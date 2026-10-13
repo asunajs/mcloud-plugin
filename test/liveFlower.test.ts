@@ -35,7 +35,9 @@ test('请求体形态：四个端点**各不相同**（"POST 就该有 JSON body
   const ui = userInfoRequest();
   assert.equal(ui.method, 'POST');
   assert.equal(ui.body, '{}');
-  assert.equal(ui.headers['content-type'], 'application/json');
+  // ⚠ 真实现**没有** content-type（模块文档写着 application/json，但代码里没设）。
+  // 2026-10-13 用真实现自己的请求对象对拍出来的。
+  assert.equal(ui.headers['content-type'], undefined, 'user/info 不该带 content-type');
 
   const j = journalingRequest(JOURNALING_EVENTS[0]!);
   assert.equal(j.method, 'POST');

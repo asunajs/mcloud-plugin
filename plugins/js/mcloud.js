@@ -1866,7 +1866,9 @@ function userInfoRequest(base) {
   return {
     url: liveRoomUrl(USER_INFO_PATH, base),
     method: "POST",
-    headers: { ...liveRoomHeaders(), "content-type": "application/json" },
+    // ⚠ 不带 content-type：真实现（`live_flower::user_info_request`）就没设它。
+    // 模块文档那张表写着 application/json，但**代码才是实际发出去的**。
+    headers: liveRoomHeaders(),
     body: "{}"
   };
 }
@@ -1999,6 +2001,29 @@ function claimEnabled(store2) {
 }
 function setClaimEnabled(store2, on, nowIso) {
   store2.setState(STATE_CLAIM_ENABLED, on ? "1" : "0", nowIso);
+}
+function probeLiveRoom(deps) {
+  const session = loadSession(deps.store);
+  if (!session || !session.jwt) {
+    return { ok: false, note: "未登录：这一族要 jwttoken（见 docs/howto-session.md）" };
+  }
+  const res = callOnce(deps.transport, withSession(userInfoRequest(deps.baseUrl), session.jwt));
+  if (res.env === void 0) {
+    return { ok: false, note: `读余额失败：${res.error ?? "未知失败"}` };
+  }
+  const code = res.env.code;
+  if (code === 0) {
+    const v = parseBalance(res.env);
+    if (v === void 0) return { ok: false, note: "读到了 code=0，但响应里没有 result.flowerCnt" };
+    return { ok: true, balance: v, note: `这一族能通：小红花余额 ${v} 朵` };
+  }
+  if (code === 90001) {
+    return {
+      ok: false,
+      note: "上游回 90001（未登录）—— 凭据是有的，所以问题在**请求头形状**：先怀疑少了 `jwttoken` / `showloading`，或多了签到族那套头（见 liveDraw.ts 文件头）"
+    };
+  }
+  return { ok: false, note: `上游回 ${code}${res.env.message ? `（${res.env.message}）` : ""}` };
 }
 function stepRequest(s, base) {
   switch (s.step) {
@@ -2749,6 +2774,22 @@ function mcloudRoutes(deps) {
           state: loadDrawState(deps.store)
         }
       })
+    },
+    {
+      // **只读探针**：一枪 `user/info`，回答"这一族能不能通"（不记账、不写状态）。
+      // 没有它，"验请求头"得先有真口令，而口令只在直播那一小时有效。
+      path: `${base}/live/draw/probe`,
+      method: "POST",
+      handler: () => {
+        const r = probeLiveRoom({
+          store: deps.store,
+          transport: deps.transport,
+          nowIso: deps.now(),
+          baseUrl: loadBaseUrl(deps.store)
+        });
+        deps.log(`小红花探针：${r.note}`);
+        return json(200, r);
+      }
     },
     {
       // 开关：领小红花（写）。默认关。

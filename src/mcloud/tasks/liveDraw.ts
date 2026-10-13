@@ -140,6 +140,42 @@ export function setClaimEnabled(store: Store, on: boolean, nowIso: string): void
   store.setState(STATE_CLAIM_ENABLED, on ? '1' : '0', nowIso);
 }
 
+/** **只读探针**：发一枪 `user/info`，回答"这一族能不能通"。
+ *
+ *  为什么要有它：这条链**唯一没在真账号上验过**的东西是**请求头形状**
+ *  （见文件头那段诚实标注）。而 `user/info` 虽然是 POST，却**只读余额、不记账**
+ *  —— 它是整条链上最便宜、最安全的那一枪。
+ *
+ *  没有它的话，"验头"这件事得先有真口令才做得了（步骤机要先有口令才肯起步），
+ *  而口令只在直播那一小时有效 —— 于是"验证"被绑死在最难凑齐的时刻上。
+ *
+ *  ⚠ 它**不写任何状态**、不碰步骤机：跑多少次都无所谓。 */
+export function probeLiveRoom(deps: TaskDeps): { ok: boolean; note: string; balance?: number } {
+  const session = loadSession(deps.store);
+  if (!session || !session.jwt) {
+    return { ok: false, note: '未登录：这一族要 jwttoken（见 docs/howto-session.md）' };
+  }
+  const res = callOnce(deps.transport, withSession(userInfoRequest(deps.baseUrl), session.jwt));
+  if (res.env === undefined) {
+    return { ok: false, note: `读余额失败：${res.error ?? '未知失败'}` };
+  }
+  const code = res.env.code;
+  if (code === 0) {
+    const v = parseBalance(res.env);
+    if (v === undefined) return { ok: false, note: '读到了 code=0，但响应里没有 result.flowerCnt' };
+    return { ok: true, balance: v, note: `这一族能通：小红花余额 ${v} 朵` };
+  }
+  if (code === 90001) {
+    // 这一支最值钱：它说明"凭据都在、却过不去" ⇒ 头形状不对（见文件头）
+    return {
+      ok: false,
+      note: '上游回 90001（未登录）—— 凭据是有的，所以问题在**请求头形状**：' +
+        '先怀疑少了 `jwttoken` / `showloading`，或多了签到族那套头（见 liveDraw.ts 文件头）',
+    };
+  }
+  return { ok: false, note: `上游回 ${code}${res.env.message ? `（${res.env.message}）` : ''}` };
+}
+
 /** 步骤 → 这一步要发的请求 + 一行人话。**纯函数**（不推进状态、不发请求）。 */
 export function stepRequest(
   s: DrawState,

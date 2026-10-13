@@ -39,6 +39,7 @@ import {
   claimEnabled,
   collectCodes,
   loadDrawState,
+  probeLiveRoom,
   runLiveDraw,
   setClaimEnabled,
 } from './tasks/liveDraw.ts';
@@ -256,6 +257,22 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
             state: loadDrawState(deps.store),
           },
         }),
+    },
+    {
+      // **只读探针**：一枪 `user/info`，回答"这一族能不能通"（不记账、不写状态）。
+      // 没有它，"验请求头"得先有真口令，而口令只在直播那一小时有效。
+      path: `${base}/live/draw/probe`,
+      method: 'POST',
+      handler: () => {
+        const r = probeLiveRoom({
+          store: deps.store,
+          transport: deps.transport,
+          nowIso: deps.now(),
+          baseUrl: loadBaseUrl(deps.store),
+        });
+        deps.log(`小红花探针：${r.note}`);
+        return json(200, r);
+      },
     },
     {
       // 开关：领小红花（写）。默认关。

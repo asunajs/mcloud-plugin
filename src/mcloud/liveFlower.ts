@@ -20,17 +20,22 @@
 // ⚠⚠ 四个请求的"请求体形态"**各不相同**，别统一成 JSON
 // ═══════════════════════════════════════════════════════════════════════
 //
-// | 端点 | content-type | body |
+// | 端点 | body | content-type |
 // |---|---|---|
-// | `user/info` | `application/json` | `{}` |
-// | `visitlog/journaling` | `application/x-www-form-urlencoded` | `module=uservisit&…` |
-// | `firstParticipate/give` | **无** | 空（`content-length: 0`） |
-// | `redFlower/draw` | **无** | 空（`content-length: 0`） |
+// | `user/info` | `{}` | **无** ⚠ |
+// | `visitlog/journaling` | `module=uservisit&…` | `application/x-www-form-urlencoded;charset=UTF-8` |
+// | `firstParticipate/give` | 空（`content-length: 0`） | **无** |
+// | `redFlower/draw` | 空（`content-length: 0`） | **无** |
 //
-// ⇒ `give` 与 `draw` **不能**带上 `{}`：那会补一个 `content-type: application/json`
-// 并让 body 变成两个字节。多发两个字节通常无害，但这里"照抄原实现"恰好是对的
-// （原项目传的是 `undefined`），而**照抄直觉**（"POST 就该有 JSON body"）是错的。
-// 本文件用 `body: undefined` 表达"无 body"。
+// ⇒ `give` 与 `draw` **不能**带上 `{}`：那会让 body 变成两个字节。
+// 这里"照抄原实现"恰好是对的（原项目传的是 `undefined`），
+// 而**照抄直觉**（"POST 就该有 JSON body"）是错的。
+//
+// ⚠⚠ `user/info` 的 content-type 一栏是**踩过的**：Rust 侧的模块文档写着
+// `application/json`，但**代码里根本没设**（`json_body` 只塞 body）。
+// 第一版我照文档写了，**多带了一枚 content-type**。
+// 2026-10-13 把真实现构造出来的请求逐字打出来对拍，才发现文档与代码不一致 ——
+// **代码才是实际发出去的**，所以这一栏是"无"。
 //
 // ═══════════════════════════════════════════════════════════════════════
 // ⚠⚠⚠ 业务码必须**对上它自己的接口** —— 不许张冠李戴
@@ -136,7 +141,9 @@ export function userInfoRequest(base?: string | undefined): BuiltRequest {
   return {
     url: liveRoomUrl(USER_INFO_PATH, base),
     method: 'POST',
-    headers: { ...liveRoomHeaders(), 'content-type': 'application/json' },
+    // ⚠ 不带 content-type：真实现（`live_flower::user_info_request`）就没设它。
+    // 模块文档那张表写着 application/json，但**代码才是实际发出去的**。
+    headers: liveRoomHeaders(),
     body: '{}',
   };
 }

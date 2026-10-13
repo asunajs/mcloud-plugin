@@ -511,3 +511,42 @@ Go 参考实现按 `pos = headEnd` 推进会多解出一条）。
 **这一族的请求头形状没有在真账号上验过**。CI 只打 mock，而 mock 验的是"我发出去的形状"，
 不是"上游接受它"。首次真机跑要盯 `90001`（凭据都在却过不去）——
 那说明 `liveDraw.ts` 文件头记的那套头（H5 公共头，**不带**签到族的签名头与 cookie）还缺东西。
+
+---
+
+## F-013 · 拿**真实现自己的请求对象**对拍，抓到一处偏差（`user/info` 多带 content-type）
+
+我原先在 `live_flower.rs` 的文件头给写那半标了一句"⚠ 请求头形状**没在真账号上验过**"。
+验不了真账号（缺 H5 的 `jwttoken`，见 F-014），但**有一件更强的、离线就能做的事**：
+
+> 把真实现（Rust）自己构造出来的请求逐字打出来，和插件侧**逐条对**。
+
+做法：临时加一个 integration test，调 `live_flower::*_request()` 把 method / url /
+全部 header / body 打出来（**不发任何请求**），跑完即删。
+
+### 结果：六口里五口逐字节一致，一口不一致
+
+一致的部分（含最容易写歪的几处）：
+
+| 项 | 真实现 | 插件 |
+|---|---|---|
+| `draw` 的 query 编码 | `?code=%E4%B8%AD%E7%A7%8B%E5%8F%A3%E4%BB%A4` | 同 ✅ |
+| `journaling` 的表单体 | `module=uservisit&optkeyword=…&sourceid=1007&marketName=…` | 逐字节同 ✅ |
+| `give` / `draw` / `revival` 的 body | `None`（无 body、无 content-type） | `undefined` ✅ |
+| 六口共用的头 | Accept / activityid / appversion / Origin / Referer / User-Agent | 同 ✅ |
+| Referer 的 `targetSourceId` | `001005`（不是直播侧的 `017027`） | 同 ✅ |
+| UA | iPad `18_7` 那个 | 同 ✅ |
+
+**唯一一处偏差**：`user/info` —— 真实现**不带 content-type**，我照文档多带了一枚
+`application/json`。而 Rust 侧的**模块文档那张表写着 `application/json`**，
+是**代码里根本没设**（`json_body` 只塞 body）。
+
+⇒ 教训写在这儿：**文档与代码不一致时，代码才是实际发出去的**。
+`user/info` 多发一枚 content-type 大概率无害，但"照文档写"这件事本身是错的 ——
+文档是二手证据，构造出来的请求才是原始证据。
+
+### 这个方法值得重复用
+
+不需要账号、不需要网络、几秒钟出结果，而且**比"打一枪看它成不成"更细**：
+它比的是"我发的每一个字节"，不是"上游这次有没有回 0"。
+凡是"插件复刻某个上游协议"的地方，都该先做一次这个对拍。
