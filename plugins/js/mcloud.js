@@ -1309,6 +1309,105 @@ function runNotice(deps) {
   return runNoticeInfo(deps);
 }
 
+// src/mcloud/tasks/appTaskMatrix.ts
+var STATE_GROUP_INDEX = "mcloud.apptaskmatrix.group_index";
+var STATE_LAST = "mcloud.apptaskmatrix.last";
+var MATRIX_GROUPS = [
+  "new",
+  "beiyong1",
+  "beiyong2",
+  "cloudEmail",
+  "time",
+  "day",
+  "month",
+  "hidden"
+];
+function asInt2(v) {
+  if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
+  if (typeof v === "string" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
+  return void 0;
+}
+function asStr(v) {
+  return typeof v === "string" && v !== "" ? v : void 0;
+}
+function parseMatrixItem(raw) {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return void 0;
+  const o = raw;
+  const it = {
+    taskId: asInt2(o.id ?? o.taskId ?? o.task_id),
+    name: asStr(o.name),
+    description: asStr(o.description),
+    groupId: asStr(o.groupid ?? o.groupId),
+    state: asStr(o.state),
+    limitType: asStr(o.limitType ?? o.limit_type),
+    enable: asInt2(o.enable),
+    currStep: asInt2(o.currstep ?? o.currStep)
+  };
+  const any = it.taskId !== void 0 || it.name !== void 0 || it.state !== void 0 || it.enable !== void 0;
+  return any ? it : void 0;
+}
+function parseMatrix(result) {
+  let list = result;
+  if (list !== null && typeof list === "object" && !Array.isArray(list)) {
+    const o = list;
+    list = o.list ?? o.tasks ?? o.taskList ?? o.items ?? [];
+  }
+  if (!Array.isArray(list)) return [];
+  return list.map(parseMatrixItem).filter((x) => !!x);
+}
+function judgeItem(i) {
+  if (i.state === "FINISH") return "done";
+  if (i.enable === 1) return "todo";
+  return "skip";
+}
+function summarize(items) {
+  let done = 0;
+  let todo = 0;
+  let skip = 0;
+  const todoNames = [];
+  for (const i of items) {
+    const j = judgeItem(i);
+    if (j === "done") done += 1;
+    else if (j === "todo") {
+      todo += 1;
+      if (todoNames.length < 3) todoNames.push(i.name ?? i.description ?? `#${i.taskId ?? "?"}`);
+    } else skip += 1;
+  }
+  return { done, todo, skip, todoNames };
+}
+function runAppTaskMatrix(deps) {
+  const raw = deps.store.getState(STATE_GROUP_INDEX);
+  const parsed = raw === void 0 || raw === null ? 0 : Number(raw);
+  const idx = Number.isFinite(parsed) && parsed >= 0 && parsed < MATRIX_GROUPS.length ? parsed : 0;
+  const group = MATRIX_GROUPS[idx];
+  const out = runTask(
+    deps,
+    {
+      task: "app-task-matrix",
+      endpoint: "taskListV2",
+      method: "POST",
+      marketName: MARKET_NAME,
+      isDeviceId: false,
+      stateKey: STATE_LAST,
+      // 实拍体：{"clientVersion":"12.6.0","group":<group>,"marketname":"sign_in_3"}
+      // 体是**字符串**（与 receiveV3Body 同一约定）
+      body: JSON.stringify({ clientVersion: TASK_CLIENT_VERSION, group, marketname: MARKET_NAME })
+    },
+    (env) => {
+      const items = parseMatrix(env.result);
+      const s = summarize(items);
+      deps.store.setState(STATE_GROUP_INDEX, String((idx + 1) % MATRIX_GROUPS.length), deps.nowIso);
+      const names = s.todoNames.length ? `（可做：${s.todoNames.join("、")}）` : "";
+      return {
+        ok: true,
+        note: `App 任务矩阵[${idx + 1}/${MATRIX_GROUPS.length} group=${group}]：已完成 ${s.done} 条、可做 ${s.todo} 条、不参与 ${s.skip} 条${names}`,
+        snapshot: { group, ...s, items: items.slice(0, 20) }
+      };
+    }
+  );
+  return out;
+}
+
 // src/mcloud/tasks/receive.ts
 var STATE_QUEUE = "mcloud.receive.queue";
 var STATE_RECEIVE = "mcloud.receive.last";
@@ -1669,6 +1768,7 @@ var TASK_META = [
   // ── 通知与趣玩（未实现）──
   // 它用**签到页那张票**（`SessionRecipe::SignInPage`）—— 就是本插件手里已有的会话，
   // 所以「只依赖 jwt」这条是对的。`getTaskInfo` 有实拍；`reward` 只实拍到成功那一枪。
+  { name: "app-task-matrix", title: "App 任务矩阵（只看）", group: "signin", kind: "Query", risk: "none", missed: "catch-up", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "captured", note: "8 个 group 一次读一个；只读，一个字节都不写" },
   { name: "notice", title: "开启通知领AI豆", group: "daily", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["jwt"], batch: true, hidden: false, implemented: true, evidence: "partial", note: "有手动前置（判不出来，见 notice.ts 文件头 ③）；reward 不报到账数 ⇒ 靠下一轮回查" },
   // 更正：换出该页 jwttoken 的那一步**在实拍归档里没有** ⇒ 现在做不了（不是"只依赖 jwt"）
   { name: "fun-ai", title: "趣玩AI抽奖", group: "activity", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["activity-token"], batch: true, hidden: false, implemented: false, evidence: "no-ticket", note: "换票那步没抓到 ⇒ 做不了" },
@@ -1980,6 +2080,7 @@ register_cron("multiple", SIGNIN_CRON, makeRunner("签到翻倍", runMultiple));
 register_cron("revival", SIGNIN_CRON, makeRunner("复活卡", runRevival));
 register_cron("backup-gift", SIGNIN_CRON, makeRunner("备份好礼", runBackupGift));
 register_cron("notice", SIGNIN_CRON, makeRunner("开启通知领AI豆", runNotice));
+register_cron("app-task-matrix", SIGNIN_CRON, makeRunner("App 任务矩阵（只看）", runAppTaskMatrix));
 register_cron("prizes", "20 8 * * *", makeRunner("待领取奖品", runPrizes));
 register_cron("cloud-snapshot", "30 8 * * *", makeRunner("AI豆快照", runCloudSnapshot));
 every("selftest", "5m", (p) => {

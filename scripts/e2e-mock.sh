@@ -129,6 +129,13 @@ for i in 1 2 3; do
   sleep 0.4
 done
 
+# App 任务矩阵（**只读**）：一次读一个 group，连读 3 次要落到不同 group
+for i in 1 2 3; do
+  curl -fsS -o /dev/null "${W[@]}" -X POST "$B/api/tasks/mcloud/app-task-matrix/run"
+  printf '   app-task-matrix（第 %s 次）✓\n' "$i"
+  sleep 0.3
+done
+
 curl -fsS "${H[@]}" "$B/plugins/mcloud/api/tasks" -o "$TMP/plugin.json"
 curl -fsS "http://127.0.0.1:$MOCK_PORT/_debug/requests" -o "$TMP/mock.json"
 curl -fsS "http://127.0.0.1:$MOCK_PORT/_debug/state" -o "$TMP/mock-state.json"
@@ -219,4 +226,24 @@ assert info_n >= 2, f'通知任务该查过至少两次状态（第二次是回�
 assert reward_n == 1, f'reward 只该发一次（会真入账），实际 {reward_n}'
 assert st.get('noticeClaimable') is False, f'mock 侧状态没变：{st.get("noticeClaimable")}'
 print('   ✅ 通知任务：查过状态、只领一次、mock 侧真的变成已领')
+PY
+
+# App 任务矩阵：游标真的在推进（三次读到三个不同的 group），且只碰只读端点
+python3 - "$TMP/mock.json" <<'PY'
+import json, sys
+reqs = json.load(open(sys.argv[1]))
+hits = [r for r in reqs if 'taskListV2' in r.get('path', '')]
+assert len(hits) >= 3, f'矩阵该读至少三次，实际 {len(hits)}'
+# ⚠ 逐条读 body，别用 json.dumps 之后的整串去 find —— 那样引号是转义的，
+#   我自己第一版就栽在这儿（断言写错，代码是对的）。
+groups = []
+for r in hits:
+    try:
+        groups.append(json.loads(r.get('body') or '{}').get('group'))
+    except Exception:
+        groups.append(None)
+assert all(g for g in groups[:3]), f'前三次都该带 group，实际 {groups[:3]}'
+assert len(set(groups[:3])) == 3, f'游标没推进（三次同一个 group）：{groups[:3]}'
+assert all(r.get('method') == 'POST' for r in hits), '这一口是 POST'
+print('   ✅ App 任务矩阵：只读、一次一个 group、游标推进正常')
 PY

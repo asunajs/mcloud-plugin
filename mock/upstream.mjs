@@ -146,6 +146,43 @@ export async function startMock(options = {}) {
           // 实拍响应就是这个形状 —— 连 result 都没有，报不出到账数
           return json(res, 200, { code: 0, msg: 'success' });
         }
+        if (url.pathname === '/ycloud/signin/task/taskListV2') {
+          // 只读：按 group 给不同的矩阵。两个实拍坑都要在夹具里出现一次：
+          //   · `new` 这一组回**空对象**（实拍就是 result:{}，不是 []）
+          //   · 一条 `enable != 1`（旧实现的门是 enable != 1 ⇒ 跳过）
+          // mock 里 `body` 是原始字符串，要自己解
+          let g = 'new';
+          try {
+            g = JSON.parse(body || '{}').group || 'new';
+          } catch {}
+          if (g === 'new') {
+            return json(res, 200, { code: 0, msg: 'success', result: {}, groupState: {} });
+          }
+          if (g === 'beiyong1') {
+            return json(res, 200, {
+              code: 0,
+              msg: 'success',
+              result: [
+                { id: 106, name: '永葆童心', description: '领38云朵', groupid: 'beiyong1', state: 'FINISH', limitType: 'EVER', enable: 1, currstep: 4 },
+                { id: 522, name: '备份有礼', description: '领5云朵', groupid: 'beiyong1', state: 'DOING', limitType: 'DAY', enable: 1, currstep: 2 },
+              ],
+              groupState: { beiyong1: { taskFinishState: 2 } },
+            });
+          }
+          if (g === 'cloudEmail') {
+            return json(res, 200, {
+              code: 0,
+              msg: 'success',
+              result: [
+                // enable != 1 ⇒ 不参与（不是"可做"）
+                { id: 1021, name: '邮箱通知', groupid: 'cloudEmail', state: 'DOING', enable: 0 },
+                // 驼峰 groupId（拍拍那一族的真实差异）也要认得
+                { id: 2001, name: '拍拍盘点', groupId: 'cloudEmail', state: 'DOING', enable: 1 },
+              ],
+            });
+          }
+          return json(res, 200, { code: 0, msg: 'success', result: [], groupState: {} });
+        }
         if (url.pathname === '/ycloud/signin/page/infoV3') {
           return json(res, 200, {
             code: 0,
