@@ -143,12 +143,19 @@ jobs:
           assert p, f"没有加载 mcloud 插件，只有 {list(plugins)}"
           assert p['runtime'] == 'js', p
           assert p.get('error') in (None, ''), p
-          assert p['tasks'] == 2, f"插件报的任务数是 {p['tasks']}，期望 2"
           # 任务定义在 **jobs** 里（`tasks` 是「正在跑的调用」，见 F-004）；
           # 插件条目上的 `tasks` 是数量，不是列表
           mine = [j for j in state.get('jobs', []) if j.get('plugin') == 'mcloud']
           names = sorted(j['name'] for j in mine)
-          assert names == ['diag', 'selftest'], f"实际任务名 {names}"
+
+          # ⚠️ 这里**不写死数量**。第一版写的是 `p['tasks'] == 2`，插件长到 4 个任务时
+          # 自己的 CI 就红了 —— 断言不该跟着代码长大而失效。改成两条更强的检查：
+          #   ① 已知任务名必须是子集（插件新增任务不用改这里）
+          #   ② 插件自报的数量必须等于调度器里**实际**的数量（自报与事实一致）
+          expected = {'selftest', 'diag', 'task-list', 'session-check'}
+          missing = expected - set(names)
+          assert not missing, f"少了这些任务：{sorted(missing)}，实际 {names}"
+          assert p['tasks'] == len(mine), f"插件自报 {p['tasks']} 个任务，调度器里实际 {len(mine)} 个：{names}"
           assert all(not j.get('deleted') for j in mine), mine
           assert all(j.get('last_error') in (None, '') for j in mine), mine
           print(f"✅ 插件 mcloud 已加载：runtime={p['runtime']} 任务 {names}（调度器里都登记了、无 last_error）")
