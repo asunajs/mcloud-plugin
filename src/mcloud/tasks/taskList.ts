@@ -12,11 +12,11 @@ import type { CallResult, Transport } from '../client.ts';
 import { resultArray } from '../envelope.ts';
 import type { SignInEnvelope } from '../envelope.ts';
 import {
-  EP,
   SHOW_LOADING,
   REFERER_SIGN_IN,
   TASK_LIST_V3_CONTENT_TYPE,
   buildH5Request,
+  resolveUrl,
   taskListV3Body,
 } from '../h5.ts';
 import { SESSION_KEY, loadSession, saveSession } from '../../store/types.ts';
@@ -55,7 +55,7 @@ export function runTaskList(deps: TaskDeps): TaskOutcome {
   }
 
   const req = buildH5Request({
-    url: (deps.baseUrl ?? '') + EP.taskListV3,
+    url: resolveUrl('taskListV3', deps.baseUrl),
     method: 'POST',
     body: taskListV3Body(),
     contentType: TASK_LIST_V3_CONTENT_TYPE,

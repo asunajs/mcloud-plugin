@@ -22,7 +22,7 @@ import type { Transport } from './mcloud/client.ts';
 import { SLOW_CALL_MS } from './mcloud/client.ts';
 import { runTaskList } from './mcloud/tasks/taskList.ts';
 import { mcloudRoutes } from './mcloud/routes.ts';
-import { verifySession } from './mcloud/session.ts';
+import { loadBaseUrl, verifySession } from './mcloud/session.ts';
 
 const store: Store = hostStore();
 store.ensureSchema();
@@ -98,7 +98,13 @@ function selftest(): { ok: boolean; detail: string } {
 // ── HTTP 接口（给界面与脚本用；见 src/mcloud/routes.ts）──
 //
 // 路径是完整路径，方法大写 —— 面板那边按 `"{METHOD} {path}"` 建键。
-for (const r of mcloudRoutes({ store, transport, now: () => new Date().toISOString(), log })) {
+for (const r of mcloudRoutes({
+  store,
+  transport,
+  now: () => new Date().toISOString(),
+  log,
+  baseUrl: undefined, // 路由内部按需读 state（改了配置立刻生效）
+})) {
   register_route(r.path, r.method, r.handler);
 }
 
@@ -112,6 +118,7 @@ register_cron('session-check', '50 7 * * *', (p) => {
     store,
     transport,
     nowIso: new Date().toISOString(),
+    baseUrl: loadBaseUrl(store),
   });
   store.recordRun({
     task: p.name,
@@ -135,7 +142,13 @@ register_cron('session-check', '50 7 * * *', (p) => {
 register_cron('task-list', '0 8 * * *', (p) => {
   const t0 = Date.now();
   try {
-    const out = runTaskList({ store, transport, nowIso: new Date().toISOString() });
+    const out = runTaskList({
+      store,
+      transport,
+      nowIso: new Date().toISOString(),
+      // 每次调用都重新读：改了基址不用重载插件（CI 与手工联调都靠这条）
+      baseUrl: loadBaseUrl(store),
+    });
     store.recordRun({
       task: p.name,
       runs: p.runs,

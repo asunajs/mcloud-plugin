@@ -13,7 +13,14 @@
 // 想看完整 cookie 的人应该去读本机的 SQLite，而不是调一个「任何拿到面板会话的人都能调」
 // 的 HTTP 接口。
 
-import { importSession, parseSessionInput, sessionStatus, verifySession } from './session.ts';
+import {
+  STATE_BASE_URL,
+  importSession,
+  loadBaseUrl,
+  parseSessionInput,
+  sessionStatus,
+  verifySession,
+} from './session.ts';
 import { STATE_LAST_ERROR, STATE_LAST_TASKLIST } from './tasks/taskList.ts';
 import type { Store } from '../store/types.ts';
 import type { Transport } from './client.ts';
@@ -73,12 +80,14 @@ function readBody(req: RouteRequest): Record<string, unknown> {
 /** 路由表。main.ts 遍历它去调用真的 `register_route`。 */
 export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
   const base = `/plugins/${PLUGIN}/api`;
+  // 基址**每次调用时从 state 读**，而不是用注入的那份快照 ——
+  // 否则「刚把基址指到 mock，导入会话却去打了真上游」：配置改了要立刻生效
   const verify = (): { ok: boolean; note: string } =>
     verifySession({
       store: deps.store,
       transport: deps.transport,
       nowIso: deps.now(),
-      baseUrl: deps.baseUrl,
+      baseUrl: loadBaseUrl(deps.store),
     });
 
   return [
@@ -125,6 +134,26 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
           note: check.note,
           status: sessionStatus(deps.store, deps.now()),
         });
+      },
+    },
+    {
+      // 上游基址：CI 指向 mock 用；生产留空 = 用真地址
+      path: `${base}/config`,
+      method: 'GET',
+      handler: () => json(200, { baseUrl: loadBaseUrl(deps.store) || '(真上游)' }),
+    },
+    {
+      path: `${base}/config`,
+      method: 'POST',
+      handler: (req) => {
+        const body = readBody(req);
+        const v = typeof body.baseUrl === 'string' ? body.baseUrl.trim() : '';
+        if (v && !/^https?:\/\//.test(v)) {
+          return json(400, { error: 'baseUrl 要以 http:// 或 https:// 开头（清空就传空串）' });
+        }
+        deps.store.setState(STATE_BASE_URL, v.replace(/\/+$/, ''), deps.now());
+        deps.log(v ? `上游基址已改为 ${v}` : '上游基址已恢复为真上游');
+        return json(200, { baseUrl: v || '(真上游)' });
       },
     },
     {

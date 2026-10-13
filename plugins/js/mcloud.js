@@ -756,20 +756,24 @@ function buildH5Request(spec) {
 var MCLOUD_HOST = "https://m.mcloud.139.com";
 var BACKUP_GIFT_HOST = "https://caiyun.feixin.10086.cn";
 var EP = {
-  infoV3: `${MCLOUD_HOST}/ycloud/signin/page/infoV3`,
-  startSignIn: `${MCLOUD_HOST}/ycloud/signin/page/startSignIn`,
-  receiveV3: `${MCLOUD_HOST}/ycloud/signin/page/receiveV3`,
-  taskExpansion: `${MCLOUD_HOST}/ycloud/signin/page/taskExpansion`,
-  receiveTaskExpansion: `${MCLOUD_HOST}/ycloud/signin/page/receiveTaskExpansion`,
-  receiveRevivalReward: `${MCLOUD_HOST}/ycloud/signin/page/receiveRevivalReward`,
-  multiple: `${MCLOUD_HOST}/ycloud/signin/page/multiple`,
-  prizeRecord: `${MCLOUD_HOST}/ycloud/signin/public/record`,
-  cloudRecordV2: `${MCLOUD_HOST}/ycloud/signin/public/cloudRecordV2`,
-  taskListV2: `${MCLOUD_HOST}/ycloud/signin/task/taskListV2`,
-  taskListV3: `${MCLOUD_HOST}/ycloud/signin/task/taskListV3`,
-  backupGiftInfo: `${BACKUP_GIFT_HOST}/market/backupgift/info`,
-  backupGiftReceive: `${BACKUP_GIFT_HOST}/market/backupgift/receive`
+  infoV3: { origin: MCLOUD_HOST, path: "/ycloud/signin/page/infoV3" },
+  startSignIn: { origin: MCLOUD_HOST, path: "/ycloud/signin/page/startSignIn" },
+  receiveV3: { origin: MCLOUD_HOST, path: "/ycloud/signin/page/receiveV3" },
+  taskExpansion: { origin: MCLOUD_HOST, path: "/ycloud/signin/page/taskExpansion" },
+  receiveTaskExpansion: { origin: MCLOUD_HOST, path: "/ycloud/signin/page/receiveTaskExpansion" },
+  receiveRevivalReward: { origin: MCLOUD_HOST, path: "/ycloud/signin/page/receiveRevivalReward" },
+  multiple: { origin: MCLOUD_HOST, path: "/ycloud/signin/page/multiple" },
+  prizeRecord: { origin: MCLOUD_HOST, path: "/ycloud/signin/public/record" },
+  cloudRecordV2: { origin: MCLOUD_HOST, path: "/ycloud/signin/public/cloudRecordV2" },
+  taskListV2: { origin: MCLOUD_HOST, path: "/ycloud/signin/task/taskListV2" },
+  taskListV3: { origin: MCLOUD_HOST, path: "/ycloud/signin/task/taskListV3" },
+  backupGiftInfo: { origin: BACKUP_GIFT_HOST, path: "/market/backupgift/info" },
+  backupGiftReceive: { origin: BACKUP_GIFT_HOST, path: "/market/backupgift/receive" }
 };
+function resolveUrl(name, base) {
+  const ep = EP[name];
+  return base ? base + ep.path : ep.origin + ep.path;
+}
 var REFERER_SIGN_IN = `${MCLOUD_HOST}/mcloud/sign_in/index.html`;
 var SHOW_LOADING = "true";
 var EP_METHOD = {
@@ -835,7 +839,7 @@ function runTaskList(deps) {
     return { ok: false, note: "未登录：state 里没有会话（先跑登录流程）" };
   }
   const req = buildH5Request({
-    url: (deps.baseUrl ?? "") + EP.taskListV3,
+    url: resolveUrl("taskListV3", deps.baseUrl),
     method: "POST",
     body: taskListV3Body(),
     contentType: TASK_LIST_V3_CONTENT_TYPE,
@@ -1005,7 +1009,7 @@ function verifySession(deps) {
     return { ok: false, note: note2 };
   }
   const req = buildH5Request({
-    url: `${deps.baseUrl ?? ""}${EP.infoV3}?${CLIENT_QUERY}`,
+    url: `${resolveUrl("infoV3", deps.baseUrl)}?${CLIENT_QUERY}`,
     method: EP_METHOD.infoV3 === "GET" ? "GET" : "POST",
     referer: REFERER_SIGN_IN,
     showLoading: SHOW_LOADING,
@@ -1030,6 +1034,14 @@ function importSession(store2, s, nowIso) {
     JSON.stringify({ at: nowIso, ok: null, note: "刚导入，还没验" }),
     nowIso
   );
+}
+var STATE_BASE_URL = "mcloud.base_url";
+function loadBaseUrl(store2) {
+  const v = store2.getState(STATE_BASE_URL);
+  if (!v) return "";
+  const t = v.trim();
+  if (!/^https?:\/\//.test(t)) return "";
+  return t.replace(/\/+$/, "");
 }
 
 // src/mcloud/routes.ts
@@ -1056,7 +1068,7 @@ function mcloudRoutes(deps) {
     store: deps.store,
     transport: deps.transport,
     nowIso: deps.now(),
-    baseUrl: deps.baseUrl
+    baseUrl: loadBaseUrl(deps.store)
   });
   return [
     {
@@ -1097,6 +1109,26 @@ function mcloudRoutes(deps) {
           note: check.note,
           status: sessionStatus(deps.store, deps.now())
         });
+      }
+    },
+    {
+      // 上游基址：CI 指向 mock 用；生产留空 = 用真地址
+      path: `${base}/config`,
+      method: "GET",
+      handler: () => json(200, { baseUrl: loadBaseUrl(deps.store) || "(真上游)" })
+    },
+    {
+      path: `${base}/config`,
+      method: "POST",
+      handler: (req) => {
+        const body = readBody(req);
+        const v = typeof body.baseUrl === "string" ? body.baseUrl.trim() : "";
+        if (v && !/^https?:\/\//.test(v)) {
+          return json(400, { error: "baseUrl 要以 http:// 或 https:// 开头（清空就传空串）" });
+        }
+        deps.store.setState(STATE_BASE_URL, v.replace(/\/+$/, ""), deps.now());
+        deps.log(v ? `上游基址已改为 ${v}` : "上游基址已恢复为真上游");
+        return json(200, { baseUrl: v || "(真上游)" });
       }
     },
     {
@@ -1163,14 +1195,22 @@ function selftest() {
     detail: bad.length === 0 ? `${checks.length}/${checks.length} 通过` : `失败：${bad.join("、")}`
   };
 }
-for (const r of mcloudRoutes({ store, transport, now: () => (/* @__PURE__ */ new Date()).toISOString(), log })) {
+for (const r of mcloudRoutes({
+  store,
+  transport,
+  now: () => (/* @__PURE__ */ new Date()).toISOString(),
+  log,
+  baseUrl: void 0
+  // 路由内部按需读 state（改了配置立刻生效）
+})) {
   register_route(r.path, r.method, r.handler);
 }
 register_cron("session-check", "50 7 * * *", (p) => {
   const check = verifySession({
     store,
     transport,
-    nowIso: (/* @__PURE__ */ new Date()).toISOString()
+    nowIso: (/* @__PURE__ */ new Date()).toISOString(),
+    baseUrl: loadBaseUrl(store)
   });
   store.recordRun({
     task: p.name,
@@ -1187,7 +1227,13 @@ register_cron("session-check", "50 7 * * *", (p) => {
 register_cron("task-list", "0 8 * * *", (p) => {
   const t0 = Date.now();
   try {
-    const out = runTaskList({ store, transport, nowIso: (/* @__PURE__ */ new Date()).toISOString() });
+    const out = runTaskList({
+      store,
+      transport,
+      nowIso: (/* @__PURE__ */ new Date()).toISOString(),
+      // 每次调用都重新读：改了基址不用重载插件（CI 与手工联调都靠这条）
+      baseUrl: loadBaseUrl(store)
+    });
     store.recordRun({
       task: p.name,
       runs: p.runs,

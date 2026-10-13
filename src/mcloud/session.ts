@@ -16,7 +16,7 @@ import { SESSION_KEY, loadSession, saveSession } from '../store/types.ts';
 import type { Session, Store } from '../store/types.ts';
 import { callOnce } from './client.ts';
 import type { Transport } from './client.ts';
-import { CLIENT_QUERY, EP, EP_METHOD, REFERER_SIGN_IN, SHOW_LOADING, buildH5Request } from './h5.ts';
+import { CLIENT_QUERY, EP_METHOD, REFERER_SIGN_IN, SHOW_LOADING, buildH5Request, resolveUrl } from './h5.ts';
 import { sessionHeaders } from './tasks/taskList.ts';
 
 export interface ParseOk {
@@ -206,7 +206,7 @@ export function verifySession(deps: {
   // `infoV3` 是 **GET** + `?client=app`（差点写成 POST —— 真面板回了我一个 405，
   // 见 h5.ts 的 EP_METHOD 表）
   const req = buildH5Request({
-    url: `${deps.baseUrl ?? ''}${EP.infoV3}?${CLIENT_QUERY}`,
+    url: `${resolveUrl('infoV3', deps.baseUrl)}?${CLIENT_QUERY}`,
     method: EP_METHOD.infoV3 === 'GET' ? 'GET' : 'POST',
     referer: REFERER_SIGN_IN,
     showLoading: SHOW_LOADING,
@@ -242,3 +242,22 @@ export function importSession(store: Store, s: Session, nowIso: string): void {
 }
 
 export { SESSION_KEY };
+
+/** 上游基址可配置 —— 默认空（= 用 h5.ts 里写死的真地址）。
+ *
+ *  为什么需要它：`http_fetch` 能把请求发到任何地方，但插件的端点常量是写死的。
+ *  「指向 mock」这件事在 CI 里是必须的：CI **绝不能碰真账号**，可又要验证整条链
+ *  （会话 → 构造 → 签名 → 发送 → 解析 → 落盘）真的能跑通。
+ *
+ *  为什么走 state 而不是环境变量：插件沙箱里没有 `process.env`（这是设计，
+ *  不是缺陷）—— 插件拿不到宿主环境。所以配置从 state 表读，由接口写。 */
+export const STATE_BASE_URL = 'mcloud.base_url';
+
+export function loadBaseUrl(store: Store): string {
+  const v = store.getState(STATE_BASE_URL);
+  if (!v) return '';
+  const t = v.trim();
+  // 只接受 http(s):// 开头，且去掉结尾斜杠 —— 免得拼出 `…//ycloud/…` 这种地址
+  if (!/^https?:\/\//.test(t)) return '';
+  return t.replace(/\/+$/, '');
+}

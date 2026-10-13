@@ -19,11 +19,11 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 
 import {
-  EP,
   REFERER_SIGN_IN,
   SHOW_LOADING,
   TASK_LIST_V3_CONTENT_TYPE,
   buildH5Request,
+  resolveUrl,
   taskListV3Body,
 } from '../src/mcloud/h5.ts';
 import { generateSignature } from '../src/mcloud/sign.ts';
@@ -57,7 +57,7 @@ test('① body 逐字节：与实拍 content-length 62 一致', () => {
 
 test('① 发出去的头：content-type 带 charset、activityid 跟 marketname、jwttoken 小写', () => {
   const req = buildH5Request({
-    url: EP.taskListV3,
+    url: resolveUrl('taskListV3'),
     method: 'POST',
     body: taskListV3Body(),
     contentType: TASK_LIST_V3_CONTENT_TYPE,
@@ -128,7 +128,7 @@ test('② 逻辑层：成功时解析清单、写 state、把 cookie 并回去',
   const out = runTaskList({ store, transport: stub, nowIso: '2026-10-13T01:00:00.000Z' });
   assert.equal(out.ok, true);
   assert.equal(out.note, '清单 3 条，已完成 2 条');
-  assert.deepEqual(seen, [`POST ${EP.taskListV3}`]);
+  assert.deepEqual(seen, [`POST ${resolveUrl('taskListV3')}`]);
 
   const saved = JSON.parse(store.getState(STATE_LAST_TASKLIST)!);
   assert.equal(saved.total, 3);

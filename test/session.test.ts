@@ -223,6 +223,35 @@ test('路由：状态不回显凭据、导入后立刻真验、坏输入 400、�
   assert.equal(JSON.parse(c.body).cleared, true);
   assert.equal(JSON.parse(call('GET', '/plugins/mcloud/api/session').body).present, false);
 
+  // 基址配置：默认真上游、坏值 400、设了立刻生效（体检会打到那个地址）
+  assert.equal(JSON.parse(call('GET', '/plugins/mcloud/api/config').body).baseUrl, '(真上游)');
+  const badBase = call('POST', '/plugins/mcloud/api/config', JSON.stringify({ baseUrl: 'ftp://x' }));
+  assert.equal(badBase.status, 400);
+  call('POST', '/plugins/mcloud/api/config', JSON.stringify({ baseUrl: 'http://127.0.0.1:9/' }));
+  assert.equal(
+    JSON.parse(call('GET', '/plugins/mcloud/api/config').body).baseUrl,
+    'http://127.0.0.1:9',
+    '结尾斜杠要去掉',
+  );
+  // 设了基址之后，导入会话的体检必须打到那个地址（而不是真上游）
+  try {
+    let url = '';
+    const routes2 = mcloudRoutes({
+      store,
+      transport: (req) => {
+        url = req.url;
+        return { status: 200, headers: {}, body: '{"code":0,"msg":"ok"}' };
+      },
+      now: () => NOW,
+      log: logNothing,
+    });
+    const h = routes2.find((x) => x.method === 'POST' && x.path.endsWith('/session'))!;
+    h.handler({ method: 'POST', body: JSON.stringify({ session: COOKIE }) });
+    assert.equal(url, 'http://127.0.0.1:9/ycloud/signin/page/infoV3?client=app');
+  } finally {
+    call('POST', '/plugins/mcloud/api/config', JSON.stringify({ baseUrl: '' }));
+  }
+
   // 任务侧状态
   store.setState(STATE_LAST_TASKLIST, JSON.stringify({ at: NOW, total: 3, done: 2 }), NOW);
   const t = JSON.parse(call('GET', '/plugins/mcloud/api/tasks').body);

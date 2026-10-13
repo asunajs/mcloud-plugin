@@ -111,20 +111,33 @@ export const MCLOUD_HOST = 'https://m.mcloud.139.com';
 export const BACKUP_GIFT_HOST = 'https://caiyun.feixin.10086.cn';
 
 export const EP = {
-  infoV3: `${MCLOUD_HOST}/ycloud/signin/page/infoV3`,
-  startSignIn: `${MCLOUD_HOST}/ycloud/signin/page/startSignIn`,
-  receiveV3: `${MCLOUD_HOST}/ycloud/signin/page/receiveV3`,
-  taskExpansion: `${MCLOUD_HOST}/ycloud/signin/page/taskExpansion`,
-  receiveTaskExpansion: `${MCLOUD_HOST}/ycloud/signin/page/receiveTaskExpansion`,
-  receiveRevivalReward: `${MCLOUD_HOST}/ycloud/signin/page/receiveRevivalReward`,
-  multiple: `${MCLOUD_HOST}/ycloud/signin/page/multiple`,
-  prizeRecord: `${MCLOUD_HOST}/ycloud/signin/public/record`,
-  cloudRecordV2: `${MCLOUD_HOST}/ycloud/signin/public/cloudRecordV2`,
-  taskListV2: `${MCLOUD_HOST}/ycloud/signin/task/taskListV2`,
-  taskListV3: `${MCLOUD_HOST}/ycloud/signin/task/taskListV3`,
-  backupGiftInfo: `${BACKUP_GIFT_HOST}/market/backupgift/info`,
-  backupGiftReceive: `${BACKUP_GIFT_HOST}/market/backupgift/receive`,
+  infoV3: { origin: MCLOUD_HOST, path: '/ycloud/signin/page/infoV3' },
+  startSignIn: { origin: MCLOUD_HOST, path: '/ycloud/signin/page/startSignIn' },
+  receiveV3: { origin: MCLOUD_HOST, path: '/ycloud/signin/page/receiveV3' },
+  taskExpansion: { origin: MCLOUD_HOST, path: '/ycloud/signin/page/taskExpansion' },
+  receiveTaskExpansion: { origin: MCLOUD_HOST, path: '/ycloud/signin/page/receiveTaskExpansion' },
+  receiveRevivalReward: { origin: MCLOUD_HOST, path: '/ycloud/signin/page/receiveRevivalReward' },
+  multiple: { origin: MCLOUD_HOST, path: '/ycloud/signin/page/multiple' },
+  prizeRecord: { origin: MCLOUD_HOST, path: '/ycloud/signin/public/record' },
+  cloudRecordV2: { origin: MCLOUD_HOST, path: '/ycloud/signin/public/cloudRecordV2' },
+  taskListV2: { origin: MCLOUD_HOST, path: '/ycloud/signin/task/taskListV2' },
+  taskListV3: { origin: MCLOUD_HOST, path: '/ycloud/signin/task/taskListV3' },
+  backupGiftInfo: { origin: BACKUP_GIFT_HOST, path: '/market/backupgift/info' },
+  backupGiftReceive: { origin: BACKUP_GIFT_HOST, path: '/market/backupgift/receive' },
 } as const;
+
+export type EndpointName = keyof typeof EP;
+
+/** 端点 → 绝对 URL。
+ *
+ *  `base` 非空时**替换整个源**（把上游指到 mock / 别的环境），端点自带的源被丢掉。
+ *  第一版我用的是 `base + EP.x` 前缀拼接 —— 那是错的：`EP.x` 原本是**绝对 URL**，
+ *  拼出来是 `http://127.0.0.1:9https://m.mcloud.139.com/…`（测试当场抓到）。
+ *  正确模型是「端点 = 源 + 路径」，替换的是源。 */
+export function resolveUrl(name: EndpointName, base?: string | undefined): string {
+  const ep = EP[name];
+  return base ? base + ep.path : ep.origin + ep.path;
+}
 
 /** `Referer` 用的签到页地址（原实现按端点给不同值，这里集中成常量，便于以后按端点细化）。 */
 export const REFERER_SIGN_IN = `${MCLOUD_HOST}/mcloud/sign_in/index.html`;
