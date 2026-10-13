@@ -59,8 +59,26 @@ export interface FetchResult {
   /** 响应体上限 1 MiB */
   body: string;
 }
-/** ⚠️ **同步阻塞**：会占住引擎线程，一次慢请求会推迟同轮的其他任务 */
-export function http_fetch(url: string, options?: FetchOptions): FetchResult;
+
+/** 失败时的返回形状：`{"error": "…"}`——**没有** status / headers / body。
+ *
+ *  ⚠️ 这条是实测出来的，文档里只写了成功形状（`docs/host-api.md` 只说
+ *  `http_fetch(url, options) -> { "status": …, "headers": …, "body": … }`）。
+ *  面板的 JS 绑定在 `Err` 时返回 `json_error(&e)`，即 `{"error": msg}`。
+ *
+ *  为什么这条很坑：它**长得像一个正常结果**。任何写 `res.body` 的代码会拿到
+ *  `TypeError: cannot read property 'length' of undefined` —— 报错位置在插件里，
+ *  看起来像插件自己的 bug。我自己就是这么被真面板抓到的（见 docs/findings.md F-006）。
+ *  本文件第一版把返回值声明成纯 `FetchResult`，TypeScript 因此**没有机会提醒我** ——
+ *  一个写错的 .d.ts 会悄悄拿走类型安全。 */
+export interface FetchError {
+  error: string;
+}
+
+/** ⚠️ **同步阻塞**：会占住引擎线程，一次慢请求会推迟同轮的其他任务。
+ *
+ *  返回可能是 `FetchResult`，也可能是 `FetchError`（见上）。 */
+export function http_fetch(url: string, options?: FetchOptions): FetchResult | FetchError;
 
 export interface RouteRequest {
   method: string;

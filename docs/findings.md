@@ -175,3 +175,88 @@ let late_ms = (now - scheduled).num_milliseconds();
 宿主已经依赖了 `getrandom`（令牌盐就是它生成的）。
 
 **状态**：待修（面板侧）。
+
+---
+
+## F-006 宿主 `http_fetch` 失败时的返回形状与文档不一致，而且**长得像正常结果**
+
+**怎么发现的**：在真面板里导入会话 → 插件内部发一次上游请求（假凭据，注定失败）→
+路由返回 500，错误是：
+
+```
+TypeError: cannot read property 'length' of undefined
+    at callOnce (mcloud.js:591:15)
+```
+
+**面板侧实际行为**（读源码确认）：
+
+```rust
+// src/jshost.rs
+match state_for_http.do_http_fetch(&url, &opts) {
+    Ok(s)  => s,
+    Err(e) => json_error(&e),          // → {"error": "…"}
+}
+```
+
+也就是说失败时返回的是 `{"error": "…"}` —— **没有** `status` / `headers` / `body`。
+而 `docs/host-api.md` 只写了成功形状（`→ { "status": int, "headers": {…}, "body": str }`），
+没写失败形状。
+
+**为什么这条比一般的「文档不全」更坑**：
+
+1. 返回的对象**长得像一个正常结果**。任何写 `res.body` 的代码会拿到
+   `TypeError: cannot read property 'length' of undefined` ——
+   报错位置在**插件里**，看起来像插件自己的 bug。我第一反应也是去翻自己的 `callOnce`。
+2. 它**只在真面板里出现**。Node 测试里的桩是我自己写的，形状当然"正确" ——
+   也就是说：你越是只在 Node 里测，越测不到它。
+3. 我自己写的那份 `src/host-api.d.ts` 把它声明成了纯 `FetchResult`，
+   于是 **TypeScript 没有机会提醒我** —— 一个写错的 `.d.ts` 会悄悄拿走类型安全。
+
+**插件侧怎么绕**：`callOnce` 先认形状（`error` 字段 / `body` 不是字符串 / 干脆是
+`undefined`），再取字段；三种都变成「可读的失败」而不是异常。
+测试里补了三条用例，桩**故意造出**失败形状与畸形形状。
+
+**建议怎么修**（面板侧，下一轮，二选一）：
+
+- **推荐**：`docs/host-api.md` 里把失败形状写进返回签名 ——
+  `-> { "status", "headers", "body" } | { "error" }`，并加一句
+  「失败时**没有** `status`/`headers`/`body`，不要直接读 `res.body`」
+- 更彻底：成功/失败都带 `ok` 字段（`{"ok":true,status,headers,body}` /
+  `{"ok":false,error}`），调用方先看 `ok` —— 破坏性变更，需要发版说明
+
+**顺带**：`docs/host-api.md` 的返回签名是给**插件作者**看的契约，
+这类「成功一种形状、失败另一种形状」的接口，文档里应该像错误码一样列出来。
+
+**状态**：待修（面板侧）。
+
+---
+
+## F-007 面板对写请求强制 `x-panel: 1`，**插件自己注册的路由也适用** —— 但插件文档里没提
+
+**怎么发现的**：在真面板上用 curl 调自己插件的 `POST /plugins/mcloud/api/session`，
+收到一句中文说明：
+
+```
+写接口要求请求头 `x-panel: 1`（防跨站请求伪造；面板页面自己会带上）
+```
+
+**这不是 bug** —— CSRF 防护是对的，而且这条对插件路由生效**也是对的**
+（否则第三方页面就能借用户的浏览器打插件接口）。但它是**插件作者必须知道的事**：
+
+- 插件自己的 WebUI（`plugins/<name>/**` 下的静态页）里发 POST 时**必须带上这枚头**，
+  否则会失败。失败信息是人话，排查不难；但如果插件作者只看了 `docs/host-api.md`
+  （那里只讲 `register_route` 的注册与请求/响应形状），就会以为「我的路由我作主」。
+- 写脚本的人同样容易漏（我自己就漏了，第一轮验证白跑一次）。
+
+**插件侧怎么绕**：在 `docs/howto-session.md` 里显式写了这一行，并说明
+「插件自己注册的路由同样适用」。后面做 WebUI（M4）时，页面里的 fetch 统一包一层
+自动加头。
+
+**建议怎么修**（面板侧，下一轮，都是小改动）：
+
+1. `docs/host-api.md` 的 `register_route` 一节加一句：写方法（POST/PUT/DELETE…）
+   需要请求头 `x-panel: 1`，与面板自身接口同一套规则
+2. 可选：给插件作者一个现成的 GET 出口读「本面板对写接口的要求」，
+   或者在 `docs/plugins.md`（如果存在）里点一下
+
+**状态**：待修（面板侧，文档）。低优先，但能省掉每个插件作者的一次白跑。

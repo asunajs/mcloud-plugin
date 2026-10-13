@@ -5,7 +5,7 @@
 //   mcloud-plugin 0.0.0
 
 // src/main.ts
-import { error, every, http_fetch, log, register_cron, warn } from "host-api";
+import { error, every, http_fetch, log, register_cron, register_route, warn } from "host-api";
 
 // src/crypto/bytes.ts
 function utf8(s) {
@@ -570,22 +570,31 @@ function resultArray(env) {
 }
 
 // src/mcloud/client.ts
+var isFetchError = (v) => typeof v === "object" && v !== null && typeof v.error === "string";
+function pickError(msg) {
+  return msg.replace(/^\s*请求失败[:：]\s*/, "").trim() || msg;
+}
 var SLOW_CALL_MS = 1500;
 function callOnce(transport2, req) {
   const t0 = Date.now();
+  const fail = (error3) => ({
+    status: 0,
+    tookMs: Date.now() - t0,
+    env: void 0,
+    ok: false,
+    error: error3,
+    raw: "",
+    setCookies: []
+  });
   let res;
   try {
     res = transport2(req);
   } catch (e) {
-    return {
-      status: 0,
-      tookMs: Date.now() - t0,
-      env: void 0,
-      ok: false,
-      error: `请求失败：${e instanceof Error ? e.message : String(e)}`,
-      raw: "",
-      setCookies: []
-    };
+    return fail(`请求失败：${e instanceof Error ? e.message : String(e)}`);
+  }
+  if (isFetchError(res)) return fail(pickError(res.error));
+  if (typeof res !== "object" || res === null || typeof res.body !== "string") {
+    return fail(`请求返回的形状不认识：${JSON.stringify(res)?.slice(0, 200) ?? String(res)}`);
   }
   const tookMs = Date.now() - t0;
   const raw = res.body.length > 500 ? `${res.body.slice(0, 500)}…` : res.body;
@@ -762,6 +771,33 @@ var EP = {
   backupGiftReceive: `${BACKUP_GIFT_HOST}/market/backupgift/receive`
 };
 var REFERER_SIGN_IN = `${MCLOUD_HOST}/mcloud/sign_in/index.html`;
+var SHOW_LOADING = "true";
+var EP_METHOD = {
+  infoV3: "GET",
+  //  ?client=app（有 deviceId 时再 &deviceId=…）
+  startSignIn: "GET",
+  //  ?client=app（有 deviceId 时再 &deviceId=…）
+  receiveV3: "POST",
+  // json body
+  taskExpansion: "GET",
+  receiveTaskExpansion: "POST",
+  receiveRevivalReward: "POST",
+  // json body `{}`
+  multiple: "GET",
+  prizeRecord: "GET",
+  // 带 query 参数
+  cloudRecordV2: "GET",
+  // 带 query 参数
+  taskListV2: "POST",
+  // body 带 group=<组名>
+  taskListV3: "POST",
+  // body 带 group=""（空串）
+  backupGiftInfo: "GET",
+  // 另一个域
+  backupGiftReceive: "GET"
+  // 另一个域
+};
+var CLIENT_QUERY = "client=app";
 function taskListV3Body(market = MARKET_NAME) {
   return JSON.stringify({ marketname: market, clientVersion: TASK_CLIENT_VERSION, group: "" });
 }
@@ -804,7 +840,7 @@ function runTaskList(deps) {
     body: taskListV3Body(),
     contentType: TASK_LIST_V3_CONTENT_TYPE,
     referer: REFERER_SIGN_IN,
-    showLoading: "1",
+    showLoading: SHOW_LOADING,
     isDeviceId: false,
     saltKey: 1,
     session: sessionHeaders(session)
@@ -851,16 +887,253 @@ function isFinished(t) {
   return typeof state === "string" && state.toUpperCase() === "FINISH";
 }
 
+// src/mcloud/session.ts
+function parseSessionInput(raw, nowIso) {
+  const text = raw.trim();
+  if (text === "") return { ok: false, reason: "内容是空的" };
+  if (!text.startsWith("{")) {
+    if (!text.includes("=")) return { ok: false, reason: "既不是 JSON，也不像 cookie 串" };
+    return { ok: true, session: { cookie: normalizeCookie(text), savedAt: nowIso } };
+  }
+  let v;
+  try {
+    v = JSON.parse(text);
+  } catch (e) {
+    return { ok: false, reason: `不是合法 JSON：${e instanceof Error ? e.message : String(e)}` };
+  }
+  if (typeof v !== "object" || v === null || Array.isArray(v)) {
+    return { ok: false, reason: "JSON 顶层要是对象" };
+  }
+  const o = v;
+  const inner = typeof o.session === "string" ? (() => {
+    try {
+      return JSON.parse(o.session);
+    } catch {
+      return o.session;
+    }
+  })() : o.session ?? o;
+  if (typeof inner === "string") return parseSessionInput(inner, nowIso);
+  if (typeof inner !== "object" || inner === null) {
+    return { ok: false, reason: "session 字段既不是对象也不是字符串" };
+  }
+  const s = inner;
+  const pick = (k) => {
+    const x = s[k];
+    if (typeof x !== "string" || x.trim() === "") return void 0;
+    return x.trim();
+  };
+  let cookie = pick("cookie") ?? pick("cookies") ?? "";
+  if (!cookie && Array.isArray(s.cookies)) {
+    cookie = s.cookies.filter((c) => typeof c === "string").map((c) => c.trim()).filter((c) => c.includes("=")).join("; ");
+  }
+  if (!cookie && Array.isArray(s.cookie)) {
+    cookie = s.cookie.filter((c) => typeof c === "string").join("; ");
+  }
+  if (!cookie) {
+    return { ok: false, reason: "没有 cookie —— 云盘账号的凭据就在 cookie 和 jwt 里，这两样至少要有 cookie" };
+  }
+  return {
+    ok: true,
+    session: {
+      cookie: normalizeCookie(cookie),
+      jwt: pick("jwt") ?? pick("jwttoken") ?? pick("JWT_TOKEN"),
+      deviceId: pick("deviceId") ?? pick("deviceid"),
+      userAgent: pick("userAgent") ?? pick("user-agent"),
+      savedAt: nowIso
+    }
+  };
+}
+function normalizeCookie(raw) {
+  const parts = [];
+  for (const seg of raw.split(";")) {
+    const p = seg.trim();
+    if (!p || !p.includes("=")) continue;
+    const name = p.slice(0, p.indexOf("=")).trim();
+    if (/^(path|domain|expires|max-age|samesite|secure|httponly)$/i.test(name)) continue;
+    parts.push(p);
+  }
+  return parts.join("; ");
+}
+function redact(secret) {
+  if (!secret) return "（无）";
+  if (secret.length <= 8) return `（${secret.length} 字符，太短不显示）`;
+  return `${secret.slice(0, 4)}…（共 ${secret.length} 字符）`;
+}
+var STATE_LAST_CHECK = "mcloud.session.last_check";
+function sessionStatus(store2, nowIso) {
+  const s = loadSession(store2);
+  const checkRaw = store2.getState(STATE_LAST_CHECK);
+  let lastCheck = "";
+  let lastCheckOk = null;
+  let lastCheckNote = "";
+  if (checkRaw) {
+    try {
+      const c = JSON.parse(checkRaw);
+      lastCheck = c.at ?? "";
+      lastCheckOk = typeof c.ok === "boolean" ? c.ok : null;
+      lastCheckNote = c.note ?? "";
+    } catch {
+      lastCheckNote = "（检查记录坏了）";
+    }
+  }
+  let ageHours = null;
+  if (s?.savedAt) {
+    const t = Date.parse(s.savedAt);
+    const n = Date.parse(nowIso);
+    if (!Number.isNaN(t) && !Number.isNaN(n)) {
+      ageHours = Math.round((n - t) / 36e5 * 10) / 10;
+    }
+  }
+  return {
+    present: !!s,
+    savedAt: s?.savedAt ?? "",
+    ageHours,
+    cookie: redact(s?.cookie),
+    jwt: redact(s?.jwt),
+    deviceId: s?.deviceId ?? "",
+    userAgent: s?.userAgent ?? "",
+    lastCheck,
+    lastCheckOk,
+    lastCheckNote
+  };
+}
+function verifySession(deps) {
+  const s = loadSession(deps.store);
+  if (!s) {
+    const note2 = "没有会话";
+    deps.store.setState(STATE_LAST_CHECK, JSON.stringify({ at: deps.nowIso, ok: false, note: note2 }), deps.nowIso);
+    return { ok: false, note: note2 };
+  }
+  const req = buildH5Request({
+    url: `${deps.baseUrl ?? ""}${EP.infoV3}?${CLIENT_QUERY}`,
+    method: EP_METHOD.infoV3 === "GET" ? "GET" : "POST",
+    referer: REFERER_SIGN_IN,
+    showLoading: SHOW_LOADING,
+    isDeviceId: !!s.deviceId,
+    saltKey: 1,
+    session: sessionHeaders(s)
+  });
+  const res = callOnce(deps.transport, req);
+  const ok = res.ok;
+  const note = ok ? `会话有效（${res.tookMs}ms）` : `会话可能已失效：${res.error ?? "未知失败"}`;
+  deps.store.setState(
+    STATE_LAST_CHECK,
+    JSON.stringify({ at: deps.nowIso, ok, note }),
+    deps.nowIso
+  );
+  return { ok, note };
+}
+function importSession(store2, s, nowIso) {
+  saveSession(store2, s, nowIso);
+  store2.setState(
+    STATE_LAST_CHECK,
+    JSON.stringify({ at: nowIso, ok: null, note: "刚导入，还没验" }),
+    nowIso
+  );
+}
+
+// src/mcloud/routes.ts
+var PLUGIN = "mcloud";
+var JSON_HEADERS = { "content-type": "application/json; charset=utf-8" };
+var json = (status, obj) => ({
+  status,
+  headers: JSON_HEADERS,
+  body: JSON.stringify(obj)
+});
+function readBody(req) {
+  const raw = (req.body ?? "").trim();
+  if (raw === "") return {};
+  try {
+    const v = JSON.parse(raw);
+    return typeof v === "object" && v !== null && !Array.isArray(v) ? v : {};
+  } catch {
+    return { session: raw };
+  }
+}
+function mcloudRoutes(deps) {
+  const base = `/plugins/${PLUGIN}/api`;
+  const verify = () => verifySession({
+    store: deps.store,
+    transport: deps.transport,
+    nowIso: deps.now(),
+    baseUrl: deps.baseUrl
+  });
+  return [
+    {
+      path: `${base}/session`,
+      method: "GET",
+      handler: () => json(200, sessionStatus(deps.store, deps.now()))
+    },
+    {
+      path: `${base}/session`,
+      method: "POST",
+      handler: (req) => {
+        const body = readBody(req);
+        if (body.clear === true) {
+          deps.store.setState("mcloud.session", "", deps.now());
+          deps.log("会话已清空");
+          return json(200, { cleared: true, status: sessionStatus(deps.store, deps.now()) });
+        }
+        const raw = typeof body.session === "string" ? body.session : "";
+        if (!raw) {
+          return json(400, { error: '需要 {"session": "<cookie 串或 JSON>"} 或 {"clear": true}' });
+        }
+        const parsed = parseSessionInput(raw, deps.now());
+        if (!parsed.ok) return json(400, { error: parsed.reason });
+        importSession(deps.store, parsed.session, deps.now());
+        const check = verify();
+        const st = sessionStatus(deps.store, deps.now());
+        deps.log(`导入会话：${check.note}（cookie ${st.cookie}）`);
+        return json(200, { imported: true, verified: check.ok, note: check.note, status: st });
+      }
+    },
+    {
+      path: `${base}/session/verify`,
+      method: "POST",
+      handler: () => {
+        const check = verify();
+        return json(200, {
+          verified: check.ok,
+          note: check.note,
+          status: sessionStatus(deps.store, deps.now())
+        });
+      }
+    },
+    {
+      path: `${base}/tasks`,
+      method: "GET",
+      handler: () => {
+        let last = null;
+        const raw = deps.store.getState(STATE_LAST_TASKLIST);
+        try {
+          last = raw ? JSON.parse(raw) : null;
+        } catch {
+          last = { broken: true };
+        }
+        return json(200, {
+          lastTaskList: last,
+          lastError: deps.store.getState(STATE_LAST_ERROR),
+          recent: deps.store.recentRuns(20)
+        });
+      }
+    }
+  ];
+}
+
 // src/main.ts
 var store = hostStore();
 store.ensureSchema();
 var REQUEST_TIMEOUT_MS = 1500;
-var transport = (req) => http_fetch(req.url, {
-  method: req.method,
-  headers: req.headers,
-  body: req.body,
-  timeout_ms: REQUEST_TIMEOUT_MS
-});
+var transport = (req) => (
+  // 返回值可能是 {status,headers,body}，也可能是失败形状 {"error":…} ——
+  // client.ts 的 callOnce 负责认形状（实测踩过，见 docs/findings.md F-006）
+  http_fetch(req.url, {
+    method: req.method,
+    headers: req.headers,
+    body: req.body,
+    timeout_ms: REQUEST_TIMEOUT_MS
+  })
+);
 function selftest() {
   const checks = [];
   checks.push(['md5("abc")', md5Hex("abc") === "900150983cd24fb0d6963f7d28e17f72"]);
@@ -890,6 +1163,27 @@ function selftest() {
     detail: bad.length === 0 ? `${checks.length}/${checks.length} 通过` : `失败：${bad.join("、")}`
   };
 }
+for (const r of mcloudRoutes({ store, transport, now: () => (/* @__PURE__ */ new Date()).toISOString(), log })) {
+  register_route(r.path, r.method, r.handler);
+}
+register_cron("session-check", "50 7 * * *", (p) => {
+  const check = verifySession({
+    store,
+    transport,
+    nowIso: (/* @__PURE__ */ new Date()).toISOString()
+  });
+  store.recordRun({
+    task: p.name,
+    runs: p.runs,
+    scheduledAt: p.scheduledAt,
+    firedAt: p.firedAt,
+    lateMs: p.lateMs,
+    ok: check.ok,
+    note: check.note
+  });
+  if (check.ok) log(`会话体检：${check.note}`);
+  else warn(`会话体检：${check.note} —— 需要用 POST /plugins/mcloud/api/session 重新导入`);
+});
 register_cron("task-list", "0 8 * * *", (p) => {
   const t0 = Date.now();
   try {

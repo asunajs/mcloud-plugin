@@ -14,6 +14,7 @@ import { parseSignInEnvelope, resultArray, resultObject } from '../src/mcloud/en
 import {
   H5_APP_VERSION,
   MARKET_NAME,
+  SHOW_LOADING,
   TASK_CLIENT_VERSION,
   buildH5Request,
 } from '../src/mcloud/h5.ts';
@@ -125,7 +126,7 @@ test('H5 头画像：appversion 四段、jwttoken 小写、GET 不发 content-ty
   const common = {
     url: 'https://example.invalid/x',
     referer: 'https://example.invalid/r',
-    showLoading: '1',
+    showLoading: SHOW_LOADING,
     isDeviceId: false,
     saltKey: 1,
     session: {},
@@ -138,7 +139,8 @@ test('H5 头画像：appversion 四段、jwttoken 小写、GET 不发 content-ty
   assert.equal(get.headers.appversion, H5_APP_VERSION);
   assert.equal(H5_APP_VERSION, '12.6.0.0', 'appversion 是四段');
   assert.equal(TASK_CLIENT_VERSION, '12.6.0', 'body 里的 clientVersion 是三段');
-  assert.equal(get.headers.showloading, '1');
+  assert.equal(get.headers.showloading, SHOW_LOADING);
+  assert.equal(SHOW_LOADING, 'true', 'showloading 的真实值是字符串 true（不是 1）');
   assert.equal(get.headers['isdeviceid'], undefined, '没要求就不发 isdeviceid');
   assert.equal(get.headers['content-type'], undefined, 'GET 不发 content-type');
   assert.equal(get.body, undefined);
@@ -206,6 +208,29 @@ test('调用层：成功 / HTTP 失败 / 非 JSON / 传输层抛异常，都不�
   assert.equal(th.status, 0);
   assert.equal(th.ok, false);
   assert.match(th.error ?? '', /connection reset/);
+});
+
+test('调用层：宿主失败返回的是 {"error":…}（没有 body）—— 不能当成正常结果', () => {
+  // ⚠️ 这三条是被真面板打出来的。宿主 `http_fetch` 失败时返回 `{"error": msg}`，
+  // 而不是 `{status, headers, body}` —— 文档里只写了成功形状。
+  // 它**长得像正常结果**，于是 `res.body.length` 抛 TypeError，报错位置在插件里，
+  // 看起来像插件自己的 bug。第一版的我就是这么找上门的（见 docs/findings.md F-006）。
+  const hostErr: Transport = () => ({ error: '请求失败: connection refused' });
+  const r1 = callOnce(hostErr, { url: 'u', method: 'GET', headers: {}, body: undefined });
+  assert.equal(r1.ok, false);
+  assert.equal(r1.status, 0);
+  assert.match(r1.error ?? '', /connection refused/);
+
+  // 形状再变也不该让插件崩（宿主改字段时，插件应该报「不认识」而不是抛异常）
+  const weird: Transport = () => undefined as never;
+  const r2 = callOnce(weird, { url: 'u', method: 'GET', headers: {}, body: undefined });
+  assert.equal(r2.ok, false);
+  assert.match(r2.error ?? '', /形状不认识/);
+
+  const noBody: Transport = () => ({ status: 200, headers: {} }) as never;
+  const r3 = callOnce(noBody, { url: 'u', method: 'GET', headers: {}, body: undefined });
+  assert.equal(r3.ok, false);
+  assert.match(r3.error ?? '', /形状不认识/);
 });
 
 test('cookie：多枚合一、Expires 里的逗号不能被当成分隔符', () => {

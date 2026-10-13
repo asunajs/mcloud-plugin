@@ -129,6 +129,39 @@ export const EP = {
 /** `Referer` 用的签到页地址（原实现按端点给不同值，这里集中成常量，便于以后按端点细化）。 */
 export const REFERER_SIGN_IN = `${MCLOUD_HOST}/mcloud/sign_in/index.html`;
 
+/** `showloading` 头的值。
+ *
+ *  ⚠️ 是字符串 `'true'`，**不是 `'1'`** —— 原实现每次都传字面量 `"true"`
+ *  （`h5(…, "true")`）。我第一版写的是 `'1'`，纯属自己脑补。 */
+export const SHOW_LOADING = 'true';
+
+/** 每个端点的**方法**与附加项 —— 逐条从原实现抄下来的表。
+ *
+ *  为什么值得占一块地方：我第一版凭「这些看着像 POST」把 `infoV3` 写成了 POST，
+ *  结果真面板里发出去收到 **405 Method Not Allowed**。405 是个很含糊的信号
+ *  （它不说「你该用 GET」），而这两个家族（GET 带 query / POST 带 json body）
+ *  混起来很容易写错。表放在这里，下一条任务照着抄就行。
+ *
+ *  来源：`mcloud-upstream` 里各 `*_request()` 函数的 `HttpRequest::get/post`。 */
+export const EP_METHOD: Record<string, 'GET' | 'POST'> = {
+  infoV3: 'GET', //  ?client=app（有 deviceId 时再 &deviceId=…）
+  startSignIn: 'GET', //  ?client=app（有 deviceId 时再 &deviceId=…）
+  receiveV3: 'POST', // json body
+  taskExpansion: 'GET',
+  receiveTaskExpansion: 'POST',
+  receiveRevivalReward: 'POST', // json body `{}`
+  multiple: 'GET',
+  prizeRecord: 'GET', // 带 query 参数
+  cloudRecordV2: 'GET', // 带 query 参数
+  taskListV2: 'POST', // body 带 group=<组名>
+  taskListV3: 'POST', // body 带 group=""（空串）
+  backupGiftInfo: 'GET', // 另一个域
+  backupGiftReceive: 'GET', // 另一个域
+};
+
+/** `infoV3` / `startSignIn` 这类 GET 端点带的固定 query。 */
+export const CLIENT_QUERY = 'client=app';
+
 /** 任务清单 V3 的请求体：**`group` 是空字符串**、`clientVersion` 三段。
  *
  *  复刻自 `app_task_list_v2.rs::task_list_v3_request`，那里的注释说明了它为什么可信：

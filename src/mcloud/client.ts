@@ -15,13 +15,26 @@
 //    与「环境炸了（应该停下来）」——用异常表达会让调用方到处 try/catch，
 //    而且一旦漏 catch，任务会以「未知异常」结束，排查时看不到上游原话。
 
-import type { FetchResult } from 'host-api';
+import type { FetchError, FetchResult } from 'host-api';
+
+/** 宿主 `http_fetch` 的返回：成功是 `FetchResult`，失败是 `FetchError`。
+ *  （插件里由 main.ts 注入真实的 `http_fetch`，测试里注入桩 —— 桩也必须能造出失败形状，
+ *  否则测不到这条路径。） */
+export type HostFetchResult = FetchResult | FetchError;
+
+const isFetchError = (v: unknown): v is FetchError =>
+  typeof v === 'object' && v !== null && typeof (v as { error?: unknown }).error === 'string';
+
+/** 宿主消息里已经带了「请求失败:」就原样用，避免叠成「请求失败：请求失败: …」。 */
+function pickError(msg: string): string {
+  return msg.replace(/^\s*请求失败[:：]\s*/, '').trim() || msg;
+}
 import { parseSignInEnvelope } from './envelope.ts';
 import type { SignInEnvelope } from './envelope.ts';
 import type { BuiltRequest } from './h5.ts';
 
 /** 发送一个请求。返回值与 `host.http_fetch` 一致，便于直接用宿主实现。 */
-export type Transport = (req: BuiltRequest) => FetchResult;
+export type Transport = (req: BuiltRequest) => HostFetchResult;
 
 export interface CallResult {
   /** HTTP 状态码；网络层直接失败时为 0 */
@@ -48,20 +61,34 @@ export const SLOW_CALL_MS = 1500;
 
 export function callOnce(transport: Transport, req: BuiltRequest): CallResult {
   const t0 = Date.now();
-  let res: FetchResult;
+  const fail = (error: string): CallResult => ({
+    status: 0,
+    tookMs: Date.now() - t0,
+    env: undefined,
+    ok: false,
+    error,
+    raw: '',
+    setCookies: [],
+  });
+
+  let res: HostFetchResult;
   try {
     res = transport(req);
   } catch (e) {
-    return {
-      status: 0,
-      tookMs: Date.now() - t0,
-      env: undefined,
-      ok: false,
-      error: `请求失败：${e instanceof Error ? e.message : String(e)}`,
-      raw: '',
-      setCookies: [],
-    };
+    return fail(`请求失败：${e instanceof Error ? e.message : String(e)}`);
   }
+
+  // ⚠️ 宿主失败时返回的是 `{"error": "…"}`，**没有 body** —— 先认形状再取字段。
+  // 不这么写就会在下面读 `res.body.length` 时抛 TypeError，而报错位置在插件里，
+  // 看起来像插件自己的 bug（实测踩过，见 docs/findings.md F-006）。
+  // 宿主自己的消息里常常已经带了「请求失败:」，别再叠一层 —— 否则日志里会出现
+  // 「请求失败：请求失败: http status: 405」，读起来像两个错误
+  if (isFetchError(res)) return fail(pickError(res.error));
+  if (typeof res !== 'object' || res === null || typeof res.body !== 'string') {
+    // 形状再变也不该让插件崩：说清收到了什么，然后当失败处理
+    return fail(`请求返回的形状不认识：${JSON.stringify(res)?.slice(0, 200) ?? String(res)}`);
+  }
+
   const tookMs = Date.now() - t0;
   const raw = res.body.length > 500 ? `${res.body.slice(0, 500)}…` : res.body;
 

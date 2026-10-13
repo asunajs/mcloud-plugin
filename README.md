@@ -10,7 +10,8 @@
    每压出一个就回面板仓库修掉，并在 [`docs/findings.md`](docs/findings.md) 记下
    「怎么测的、什么数、改了什么」
 
-> **状态：M0 完成，M1 进行中（上游层：签名 / H5 头画像 / 信封 / 调用层已落地并有测试）。** 决策见下，压出来的问题见
+> **状态：M0 完成，M1 进行中（上游层 + 会话层 + 第一条任务 `task-list` 已打通，全部有测试；
+> 其余 7 条签到族任务在 M2 逐条接）。** 决策见下，压出来的问题见
 > [`docs/findings.md`](docs/findings.md)（已记两条，都在面板侧）。
 
 ## M0 做了什么（已完成）
@@ -40,6 +41,26 @@
 测试 16 项，其中三条是「容易顺手优化掉」的行为：签名的 **timestamp 不做数值归一化**
 （`'007'` 不等于 `'7'`）、`result` 形状不同**各写各的解析**（不写「两种都吃」的兼容）、
 `jwttoken` 头名**不能被驼峰化**。
+
+### 会话层 + 第一条任务
+
+| 模块 | 内容 |
+|---|---|
+| `src/mcloud/session.ts` | 会话解析（cookie 串 / JSON / 包一层 / cookies 数组 / jwt 别名都收）、归一化（丢掉 `Path`/`Expires` 等属性段）、**只输出脱敏摘要**、真验一次（`infoV3`）、导入时作废旧结论 |
+| `src/mcloud/routes.ts` | 四个插件接口（纯逻辑，由 main.ts 注册）：`GET/POST /plugins/mcloud/api/session`、`POST …/session/verify`、`GET …/tasks`。**不回显凭据** |
+| `src/mcloud/tasks/taskList.ts` | `task-list`（taskListV3，纯只读）；一次调用只发一个请求；失败不抛异常 |
+| `mock/upstream.mjs` | mock 上游：记录收到的每个请求、形状照抄实拍、能故意失败（biz-fail / http-500 / not-json / timeout） |
+| `docs/howto-session.md` | 使用者手册：怎么从浏览器/App 拿会话、怎么导入、失败的两种含义怎么分、过期怎么办 |
+
+真面板里的实测（这条链一次走通）：导入假凭据 → 真发一次 `m.mcloud.139.com` →
+上层信封解析出 `code=90001 msg=未登录` → 正确归类为「会话失效」→ 日志里只有
+`SESS…（共 31 字符）`。
+
+**方法表**（`h5.ts` 的 `EP_METHOD`）值得单独提：我第一版凭「这些看着像 POST」
+把 `infoV3` 写成 POST，真面板回了 **405**。查原实现后才发现签到族里
+`infoV3` / `startSignIn` / `multiple` / `prizeRecord` / `cloudRecordV2` 都是 **GET**
+（`infoV3` 还要 `?client=app`），只有 `receiveV3` / `receiveRevivalReward` /
+`taskListV3` 是 POST。这条已经固化成代码里的表，下一条任务照着抄。
 
 **沙箱内自检 6/6 通过**（在真面板里跑的，不是 Node 里）：
 

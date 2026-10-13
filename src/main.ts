@@ -14,13 +14,15 @@
 // —— 面板的「覆盖层」正是为这件事设计的（`jobs.override_expr`），
 // 改完不会跟插件代码打架，插件热更新也会把覆盖保留下来。
 
-import { error, every, http_fetch, log, register_cron, warn } from 'host-api';
+import { error, every, http_fetch, log, register_cron, register_route, warn } from 'host-api';
 import { md5Hex, sha256Hex, toBase64, fromBase64, fromUtf8, utf8 } from './crypto/index.ts';
 import { hostStore } from './store/host.ts';
 import type { Store } from './store/types.ts';
 import type { Transport } from './mcloud/client.ts';
 import { SLOW_CALL_MS } from './mcloud/client.ts';
 import { runTaskList } from './mcloud/tasks/taskList.ts';
+import { mcloudRoutes } from './mcloud/routes.ts';
+import { verifySession } from './mcloud/session.ts';
 
 const store: Store = hostStore();
 store.ensureSchema();
@@ -39,6 +41,8 @@ store.ensureSchema();
 const REQUEST_TIMEOUT_MS = 1500;
 
 const transport: Transport = (req) =>
+  // 返回值可能是 {status,headers,body}，也可能是失败形状 {"error":…} ——
+  // client.ts 的 callOnce 负责认形状（实测踩过，见 docs/findings.md F-006）
   http_fetch(req.url, {
     method: req.method,
     headers: req.headers,
@@ -90,6 +94,37 @@ function selftest(): { ok: boolean; detail: string } {
     detail: bad.length === 0 ? `${checks.length}/${checks.length} 通过` : `失败：${bad.join('、')}`,
   };
 }
+
+// ── HTTP 接口（给界面与脚本用；见 src/mcloud/routes.ts）──
+//
+// 路径是完整路径，方法大写 —— 面板那边按 `"{METHOD} {path}"` 建键。
+for (const r of mcloudRoutes({ store, transport, now: () => new Date().toISOString(), log })) {
+  register_route(r.path, r.method, r.handler);
+}
+
+// ── 任务：会话体检（每天 7:50，排在 8:00 的签到流程之前）──
+//
+// 为什么单独一条：凭据失效是所有签到任务共同的失败原因，而它们的报错长得都一样
+// （「未登录」）。在流程之前先体检一次，日志里就会**先**出现「会话可能已失效」，
+// 后面那一串失败就有了单一解释 —— 排查时间从「翻一堆任务」变成「看一行」。
+register_cron('session-check', '50 7 * * *', (p) => {
+  const check = verifySession({
+    store,
+    transport,
+    nowIso: new Date().toISOString(),
+  });
+  store.recordRun({
+    task: p.name,
+    runs: p.runs,
+    scheduledAt: p.scheduledAt,
+    firedAt: p.firedAt,
+    lateMs: p.lateMs,
+    ok: check.ok,
+    note: check.note,
+  });
+  if (check.ok) log(`会话体检：${check.note}`);
+  else warn(`会话体检：${check.note} —— 需要用 POST /plugins/mcloud/api/session 重新导入`);
+});
 
 // ── 任务：任务清单（签到族第 1 条，纯只读）──
 //

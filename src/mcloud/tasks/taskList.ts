@@ -13,6 +13,7 @@ import { resultArray } from '../envelope.ts';
 import type { SignInEnvelope } from '../envelope.ts';
 import {
   EP,
+  SHOW_LOADING,
   REFERER_SIGN_IN,
   TASK_LIST_V3_CONTENT_TYPE,
   buildH5Request,
@@ -59,7 +60,7 @@ export function runTaskList(deps: TaskDeps): TaskOutcome {
     body: taskListV3Body(),
     contentType: TASK_LIST_V3_CONTENT_TYPE,
     referer: REFERER_SIGN_IN,
-    showLoading: '1',
+    showLoading: SHOW_LOADING,
     isDeviceId: false,
     saltKey: 1,
     session: sessionHeaders(session),
