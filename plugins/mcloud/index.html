@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>mcloud 插件 · 分组与操作</title>
+  <!-- 复用主面板的主题变量与组件样式；再叠一层插件自己的 style.css -->
+  <link rel="stylesheet" href="/css/reset.css">
+  <link rel="stylesheet" href="/css/theme.css">
+  <link rel="stylesheet" href="/css/components.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="wrap">
+    <header class="page-head">
+      <div>
+        <h1 class="plugin-title">mcloud 插件</h1>
+        <p class="plugin-sub">
+          按<b>风险与依赖</b>分组，不按功能名 —— 操作一条任务前，真正要知道的是
+          「它安不安全、要哪种凭据」。
+        </p>
+      </div>
+      <div class="head-actions">
+        <button id="refresh" class="btn">刷新</button>
+      </div>
+    </header>
+
+    <p id="summary" class="summary">加载中…</p>
+    <p id="error" class="error" hidden></p>
+
+    <!-- 会话：插件自己才知道的东西（主面板不管这个） -->
+    <section class="card" id="session-card">
+      <div class="card-head">
+        <h2>会话</h2>
+        <span class="card-sub" id="session-status">查状态中…</span>
+      </div>
+      <div class="row">
+        <input id="session-input" class="input" type="password" autocomplete="off"
+               placeholder="粘 cookie 串（导法见插件仓库 docs/howto-session.md）">
+        <button id="session-save" class="btn btn-primary">导入并验证</button>
+        <button id="session-check" class="btn">只验证</button>
+      </div>
+      <p class="hint">
+        凭据只进 SQLite 的 <code>state</code> 表，**任何接口都不回显**；
+        页面上的输入框不会被回填。
+      </p>
+      <div class="row">
+        <label class="label">上游地址</label>
+        <input id="base-url" class="input" placeholder="留空 = 用默认上游">
+        <button id="base-save" class="btn">保存</button>
+      </div>
+      <p class="hint" id="base-hint"></p>
+    </section>
+
+    <div id="groups"></div>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

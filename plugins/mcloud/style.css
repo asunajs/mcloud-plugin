@@ -1,0 +1,74 @@
+/* mcloud 插件界面自己的样式。变量名全部来自主面板的 css/theme.css
+   （--surface / --border-soft / --text / --text-mute / --accent / --success /
+     --warning / --error / --r-md / --font-mono …）—— 不自己编名字。 */
+
+.wrap { max-width: 1080px; margin: 0 auto; padding: 24px 16px 64px; }
+
+.page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.plugin-title { font-size: 20px; margin: 0 0 6px; color: var(--text); }
+.plugin-sub { margin: 0; color: var(--text-mute); font-size: 13px; line-height: 1.6; }
+.plugin-sub b { color: var(--text); font-weight: 600; }
+.head-actions { display: flex; gap: 8px; }
+
+.summary { margin: 18px 0 14px; color: var(--text); font-size: 13px; }
+.summary b { color: var(--accent); }
+
+.error {
+  margin: 0 0 14px; padding: 10px 12px; border-radius: var(--r-md);
+  background: var(--error-soft); color: var(--error); font-size: 13px;
+  border: 1px solid var(--error);
+}
+
+.card {
+  background: var(--surface); border: 1px solid var(--border-soft);
+  border-radius: var(--r-md); padding: 16px; margin-bottom: 14px;
+}
+.card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.card-head h2 { font-size: 15px; margin: 0; color: var(--text); }
+.card-sub { color: var(--text-mute); font-size: 12px; }
+.why { margin: 8px 0 12px; color: var(--text-mute); font-size: 12px; line-height: 1.6; }
+
+.row { display: flex; gap: 8px; align-items: center; margin: 8px 0; flex-wrap: wrap; }
+.label { color: var(--text-mute); font-size: 12px; min-width: 64px; }
+.input {
+  flex: 1 1 320px; min-width: 200px; padding: 8px 10px;
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  font-family: var(--font-mono); font-size: 12px;
+}
+.hint { margin: 6px 0 0; color: var(--text-mute); font-size: 12px; line-height: 1.6; }
+.hint code { font-family: var(--font-mono); color: var(--text-dim); }
+
+.btn {
+  padding: 7px 12px; font-size: 12px; cursor: pointer;
+  background: var(--bg-deep); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+}
+.btn:hover { border-color: var(--accent); }
+.btn-primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.btn-sm { padding: 4px 9px; font-size: 12px; }
+.btn:disabled { opacity: .55; cursor: default; }
+
+.tasks { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.tasks th {
+  text-align: left; font-weight: 600; color: var(--text-mute);
+  padding: 6px 8px; border-bottom: 1px solid var(--border-soft); white-space: nowrap;
+}
+.tasks td { padding: 7px 8px; border-bottom: 1px solid var(--border-soft); color: var(--text); vertical-align: top; }
+.tasks tr:last-child td { border-bottom: none; }
+.tasks td.c { text-align: center; white-space: nowrap; }
+.tasks td.note { color: var(--text-mute); max-width: 380px; }
+.tasks code { font-family: var(--font-mono); color: var(--text-dim); }
+.row-off { opacity: .55; }
+
+.badge {
+  display: inline-block; padding: 1px 7px; border-radius: 999px;
+  font-size: 11px; border: 1px solid currentColor;
+}
+.risk-ledger { color: var(--warning); }
+.risk-write { color: var(--warning); }
+.risk-hard { color: var(--error); }
+.risk-spend { color: var(--error); }
+
+.dim { color: var(--text-mute); }
+.bad { color: var(--error); }
