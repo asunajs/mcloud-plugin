@@ -156,6 +156,12 @@ export async function startMock(options = {}) {
           st.receiveList = st.receiveList.filter((x) => x.recordId !== rid);
           return json(res, 200, { code: 0, msg: 'success', result: { bean: 5, cloudId: rid } });
         }
+        if (url.pathname === '/ycloud/signin/page/receiveTaskExpansion') {
+          // 延期领取：真实客户端发的是**裸 GET**（没有 acceptDate）——
+          // 这一口把 cloudType=1 的条目消化掉
+          st.receiveList = st.receiveList.filter((x) => x.cloudType !== 1);
+          return json(res, 200, { code: 0, msg: 'success', result: { bean: 3 } });
+        }
         if (url.pathname === '/ycloud/signin/page/multiple') {
           st.curMonthBackupSignAccept = true; // 每月只用一次
           return json(res, 200, { code: 0, msg: 'success', result: { multiple: 2 } });

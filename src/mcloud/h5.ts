@@ -166,7 +166,10 @@ export const EP_METHOD: Record<string, 'GET' | 'POST'> = {
   startSignIn: 'GET', //  ?client=app（有 deviceId 时再 &deviceId=…）
   receiveV3: 'POST', // json body
   taskExpansion: 'GET',
-  receiveTaskExpansion: 'POST',
+  // 更正记录：这一条我起初写成 POST，查 `receive_task_expansion_request` 后改成 GET
+  // （`h5(false, HttpRequest::get(url), "true")`）。表是从源码抄的，抄错就会得到 405——
+  // 而 405 只会说"方法不对"，不会说"该用哪个"。
+  receiveTaskExpansion: 'GET',
   receiveRevivalReward: 'POST', // json body `{}`
   multiple: 'GET',
   prizeRecord: 'GET', // 带 query 参数

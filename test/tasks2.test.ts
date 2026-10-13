@@ -10,7 +10,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { STATE_STAGE, runSign } from '../src/mcloud/tasks/sign.ts';
-import { STATE_QUEUE, receiveV3Body, runReceive } from '../src/mcloud/tasks/receive.ts';
+import { STATE_QUEUE, readAcceptDate, receiveV3Body, runReceive } from '../src/mcloud/tasks/receive.ts';
 import { runMultiple } from '../src/mcloud/tasks/multiple.ts';
 import {
   REVIVAL_SKIP_AFTER_MS,
@@ -224,12 +224,18 @@ test('revival：不可逆 —— 晚太久不发；「已领取」算完成不�
   assert.equal(outBad.ok, false);
 });
 
-test('receive：清单入队 → 逐条领（一次一条）→ cloudType=1 跳过', () => {
+test('receive：清单入队 → 逐条领（一次一条，两种 cloudType 各走对端点）', () => {
   let list: unknown[] = [{ recordId: 'r1', cloudType: 2 }, { recordId: 'r2', cloudType: 1 }];
   const received: string[] = [];
+  const expansionCalled: string[] = [];
   const store = seeded();
   const transport: Transport = (req) => {
     if (/infoV3/.test(req.url)) return { status: 200, headers: {}, body: infoOk({ receiveList: list }) };
+    if (/receiveTaskExpansion/.test(req.url)) {
+      expansionCalled.push(req.url);
+      list = list.filter((x) => (x as { cloudType?: number }).cloudType !== 1);
+      return { status: 200, headers: {}, body: JSON.stringify({ code: 0, msg: 'success', result: {} }) };
+    }
     if (/receiveV3/.test(req.url)) {
       const b = JSON.parse(req.body ?? '{}') as { cloudId?: string };
       received.push(b.cloudId ?? '');
@@ -253,12 +259,12 @@ test('receive：清单入队 → 逐条领（一次一条）→ cloudType=1 跳�
   assert.equal(received[0], 'r1');
   assert.match(r2.note, /还剩 1 条/);
 
-  // ③ 第二条是延期领取 → 跳过（并说明），不卡在队列里
+  // ③ 第二条是延期领取 → 走另一口端点（不是跳过）
   const r3 = runReceive({ store, transport, nowIso: NOW, lateMs: 0 });
   assert.equal(r3.ok, true);
-  assert.equal(r3.skipped, true);
-  assert.match(r3.note, /延期领取/);
+  assert.match(r3.note, /延期领取已完成/);
   assert.equal(received.length, 1, '延期那条不该走 receiveV3');
+  assert.equal(expansionCalled.length, 1, '延期那条应当走 receiveTaskExpansion');
   assert.equal(JSON.parse(store.getState(STATE_QUEUE)!).length, 0, '队列要清空');
 
   // ④ 队列空 + 上游清单也空 → 收工
@@ -266,6 +272,41 @@ test('receive：清单入队 → 逐条领（一次一条）→ cloudType=1 跳�
   const r4 = runReceive({ store, transport, nowIso: NOW, lateMs: 0 });
   assert.equal(r4.ok, true);
   assert.match(r4.note, /没有待领取/);
+});
+
+test('延期领取：裸 GET（绝不发出 ?acceptDate=），且 dig 掉队列里那一条', () => {
+  // `acceptDate` 有才带 —— 真实清单里没有这个字段，所以缺省路径是"裸 GET"。
+  // 写成空串会发出 `?acceptDate=`，那是另一个请求（原实现专门警告过）。
+  assert.equal(readAcceptDate({ cloudType: 1 }), undefined);
+  assert.equal(readAcceptDate({ acceptDate: '   ' }), undefined);
+  assert.equal(readAcceptDate({ acceptDate: '2026-10-13' }), '2026-10-13');
+  assert.equal(readAcceptDate({ accept_date: '2026-10-13' }), '2026-10-13');
+  assert.equal(readAcceptDate(null), undefined);
+
+  let list: unknown[] = [{ recordId: 'r2', cloudType: 1 }];
+  const store = seeded();
+  const sent: string[] = [];
+  const transport: Transport = (req) => {
+    sent.push(req.url);
+    if (/infoV3/.test(req.url)) return { status: 200, headers: {}, body: infoOk({ receiveList: list }) };
+    if (/receiveTaskExpansion/.test(req.url)) {
+      list = [];
+      return { status: 200, headers: {}, body: JSON.stringify({ code: 0, msg: 'success', result: {} }) };
+    }
+    return { status: 404, headers: {}, body: '{}' };
+  };
+  runReceive({ store, transport, nowIso: NOW, lateMs: 0 });      // 入队
+  const out = runReceive({ store, transport, nowIso: NOW, lateMs: 0 });  // 领（延期那一口）
+  assert.equal(out.ok, true);
+  assert.match(out.note, /延期领取已完成/);
+  const call = sent.find((u) => /receiveTaskExpansion/.test(u))!;
+  assert.ok(call, '应当调用 receiveTaskExpansion');
+  assert.equal(
+    call,
+    'https://m.mcloud.139.com/ycloud/signin/page/receiveTaskExpansion',
+    '必须是没有查询串的裸 GET',
+  );
+  assert.equal(JSON.parse(store.getState(STATE_QUEUE)!).length, 0, '队列要清掉');
 });
 
 test('receiveV3 的请求体：cloudType 缺省是**空串**而不是 0', () => {

@@ -14,12 +14,13 @@
 //
 // * `cloudType` 缺省是**空串**（不是 0）：H5 写的是 `e.cloudType ?? ""`。
 //   0 是合法取值（当前可领取），缺省给 0 会被上游当成"要的是第 0 类"。
-// * `cloudType == 1` 是「延期领取」，走的是**另一口端点**（`receiveTaskExpansion`）。
-//   这条**没实现**（不在本批范围）：碰到它就跳过并如实写在 note 里，
-//   免得队列卡死在那儿反复重试。
-//   ⚠️ 顺带一个必须知道的后果：跳过 ≠ 上游那边消失 —— 下一次问清单，它**还会回来**。
-//   所以这件事每 15 分钟会重复一次（每次一个只读请求 + 一次跳过），直到
-//   `receiveTaskExpansion` 被实现。这是可接受的成本，但要知道它在发生。
+// * `cloudType == 1` 是「延期领取」，走的是**另一口端点**：`receiveTaskExpansion`。
+//   它是 **GET**，而且 `h5(false, …)` → 不发 `isdeviceid`。
+//   ⚠️ 这一口最要紧的细节是 `acceptDate`：原实现查过原始响应，
+//   **两条真实账号的 `receiveList` 里都没有 `acceptDate` 这个字段**
+//   （只有 `cloudNum` / `cloudType`）⇒ 真实客户端发出去的是**裸 GET，一个参数都没有**。
+//   所以这里：没有 `acceptDate` 就什么都不带；**绝不能写成 `?acceptDate=`** ——
+//   原实现专门警告过「那是另一个请求」。
 //
 // 请求体逐字（`receive_v3_request`）：`{client:"app", cloudId, cloudType, deviceId}`，
 // 而且这一口是 `h5(true, …)` → **发 `isdeviceid`**。
@@ -60,6 +61,16 @@ function saveQueue(
   store.setState(STATE_QUEUE, JSON.stringify(q), nowIso);
 }
 
+/** 从清单项里取 `acceptDate`（**有才带**，没有就返回 undefined）。
+ *
+ *  实测的真实清单里没有这个字段 —— 所以缺省路径是"裸 GET"。
+ *  写成空串会发出 `?acceptDate=`，那是**另一个请求**（原实现专门警告过）。 */
+export function readAcceptDate(raw: unknown): string | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined;
+  const v = (raw as Record<string, unknown>).acceptDate ?? (raw as Record<string, unknown>).accept_date;
+  return typeof v === 'string' && v.trim() !== '' ? v.trim() : undefined;
+}
+
 /** `receiveV3` 的请求体（逐字照抄，`cloudType` 缺省空串）。 */
 export function receiveV3Body(cloudId: string, cloudType: number | undefined, deviceId: string): string {
   return JSON.stringify({
@@ -98,13 +109,29 @@ export function runReceive(deps: TaskDeps): TaskOutcome {
   const rest = queue.slice(1);
 
   if (item.cloudType === 1) {
-    // 延期领取走另一口端点，这条没实现 —— 跳过并说明，别让队列卡死
+    // 延期领取：另一口端点，GET。`acceptDate` **有才带**（真实清单里没有这个字段，
+    // 所以缺省路径是"裸 GET"；写成空串会变成另一个请求）
+    const acceptDate = readAcceptDate(item.raw);
+    const out = runTask(
+      deps,
+      {
+        task: 'receive',
+        endpoint: 'receiveTaskExpansion',
+        method: 'GET',
+        query: acceptDate ? `acceptDate=${encodeURIComponent(acceptDate)}` : undefined,
+        // 原实现是 h5(false, …)：这一口不发 isdeviceid
+        isDeviceId: false,
+        stateKey: STATE_RECEIVE,
+      },
+      (env) => ({
+        ok: true,
+        note: `延期领取已完成（上游回 ${JSON.stringify(env.result ?? env.message).slice(0, 80)}）`,
+        snapshot: { item: item.raw, result: env.result ?? null },
+      }),
+    );
     saveQueue(deps.store, rest, deps.nowIso);
-    return {
-      ok: true,
-      skipped: true,
-      note: '这一条是延期领取（cloudType=1，走 receiveTaskExpansion）—— 本批未实现，已跳过',
-    };
+    const left1 = rest.length;
+    return { ...out, note: `${out.note}${left1 > 0 ? `（队列还剩 ${left1} 条）` : '（队列已清空）'}` };
   }
 
   const out = runTask(

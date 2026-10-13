@@ -118,6 +118,9 @@ for i in 1 2 3; do
   printf '   receive（第 %s 次）✓\n' "$i"
   sleep 0.4
 done
+curl -fsS -o /dev/null "${W[@]}" -X POST "$B/api/tasks/mcloud/receive/run"
+printf '   receive（第 4 次：延期领取）✓\n'
+sleep 0.4
 
 curl -fsS "${H[@]}" "$B/plugins/mcloud/api/tasks" -o "$TMP/plugin.json"
 curl -fsS "http://127.0.0.1:$MOCK_PORT/_debug/requests" -o "$TMP/mock.json"
@@ -171,12 +174,14 @@ assert sess and sess['method'] == 'GET' and '?client=app' in sess['path'], sess
 mockst = json.load(open(sys.argv[3]))
 assert mockst['todaySigned'] is True, '签到没有真正落地（mock 状态里今天还是没签）：' + str(mockst)
 assert mockst['curMonthBackupSignAccept'] is True, '翻倍没领到'
-# ⚠️ 清单里**会剩一条**：`cloudType=1` 是延期领取，走的是另一口端点
-# （`receiveTaskExpansion`），本批没实现 —— 插件跳过它、上游也继续列它。
-# 这里如实断言"只剩那一条"，而不是断言"清空"（后者是我们做不到的事，
-# 断言做不到的事只会让 CI 长期变红然后被无视）。
-assert mockst['receiveList'] == [{'recordId': 'r2', 'cloudType': 1}], (
-    '应当只剩那条延期领取：' + str(mockst['receiveList']))
+# 清单要**清空**：两条都领到了（r1 走 receiveV3、r2 是延期领取走 receiveTaskExpansion）。
+# 之前这里只断言"剩一条"—— 因为那时延期领取还没实现。现在能真清空了，就断言清空。
+assert mockst['receiveList'] == [], '待领清单没清空：' + str(mockst['receiveList'])
+# 延期领取那一口必须是**裸 GET**（带 ?acceptDate= 就是另一个请求）
+rte = [r for r in reqs if 'receiveTaskExpansion' in r['path']]
+assert rte, '没调用 receiveTaskExpansion'
+assert rte[-1]['path'] == '/ycloud/signin/page/receiveTaskExpansion', (
+    '延期领取应当是裸 GET：' + rte[-1]['path'])
 assert mockst['backupCanReceive'] is False, '备份好礼没领到'
 
 # 签到是三段式：先 infoV3（说没签）→ startSignIn → 再 infoV3（说签了）

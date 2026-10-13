@@ -787,7 +787,10 @@ var EP_METHOD = {
   receiveV3: "POST",
   // json body
   taskExpansion: "GET",
-  receiveTaskExpansion: "POST",
+  // 更正记录：这一条我起初写成 POST，查 `receive_task_expansion_request` 后改成 GET
+  // （`h5(false, HttpRequest::get(url), "true")`）。表是从源码抄的，抄错就会得到 405——
+  // 而 405 只会说"方法不对"，不会说"该用哪个"。
+  receiveTaskExpansion: "GET",
   receiveRevivalReward: "POST",
   // json body `{}`
   multiple: "GET",
@@ -1210,6 +1213,11 @@ function loadQueue(store2) {
 function saveQueue(store2, q, nowIso) {
   store2.setState(STATE_QUEUE, JSON.stringify(q), nowIso);
 }
+function readAcceptDate(raw) {
+  if (typeof raw !== "object" || raw === null) return void 0;
+  const v = raw.acceptDate ?? raw.accept_date;
+  return typeof v === "string" && v.trim() !== "" ? v.trim() : void 0;
+}
 function receiveV3Body(cloudId, cloudType, deviceId) {
   return JSON.stringify({
     client: "app",
@@ -1239,12 +1247,27 @@ function runReceive(deps) {
   const item = queue[0];
   const rest = queue.slice(1);
   if (item.cloudType === 1) {
+    const acceptDate = readAcceptDate(item.raw);
+    const out2 = runTask(
+      deps,
+      {
+        task: "receive",
+        endpoint: "receiveTaskExpansion",
+        method: "GET",
+        query: acceptDate ? `acceptDate=${encodeURIComponent(acceptDate)}` : void 0,
+        // 原实现是 h5(false, …)：这一口不发 isdeviceid
+        isDeviceId: false,
+        stateKey: STATE_RECEIVE
+      },
+      (env) => ({
+        ok: true,
+        note: `延期领取已完成（上游回 ${JSON.stringify(env.result ?? env.message).slice(0, 80)}）`,
+        snapshot: { item: item.raw, result: env.result ?? null }
+      })
+    );
     saveQueue(deps.store, rest, deps.nowIso);
-    return {
-      ok: true,
-      skipped: true,
-      note: "这一条是延期领取（cloudType=1，走 receiveTaskExpansion）—— 本批未实现，已跳过"
-    };
+    const left1 = rest.length;
+    return { ...out2, note: `${out2.note}${left1 > 0 ? `（队列还剩 ${left1} 条）` : "（队列已清空）"}` };
   }
   const out = runTask(
     deps,
