@@ -25,6 +25,9 @@ import { runPrizes } from './mcloud/tasks/prizes.ts';
 import { runCloudSnapshot } from './mcloud/tasks/cloudSnapshot.ts';
 import { runSign } from './mcloud/tasks/sign.ts';
 import { runBackupGift } from './mcloud/tasks/backupGift.ts';
+import { runReceive } from './mcloud/tasks/receive.ts';
+import { runMultiple } from './mcloud/tasks/multiple.ts';
+import { runRevival } from './mcloud/tasks/revival.ts';
 import { mcloudRoutes } from './mcloud/routes.ts';
 import { loadBaseUrl, verifySession } from './mcloud/session.ts';
 
@@ -218,9 +221,19 @@ interface TaskPayload {
   lateMs: number;
 }
 
-register_cron('sign', '5 8 * * *', makeRunner('签到', runSign));
-register_cron('backup-gift', '15 8 * * *', makeRunner('备份好礼', runBackupGift));
-register_cron('prizes', '20 8 * * *', makeRunner('待领取奖品', (d) => runPrizes(d)));
+// 签到族挂在**白天每 15 分钟**，而不是"每天 8:05 打一枪"。三条理由：
+//   ① 签到是「提交 → 回查状态」的多步流程，多步需要多次调用（一次调用一个请求的纪律）
+//   ② 低配盒子不常在线：8 点整没开机，9 点上线照样补上（这就是 catch-up 的意义）
+//   ③ 每一步都便宜且自带门槛：状态说不需要动作时就只是一次只读检查
+// 真正"每天一次"的东西只有一个：翻倍机会，而它的门槛（curMonthBackup 两个值）
+// 由插件自己判 —— 条件不成立时一个字节都不发。
+const SIGNIN_CRON = '*/15 7-22 * * *';
+register_cron('sign', SIGNIN_CRON, makeRunner('签到', runSign));
+register_cron('receive', SIGNIN_CRON, makeRunner('领取AI豆', runReceive));
+register_cron('multiple', SIGNIN_CRON, makeRunner('签到翻倍', runMultiple));
+register_cron('revival', SIGNIN_CRON, makeRunner('复活卡', runRevival));
+register_cron('backup-gift', SIGNIN_CRON, makeRunner('备份好礼', runBackupGift));
+register_cron('prizes', '20 8 * * *', makeRunner('待领取奖品', runPrizes));
 register_cron('cloud-snapshot', '30 8 * * *', makeRunner('AI豆快照', runCloudSnapshot));
 
 // ── 任务：自检（装上去先跑一次这个，确认沙箱这一层是好的）──

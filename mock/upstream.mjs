@@ -39,7 +39,8 @@ export const FIXTURES = {
   },
   // taskListV2 的 result 是**以 group 为键的对象**（与 V3 形状不同，故意保留）
   taskListV2: { code: 0, msg: 'success', result: {}, groupState: {} },
-  infoV3: { code: 0, msg: 'success', result: { signIn: { days: 3, continuous: 3 } } },
+  // infoV3 由状态机生成，见下面 case 分支
+  infoV3: { code: 0, msg: 'success', result: {} },
   startSignIn: { code: 0, msg: 'success', result: { bean: 10 } },
   receiveV3: { code: 0, msg: 'success', result: { bean: 10 } },
   multiple: { code: 0, msg: 'success', result: { multiple: 2 } },
@@ -56,6 +57,21 @@ export const FIXTURES = {
  */
 export async function startMock(options = {}) {
   const requests = [];
+
+  // ── 一个小小状态机 ──────────────────────────────────────────────────────
+  //
+  // 一开始这里是纯静态夹具，结果测不了**多步流程**：签到是「提交 → 回查状态」，
+  // 静态夹具永远回「今天还没签」，于是回查那一步必然报失败 —— 那是 mock 的毛病，
+  // 不是插件的。所以给它一点状态：动作打过来就改变后续的只读响应。
+  //
+  // 默认起点：今天还没签、有 2 条待领（其中 1 条是延期领取）、有翻倍机会、备份好礼可领。
+  const st = {
+    todaySigned: false,
+    receiveList: [{ recordId: 'r1', cloudType: 2 }, { recordId: 'r2', cloudType: 1 }],
+    curMonthBackup: true,
+    curMonthBackupSignAccept: false,
+    backupCanReceive: true,
+  };
   // behavior: 'normal' | 'biz-fail' | 'http-500' | 'not-json' | 'timeout'
   let behavior = options.behavior ?? 'normal';
   const delayMs = options.delayMs ?? 0;
@@ -79,6 +95,7 @@ export async function startMock(options = {}) {
         requests.length = 0;
         return json(res, 200, { cleared: n });
       }
+      if (url.pathname === '/_debug/state') return json(res, 200, st);
       if (url.pathname === '/_debug/behavior') {
         if (req.method === 'POST') {
           behavior = body || 'normal';
@@ -108,8 +125,51 @@ export async function startMock(options = {}) {
           '/market/backupgift/info': FIXTURES.backupGiftInfo,
           '/market/backupgift/receive': FIXTURES.backupGiftReceive,
         };
+        // ── 会改变状态的那几口 ──
+        if (url.pathname === '/ycloud/signin/page/infoV3') {
+          return json(res, 200, {
+            code: 0,
+            msg: 'success',
+            result: {
+              todaySignIn: st.todaySigned,
+              cal: [{ d: 19, s: st.todaySigned, n: 3, p: 0, t: true, currentMonth: 1 }],
+              receiveList: st.receiveList,
+              curMonthBackup: st.curMonthBackup,
+              curMonthBackupSignAccept: st.curMonthBackupSignAccept,
+            },
+          });
+        }
+        if (url.pathname === '/ycloud/signin/page/startSignIn') {
+          // 上游的语义：提交之后**状态可能还没变**（真实世界里会延迟入账）。
+          // 这里让它立刻变 —— 好测「回查确认」那条路径；想测"没入账"的话把
+          // `st.todaySigned` 后面的赋值去掉即可。
+          st.todaySigned = true;
+          return json(res, 200, { code: 0, msg: 'success', result: { bean: 10 } });
+        }
+        if (url.pathname === '/ycloud/signin/page/receiveV3') {
+          let rid = '';
+          try {
+            rid = JSON.parse(body || '{}').cloudId ?? '';
+          } catch {
+            /* 体不是 JSON 就算了 */
+          }
+          st.receiveList = st.receiveList.filter((x) => x.recordId !== rid);
+          return json(res, 200, { code: 0, msg: 'success', result: { bean: 5, cloudId: rid } });
+        }
+        if (url.pathname === '/ycloud/signin/page/multiple') {
+          st.curMonthBackupSignAccept = true; // 每月只用一次
+          return json(res, 200, { code: 0, msg: 'success', result: { multiple: 2 } });
+        }
+        if (url.pathname === '/market/backupgift/receive') {
+          st.backupCanReceive = false;
+          return json(res, 200, { code: 0, msg: 'success', result: {} });
+        }
+
         const hit = map[url.pathname];
         if (!hit) return json(res, 404, { code: -1, msg: `mock 没有这个端点：${url.pathname}` });
+        if (url.pathname === '/market/backupgift/info') {
+          return json(res, 200, { code: 0, msg: 'success', result: { canReceive: st.backupCanReceive } });
+        }
         return json(res, 200, hit);
       };
 

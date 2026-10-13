@@ -60,6 +60,10 @@ export interface TaskSpec {
   stateKey?: string | undefined;
   /** 比计划晚超过这么多毫秒就**不做**（只给不可逆动作用）。负数/缺省 = 总是做 */
   skipIfLaterThanMs?: number | undefined;
+  /** 上游回的**错误**里有些其实是"已经完成了"（例如复活卡的「已领取」）。
+   *  给一个判据，命中时算成功、并把这个判据的说明写进 note。
+   *  不这么做的后果：面板里每天多一条红，而实际上什么都没坏。 */
+  okWhenError?: ((error: string) => boolean) | undefined;
 }
 
 /** 落盘的失败原因的键前缀。 */
@@ -141,6 +145,11 @@ export function runTask(
 
   if (!res.ok) {
     const note = res.error ?? '未知失败';
+    // 「上游说失败，其实是已经做过了」这一类：算完成，但把上游原话留在 note 里
+    if (spec.okWhenError?.(note)) {
+      clearError(deps.store, spec.task, deps.nowIso);
+      return { ok: true, note: `上游说「${note}」—— 按"已经完成"处理（见 okWhenError）` };
+    }
     recordError(deps.store, spec.task, note, deps.nowIso);
     return { ok: false, note };
   }

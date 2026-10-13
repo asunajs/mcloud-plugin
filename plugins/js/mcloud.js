@@ -882,6 +882,10 @@ function runTask(deps, spec, judge) {
   }
   if (!res.ok) {
     const note = res.error ?? "未知失败";
+    if (spec.okWhenError?.(note)) {
+      clearError(deps.store, spec.task, deps.nowIso);
+      return { ok: true, note: `上游说「${note}」—— 按"已经完成"处理（见 okWhenError）` };
+    }
     recordError(deps.store, spec.task, note, deps.nowIso);
     return { ok: false, note };
   }
@@ -905,6 +909,9 @@ var TASK_NAMES = [
   "session-check",
   "task-list",
   "sign",
+  "receive",
+  "multiple",
+  "revival",
   "backup-gift",
   "prizes",
   "cloud-snapshot"
@@ -1023,28 +1030,94 @@ function runCloudSnapshot(deps) {
   );
 }
 
+// src/mcloud/tasks/info.ts
+var bool = (v, dflt = false) => typeof v === "boolean" ? v : dflt;
+function parseInfoV3(result) {
+  const o = resultObject({ code: 0, message: "", result, ok: true });
+  const pick = (...keys) => {
+    for (const k of keys) if (o[k] !== void 0) return o[k];
+    return void 0;
+  };
+  const listRaw = pick("receiveList", "receive_list");
+  const receiveList = Array.isArray(listRaw) ? listRaw.map((x) => {
+    const it = typeof x === "object" && x !== null ? x : {};
+    const rid = it.recordId ?? it.record_id ?? it.cloudId ?? it.cloud_id;
+    const ct = it.cloudType ?? it.cloud_type;
+    return {
+      recordId: typeof rid === "string" ? rid : rid === void 0 || rid === null ? "" : String(rid),
+      cloudType: typeof ct === "number" ? ct : void 0,
+      raw: x
+    };
+  }) : [];
+  return {
+    todaySigned: bool(pick("todaySignIn", "today_sign_in")),
+    receiveList,
+    curMonthBackup: bool(pick("curMonthBackup", "cur_month_backup")),
+    curMonthBackupSignAccept: bool(pick("curMonthBackupSignAccept", "cur_month_backup_sign_accept")),
+    raw: result ?? null
+  };
+}
+function fetchInfoV3(deps) {
+  const session = loadSession(deps.store);
+  if (!session) return { ok: false, error: "未登录：state 里没有会话" };
+  const req = buildH5Request({
+    url: `${resolveUrl("infoV3", deps.baseUrl)}?${CLIENT_QUERY}`,
+    method: EP_METHOD.infoV3 === "GET" ? "GET" : "POST",
+    referer: REFERER_SIGN_IN,
+    showLoading: SHOW_LOADING,
+    isDeviceId: !!session.deviceId,
+    saltKey: 1,
+    session: sessionHeaders(session)
+  });
+  const res = callOnce(deps.transport, req);
+  if (!res.ok) return { ok: false, error: res.error ?? "未知失败" };
+  const env = res.env;
+  return { ok: true, info: parseInfoV3(env.result), tookMs: res.tookMs };
+}
+
 // src/mcloud/tasks/sign.ts
 var STATE_SIGN = "mcloud.sign.last";
+var STATE_STAGE = "mcloud.sign.stage";
 function runSign(deps) {
-  const deviceId = loadSession(deps.store)?.deviceId;
-  return runTask(
+  const session = loadSession(deps.store);
+  if (!session) {
+    return { ok: false, note: "未登录：state 里没有会话（见 docs/howto-session.md）" };
+  }
+  const stage = deps.store.getState(STATE_STAGE) ?? "";
+  if (stage === "need-verify") {
+    const info2 = fetchInfoV3({ store: deps.store, transport: deps.transport, baseUrl: deps.baseUrl });
+    if (!info2.ok) return { ok: false, note: `回查失败：${info2.error}` };
+    if (info2.info.todaySigned) {
+      deps.store.setState(STATE_STAGE, "", deps.nowIso);
+      return { ok: true, note: "签到完成（回查 infoV3 确认今日已签）" };
+    }
+    return { ok: false, note: "已提交签到，但回查 infoV3 显示今日仍未签（上游可能延迟入账）" };
+  }
+  const info = fetchInfoV3({ store: deps.store, transport: deps.transport, baseUrl: deps.baseUrl });
+  if (!info.ok) return { ok: false, note: `查询签到状态失败：${info.error}` };
+  if (info.info.todaySigned) {
+    return { ok: true, note: "今日已签到（infoV3 判据）" };
+  }
+  const deviceId = session.deviceId;
+  const out = runTask(
     deps,
     {
       task: "sign",
       endpoint: "startSignIn",
       method: "GET",
       query: deviceId ? `client=app&deviceId=${encodeURIComponent(deviceId)}` : "client=app",
-      // 原实现：有设备号才发 isdeviceid
       isDeviceId: !!deviceId,
       stateKey: STATE_SIGN
-      // 签到是 catch-up（晚了也补做）：上游幂等，不设跳过阈值
     },
     (env) => ({
       ok: true,
-      note: `签到已送达（上游回 ${JSON.stringify(env.result ?? env.message).slice(0, 120)}）`,
+      // ⚠️ 这里**不说"签到成功"** —— 动作响应不是判据（见文件头）。
+      note: `签到已提交（下次触发回查状态；上游回 ${JSON.stringify(env.result ?? env.message).slice(0, 80)}）`,
       snapshot: { result: env.result ?? null, message: env.message }
     })
   );
+  if (out.ok) deps.store.setState(STATE_STAGE, "need-verify", deps.nowIso);
+  return out;
 }
 
 // src/mcloud/tasks/backupGift.ts
@@ -1114,6 +1187,141 @@ function runBackupGift(deps) {
   const can = deps.store.getState(STATE_CAN);
   if (can === "yes") return runBackupGiftReceive(deps);
   return runBackupGiftInfo(deps);
+}
+
+// src/mcloud/tasks/receive.ts
+var STATE_QUEUE = "mcloud.receive.queue";
+var STATE_RECEIVE = "mcloud.receive.last";
+function loadQueue(store2) {
+  const raw = store2.getState(STATE_QUEUE);
+  if (!raw) return [];
+  try {
+    const v = JSON.parse(raw);
+    if (!Array.isArray(v)) return [];
+    return v.filter((x) => typeof x === "object" && x !== null).map((o) => ({
+      recordId: typeof o.recordId === "string" ? o.recordId : "",
+      cloudType: typeof o.cloudType === "number" ? o.cloudType : void 0,
+      raw: o.raw
+    }));
+  } catch {
+    return [];
+  }
+}
+function saveQueue(store2, q, nowIso) {
+  store2.setState(STATE_QUEUE, JSON.stringify(q), nowIso);
+}
+function receiveV3Body(cloudId, cloudType, deviceId) {
+  return JSON.stringify({
+    client: "app",
+    cloudId,
+    cloudType: cloudType === void 0 ? "" : cloudType,
+    deviceId
+  });
+}
+function runReceive(deps) {
+  const session = loadSession(deps.store);
+  if (!session) {
+    return { ok: false, note: "未登录：state 里没有会话（见 docs/howto-session.md）" };
+  }
+  let queue = loadQueue(deps.store);
+  if (queue.length === 0) {
+    const info = fetchInfoV3({ store: deps.store, transport: deps.transport, baseUrl: deps.baseUrl });
+    if (!info.ok) return { ok: false, note: `查询待领清单失败：${info.error}` };
+    if (info.info.receiveList.length === 0) {
+      return { ok: true, skipped: true, note: "没有待领取的东西（infoV3.receiveList 为空）" };
+    }
+    saveQueue(deps.store, info.info.receiveList, deps.nowIso);
+    return {
+      ok: true,
+      note: `发现 ${info.info.receiveList.length} 条待领取，已入队（下面几次触发逐条领）`
+    };
+  }
+  const item = queue[0];
+  const rest = queue.slice(1);
+  if (item.cloudType === 1) {
+    saveQueue(deps.store, rest, deps.nowIso);
+    return {
+      ok: true,
+      skipped: true,
+      note: "这一条是延期领取（cloudType=1，走 receiveTaskExpansion）—— 本批未实现，已跳过"
+    };
+  }
+  const out = runTask(
+    deps,
+    {
+      task: "receive",
+      endpoint: "receiveV3",
+      method: "POST",
+      body: receiveV3Body(item.recordId, item.cloudType, session.deviceId ?? ""),
+      stateKey: STATE_RECEIVE
+    },
+    (env) => ({
+      ok: true,
+      note: `已领取（cloudId=${item.recordId || "空"}；上游回 ${JSON.stringify(env.result ?? env.message).slice(0, 80)}）`,
+      snapshot: { item: item.raw, result: env.result ?? null }
+    })
+  );
+  saveQueue(deps.store, rest, deps.nowIso);
+  const left = rest.length;
+  return { ...out, note: `${out.note}${left > 0 ? `（队列还剩 ${left} 条）` : "（队列已清空）"}` };
+}
+
+// src/mcloud/tasks/multiple.ts
+var STATE_MULTIPLE = "mcloud.multiple.last";
+function runMultiple(deps) {
+  const info = fetchInfoV3({ store: deps.store, transport: deps.transport, baseUrl: deps.baseUrl });
+  if (!info.ok) return { ok: false, note: `查询状态失败：${info.error}` };
+  const { curMonthBackup, curMonthBackupSignAccept } = info.info;
+  if (!curMonthBackup) {
+    return { ok: true, skipped: true, note: "本月没有翻倍机会（infoV3.curMonthBackup=false）" };
+  }
+  if (curMonthBackupSignAccept) {
+    return { ok: true, skipped: true, note: "本月翻倍机会已用过（infoV3.curMonthBackupSignAccept=true）" };
+  }
+  return runTask(
+    deps,
+    {
+      task: "multiple",
+      endpoint: "multiple",
+      method: "GET",
+      isDeviceId: false,
+      stateKey: STATE_MULTIPLE
+    },
+    (env) => ({
+      ok: true,
+      note: `已领取翻倍（上游回 ${JSON.stringify(env.result ?? env.message).slice(0, 100)}）`,
+      snapshot: env.result ?? null
+    })
+  );
+}
+
+// src/mcloud/tasks/revival.ts
+var STATE_REVIVAL = "mcloud.revival.last";
+var REVIVAL_SKIP_AFTER_MS = 2 * 36e5;
+function revivalMessageAlreadyClaimed(message) {
+  if (!message.includes("已领取") && !message.includes("已领过")) return false;
+  return message.includes("复活卡") || message.includes("回馈卡") || message.includes("奖励");
+}
+function runRevival(deps) {
+  return runTask(
+    deps,
+    {
+      task: "revival",
+      endpoint: "receiveRevivalReward",
+      method: "POST",
+      body: "{}",
+      stateKey: STATE_REVIVAL,
+      // 不可逆：晚了太久就不做
+      skipIfLaterThanMs: REVIVAL_SKIP_AFTER_MS,
+      // 「已领取」是**完成**，不是失败（否则面板每天多一条红）
+      okWhenError: revivalMessageAlreadyClaimed
+    },
+    (env) => ({
+      ok: true,
+      note: `已用掉一张卡（上游回 ${JSON.stringify(env.result ?? env.message).slice(0, 100)}）`,
+      snapshot: env.result ?? null
+    })
+  );
 }
 
 // src/mcloud/session.ts
@@ -1507,9 +1715,13 @@ function makeRunner(name, run) {
     }
   };
 }
-register_cron("sign", "5 8 * * *", makeRunner("签到", runSign));
-register_cron("backup-gift", "15 8 * * *", makeRunner("备份好礼", runBackupGift));
-register_cron("prizes", "20 8 * * *", makeRunner("待领取奖品", (d) => runPrizes(d)));
+var SIGNIN_CRON = "*/15 7-22 * * *";
+register_cron("sign", SIGNIN_CRON, makeRunner("签到", runSign));
+register_cron("receive", SIGNIN_CRON, makeRunner("领取AI豆", runReceive));
+register_cron("multiple", SIGNIN_CRON, makeRunner("签到翻倍", runMultiple));
+register_cron("revival", SIGNIN_CRON, makeRunner("复活卡", runRevival));
+register_cron("backup-gift", SIGNIN_CRON, makeRunner("备份好礼", runBackupGift));
+register_cron("prizes", "20 8 * * *", makeRunner("待领取奖品", runPrizes));
 register_cron("cloud-snapshot", "30 8 * * *", makeRunner("AI豆快照", runCloudSnapshot));
 every("selftest", "5m", (p) => {
   try {

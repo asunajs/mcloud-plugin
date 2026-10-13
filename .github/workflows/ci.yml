@@ -154,7 +154,8 @@ jobs:
           #   ② 插件自报的数量必须等于调度器里**实际**的数量（自报与事实一致）
           expected = {
               'selftest', 'diag', 'task-list', 'session-check',
-              'sign', 'backup-gift', 'prizes', 'cloud-snapshot',
+              'sign', 'receive', 'multiple', 'revival',
+              'backup-gift', 'prizes', 'cloud-snapshot',
           }
           missing = expected - set(names)
           assert not missing, f"少了这些任务：{sorted(missing)}，实际 {names}"

@@ -39,6 +39,18 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# ⚠️ 端口被占就直接报错，别往下走。
+# 吃过一次亏：上一次 KEEP=1 留下的进程还活着，于是脚本连到了**旧的** mock/面板，
+# 断言结果是旧状态决定的（表现为"插件行为不对"，其实是环境不对）。
+# 还有一次是 `pkill -f e2e-mock` 杀不掉 `node mock/upstream.mjs` —— 名字根本不匹配。
+for p in "$PANEL_PORT" "$MOCK_PORT"; do
+  if curl -s -o /dev/null --max-time 1 "http://127.0.0.1:$p/" 2>/dev/null; then
+    echo "❌ 端口 $p 已被占用 —— 可能是上一次跑剩的进程。先收摊再跑：" >&2
+    echo "   lsof -ti tcp:$p | xargs kill" >&2
+    exit 2
+  fi
+done
+
 echo "① 起 mock 上游（:$MOCK_PORT）"
 node "$HERE/mock/upstream.mjs" "$MOCK_PORT" > "$TMP/mock.log" 2>&1 &
 MOCK_PID=$!
@@ -85,24 +97,54 @@ assert 'mockcookie=1' not in json.dumps(d), '响应里不能回显凭据'
 print('   会话导入并对 mock 验证通过，响应里没有凭据原文')
 PY
 
-echo "④ 逐条跑（备份好礼跑两次：先问、再领）"
-for t in task-list prizes cloud-snapshot sign backup-gift; do
+echo "④ 逐条跑。多步任务**跑多次**让步骤机推进（一次调用只发一个请求是这套架构的纪律）"
+for t in task-list prizes cloud-snapshot multiple revival backup-gift; do
   curl -fsS -o /dev/null "${W[@]}" -X POST "$B/api/tasks/mcloud/$t/run"
   printf '   %s ✓\n' "$t"
-  sleep 0.5
+  sleep 0.4
 done
-curl -fsS -o /dev/null "${W[@]}" -X POST "$B/api/tasks/mcloud/backup-gift/run"   # 第二次：真领
-printf '   backup-gift（第二次）✓\n'
-sleep 0.5
+# 备份好礼：info 说能领 → 第二次才领
+curl -fsS -o /dev/null "${W[@]}" -X POST "$B/api/tasks/mcloud/backup-gift/run"
+printf '   backup-gift（第二次：真领）✓\n'
+# 签到：问状态 → 提交 → 回查（三段式）
+for i in 1 2 3; do
+  curl -fsS -o /dev/null "${W[@]}" -X POST "$B/api/tasks/mcloud/sign/run"
+  printf '   sign（第 %s 段）✓\n' "$i"
+  sleep 0.4
+done
+# 领取：入队 → 逐条（清单里 2 条，第 2 条是延期领取会被跳过）
+for i in 1 2 3; do
+  curl -fsS -o /dev/null "${W[@]}" -X POST "$B/api/tasks/mcloud/receive/run"
+  printf '   receive（第 %s 次）✓\n' "$i"
+  sleep 0.4
+done
 
 curl -fsS "${H[@]}" "$B/plugins/mcloud/api/tasks" -o "$TMP/plugin.json"
 curl -fsS "http://127.0.0.1:$MOCK_PORT/_debug/requests" -o "$TMP/mock.json"
-python3 - "$TMP/plugin.json" "$TMP/mock.json" <<'PY'
+curl -fsS "http://127.0.0.1:$MOCK_PORT/_debug/state" -o "$TMP/mock-state.json"
+python3 - "$TMP/plugin.json" "$TMP/mock.json" "$TMP/mock-state.json" <<'PY'
 import json, sys
 
 d = json.load(open(sys.argv[1]))
 errs = d.get('lastErrorByTask') or {}
-assert not errs, '这些任务报了错：' + json.dumps(errs, ensure_ascii=False)
+
+
+def diagnose(msg):
+    """断言失败时把现场打出来 —— 不然只能看到一句"期望 X 实际 Y"，
+    还得回头翻日志、猜是哪一层的问题（我已经为此绕了好几个来回）。"""
+    print('❌ ' + msg)
+    print('  插件最近的记录：')
+    for r in (json.load(open(sys.argv[1])).get('recent') or [])[:14]:
+        print('    %-13s %s' % (r['task'], str(r['note'])[:90]))
+    print('  各任务的失败原因：' + json.dumps(errs, ensure_ascii=False))
+    print('  mock 收到的请求：')
+    for r in json.load(open(sys.argv[2])):
+        print('    %-4s %s' % (r['method'], r['path'][:90]))
+    print('  mock 状态：' + json.dumps(json.load(open(sys.argv[3])), ensure_ascii=False))
+
+
+assert not errs, diagnose('这些任务报了错')
+
 
 reqs = json.load(open(sys.argv[2]))
 paths = {}
@@ -123,6 +165,33 @@ assert len(paths['/market/backupgift/receive']) == 1, '领一次就够，别重�
 assert bi['headers']['activityid'] == 'backupgift', '备份好礼那页的 activityid 是 backupgift'
 sess = line('/ycloud/signin/page/infoV3')
 assert sess and sess['method'] == 'GET' and '?client=app' in sess['path'], sess
-print('   ✅ 全部断言通过：query 逐字、备份好礼两步顺序正确、只领一次、没有任务报错')
+
+# ── 最终状态：这一天才算真的过完 ────────────────────────────────────────
+# 这些断言比"任务返回 ok"有力得多：它们看的是**上游侧的状态真的变了**。
+mockst = json.load(open(sys.argv[3]))
+assert mockst['todaySigned'] is True, '签到没有真正落地（mock 状态里今天还是没签）：' + str(mockst)
+assert mockst['curMonthBackupSignAccept'] is True, '翻倍没领到'
+# ⚠️ 清单里**会剩一条**：`cloudType=1` 是延期领取，走的是另一口端点
+# （`receiveTaskExpansion`），本批没实现 —— 插件跳过它、上游也继续列它。
+# 这里如实断言"只剩那一条"，而不是断言"清空"（后者是我们做不到的事，
+# 断言做不到的事只会让 CI 长期变红然后被无视）。
+assert mockst['receiveList'] == [{'recordId': 'r2', 'cloudType': 1}], (
+    '应当只剩那条延期领取：' + str(mockst['receiveList']))
+assert mockst['backupCanReceive'] is False, '备份好礼没领到'
+
+# 签到是三段式：先 infoV3（说没签）→ startSignIn → 再 infoV3（说签了）
+# ⚠️ 大小写：端点里是 `startSignIn`（大写 S），别写成 `signIn` 去 in 一下 ——
+# 那次我因此得到"插件没提交签到"的假象，白白绕了几个来回。
+# 过滤器一律用路径片段 `/signin/`（全小写、两边都对得上）。
+sig_seq = [r['path'].split('?')[0] for r in reqs if '/signin/' in r['path']]
+if sig_seq.count('/ycloud/signin/page/startSignIn') != 1:
+    diagnose('签到提交次数不是 1：' + str(sig_seq))
+if sig_seq.count('/ycloud/signin/page/infoV3') < 2:
+    diagnose('签到回查那一步没发生：' + str(sig_seq))
+assert sig_seq.count('/ycloud/signin/page/startSignIn') == 1, '提交只该一次：' + str(sig_seq)
+assert sig_seq.count('/ycloud/signin/page/infoV3') >= 2, '回查那一步没发生：' + str(sig_seq)
+
+print('   ✅ 全部断言通过：query 逐字、备份好礼两步、签到三段式（含回查）、')
+print('      翻倍门槛、逐条领取、只领一次、没有任务报错 —— 且 mock 侧状态真的变了')
 print('   ✅ 面板日志：' + sys.argv[1].replace('plugin.json', 'panel.log'))
 PY

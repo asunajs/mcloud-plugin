@@ -1,51 +1,81 @@
-// 任务：每日签到（`sign`）—— 动作类，**幂等**。
+// 任务：每日签到（`sign`）—— 动作类、**幂等**、**判据必须回查**。
 //
-// 端点：`GET /ycloud/signin/page/startSignIn?client=app[&deviceId=…]`
-// （`h5(is_device_id, get(url), "true")` —— 有没有设备号决定发不发 `isdeviceid`）
+// # 三段式（一次调用只走一段，状态落盘）
 //
-// # 为什么现在只做"一步"，以及为什么这是安全的
+//   ① 问状态：`infoV3` → `todaySignIn` 已经是 true → 收工（今天签过了）
+//   ② 动手：`startSignIn`（GET + `?client=app[&deviceId=]`）→ 记下"待回查"
+//   ③ 回查：再问 `infoV3` → **这才是成败判据**
 //
-// 原实现的完整流程是**两步**：先 `infoV3` 看今天签没签（状态在响应里，
-// 不是在 code 里 —— `signin.rs:212` 的 "今日已签到，余额 {}" 是从状态判的），
-// 只有没签才 `startSignIn`。这里目前只发 `startSignIn`，理由是原实现自己写下的：
+// 为什么非要③：原实现里写着（`signin.rs:167-170`）——
 //
-//   > 签到是**无害且幂等**的动作（重复签到只会回"今日已签到"）
+//   > ⚠ 判据是 `infoV3`，不是 `startSignIn` 的响应 …… 它说没签，
+//   > 但紧接着 `infoV3` 已经是 `s:true` 了。**判成败一律回查 `infoV3`。**
 //
-// 也就是说重复发不会造成任何后果，最坏是上游回一句"已签"。两步判断（省掉那次多余请求）
-// 留到拿到**真实响应**之后再做 —— 猜 `infoV3` 的响应形状来写判断，是在没证据的情况下
-// 写分支，那种分支在真机上通常就是错的。
+// 也就是说动作响应会**撒谎**（说的是提交那一刻的状态，不是最终状态）。
+// 拿它当判据就会每天误报一次失败。
 //
-// ⚠️ 已知的粗糙处（不装懂）：这里把「上游回了非 0」（例如"今日已签到"）一律记成
-// `ok=false`。它其实不是失败 —— 到了有真实响应的那天，应该按上游的 code 分流成
-// 「已完成」而不是「失败」，否则面板里每天都会多一条红色。这条已记进 README 的待办。
+// # 为什么调度要密（而不是"每天 8:05 打一枪"）
+//
+// 三段式需要三次调用。挂在"每天一次"的 cron 上，就要三天才签完一次 ✗。
+// 所以这条任务挂在**白天每 15 分钟**：每次只发一个请求（便宜），
+// 状态说不需要动作时就只是一次只读检查。副作用是**对盒子不常在线这件事很宽容** ——
+// 8 点整没开机，9 点上线照样会把今天补上（这正是 mcloud 任务表里 catch-up 的意思）。
 
+import { fetchInfoV3 } from './info.ts';
 import { runTask } from './base.ts';
 import type { TaskDeps, TaskOutcome } from './base.ts';
 import { loadSession } from '../../store/types.ts';
 
 export const STATE_SIGN = 'mcloud.sign.last';
+/** '' | 'need-verify'：下一步该干嘛 */
+export const STATE_STAGE = 'mcloud.sign.stage';
 
 export function runSign(deps: TaskDeps): TaskOutcome {
-  // 设备号就在**会话**里（导入时一起给的），不要另造一个 state 键存它 ——
-  // 第一版我写的 `mcloud.session.device_hint` 是凭空发明的，于是"有设备号也不发 deviceId"，
-  // 被测试当场抓到。
-  const deviceId = loadSession(deps.store)?.deviceId;
-  return runTask(
+  const session = loadSession(deps.store);
+  if (!session) {
+    return { ok: false, note: '未登录：state 里没有会话（见 docs/howto-session.md）' };
+  }
+
+  const stage = deps.store.getState(STATE_STAGE) ?? '';
+
+  // ③ 回查：上一次已经把签到提交出去了，这次看结果
+  if (stage === 'need-verify') {
+    const info = fetchInfoV3({ store: deps.store, transport: deps.transport, baseUrl: deps.baseUrl });
+    if (!info.ok) return { ok: false, note: `回查失败：${info.error}` };
+    if (info.info.todaySigned) {
+      deps.store.setState(STATE_STAGE, '', deps.nowIso);
+      return { ok: true, note: '签到完成（回查 infoV3 确认今日已签）' };
+    }
+    // 提交过了但状态还没变：**如实报失败**，别自己安慰自己
+    return { ok: false, note: '已提交签到，但回查 infoV3 显示今日仍未签（上游可能延迟入账）' };
+  }
+
+  // ① 问状态
+  const info = fetchInfoV3({ store: deps.store, transport: deps.transport, baseUrl: deps.baseUrl });
+  if (!info.ok) return { ok: false, note: `查询签到状态失败：${info.error}` };
+  if (info.info.todaySigned) {
+    return { ok: true, note: '今日已签到（infoV3 判据）' };
+  }
+
+  // ② 动手
+  const deviceId = session.deviceId;
+  const out = runTask(
     deps,
     {
       task: 'sign',
       endpoint: 'startSignIn',
       method: 'GET',
       query: deviceId ? `client=app&deviceId=${encodeURIComponent(deviceId)}` : 'client=app',
-      // 原实现：有设备号才发 isdeviceid
       isDeviceId: !!deviceId,
       stateKey: STATE_SIGN,
-      // 签到是 catch-up（晚了也补做）：上游幂等，不设跳过阈值
     },
     (env) => ({
       ok: true,
-      note: `签到已送达（上游回 ${JSON.stringify(env.result ?? env.message).slice(0, 120)}）`,
+      // ⚠️ 这里**不说"签到成功"** —— 动作响应不是判据（见文件头）。
+      note: `签到已提交（下次触发回查状态；上游回 ${JSON.stringify(env.result ?? env.message).slice(0, 80)}）`,
       snapshot: { result: env.result ?? null, message: env.message },
     }),
   );
+  if (out.ok) deps.store.setState(STATE_STAGE, 'need-verify', deps.nowIso);
+  return out;
 }

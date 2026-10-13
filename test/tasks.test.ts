@@ -103,30 +103,47 @@ test('cloud-snapshot：query 逐字；一页装满就如实说「可能还有下
   assert.equal(saved.value.entries.length, PAGE_SIZE);
 });
 
-test('sign：有设备号才发 isdeviceid 与 deviceId（原实现是 h5(is_device_id, …)）', () => {
-  const store = seeded();
-  const a = recorder([{ ok: 1 }]);
-  runSign({ store, transport: a.transport, nowIso: NOW });
+test('sign：有设备号才发 isdeviceid 与 deviceId（且要走到"提交"那一步 GET 出去）', () => {
+  // 注意：签到现在是三段式（问状态 → 提交 → 回查，见 tasks2.test.ts）。
+  // 这条只盯「提交那一步的请求长什么样」，所以要真的走到提交那一步。
+  const notSigned = JSON.stringify({
+    code: 0,
+    msg: 'success',
+    result: { todaySignIn: false, cal: [], receiveList: [] },
+  });
+
+  const store = seeded(); // 会话里带 deviceId
+  const sent: { url: string; headers: Record<string, string> }[] = [];
+  const transport: Transport = (req) => {
+    sent.push({ url: req.url, headers: req.headers });
+    return { status: 200, headers: {}, body: notSigned };
+  };
+  runSign({ store, transport, nowIso: NOW, lateMs: 0 }); // ① 问状态
+  assert.match(sent[0]!.url, /infoV3/);
+  runSign({ store, transport, nowIso: NOW, lateMs: 0 }); // ② 提交
+  const submit = sent.find((x) => /startSignIn/.test(x.url));
+  assert.ok(submit, '第二次应当去提交签到');
   assert.equal(
-    a.sent[0]!.url,
+    submit.url,
     'https://m.mcloud.139.com/ycloud/signin/page/startSignIn?client=app&deviceId=dev-1',
   );
+  assert.equal(submit.headers['isdeviceid'], 'true');
 
-  // 没有设备号时：只带 client=app，且不发 isdeviceid
+  // 没有设备号：只带 client=app，不发 isdeviceid
   const store2 = memStore();
   store2.ensureSchema();
   store2.setState(SESSION_KEY, JSON.stringify({ cookie: 'c=1', savedAt: NOW }), NOW);
-  let headers: Record<string, string> = {};
-  runSign({
-    store: store2,
-    transport: (req) => {
-      headers = req.headers;
-      return { status: 200, headers: {}, body: '{"code":0,"msg":"ok","result":{}}' };
-    },
-    nowIso: NOW,
-  });
-  assert.equal(headers['isdeviceid'], undefined);
-  assert.equal(headers.activityid, 'sign_in_3');
+  const sent2: { url: string; headers: Record<string, string> }[] = [];
+  const t2: Transport = (req) => {
+    sent2.push({ url: req.url, headers: req.headers });
+    return { status: 200, headers: {}, body: notSigned };
+  };
+  runSign({ store: store2, transport: t2, nowIso: NOW, lateMs: 0 });
+  runSign({ store: store2, transport: t2, nowIso: NOW, lateMs: 0 });
+  const submit2 = sent2.find((x) => /startSignIn/.test(x.url))!;
+  assert.equal(submit2.url, 'https://m.mcloud.139.com/ycloud/signin/page/startSignIn?client=app');
+  assert.equal(submit2.headers['isdeviceid'], undefined);
+  assert.equal(submit2.headers.activityid, 'sign_in_3');
 });
 
 test('② 备份好礼不能抢跑：info 说不能领就绝不发领取请求', () => {
