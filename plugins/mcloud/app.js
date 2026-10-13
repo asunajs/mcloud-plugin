@@ -179,6 +179,32 @@ async function loadMatrix() {
   $('matrix-table').querySelector('tbody').innerHTML = rows.join('');
 }
 
+// ──────────────────────────── 兑换清单（只读任务的读数）
+
+async function loadExchange() {
+  const d = await req('/plugins/mcloud/api/exchange');
+  const card = $('exchange-card');
+  if (!d.ok || !d.reading) {
+    card.hidden = true;
+    return;
+  }
+  card.hidden = false;
+  const r = d.reading;
+  const t = d.verdictText || {};
+  $('exchange-sub').textContent = `${r.groups} 组 / ${r.total} 件 · 读到 ${esc((r.at || '').slice(11, 19))}`;
+  $('exchange-note').innerHTML = `<b>只读</b>：${esc(d.note || '')}`;
+  const rows = (r.ok || []).map(
+    (p) => `<li><code>${esc(p.name || '#' + p.prizeId)}</code> · ${p.price ?? '?'} 豆</li>`,
+  );
+  $('exchange-ok').innerHTML = rows.length
+    ? `<div class="hint">现在可兑（${r.okCount} 件）：</div><ul class="ok-list">${rows.join('')}</ul>`
+    : '<div class="hint">现在没有可兑的</div>';
+  const tiers = Object.entries(r.byVerdict || {})
+    .map(([k, v]) => `${esc(t[k] || k)} ${v}`)
+    .join(' · ');
+  $('exchange-tiers').textContent = tiers ? '各档计数：' + tiers : '';
+}
+
 // ──────────────────────────── 会话与上游地址
 
 async function loadSession() {
@@ -256,6 +282,7 @@ $('refresh').addEventListener('click', () => {
   loadGroups();
   loadSession();
   loadMatrix();
+  loadExchange();
 });
 $('session-save').addEventListener('click', saveSession);
 $('session-check').addEventListener('click', checkSession);
@@ -264,4 +291,5 @@ $('base-save').addEventListener('click', saveBase);
 loadGroups();
 loadSession();
 loadMatrix();
+loadExchange();
 loadBase();

@@ -146,6 +146,25 @@ export async function startMock(options = {}) {
           // 实拍响应就是这个形状 —— 连 result 都没有，报不出到账数
           return json(res, 200, { code: 0, msg: 'success' });
         }
+        if (url.pathname === '/ycloud/signin/page/exchangeList') {
+          // ⚠ group 键**不连续**（实拍是 0,1,2,5,7,8,9,11,15）—— 夹具就摆成这样，
+          // 谁按 0..n 遍历，这里就会漏。
+          return json(res, 200, {
+            code: 0,
+            msg: 'success',
+            result: {
+              0: [
+                { prizeId: 251230053, name: '云朵1个', groupId: 0, price: 100, limit: 0, onLine: 1 },
+                { prizeId: 251230054, name: '会员1天', groupId: 0, price: 500, limit: 2, onLine: 1 },
+              ],
+              2: [{ prizeId: 251230061, name: '明日再来款', groupId: 2, price: 300, limit: 1, onLine: 1 }],
+              15: [
+                { prizeId: 251230099, name: '已下架款', groupId: 15, price: 999, limit: 0, onLine: 0 },
+                { prizeId: 251230100, name: '缺 limit 款', groupId: 15, price: 200, onLine: 1 },
+              ],
+            },
+          });
+        }
         if (url.pathname === '/ycloud/signin/task/taskListV2') {
           // 只读：按 group 给不同的矩阵。两个实拍坑都要在夹具里出现一次：
           //   · `new` 这一组回**空对象**（实拍就是 result:{}，不是 []）

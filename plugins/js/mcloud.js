@@ -773,6 +773,8 @@ var EP = {
   // 通知任务（`notice`）：两个端点都在主域，**裸 GET、不带查询参数**。
   // ⚠ "不带参数"本身是个**未验证的选择** —— 实拍的完整 URL 被脱敏，只见到路径。
   //   真要出问题（例如回了另一个活动的状态），改这一处加参数即可。
+  // 兑换清单：**只读**，查询串只有 client 与 clientVersion，**不带 deviceId**
+  exchangeList: { origin: MCLOUD_HOST, path: "/ycloud/signin/page/exchangeList" },
   noticeInfo: { origin: MCLOUD_HOST, path: "/ycloud/openemailsms-service/openEmailsms/getTaskInfo" },
   noticeReward: { origin: MCLOUD_HOST, path: "/ycloud/openemailsms-service/openEmailsms/reward" },
   backupGiftInfo: { origin: BACKUP_GIFT_HOST, path: "/market/backupgift/info" },
@@ -807,6 +809,7 @@ var EP_METHOD = {
   // body 带 group=<组名>
   taskListV3: "POST",
   // body 带 group=""（空串）
+  exchangeList: "GET",
   noticeInfo: "GET",
   noticeReward: "GET",
   // 写（会真入账），但上游用 GET
@@ -1430,6 +1433,129 @@ function runAppTaskMatrix(deps) {
   return out;
 }
 
+// src/mcloud/tasks/exchangeList.ts
+var STATE_LIST = "mcloud.exchangelist.last";
+var STATE_RAW = "mcloud.exchangelist.raw";
+var LIMIT_AVAILABLE = 0;
+var LIMIT_TOMORROW = 1;
+var LIMIT_EXCHANGED = 2;
+var LIMIT_GROUP_EXCHANGED = 4;
+function verdictOf(p) {
+  if (p.onLine !== void 0 && p.onLine !== 1) return "offline";
+  if (p.limit === void 0) return "unknown";
+  switch (p.limit) {
+    case LIMIT_AVAILABLE:
+      return "ok";
+    case LIMIT_TOMORROW:
+      return "tomorrow";
+    case LIMIT_EXCHANGED:
+      return "exchanged";
+    case LIMIT_GROUP_EXCHANGED:
+      return "group-exchanged";
+    default:
+      return "unknown";
+  }
+}
+var VERDICT_TEXT = {
+  ok: "可兑",
+  tomorrow: "明日再来",
+  exchanged: "本件本月已兑",
+  "group-exchanged": "本组本月已兑",
+  offline: "已下架",
+  unknown: "判不了"
+};
+function asInt3(v) {
+  if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
+  if (typeof v === "string" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
+  return void 0;
+}
+function asStr2(v) {
+  return typeof v === "string" && v !== "" ? v : void 0;
+}
+function parsePrize(raw) {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return void 0;
+  const o = raw;
+  const p = {
+    // ⚠ 实拍是**数字**，不是字符串（原项目特意标了这一点）
+    prizeId: asInt3(o.prizeId ?? o.prize_id),
+    name: asStr2(o.name),
+    groupId: asInt3(o.groupId ?? o.group_id),
+    price: asInt3(o.price),
+    limit: asInt3(o.limit),
+    count: asInt3(o.count),
+    totalCount: asInt3(o.totalCount ?? o.total_count),
+    dailyRemainderCount: asInt3(o.dailyRemainderCount ?? o.daily_remainder_count),
+    onLine: asInt3(o.onLine ?? o.on_line),
+    startTime: asStr2(o.startTime ?? o.start_time),
+    endTime: asStr2(o.endTime ?? o.end_time)
+  };
+  return p.prizeId !== void 0 || p.name !== void 0 ? p : void 0;
+}
+function parseExchangeList(result) {
+  const o = resultObject({ code: 0, message: "", result, ok: true });
+  const src = o.groups ?? o;
+  const groups = [];
+  const all = [];
+  if (src && typeof src === "object" && !Array.isArray(src)) {
+    for (const key of Object.keys(src)) {
+      const v = src[key];
+      if (!Array.isArray(v)) continue;
+      const prizes = v.map(parsePrize).filter((x) => !!x);
+      groups.push({ group: key, prizes });
+      all.push(...prizes);
+    }
+  }
+  groups.sort((a, b) => (Number(a.group) || 0) - (Number(b.group) || 0));
+  all.sort((a, b) => (a.groupId ?? 0) - (b.groupId ?? 0) || (a.prizeId ?? 0) - (b.prizeId ?? 0));
+  return { groups, prizes: all };
+}
+function summarizeList(prizes) {
+  const byVerdict = {};
+  const ok = [];
+  for (const p of prizes) {
+    const v = verdictOf(p);
+    byVerdict[v] = (byVerdict[v] ?? 0) + 1;
+    if (v === "ok" && ok.length < 20) {
+      ok.push({ prizeId: p.prizeId, name: p.name, price: p.price, groupId: p.groupId });
+    }
+  }
+  return { total: prizes.length, okCount: byVerdict.ok ?? 0, byVerdict, ok };
+}
+function runExchangeList(deps) {
+  return runTask(
+    deps,
+    {
+      task: "exchange-list",
+      endpoint: "exchangeList",
+      method: "GET",
+      marketName: "sign_in_3",
+      isDeviceId: false,
+      stateKey: STATE_RAW
+    },
+    (env) => {
+      const { groups, prizes } = parseExchangeList(env.result);
+      const s = summarizeList(prizes);
+      const reading = { at: deps.nowIso, groups: groups.length, ...s };
+      deps.store.setState(STATE_LIST, JSON.stringify(reading), deps.nowIso);
+      const names = s.ok.slice(0, 3).map((x) => `${x.name ?? "#" + x.prizeId}(${x.price ?? "?"}豆)`);
+      return {
+        ok: true,
+        note: `兑换清单：${groups.length} 组 / ${s.total} 件，可兑 ${s.okCount} 件` + (names.length ? `（${names.join("、")}）` : "") + (s.byVerdict.unknown ? `；判不了 ${s.byVerdict.unknown} 件` : ""),
+        snapshot: reading
+      };
+    }
+  );
+}
+function readExchangeList(store2) {
+  const raw = store2.getState(STATE_LIST);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
 // src/mcloud/tasks/receive.ts
 var STATE_QUEUE = "mcloud.receive.queue";
 var STATE_RECEIVE = "mcloud.receive.last";
@@ -1790,6 +1916,7 @@ var TASK_META = [
   // ── 通知与趣玩（未实现）──
   // 它用**签到页那张票**（`SessionRecipe::SignInPage`）—— 就是本插件手里已有的会话，
   // 所以「只依赖 jwt」这条是对的。`getTaskInfo` 有实拍；`reward` 只实拍到成功那一枪。
+  { name: "exchange-list", title: "兑换清单（只看）", group: "activity", kind: "Query", risk: "none", missed: "catch-up", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "captured", note: "逐件判能不能兑；**不碰余额、不碰滑块、不下单**" },
   { name: "app-task-matrix", title: "App 任务矩阵（只看）", group: "signin", kind: "Query", risk: "none", missed: "catch-up", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "captured", note: "8 个 group 一次读一个；只读，一个字节都不写" },
   { name: "notice", title: "开启通知领AI豆", group: "daily", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["jwt"], batch: true, hidden: false, implemented: true, evidence: "partial", note: "有手动前置（判不出来，见 notice.ts 文件头 ③）；reward 不报到账数 ⇒ 靠下一轮回查" },
   // 更正：换出该页 jwttoken 的那一步**在实拍归档里没有** ⇒ 现在做不了（不是"只依赖 jwt"）
@@ -1935,6 +2062,20 @@ function mcloudRoutes(deps) {
         deps.store.setState(STATE_BASE_URL, v.replace(/\/+$/, ""), deps.now());
         deps.log(v ? `上游基址已改为 ${v}` : "上游基址已恢复为真上游");
         return json(200, { baseUrl: v || "(真上游)" });
+      }
+    },
+    {
+      // 兑换清单的读数（只读任务采集，界面展示）—— 含"没有余额读数"那句提醒
+      path: `${base}/exchange`,
+      method: "GET",
+      handler: () => {
+        const reading = readExchangeList(deps.store);
+        return json(200, {
+          reading,
+          // 界面上必须写出来：没有余额读数 ⇒ 标"可兑"的仍可能被余额挡下
+          note: "没有余额读数：标「可兑」的仍可能被余额挡下（但那次挡下有错误码，不会静默）",
+          verdictText: VERDICT_TEXT
+        });
       }
     },
     {
@@ -2117,6 +2258,7 @@ register_cron("revival", SIGNIN_CRON, makeRunner("复活卡", runRevival));
 register_cron("backup-gift", SIGNIN_CRON, makeRunner("备份好礼", runBackupGift));
 register_cron("notice", SIGNIN_CRON, makeRunner("开启通知领AI豆", runNotice));
 register_cron("app-task-matrix", SIGNIN_CRON, makeRunner("App 任务矩阵（只看）", runAppTaskMatrix));
+register_cron("exchange-list", SIGNIN_CRON, makeRunner("兑换清单（只看）", runExchangeList));
 register_cron("prizes", "20 8 * * *", makeRunner("待领取奖品", runPrizes));
 register_cron("cloud-snapshot", "30 8 * * *", makeRunner("AI豆快照", runCloudSnapshot));
 every("selftest", "5m", (p) => {

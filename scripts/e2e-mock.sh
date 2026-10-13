@@ -136,6 +136,11 @@ for i in 1 2 3; do
   sleep 0.3
 done
 
+# 兑换清单（**只读**）：一个 GET，不带 deviceId
+curl -fsS -o /dev/null "${W[@]}" -X POST "$B/api/tasks/mcloud/exchange-list/run"
+printf '   exchange-list（只读）✓\n'
+sleep 0.3
+
 curl -fsS "${H[@]}" "$B/plugins/mcloud/api/tasks" -o "$TMP/plugin.json"
 curl -fsS "http://127.0.0.1:$MOCK_PORT/_debug/requests" -o "$TMP/mock.json"
 curl -fsS "http://127.0.0.1:$MOCK_PORT/_debug/state" -o "$TMP/mock-state.json"
@@ -246,4 +251,14 @@ assert all(g for g in groups[:3]), f'前三次都该带 group，实际 {groups[:
 assert len(set(groups[:3])) == 3, f'游标没推进（三次同一个 group）：{groups[:3]}'
 assert all(r.get('method') == 'POST' for r in hits), '这一口是 POST'
 print('   ✅ App 任务矩阵：只读、一次一个 group、游标推进正常')
+PY
+
+# 兑换清单：只读 —— 只有 GET，且不带 deviceId（实拍就是这样）
+python3 - "$TMP/mock.json" <<'PY'
+import json, sys
+hits = [r for r in json.load(open(sys.argv[1])) if 'exchangeList' in r.get('path', '')]
+assert len(hits) == 1, f'该只读一次，实际 {len(hits)}'
+assert hits[0].get('method') == 'GET', hits[0].get('method')
+assert 'deviceId' not in hits[0].get('path', ''), '这一口不带 deviceId'
+print('   ✅ 兑换清单：只读、一个 GET、不带 deviceId')
 PY

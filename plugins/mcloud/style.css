@@ -72,3 +72,6 @@
 
 .dim { color: var(--text-mute); }
 .bad { color: var(--error); }
+
+.ok-list { margin: 6px 0 0; padding-left: 20px; color: var(--text); font-size: 12.5px; }
+.ok-list code { font-family: var(--font-mono); color: var(--text-dim); }

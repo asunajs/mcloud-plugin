@@ -24,6 +24,7 @@ import {
 import { TASK_NAMES, STATE_LAST_TASKLIST } from './tasks/taskList.ts';
 import { groupView } from './groups.ts';
 import { MATRIX_GROUPS, readMatrix } from './tasks/appTaskMatrix.ts';
+import { VERDICT_TEXT, readExchangeList } from './tasks/exchangeList.ts';
 import type { Store } from '../store/types.ts';
 import type { Transport } from './client.ts';
 
@@ -156,6 +157,20 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
         deps.store.setState(STATE_BASE_URL, v.replace(/\/+$/, ''), deps.now());
         deps.log(v ? `上游基址已改为 ${v}` : '上游基址已恢复为真上游');
         return json(200, { baseUrl: v || '(真上游)' });
+      },
+    },
+    {
+      // 兑换清单的读数（只读任务采集，界面展示）—— 含"没有余额读数"那句提醒
+      path: `${base}/exchange`,
+      method: 'GET',
+      handler: () => {
+        const reading = readExchangeList(deps.store);
+        return json(200, {
+          reading,
+          // 界面上必须写出来：没有余额读数 ⇒ 标"可兑"的仍可能被余额挡下
+          note: '没有余额读数：标「可兑」的仍可能被余额挡下（但那次挡下有错误码，不会静默）',
+          verdictText: VERDICT_TEXT,
+        });
       },
     },
     {

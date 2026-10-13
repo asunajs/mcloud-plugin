@@ -27,6 +27,7 @@ import { runSign } from './mcloud/tasks/sign.ts';
 import { runBackupGift } from './mcloud/tasks/backupGift.ts';
 import { runNotice } from './mcloud/tasks/notice.ts';
 import { runAppTaskMatrix } from './mcloud/tasks/appTaskMatrix.ts';
+import { runExchangeList } from './mcloud/tasks/exchangeList.ts';
 import { runReceive } from './mcloud/tasks/receive.ts';
 import { runMultiple } from './mcloud/tasks/multiple.ts';
 import { runRevival } from './mcloud/tasks/revival.ts';
@@ -238,6 +239,8 @@ register_cron('backup-gift', SIGNIN_CRON, makeRunner('备份好礼', runBackupGi
 register_cron('notice', SIGNIN_CRON, makeRunner('开启通知领AI豆', runNotice));
 // App 任务矩阵：**只读那一半**（`app-task` 写的那半会传文件且不可回滚）
 register_cron('app-task-matrix', SIGNIN_CRON, makeRunner('App 任务矩阵（只看）', runAppTaskMatrix));
+// 兑换清单：**只读那一半**（下单要过滑块，且真扣豆不可回滚）
+register_cron('exchange-list', SIGNIN_CRON, makeRunner('兑换清单（只看）', runExchangeList));
 register_cron('prizes', '20 8 * * *', makeRunner('待领取奖品', runPrizes));
 register_cron('cloud-snapshot', '30 8 * * *', makeRunner('AI豆快照', runCloudSnapshot));
 

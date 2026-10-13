@@ -130,6 +130,8 @@ export const EP = {
   // 通知任务（`notice`）：两个端点都在主域，**裸 GET、不带查询参数**。
   // ⚠ "不带参数"本身是个**未验证的选择** —— 实拍的完整 URL 被脱敏，只见到路径。
   //   真要出问题（例如回了另一个活动的状态），改这一处加参数即可。
+  // 兑换清单：**只读**，查询串只有 client 与 clientVersion，**不带 deviceId**
+  exchangeList: { origin: MCLOUD_HOST, path: '/ycloud/signin/page/exchangeList' },
   noticeInfo: { origin: MCLOUD_HOST, path: '/ycloud/openemailsms-service/openEmailsms/getTaskInfo' },
   noticeReward: { origin: MCLOUD_HOST, path: '/ycloud/openemailsms-service/openEmailsms/reward' },
   backupGiftInfo: { origin: BACKUP_GIFT_HOST, path: '/market/backupgift/info' },
@@ -181,6 +183,7 @@ export const EP_METHOD: Record<string, 'GET' | 'POST'> = {
   cloudRecordV2: 'GET', // 带 query 参数
   taskListV2: 'POST', // body 带 group=<组名>
   taskListV3: 'POST', // body 带 group=""（空串）
+  exchangeList: 'GET',
   noticeInfo: 'GET',
   noticeReward: 'GET', // 写（会真入账），但上游用 GET
   backupGiftInfo: 'GET', // 另一个域
