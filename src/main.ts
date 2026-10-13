@@ -21,6 +21,10 @@ import type { Store } from './store/types.ts';
 import type { Transport } from './mcloud/client.ts';
 import { SLOW_CALL_MS } from './mcloud/client.ts';
 import { runTaskList } from './mcloud/tasks/taskList.ts';
+import { runPrizes } from './mcloud/tasks/prizes.ts';
+import { runCloudSnapshot } from './mcloud/tasks/cloudSnapshot.ts';
+import { runSign } from './mcloud/tasks/sign.ts';
+import { runBackupGift } from './mcloud/tasks/backupGift.ts';
 import { mcloudRoutes } from './mcloud/routes.ts';
 import { loadBaseUrl, verifySession } from './mcloud/session.ts';
 
@@ -167,6 +171,57 @@ register_cron('task-list', '0 8 * * *', (p) => {
     error(`任务清单抛异常（这是插件 bug）：${e instanceof Error ? e.message : String(e)}`);
   }
 });
+
+// ── 签到族：剩下的四条（与上面两条同一套管道 base.ts）──
+//
+// 调度照 mcloud 的语义：签到流程一早在 8 点前后，查询类挪到稍晚、避免与动作抢上游。
+// 每条任务的 `lateMs` 都进 payload（面板给的），底座按「catch-up / skip」语义处理。
+function makeRunner(
+  name: string,
+  run: (deps: { store: Store; transport: Transport; nowIso: string; baseUrl: string; lateMs: number }) => { ok: boolean; note: string; skipped?: boolean },
+) {
+  return (p: TaskPayload) => {
+    try {
+      const out = run({
+        store,
+        transport,
+        nowIso: new Date().toISOString(),
+        baseUrl: loadBaseUrl(store),
+        lateMs: p.lateMs,
+      });
+      store.recordRun({
+        task: p.name,
+        runs: p.runs,
+        scheduledAt: p.scheduledAt,
+        firedAt: p.firedAt,
+        lateMs: p.lateMs,
+        ok: out.ok,
+        note: out.note,
+      });
+      if (out.ok) log(`${name}：${out.note}`);
+      else warn(`${name} 失败：${out.note}`);
+    } catch (e) {
+      // 各任务设计上不抛；真抛了说明是插件自己的 bug，必须让它可见
+      error(`${name} 抛异常（这是插件 bug）：${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+}
+
+/** 任务 payload（面板给的形状，见 docs/host-api.md）。 */
+interface TaskPayload {
+  name: string;
+  plugin: string;
+  expr: string;
+  runs: number;
+  scheduledAt: string;
+  firedAt: string;
+  lateMs: number;
+}
+
+register_cron('sign', '5 8 * * *', makeRunner('签到', runSign));
+register_cron('backup-gift', '15 8 * * *', makeRunner('备份好礼', runBackupGift));
+register_cron('prizes', '20 8 * * *', makeRunner('待领取奖品', (d) => runPrizes(d)));
+register_cron('cloud-snapshot', '30 8 * * *', makeRunner('AI豆快照', runCloudSnapshot));
 
 // ── 任务：自检（装上去先跑一次这个，确认沙箱这一层是好的）──
 every('selftest', '5m', (p) => {

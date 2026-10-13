@@ -17,7 +17,7 @@ import type { Session, Store } from '../store/types.ts';
 import { callOnce } from './client.ts';
 import type { Transport } from './client.ts';
 import { CLIENT_QUERY, EP_METHOD, REFERER_SIGN_IN, SHOW_LOADING, buildH5Request, resolveUrl } from './h5.ts';
-import { sessionHeaders } from './tasks/taskList.ts';
+import { sessionHeaders } from './tasks/base.ts';
 
 export interface ParseOk {
   ok: true;

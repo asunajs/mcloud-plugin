@@ -568,6 +568,9 @@ function parseSignInEnvelope(body) {
 function resultArray(env) {
   return Array.isArray(env.result) ? env.result : [];
 }
+function resultObject(env) {
+  return isRecord(env.result) ? env.result : {};
+}
 
 // src/mcloud/client.ts
 var isFetchError = (v) => typeof v === "object" && v !== null && typeof v.error === "string";
@@ -733,7 +736,7 @@ function buildH5Request(spec) {
   const headers = {
     Accept: "*/*",
     // ⚠ 跟本次的 marketname 走，不是恒定的 sign_in_3
-    activityid: MARKET_NAME,
+    activityid: spec.marketName ?? MARKET_NAME,
     appversion: H5_APP_VERSION,
     Referer: spec.referer,
     showloading: spec.showLoading
@@ -830,37 +833,46 @@ function saveSession(store2, s, nowIso) {
   store2.setState(SESSION_KEY, JSON.stringify({ ...s, savedAt: nowIso }), nowIso);
 }
 
-// src/mcloud/tasks/taskList.ts
-var STATE_LAST_TASKLIST = "mcloud.tasklist.last";
-var STATE_LAST_ERROR = "mcloud.tasklist.last_error";
-function runTaskList(deps) {
+// src/mcloud/tasks/base.ts
+var ERR_PREFIX = "mcloud.last_error.";
+function recordError(store2, task, note, nowIso) {
+  store2.setState(`${ERR_PREFIX}${task}`, `${note} @ ${nowIso}`, nowIso);
+}
+function clearError(store2, task, nowIso) {
+  store2.setState(`${ERR_PREFIX}${task}`, "", nowIso);
+}
+function sessionHeaders(s) {
+  return { jwt: s.jwt, deviceId: s.deviceId, userAgent: s.userAgent, cookie: s.cookie };
+}
+function runTask(deps, spec, judge) {
+  const late = deps.lateMs ?? 0;
+  if (spec.skipIfLaterThanMs !== void 0 && late > spec.skipIfLaterThanMs) {
+    const mins = Math.round(late / 6e4);
+    const note = `错过太久（晚了 ${mins} 分钟，阈值 ${Math.round(spec.skipIfLaterThanMs / 6e4)} 分钟）→ 主动跳过`;
+    recordError(deps.store, spec.task, note, deps.nowIso);
+    return { ok: true, skipped: true, note };
+  }
   const session = loadSession(deps.store);
   if (!session) {
-    return { ok: false, note: "未登录：state 里没有会话（先跑登录流程）" };
+    const note = "未登录：state 里没有会话（见 docs/howto-session.md）";
+    recordError(deps.store, spec.task, note, deps.nowIso);
+    return { ok: false, note };
   }
+  const method = spec.method ?? EP_METHOD[spec.endpoint] ?? "GET";
+  const url = resolveUrl(spec.endpoint, deps.baseUrl) + (spec.query ? `?${spec.query}` : "");
   const req = buildH5Request({
-    url: resolveUrl("taskListV3", deps.baseUrl),
-    method: "POST",
-    body: taskListV3Body(),
-    contentType: TASK_LIST_V3_CONTENT_TYPE,
+    url,
+    method,
+    body: spec.body,
+    contentType: spec.contentType,
     referer: REFERER_SIGN_IN,
     showLoading: SHOW_LOADING,
-    isDeviceId: false,
+    isDeviceId: spec.isDeviceId ?? method === "POST",
     saltKey: 1,
+    marketName: spec.marketName,
     session: sessionHeaders(session)
   });
   const res = callOnce(deps.transport, req);
-  return absorb(deps, res, session);
-}
-function sessionHeaders(s) {
-  return {
-    jwt: s.jwt,
-    deviceId: s.deviceId,
-    userAgent: s.userAgent,
-    cookie: s.cookie
-  };
-}
-function absorb(deps, res, session) {
   if (res.setCookies.length > 0) {
     saveSession(
       deps.store,
@@ -869,26 +881,239 @@ function absorb(deps, res, session) {
     );
   }
   if (!res.ok) {
+    const note = res.error ?? "未知失败";
+    recordError(deps.store, spec.task, note, deps.nowIso);
+    return { ok: false, note };
+  }
+  const verdict = judge(res.env, res);
+  if (verdict.snapshot !== void 0 && spec.stateKey) {
     deps.store.setState(
-      STATE_LAST_ERROR,
-      `${res.error ?? "未知失败"} @ ${deps.nowIso}`,
+      spec.stateKey,
+      JSON.stringify({ at: deps.nowIso, lateMs: late, value: verdict.snapshot }),
       deps.nowIso
     );
-    return { ok: false, note: res.error ?? "未知失败" };
   }
-  const list = resultArray(res.env);
-  const done = list.filter((t) => isFinished(t)).length;
-  deps.store.setState(
-    STATE_LAST_TASKLIST,
-    JSON.stringify({ at: deps.nowIso, total: list.length, done, items: list }),
-    deps.nowIso
-  );
-  return { ok: true, note: `清单 ${list.length} 条，已完成 ${done} 条` };
+  if (verdict.ok) clearError(deps.store, spec.task, deps.nowIso);
+  else recordError(deps.store, spec.task, verdict.note, deps.nowIso);
+  return { ok: verdict.ok, note: verdict.note };
 }
+
+// src/mcloud/tasks/taskList.ts
+var TASK_NAMES = [
+  "selftest",
+  "diag",
+  "session-check",
+  "task-list",
+  "sign",
+  "backup-gift",
+  "prizes",
+  "cloud-snapshot"
+];
+var STATE_LAST_TASKLIST = "mcloud.tasklist.last";
 function isFinished(t) {
   if (typeof t !== "object" || t === null) return false;
   const state = t.state;
   return typeof state === "string" && state.toUpperCase() === "FINISH";
+}
+function runTaskList(deps) {
+  return runTask(
+    deps,
+    {
+      task: "task-list",
+      endpoint: "taskListV3",
+      method: "POST",
+      body: taskListV3Body(),
+      contentType: TASK_LIST_V3_CONTENT_TYPE,
+      isDeviceId: false,
+      stateKey: STATE_LAST_TASKLIST
+    },
+    (env) => {
+      const list = resultArray(env);
+      const done = list.filter(isFinished).length;
+      return {
+        ok: true,
+        note: `清单 ${list.length} 条，已完成 ${done} 条`,
+        snapshot: { total: list.length, done, items: list }
+      };
+    }
+  );
+}
+
+// src/mcloud/tasks/prizes.ts
+var STATE_PRIZES = "mcloud.prizes.last";
+var PRIZE_QUERY = {
+  status: 1,
+  pageNumber: 1,
+  pageSize: 10
+};
+function prizeQuery(market) {
+  return `marketname=${encodeURIComponent(market)}&type=${PRIZE_QUERY.status}&pageNumber=${PRIZE_QUERY.pageNumber}&pageSize=${PRIZE_QUERY.pageSize}`;
+}
+function runPrizes(deps, market = "sign_in_3") {
+  return runTask(
+    deps,
+    {
+      task: "prizes",
+      endpoint: "prizeRecord",
+      method: "GET",
+      query: prizeQuery(market),
+      isDeviceId: false,
+      stateKey: STATE_PRIZES
+    },
+    (env) => {
+      const list = resultArray(env);
+      const items = list.map((x) => {
+        const o = typeof x === "object" && x !== null ? x : {};
+        return {
+          id: typeof o.id === "number" ? o.id : void 0,
+          name: typeof o.name === "string" ? o.name : void 0,
+          state: typeof o.state === "string" ? o.state : void 0
+        };
+      });
+      const unreceived = items.filter((i) => (i.state ?? "").toUpperCase().includes("UNRECEIVED"));
+      return {
+        ok: true,
+        note: `奖品 ${items.length} 条（未领取 ${unreceived.length} 条）`,
+        snapshot: items
+      };
+    }
+  );
+}
+
+// src/mcloud/tasks/cloudSnapshot.ts
+var STATE_SNAPSHOT = "mcloud.cloudsnapshot.last";
+var LEDGER_AI_DOU = 1;
+var TYPE_ALL = 0;
+var PAGE_SIZE = 100;
+function snapshotQuery(pageNumber = 1) {
+  return `aiDou=${LEDGER_AI_DOU}&type=${TYPE_ALL}&pageNumber=${pageNumber}&pageSize=${PAGE_SIZE}`;
+}
+function runCloudSnapshot(deps) {
+  return runTask(
+    deps,
+    {
+      task: "cloud-snapshot",
+      endpoint: "cloudRecordV2",
+      method: "GET",
+      query: snapshotQuery(),
+      isDeviceId: false,
+      stateKey: STATE_SNAPSHOT
+    },
+    (env) => {
+      const list = resultArray(env);
+      const entries = list.map((x) => {
+        const o = typeof x === "object" && x !== null ? x : {};
+        const num = (v) => typeof v === "number" ? v : void 0;
+        const str = (v) => typeof v === "string" ? v : void 0;
+        return {
+          id: num(o.id),
+          value: num(o.aiDou ?? o.value ?? o.change),
+          reason: str(o.typeName ?? o.reason ?? o.type),
+          insertTime: str(o.insertTime ?? o.time)
+        };
+      });
+      const latest = [...entries].reverse().find((e) => e.value !== void 0);
+      const full = entries.length === PAGE_SIZE;
+      return {
+        ok: true,
+        note: `流水 ${entries.length} 条` + (latest ? `，最新一笔 ${latest.value}（${latest.reason ?? "—"}）` : "") + (full ? `；== pageSize(${PAGE_SIZE}) 说明可能还有下一页（本任务只取第一页）` : ""),
+        snapshot: { entries, truncated: full }
+      };
+    }
+  );
+}
+
+// src/mcloud/tasks/sign.ts
+var STATE_SIGN = "mcloud.sign.last";
+function runSign(deps) {
+  const deviceId = loadSession(deps.store)?.deviceId;
+  return runTask(
+    deps,
+    {
+      task: "sign",
+      endpoint: "startSignIn",
+      method: "GET",
+      query: deviceId ? `client=app&deviceId=${encodeURIComponent(deviceId)}` : "client=app",
+      // 原实现：有设备号才发 isdeviceid
+      isDeviceId: !!deviceId,
+      stateKey: STATE_SIGN
+      // 签到是 catch-up（晚了也补做）：上游幂等，不设跳过阈值
+    },
+    (env) => ({
+      ok: true,
+      note: `签到已送达（上游回 ${JSON.stringify(env.result ?? env.message).slice(0, 120)}）`,
+      snapshot: { result: env.result ?? null, message: env.message }
+    })
+  );
+}
+
+// src/mcloud/tasks/backupGift.ts
+var STATE_INFO = "mcloud.backupgift.info";
+var STATE_CAN = "mcloud.backupgift.can_receive";
+function parseCanReceive(result) {
+  const o = resultObject({ code: 0, message: "", result, ok: true });
+  const v = o.canReceive ?? o.can_receive ?? o.receivable ?? o.status;
+  if (typeof v === "boolean") return { can: v, raw: v };
+  if (typeof v === "number") return { can: v === 1, raw: v };
+  if (typeof v === "string") {
+    const s = v.toLowerCase();
+    if (s === "true" || s === "1" || s === "yes" || s === "can") return { can: true, raw: v };
+    return { can: false, raw: v };
+  }
+  return { can: false, raw: result ?? null };
+}
+function runBackupGiftInfo(deps) {
+  return runTask(
+    deps,
+    {
+      task: "backup-gift",
+      endpoint: "backupGiftInfo",
+      method: "GET",
+      marketName: "backupgift",
+      isDeviceId: false,
+      stateKey: STATE_INFO
+    },
+    (env) => {
+      const { can, raw } = parseCanReceive(env.result);
+      deps.store.setState(STATE_CAN, can ? "yes" : `no:${JSON.stringify(raw)?.slice(0, 80)}`, deps.nowIso);
+      return {
+        ok: true,
+        note: can ? "备份好礼：可以领取（下一次触发会去领）" : "备份好礼：当前没有可领的",
+        snapshot: env.result ?? null
+      };
+    }
+  );
+}
+function runBackupGiftReceive(deps) {
+  const can = deps.store.getState(STATE_CAN);
+  if (can !== "yes") {
+    return {
+      ok: true,
+      skipped: true,
+      note: `上次问过状态是「${can ?? "没问过"}」，不发领取请求`
+    };
+  }
+  const out = runTask(
+    deps,
+    {
+      task: "backup-gift",
+      endpoint: "backupGiftReceive",
+      method: "GET",
+      marketName: "backupgift",
+      isDeviceId: false
+    },
+    (env) => ({
+      ok: true,
+      note: `备份好礼已领取（上游回 ${JSON.stringify(env.result ?? env.message).slice(0, 120)}）`
+    })
+  );
+  if (out.ok) deps.store.setState(STATE_CAN, "no:claimed", deps.nowIso);
+  return out;
+}
+function runBackupGift(deps) {
+  const can = deps.store.getState(STATE_CAN);
+  if (can === "yes") return runBackupGiftReceive(deps);
+  return runBackupGiftInfo(deps);
 }
 
 // src/mcloud/session.ts
@@ -1142,9 +1367,14 @@ function mcloudRoutes(deps) {
         } catch {
           last = { broken: true };
         }
+        const lastErrorByTask = {};
+        for (const t of TASK_NAMES) {
+          const v = deps.store.getState(`mcloud.last_error.${t}`);
+          if (v) lastErrorByTask[t] = v;
+        }
         return json(200, {
           lastTaskList: last,
-          lastError: deps.store.getState(STATE_LAST_ERROR),
+          lastErrorByTask,
           recent: deps.store.recentRuns(20)
         });
       }
@@ -1251,6 +1481,36 @@ register_cron("task-list", "0 8 * * *", (p) => {
     error(`任务清单抛异常（这是插件 bug）：${e instanceof Error ? e.message : String(e)}`);
   }
 });
+function makeRunner(name, run) {
+  return (p) => {
+    try {
+      const out = run({
+        store,
+        transport,
+        nowIso: (/* @__PURE__ */ new Date()).toISOString(),
+        baseUrl: loadBaseUrl(store),
+        lateMs: p.lateMs
+      });
+      store.recordRun({
+        task: p.name,
+        runs: p.runs,
+        scheduledAt: p.scheduledAt,
+        firedAt: p.firedAt,
+        lateMs: p.lateMs,
+        ok: out.ok,
+        note: out.note
+      });
+      if (out.ok) log(`${name}：${out.note}`);
+      else warn(`${name} 失败：${out.note}`);
+    } catch (e) {
+      error(`${name} 抛异常（这是插件 bug）：${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+}
+register_cron("sign", "5 8 * * *", makeRunner("签到", runSign));
+register_cron("backup-gift", "15 8 * * *", makeRunner("备份好礼", runBackupGift));
+register_cron("prizes", "20 8 * * *", makeRunner("待领取奖品", (d) => runPrizes(d)));
+register_cron("cloud-snapshot", "30 8 * * *", makeRunner("AI豆快照", runCloudSnapshot));
 every("selftest", "5m", (p) => {
   try {
     const r = selftest();

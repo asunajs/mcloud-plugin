@@ -21,7 +21,7 @@ import {
   sessionStatus,
   verifySession,
 } from './session.ts';
-import { STATE_LAST_ERROR, STATE_LAST_TASKLIST } from './tasks/taskList.ts';
+import { TASK_NAMES, STATE_LAST_TASKLIST } from './tasks/taskList.ts';
 import type { Store } from '../store/types.ts';
 import type { Transport } from './client.ts';
 
@@ -167,9 +167,17 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
         } catch {
           last = { broken: true };
         }
+        // 每条任务各自的最近失败原因（base.ts 写的 `mcloud.last_error.<任务名>`）。
+        // 给界面用，也让 CI 能断言「这一批任务都没报错」——如果没有这个字段，
+        // 那种断言会因为拿不到数据而**永远通过**（我第一版就是这么写的，等于没测）。
+        const lastErrorByTask: Record<string, string> = {};
+        for (const t of TASK_NAMES) {
+          const v = deps.store.getState(`mcloud.last_error.${t}`);
+          if (v) lastErrorByTask[t] = v;
+        }
         return json(200, {
           lastTaskList: last,
-          lastError: deps.store.getState(STATE_LAST_ERROR),
+          lastErrorByTask,
           recent: deps.store.recentRuns(20),
         });
       },

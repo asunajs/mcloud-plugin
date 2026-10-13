@@ -65,10 +65,20 @@ export async function startMock(options = {}) {
     req.on('data', (c) => chunks.push(c));
     req.on('end', () => {
       const body = Buffer.concat(chunks).toString('utf8');
-      requests.push({ method: req.method, path: req.url, headers: req.headers, body });
-
       const url = new URL(req.url, 'http://mock');
+      // `/_debug/*` 是 mock 自己的管理接口，不算"上游收到的请求" —— 记进去只会
+      // 让断言里多出噪声（而且分分钟把 clear 自己也算成一次请求）
+      if (!url.pathname.startsWith('/_debug/')) {
+        requests.push({ method: req.method, path: req.url, headers: req.headers, body });
+      }
+
       if (url.pathname === '/_debug/requests') return json(res, 200, requests);
+      // 清空记录：CI 里分段落断言时用（不然前面步骤发的请求也会混进来）
+      if (url.pathname === '/_debug/requests/clear') {
+        const n = requests.length;
+        requests.length = 0;
+        return json(res, 200, { cleared: n });
+      }
       if (url.pathname === '/_debug/behavior') {
         if (req.method === 'POST') {
           behavior = body || 'normal';

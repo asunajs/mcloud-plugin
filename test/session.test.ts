@@ -253,8 +253,15 @@ test('路由：状态不回显凭据、导入后立刻真验、坏输入 400、�
   }
 
   // 任务侧状态
-  store.setState(STATE_LAST_TASKLIST, JSON.stringify({ at: NOW, total: 3, done: 2 }), NOW);
+  store.setState(STATE_LAST_TASKLIST, JSON.stringify({ at: NOW, lateMs: 0, value: { total: 3, done: 2 } }), NOW);
   const t = JSON.parse(call('GET', '/plugins/mcloud/api/tasks').body);
-  assert.equal(t.lastTaskList.total, 3);
-  assert.equal(t.lastError, null);
+  assert.equal(t.lastTaskList.value.total, 3);
+  assert.deepEqual(t.lastErrorByTask, {}, '没有失败时是空对象');
+
+  // ⚠️ 这条是**真断言**：先写一条失败原因，接口必须把它读出来 ——
+  // 如果接口不返回这个字段（我第一版就是这样），上面那句 deepEqual({}) 会**永远通过**，
+  // 等于没测。负向验证：往 state 里塞一条，必须出现在结果里。
+  store.setState('mcloud.last_error.prizes', 'code=90001 未登录 @ ' + NOW, NOW);
+  const t2 = JSON.parse(call('GET', '/plugins/mcloud/api/tasks').body);
+  assert.match(t2.lastErrorByTask.prizes ?? '', /90001/);
 });

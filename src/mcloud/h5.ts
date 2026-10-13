@@ -55,6 +55,11 @@ export interface H5RequestSpec {
   /** POST 的 content-type。默认 `application/json`；`taskListV3` 要的是
    *  `application/json;charset=UTF-8`（原实现逐字如此，别自作主张统一）。 */
   contentType?: string | undefined;
+  /** `activityid` 用的市场名。**各页不同**：签到页 `sign_in_3`、
+   *  备份有礼页 `backupgift`（见 `session.rs` 的配方表）。
+   *  原实现每次 POST 都拿本次的 marketname 去**先剥再补**这枚头 ——
+   *  同名两枚头会让「哪枚生效」变成传输层的事，所以这里是一枚、可覆盖的。 */
+  marketName?: string | undefined;
   session: SessionHeaders;
   /** 显式传入随机量与时间戳，测试可复现；生产不传 */
   signInputs?: { id?: string; nonce?: string; timestampMs?: string } | undefined;
@@ -81,7 +86,7 @@ export function buildH5Request(spec: H5RequestSpec): BuiltRequest {
   const headers: Record<string, string> = {
     Accept: '*/*',
     // ⚠ 跟本次的 marketname 走，不是恒定的 sign_in_3
-    activityid: MARKET_NAME,
+    activityid: spec.marketName ?? MARKET_NAME,
     appversion: H5_APP_VERSION,
     Referer: spec.referer,
     showloading: spec.showLoading,

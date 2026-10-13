@@ -130,10 +130,11 @@ test('② 逻辑层：成功时解析清单、写 state、把 cookie 并回去',
   assert.equal(out.note, '清单 3 条，已完成 2 条');
   assert.deepEqual(seen, [`POST ${resolveUrl('taskListV3')}`]);
 
+  // 状态形状统一成 {at, lateMs, value}（所有任务一套，界面不用为每条写一遍解析）
   const saved = JSON.parse(store.getState(STATE_LAST_TASKLIST)!);
-  assert.equal(saved.total, 3);
-  assert.equal(saved.done, 2);
   assert.equal(saved.at, '2026-10-13T01:00:00.000Z');
+  assert.equal(saved.value.total, 3);
+  assert.equal(saved.value.done, 2);
 
   // 会话续期：上游顺手给的 cookie 要并进去，否则跑一阵就被登出
   const sess = JSON.parse(store.getState(SESSION_KEY)!);

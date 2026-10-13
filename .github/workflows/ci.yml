@@ -152,7 +152,10 @@ jobs:
           # 自己的 CI 就红了 —— 断言不该跟着代码长大而失效。改成两条更强的检查：
           #   ① 已知任务名必须是子集（插件新增任务不用改这里）
           #   ② 插件自报的数量必须等于调度器里**实际**的数量（自报与事实一致）
-          expected = {'selftest', 'diag', 'task-list', 'session-check'}
+          expected = {
+              'selftest', 'diag', 'task-list', 'session-check',
+              'sign', 'backup-gift', 'prizes', 'cloud-snapshot',
+          }
           missing = expected - set(names)
           assert not missing, f"少了这些任务：{sorted(missing)}，实际 {names}"
           assert p['tasks'] == len(mine), f"插件自报 {p['tasks']} 个任务，调度器里实际 {len(mine)} 个：{names}"
@@ -189,108 +192,19 @@ jobs:
 
       # ══════════ 对着 mock 上游跑完整条链（CI 绝不碰真账号）══════════
       #
-      # 到这一步为止，我们验证的是「插件装上了、任务登记了、自检过了」。
-      # 这一段往前推一格：把**上游指向 mock**，导入一份假会话，真跑一次 task-list，
-      # 然后断言三件事 —— 任务成功、状态落盘、以及 **mock 收到的字节**。
+      # 这一段直接用仓库里的 `scripts/e2e-mock.sh` —— 和你在本机跑的是**同一份脚本**。
+      # 以前这里是手写的三大段（起 mock / 导入 / 断言字节），本机和 CI 各写一遍，
+      # 改一处就要改两处；现在只有一份，脚本里那些断言（query 逐字、备份好礼两步、
+      # 签名自洽）在两边都成立。
       #
-      # 最后那条是重点：签名错是这条链最常见的失败，而它在真机上只有一句
-      # 「签名错误」。断言收到的 body 与四个签名头自洽，等于把协议钉在 CI 里。
-      - name: 起 mock 上游
+      # 为什么值得：这些断言本来只有"真机出问题"才会发现 —— 签名写错、参数抄错、
+      # 步骤顺序错。CI 里对着 mock 断言，就能在提交时抓到，而且**永远不碰你的账号**。
+      - name: 对着 mock 上游跑完整条链（同一个脚本，本机也能跑）
         run: |
           set -euo pipefail
-          node plugin/mock/upstream.mjs 19099 > "$TMP/mock.log" 2>&1 &
-          echo "MOCK_PID=$!" >> "$GITHUB_ENV"
-          for i in $(seq 1 20); do
-            if curl -fsS http://127.0.0.1:19099/_debug/requests >/dev/null 2>&1; then
-              echo "✅ mock 上游已起"; exit 0
-            fi
-            sleep 0.5
-          done
-          echo "❌ mock 没起来"; cat "$TMP/mock.log"; exit 1
-
-      - name: 把插件指向 mock，导入假会话，真跑一次 task-list
-        run: |
-          set -euo pipefail
-          P="-H X-Panel-Token:ci-token-plugin"
-          W="$P -H x-panel:1"          # 写接口要 x-panel: 1（面板的 CSRF 防护，插件路由同样适用）
-          B=http://127.0.0.1:18795
-
-          # ① 基址指到 mock（沙箱里读不到环境变量，所以走 state + 接口）
-          curl -fsS $W -X POST -d '{"baseUrl":"http://127.0.0.1:19099"}' $B/plugins/mcloud/api/config
-          echo
-
-          # ② 导入假会话：导入时会立刻真验一次（打到 mock）
-          curl -fsS $W -X POST -d '{"session":"mockcookie=1"}' $B/plugins/mcloud/api/session \
-            > "$TMP/import.json"
-          # ③ 真跑一次 task-list（mock 夹具：3 条，其中 2 条 FINISH）
-          curl -fsS $W -X POST $B/api/tasks/mcloud/task-list/run
-          echo
-          sleep 2
-          # ④ 取插件自己的状态
-          curl -fsS $P $B/plugins/mcloud/api/tasks > "$TMP/plugin-state.json"
-
-          python3 - <<'PY'
-          import json, os
-
-          t = os.environ['TMP']
-          imp = json.load(open(t + '/import.json'))
-          assert imp['imported'], imp
-          assert imp['verified'], '对 mock 的验证应当通过：' + str(imp.get('note'))
-          # 凭据不回显（`savedAt` 里也有 cookie 的脱敏摘要，所以整段 JSON 一起查）
-          assert 'mockcookie=1' not in json.dumps(imp), imp
-          print('✅ 会话导入并对 mock 验证通过，且响应里没有凭据原文')
-
-          d = json.load(open(t + '/plugin-state.json'))
-          last = d['lastTaskList']
-          assert last, '没有落盘清单：' + json.dumps(d)
-          assert last['total'] == 3, last
-          assert last['done'] == 2, last
-          assert d['lastError'] is None, d['lastError']
-          print('✅ task-list 跑通：清单 %d 条、已完成 %d 条' % (last['total'], last['done']))
-          PY
-
-      - name: 断言 mock 收到的字节（body 逐字节、头齐全、签名自洽）
-        run: |
-          set -euo pipefail
-          curl -fsS http://127.0.0.1:19099/_debug/requests -o "$TMP/mock-req.json"
-          python3 - <<'PY'
-          import hashlib, json, os
-
-          reqs = json.load(open(os.environ['TMP'] + '/mock-req.json'))
-          paths = [r['path'] for r in reqs]
-          tl = [r for r in reqs if r['path'] == '/ycloud/signin/task/taskListV3']
-          assert tl, 'mock 没收到 taskListV3，只收到：' + str(paths)
-
-          h = tl[-1]['headers']
-          body = tl[-1]['body']
-
-          # body 逐字节（实拍 content-length 62 就是这个串）
-          want = '{"marketname":"sign_in_3","clientVersion":"12.6.0","group":""}'
-          assert body == want, 'body 不对：' + repr(body)
-
-          # 头齐全（这一口:带 activityid/appversion，不带 isdeviceid）
-          assert h['activityid'] == 'sign_in_3', h
-          assert h['appversion'] == '12.6.0.0', h
-          assert h['content-type'] == 'application/json;charset=UTF-8', h
-          assert h['cookie'] == 'mockcookie=1', h
-          assert h.get('showloading') == 'true', h
-          assert 'isdeviceid' not in h, h
-          assert 'jwttoken' not in h, '这一份会话没有 jwt，不该发这枚头：' + str(h)
-
-          # 签名自洽：用收到的那三个值重算，必须等于收到的 x-signature
-          salt = 'seedMdYYLIZfbCxg'
-          want_sig = hashlib.md5(
-              (salt + h['x-request-id'] + h['x-timestamp'] + h['x-nonce'] + salt).encode()
-          ).hexdigest()
-          assert h['x-signature'] == want_sig, '签名不匹配：' + h['x-signature'] + ' != ' + want_sig
-          print('✅ mock 收到的字节全对：body 逐字节、头齐全、签名自洽')
-          # 顺带确认体检那一口是 GET + ?client=app（我写错过 POST，上游回 405）
-          info = [r for r in reqs if r['path'].startswith('/ycloud/signin/page/infoV3')]
-          assert info, '没有体检请求：' + str(paths)
-          assert info[-1]['method'] == 'GET', info[-1]['method']
-          assert info[-1]['path'] == '/ycloud/signin/page/infoV3?client=app', info[-1]['path']
-          print('✅ 体检请求也是对的：GET /ycloud/signin/page/infoV3?client=app')
-          PY
+          mkdir -p "$TMP/mock-e2e"
+          E2E_KEEP=0 bash plugin/scripts/e2e-mock.sh "$GITHUB_WORKSPACE/panel/target/release/plugin-panel" 18950 \
+            2>&1 | tee "$TMP/mock-e2e/out.log"
 
       - name: 失败时把面板日志打出来
         if: failure()
