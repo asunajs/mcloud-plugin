@@ -47,9 +47,25 @@ export interface TaskMeta {
   hidden: boolean;
   /** **本插件实现到哪了**（见文件头） */
   implemented: boolean;
+  /** 上游证据到哪一步 —— 决定"现在**能不能**忠实实现"。
+   *
+   *  **可选**，而且是故意的：只在我们真去源码里核对过的地方才填。
+   *  没填 = 没核对过（不是我估了个值）—— 要查就看 mcloud 的 `docs/task-inventory.md`。 */
+  evidence?: Evidence;
   /** 为什么危险 / 为什么要这套凭据 —— 一两句人话，界面直接显示 */
   note?: string;
 }
+
+/** 上游证据状态。这一列区分的是「能照实写」与「只能照旧项目的口径猜」。
+ *
+ *  `captured` —— 有实拍：路径/方法/字段名都逐字见过
+ *  `partial`  —— 只实拍到"成功那一枪"，失败形态还没样本
+ *  `none`     —— 零样本：方法、非 0 例文全空
+ *  `no-ticket` —— **连那张票怎么换都没抓到**，页面的特有取法无从得知
+ *
+ *  `none` / `no-ticket` 两条是**拦路石**：不是难度问题，是没证据就没法照实写。
+ */
+export type Evidence = 'captured' | 'partial' | 'none' | 'no-ticket';
 
 export type GroupId =
   | 'signin'
@@ -122,9 +138,15 @@ export const TASK_META: TaskMeta[] = [
   { name: 'cloud-snapshot', title: 'AI豆余额快照', group: 'query', kind: 'Query', risk: 'none', missed: 'catch-up', deps: ['jwt'], batch: false, hidden: false, implemented: true, note: '只取第一页；一页装满会如实说可能还有下一页' },
 
   // ── 通知与趣玩（未实现）──
-  { name: 'notice', title: '开启通知领AI豆', group: 'daily', kind: 'Action', risk: 'ledger', missed: 'catch-up', deps: ['jwt'], batch: true, hidden: false, implemented: false },
-  { name: 'fun-ai', title: '趣玩AI抽奖', group: 'daily', kind: 'Action', risk: 'ledger', missed: 'catch-up', deps: ['jwt'], batch: true, hidden: false, implemented: false },
-  { name: 'msg-push', title: '消息推送任务', group: 'daily', kind: 'Action', risk: 'ledger', missed: 'skip', deps: ['jwt'], batch: false, hidden: false, implemented: false },
+  // 它用**签到页那张票**（`SessionRecipe::SignInPage`）—— 就是本插件手里已有的会话，
+  // 所以「只依赖 jwt」这条是对的。`getTaskInfo` 有实拍；`reward` 只实拍到成功那一枪。
+  { name: 'notice', title: '开启通知领AI豆', group: 'daily', kind: 'Action', risk: 'ledger', missed: 'catch-up', deps: ['jwt'], batch: true, hidden: false, implemented: false, evidence: 'partial', note: '有手动前置（要去 App 里开邮箱/短信通知）；失败形态零样本' },
+  // 更正：换出该页 jwttoken 的那一步**在实拍归档里没有** ⇒ 现在做不了（不是"只依赖 jwt"）
+  { name: 'fun-ai', title: '趣玩AI抽奖', group: 'activity', kind: 'Action', risk: 'ledger', missed: 'catch-up', deps: ['activity-token'], batch: true, hidden: false, implemented: false, evidence: 'no-ticket', note: '换票那步没抓到 ⇒ 做不了' },
+  // 更正：整条链在 `/ycloud/msgPushOn/` 下、要**另一张票**（marketName=msgpushon /
+  // sourceId=1062）。`task/status` 有实拍，`task/obtain` **零样本** ——
+  // "什么值该做什么"仍是旧项目口径，一条都没被上游证实过。
+  { name: 'msg-push', title: '消息推送任务', group: 'activity', kind: 'Action', risk: 'ledger', missed: 'skip', deps: ['activity-token'], batch: false, hidden: false, implemented: false, evidence: 'partial', note: '要另一张票（msgpushon）；obtain 零样本' },
 
   // ── 活动与站票（未实现）──
   { name: 'cloud-phone-redpack', title: '红包派对', group: 'activity', kind: 'Action', risk: 'ledger', missed: 'catch-up', deps: ['activity-token'], batch: false, hidden: false, implemented: false, note: '⚠ 读到没见过的状态码时**刻意不发写**（旧 TS 会发）' },
