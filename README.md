@@ -16,6 +16,41 @@
 > 延期领取那一口端点（`receiveTaskExpansion`）、以及 WebUI / 通知两个里程碑。 决策见下，压出来的问题见
 > [`docs/findings.md`](docs/findings.md)（已记两条，都在面板侧）。
 
+## 先跑起来（不用真账号）
+
+```bash
+# ① 一整套本地验证：类型、测试、产物一致性
+npm ci && npm run all
+
+# ② 对着 mock 上游跑完整条链 —— **绝不碰真账号**，也不需要你的凭据
+./scripts/e2e-mock.sh <面板可执行文件> 18900
+```
+
+`e2e-mock.sh` 会起 mock 上游 + 一个面板实例，把上游指向 mock、导入一份假会话，
+然后逐条跑签到族任务，断言：query 逐字节、备份好礼两步、签到三段式（含回查）、
+翻倍门槛、逐条领取、只领一次 —— 以及 **mock 侧的状态真的变了**
+（todaySigned / curMonthBackupSignAccept / receiveList / backupCanReceive）。
+它和你跑的是**同一份脚本**，CI 里跑的也是这一份。
+
+## 装到你自己的面板上
+
+```bash
+# 面板的插件目录指向本仓库的 plugins/（一个静态二进制 + 一个目录，没有依赖）
+PLUGINS_DIR=/path/to/mcloud-plugin/plugins PANEL_TOKEN=<你的令牌> <面板二进制>
+```
+
+装好后：
+
+* 面板里能看到 `mcloud`，11 条任务全部登记
+* 接口文档（导入会话、看状态、指到 mock）：[`docs/howto-session.md`](docs/howto-session.md)
+* 任务挂在**白天每 15 分钟**（不是"每天 8:05 打一枪"）—— 低配盒子不常在线，
+  8 点没开机 9 点上线照样补上；每条任务自带门槛，不需要动作时就只是一次只读检查
+* 想让它立刻干活：面板上点「立即执行」，或
+  `curl -X POST -H 'X-Panel-Token: <令牌>' -H 'x-panel: 1' <面板>/api/tasks/mcloud/task-list/run`
+
+> ⚠️ 写接口（POST）必须带 `-H 'x-panel: 1'` —— 面板的防跨站请求伪造要求，
+> **插件自己注册的路由同样适用**（见 [`docs/findings.md`](docs/findings.md) F-007）。
+
 ## M0 做了什么（已完成）
 
 | 东西 | 说明 |
