@@ -10,7 +10,39 @@
    每压出一个就回面板仓库修掉，并在 [`docs/findings.md`](docs/findings.md) 记下
    「怎么测的、什么数、改了什么」
 
-> **状态：已定稿，未开工**（等一句「开动」）。决策见下。
+> **状态：M0 已完成，正在往 M1 走。** 决策见下，压出来的问题见
+> [`docs/findings.md`](docs/findings.md)（已记两条，都在面板侧）。
+
+## M0 做了什么（已完成）
+
+| 东西 | 说明 |
+|---|---|
+| TS + esbuild → 单文件产物 | `plugins/js/mcloud.js`，14 KB / 594 行，**只有 `host-api` 一个外部 import**，产物提交进仓库 |
+| 纯 JS 密码学 | md5 / sha1 / sha256 / hmac，**只用 32 位整数**（不用 BigInt，QuickJS 里更稳）；UTF-8、hex、base64 手写（沙箱没有 TextEncoder/Buffer） |
+| 常量可复现 | SHA-2 的 K/H 表由 `scripts/gen-constants.mjs` 用 BigInt 精确生成 —— 不用浮点技巧，也不手抄魔数 |
+| 测试 | 7 组：公开测试向量（RFC 1321 / FIPS 180-4）+ 补位边界 55/56/63/64/119/120/128 + UTF-8（含代理对与孤立代理）逐字节对 `TextEncoder` + hex/base64 对 `Buffer` + HMAC 密钥跨 64 字节块 + 64 组随机字节 |
+| 插件本体 | `selftest`（在沙箱里自证密码学/SQLite/宿主 API）与 `diag`（每次触发记 `lateMs`，喂「调度精度」那条测量） |
+| 闸门 | `npm run check-build`：产物与源码不一致就红 —— 防「改了源码忘重新构建，测试还全绿」 |
+| CI | 两层：`check`（~30s，每次推送都跑）+ `panel-e2e`（**真 ARM64 上现构建面板**、把插件装进去跑，只在 tag / 手动 / PR 上跑） |
+
+**沙箱内自检 6/6 通过**（在真面板里跑的，不是 Node 里）：
+
+```
+[mcloud] 自检通过（6/6 通过）· lateMs=-290918
+```
+
+（`lateMs` 是负数 —— 那不是我的 bug，见下面的第一条发现。）
+
+## 已经压出来的两条（面板侧，待修）
+
+- **F-001 手动触发的 `lateMs` 是负数、`scheduledAt` 指向未来** —— 根因在
+  `src/engine.rs:1832`：payload 里取的是任务结构里的 `next_fire`，手动触发时它还在未来。
+  这条会直接污染「调度精度」统计（而手动触发是用户常有动作）。插件侧已绕开
+  （负延迟单独计数、不进分布），面板侧建议在 payload 里加 `manual: true`。
+- **F-002 启动时打「插件目录里没有找到任何 .js / .py 插件」** —— 根因在
+  `src/engine.rs:767`：条件是 `plugins.is_empty()`，判断的其实是「**这个 worker**
+  名下没有插件」。`ENGINE_WORKERS=2` 而只有一个插件时，worker 1 必然报一次。
+  文案与事实不符，会让人去找不存在的问题。
 
 ## 零、已定的决策
 

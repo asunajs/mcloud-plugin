@@ -1,0 +1,139 @@
+name: CI
+
+# 两个 job，成本差很多，所以触发条件不同：
+#
+#   check       ~30 秒。类型检查、测试、常量可复现、产物与源码一致。
+#               **每次推送都跑** —— 它便宜，而且这几条正是「本地忘了跑」的那种错。
+#   panel-e2e   ~5 分钟（要现构建面板的 Rust）。插件的真正验收是「在真面板里能跑」，
+#               所以它必须在 CI 里，但没必要每次推送都跑 —— 只在 tag / 手动 / PR 上跑。
+#
+# 真 ARM64 硬件（ubuntu-24.04-arm）：目标机是低配 ARM 盒子，而这个插件是拿它压边界的，
+# 用 x86 跑 E2E 得到的结论不能直接搬到目标平台。
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  check:
+    name: 静态检查与测试
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: npm ci --no-audit --no-fund
+
+      # 常量必须可复现：生成结果与提交的一致
+      - name: SHA-2 常量可复现
+        run: |
+          npm run gen
+          git diff --exit-code -- src/crypto/tables.ts \
+            || { echo "❌ src/crypto/tables.ts 与生成脚本的结果不一致"; exit 1; }
+
+      - name: 类型检查（src 不许出现 Node 类型）
+        run: npm run typecheck
+
+      - name: 单元测试（密码学对 Node 的 crypto 逐用例比对）
+        run: npm test
+
+      # 产物是提交进仓库的（面板加载的是它）。只跑测的话，完全可以
+      # 「源码改了、忘了重新构建」——全绿，而面板跑的还是旧逻辑。
+      - name: 产物与源码一致
+        run: npm run check-build
+
+  panel-e2e:
+    name: 在真面板里跑（真 ARM64）
+    if: github.event_name != 'push' || startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: 取出插件
+        uses: actions/checkout@v4
+        with:
+          path: plugin
+      - name: 取出面板
+        uses: actions/checkout@v4
+        with:
+          repository: asunajs/panel
+          path: panel
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: panel
+
+      - name: 构建面板
+        run: cargo build --release
+        working-directory: panel
+
+      - name: 起面板（PLUGINS_DIR 指向本仓库的插件）
+        working-directory: panel
+        run: |
+          set -euo pipefail
+          TMP=$(mktemp -d)
+          echo "TMP=$TMP" >> "$GITHUB_ENV"
+          PANEL_TOKEN=ci-token-plugin \
+          BIND_ADDR=127.0.0.1:18795 \
+          DB_PATH="$TMP/panel.db" \
+          PLUGINS_DIR="$GITHUB_WORKSPACE/plugin/plugins" \
+            ./target/release/plugin-panel > "$TMP/panel.log" 2>&1 &
+          echo "PID=$!" >> "$GITHUB_ENV"
+          for _ in $(seq 1 60); do
+            if curl -fsS -H 'X-Panel-Token: ci-token-plugin' \
+                 http://127.0.0.1:18795/api/state -o "$TMP/state.json"; then break; fi
+            sleep 0.5
+          done
+
+      - name: 插件加载了、任务登记了、没有错
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, sys
+          state = json.load(open(os.environ['TMP'] + '/state.json'))
+          plugins = {p['name']: p for p in state['plugins']}
+          p = plugins.get('mcloud')
+          assert p, f"没有加载 mcloud 插件，只有 {list(plugins)}"
+          assert p['runtime'] == 'js', p
+          assert p.get('error') in (None, ''), p
+          assert sorted(p['tasks']) == ['diag', 'selftest'], p['tasks']
+          print(f"✅ 插件 mcloud 已加载：runtime={p['runtime']} tasks={sorted(p['tasks'])}")
+          PY
+
+      - name: 沙箱内的自检必须通过（这是 M0 的核心证据）
+        run: |
+          set -euo pipefail
+          curl -fsS -X POST -H 'X-Panel-Token: ci-token-plugin' -H 'x-panel: 1' \
+            http://127.0.0.1:18795/api/tasks/mcloud/selftest/run
+          sleep 3
+          grep -q "自检通过" "$TMP/panel.log" \
+            || { echo "❌ 沙箱内自检没有通过"; grep -i mcloud "$TMP/panel.log"; exit 1; }
+          if grep -q "自检失败" "$TMP/panel.log"; then
+            echo "❌ 沙箱内自检失败"; grep -i mcloud "$TMP/panel.log"; exit 1
+          fi
+          echo "✅ 沙箱内自检通过（密码学 / UTF-8 / base64 / SQLite 都跑在这台 ARM64 上的 QuickJS 里）"
+
+      - name: 手动触发的负延迟要被排除、不能污染统计（F-001 的绕开）
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 10); do
+            curl -fsS -o /dev/null -X POST -H 'X-Panel-Token: ci-token-plugin' -H 'x-panel: 1' \
+              http://127.0.0.1:18795/api/tasks/mcloud/diag/run
+            sleep 0.2
+          done
+          sleep 1
+          grep -q "排除负延迟 10 条" "$TMP/panel.log" \
+            || { echo "❌ 负延迟没有被排除（或没报出来）"; grep -E "调度健康" "$TMP/panel.log"; exit 1; }
+          echo "✅ 10 次手动触发产生了 10 条负延迟，全部被排除且单独计数"
+
+      - name: 失败时把面板日志打出来
+        if: failure()
+        run: |
+          echo "──── 面板日志 ────"
+          tail -60 "$TMP/panel.log" || true

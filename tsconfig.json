@@ -1,0 +1,35 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2020"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    // 源码里 import 相对路径要带 .ts 后缀：Node 的类型剥离（node --test test/*.ts）
+    // 不做模块解析，写 './bytes' 会直接报模块找不到。配合 noEmit 用。
+    "allowImportingTsExtensions": true,
+    "forceConsistentCasingInFileNames": true,
+
+    // 空数组 = **不许用任何 @types**。
+    //
+    // 这不是洁癖：插件最终跑在 QuickJS 沙箱里，那里没有 Node（没有 process / Buffer /
+    // fs / crypto / setTimeout）。如果 tsconfig 里带了 @types/node，我在这份源码里
+    // 顺手写个 `Buffer.from(...)` 也能通过类型检查，然后在面板里运行时报 undefined。
+    // 类型检查在这里的作用是**当围栏**，不是补全提示。
+    "types": [],
+
+    // 源码里 import 'host-api' 由面板的 Resolver 提供，不是 npm 包。
+    // 声明放在 src/host-api.d.ts，路径映射让 tsc 认它。
+    "paths": {
+      "host-api": ["./src/host-api.d.ts"]
+    }
+  },
+  "include": ["src/**/*.ts"]
+}

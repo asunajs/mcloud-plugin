@@ -1,0 +1,12 @@
+{
+  // 测试跑在 Node 里，所以这里**允许** Node 的类型（Buffer / node:crypto / TextEncoder）。
+  // 和 tsconfig.json 分开的意义：源码那边必须一个 Node 类型都没有 ——
+  // 那个围栏不能被测试的宽松传染。
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true
+  },
+  "include": ["test/**/*.ts", "src/**/*.ts"]
+}
