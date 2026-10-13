@@ -293,10 +293,12 @@ match state_for_http.do_http_fetch(&url, &opts) {
 - 解析器按 **URL 语义**把相对说明符解析成 `file://` URL（模块标识就是 URL，
   顺带 `import.meta.url` 也填上了 —— QuickJS 不自动给，得宿主填）
 - 加载器按解析出的路径读文件；边界限制在插件目录内
-- **严格 ESM**：要写全扩展名；没写全时报错会提示"`./lib/math.js` 是存在的"，
-  但**不替人猜**
+- ESM 语义，但解析**放宽**：扩展名可省、目录自动找 `index.js`（候选链
+  `原样 → +.js → +.mjs → /index.js → /index.mjs`），这条链与 `require` 共用
 - 另加 `require`（CJS 兼容）：`require('host-api')`、`require('./lib/x.js')`、
-  CJS 规矩解析（可省扩展名）、按 URL 缓存；读 ES 模块时明确报错「请用 import」
+  与 import 同一套解析、按 URL 缓存；读 ES 模块时明确报错「请用 import」
+- 两个方向都给了能照着做的提示：`require` 读 ES 模块 → 「请用 import」；
+  `import` 读 CJS 文件 → 「请用 require，或改成 ES 模块」
 - 扫描规则收紧：只收 `plugins/` 根与 `plugins/js|py/` 这一层 → 「模块放子目录」
   成了结构性约定，库文件不会再变成插件
 

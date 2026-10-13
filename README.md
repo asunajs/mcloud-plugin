@@ -58,6 +58,8 @@ import { log } from 'host-api';
 ```
 
 * 模块标识是 `file://` URL（`import.meta.url` 可用）、活绑定、循环导入、动态 import 都成立
+* 扩展名可省、目录自动找 `index.js`（**放宽**，不是浏览器 ESM 的行为 —— 代价见
+  [`docs/findings.md`](docs/findings.md) F-008）
 * **同一份 core 被多个插件 import 只加载一次**（按 URL 缓存）——
   这是省内存的关键：不必为了共用 core 而接受 N 份打包产物
 * 另有够用的 `require`（CJS 兼容）：`require('host-api')`、`require('./lib/x.js')`，
