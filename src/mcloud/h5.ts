@@ -52,6 +52,9 @@ export interface H5RequestSpec {
   saltKey: number;
   /** 签名里 `other` 段（多数端点是空串） */
   other?: string | undefined;
+  /** POST 的 content-type。默认 `application/json`；`taskListV3` 要的是
+   *  `application/json;charset=UTF-8`（原实现逐字如此，别自作主张统一）。 */
+  contentType?: string | undefined;
   session: SessionHeaders;
   /** 显式传入随机量与时间戳，测试可复现；生产不传 */
   signInputs?: { id?: string; nonce?: string; timestampMs?: string } | undefined;
@@ -89,7 +92,9 @@ export function buildH5Request(spec: H5RequestSpec): BuiltRequest {
   if (spec.session.deviceId) headers.deviceid = spec.session.deviceId;
   if (spec.session.userAgent) headers['user-agent'] = spec.session.userAgent;
   if (spec.session.cookie) headers.cookie = spec.session.cookie;
-  if (spec.method === 'POST') headers['content-type'] = 'application/json';
+  if (spec.method === 'POST') {
+    headers['content-type'] = spec.contentType ?? 'application/json';
+  }
 
   return {
     url: spec.url,
@@ -123,3 +128,15 @@ export const EP = {
 
 /** `Referer` 用的签到页地址（原实现按端点给不同值，这里集中成常量，便于以后按端点细化）。 */
 export const REFERER_SIGN_IN = `${MCLOUD_HOST}/mcloud/sign_in/index.html`;
+
+/** 任务清单 V3 的请求体：**`group` 是空字符串**、`clientVersion` 三段。
+ *
+ *  复刻自 `app_task_list_v2.rs::task_list_v3_request`，那里的注释说明了它为什么可信：
+ *  实拍没存下 body，但 `content-length: 62` 能逐字节对出来正好是下面这个串 ——
+ *  空 body 与带 `client` 两种写法都试过，**都 404**。 */
+export function taskListV3Body(market: string = MARKET_NAME): string {
+  return JSON.stringify({ marketname: market, clientVersion: TASK_CLIENT_VERSION, group: '' });
+}
+
+/** 任务清单 V3 用的 content-type（注意 charset 后缀）。 */
+export const TASK_LIST_V3_CONTENT_TYPE = 'application/json;charset=UTF-8';

@@ -5,6 +5,11 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "types": ["node"],
+    // 测试跑在 Node 上：可以用更新的 lib（源码那边仍锁 ES2020 —— 那是给 QuickJS 的围栏）
+    "lib": ["ES2022"],
+    // mock/upstream.mjs 是纯 JS，让 TS 从它推类型（不给它单独写 .d.ts，省一份要同步的东西）
+    "allowJs": true,
+    "checkJs": false,
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true
   },
