@@ -1360,6 +1360,21 @@ function judgeItem(i) {
   if (i.enable === 1) return "todo";
   return "skip";
 }
+function matrixKey(group) {
+  return `mcloud.apptaskmatrix.g.${group}`;
+}
+function readMatrix(store2) {
+  return MATRIX_GROUPS.map((g) => {
+    const raw = store2.getState(matrixKey(g));
+    if (!raw) return null;
+    try {
+      const v = JSON.parse(raw);
+      return typeof v === "object" && v ? { ...v, group: g } : null;
+    } catch {
+      return null;
+    }
+  });
+}
 function summarize(items) {
   let done = 0;
   let todo = 0;
@@ -1397,6 +1412,13 @@ function runAppTaskMatrix(deps) {
       const items = parseMatrix(env.result);
       const s = summarize(items);
       deps.store.setState(STATE_GROUP_INDEX, String((idx + 1) % MATRIX_GROUPS.length), deps.nowIso);
+      const reading = {
+        group,
+        at: deps.nowIso,
+        ...s,
+        groupState: env.groupState
+      };
+      deps.store.setState(matrixKey(group), JSON.stringify(reading), deps.nowIso);
       const names = s.todoNames.length ? `（可做：${s.todoNames.join("、")}）` : "";
       return {
         ok: true,
@@ -1913,6 +1935,20 @@ function mcloudRoutes(deps) {
         deps.store.setState(STATE_BASE_URL, v.replace(/\/+$/, ""), deps.now());
         deps.log(v ? `上游基址已改为 ${v}` : "上游基址已恢复为真上游");
         return json(200, { baseUrl: v || "(真上游)" });
+      }
+    },
+    {
+      // App 任务矩阵的读数（8 个 group 各一条）—— 只读任务采集，界面展示。
+      // 界面要能看见，否则"只读"就只是日志里的一行数。
+      path: `${base}/matrix`,
+      method: "GET",
+      handler: () => {
+        const rows = readMatrix(deps.store);
+        return json(200, {
+          groups: rows.map((r, i) => ({ group: MATRIX_GROUPS[i], reading: r })),
+          read: rows.filter(Boolean).length,
+          total: MATRIX_GROUPS.length
+        });
       }
     },
     {

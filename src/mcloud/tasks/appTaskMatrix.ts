@@ -111,6 +111,32 @@ export function judgeItem(i: MatrixItem): 'done' | 'todo' | 'skip' {
   return 'skip';
 }
 
+export interface MatrixReading extends MatrixSummary {
+  group: string;
+  at: string;
+  /** 实拍里的 groupState（原样留一份，排障时看） */
+  groupState?: unknown;
+}
+
+/** 每个 group 一条读数 —— 界面要一次看到 8 个，所以**按 group 存**，
+ *  不是只留"最后读的那个"（那样界面上永远只有一格有数）。 */
+export function matrixKey(group: string): string {
+  return `mcloud.apptaskmatrix.g.${group}`;
+}
+
+export function readMatrix(store: { getState(k: string): string | null | undefined }): (MatrixReading | null)[] {
+  return MATRIX_GROUPS.map((g) => {
+    const raw = store.getState(matrixKey(g));
+    if (!raw) return null;
+    try {
+      const v = JSON.parse(raw) as MatrixReading;
+      return typeof v === 'object' && v ? { ...v, group: g } : null;
+    } catch {
+      return null;
+    }
+  });
+}
+
 export interface MatrixSummary {
   done: number;
   todo: number;
@@ -159,6 +185,14 @@ export function runAppTaskMatrix(deps: TaskDeps): TaskOutcome {
       const items = parseMatrix(env.result);
       const s = summarize(items);
       deps.store.setState(STATE_GROUP_INDEX, String((idx + 1) % MATRIX_GROUPS.length), deps.nowIso);
+      // 按 group 落一条读数（界面直接吃这个）
+      const reading: MatrixReading = {
+        group,
+        at: deps.nowIso,
+        ...s,
+        groupState: (env as { groupState?: unknown }).groupState,
+      };
+      deps.store.setState(matrixKey(group), JSON.stringify(reading), deps.nowIso);
       const names = s.todoNames.length ? `（可做：${s.todoNames.join('、')}）` : '';
       return {
         ok: true,

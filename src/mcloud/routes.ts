@@ -23,6 +23,7 @@ import {
 } from './session.ts';
 import { TASK_NAMES, STATE_LAST_TASKLIST } from './tasks/taskList.ts';
 import { groupView } from './groups.ts';
+import { MATRIX_GROUPS, readMatrix } from './tasks/appTaskMatrix.ts';
 import type { Store } from '../store/types.ts';
 import type { Transport } from './client.ts';
 
@@ -155,6 +156,20 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
         deps.store.setState(STATE_BASE_URL, v.replace(/\/+$/, ''), deps.now());
         deps.log(v ? `上游基址已改为 ${v}` : '上游基址已恢复为真上游');
         return json(200, { baseUrl: v || '(真上游)' });
+      },
+    },
+    {
+      // App 任务矩阵的读数（8 个 group 各一条）—— 只读任务采集，界面展示。
+      // 界面要能看见，否则"只读"就只是日志里的一行数。
+      path: `${base}/matrix`,
+      method: 'GET',
+      handler: () => {
+        const rows = readMatrix(deps.store);
+        return json(200, {
+          groups: rows.map((r, i) => ({ group: MATRIX_GROUPS[i], reading: r })),
+          read: rows.filter(Boolean).length,
+          total: MATRIX_GROUPS.length,
+        });
       },
     },
     {

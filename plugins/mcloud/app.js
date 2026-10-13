@@ -150,6 +150,35 @@ async function runTask(btn) {
   await loadGroups();
 }
 
+// ──────────────────────────── App 任务矩阵（只读任务的读数）
+
+async function loadMatrix() {
+  const d = await req('/plugins/mcloud/api/matrix');
+  const card = $('matrix-card');
+  if (!d.ok || !Array.isArray(d.groups)) {
+    card.hidden = true;
+    return;
+  }
+  card.hidden = false;
+  $('matrix-sub').textContent = `已读到 ${d.read}/${d.total} 个 group`;
+  const rows = d.groups.map((g) => {
+    const r = g.reading;
+    if (!r) {
+      return `<tr><td><code>${esc(g.group)}</code></td><td colspan="5" class="dim">还没读到（下一次触发读它）</td></tr>`;
+    }
+    const names = (r.todoNames || []).join('、');
+    return `<tr>
+      <td><code>${esc(g.group)}</code></td>
+      <td class="c">${r.done}</td>
+      <td class="c">${r.todo ? `<b>${r.todo}</b>` : 0}</td>
+      <td class="c dim">${r.skip}</td>
+      <td class="note">${names ? esc(names) : '<span class="dim">—</span>'}</td>
+      <td class="dim">${esc((r.at || '').slice(11, 19))}</td>
+    </tr>`;
+  });
+  $('matrix-table').querySelector('tbody').innerHTML = rows.join('');
+}
+
 // ──────────────────────────── 会话与上游地址
 
 async function loadSession() {
@@ -226,6 +255,7 @@ async function saveBase() {
 $('refresh').addEventListener('click', () => {
   loadGroups();
   loadSession();
+  loadMatrix();
 });
 $('session-save').addEventListener('click', saveSession);
 $('session-check').addEventListener('click', checkSession);
@@ -233,4 +263,5 @@ $('base-save').addEventListener('click', saveBase);
 
 loadGroups();
 loadSession();
+loadMatrix();
 loadBase();

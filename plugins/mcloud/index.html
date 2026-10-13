@@ -52,6 +52,23 @@
       <p class="hint" id="base-hint"></p>
     </section>
 
+    <!-- 只读任务采集来的读数：界面要能看见，否则"只读"就只是日志里的一行数 -->
+    <section class="card" id="matrix-card" hidden>
+      <div class="card-head">
+        <h2>App 任务矩阵</h2>
+        <span class="card-sub" id="matrix-sub"></span>
+      </div>
+      <p class="why">
+        <b>只看，不写</b>：一个字节都不发。一次触发读一个 group（8 个一轮），
+        所以下面的格子会一个个填满 —— 想立刻看下一组，去任务列表点
+        <code>app-task-matrix</code> 的「立即执行」。
+      </p>
+      <table class="tasks" id="matrix-table">
+        <thead><tr><th>group</th><th>已完成</th><th>可做</th><th>不参与</th><th>可做的</th><th>读到时间</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
     <div id="groups"></div>
   </main>
 
