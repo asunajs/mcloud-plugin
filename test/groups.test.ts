@@ -30,8 +30,8 @@ test('分组：路线图那两列 —— implemented 说做完了没，evidence 
 });
 
 test('分组视图：带上运行时状态，且不编造面板才知道的东西', () => {
-  const store = memStore()   ;
-  store.setState('mcloud.last_error.sign', '上游 500');
+  const store = memStore();
+  store.setState('mcloud.last_error.sign', '上游 500', '2026-10-13T20:00:00Z');
   const v = groupView(store);
   const sign = v.groups.flatMap((g) => g.tasks).find((t) => t.name === 'sign')!;
   assert.equal(sign.lastError, '上游 500');
