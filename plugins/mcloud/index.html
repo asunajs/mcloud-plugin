@@ -105,6 +105,19 @@
         <button id="live-clear" class="btn">清空</button>
       </div>
       <p class="hint" id="live-codes-hint"></p>
+
+      <div class="row">
+        <label class="label">领小红花（写）</label>
+        <label><input id="live-claim" type="checkbox"> 开启（开启后 cron 才会自动推）</label>
+        <button id="live-draw" class="btn btn-primary">现在领一次</button>
+      </div>
+      <p class="hint">
+        <b>会真往账号里写</b>（记账、留活动足迹）。同一条口令重领只会回「已兑换过」，
+        不会重复发奖 —— 所以它基本幂等，但仍然是写。
+        六步链一共 9+N 个请求，<b>一次只发一个</b>；这个按钮会一步步推完。
+      </p>
+      <p class="hint" id="live-draw-hint"></p>
+      <div id="live-draw-result"></div>
     </section>
 
     <div id="groups"></div>

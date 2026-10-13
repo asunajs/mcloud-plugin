@@ -245,6 +245,72 @@ async function loadLive() {
   $('live-codes-hint').textContent = c
     ? `已存 ${c.codes.length} 条（${c.how}）· ${(c.at || '').slice(0, 16).replace('T', ' ')}：${c.codes.join('、')}`
     : '还没存过口令。口令不是账号凭据 —— 它是**共享资源**（谁拿到都能拿去领小红花），所以这里如实显示。';
+
+  // ── 写那半（领小红花）──
+  const claim = d.claim || {};
+  $('live-claim').checked = !!claim.enabled;
+  const st = claim.state;
+  if (!st) {
+    $('live-draw-hint').textContent = '还没领过。要试的口令：' + ((claim.codes || []).join('、') || '（一条都没有）');
+  } else if (st.step === 'done') {
+    $('live-draw-hint').textContent = `上一轮：${st.summary || ''}`;
+  } else {
+    $('live-draw-hint').textContent = `进行中：第「${st.step}」步 · 口令 ${st.drawIndex}/${(st.codes || []).length}`;
+  }
+  const rows = (st && st.results) || [];
+  $('live-draw-result').innerHTML = rows.length
+    ? `<ul class="ok-list">${rows.map((r) => `<li>${esc(r.note)}</li>`).join('')}</ul>`
+    : '';
+}
+
+async function toggleClaim() {
+  const on = $('live-claim').checked;
+  if (on && !confirm('开启后 cron 会**自动**去领小红花（往账号里写）。确定开启？')) {
+    $('live-claim').checked = false;
+    return;
+  }
+  const d = await req('/plugins/mcloud/api/live/claim', { method: 'POST', body: { enabled: on } });
+  if (!d.ok) {
+    showError('改开关失败：' + d.error);
+    $('live-claim').checked = !on;
+    return;
+  }
+  showError('');
+  await loadLive();
+}
+
+/** 现在领一次：**浏览器循环调「推进一步」**，直到跑完。
+ *
+ *  为什么不在服务端一次跑完：面板的单次执行预算只有 2000ms，而六步链有 9+N 个请求
+ *  —— 一个"从头跑到尾"的调用会在第 2、3 个请求处被判超时，而那时**上游的账已经记了**。
+ *  每次 HTTP 调用一个上游请求，这是这套架构的纪律。 */
+async function drawNow() {
+  if (!confirm('领小红花会**真的往你的账号里写**（记账、留活动足迹）。同一条口令重领只会回「已兑换过」，不会重复发奖。确定现在领？')) {
+    return;
+  }
+  const btn = $('live-draw');
+  btn.disabled = true;
+  const hint = $('live-draw-hint');
+  let steps = 0;
+  for (;;) {
+    const d = await req('/plugins/mcloud/api/live/draw/step', { method: 'POST' });
+    if (d.error) {
+      showError('领取失败：' + d.error);
+      break;
+    }
+    hint.textContent = d.note || '';
+    if (!d.ok) showError(d.note || '这一步失败了');
+    else showError('');
+    steps += 1;
+    if (d.done) break;
+    // 上限只是防死循环：9 + 口令数 + 余量。真到了说明状态机卡住了。
+    if (steps > 40) {
+      hint.textContent = `推了 ${steps} 步还没跑完，停下（${d.note || ''}）—— 状态可能卡住了`;
+      break;
+    }
+  }
+  btn.disabled = false;
+  await loadLive();
 }
 
 async function saveLiveCodes() {
@@ -380,6 +446,8 @@ $('base-save').addEventListener('click', saveBase);
 $('live-url-save').addEventListener('click', saveLiveUrl);
 $('live-save').addEventListener('click', saveLiveCodes);
 $('live-clear').addEventListener('click', clearLiveCodes);
+$('live-claim').addEventListener('change', toggleClaim);
+$('live-draw').addEventListener('click', drawNow);
 
 loadGroups();
 loadSession();

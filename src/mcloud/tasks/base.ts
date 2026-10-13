@@ -39,6 +39,9 @@ export interface TaskOutcome {
   note: string;
   /** 是否因为「错过太久」而主动跳过（不是失败） */
   skipped?: boolean;
+  /** 这一轮**什么都没做**（开关关着 / 已经跑完 / 没料）——
+   *  调用方据此决定要不要记一笔 run。不标的话，"关着"会每 5 分钟刷一行噪声。 */
+  idle?: boolean;
 }
 
 export interface TaskSpec {

@@ -194,7 +194,11 @@ export const TASK_META: TaskMeta[] = [
   // 2026-10-13：**只读那一半已实现**（用户选的方案：加口令输入框 + 只做「抓主页 + 列出口令」）。
   // 抓主页走的是原项目 `xiaohongshu.ts` 的公开 GET + 逐字移植的提取器（41 条黄金向量守着）。
   // 领小红花那一步（写、会入群足迹）**仍然没做** —— 所以 risk 维持 `ledger` 不变。
-  { name: 'live-room', title: '直播口令 → 小红花', group: 'activity', kind: 'Query', risk: 'ledger', missed: 'skip', deps: [], batch: false, hidden: false, implemented: true, evidence: 'partial', note: '只做只读那半：抓公开主页 + 列出口令（**不需要凭据**）；口令要人给（那边无法鉴权）。领小红花那步没做' },
+  { name: 'live-room', title: '直播口令（只看）', group: 'activity', kind: 'Query', risk: 'none', missed: 'catch-up', deps: [], batch: false, hidden: false, implemented: true, evidence: 'partial', note: '抓口令发布方的**公开**主页 + 列出口令（**不需要凭据**）；口令要人给（那边无法鉴权）' },
+  // 写那半。**默认关**（`mcloud.live.claim_enabled`），开关与二次确认都在插件界面上。
+  // 它虽然记账，但**基本幂等**：同一条口令再领一次回 `200112`（已兑换过），不会重复发奖。
+  // 所以 risk 是 `ledger` 而不是 `irreversible`。
+  { name: 'live-draw', title: '领小红花（写）', group: 'activity', kind: 'Action', risk: 'ledger', missed: 'skip', deps: ['jwt'], batch: false, hidden: false, implemented: true, evidence: 'partial', note: '六步链 9+N 个请求，一次调用一步；**默认关**。同口令重领回 200112 ⇒ 基本幂等。⚠ 请求头形状未在真账号上验过' },
 
   // ── 网盘写入（未实现）──
   { name: 'app-task', title: 'App 任务（做任务）', group: 'cloud-write', kind: 'Action', risk: 'write-cloud', missed: 'skip', deps: ['jwt'], batch: false, hidden: false, implemented: false, note: '会上传 / 建删外链 / 发邮件' },

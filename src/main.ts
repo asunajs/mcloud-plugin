@@ -29,6 +29,7 @@ import { runNotice } from './mcloud/tasks/notice.ts';
 import { runAppTaskMatrix } from './mcloud/tasks/appTaskMatrix.ts';
 import { runExchangeList } from './mcloud/tasks/exchangeList.ts';
 import { runLiveRoom } from './mcloud/tasks/liveRoom.ts';
+import { runLiveDraw } from './mcloud/tasks/liveDraw.ts';
 import { runReceive } from './mcloud/tasks/receive.ts';
 import { runMultiple } from './mcloud/tasks/multiple.ts';
 import { runRevival } from './mcloud/tasks/revival.ts';
@@ -251,6 +252,40 @@ register_cron('exchange-list', SIGNIN_CRON, makeRunner('兑换清单（只看）
 // 节奏：直播多在晚上，但口令笔记白天也可能发 ⇒ 白天每 30 分钟抓一次。
 // 一次只发一个请求（面板执行预算 2000ms，见 liveRoom.ts 文件头）。
 register_cron('live-room', '*/30 7-23 * * *', makeRunner('直播口令（只看）', runLiveRoom));
+
+// 领小红花（**写那半**）：六步链 9+N 个请求，一次调用只推进一步（面板预算 2000ms）。
+//
+// ⚠️ **默认关**（`mcloud.live.claim_enabled`），开关在插件界面上。
+// 关着的时候这条 cron 一个请求都不发、**也不记 run** ——
+// 否则"关着"会每 5 分钟往面板上刷一行，把真信息淹掉。
+//
+// 为什么还要 cron：手动那条路（界面按钮）是浏览器循环调 `/api/live/draw/step`，
+// 每步一次调用；cron 是**没人看着时的兜底**（口令变了就自动起一轮）。
+register_cron('live-draw', '*/5 7-23 * * *', (p) => {
+  try {
+    const out = runLiveDraw({
+      store,
+      transport,
+      nowIso: new Date().toISOString(),
+      baseUrl: loadBaseUrl(store),
+      lateMs: p.lateMs,
+    });
+    if (out.idle) return; // 什么都没做 ⇒ 不记 run（见上）
+    store.recordRun({
+      task: p.name,
+      runs: p.runs,
+      scheduledAt: p.scheduledAt,
+      firedAt: p.firedAt,
+      lateMs: p.lateMs,
+      ok: out.ok,
+      note: out.note,
+    });
+    if (out.ok) log(`领小红花：${out.note}`);
+    else warn(`领小红花失败：${out.note}`);
+  } catch (e) {
+    error(`领小红花抛异常（这是插件 bug）：${e instanceof Error ? e.message : String(e)}`);
+  }
+});
 register_cron('prizes', '20 8 * * *', makeRunner('待领取奖品', runPrizes));
 register_cron('cloud-snapshot', '30 8 * * *', makeRunner('AI豆快照', runCloudSnapshot));
 

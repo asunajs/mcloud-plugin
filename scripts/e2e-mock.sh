@@ -88,12 +88,17 @@ curl -fsS "${W[@]}" -X POST -d "{\"baseUrl\":\"http://127.0.0.1:$MOCK_PORT\"}" "
 # 清空 mock 的请求记录要在**导入之前** —— 导入会立刻真验一次（打 infoV3），
 # 那一次也是要断言的（它就是"体检"那一口）
 curl -fsS -X POST "http://127.0.0.1:$MOCK_PORT/_debug/requests/clear" > /dev/null
-curl -fsS "${W[@]}" -X POST -d '{"session":"mockcookie=1"}' "$B/plugins/mcloud/api/session" > "$TMP/import.json"
+curl -fsS "${W[@]}" -X POST \
+  -d '{"session":"{\"cookie\":\"mockcookie=1\",\"jwt\":\"mock-jwttoken\"}"}' \
+  "$B/plugins/mcloud/api/session" > "$TMP/import.json"
 python3 - "$TMP/import.json" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
 assert d['verified'], '对 mock 的验证应当通过：' + str(d.get('note'))
 assert 'mockcookie=1' not in json.dumps(d), '响应里不能回显凭据'
+# 假会话**要带 jwt**：领小红花那一族走 H5 公共头，凭据就是 `jwttoken`
+# （没有它连一条都发不出去 —— 那不是"没登录"，是这一族本来就要票）
+assert 'mock-jwttoken' not in json.dumps(d), 'jwt 也不能回显'
 print('   会话导入并对 mock 验证通过，响应里没有凭据原文')
 PY
 
@@ -292,4 +297,81 @@ assert live['reading']['url'].endswith('/xhs/profile'), live['reading']['url']
 assert live['reading']['chars'] > live['emptyShellHintChars'], live['reading']['chars']
 assert live.get('codes') is None, '还没存过人给的口令，这里该是 null'
 print('   ✅ 直播口令：只读、一个 GET、UA 伪装在、解出了那一条口令')
+PY
+
+# ── 领小红花（**写那半**）：六步链端到端跑一遍 ──────────────────────────────
+#
+# 这里用的是**界面那条路**：浏览器循环调 `/api/live/draw/step`，每次一步、每次一个
+# 上游请求（面板单次执行预算只有 2000ms，跑完一整条链会被判超时，而那时账已经记了）。
+# 脚本里就用 for 循环扮演那个浏览器。
+echo "⑤ 领小红花（写）：先存口令，再一步步推完"
+curl -fsS -o /dev/null "${W[@]}" -X POST -H 'content-type: application/json' \
+  -d '{"codes":"云盘AI高效复盘\n过期的口令"}' "$B/plugins/mcloud/api/live/codes"
+curl -fsS -o /dev/null "${W[@]}" -X POST "$B/plugins/mcloud/api/live/claim" \
+  -H 'content-type: application/json' -d '{"enabled":true}'
+
+DRAW_JSON="$TMP/draw.json"
+for i in $(seq 1 20); do
+  curl -fsS "${W[@]}" -X POST "$B/plugins/mcloud/api/live/draw/step" -o "$DRAW_JSON"
+  if python3 -c "import json,sys; sys.exit(0 if json.load(open('$DRAW_JSON'))['done'] else 1)"; then
+    printf '   推完（第 %s 步）\n' "$i"
+    break
+  fi
+  if [ "$i" = 20 ]; then echo "❌ 20 步还没推完" >&2; cat "$DRAW_JSON" >&2; exit 1; fi
+done
+
+curl -fsS "http://127.0.0.1:$MOCK_PORT/_debug/requests" -o "$TMP/mock.json"
+python3 - "$TMP/draw.json" "$TMP/mock.json" <<'PY'
+import json, sys
+
+final = json.load(open(sys.argv[1]))
+st = final['state']
+assert st['step'] == 'done', st
+# 1(余额) + 5(埋点) + 1(惊喜奖) + 2(口令) + 1(复活花) + 1(再读余额)
+assert len(st['results']) == 2, st['results']
+
+by_code = {r['code']: r for r in st['results']}
+assert by_code['云盘AI高效复盘']['kind'] == 'succeeded', by_code
+# ⚠ 这一条是**刻意分叉的判据**的端到端证据：
+#   200118 是"本场已结束"，**不是**"口令无效" —— 后者（200108）才会触发重听
+assert by_code['过期的口令']['kind'] == 'kouling-expired', by_code
+assert '本场已结束' in by_code['过期的口令']['note'], by_code
+assert '口令无效' not in by_code['过期的口令']['note'], by_code
+
+# 进账 = ⑥ − ①（mock 里每次成功领 +10）
+assert st['balanceBefore'] == 100 and st['balanceAfter'] == 110, st
+assert '进账 10 朵' in st['summary'], st['summary']
+
+# mock 侧：11 个请求、顺序固定、draw 的 body **是空的**（实拍 content-length: 0）
+paths = [r['path'] for r in json.load(open(sys.argv[2])) if 'liveRoomFeedback' in r['path'] or 'visitlog' in r['path']]
+seq = [p.split('?')[0] for p in paths]
+assert seq == [
+    '/ycloud/liveRoomFeedback/user/info',
+    '/ycloud/visitlog/journaling',
+    '/ycloud/visitlog/journaling',
+    '/ycloud/visitlog/journaling',
+    '/ycloud/visitlog/journaling',
+    '/ycloud/visitlog/journaling',
+    '/ycloud/liveRoomFeedback/firstParticipate/give',
+    '/ycloud/liveRoomFeedback/redFlower/draw',
+    '/ycloud/liveRoomFeedback/redFlower/draw',
+    '/ycloud/liveRoomFeedback/redFlower/queryRevivalFlowers',
+    '/ycloud/liveRoomFeedback/user/info',
+], seq
+
+draws = [r for r in json.load(open(sys.argv[2])) if '/redFlower/draw' in r['path']]
+assert len(draws) == 2, draws
+for d in draws:
+    assert d['method'] == 'POST', d
+    assert d['body'] == '', f"draw 的 body 必须是空的（实拍 content-length: 0）：{d['body']!r}"
+    assert 'content-type' not in d['headers'], 'draw 不该带 content-type'
+    assert 'code=' in d['path'], d['path']
+# 口令是中文 ⇒ 必须百分号编码
+assert '%E4%BA%91%E7%9B%98' in draws[0]['path'], draws[0]['path']
+# 这一族的头：activityid 是签到族那个，UA 是小红花那个 iPad UA
+assert draws[0]['headers'].get('activityid') == 'sign_in_3', draws[0]['headers']
+assert '18_7' in draws[0]['headers'].get('user-agent', ''), draws[0]['headers']
+# ⚠ 这一族**不带**签到族那套签名头（见 liveDraw.ts 文件头）
+assert 'x-signature' not in draws[0]['headers'], draws[0]['headers']
+print('   ✅ 领小红花：六步链 11 个请求、一次一个、200118 与 200108 分得清、进账按 ⑥−①')
 PY

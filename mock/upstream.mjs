@@ -73,6 +73,9 @@ export async function startMock(options = {}) {
     curMonthBackup: true,
     curMonthBackupSignAccept: false,
     backupCanReceive: true,
+    // 小红花：余额刻意做成**会变**的（插件的"进账"是 ⑥ − ①，夹具不变那条断言就等于没测）
+    flowerCnt: 100,
+    firstParticipated: false,
   };
   // behavior: 'normal' | 'biz-fail' | 'http-500' | 'not-json' | 'timeout'
   let behavior = options.behavior ?? 'normal';
@@ -125,6 +128,47 @@ export async function startMock(options = {}) {
           '</body></html>';
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
         return res.end(html);
+      }
+
+      // ── 小红花（`liveRoomFeedback`）：领小红花那条链 ────────────────────────
+      //
+      // 六步链，四口的**请求体形态各不相同**（见插件侧 liveFlower.ts 文件头）：
+      //   user/info          → POST `{}`（json）
+      //   visitlog/journaling→ POST 表单
+      //   firstParticipate   → POST **无 body**
+      //   redFlower/draw     → POST **无 body**，口令在 query
+      // 所以这里不能"统一按 JSON 读 body"——`draw` 的 body 是空的。
+      //
+      // ⚠ 余额刻意做成**会变**的：插件的"进账"是 **⑥ − ①**，
+      // 夹具不变的话那一条断言永远等于 0，等于没测。
+      if (url.pathname === '/ycloud/liveRoomFeedback/user/info') {
+        return json(res, 200, { code: 0, msg: 'success', result: { flowerCnt: st.flowerCnt } });
+      }
+      if (url.pathname === '/ycloud/visitlog/journaling') {
+        return json(res, 200, { code: 0, msg: 'success' });
+      }
+      if (url.pathname === '/ycloud/liveRoomFeedback/firstParticipate/give') {
+        // 第二次起就是 `200110`（已参与过）—— 那是**正常**的一支，不是失败
+        const first = !st.firstParticipated;
+        st.firstParticipated = true;
+        return first
+          ? json(res, 200, { code: 0, msg: 'success' })
+          : json(res, 200, { code: 200110, msg: '已参与过' });
+      }
+      if (url.pathname === '/ycloud/liveRoomFeedback/redFlower/draw') {
+        const code = url.searchParams.get('code') ?? '';
+        // 口令里带「过期」⇒ 回 `200118`（本场已结束）。这是**刻意**留的一支：
+        // 它和 `200108`（口令无效）在插件里走**不同的**分支，必须能被端到端验到。
+        if (code.includes('过期')) return json(res, 200, { code: 200118, msg: '口令已失效' });
+        st.flowerCnt += 10;
+        return json(res, 200, {
+          code: 0,
+          msg: 'success',
+          result: { prizeId: 1, flowerNum: 10, prizeName: '小红花', prizeType: 1 },
+        });
+      }
+      if (url.pathname === '/ycloud/liveRoomFeedback/redFlower/queryRevivalFlowers') {
+        return json(res, 200, { code: 0, msg: 'success', result: 3 });
       }
 
       const finish = () => {

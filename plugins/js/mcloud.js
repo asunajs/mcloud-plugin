@@ -888,7 +888,7 @@ function clearError(store2, task, nowIso) {
 function sessionHeaders(s) {
   return { jwt: s.jwt, deviceId: s.deviceId, userAgent: s.userAgent, cookie: s.cookie };
 }
-function runTask(deps, spec, judge) {
+function runTask(deps, spec, judge2) {
   const late = deps.lateMs ?? 0;
   if (spec.skipIfLaterThanMs !== void 0 && late > spec.skipIfLaterThanMs) {
     const mins = Math.round(late / 6e4);
@@ -933,7 +933,7 @@ function runTask(deps, spec, judge) {
     recordError(deps.store, spec.task, note, deps.nowIso);
     return { ok: false, note };
   }
-  const verdict = judge(res.env, res);
+  const verdict = judge2(res.env, res);
   if (verdict.snapshot !== void 0 && spec.stateKey) {
     deps.store.setState(
       spec.stateKey,
@@ -1823,6 +1823,339 @@ function parseJson(raw) {
   }
 }
 
+// src/mcloud/liveFlower.ts
+var LIVE_ROOM_ORIGIN = "https://m.mcloud.139.com";
+var USER_INFO_PATH = "/ycloud/liveRoomFeedback/user/info";
+var JOURNALING_PATH = "/ycloud/visitlog/journaling";
+var FIRST_PARTICIPATE_GIVE_PATH = "/ycloud/liveRoomFeedback/firstParticipate/give";
+var DRAW_PATH = "/ycloud/liveRoomFeedback/redFlower/draw";
+var QUERY_REVIVAL_FLOWERS_PATH = "/ycloud/liveRoomFeedback/redFlower/queryRevivalFlowers";
+var LIVE_ROOM_MARKET_NAME = "National_LiveRoomFeedback";
+var LIVE_ROOM_JOURNALING_SOURCE_ID = "1007";
+var LIVE_ROOM_ACTIVITY_ID = "sign_in_3";
+var LIVE_ROOM_APP_VERSION = "12.6.0.0";
+var TO_SOURCE_ID = "001005";
+var LIVE_ROOM_USER_AGENT = "Mozilla/5.0 (iPad; CPU OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) MCloudApp/12.6.0 iPad AppLanguage/zh-CN";
+var CODE_KOULING_INVALID = 200108;
+var CODE_KOULING_ALREADY_DRAWN = 200112;
+var CODE_KOULING_EXPIRED = 200118;
+var JOURNALING_EVENTS = [
+  "National_LiveRoomFeedback_pv",
+  "National_LiveRoomFeedback_client",
+  "National_LiveRoomFeedback_client_isApp",
+  "National_LiveRoomFeedback_login",
+  "National_LiveRoomFeedback_flowerBtn"
+];
+function liveRoomPageReferer() {
+  return `${LIVE_ROOM_ORIGIN}/portal/yunClound/index.html?path=${LIVE_ROOM_MARKET_NAME}&sourceid=${LIVE_ROOM_JOURNALING_SOURCE_ID}&targetSourceId=${TO_SOURCE_ID}`;
+}
+function liveRoomHeaders() {
+  return {
+    Accept: "*/*",
+    activityid: LIVE_ROOM_ACTIVITY_ID,
+    appversion: LIVE_ROOM_APP_VERSION,
+    Origin: LIVE_ROOM_ORIGIN,
+    Referer: liveRoomPageReferer(),
+    "User-Agent": LIVE_ROOM_USER_AGENT
+  };
+}
+function liveRoomUrl(path, base) {
+  return `${(base ?? LIVE_ROOM_ORIGIN).replace(/\/+$/, "")}${path}`;
+}
+function userInfoRequest(base) {
+  return {
+    url: liveRoomUrl(USER_INFO_PATH, base),
+    method: "POST",
+    headers: { ...liveRoomHeaders(), "content-type": "application/json" },
+    body: "{}"
+  };
+}
+function journalingRequest(optkeyword, base) {
+  return {
+    url: liveRoomUrl(JOURNALING_PATH, base),
+    method: "POST",
+    headers: {
+      ...liveRoomHeaders(),
+      "content-type": "application/x-www-form-urlencoded;charset=UTF-8"
+    },
+    body: `module=uservisit&optkeyword=${encodeURIComponent(optkeyword)}&sourceid=${LIVE_ROOM_JOURNALING_SOURCE_ID}&marketName=${LIVE_ROOM_MARKET_NAME}`
+  };
+}
+function firstParticipateGiveRequest(base) {
+  return {
+    url: liveRoomUrl(FIRST_PARTICIPATE_GIVE_PATH, base),
+    method: "POST",
+    headers: liveRoomHeaders(),
+    body: void 0
+  };
+}
+function drawRequest(code, base) {
+  return {
+    url: `${liveRoomUrl(DRAW_PATH, base)}?code=${encodeURIComponent(code)}`,
+    method: "POST",
+    headers: liveRoomHeaders(),
+    body: void 0
+  };
+}
+function queryRevivalFlowersRequest(base) {
+  return {
+    url: liveRoomUrl(QUERY_REVIVAL_FLOWERS_PATH, base),
+    method: "GET",
+    headers: liveRoomHeaders(),
+    body: void 0
+  };
+}
+function intAt(o, k) {
+  const v = o[k];
+  if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
+  if (typeof v === "string" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
+  return void 0;
+}
+function strAt(o, k) {
+  const v = o[k];
+  return typeof v === "string" && v !== "" ? v : void 0;
+}
+function classifyDraw(env) {
+  if (!env || env.code === void 0) {
+    return { kind: "unparsable", code: env?.code, message: env?.message ?? "响应解不出来" };
+  }
+  const base = { code: env.code, message: env.message ?? "" };
+  switch (env.code) {
+    case 0: {
+      const r = env.result;
+      if (r === null || typeof r !== "object" || Array.isArray(r)) {
+        return { ...base, kind: "unparsable" };
+      }
+      const o = r;
+      return {
+        ...base,
+        kind: "succeeded",
+        result: {
+          prizeId: intAt(o, "prizeId") ?? 0,
+          flowerNum: intAt(o, "flowerNum") ?? 0,
+          prizeName: strAt(o, "prizeName"),
+          prizeType: intAt(o, "prizeType") ?? 0
+        }
+      };
+    }
+    case CODE_KOULING_ALREADY_DRAWN:
+      return { ...base, kind: "already-drawn" };
+    case CODE_KOULING_INVALID:
+      return { ...base, kind: "invalid-kouling" };
+    case CODE_KOULING_EXPIRED:
+      return { ...base, kind: "kouling-expired" };
+    default:
+      return { ...base, kind: "other" };
+  }
+}
+function drawLine(code, out) {
+  switch (out.kind) {
+    case "succeeded":
+      return `口令「${code}」领到 ${out.result?.flowerNum ?? 0} 朵`;
+    case "already-drawn":
+      return `口令「${code}」没领到：已兑换过`;
+    case "invalid-kouling":
+      return `口令「${code}」没领到：口令无效`;
+    case "kouling-expired":
+      return `口令「${code}」没领到：本场已结束（口令是对的）`;
+    case "other":
+      return `口令「${code}」没领到：上游回了未分类的码 ${out.code ?? "?"}${out.message ? `（${out.message}）` : ""}`;
+    default:
+      return `口令「${code}」没领到：响应解不出来`;
+  }
+}
+function parseBalance(env) {
+  const r = env?.result;
+  if (r === null || typeof r !== "object" || Array.isArray(r)) return void 0;
+  return intAt(r, "flowerCnt");
+}
+
+// src/mcloud/tasks/liveDraw.ts
+var STATE_DRAW = "mcloud.live.draw";
+var STATE_CLAIM_ENABLED = "mcloud.live.claim_enabled";
+function collectCodes(store2) {
+  const human = loadLiveCodes(store2)?.codes ?? [];
+  const auto = readLiveReading(store2)?.codes ?? [];
+  const out = [];
+  for (const c of [...human, ...auto]) {
+    const v = c.trim();
+    if (v && !out.includes(v)) out.push(v);
+    if (out.length >= MAX_CODES) break;
+  }
+  return out;
+}
+function loadDrawState(store2) {
+  const raw = store2.getState(STATE_DRAW);
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw);
+    return typeof v?.step === "string" ? v : null;
+  } catch {
+    return null;
+  }
+}
+function claimEnabled(store2) {
+  return store2.getState(STATE_CLAIM_ENABLED) === "1";
+}
+function setClaimEnabled(store2, on, nowIso) {
+  store2.setState(STATE_CLAIM_ENABLED, on ? "1" : "0", nowIso);
+}
+function stepRequest(s, base) {
+  switch (s.step) {
+    case "balance-before":
+      return { request: userInfoRequest(base), label: "① 读余额（领之前）" };
+    case "journaling": {
+      const ev = JOURNALING_EVENTS[s.journalingSent];
+      if (ev === void 0) return null;
+      return { request: journalingRequest(ev, base), label: `② 埋点 ${s.journalingSent + 1}/5` };
+    }
+    case "first-participate":
+      return { request: firstParticipateGiveRequest(base), label: "③ 首次参与惊喜奖" };
+    case "draw": {
+      const code = s.codes[s.drawIndex];
+      if (code === void 0) return null;
+      return {
+        request: drawRequest(code, base),
+        label: `④ 领口令「${code}」（${s.drawIndex + 1}/${s.codes.length}）`
+      };
+    }
+    case "revival":
+      return { request: queryRevivalFlowersRequest(base), label: "⑤ 复活花" };
+    case "balance-after":
+      return { request: userInfoRequest(base), label: "⑥ 再读余额（核对进账）" };
+    default:
+      return null;
+  }
+}
+function runLiveDraw(deps, opts = {}) {
+  const TASK = "live-room";
+  if (!opts.force && !claimEnabled(deps.store)) {
+    return { ok: true, idle: true, note: "领小红花未开启（界面上那个开关）" };
+  }
+  let s = loadDrawState(deps.store);
+  const codes = collectCodes(deps.store);
+  if (!s || s.step === "done") {
+    const done = s?.codes ?? [];
+    if (codes.length === 0) return { ok: true, idle: true, note: "没有口令可领（先抓主页或把口令填进输入框）" };
+    if (s?.step === "done" && sameList(done, codes)) {
+      return { ok: true, idle: true, note: `这一轮已跑完（${s.summary ?? ""}）；口令没变，不重复领` };
+    }
+    s = {
+      step: "balance-before",
+      journalingSent: 0,
+      drawIndex: 0,
+      codes,
+      results: [],
+      startedAt: deps.nowIso
+    };
+    deps.store.setState(STATE_DRAW, JSON.stringify(s), deps.nowIso);
+  }
+  const session = loadSession(deps.store);
+  if (!session || !session.jwt) {
+    const note = "未登录：领小红花要 jwttoken（见 docs/howto-session.md）";
+    recordError(deps.store, TASK, note, deps.nowIso);
+    return { ok: false, note };
+  }
+  const step = stepRequest(s, deps.baseUrl);
+  if (!step) {
+    s.step = "balance-after";
+    deps.store.setState(STATE_DRAW, JSON.stringify(s), deps.nowIso);
+    return { ok: true, note: "步骤下标越界，已跳到收尾" };
+  }
+  const res = callOnce(deps.transport, withSession(step.request, session.jwt));
+  const advance = judge(s, step.label, res, deps.nowIso);
+  deps.store.setState(STATE_DRAW, JSON.stringify(advance.state), deps.nowIso);
+  if (!advance.ok) {
+    recordError(deps.store, TASK, advance.note, deps.nowIso);
+    return { ok: false, note: advance.note };
+  }
+  clearError(deps.store, TASK, deps.nowIso);
+  return { ok: true, note: advance.note };
+}
+function withSession(req, jwt) {
+  return {
+    ...req,
+    headers: { ...req.headers, showloading: "true", jwttoken: jwt }
+  };
+}
+function judge(s, label, res, nowIso) {
+  const st = { ...s, results: [...s.results] };
+  if (res.env === void 0) {
+    const why = res.error ?? "未知失败";
+    return { state: st, ok: false, note: `${label} 失败：${why}` };
+  }
+  const biz = () => `${label}：上游回 ${res.env?.code ?? "?"}${res.env?.message ? `（${res.env.message}）` : ""}`;
+  switch (s.step) {
+    case "balance-before": {
+      if (res.env.code !== 0) return { state: st, ok: false, note: biz() };
+      const v = parseBalance(res.env);
+      if (v === void 0) {
+        return { state: st, ok: false, note: `${label}：响应里没有 result.flowerCnt（余额）` };
+      }
+      st.balanceBefore = v;
+      st.step = "journaling";
+      return { state: st, ok: true, note: `${label}：${v} 朵 → 开始领` };
+    }
+    case "journaling": {
+      st.journalingSent = s.journalingSent + 1;
+      if (st.journalingSent >= JOURNALING_EVENTS.length) st.step = "first-participate";
+      return {
+        state: st,
+        ok: true,
+        note: res.env.code === 0 ? `${label} 完成` : `${biz()}（埋点失败不拦领取）`
+      };
+    }
+    case "first-participate": {
+      const code = res.env.code;
+      st.firstParticipate = code === 0 ? "领到首次参与惊喜奖" : code === 200110 ? "已参与过（正常）" : `上游回 ${code ?? "?"}`;
+      st.step = "draw";
+      return { state: st, ok: true, note: `${label}：${st.firstParticipate}` };
+    }
+    case "draw": {
+      const code = s.codes[s.drawIndex] ?? "";
+      const out = classifyDraw(res.env);
+      st.results.push({
+        code,
+        kind: out.kind,
+        note: drawLine(code, out),
+        flowerNum: out.result?.flowerNum ?? 0
+      });
+      st.drawIndex = s.drawIndex + 1;
+      if (st.drawIndex >= st.codes.length) st.step = "revival";
+      return { state: st, ok: true, note: drawLine(code, out) };
+    }
+    case "revival": {
+      const r = res.env.result;
+      st.revival = typeof r === "number" ? r : void 0;
+      st.step = "balance-after";
+      return {
+        state: st,
+        ok: true,
+        note: res.env.code === 0 ? `${label}：${st.revival ?? "?"} 朵（**不是**小红花余额）` : biz()
+      };
+    }
+    case "balance-after": {
+      if (res.env.code !== 0) return { state: st, ok: false, note: biz() };
+      const v = parseBalance(res.env);
+      if (v === void 0) {
+        return { state: st, ok: false, note: `${label}：响应里没有 result.flowerCnt` };
+      }
+      st.balanceAfter = v;
+      st.step = "done";
+      st.finishedAt = nowIso;
+      const gained = (st.balanceAfter ?? 0) - (st.balanceBefore ?? 0);
+      const okCount = st.results.filter((r) => r.kind === "succeeded").length;
+      st.summary = `${st.results.length} 条口令领到 ${okCount} 条，进账 ${gained} 朵（${st.balanceBefore} → ${st.balanceAfter}）`;
+      return { state: st, ok: true, note: st.summary };
+    }
+    default:
+      return { state: st, ok: true, note: "没有可推进的步骤" };
+  }
+}
+function sameList(a, b) {
+  return a.length === b.length && a.every((v, i) => v === b[i]);
+}
+
 // src/mcloud/tasks/receive.ts
 var STATE_QUEUE = "mcloud.receive.queue";
 var STATE_RECEIVE = "mcloud.receive.last";
@@ -2207,7 +2540,11 @@ var TASK_META = [
   // 2026-10-13：**只读那一半已实现**（用户选的方案：加口令输入框 + 只做「抓主页 + 列出口令」）。
   // 抓主页走的是原项目 `xiaohongshu.ts` 的公开 GET + 逐字移植的提取器（41 条黄金向量守着）。
   // 领小红花那一步（写、会入群足迹）**仍然没做** —— 所以 risk 维持 `ledger` 不变。
-  { name: "live-room", title: "直播口令 → 小红花", group: "activity", kind: "Query", risk: "ledger", missed: "skip", deps: [], batch: false, hidden: false, implemented: true, evidence: "partial", note: "只做只读那半：抓公开主页 + 列出口令（**不需要凭据**）；口令要人给（那边无法鉴权）。领小红花那步没做" },
+  { name: "live-room", title: "直播口令（只看）", group: "activity", kind: "Query", risk: "none", missed: "catch-up", deps: [], batch: false, hidden: false, implemented: true, evidence: "partial", note: "抓口令发布方的**公开**主页 + 列出口令（**不需要凭据**）；口令要人给（那边无法鉴权）" },
+  // 写那半。**默认关**（`mcloud.live.claim_enabled`），开关与二次确认都在插件界面上。
+  // 它虽然记账，但**基本幂等**：同一条口令再领一次回 `200112`（已兑换过），不会重复发奖。
+  // 所以 risk 是 `ledger` 而不是 `irreversible`。
+  { name: "live-draw", title: "领小红花（写）", group: "activity", kind: "Action", risk: "ledger", missed: "skip", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "partial", note: "六步链 9+N 个请求，一次调用一步；**默认关**。同口令重领回 200112 ⇒ 基本幂等。⚠ 请求头形状未在真账号上验过" },
   // ── 网盘写入（未实现）──
   { name: "app-task", title: "App 任务（做任务）", group: "cloud-write", kind: "Action", risk: "write-cloud", missed: "skip", deps: ["jwt"], batch: false, hidden: false, implemented: false, note: "会上传 / 建删外链 / 发邮件" },
   { name: "task-expansion", title: "任务拓展", group: "cloud-write", kind: "Action", risk: "write-cloud", missed: "skip", deps: ["jwt"], batch: false, hidden: false, implemented: false, note: "会往网盘写文件（延期领取那一口已经接了，这是它的另一部分）" },
@@ -2404,8 +2741,56 @@ function mcloudRoutes(deps) {
         codes: loadLiveCodes(deps.store),
         url: loadLiveUrl(deps.store),
         emptyShellHintChars: EMPTY_SHELL_HINT_CHARS,
-        note: "口令本身**没法自动化**（主播在弹幕/小红书发，那边无法鉴权）⇒ 要人给；能自动的只有「抓主页 + 列出看到的口令」。领小红花那一步（写）还没做。"
+        note: "口令本身**没法自动化**（主播在弹幕/小红书发，那边无法鉴权）⇒ 要人给；能自动的只有「抓主页 + 列出看到的口令」。",
+        // 写那半（领小红花）：默认关，开关在这里
+        claim: {
+          enabled: claimEnabled(deps.store),
+          codes: collectCodes(deps.store),
+          state: loadDrawState(deps.store)
+        }
       })
+    },
+    {
+      // 开关：领小红花（写）。默认关。
+      path: `${base}/live/claim`,
+      method: "POST",
+      handler: (req) => {
+        const body = readBody(req);
+        if (typeof body.enabled !== "boolean") {
+          return json(400, { error: '需要 {"enabled": true|false}' });
+        }
+        setClaimEnabled(deps.store, body.enabled, deps.now());
+        deps.log(`领小红花：${body.enabled ? "已开启（会真往账号里写）" : "已关闭"}`);
+        return json(200, { enabled: claimEnabled(deps.store) });
+      }
+    },
+    {
+      // **推进一步**（一次调用一个上游请求 —— 面板执行预算 2000ms，见 liveDraw.ts 文件头）。
+      //
+      // 为什么是"一步"而不是"跑完整条链"：一个从头发到尾的函数会在第 2、3 个请求处
+      // 被判超时，而那时**上游的账已经记了**。界面上那个按钮是**浏览器循环调这里**
+      // 直到 `done` —— 每步一次 HTTP，每次一个上游请求。
+      path: `${base}/live/draw/step`,
+      method: "POST",
+      handler: () => {
+        const out = runLiveDraw(
+          {
+            store: deps.store,
+            transport: deps.transport,
+            nowIso: deps.now(),
+            baseUrl: loadBaseUrl(deps.store)
+          },
+          { force: true }
+          // 手动那一枪不受开关限制（开关只管 cron）
+        );
+        const state = loadDrawState(deps.store);
+        return json(200, {
+          ok: out.ok,
+          note: out.note,
+          done: state?.step === "done" || out.idle === true,
+          state
+        });
+      }
     },
     {
       path: `${base}/live/codes`,
@@ -2600,6 +2985,31 @@ register_cron("notice", SIGNIN_CRON, makeRunner("开启通知领AI豆", runNotic
 register_cron("app-task-matrix", SIGNIN_CRON, makeRunner("App 任务矩阵（只看）", runAppTaskMatrix));
 register_cron("exchange-list", SIGNIN_CRON, makeRunner("兑换清单（只看）", runExchangeList));
 register_cron("live-room", "*/30 7-23 * * *", makeRunner("直播口令（只看）", runLiveRoom));
+register_cron("live-draw", "*/5 7-23 * * *", (p) => {
+  try {
+    const out = runLiveDraw({
+      store,
+      transport,
+      nowIso: (/* @__PURE__ */ new Date()).toISOString(),
+      baseUrl: loadBaseUrl(store),
+      lateMs: p.lateMs
+    });
+    if (out.idle) return;
+    store.recordRun({
+      task: p.name,
+      runs: p.runs,
+      scheduledAt: p.scheduledAt,
+      firedAt: p.firedAt,
+      lateMs: p.lateMs,
+      ok: out.ok,
+      note: out.note
+    });
+    if (out.ok) log(`领小红花：${out.note}`);
+    else warn(`领小红花失败：${out.note}`);
+  } catch (e) {
+    error(`领小红花抛异常（这是插件 bug）：${e instanceof Error ? e.message : String(e)}`);
+  }
+});
 register_cron("prizes", "20 8 * * *", makeRunner("待领取奖品", runPrizes));
 register_cron("cloud-snapshot", "30 8 * * *", makeRunner("AI豆快照", runCloudSnapshot));
 every("selftest", "5m", (p) => {

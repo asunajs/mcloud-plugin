@@ -35,6 +35,13 @@ import {
   saveLiveUrl,
 } from './tasks/liveRoom.ts';
 import { XIAOHONGSHU_KOULING_PROFILE_URL } from './liveKouling.ts';
+import {
+  claimEnabled,
+  collectCodes,
+  loadDrawState,
+  runLiveDraw,
+  setClaimEnabled,
+} from './tasks/liveDraw.ts';
 import type { Store } from '../store/types.ts';
 import type { Transport } from './client.ts';
 
@@ -241,8 +248,55 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
           emptyShellHintChars: EMPTY_SHELL_HINT_CHARS,
           note:
             '口令本身**没法自动化**（主播在弹幕/小红书发，那边无法鉴权）⇒ 要人给；' +
-            '能自动的只有「抓主页 + 列出看到的口令」。领小红花那一步（写）还没做。',
+            '能自动的只有「抓主页 + 列出看到的口令」。',
+          // 写那半（领小红花）：默认关，开关在这里
+          claim: {
+            enabled: claimEnabled(deps.store),
+            codes: collectCodes(deps.store),
+            state: loadDrawState(deps.store),
+          },
         }),
+    },
+    {
+      // 开关：领小红花（写）。默认关。
+      path: `${base}/live/claim`,
+      method: 'POST',
+      handler: (req) => {
+        const body = readBody(req);
+        if (typeof body.enabled !== 'boolean') {
+          return json(400, { error: '需要 {"enabled": true|false}' });
+        }
+        setClaimEnabled(deps.store, body.enabled, deps.now());
+        deps.log(`领小红花：${body.enabled ? '已开启（会真往账号里写）' : '已关闭'}`);
+        return json(200, { enabled: claimEnabled(deps.store) });
+      },
+    },
+    {
+      // **推进一步**（一次调用一个上游请求 —— 面板执行预算 2000ms，见 liveDraw.ts 文件头）。
+      //
+      // 为什么是"一步"而不是"跑完整条链"：一个从头发到尾的函数会在第 2、3 个请求处
+      // 被判超时，而那时**上游的账已经记了**。界面上那个按钮是**浏览器循环调这里**
+      // 直到 `done` —— 每步一次 HTTP，每次一个上游请求。
+      path: `${base}/live/draw/step`,
+      method: 'POST',
+      handler: () => {
+        const out = runLiveDraw(
+          {
+            store: deps.store,
+            transport: deps.transport,
+            nowIso: deps.now(),
+            baseUrl: loadBaseUrl(deps.store),
+          },
+          { force: true }, // 手动那一枪不受开关限制（开关只管 cron）
+        );
+        const state = loadDrawState(deps.store);
+        return json(200, {
+          ok: out.ok,
+          note: out.note,
+          done: state?.step === 'done' || out.idle === true,
+          state,
+        });
+      },
     },
     {
       path: `${base}/live/codes`,
