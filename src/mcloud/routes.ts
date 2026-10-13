@@ -22,6 +22,7 @@ import {
   verifySession,
 } from './session.ts';
 import { TASK_NAMES, STATE_LAST_TASKLIST } from './tasks/taskList.ts';
+import { groupView } from './groups.ts';
 import type { Store } from '../store/types.ts';
 import type { Transport } from './client.ts';
 
@@ -155,6 +156,13 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
         deps.log(v ? `上游基址已改为 ${v}` : '上游基址已恢复为真上游');
         return json(200, { baseUrl: v || '(真上游)' });
       },
+    },
+    {
+      // 分组视图：把 20 条云盘任务按**风险与依赖**分组，附每条的实际状态。
+      // 界面（M4）直接吃这个; 现在也能 curl 看。
+      path: `${base}/groups`,
+      method: 'GET',
+      handler: () => json(200, groupView(deps.store)),
     },
     {
       path: `${base}/tasks`,

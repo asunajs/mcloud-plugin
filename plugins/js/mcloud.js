@@ -1500,6 +1500,111 @@ function loadBaseUrl(store2) {
   return t.replace(/\/+$/, "");
 }
 
+// src/mcloud/groups.ts
+var GROUPS = [
+  {
+    id: "plugin",
+    title: "插件自身",
+    why: "不是云盘的事，是这个插件自己的健康检查与自检",
+    order: 0
+  },
+  {
+    id: "signin",
+    title: "签到族",
+    why: "无害且幂等：重复只会回「今日已签到」。可以放心点、可以补跑",
+    order: 1
+  },
+  { id: "daily", title: "通知与趣玩", why: "记账类，幂等，漏了可以补", order: 2 },
+  { id: "query", title: "查询与快照", why: "只读，点多少次都无所谓", order: 3 },
+  {
+    id: "activity",
+    title: "活动与站票",
+    why: "要**另一套凭据**（活动会话票，与 jwt 无关）—— 那份票不在，点了必然失败",
+    order: 4
+  },
+  {
+    id: "cloud-write",
+    title: "网盘写入",
+    why: "会往你的网盘里写文件 / 建删外链 / 发邮件 —— 想清楚再点",
+    order: 5
+  },
+  {
+    id: "risky",
+    title: "高风险",
+    why: "真扣 AI豆、不可回滚 —— 默认关闭，要开必须自己想清楚",
+    order: 6
+  }
+];
+var TASK_META = [
+  // ── 插件自身 ──
+  { name: "selftest", title: "沙箱自检", group: "plugin", kind: "Query", risk: "none", missed: "catch-up", deps: [], batch: false, hidden: false, implemented: true, note: "密码学/UTF-8/base64/SQLite 都跑一遍" },
+  { name: "diag", title: "调度健康", group: "plugin", kind: "Query", risk: "none", missed: "catch-up", deps: [], batch: false, hidden: false, implemented: true, note: "记录每次触发的调度延迟（面板 F-001 的那条测量）" },
+  { name: "session-check", title: "会话体检", group: "plugin", kind: "Query", risk: "none", missed: "catch-up", deps: [], batch: false, hidden: false, implemented: true, note: "每天 7:50 先问一次上游还认不认这份凭据" },
+  // ── 签到族（8 条，全实现）──
+  { name: "sign", title: "每日签到", group: "signin", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["jwt"], batch: true, hidden: false, implemented: true, note: "三段式：问状态 → 提交 → 回查（判据是回查）" },
+  { name: "receive", title: "领取AI豆", group: "signin", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["jwt"], batch: true, hidden: false, implemented: true, note: "逐条独立；延期领取走另一口端点" },
+  { name: "multiple", title: "签到翻倍", group: "signin", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["jwt"], batch: true, hidden: false, implemented: true, note: "每月一次机会 —— 门槛由插件自己判，条件不成立时一个字节都不发" },
+  { name: "backup-gift", title: "备份好礼", group: "signin", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["jwt"], batch: true, hidden: false, implemented: true, note: "**GET 却是写**；两步：先问能不能领，能领才领" },
+  { name: "revival", title: "用复活卡/回馈卡", group: "signin", kind: "Action", risk: "irreversible", missed: "skip", deps: ["jwt"], batch: false, hidden: false, implemented: true, note: "**不可逆** —— 晚超过 2 小时就不做" },
+  { name: "prizes", title: "待领取奖品", group: "query", kind: "Query", risk: "none", missed: "catch-up", deps: ["jwt"], batch: false, hidden: false, implemented: true },
+  { name: "task-list", title: "任务清单", group: "query", kind: "Query", risk: "none", missed: "catch-up", deps: ["jwt"], batch: false, hidden: false, implemented: true },
+  { name: "cloud-snapshot", title: "AI豆余额快照", group: "query", kind: "Query", risk: "none", missed: "catch-up", deps: ["jwt"], batch: false, hidden: false, implemented: true, note: "只取第一页；一页装满会如实说可能还有下一页" },
+  // ── 通知与趣玩（未实现）──
+  { name: "notice", title: "开启通知领AI豆", group: "daily", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["jwt"], batch: true, hidden: false, implemented: false },
+  { name: "fun-ai", title: "趣玩AI抽奖", group: "daily", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["jwt"], batch: true, hidden: false, implemented: false },
+  { name: "msg-push", title: "消息推送任务", group: "daily", kind: "Action", risk: "ledger", missed: "skip", deps: ["jwt"], batch: false, hidden: false, implemented: false },
+  // ── 活动与站票（未实现）──
+  { name: "cloud-phone-redpack", title: "红包派对", group: "activity", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["activity-token"], batch: false, hidden: false, implemented: false, note: "⚠ 读到没见过的状态码时**刻意不发写**（旧 TS 会发）" },
+  { name: "play-ai-special", title: "拍拍盘点", group: "activity", kind: "Query", risk: "none", missed: "catch-up", deps: ["jwt", "activity-token"], batch: false, hidden: false, implemented: false },
+  { name: "live-room", title: "直播口令 → 小红花", group: "activity", kind: "Action", risk: "ledger", missed: "skip", deps: ["jwt", "websocket"], batch: false, hidden: false, implemented: false, note: "需要 WebSocket 长连 —— 沙箱里没有 WS" },
+  // ── 网盘写入（未实现）──
+  { name: "app-task", title: "App 任务（做任务）", group: "cloud-write", kind: "Action", risk: "write-cloud", missed: "skip", deps: ["jwt"], batch: false, hidden: false, implemented: false, note: "会上传 / 建删外链 / 发邮件" },
+  { name: "task-expansion", title: "任务拓展", group: "cloud-write", kind: "Action", risk: "write-cloud", missed: "skip", deps: ["jwt"], batch: false, hidden: false, implemented: false, note: "会往网盘写文件（延期领取那一口已经接了，这是它的另一部分）" },
+  { name: "ai-avatar", title: "AI 头像生成与抽奖", group: "cloud-write", kind: "Action", risk: "write-cloud", missed: "skip", deps: ["basic+jwt"], batch: false, hidden: false, implemented: false, note: "往网盘写图 —— 原实现里默认就是**关**的" },
+  // ── 高风险（未实现）──
+  { name: "exchange", title: "兑换奖品", group: "risky", kind: "Action", risk: "spend", missed: "skip", deps: ["jwt", "slider"], batch: false, hidden: true, implemented: false, note: "**真扣 AI豆、不可回滚**，还要过滑块 —— 上游没有幂等，本插件里必须默认关 + 二次确认" },
+  { name: "auth-refresh", title: "刷新 auth 凭据", group: "risky", kind: "Action", risk: "irreversible", missed: "catch-up", deps: ["basic+jwt"], batch: false, hidden: true, implemented: false, note: "换 token —— 唯一不需要 jwt 的写操作" }
+];
+function groupView(store2) {
+  const recent = store2.recentRuns(200);
+  const byTask = /* @__PURE__ */ new Map();
+  for (const r of recent) {
+    const t = String(r.task ?? "");
+    if (!t) continue;
+    const list = byTask.get(t) ?? [];
+    if (list.length < 3) {
+      list.push({
+        firedAt: String(r.fired_at ?? ""),
+        ok: Number(r.ok ?? 0) === 1,
+        note: String(r.note ?? ""),
+        lateMs: Number(r.late_ms ?? 0)
+      });
+    }
+    byTask.set(t, list);
+  }
+  const groups = GROUPS.map((g) => {
+    const tasks = TASK_META.filter((t) => t.group === g.id).map((t) => ({
+      ...t,
+      lastError: store2.getState(`mcloud.last_error.${t.name}`) ?? "",
+      recent: byTask.get(t.name) ?? []
+    }));
+    return {
+      ...g,
+      tasks,
+      implemented: tasks.filter((t) => t.implemented).length,
+      total: tasks.length
+    };
+  });
+  return {
+    groups,
+    totals: {
+      tasks: TASK_META.length,
+      implemented: TASK_META.filter((t) => t.implemented).length,
+      risky: TASK_META.filter((t) => t.risk === "spend" || t.risk === "irreversible").length
+    }
+  };
+}
+
 // src/mcloud/routes.ts
 var PLUGIN = "mcloud";
 var JSON_HEADERS = { "content-type": "application/json; charset=utf-8" };
@@ -1586,6 +1691,13 @@ function mcloudRoutes(deps) {
         deps.log(v ? `上游基址已改为 ${v}` : "上游基址已恢复为真上游");
         return json(200, { baseUrl: v || "(真上游)" });
       }
+    },
+    {
+      // 分组视图：把 20 条云盘任务按**风险与依赖**分组，附每条的实际状态。
+      // 界面（M4）直接吃这个; 现在也能 curl 看。
+      path: `${base}/groups`,
+      method: "GET",
+      handler: () => json(200, groupView(deps.store))
     },
     {
       path: `${base}/tasks`,

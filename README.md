@@ -32,6 +32,39 @@ npm ci && npm run all
 （todaySigned / curMonthBackupSignAccept / receiveList / backupCanReceive）。
 它和你跑的是**同一份脚本**，CI 里跑的也是这一份。
 
+## 两个结构上的选择（以及一个已经打通的前提）
+
+`mcloud` 的任务多（20 条），所以迟早要回答两个问题：
+
+**① 怎么分组？** 面板只是"插件 → 任务"两层，没有分组概念。三条路：
+
+| 做法 | 代价 |
+|---|---|
+| **一个插件 + 分组界面**（推荐先走这条） | 不用改面板；11 条任务已经在一个插件里、共用会话与状态，分组只是**显示与操作**的组织方式。分组模型已经写好了：`src/mcloud/groups.ts`（按**风险与依赖**分组，不是按功能名），接口 `GET /plugins/mcloud/api/groups` |
+| 一个组一个插件（`mcloud-signin.js`…） | 每组能单独启停 ✓，但每组各有一份代码与一个 QuickJS 上下文，内存按组数乘 |
+| 面板侧加「组」概念 | 最干净，但要改面板（jobs 加 group 字段 + 界面），且不只为本插件服务 |
+
+分组维度**照 mcloud 自己的任务清单来**（类型 / 副作用 / 依赖 / 批量 / 隐藏 / 错过），
+不自己发明 —— 操作一条任务前，人真正要知道的是「它安不安全、要哪种凭据」。
+
+**② 能不能"一份 core、插件 import 函数"？** —— **现在能了**。
+面板的模块加载器原先只认 `host-api`，相对 `import` 一律失败（而报错文案还建议你用它，
+见 [`docs/findings.md`](docs/findings.md) F-008）。这条已经修好并验证：
+
+```js
+// plugins/js/mcloud-signin.js
+import { runSign, runReceive } from './lib/signin.js';   // ← 模块放子目录
+import { log } from 'host-api';
+```
+
+* 模块标识是 `file://` URL（`import.meta.url` 可用）、活绑定、循环导入、动态 import 都成立
+* **同一份 core 被多个插件 import 只加载一次**（按 URL 缓存）——
+  这是省内存的关键：不必为了共用 core 而接受 N 份打包产物
+* 另有够用的 `require`（CJS 兼容）：`require('host-api')`、`require('./lib/x.js')`，
+  按 CJS 规矩解析（可省扩展名），读 ES 模块时会明确告诉你「该用 import」
+
+也就是说：**先按①的第一条走（一个插件 + 分组），需要拆的时候②那条路已经开了。**
+
 ## 装到你自己的面板上
 
 ```bash
