@@ -180,7 +180,15 @@ export const TASK_META: TaskMeta[] = [
   // ── 活动与站票（未实现）──
   { name: 'cloud-phone-redpack', title: '红包派对', group: 'activity', kind: 'Action', risk: 'ledger', missed: 'catch-up', deps: ['activity-token'], batch: false, hidden: false, implemented: false, note: '⚠ 读到没见过的状态码时**刻意不发写**（旧 TS 会发）' },
   { name: 'play-ai-special', title: '拍拍盘点', group: 'activity', kind: 'Query', risk: 'none', missed: 'catch-up', deps: ['jwt', 'activity-token'], batch: false, hidden: false, implemented: false },
-  { name: 'live-room', title: '直播口令 → 小红花', group: 'activity', kind: 'Action', risk: 'ledger', missed: 'skip', deps: ['jwt', 'websocket'], batch: false, hidden: false, implemented: false, note: '需要 WebSocket 长连 —— 沙箱里没有 WS' },
+  // ⚠️ 这条我**改过两次口径**，第三次才对：
+  //   ① 先说「需要 WebSocket ⇒ 做不了」✗
+  //   ② 再说「两个来源地位相同（WS 弹幕 / 小红书主页），少一条腿不等于走不了」——
+  //      这一半是对的：小红书主页确实只是一次**公开 GET**
+  //   ③ 但源码里还有一句我漏了：**口令（codes）不是可选项** ——
+  //      「小红书那条口令**没法自动化**（那边**无法鉴权**）」，只能由**人给**
+  //   ⇒ 能自动的是「抓主页」，不能自动的是「口令本身」。这是两件事。
+  //   所以拦路石不是 WS，是**缺一个输入口**（让人把口令填进来）。
+  { name: 'live-room', title: '直播口令 → 小红花', group: 'activity', kind: 'Action', risk: 'ledger', missed: 'skip', deps: ['jwt'], batch: false, hidden: false, implemented: false, evidence: 'partial', note: '能自动抓小红书主页（公开 GET）；但口令要**人给**（那边无法鉴权）—— 缺的是一个输入口' },
 
   // ── 网盘写入（未实现）──
   { name: 'app-task', title: 'App 任务（做任务）', group: 'cloud-write', kind: 'Action', risk: 'write-cloud', missed: 'skip', deps: ['jwt'], batch: false, hidden: false, implemented: false, note: '会上传 / 建删外链 / 发邮件' },
