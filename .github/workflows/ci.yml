@@ -85,9 +85,31 @@ jobs:
           PLUGINS_DIR="$GITHUB_WORKSPACE/plugin/plugins" \
             ./target/release/plugin-panel > "$TMP/panel.log" 2>&1 &
           echo "PID=$!" >> "$GITHUB_ENV"
-          for _ in $(seq 1 60); do
-            if curl -fsS -H 'X-Panel-Token: ci-token-plugin' \
-                 http://127.0.0.1:18795/api/state -o "$TMP/state.json"; then break; fi
+
+      # 等引擎把插件装完，**不能只等 HTTP 起来**。
+      #
+      # 第一次跑就是在这一步红的：`/api/state` 一开始能返回 200 时，引擎还没装完插件，
+      # `plugins` 是空数组 —— 断言在第 40 毫秒就下结论，插件在第 80 毫秒才装好。
+      # 这是这个项目里反复出现的一类错（「断言下得太早」），所以这里等的是
+      # **插件真的带着任务出现**，而不是接口通不通。
+      # 顺带这条也是 F-003：`/api/state` 无法区分「没有插件」和「还没装完」。
+      - name: 等插件装好（不是等接口通）
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 60); do
+            curl -fsS -H 'X-Panel-Token: ci-token-plugin' \
+              http://127.0.0.1:18795/api/state -o "$TMP/state.json" 2>/dev/null || true
+            if python3 -c "
+          import json, os, sys
+          try:
+              s = json.load(open(os.environ['TMP'] + '/state.json'))
+          except Exception:
+              sys.exit(1)
+          sys.exit(0 if any(p['name'] == 'mcloud' and p.get('tasks') for p in s.get('plugins', [])) else 1)
+          " 2>/dev/null; then
+              echo "✅ 插件已装好（第 $i 次探测）"
+              break
+            fi
             sleep 0.5
           done
 
