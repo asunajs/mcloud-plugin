@@ -10,7 +10,7 @@
    每压出一个就回面板仓库修掉，并在 [`docs/findings.md`](docs/findings.md) 记下
    「怎么测的、什么数、改了什么」
 
-> **状态：M0 已完成，正在往 M1 走。** 决策见下，压出来的问题见
+> **状态：M0 完成，M1 进行中（上游层：签名 / H5 头画像 / 信封 / 调用层已落地并有测试）。** 决策见下，压出来的问题见
 > [`docs/findings.md`](docs/findings.md)（已记两条，都在面板侧）。
 
 ## M0 做了什么（已完成）
@@ -24,6 +24,22 @@
 | 插件本体 | `selftest`（在沙箱里自证密码学/SQLite/宿主 API）与 `diag`（每次触发记 `lateMs`，喂「调度精度」那条测量） |
 | 闸门 | `npm run check-build`：产物与源码不一致就红 —— 防「改了源码忘重新构建，测试还全绿」 |
 | CI | 两层：`check`（~30s，每次推送都跑）+ `panel-e2e`（**真 ARM64 上现构建面板**、把插件装进去跑，只在 tag / 手动 / PR 上跑） |
+
+### M1 进行中：上游层（已完成的部分）
+
+复刻自 mcloud 的 `mcloud-crypto` / `mcloud-upstream`，逐条都在测试里钉住：
+
+| 模块 | 内容 |
+|---|---|
+| `src/mcloud/sign.ts` | 签名公式 `md5(salt + id + ts + nonce + other + salt)` + 两个盐值 + 未知 key 回落 1 |
+| `src/mcloud/rand.ts` | UUID v4 与 nonce（**沙箱没有随机源** → `Math.random` + 计数，取舍写在文件头，见 F-005） |
+| `src/mcloud/envelope.ts` | 签到族信封：`code` 数字或数字字符串都收、`msg`/`message` 两种键名、解析不出来给 **-1 而不是 0** |
+| `src/mcloud/h5.ts` | H5 头画像（`activityid` 跟 marketname 走、`appversion` 四段、`jwttoken` **小写**）+ 13 个端点常量 |
+| `src/mcloud/client.ts` | 可注入 transport 的调用层（插件里注入 `http_fetch`，测试里注入桩）+ cookie 解析（**`Expires` 里的逗号不能当分隔符**）+ 单次耗时预警线 1500ms |
+
+测试 16 项，其中三条是「容易顺手优化掉」的行为：签名的 **timestamp 不做数值归一化**
+（`'007'` 不等于 `'7'`）、`result` 形状不同**各写各的解析**（不写「两种都吃」的兼容）、
+`jwttoken` 头名**不能被驼峰化**。
 
 **沙箱内自检 6/6 通过**（在真面板里跑的，不是 Node 里）：
 
