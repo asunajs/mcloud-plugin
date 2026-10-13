@@ -66,6 +66,8 @@ export async function startMock(options = {}) {
   //
   // 默认起点：今天还没签、有 2 条待领（其中 1 条是延期领取）、有翻倍机会、备份好礼可领。
   const st = {
+    // 通知任务：能不能领（reward 之后翻成 false）
+    noticeClaimable: true,
     todaySigned: false,
     receiveList: [{ recordId: 'r1', cloudType: 2 }, { recordId: 'r2', cloudType: 1 }],
     curMonthBackup: true,
@@ -126,6 +128,24 @@ export async function startMock(options = {}) {
           '/market/backupgift/receive': FIXTURES.backupGiftReceive,
         };
         // ── 会改变状态的那几口 ──
+        if (url.pathname === '/ycloud/openemailsms-service/openEmailsms/getTaskInfo') {
+          // 四个字段名来自实拍：cloudStatus / sum / progress / taskStatus。
+          // sum 与 progress 是**假数**（含义未证实，插件只原样搬运）。
+          const cloud = st.noticeClaimable ? 1 : 2;
+          return json(res, 200, {
+            code: 0,
+            msg: 'success',
+            result: {
+              taskOneInfo: { cloudStatus: cloud, sum: 10, progress: 16, taskStatus: 3 },
+              taskTwoInfo: { cloudStatus: cloud, sum: 10, progress: 16, taskStatus: 3 },
+            },
+          });
+        }
+        if (url.pathname === '/ycloud/openemailsms-service/openEmailsms/reward') {
+          st.noticeClaimable = false;
+          // 实拍响应就是这个形状 —— 连 result 都没有，报不出到账数
+          return json(res, 200, { code: 0, msg: 'success' });
+        }
         if (url.pathname === '/ycloud/signin/page/infoV3') {
           return json(res, 200, {
             code: 0,

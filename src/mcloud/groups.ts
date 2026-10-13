@@ -128,19 +128,19 @@ export const TASK_META: TaskMeta[] = [
   { name: 'session-check', title: '会话体检', group: 'plugin', kind: 'Query', risk: 'none', missed: 'catch-up', deps: [], batch: false, hidden: false, implemented: true, note: '每天 7:50 先问一次上游还认不认这份凭据' },
 
   // ── 签到族（8 条，全实现）──
-  { name: 'sign', title: '每日签到', group: 'signin', kind: 'Action', risk: 'ledger', missed: 'catch-up', deps: ['jwt'], batch: true, hidden: false, implemented: true, note: '三段式：问状态 → 提交 → 回查（判据是回查）' },
-  { name: 'receive', title: '领取AI豆', group: 'signin', kind: 'Action', risk: 'ledger', missed: 'catch-up', deps: ['jwt'], batch: true, hidden: false, implemented: true, note: '逐条独立；延期领取走另一口端点' },
-  { name: 'multiple', title: '签到翻倍', group: 'signin', kind: 'Action', risk: 'ledger', missed: 'catch-up', deps: ['jwt'], batch: true, hidden: false, implemented: true, note: '每月一次机会 —— 门槛由插件自己判，条件不成立时一个字节都不发' },
-  { name: 'backup-gift', title: '备份好礼', group: 'signin', kind: 'Action', risk: 'ledger', missed: 'catch-up', deps: ['jwt'], batch: true, hidden: false, implemented: true, note: '**GET 却是写**；两步：先问能不能领，能领才领' },
-  { name: 'revival', title: '用复活卡/回馈卡', group: 'signin', kind: 'Action', risk: 'irreversible', missed: 'skip', deps: ['jwt'], batch: false, hidden: false, implemented: true, note: '**不可逆** —— 晚超过 2 小时就不做' },
-  { name: 'prizes', title: '待领取奖品', group: 'query', kind: 'Query', risk: 'none', missed: 'catch-up', deps: ['jwt'], batch: false, hidden: false, implemented: true },
-  { name: 'task-list', title: '任务清单', group: 'query', kind: 'Query', risk: 'none', missed: 'catch-up', deps: ['jwt'], batch: false, hidden: false, implemented: true },
-  { name: 'cloud-snapshot', title: 'AI豆余额快照', group: 'query', kind: 'Query', risk: 'none', missed: 'catch-up', deps: ['jwt'], batch: false, hidden: false, implemented: true, note: '只取第一页；一页装满会如实说可能还有下一页' },
+  { name: 'sign', title: '每日签到', group: 'signin', kind: 'Action', risk: 'ledger', missed: 'catch-up', deps: ['jwt'], batch: true, hidden: false, implemented: true, evidence: 'captured', note: '三段式：问状态 → 提交 → 回查（判据是回查）' },
+  { name: 'receive', title: '领取AI豆', group: 'signin', kind: 'Action', risk: 'ledger', missed: 'catch-up', deps: ['jwt'], batch: true, hidden: false, implemented: true, evidence: 'captured', note: '逐条独立；延期领取走另一口端点' },
+  { name: 'multiple', title: '签到翻倍', group: 'signin', kind: 'Action', risk: 'ledger', missed: 'catch-up', deps: ['jwt'], batch: true, hidden: false, implemented: true, evidence: 'captured', note: '每月一次机会 —— 门槛由插件自己判，条件不成立时一个字节都不发' },
+  { name: 'backup-gift', title: '备份好礼', group: 'signin', kind: 'Action', risk: 'ledger', missed: 'catch-up', deps: ['jwt'], batch: true, hidden: false, implemented: true, evidence: 'captured', note: '**GET 却是写**；两步：先问能不能领，能领才领' },
+  { name: 'revival', title: '用复活卡/回馈卡', group: 'signin', kind: 'Action', risk: 'irreversible', missed: 'skip', deps: ['jwt'], batch: false, hidden: false, implemented: true, evidence: 'captured', note: '**不可逆** —— 晚超过 2 小时就不做' },
+  { name: 'prizes', title: '待领取奖品', group: 'query', kind: 'Query', risk: 'none', missed: 'catch-up', deps: ['jwt'], batch: false, hidden: false, implemented: true, evidence: 'captured' },
+  { name: 'task-list', title: '任务清单', group: 'query', kind: 'Query', risk: 'none', missed: 'catch-up', deps: ['jwt'], batch: false, hidden: false, implemented: true, evidence: 'captured' },
+  { name: 'cloud-snapshot', title: 'AI豆余额快照', group: 'query', kind: 'Query', risk: 'none', missed: 'catch-up', deps: ['jwt'], batch: false, hidden: false, implemented: true, evidence: 'captured', note: '只取第一页；一页装满会如实说可能还有下一页' },
 
   // ── 通知与趣玩（未实现）──
   // 它用**签到页那张票**（`SessionRecipe::SignInPage`）—— 就是本插件手里已有的会话，
   // 所以「只依赖 jwt」这条是对的。`getTaskInfo` 有实拍；`reward` 只实拍到成功那一枪。
-  { name: 'notice', title: '开启通知领AI豆', group: 'daily', kind: 'Action', risk: 'ledger', missed: 'catch-up', deps: ['jwt'], batch: true, hidden: false, implemented: false, evidence: 'partial', note: '有手动前置（要去 App 里开邮箱/短信通知）；失败形态零样本' },
+  { name: 'notice', title: '开启通知领AI豆', group: 'daily', kind: 'Action', risk: 'ledger', missed: 'catch-up', deps: ['jwt'], batch: true, hidden: false, implemented: true, evidence: 'partial', note: '有手动前置（判不出来，见 notice.ts 文件头 ③）；reward 不报到账数 ⇒ 靠下一轮回查' },
   // 更正：换出该页 jwttoken 的那一步**在实拍归档里没有** ⇒ 现在做不了（不是"只依赖 jwt"）
   { name: 'fun-ai', title: '趣玩AI抽奖', group: 'activity', kind: 'Action', risk: 'ledger', missed: 'catch-up', deps: ['activity-token'], batch: true, hidden: false, implemented: false, evidence: 'no-ticket', note: '换票那步没抓到 ⇒ 做不了' },
   // 更正：整条链在 `/ycloud/msgPushOn/` 下、要**另一张票**（marketName=msgpushon /

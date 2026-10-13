@@ -78,7 +78,7 @@ try:
 except Exception:
     sys.exit(1)
 names = {j['name'] for j in s.get('jobs', []) if j.get('plugin') == 'mcloud'}
-sys.exit(0 if {'task-list', 'prizes', 'sign', 'backup-gift', 'cloud-snapshot'} <= names else 1)
+sys.exit(0 if {'task-list', 'prizes', 'sign', 'backup-gift', 'cloud-snapshot', 'notice'} <= names else 1)
 PY
   sleep 0.5
 done
@@ -121,6 +121,13 @@ done
 curl -fsS -o /dev/null "${W[@]}" -X POST "$B/api/tasks/mcloud/receive/run"
 printf '   receive（第 4 次：延期领取）✓\n'
 sleep 0.4
+
+# 通知任务：查两个槽 → 能领才领 → 下一轮**回查**（reward 不报到账数，成败只能靠回查）
+for i in 1 2 3; do
+  curl -fsS -o /dev/null "${W[@]}" -X POST "$B/api/tasks/mcloud/notice/run"
+  printf '   notice（第 %s 次）✓\n' "$i"
+  sleep 0.4
+done
 
 curl -fsS "${H[@]}" "$B/plugins/mcloud/api/tasks" -o "$TMP/plugin.json"
 curl -fsS "http://127.0.0.1:$MOCK_PORT/_debug/requests" -o "$TMP/mock.json"
@@ -199,4 +206,17 @@ assert sig_seq.count('/ycloud/signin/page/infoV3') >= 2, '回查那一步没发�
 print('   ✅ 全部断言通过：query 逐字、备份好礼两步、签到三段式（含回查）、')
 print('      翻倍门槛、逐条领取、只领一次、没有任务报错 —— 且 mock 侧状态真的变了')
 print('   ✅ 面板日志：' + sys.argv[1].replace('plugin.json', 'panel.log'))
+PY
+
+# 通知任务：`reward` **只该发一次**（它真的会入账），且 mock 侧状态必须真的变了
+python3 - "$TMP/mock.json" "$TMP/mock-state.json" <<'PY'
+import json, sys
+reqs = json.dumps(json.load(open(sys.argv[1])), ensure_ascii=False)
+st = json.load(open(sys.argv[2]))
+info_n = reqs.count('getTaskInfo')
+reward_n = reqs.count('/openEmailsms/reward')
+assert info_n >= 2, f'通知任务该查过至少两次状态（第二次是回查），实际 {info_n}'
+assert reward_n == 1, f'reward 只该发一次（会真入账），实际 {reward_n}'
+assert st.get('noticeClaimable') is False, f'mock 侧状态没变：{st.get("noticeClaimable")}'
+print('   ✅ 通知任务：查过状态、只领一次、mock 侧真的变成已领')
 PY

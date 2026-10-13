@@ -770,6 +770,11 @@ var EP = {
   cloudRecordV2: { origin: MCLOUD_HOST, path: "/ycloud/signin/public/cloudRecordV2" },
   taskListV2: { origin: MCLOUD_HOST, path: "/ycloud/signin/task/taskListV2" },
   taskListV3: { origin: MCLOUD_HOST, path: "/ycloud/signin/task/taskListV3" },
+  // 通知任务（`notice`）：两个端点都在主域，**裸 GET、不带查询参数**。
+  // ⚠ "不带参数"本身是个**未验证的选择** —— 实拍的完整 URL 被脱敏，只见到路径。
+  //   真要出问题（例如回了另一个活动的状态），改这一处加参数即可。
+  noticeInfo: { origin: MCLOUD_HOST, path: "/ycloud/openemailsms-service/openEmailsms/getTaskInfo" },
+  noticeReward: { origin: MCLOUD_HOST, path: "/ycloud/openemailsms-service/openEmailsms/reward" },
   backupGiftInfo: { origin: BACKUP_GIFT_HOST, path: "/market/backupgift/info" },
   backupGiftReceive: { origin: BACKUP_GIFT_HOST, path: "/market/backupgift/receive" }
 };
@@ -802,6 +807,9 @@ var EP_METHOD = {
   // body 带 group=<组名>
   taskListV3: "POST",
   // body 带 group=""（空串）
+  noticeInfo: "GET",
+  noticeReward: "GET",
+  // 写（会真入账），但上游用 GET
   backupGiftInfo: "GET",
   // 另一个域
   backupGiftReceive: "GET"
@@ -1192,6 +1200,115 @@ function runBackupGift(deps) {
   return runBackupGiftInfo(deps);
 }
 
+// src/mcloud/tasks/notice.ts
+var STATE_CAN2 = "mcloud.notice.can_claim";
+var STATE_INFO2 = "mcloud.notice.info";
+var NOTICE_CLOUD_STATUS_UNCLAIMED = 1;
+var NOTICE_TASK_STATUS_DONE = 3;
+function asInt(v) {
+  if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
+  if (typeof v === "string" && v.trim() !== "" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
+  return void 0;
+}
+function parseNoticeSlot(raw) {
+  if (raw === null || raw === void 0 || typeof raw !== "object") return void 0;
+  const o = raw;
+  const slot = {
+    cloudStatus: asInt(o.cloudStatus ?? o.cloud_status),
+    sum: asInt(o.sum),
+    progress: asInt(o.progress),
+    taskStatus: asInt(o.taskStatus ?? o.task_status)
+  };
+  const any = slot.cloudStatus !== void 0 || slot.sum !== void 0 || slot.progress !== void 0 || slot.taskStatus !== void 0;
+  return any ? slot : void 0;
+}
+function parseNoticeInfo(result) {
+  const o = resultObject({ code: 0, message: "", result, ok: true });
+  return {
+    one: parseNoticeSlot(o.taskOneInfo ?? o.task_one_info),
+    two: parseNoticeSlot(o.taskTwoInfo ?? o.task_two_info)
+  };
+}
+function slotJudged(slot) {
+  return !!slot && slot.cloudStatus !== void 0 && slot.taskStatus !== void 0;
+}
+function slotClaimable(slot) {
+  if (!slotJudged(slot)) return false;
+  return slot.cloudStatus === NOTICE_CLOUD_STATUS_UNCLAIMED && slot.taskStatus === NOTICE_TASK_STATUS_DONE;
+}
+function noticePlan(info) {
+  const slots = [
+    ["槽一", info.one],
+    ["槽二", info.two]
+  ];
+  const claimable = slots.filter(([, s]) => slotClaimable(s)).map(([n]) => n);
+  const unjudged = slots.filter(([, s]) => s && !slotJudged(s)).map(([n]) => n);
+  const missing = slots.filter(([, s]) => !s).map(([n]) => n);
+  const parts = [];
+  if (claimable.length) parts.push(`${claimable.join("/")}可领`);
+  if (unjudged.length) parts.push(`${unjudged.join("/")}判据字段不全（不参与判断，避免静默漏领）`);
+  if (missing.length) parts.push(`${missing.join("/")}上游没给`);
+  if (!parts.length) parts.push("两槽都已入账或无可领");
+  return {
+    claimable: claimable.length > 0,
+    unjudged: unjudged.length > 0,
+    detail: parts.join("；")
+  };
+}
+function runNoticeInfo(deps) {
+  return runTask(
+    deps,
+    {
+      task: "notice",
+      endpoint: "noticeInfo",
+      method: "GET",
+      marketName: "sign_in_3",
+      isDeviceId: false,
+      stateKey: STATE_INFO2
+    },
+    (env) => {
+      const info = parseNoticeInfo(env.result);
+      const plan = noticePlan(info);
+      deps.store.setState(STATE_CAN2, plan.claimable ? "yes" : `no:${plan.detail}`, deps.nowIso);
+      return {
+        ok: true,
+        note: plan.claimable ? `通知任务：${plan.detail}（下一次触发会去领）` : `通知任务：${plan.detail}`,
+        snapshot: { one: info.one ?? null, two: info.two ?? null }
+      };
+    }
+  );
+}
+function runNoticeReward(deps) {
+  const can = deps.store.getState(STATE_CAN2);
+  if (can !== "yes") {
+    return { ok: true, skipped: true, note: `上次问过状态是「${can ?? "没问过"}」，不发领取请求` };
+  }
+  const out = runTask(
+    deps,
+    {
+      task: "notice",
+      endpoint: "noticeReward",
+      method: "GET",
+      marketName: "sign_in_3",
+      isDeviceId: false
+    },
+    (env) => ({
+      ok: true,
+      // 上游不报到账数 —— 这句必须说，否则下一个人会以为这里能看到领了多少
+      note: `通知任务：已发领取请求（上游不报到账数，下一次触发回查 ${JSON.stringify(
+        env.message ?? "success"
+      ).slice(0, 40)}）`
+    })
+  );
+  if (out.ok) deps.store.setState(STATE_CAN2, "no:sent", deps.nowIso);
+  return out;
+}
+function runNotice(deps) {
+  const can = deps.store.getState(STATE_CAN2);
+  if (can === "yes") return runNoticeReward(deps);
+  return runNoticeInfo(deps);
+}
+
 // src/mcloud/tasks/receive.ts
 var STATE_QUEUE = "mcloud.receive.queue";
 var STATE_RECEIVE = "mcloud.receive.last";
@@ -1541,18 +1658,18 @@ var TASK_META = [
   { name: "diag", title: "调度健康", group: "plugin", kind: "Query", risk: "none", missed: "catch-up", deps: [], batch: false, hidden: false, implemented: true, note: "记录每次触发的调度延迟（面板 F-001 的那条测量）" },
   { name: "session-check", title: "会话体检", group: "plugin", kind: "Query", risk: "none", missed: "catch-up", deps: [], batch: false, hidden: false, implemented: true, note: "每天 7:50 先问一次上游还认不认这份凭据" },
   // ── 签到族（8 条，全实现）──
-  { name: "sign", title: "每日签到", group: "signin", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["jwt"], batch: true, hidden: false, implemented: true, note: "三段式：问状态 → 提交 → 回查（判据是回查）" },
-  { name: "receive", title: "领取AI豆", group: "signin", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["jwt"], batch: true, hidden: false, implemented: true, note: "逐条独立；延期领取走另一口端点" },
-  { name: "multiple", title: "签到翻倍", group: "signin", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["jwt"], batch: true, hidden: false, implemented: true, note: "每月一次机会 —— 门槛由插件自己判，条件不成立时一个字节都不发" },
-  { name: "backup-gift", title: "备份好礼", group: "signin", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["jwt"], batch: true, hidden: false, implemented: true, note: "**GET 却是写**；两步：先问能不能领，能领才领" },
-  { name: "revival", title: "用复活卡/回馈卡", group: "signin", kind: "Action", risk: "irreversible", missed: "skip", deps: ["jwt"], batch: false, hidden: false, implemented: true, note: "**不可逆** —— 晚超过 2 小时就不做" },
-  { name: "prizes", title: "待领取奖品", group: "query", kind: "Query", risk: "none", missed: "catch-up", deps: ["jwt"], batch: false, hidden: false, implemented: true },
-  { name: "task-list", title: "任务清单", group: "query", kind: "Query", risk: "none", missed: "catch-up", deps: ["jwt"], batch: false, hidden: false, implemented: true },
-  { name: "cloud-snapshot", title: "AI豆余额快照", group: "query", kind: "Query", risk: "none", missed: "catch-up", deps: ["jwt"], batch: false, hidden: false, implemented: true, note: "只取第一页；一页装满会如实说可能还有下一页" },
+  { name: "sign", title: "每日签到", group: "signin", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["jwt"], batch: true, hidden: false, implemented: true, evidence: "captured", note: "三段式：问状态 → 提交 → 回查（判据是回查）" },
+  { name: "receive", title: "领取AI豆", group: "signin", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["jwt"], batch: true, hidden: false, implemented: true, evidence: "captured", note: "逐条独立；延期领取走另一口端点" },
+  { name: "multiple", title: "签到翻倍", group: "signin", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["jwt"], batch: true, hidden: false, implemented: true, evidence: "captured", note: "每月一次机会 —— 门槛由插件自己判，条件不成立时一个字节都不发" },
+  { name: "backup-gift", title: "备份好礼", group: "signin", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["jwt"], batch: true, hidden: false, implemented: true, evidence: "captured", note: "**GET 却是写**；两步：先问能不能领，能领才领" },
+  { name: "revival", title: "用复活卡/回馈卡", group: "signin", kind: "Action", risk: "irreversible", missed: "skip", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "captured", note: "**不可逆** —— 晚超过 2 小时就不做" },
+  { name: "prizes", title: "待领取奖品", group: "query", kind: "Query", risk: "none", missed: "catch-up", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "captured" },
+  { name: "task-list", title: "任务清单", group: "query", kind: "Query", risk: "none", missed: "catch-up", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "captured" },
+  { name: "cloud-snapshot", title: "AI豆余额快照", group: "query", kind: "Query", risk: "none", missed: "catch-up", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "captured", note: "只取第一页；一页装满会如实说可能还有下一页" },
   // ── 通知与趣玩（未实现）──
   // 它用**签到页那张票**（`SessionRecipe::SignInPage`）—— 就是本插件手里已有的会话，
   // 所以「只依赖 jwt」这条是对的。`getTaskInfo` 有实拍；`reward` 只实拍到成功那一枪。
-  { name: "notice", title: "开启通知领AI豆", group: "daily", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["jwt"], batch: true, hidden: false, implemented: false, evidence: "partial", note: "有手动前置（要去 App 里开邮箱/短信通知）；失败形态零样本" },
+  { name: "notice", title: "开启通知领AI豆", group: "daily", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["jwt"], batch: true, hidden: false, implemented: true, evidence: "partial", note: "有手动前置（判不出来，见 notice.ts 文件头 ③）；reward 不报到账数 ⇒ 靠下一轮回查" },
   // 更正：换出该页 jwttoken 的那一步**在实拍归档里没有** ⇒ 现在做不了（不是"只依赖 jwt"）
   { name: "fun-ai", title: "趣玩AI抽奖", group: "activity", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["activity-token"], batch: true, hidden: false, implemented: false, evidence: "no-ticket", note: "换票那步没抓到 ⇒ 做不了" },
   // 更正：整条链在 `/ycloud/msgPushOn/` 下、要**另一张票**（marketName=msgpushon /
@@ -1862,6 +1979,7 @@ register_cron("receive", SIGNIN_CRON, makeRunner("领取AI豆", runReceive));
 register_cron("multiple", SIGNIN_CRON, makeRunner("签到翻倍", runMultiple));
 register_cron("revival", SIGNIN_CRON, makeRunner("复活卡", runRevival));
 register_cron("backup-gift", SIGNIN_CRON, makeRunner("备份好礼", runBackupGift));
+register_cron("notice", SIGNIN_CRON, makeRunner("开启通知领AI豆", runNotice));
 register_cron("prizes", "20 8 * * *", makeRunner("待领取奖品", runPrizes));
 register_cron("cloud-snapshot", "30 8 * * *", makeRunner("AI豆快照", runCloudSnapshot));
 every("selftest", "5m", (p) => {

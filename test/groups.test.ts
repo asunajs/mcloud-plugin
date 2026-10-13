@@ -16,11 +16,20 @@ test('分组：任务名不重复', () => {
 
 test('分组：路线图那两列 —— implemented 说做完了没，evidence 说能不能做', () => {
   const by = (n: string) => TASK_META.find((t) => t.name === n)!;
-  // 证据是自愿填的：没填 = 没核对过。填了就必须说得通
+  // 已实现的必须有证据，而且不能是"做不了"的那两档。
+  //
+  // 这条规则改过一次：原来写的是"证据不是 captured 就不许标已实现"——
+  // 太粗了。`partial`（只实拍到成功那一枪、失败形态零样本）**是能实现的**，
+  // 前提是把缺口写清楚：`notice` 就是这一档。真正做不了的是
+  // `none`（零样本）与 `no-ticket`（连票怎么换都不知道）。
   for (const t of TASK_META) {
-    if (t.evidence && t.evidence !== 'captured') {
-      assert.ok(!t.implemented, `${t.name} 标了已实现，证据却是 ${t.evidence} —— 说不通`);
-    }
+    if (!t.implemented) continue;
+    // 插件自己的任务（自检 / 调度健康 / 会话体检）没有"上游证据"这回事 ——
+    // 这一列说的是**上游**能不能照实写，它们不跟上游打交道。
+    if (t.group === 'plugin') continue;
+    assert.ok(t.evidence, `${t.name} 标了已实现却没写证据`);
+    assert.notEqual(t.evidence, 'none', `${t.name} 零样本却标了已实现`);
+    assert.notEqual(t.evidence, 'no-ticket', `${t.name} 连票都换不出来却标了已实现`);
   }
   // 三处更正（都是查源码查出来的，不是估的）
   assert.equal(by('notice').deps.join(), 'jwt', 'notice 用的是签到页那张票 —— 手里已有');

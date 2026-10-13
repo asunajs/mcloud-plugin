@@ -25,6 +25,7 @@ import { runPrizes } from './mcloud/tasks/prizes.ts';
 import { runCloudSnapshot } from './mcloud/tasks/cloudSnapshot.ts';
 import { runSign } from './mcloud/tasks/sign.ts';
 import { runBackupGift } from './mcloud/tasks/backupGift.ts';
+import { runNotice } from './mcloud/tasks/notice.ts';
 import { runReceive } from './mcloud/tasks/receive.ts';
 import { runMultiple } from './mcloud/tasks/multiple.ts';
 import { runRevival } from './mcloud/tasks/revival.ts';
@@ -233,6 +234,7 @@ register_cron('receive', SIGNIN_CRON, makeRunner('领取AI豆', runReceive));
 register_cron('multiple', SIGNIN_CRON, makeRunner('签到翻倍', runMultiple));
 register_cron('revival', SIGNIN_CRON, makeRunner('复活卡', runRevival));
 register_cron('backup-gift', SIGNIN_CRON, makeRunner('备份好礼', runBackupGift));
+register_cron('notice', SIGNIN_CRON, makeRunner('开启通知领AI豆', runNotice));
 register_cron('prizes', '20 8 * * *', makeRunner('待领取奖品', runPrizes));
 register_cron('cloud-snapshot', '30 8 * * *', makeRunner('AI豆快照', runCloudSnapshot));
 

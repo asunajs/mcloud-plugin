@@ -40,7 +40,7 @@ npm ci && npm run all
 
 | 做法 | 代价 |
 |---|---|
-| **一个插件 + 分组界面**（推荐先走这条） | 不用改面板；11 条任务已经在一个插件里、共用会话与状态，分组只是**显示与操作**的组织方式。分组模型已经写好了：`src/mcloud/groups.ts`（按**风险与依赖**分组，不是按功能名），接口 `GET /plugins/mcloud/api/groups` |
+| **一个插件 + 分组界面**（推荐先走这条） | 不用改面板；12 条任务已经在一个插件里、共用会话与状态，分组只是**显示与操作**的组织方式。分组模型已经写好了：`src/mcloud/groups.ts`（按**风险与依赖**分组，不是按功能名），接口 `GET /plugins/mcloud/api/groups` |
 | 一个组一个插件（`mcloud-signin.js`…） | 每组能单独启停 ✓，但每组各有一份代码与一个 QuickJS 上下文，内存按组数乘 |
 | 面板侧加「组」概念 | 最干净，但要改面板（jobs 加 group 字段 + 界面），且不只为本插件服务 |
 
@@ -76,7 +76,7 @@ PLUGINS_DIR=/path/to/mcloud-plugin/plugins PANEL_TOKEN=<你的令牌> <面板二
 
 装好后：
 
-* 面板里能看到 `mcloud`，11 条任务全部登记
+* 面板里能看到 `mcloud`，12 条任务全部登记
 * 接口文档（导入会话、看状态、指到 mock）：[`docs/howto-session.md`](docs/howto-session.md)
 * 任务挂在**白天每 15 分钟**（不是"每天 8:05 打一枪"）—— 低配盒子不常在线，
   8 点没开机 9 点上线照样补上；每条任务自带门槛，不需要动作时就只是一次只读检查
@@ -137,6 +137,7 @@ PLUGINS_DIR=/path/to/mcloud-plugin/plugins PANEL_TOKEN=<你的令牌> <面板二
 | `multiple` | **门槛必须自己判**：`curMonthBackup && !curMonthBackupSignAccept` 都成立才发 —— 每月只有一次机会，「条件不成立还发是白白消耗」。门槛不成立时**一个字节都不发** |
 | `revival` | **不可逆**：晚超过 2 小时就不做（任务表里它的语义是 skip 不是 catch-up）；「已领取」是**完成**不是失败（照抄原实现的两条件文案判定），靠底座新加的 `okWhenError` 接线 |
 | `backup-gift` | **两步**：先问能不能领，能领才在下一次触发去领。`activityid` 是 `backupgift` 不是 `sign_in_3` |
+| `notice` | **两步**：查两个槽（`taskOneInfo` / `taskTwoInfo`）→ 能领才领。三处照实说的东西：① 判据字段缺任何一个都**不参与判断**（`None` ≠ `Some(0)`，否则静默漏领）② `reward` **报不出到账数**（实拍只有 `{"code":0,"msg":"success"}`）⇒ 成败靠**下一轮回查** ③ "通知未开启"那一档**判不出来**（`noticeNeedsManual` 恒 false，就地声明为未被断言的分支）|
 
 调度面也改了：签到族挂在**白天每 15 分钟**而不是「每天 8:05 打一枪」——
 ① 多步流程需要多次调用（一次调用一个请求的纪律）；② 低配盒子不常在线，
@@ -175,6 +176,7 @@ PLUGINS_DIR=/path/to/mcloud-plugin/plugins PANEL_TOKEN=<你的令牌> <面板二
 | 仓库 | `asunajs/mcloud-plugin`（就用这个） |
 | 源码形态 | TS 源码 + **esbuild 打包成单文件**（dev 依赖，产物零依赖） |
 | 第一批任务 | **签到族 8 条**：`sign` `receive` `multiple` `backup-gift` `revival` `prizes` `cloud-snapshot` `task-list` |
+| 第二批 | `notice`（开启通知领AI豆）—— 先做「读的那一半 + 被上游回答把着门的写」；`reward` 只有成功形态有实拍，所以领完**不清账**，靠下一轮回查 |
 | 上游验证 | **真账号手工验 + mock 进 CI**（CI 永不碰真账号） |
 | 面板侧改动 | **先压出来再改** —— 本轮只用面板现有能力，拿到数据再动面板 |
 | 签名 | **纯 JS 自带**（md5/sha/aes 自己写，插件自包含） |
