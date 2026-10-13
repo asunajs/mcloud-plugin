@@ -105,7 +105,8 @@ jobs:
               s = json.load(open(os.environ['TMP'] + '/state.json'))
           except Exception:
               sys.exit(1)
-          sys.exit(0 if any(p['name'] == 'mcloud' and p.get('tasks') for p in s.get('plugins', [])) else 1)
+          names = {t['name'] for t in s.get('tasks', []) if t.get('plugin') == 'mcloud'}
+          sys.exit(0 if {'selftest', 'diag'} <= names else 1)
           " 2>/dev/null; then
               echo "✅ 插件已装好（第 $i 次探测）"
               break
@@ -124,8 +125,11 @@ jobs:
           assert p, f"没有加载 mcloud 插件，只有 {list(plugins)}"
           assert p['runtime'] == 'js', p
           assert p.get('error') in (None, ''), p
-          assert sorted(p['tasks']) == ['diag', 'selftest'], p['tasks']
-          print(f"✅ 插件 mcloud 已加载：runtime={p['runtime']} tasks={sorted(p['tasks'])}")
+          assert p['tasks'] == 2, f"插件报的任务数是 {p['tasks']}，期望 2"
+          # 任务名要去**顶层** tasks 里按 plugin 过滤（插件条目里的 tasks 是数量，不是列表）
+          names = sorted(t['name'] for t in state.get('tasks', []) if t.get('plugin') == 'mcloud')
+          assert names == ['diag', 'selftest'], f"实际任务名 {names}"
+          print(f"✅ 插件 mcloud 已加载：runtime={p['runtime']} 任务 {names}（调度器里都登记了）")
           PY
 
       - name: 沙箱内的自检必须通过（这是 M0 的核心证据）
