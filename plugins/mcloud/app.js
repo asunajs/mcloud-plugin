@@ -205,6 +205,74 @@ async function loadExchange() {
   $('exchange-tiers').textContent = tiers ? '各档计数：' + tiers : '';
 }
 
+// ──────────────────────────── 直播口令（只读那半 + 人给的口令）
+
+async function loadLive() {
+  const d = await req('/plugins/mcloud/api/live');
+  const card = $('live-card');
+  if (!d.ok) {
+    card.hidden = true;
+    return;
+  }
+  card.hidden = false;
+  $('live-note').innerHTML = esc(d.note || '');
+
+  const r = d.reading;
+  const sub = [];
+  if (r) {
+    sub.push(`读到 ${(r.at || '').slice(11, 19)}`);
+    sub.push(`${r.chars} 字符`);
+    if (r.tookMs !== undefined) sub.push(`${r.tookMs}ms`);
+  } else {
+    sub.push('还没抓过');
+  }
+  $('live-sub').textContent = sub.join(' · ');
+
+  // 抓到的口令：**一条也没有**与"页面被挡成空壳"在解析层长得一样，
+  // 所以这里把读数里那句 note 原样贴出来（它已经写了两种可能），别自己下结论。
+  if (!r) {
+    $('live-found').innerHTML = '<div class="hint">还没抓过 —— 去任务列表点 <code>live-room</code> 的「立即执行」</div>';
+  } else if (r.codes && r.codes.length) {
+    $('live-found').innerHTML =
+      '<ul class="ok-list">' +
+      r.codes.map((c) => `<li><code>${esc(c)}</code></li>`).join('') +
+      '</ul>';
+  } else {
+    $('live-found').innerHTML = `<div class="hint">${esc(r.note || '没读到口令')}</div>`;
+  }
+
+  const c = d.codes;
+  $('live-codes-hint').textContent = c
+    ? `已存 ${c.codes.length} 条（${c.how}）· ${(c.at || '').slice(0, 16).replace('T', ' ')}：${c.codes.join('、')}`
+    : '还没存过口令。口令不是账号凭据 —— 它是**共享资源**（谁拿到都能拿去领小红花），所以这里如实显示。';
+}
+
+async function saveLiveCodes() {
+  const v = $('live-input').value.trim();
+  if (!v) {
+    showError('先贴一条口令');
+    return;
+  }
+  const d = await req('/plugins/mcloud/api/live/codes', { method: 'POST', body: { codes: v } });
+  if (!d.ok) {
+    showError('存口令失败：' + d.error);
+    return;
+  }
+  $('live-input').value = '';
+  showError('');
+  await loadLive();
+}
+
+async function clearLiveCodes() {
+  const d = await req('/plugins/mcloud/api/live/codes', { method: 'POST', body: { clear: true } });
+  if (!d.ok) {
+    showError('清空失败：' + d.error);
+    return;
+  }
+  showError('');
+  await loadLive();
+}
+
 // ──────────────────────────── 会话与上游地址
 
 async function loadSession() {
@@ -263,6 +331,27 @@ async function loadBase() {
   $('base-hint').textContent = b
     ? '当前指向上游：' + b
     : '当前用默认上游（移动云盘正式地址）。指向本地 mock 时填 http://127.0.0.1:19040。';
+
+  // 口令主页：**与上游地址不是一回事**（那是个源，这是个完整 URL）。
+  // 值等于默认时输入框留空 —— 那样"留空 = 用默认"这句话才成立。
+  const lv = d.liveUrl || '';
+  const lvDefault = d.liveUrlDefault || '';
+  $('live-url').value = lv === lvDefault ? '' : lv;
+  $('live-url-hint').textContent = lv
+    ? (lv === lvDefault ? '当前抓发布方的小红书主页（默认）：' : '当前抓：') + lv
+    : '还没配（任务会用默认主页）';
+}
+
+async function saveLiveUrl() {
+  const v = $('live-url').value.trim();
+  const d = await req('/plugins/mcloud/api/config', { method: 'POST', body: { liveUrl: v } });
+  if (!d.ok) {
+    showError('保存口令主页失败：' + d.error);
+    return;
+  }
+  showError('');
+  await loadBase();
+  await loadLive();
 }
 
 async function saveBase() {
@@ -283,13 +372,18 @@ $('refresh').addEventListener('click', () => {
   loadSession();
   loadMatrix();
   loadExchange();
+  loadLive();
 });
 $('session-save').addEventListener('click', saveSession);
 $('session-check').addEventListener('click', checkSession);
 $('base-save').addEventListener('click', saveBase);
+$('live-url-save').addEventListener('click', saveLiveUrl);
+$('live-save').addEventListener('click', saveLiveCodes);
+$('live-clear').addEventListener('click', clearLiveCodes);
 
 loadGroups();
 loadSession();
 loadMatrix();
 loadExchange();
+loadLive();
 loadBase();

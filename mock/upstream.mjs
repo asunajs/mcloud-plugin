@@ -106,6 +106,27 @@ export async function startMock(options = {}) {
         return json(res, 200, { behavior });
       }
 
+      // ── 口令主页（直播那条链的**第三方**源）────────────────────────────────
+      //
+      // 为什么 mock 要管这一口：`live-room` 抓的是小红书主页，是本仓库里**唯一**
+      // 会打第三方站点的一条链。仓库的纪律是「CI 全程只打 mock」，所以插件必须
+      // 能把这个地址指走（`POST /plugins/mcloud/api/config {"liveUrl": …}`），
+      // 而这里就是它指过来的落点。
+      //
+      // ⚠ 页面**故意做得大**（> 5 KB）：插件的读数里有一条"页面小得可疑 ⇒ **猜**是
+      // 被挡成空壳"的提示。夹具太小会让那次断言看起来像被挡了，而那是在测夹具、不是测插件。
+      if (url.pathname === '/xhs/profile') {
+        const filler = '<div class="note">这一期云盘的笔记正文占位</div>'.repeat(200);
+        const html =
+          '<html><head><script>window.__INITIAL_STATE__=' +
+          JSON.stringify({ noteList: [{ displayTitle: '小红花口令：云盘AI高效复盘' }] }) +
+          '</script></head><body>' +
+          filler +
+          '</body></html>';
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+        return res.end(html);
+      }
+
       const finish = () => {
         if (behavior === 'http-500') return json(res, 500, { code: -1, msg: 'boom' });
         if (behavior === 'not-json') {

@@ -116,6 +116,64 @@ export function callOnce(transport: Transport, req: BuiltRequest): CallResult {
   };
 }
 
+/** 原样取回响应**文本**的结果。 */
+export interface RawTextResult {
+  ok: boolean;
+  status: number;
+  /** 响应体原文（**不截断** —— 调用方要拿它做解析） */
+  text: string;
+  /** `text.length`（UTF-16 码元数，不是字节数）。用于在界面上说清"页面多大" */
+  chars: number;
+  tookMs: number;
+  error: string | undefined;
+}
+
+/** 发一个请求并**原样**拿回文本（不解析信封）。
+ *
+ *  为什么不让 `callOnce` 加个开关：两者的**契约不同**。
+ *  `callOnce` 的契约是"签到族信封"（JSON + `code` 字段），失败要能区分
+ *  「业务失败（可重试）」与「环境炸了（该停）」。而这里要拿的是**第三方页面的 HTML**
+ *  —— 拿信封去解必然失败，且失败信息会误导（`code=undefined` 看起来像上游坏了）。
+ *  两条路的失败语义不一样，所以分成两个函数。
+ *
+ *  ⚠️ 这里**不做 500 字符截断**（`callOnce` 的 `raw` 截断是给日志用的）——
+ *  调用方要拿全文做正则。页面大小由 `chars` 如实报出去，别在解析前就把内容丢了。 */
+export function callRawText(transport: Transport, req: BuiltRequest): RawTextResult {
+  const t0 = Date.now();
+  const fail = (error: string): RawTextResult => ({
+    ok: false,
+    status: 0,
+    text: '',
+    chars: 0,
+    tookMs: Date.now() - t0,
+    error,
+  });
+
+  let res: HostFetchResult;
+  try {
+    res = transport(req);
+  } catch (e) {
+    return fail(`请求失败：${e instanceof Error ? e.message : String(e)}`);
+  }
+  const tookMs = Date.now() - t0;
+
+  // 与 callOnce 同一套形状识别（宿主失败时返回 `{"error": …}`，没有 body）
+  if (isFetchError(res)) return { ...fail(pickError(res.error)), tookMs };
+  if (typeof res !== 'object' || res === null || typeof res.body !== 'string') {
+    return {
+      ...fail(`请求返回的形状不认识：${JSON.stringify(res)?.slice(0, 200) ?? String(res)}`),
+      tookMs,
+    };
+  }
+
+  const chars = res.body.length;
+  if (res.status !== 200) {
+    // 非 200 也把 body 带回去：有些站点把错误说明写在正文里，日志里看得到比只看状态码有用
+    return { ok: false, status: res.status, text: res.body, chars, tookMs, error: `HTTP ${res.status}` };
+  }
+  return { ok: true, status: 200, text: res.body, chars, tookMs, error: undefined };
+}
+
 /** 从响应头里取 set-cookie。
  *
  *  ⚠ 这里保守处理：不同层可能把多枚 `set-cookie` 合成了一个字符串，

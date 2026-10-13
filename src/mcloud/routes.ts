@@ -25,6 +25,16 @@ import { TASK_NAMES, STATE_LAST_TASKLIST } from './tasks/taskList.ts';
 import { groupView } from './groups.ts';
 import { MATRIX_GROUPS, readMatrix } from './tasks/appTaskMatrix.ts';
 import { VERDICT_TEXT, readExchangeList } from './tasks/exchangeList.ts';
+import {
+  EMPTY_SHELL_HINT_CHARS,
+  clearLiveCodes,
+  loadLiveCodes,
+  loadLiveUrl,
+  readLiveReading,
+  saveLiveCodes,
+  saveLiveUrl,
+} from './tasks/liveRoom.ts';
+import { XIAOHONGSHU_KOULING_PROFILE_URL } from './liveKouling.ts';
 import type { Store } from '../store/types.ts';
 import type { Transport } from './client.ts';
 
@@ -140,23 +150,54 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
       },
     },
     {
-      // 上游基址：CI 指向 mock 用；生产留空 = 用真地址
+      // 上游基址：CI 指向 mock 用；生产留空 = 用真地址。
+      // 口令主页地址：同一条路（**完整 URL**，不是源 —— 见 liveRoom.ts 的 loadLiveUrl）
       path: `${base}/config`,
       method: 'GET',
-      handler: () => json(200, { baseUrl: loadBaseUrl(deps.store) || '(真上游)' }),
+      handler: () =>
+        json(200, {
+          baseUrl: loadBaseUrl(deps.store) || '(真上游)',
+          liveUrl: loadLiveUrl(deps.store),
+          liveUrlDefault: XIAOHONGSHU_KOULING_PROFILE_URL,
+        }),
     },
     {
       path: `${base}/config`,
       method: 'POST',
       handler: (req) => {
         const body = readBody(req);
-        const v = typeof body.baseUrl === 'string' ? body.baseUrl.trim() : '';
-        if (v && !/^https?:\/\//.test(v)) {
-          return json(400, { error: 'baseUrl 要以 http:// 或 https:// 开头（清空就传空串）' });
+        const out: Record<string, string> = {};
+
+        // ⚠️ 只改**传了的**那个字段。
+        // 早先这里无条件写 `baseUrl`（没传就当空串），于是"只想改口令主页"会把
+        // 上游基址一起抹掉 —— 抹掉之后所有云盘任务都会打**真上游**（CI 里就是打公网）。
+        // 这正是"看着只是多了个配置项、实际把另一个配置清了"的那类错。
+        if ('baseUrl' in body) {
+          const v = typeof body.baseUrl === 'string' ? body.baseUrl.trim() : '';
+          if (v && !/^https?:\/\//.test(v)) {
+            return json(400, { error: 'baseUrl 要以 http:// 或 https:// 开头（清空就传空串）' });
+          }
+          deps.store.setState(STATE_BASE_URL, v.replace(/\/+$/, ''), deps.now());
+          deps.log(v ? `上游基址已改为 ${v}` : '上游基址已恢复为真上游');
+          out.baseUrl = v || '(真上游)';
         }
-        deps.store.setState(STATE_BASE_URL, v.replace(/\/+$/, ''), deps.now());
-        deps.log(v ? `上游基址已改为 ${v}` : '上游基址已恢复为真上游');
-        return json(200, { baseUrl: v || '(真上游)' });
+
+        if ('liveUrl' in body) {
+          const v = typeof body.liveUrl === 'string' ? body.liveUrl.trim() : '';
+          if (v && !/^https?:\/\//.test(v)) {
+            return json(400, {
+              error: 'liveUrl 要以 http:// 或 https:// 开头（清空 = 用默认主页）',
+            });
+          }
+          saveLiveUrl(deps.store, v, deps.now());
+          deps.log(v ? `口令主页已改为 ${v}` : '口令主页已恢复为默认（发布方的小红书主页）');
+          out.liveUrl = v || XIAOHONGSHU_KOULING_PROFILE_URL;
+        }
+
+        if (Object.keys(out).length === 0) {
+          return json(400, { error: '要传 baseUrl 或 liveUrl（清空就传空串）' });
+        }
+        return json(200, out);
       },
     },
     {
@@ -184,6 +225,55 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
           groups: rows.map((r, i) => ({ group: MATRIX_GROUPS[i], reading: r })),
           read: rows.filter(Boolean).length,
           total: MATRIX_GROUPS.length,
+        });
+      },
+    },
+    {
+      // 直播口令（只读那半）：自动抓到的读数 + **人给的口令**。
+      // 界面要能看见 —— 否则"抓主页"就只是日志里的一行数。
+      path: `${base}/live`,
+      method: 'GET',
+      handler: () =>
+        json(200, {
+          reading: readLiveReading(deps.store),
+          codes: loadLiveCodes(deps.store),
+          url: loadLiveUrl(deps.store),
+          emptyShellHintChars: EMPTY_SHELL_HINT_CHARS,
+          note:
+            '口令本身**没法自动化**（主播在弹幕/小红书发，那边无法鉴权）⇒ 要人给；' +
+            '能自动的只有「抓主页 + 列出看到的口令」。领小红花那一步（写）还没做。',
+        }),
+    },
+    {
+      path: `${base}/live/codes`,
+      method: 'POST',
+      handler: (req) => {
+        const body = readBody(req);
+        if (body.clear === true) {
+          clearLiveCodes(deps.store, deps.now());
+          deps.log('直播口令：已清空');
+          return json(200, { cleared: true });
+        }
+        // `readBody` 对"不是 JSON 的 body"会兜成 `{session: 原文}`（让人少一步转换）
+        // —— 这里顺着那个约定，贴纯文本也能存
+        const raw =
+          typeof body.codes === 'string'
+            ? body.codes
+            : typeof body.session === 'string'
+              ? body.session
+              : '';
+        if (!raw.trim()) {
+          return json(400, { error: '需要 {"codes": "<口令，一行一条>"} 或 {"clear": true}' });
+        }
+        const r = saveLiveCodes(deps.store, raw, deps.now());
+        if (!r.ok) return json(400, { error: r.error ?? '解不出口令' });
+        // ⚠ 口令不是账号凭据（它是**共享资源**，谁拿到都能用），所以这里如实回显
+        deps.log(`直播口令：存了 ${r.codes.length} 条（${r.how}）`);
+        return json(200, {
+          saved: r.codes.length,
+          codes: r.codes,
+          how: r.how,
+          stored: loadLiveCodes(deps.store),
         });
       },
     },

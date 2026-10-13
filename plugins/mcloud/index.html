@@ -50,6 +50,12 @@
         <button id="base-save" class="btn">保存</button>
       </div>
       <p class="hint" id="base-hint"></p>
+      <div class="row">
+        <label class="label">口令主页</label>
+        <input id="live-url" class="input" placeholder="留空 = 用发布方的小红书主页">
+        <button id="live-url-save" class="btn">保存</button>
+      </div>
+      <p class="hint" id="live-url-hint"></p>
     </section>
 
     <!-- 只读任务采集来的读数：界面要能看见，否则"只读"就只是日志里的一行数 -->
@@ -77,6 +83,28 @@
       <p class="why" id="exchange-note"></p>
       <div id="exchange-ok"></div>
       <p class="hint" id="exchange-tiers"></p>
+    </section>
+
+    <section class="card" id="live-card" hidden>
+      <div class="card-head">
+        <h2>直播口令</h2>
+        <span class="card-sub" id="live-sub"></span>
+      </div>
+      <p class="why" id="live-note"></p>
+
+      <div class="row">
+        <label class="label">抓到的口令</label>
+      </div>
+      <div id="live-found"></div>
+
+      <div class="row">
+        <label class="label">口令（人给）</label>
+        <input id="live-input" class="input" autocomplete="off"
+               placeholder="贴口令，或直接贴整条弹幕（复制口令1：XXX）">
+        <button id="live-save" class="btn btn-primary">保存</button>
+        <button id="live-clear" class="btn">清空</button>
+      </div>
+      <p class="hint" id="live-codes-hint"></p>
     </section>
 
     <div id="groups"></div>

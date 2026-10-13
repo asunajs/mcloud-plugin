@@ -28,6 +28,7 @@ import { runBackupGift } from './mcloud/tasks/backupGift.ts';
 import { runNotice } from './mcloud/tasks/notice.ts';
 import { runAppTaskMatrix } from './mcloud/tasks/appTaskMatrix.ts';
 import { runExchangeList } from './mcloud/tasks/exchangeList.ts';
+import { runLiveRoom } from './mcloud/tasks/liveRoom.ts';
 import { runReceive } from './mcloud/tasks/receive.ts';
 import { runMultiple } from './mcloud/tasks/multiple.ts';
 import { runRevival } from './mcloud/tasks/revival.ts';
@@ -241,6 +242,15 @@ register_cron('notice', SIGNIN_CRON, makeRunner('开启通知领AI豆', runNotic
 register_cron('app-task-matrix', SIGNIN_CRON, makeRunner('App 任务矩阵（只看）', runAppTaskMatrix));
 // 兑换清单：**只读那一半**（下单要过滑块，且真扣豆不可回滚）
 register_cron('exchange-list', SIGNIN_CRON, makeRunner('兑换清单（只看）', runExchangeList));
+// 直播口令：**只读那一半**（抓主页 + 列出口令；领小红花那一步是写，还没做）
+//
+// 它是**第一条不需要凭据的任务** —— 主页是公开 GET，与云盘账号无关。
+// 两个实际好处：还没导入会话的机器上它照样有产出；凭据失效时（所有签到任务
+// 共同的失败原因）它不受影响。
+//
+// 节奏：直播多在晚上，但口令笔记白天也可能发 ⇒ 白天每 30 分钟抓一次。
+// 一次只发一个请求（面板执行预算 2000ms，见 liveRoom.ts 文件头）。
+register_cron('live-room', '*/30 7-23 * * *', makeRunner('直播口令（只看）', runLiveRoom));
 register_cron('prizes', '20 8 * * *', makeRunner('待领取奖品', runPrizes));
 register_cron('cloud-snapshot', '30 8 * * *', makeRunner('AI豆快照', runCloudSnapshot));
 

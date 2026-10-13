@@ -141,10 +141,20 @@ curl -fsS -o /dev/null "${W[@]}" -X POST "$B/api/tasks/mcloud/exchange-list/run"
 printf '   exchange-list（只读）✓\n'
 sleep 0.3
 
+# 直播口令（**只读**）：抓的是**第三方页面**，所以先把它指到 mock 的 /xhs/profile
+# —— 本仓库唯一会打外站的一条链。CI 里不指走的话它会去敲小红书（不稳，也不该）。
+curl -fsS "${W[@]}" -X POST \
+  -d "{\"liveUrl\":\"http://127.0.0.1:$MOCK_PORT/xhs/profile\"}" \
+  "$B/plugins/mcloud/api/config" >/dev/null
+curl -fsS -o /dev/null "${W[@]}" -X POST "$B/api/tasks/mcloud/live-room/run"
+printf '   live-room（只读，主页指到 mock）✓\n'
+sleep 0.3
+
 curl -fsS "${H[@]}" "$B/plugins/mcloud/api/tasks" -o "$TMP/plugin.json"
+curl -fsS "${H[@]}" "$B/plugins/mcloud/api/live" -o "$TMP/live.json"
 curl -fsS "http://127.0.0.1:$MOCK_PORT/_debug/requests" -o "$TMP/mock.json"
 curl -fsS "http://127.0.0.1:$MOCK_PORT/_debug/state" -o "$TMP/mock-state.json"
-python3 - "$TMP/plugin.json" "$TMP/mock.json" "$TMP/mock-state.json" <<'PY'
+python3 - "$TMP/plugin.json" "$TMP/mock.json" "$TMP/mock-state.json" "$TMP/live.json" <<'PY'
 import json, sys
 
 d = json.load(open(sys.argv[1]))
@@ -261,4 +271,25 @@ assert len(hits) == 1, f'该只读一次，实际 {len(hits)}'
 assert hits[0].get('method') == 'GET', hits[0].get('method')
 assert 'deviceId' not in hits[0].get('path', ''), '这一口不带 deviceId'
 print('   ✅ 兑换清单：只读、一个 GET、不带 deviceId')
+PY
+
+# 直播口令：只读 —— 一个 GET 打第三方"主页"，UA 伪装在，且解析出的是那一条口令。
+# 这一条把整条链（公开 GET → 四级候选 → 逐字移植的提取器）在**真面板**里走通了。
+python3 - "$TMP/mock.json" "$TMP/live.json" <<'PY'
+import json, sys
+reqs = json.load(open(sys.argv[1]))
+hits = [r for r in reqs if r.get('path', '').startswith('/xhs/profile')]
+assert len(hits) == 1, f'该只抓一次主页，实际 {len(hits)}'
+assert hits[0].get('method') == 'GET', hits[0].get('method')
+# UA 伪装丢了会被回空壳页，而空壳与"这期没发"在解析层分不开 ⇒ 这条断言是必须的
+assert 'Chrome' in (hits[0].get('headers') or {}).get('user-agent', ''), 'UA 伪装丢了'
+
+live = json.load(open(sys.argv[2]))
+assert live.get('reading'), '没有读数（任务没落盘？）'
+assert live['reading']['codes'] == ['云盘AI高效复盘'], live['reading']['codes']
+assert live['reading']['url'].endswith('/xhs/profile'), live['reading']['url']
+# 页面是 mock 造的大页面 ⇒ 不该触发"页面小得可疑"那条猜测
+assert live['reading']['chars'] > live['emptyShellHintChars'], live['reading']['chars']
+assert live.get('codes') is None, '还没存过人给的口令，这里该是 null'
+print('   ✅ 直播口令：只读、一个 GET、UA 伪装在、解出了那一条口令')
 PY

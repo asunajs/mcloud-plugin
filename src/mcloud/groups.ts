@@ -41,6 +41,8 @@
 //   · `live-room`  ⚠️ 我原以为沙箱没有 WebSocket 就等于做不了。**错了**：
 //                  它有两个**地位相同**的来源 —— WebSocket 弹幕 **和小红书主页**
 //                  （源码原话："任一来源为空不影响另一个"）⇒ 少一条腿不等于走不了。
+//                  但**口令本身要人给**（那边无法鉴权）⇒ 先做"抓主页 + 输入口"这一半
+//                  （已做，见 TASK_META 里那条的注释）；领小红花那半没做。
 //
 // 同一个套路：先把能照实写的写完，写的那半等证据或凭据到位。
 // ─────────────────────────────────────────────────────────────────────
@@ -188,7 +190,11 @@ export const TASK_META: TaskMeta[] = [
   //      「小红书那条口令**没法自动化**（那边**无法鉴权**）」，只能由**人给**
   //   ⇒ 能自动的是「抓主页」，不能自动的是「口令本身」。这是两件事。
   //   所以拦路石不是 WS，是**缺一个输入口**（让人把口令填进来）。
-  { name: 'live-room', title: '直播口令 → 小红花', group: 'activity', kind: 'Action', risk: 'ledger', missed: 'skip', deps: ['jwt'], batch: false, hidden: false, implemented: false, evidence: 'partial', note: '能自动抓小红书主页（公开 GET）；但口令要**人给**（那边无法鉴权）—— 缺的是一个输入口' },
+  //
+  // 2026-10-13：**只读那一半已实现**（用户选的方案：加口令输入框 + 只做「抓主页 + 列出口令」）。
+  // 抓主页走的是原项目 `xiaohongshu.ts` 的公开 GET + 逐字移植的提取器（41 条黄金向量守着）。
+  // 领小红花那一步（写、会入群足迹）**仍然没做** —— 所以 risk 维持 `ledger` 不变。
+  { name: 'live-room', title: '直播口令 → 小红花', group: 'activity', kind: 'Query', risk: 'ledger', missed: 'skip', deps: [], batch: false, hidden: false, implemented: true, evidence: 'partial', note: '只做只读那半：抓公开主页 + 列出口令（**不需要凭据**）；口令要人给（那边无法鉴权）。领小红花那步没做' },
 
   // ── 网盘写入（未实现）──
   { name: 'app-task', title: 'App 任务（做任务）', group: 'cloud-write', kind: 'Action', risk: 'write-cloud', missed: 'skip', deps: ['jwt'], batch: false, hidden: false, implemented: false, note: '会上传 / 建删外链 / 发邮件' },

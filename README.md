@@ -75,10 +75,12 @@ import { log } from 'host-api';
 |---|---|---|
 | `mcloud-signin` | 签到族 + **`app-task` 等每日/月默认任务** | 签到那 8 条已完；`app-task` 的**只读半边**（`app-task-matrix`）可做 |
 | `mcloud-exchange` | 兑换 | **只读半边**可做（读清单 + 判"能不能兑"，不碰余额/滑块/下单）|
-| `mcloud-live` | 直播 | 可做 —— 它有**两个地位相同的来源**（WebSocket 弹幕 / 小红书主页），少一条腿不等于走不了 |
+| `mcloud-live` | 直播 | **只读半边已做**（抓口令发布方的**公开**主页 + 口令输入口，见 `live-room`）；领小红花那半没做 |
 
 三族各自"写的那半"卡在不同东西上：`app-task` 会往网盘传文件且 `task/click`
-不可回滚；`exchange` 下单要过滑块（而滑块接口计失败次数）；`live-room` 缺 WS。
+不可回滚；`exchange` 下单要过滑块（而滑块接口计失败次数）；`live-room` 的
+**口令本身要人给**（主播发在弹幕/小红书里，那边**无法鉴权** ⇒ 没法自动取）
+—— 所以它缺的不是 WS，是**一个输入口**，而那个口已经做了。
 **先把能照实写的写完**，写的那半等证据或真账号。
 
 ## 起名即分组
@@ -320,8 +322,8 @@ mcloud-plugin/
 
 - **M0 骨架**：构建（TS→单文件）、CI（在 Node/CPython 适配器上跑通一个 handler）、文档
 - **M1 上游客户端层**：登录 / 签名 / cookie 轮换 + **mock 上游**（CI 不碰真账号）
-- **M2 任务层**：20 条任务 —— **先做那 5 条纯只读的**（`task-list`、`prizes`、
-  `cloud-snapshot`、`app-task-matrix`、`play-ai-special`：只拉读数、不改上游账本）
+- **M2 任务层**：20 条任务 —— **先做那几条纯只读的**（`task-list`、`prizes`、
+  `cloud-snapshot`、`app-task-matrix`、`exchange-list`、`live-room`：只拉读数、不改上游账本）
 - **M3 状态与日志**：SQLite 表 + 运行日志 + 轮询
 - **M4 WebUI**：10 页（先总览 / 账号 / 任务 / 日志）
 - **M5 通知 + 编排 + 配置导入导出**

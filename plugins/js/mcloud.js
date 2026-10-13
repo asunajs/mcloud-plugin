@@ -623,6 +623,36 @@ function callOnce(transport2, req) {
     setCookies: extractSetCookies(res.headers)
   };
 }
+function callRawText(transport2, req) {
+  const t0 = Date.now();
+  const fail = (error2) => ({
+    ok: false,
+    status: 0,
+    text: "",
+    chars: 0,
+    tookMs: Date.now() - t0,
+    error: error2
+  });
+  let res;
+  try {
+    res = transport2(req);
+  } catch (e) {
+    return fail(`请求失败：${e instanceof Error ? e.message : String(e)}`);
+  }
+  const tookMs = Date.now() - t0;
+  if (isFetchError(res)) return { ...fail(pickError(res.error)), tookMs };
+  if (typeof res !== "object" || res === null || typeof res.body !== "string") {
+    return {
+      ...fail(`请求返回的形状不认识：${JSON.stringify(res)?.slice(0, 200) ?? String(res)}`),
+      tookMs
+    };
+  }
+  const chars = res.body.length;
+  if (res.status !== 200) {
+    return { ok: false, status: res.status, text: res.body, chars, tookMs, error: `HTTP ${res.status}` };
+  }
+  return { ok: true, status: 200, text: res.body, chars, tookMs, error: void 0 };
+}
 function extractSetCookies(headers) {
   const raw = [];
   for (const [k, v] of Object.entries(headers)) {
@@ -1556,6 +1586,243 @@ function readExchangeList(store2) {
   }
 }
 
+// src/mcloud/liveKouling.ts
+var XIAOHONGSHU_KOULING_PROFILE_URL = "https://www.xiaohongshu.com/user/profile/568caf13aed7585949773b30";
+function xiaohongshuProfileHeaders() {
+  return {
+    accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "accept-language": "zh-CN,zh;q=0.9",
+    referer: "https://www.xiaohongshu.com/",
+    "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+  };
+}
+function isKoulingHead(text) {
+  return /(?:复制)?口令\s*\d*\s*[：:]\s*$/.test(text.trim());
+}
+function hasKouling(text) {
+  return /口令|小红花/.test(text);
+}
+var TRAILING_PARTICLE = /[呀啊吧呢嘛哦]+$/;
+var QUESTION_WORDS = ["什么", "啥", "多少", "几", "哪个", "哪些"];
+function isQuestion(code) {
+  if (/[?？]/.test(code)) return true;
+  const t = code.replace(TRAILING_PARTICLE, "");
+  return QUESTION_WORDS.includes(t);
+}
+function looksLikeQuestionAboutKouling(line) {
+  if (/[?？]/.test(line)) return true;
+  const stripped = line.replace(/^第?\d*个?口令\s*[是为：:]?\s*/, "").trim();
+  return isQuestion(line) || isQuestion(stripped);
+}
+var SAME_LINE_PATTERN = /(?:复制)?口令\s*\d*\s*[：:]\s*(.*?)(?=\s+(?:复制)?口令\s*\d*\s*[：:]|无随机|$)/g;
+function extractKouling(msg) {
+  const result = [];
+  const m2 = msg.match(/小红花口令[：:]\s*(.+)/);
+  if (m2 && m2[1] !== void 0) result.push(m2[1].trim());
+  const lines = msg.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = (lines[i] ?? "").trim();
+    if (isKoulingHead(line)) {
+      const next = lines[i + 1];
+      if (next !== void 0) {
+        const content = next.trim();
+        if (content && !/^(?:复制)?口令/.test(content) && !/无随机/.test(content)) {
+          result.push(content);
+        }
+      }
+      continue;
+    }
+    for (const match of line.matchAll(SAME_LINE_PATTERN)) {
+      const code = (match[1] ?? "").trim();
+      if (code && !/无随机/.test(code)) result.push(code);
+    }
+  }
+  const m1 = msg.match(/口令是(.+)/);
+  if (m1 && m1[1] !== void 0) result.push(m1[1].trim());
+  if (result.length === 0 && /无随机/.test(msg)) {
+    const parts = msg.replace(/无随机.*/, "").trim().split(/\s+/);
+    for (const part of parts) {
+      const v = part.match(/^\d+\s*[：:]\s*(.+)/);
+      if (v && v[1] !== void 0) {
+        const code = v[1].trim();
+        if (code) result.push(code);
+      }
+    }
+  }
+  return [...new Set(result)].filter((code) => !isQuestion(code));
+}
+var NAMED_ENTITIES = {
+  amp: "&",
+  apos: "'",
+  gt: ">",
+  lt: "<",
+  nbsp: " ",
+  quot: '"'
+};
+function decodeHtmlEntities(text) {
+  return text.replace(/&(?:#(\d+)|#x([\da-f]+)|(\w+));/gi, (entity, decimal, hex, named) => {
+    if (typeof decimal === "string" && decimal !== "") {
+      const n = Number(decimal);
+      return safeFromCodePoint(n, entity);
+    }
+    if (typeof hex === "string" && hex !== "") {
+      return safeFromCodePoint(Number.parseInt(hex, 16), entity);
+    }
+    if (typeof named === "string") {
+      return NAMED_ENTITIES[named.toLowerCase()] ?? entity;
+    }
+    return entity;
+  });
+}
+function safeFromCodePoint(n, fallback) {
+  if (!Number.isFinite(n) || n < 0 || n > 1114111) return fallback;
+  try {
+    return String.fromCodePoint(n);
+  } catch {
+    return fallback;
+  }
+}
+function decodeJsonString(value) {
+  try {
+    return JSON.parse(`"${value}"`);
+  } catch {
+    return value.replace(/\\n/g, "\n").replace(/\\r/g, "\r").replace(/\\t/g, "	").replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+  }
+}
+function htmlToText(html) {
+  return decodeHtmlEntities(
+    html.replace(/<br\s*\/?\s*>/gi, "\n").replace(/<\/(?:a|article|div|h\d|li|p|section)>/gi, "\n").replace(/<[^>]+>/g, " ")
+  ).replace(/[ \t]+/g, " ").replace(/\n\s+/g, "\n").trim();
+}
+function collectCandidateTexts(html) {
+  const candidates = [];
+  const seen = /* @__PURE__ */ new Set();
+  const add = (value) => {
+    const text = decodeHtmlEntities(value).replace(/\s+/g, " ").trim();
+    if (!text || !hasKouling(text) || seen.has(text)) return;
+    seen.add(text);
+    candidates.push(text);
+  };
+  const jsonFieldPattern = /"(?:displayTitle|title|desc)"\s*:\s*"((?:\\.|[^"\\])*)"/g;
+  for (const match of html.matchAll(jsonFieldPattern)) add(decodeJsonString(match[1] ?? ""));
+  const elementPattern = /<(?:a|article|div|h\d|p)[^>]*>([\s\S]*?)<\/(?:a|article|div|h\d|p)>/gi;
+  for (const match of html.matchAll(elementPattern)) add(htmlToText(match[1] ?? ""));
+  const metaPattern = /<meta\b[^>]*(?:content=["']([^"']+)["'])[^>]*>/gi;
+  for (const match of html.matchAll(metaPattern)) add(match[1] ?? "");
+  for (const line of htmlToText(html).split(/\r?\n/)) add(line);
+  return candidates;
+}
+function extractKoulingFromXiaohongshuHtml(html) {
+  for (const candidate of collectCandidateTexts(html)) {
+    const codes = extractKouling(candidate);
+    if (codes.length > 0) return codes;
+  }
+  return [];
+}
+var MAX_CODE_CHARS = 128;
+var MAX_CODES = 10;
+function parseCodeInput(raw) {
+  const text = raw.trim();
+  if (!text) return { ok: false, codes: [], how: "", error: "先贴一条口令" };
+  const extracted = extractKouling(text);
+  if (extracted.length > 0) {
+    return finish(extracted, `按弹幕格式解出 ${extracted.length} 条`);
+  }
+  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter((l) => l !== "");
+  if (lines.length === 0) return { ok: false, codes: [], how: "", error: "先贴一条口令" };
+  const bad = lines.find((l) => looksLikeQuestionAboutKouling(l));
+  if (bad !== void 0) {
+    return {
+      ok: false,
+      codes: [],
+      how: "",
+      error: `「${bad.slice(0, 20)}」看着是观众的提问，不是口令 —— 拿去领只会白跑一枪（上游回 200108）`
+    };
+  }
+  return finish(lines, `按原文收下 ${lines.length} 条（没匹配到任何弹幕格式）`);
+}
+function finish(codes, how) {
+  const uniq = [...new Set(codes.map((c) => c.trim()).filter((c) => c !== ""))];
+  const tooLong = uniq.find((c) => c.length > MAX_CODE_CHARS);
+  if (tooLong !== void 0) {
+    return {
+      ok: false,
+      codes: [],
+      how: "",
+      error: `有一条 ${tooLong.length} 个字符，超过 ${MAX_CODE_CHARS} 的上限 —— 这不像口令`
+    };
+  }
+  if (uniq.length > MAX_CODES) {
+    return { ok: false, codes: [], how: "", error: `一次最多 ${MAX_CODES} 条（收到 ${uniq.length} 条）` };
+  }
+  return { ok: true, codes: uniq, how };
+}
+
+// src/mcloud/tasks/liveRoom.ts
+var STATE_READING = "mcloud.live.reading";
+var STATE_CODES = "mcloud.live.codes";
+var STATE_LIVE_URL = "mcloud.live.url";
+function loadLiveUrl(store2) {
+  const v = store2.getState(STATE_LIVE_URL);
+  return v && v.trim() ? v.trim() : XIAOHONGSHU_KOULING_PROFILE_URL;
+}
+function saveLiveUrl(store2, url, nowIso) {
+  store2.setState(STATE_LIVE_URL, url.trim().replace(/\/+$/, ""), nowIso);
+}
+var EMPTY_SHELL_HINT_CHARS = 5e3;
+function runLiveRoom(deps) {
+  const url = loadLiveUrl(deps.store);
+  const res = callRawText(deps.transport, {
+    url,
+    method: "GET",
+    headers: xiaohongshuProfileHeaders(),
+    body: void 0
+  });
+  if (!res.ok) {
+    const note2 = `抓小红书主页失败：${res.error ?? "未知失败"}`;
+    recordError(deps.store, "live-room", note2, deps.nowIso);
+    return { ok: false, note: note2 };
+  }
+  const codes = extractKoulingFromXiaohongshuHtml(res.text);
+  const guess = res.chars < EMPTY_SHELL_HINT_CHARS;
+  const note = codes.length ? `小红书主页：${codes.length} 条口令（${codes.join("、")}）` : `小红书主页：没读到口令（页面 ${res.chars} 字符）` + (guess ? ` —— 页面小得可疑，**猜**是被挡成了空壳（不是判据）` : ` —— 也可能是这期没发：空壳页与"没发"在解析层长得一样`);
+  const reading = {
+    at: deps.nowIso,
+    url,
+    codes,
+    chars: res.chars,
+    tookMs: res.tookMs,
+    note
+  };
+  deps.store.setState(STATE_READING, JSON.stringify(reading), deps.nowIso);
+  clearError(deps.store, "live-room", deps.nowIso);
+  return { ok: true, note };
+}
+function readLiveReading(store2) {
+  return parseJson(store2.getState(STATE_READING));
+}
+function loadLiveCodes(store2) {
+  return parseJson(store2.getState(STATE_CODES));
+}
+function saveLiveCodes(store2, raw, nowIso) {
+  const parsed = parseCodeInput(raw);
+  if (!parsed.ok) return { ok: false, codes: [], how: "", error: parsed.error ?? "解不出口令" };
+  const v = { at: nowIso, codes: parsed.codes, raw: raw.trim(), how: parsed.how };
+  store2.setState(STATE_CODES, JSON.stringify(v), nowIso);
+  return { ok: true, codes: parsed.codes, how: parsed.how };
+}
+function clearLiveCodes(store2, nowIso) {
+  store2.setState(STATE_CODES, "", nowIso);
+}
+function parseJson(raw) {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
 // src/mcloud/tasks/receive.ts
 var STATE_QUEUE = "mcloud.receive.queue";
 var STATE_RECEIVE = "mcloud.receive.last";
@@ -1936,7 +2203,11 @@ var TASK_META = [
   //      「小红书那条口令**没法自动化**（那边**无法鉴权**）」，只能由**人给**
   //   ⇒ 能自动的是「抓主页」，不能自动的是「口令本身」。这是两件事。
   //   所以拦路石不是 WS，是**缺一个输入口**（让人把口令填进来）。
-  { name: "live-room", title: "直播口令 → 小红花", group: "activity", kind: "Action", risk: "ledger", missed: "skip", deps: ["jwt"], batch: false, hidden: false, implemented: false, evidence: "partial", note: "能自动抓小红书主页（公开 GET）；但口令要**人给**（那边无法鉴权）—— 缺的是一个输入口" },
+  //
+  // 2026-10-13：**只读那一半已实现**（用户选的方案：加口令输入框 + 只做「抓主页 + 列出口令」）。
+  // 抓主页走的是原项目 `xiaohongshu.ts` 的公开 GET + 逐字移植的提取器（41 条黄金向量守着）。
+  // 领小红花那一步（写、会入群足迹）**仍然没做** —— 所以 risk 维持 `ledger` 不变。
+  { name: "live-room", title: "直播口令 → 小红花", group: "activity", kind: "Query", risk: "ledger", missed: "skip", deps: [], batch: false, hidden: false, implemented: true, evidence: "partial", note: "只做只读那半：抓公开主页 + 列出口令（**不需要凭据**）；口令要人给（那边无法鉴权）。领小红花那步没做" },
   // ── 网盘写入（未实现）──
   { name: "app-task", title: "App 任务（做任务）", group: "cloud-write", kind: "Action", risk: "write-cloud", missed: "skip", deps: ["jwt"], batch: false, hidden: false, implemented: false, note: "会上传 / 建删外链 / 发邮件" },
   { name: "task-expansion", title: "任务拓展", group: "cloud-write", kind: "Action", risk: "write-cloud", missed: "skip", deps: ["jwt"], batch: false, hidden: false, implemented: false, note: "会往网盘写文件（延期领取那一口已经接了，这是它的另一部分）" },
@@ -2053,23 +2324,46 @@ function mcloudRoutes(deps) {
       }
     },
     {
-      // 上游基址：CI 指向 mock 用；生产留空 = 用真地址
+      // 上游基址：CI 指向 mock 用；生产留空 = 用真地址。
+      // 口令主页地址：同一条路（**完整 URL**，不是源 —— 见 liveRoom.ts 的 loadLiveUrl）
       path: `${base}/config`,
       method: "GET",
-      handler: () => json(200, { baseUrl: loadBaseUrl(deps.store) || "(真上游)" })
+      handler: () => json(200, {
+        baseUrl: loadBaseUrl(deps.store) || "(真上游)",
+        liveUrl: loadLiveUrl(deps.store),
+        liveUrlDefault: XIAOHONGSHU_KOULING_PROFILE_URL
+      })
     },
     {
       path: `${base}/config`,
       method: "POST",
       handler: (req) => {
         const body = readBody(req);
-        const v = typeof body.baseUrl === "string" ? body.baseUrl.trim() : "";
-        if (v && !/^https?:\/\//.test(v)) {
-          return json(400, { error: "baseUrl 要以 http:// 或 https:// 开头（清空就传空串）" });
+        const out = {};
+        if ("baseUrl" in body) {
+          const v = typeof body.baseUrl === "string" ? body.baseUrl.trim() : "";
+          if (v && !/^https?:\/\//.test(v)) {
+            return json(400, { error: "baseUrl 要以 http:// 或 https:// 开头（清空就传空串）" });
+          }
+          deps.store.setState(STATE_BASE_URL, v.replace(/\/+$/, ""), deps.now());
+          deps.log(v ? `上游基址已改为 ${v}` : "上游基址已恢复为真上游");
+          out.baseUrl = v || "(真上游)";
         }
-        deps.store.setState(STATE_BASE_URL, v.replace(/\/+$/, ""), deps.now());
-        deps.log(v ? `上游基址已改为 ${v}` : "上游基址已恢复为真上游");
-        return json(200, { baseUrl: v || "(真上游)" });
+        if ("liveUrl" in body) {
+          const v = typeof body.liveUrl === "string" ? body.liveUrl.trim() : "";
+          if (v && !/^https?:\/\//.test(v)) {
+            return json(400, {
+              error: "liveUrl 要以 http:// 或 https:// 开头（清空 = 用默认主页）"
+            });
+          }
+          saveLiveUrl(deps.store, v, deps.now());
+          deps.log(v ? `口令主页已改为 ${v}` : "口令主页已恢复为默认（发布方的小红书主页）");
+          out.liveUrl = v || XIAOHONGSHU_KOULING_PROFILE_URL;
+        }
+        if (Object.keys(out).length === 0) {
+          return json(400, { error: "要传 baseUrl 或 liveUrl（清空就传空串）" });
+        }
+        return json(200, out);
       }
     },
     {
@@ -2097,6 +2391,44 @@ function mcloudRoutes(deps) {
           groups: rows.map((r, i) => ({ group: MATRIX_GROUPS[i], reading: r })),
           read: rows.filter(Boolean).length,
           total: MATRIX_GROUPS.length
+        });
+      }
+    },
+    {
+      // 直播口令（只读那半）：自动抓到的读数 + **人给的口令**。
+      // 界面要能看见 —— 否则"抓主页"就只是日志里的一行数。
+      path: `${base}/live`,
+      method: "GET",
+      handler: () => json(200, {
+        reading: readLiveReading(deps.store),
+        codes: loadLiveCodes(deps.store),
+        url: loadLiveUrl(deps.store),
+        emptyShellHintChars: EMPTY_SHELL_HINT_CHARS,
+        note: "口令本身**没法自动化**（主播在弹幕/小红书发，那边无法鉴权）⇒ 要人给；能自动的只有「抓主页 + 列出看到的口令」。领小红花那一步（写）还没做。"
+      })
+    },
+    {
+      path: `${base}/live/codes`,
+      method: "POST",
+      handler: (req) => {
+        const body = readBody(req);
+        if (body.clear === true) {
+          clearLiveCodes(deps.store, deps.now());
+          deps.log("直播口令：已清空");
+          return json(200, { cleared: true });
+        }
+        const raw = typeof body.codes === "string" ? body.codes : typeof body.session === "string" ? body.session : "";
+        if (!raw.trim()) {
+          return json(400, { error: '需要 {"codes": "<口令，一行一条>"} 或 {"clear": true}' });
+        }
+        const r = saveLiveCodes(deps.store, raw, deps.now());
+        if (!r.ok) return json(400, { error: r.error ?? "解不出口令" });
+        deps.log(`直播口令：存了 ${r.codes.length} 条（${r.how}）`);
+        return json(200, {
+          saved: r.codes.length,
+          codes: r.codes,
+          how: r.how,
+          stored: loadLiveCodes(deps.store)
         });
       }
     },
@@ -2267,6 +2599,7 @@ register_cron("backup-gift", SIGNIN_CRON, makeRunner("备份好礼", runBackupGi
 register_cron("notice", SIGNIN_CRON, makeRunner("开启通知领AI豆", runNotice));
 register_cron("app-task-matrix", SIGNIN_CRON, makeRunner("App 任务矩阵（只看）", runAppTaskMatrix));
 register_cron("exchange-list", SIGNIN_CRON, makeRunner("兑换清单（只看）", runExchangeList));
+register_cron("live-room", "*/30 7-23 * * *", makeRunner("直播口令（只看）", runLiveRoom));
 register_cron("prizes", "20 8 * * *", makeRunner("待领取奖品", runPrizes));
 register_cron("cloud-snapshot", "30 8 * * *", makeRunner("AI豆快照", runCloudSnapshot));
 every("selftest", "5m", (p) => {

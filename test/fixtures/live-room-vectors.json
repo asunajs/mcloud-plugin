@@ -1,0 +1,304 @@
+{
+  "$source": "/Users/catlair/mobile/workspace/mcloud/test/golden/live-room-vectors.json",
+  "$sha256": "42ff40b6038e74049b622c3e29203a3d8ad29f3b72481fa940ec8cf8c80507f0",
+  "$copiedAt": "2026-10-13",
+  "$note": "从 mcloud 仓库的黄金向量里**只取这两个小节**（弹幕 36 条 / 小红书 5 条），逐字拷贝、不做任何加工。期望值出自原项目 TS 源码真跑（见上游 $source 字段），不是手写的 —— 所以任何一条不一致都当 bug 处理：改实现，不改期望值。",
+  "koulingExtract": [
+    {
+      "name": "ts-basic",
+      "text": "小红花口令：云盘AI高效复盘",
+      "why": "格式 1 的基本形态",
+      "expect": [
+        "云盘AI高效复盘"
+      ]
+    },
+    {
+      "name": "ts-multiline",
+      "text": "复制口令1：\n短漫上新免费看\n复制口令2：\n云盘AI高效复盘\n无随机口令",
+      "why": "格式 2：整行是头 ⇒ 取下一行。⚠ 这条曾因 Go 侧漏了\"取下一行\"这一支而解出空",
+      "expect": [
+        "短漫上新免费看",
+        "云盘AI高效复盘"
+      ]
+    },
+    {
+      "name": "ts-multiline-sameline",
+      "text": "复制口令1：短漫上新免费看\n复制口令2：云盘AI高效复盘\n无随机口令",
+      "why": "格式 2 的同名行形态（头与内容在同一行）",
+      "expect": [
+        "短漫上新免费看",
+        "云盘AI高效复盘"
+      ]
+    },
+    {
+      "name": "ts-single-multiline",
+      "text": "复制口令：\n云盘AI高效复盘",
+      "why": "⚠ 单个口令头 + 下一行：与 ts-multiline 同一支，但没有编号",
+      "expect": [
+        "云盘AI高效复盘"
+      ]
+    },
+    {
+      "name": "ts-shi",
+      "text": "口令是云盘AI高效复盘",
+      "why": "格式 3",
+      "expect": [
+        "云盘AI高效复盘"
+      ]
+    },
+    {
+      "name": "ts-question-1",
+      "text": "口令是什么？",
+      "why": "疑问句：问号",
+      "expect": []
+    },
+    {
+      "name": "ts-question-2",
+      "text": "口令是什么",
+      "why": "疑问句：整条等于疑问词",
+      "expect": []
+    },
+    {
+      "name": "ts-question-3",
+      "text": "口令是多少啊",
+      "why": "疑问句：去语气词后等于疑问词",
+      "expect": []
+    },
+    {
+      "name": "ts-question-4",
+      "text": "口令是啥呢",
+      "why": "疑问句：同上，另一个词",
+      "expect": []
+    },
+    {
+      "name": "ts-question-keeps-real",
+      "text": "口令是带着云盘去上学",
+      "why": "⚠ 疑问句过滤的**反向**边界：真口令不能误伤",
+      "expect": [
+        "带着云盘去上学"
+      ]
+    },
+    {
+      "name": "ts-digit-format",
+      "text": "1:短漫上新免费看 2:云盘AI高效复盘 无随机",
+      "why": "格式 4 兜底（只在 ①②③ 全空时生效）",
+      "expect": [
+        "短漫上新免费看",
+        "云盘AI高效复盘"
+      ]
+    },
+    {
+      "name": "ts-empty",
+      "text": "",
+      "why": "空串",
+      "expect": []
+    },
+    {
+      "name": "ts-dedupe",
+      "text": "小红花口令：AAA\n小红花口令：AAA",
+      "why": "保序去重",
+      "expect": [
+        "AAA"
+      ]
+    },
+    {
+      "name": "ts-english-colon",
+      "text": "小红花口令:云盘AI高效复盘",
+      "why": "半角冒号",
+      "expect": [
+        "云盘AI高效复盘"
+      ]
+    },
+    {
+      "name": "live-real-1",
+      "text": "小红花口令：毕业之旅MClaw相伴",
+      "why": "实拍：真实主播格式",
+      "expect": [
+        "毕业之旅MClaw相伴"
+      ]
+    },
+    {
+      "name": "live-real-2",
+      "text": "口令1:MClaw全能小助手 口令2:毕业之旅MClaw相伴",
+      "why": "实拍：同一行两个口令（头之间以空格分隔）",
+      "expect": [
+        "MClaw全能小助手",
+        "毕业之旅MClaw相伴"
+      ]
+    },
+    {
+      "name": "live-real-3",
+      "text": "口令2：毕业之旅MClaw相伴",
+      "why": "实拍：单个编号口令",
+      "expect": [
+        "毕业之旅MClaw相伴"
+      ]
+    },
+    {
+      "name": "live-real-4",
+      "text": "口令1：MClaw全能小助手",
+      "why": "实拍：同上，另一个编号",
+      "expect": [
+        "MClaw全能小助手"
+      ]
+    },
+    {
+      "name": "live-false-positive",
+      "text": "口令是相伴什么",
+      "why": "⚠ 已知假阳性，钉成行为契约",
+      "expect": [
+        "相伴什么"
+      ]
+    },
+    {
+      "name": "live-question-1",
+      "text": "口令在哪里",
+      "why": "疑问句（\"哪里\"不在疑问词表里，靠整条不等判掉）",
+      "expect": []
+    },
+    {
+      "name": "live-question-2",
+      "text": "口令是什么",
+      "why": "疑问句",
+      "expect": []
+    },
+    {
+      "name": "live-question-3",
+      "text": "口令是啥",
+      "why": "疑问句",
+      "expect": []
+    },
+    {
+      "name": "live-question-4",
+      "text": "口令啥啊",
+      "why": "疑问句",
+      "expect": []
+    },
+    {
+      "name": "live-question-5",
+      "text": "口令二是什么",
+      "why": "疑问句（带汉字编号）",
+      "expect": []
+    },
+    {
+      "name": "live-question-6",
+      "text": "口令是什么啊",
+      "why": "疑问句",
+      "expect": []
+    },
+    {
+      "name": "live-question-7",
+      "text": "第2个口令是什么？",
+      "why": "疑问句（问号）",
+      "expect": []
+    },
+    {
+      "name": "live-question-8",
+      "text": "场控随机口令是多少",
+      "why": "疑问句（去语气词后等于\"多少\"）",
+      "expect": []
+    },
+    {
+      "name": "live-question-9",
+      "text": "怎么复制口令",
+      "why": "无口令头、无\"口令是\"",
+      "expect": []
+    },
+    {
+      "name": "live-question-10",
+      "text": "口令兑换不了",
+      "why": "同上",
+      "expect": []
+    },
+    {
+      "name": "live-bare",
+      "text": "口令",
+      "why": "裸关键词",
+      "expect": []
+    },
+    {
+      "name": "live-no-random",
+      "text": "没有随机口令",
+      "why": "含\"口令\"但解不出（也不含\"口令是\"）",
+      "expect": []
+    },
+    {
+      "name": "live-only-this-one",
+      "text": "只有这一个口令",
+      "why": "同上",
+      "expect": []
+    },
+    {
+      "name": "live-no-random-with-head",
+      "text": "小红花口令：AAA 无随机",
+      "why": "⚠ 格式 1 与同一行切分**同时**命中（两个结果）",
+      "expect": [
+        "AAA 无随机",
+        "AAA"
+      ]
+    },
+    {
+      "name": "live-ideographic-space",
+      "text": "口令1：AAA　口令2：BBB",
+      "why": "⚠ 全角空格：JS `\\s` 含 U+3000，Go 的不含",
+      "expect": [
+        "AAA",
+        "BBB"
+      ]
+    },
+    {
+      "name": "live-head-then-head",
+      "text": "复制口令1：\n复制口令2：\nAAA",
+      "why": "⚠ 下一行自己也是口令头 ⇒ 必须排除（否则把 `复制口令2：` 当口令）",
+      "expect": [
+        "AAA"
+      ]
+    },
+    {
+      "name": "live-head-then-no-random",
+      "text": "复制口令1：\n无随机口令",
+      "why": "⚠ 下一行含 `无随机` ⇒ 必须排除（它是收尾标记，不是口令）",
+      "expect": []
+    }
+  ],
+  "xiaohongshuExtract": [
+    {
+      "name": "inline-json-first-hit-wins",
+      "html": "<html><head><script>window.__INITIAL_STATE__={\"noteList\":[{\"displayTitle\":\"小红花口令：最新一期口令在此\"},{\"displayTitle\":\"小红花口令：上一期的旧口令\"}]}</script></head><body></body></html>",
+      "why": "内嵌 JSON 优先；主页倒序 ⇒ 第一条命中即最新（不能再往下取历史口令）",
+      "expect": [
+        "最新一期口令在此"
+      ]
+    },
+    {
+      "name": "server-rendered-element",
+      "html": "<html><body><div class=\"note\">口令是云盘AI高效复盘</div></body></html>",
+      "why": "没有内嵌 JSON 时退到服务端渲染的卡片",
+      "expect": [
+        "云盘AI高效复盘"
+      ]
+    },
+    {
+      "name": "meta-content",
+      "html": "<html><head><meta name=\"description\" content=\"小红花口令：元数据里的口令\" /></head></html>",
+      "why": "再退到 `<meta content>`",
+      "expect": [
+        "元数据里的口令"
+      ]
+    },
+    {
+      "name": "no-kouling-at-all",
+      "html": "<html><body><div>今天天气不错</div></body></html>",
+      "why": "空结果的形状（返回 `[]` 而不是 nil）",
+      "expect": []
+    },
+    {
+      "name": "html-entities-and-json-escape",
+      "html": "<html><body><div>小红花口令：&#35270;&#39057;&#20307;&#39564;</div><script>{\"desc\":\"口令是A\\nB\"}</script></body></html>",
+      "why": "⚠ 内嵌 JSON **优先于**文档顺序 ⇒ 解出的是 `A B`（换行折成空格），不是 div 里的「视频体验」。手写期望值的第一版脚本记成了「视频体验」，与真实现不符，已改为真跑",
+      "expect": [
+        "A B"
+      ]
+    }
+  ]
+}
