@@ -120,3 +120,31 @@ let late_ms = (now - scheduled).num_milliseconds();
 或者在启动完成前让 `/api/state` 返回 503。前者对轮询更友好（也不破坏既有字段）。
 
 **状态**：待修（面板侧）。
+
+---
+
+## F-004 `tasks` 与 `jobs` 语义不同，字段名不提示
+
+**怎么发现的**：本仓库 CI 写断言时，把任务名去 `/api/state` 的 **`tasks`** 里找
+（看名字以为是「所有任务」），结果拿到 `[]`。实际形状：
+
+```
+/api/state
+  plugins[]  →  { name, runtime, tasks: 2, ticks, has_ui, has_on_tick, error … }
+                                                     ↑ 这里是**数量**，不是列表
+  tasks[]    →  只有正在跑的调用（样例里只有 kernel 自己的 heartbeat）
+  jobs[]     →  **任务定义**在这里：{ plugin, name, next_run, last_run, deleted, last_error … }
+```
+
+**影响**：本仓库是这套 API 的**第一个外部消费者**，两次断言都栽在这里
+（第一次 `p['tasks']` 拿到 int 2 → TypeError；第二次按 `tasks` 过滤拿不到任务）。
+对插件作者来说这是纯摩擦：名字不提示区别，而猜错的代价是一轮 CI。
+
+**插件侧怎么绕**：CI 改用 `jobs` 并按 `plugin` 过滤。
+
+**建议怎么修**（面板侧，下一轮）：不一定要改名（改名是破坏性的），
+在 `/api/state` 的字段注释 / `docs` 里写清「`tasks` = 正在跑的调用，`jobs` = 任务定义」，
+或者把 `tasks` 改成 `inflight`（语义更准）。这条优先度低 —— 但它是**第一个外部消费者
+真实的踩坑记录**，值得留下。
+
+**状态**：待定（面板侧，属于文档/命名的摩擦，不是 bug）。

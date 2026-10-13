@@ -88,14 +88,20 @@ jobs:
 
       # 等引擎把插件装完，**不能只等 HTTP 起来**。
       #
-      # 第一次跑就是在这一步红的：`/api/state` 一开始能返回 200 时，引擎还没装完插件，
-      # `plugins` 是空数组 —— 断言在第 40 毫秒就下结论，插件在第 80 毫秒才装好。
+      # 第一次跑就是在这一步红的：`/api/state` 一开始能返回 200 时引擎还没装完插件，
+      # `plugins` 是空数组 —— 断言在插件装好前 40 毫秒就下了结论。
       # 这是这个项目里反复出现的一类错（「断言下得太早」），所以这里等的是
-      # **插件真的带着任务出现**，而不是接口通不通。
-      # 顺带这条也是 F-003：`/api/state` 无法区分「没有插件」和「还没装完」。
+      # **任务真的出现在调度器里**，而不是接口通不通。
+      #
+      # 两个坑都踩过，写在配置里免得后人重踩：
+      #   ① `/api/state` 没法区分「没有插件」和「还没装完」（F-003）
+      #   ② 任务定义在 **`jobs`** 字段里；`tasks` 是「正在跑的调用」（F-004）
+      #   ③ 循环里等到就 break，**等不到必须 exit 1** —— 第一版忘了，
+      #      于是 60 次都没等到也算这一步成功，错误被推到下一步、变得难查
       - name: 等插件装好（不是等接口通）
         run: |
           set -euo pipefail
+          got=0
           for i in $(seq 1 60); do
             curl -fsS -H 'X-Panel-Token: ci-token-plugin' \
               http://127.0.0.1:18795/api/state -o "$TMP/state.json" 2>/dev/null || true
@@ -105,14 +111,26 @@ jobs:
               s = json.load(open(os.environ['TMP'] + '/state.json'))
           except Exception:
               sys.exit(1)
-          names = {t['name'] for t in s.get('tasks', []) if t.get('plugin') == 'mcloud'}
+          names = {j['name'] for j in s.get('jobs', [])
+                   if j.get('plugin') == 'mcloud' and not j.get('deleted')}
           sys.exit(0 if {'selftest', 'diag'} <= names else 1)
           " 2>/dev/null; then
-              echo "✅ 插件已装好（第 $i 次探测）"
+              echo "✅ 插件与它的任务都已就位（第 $i 次探测）"
+              got=1
               break
             fi
             sleep 0.5
           done
+          if [ "$got" != 1 ]; then
+            echo "❌ 30 秒内没等到插件任务进入调度器"
+            python3 -c "
+          import json, os
+          s = json.load(open(os.environ['TMP'] + '/state.json'))
+          print('plugins =', s.get('plugins'))
+          print('jobs    =', s.get('jobs'))
+          "
+            exit 1
+          fi
 
       - name: 插件加载了、任务登记了、没有错
         run: |
@@ -126,10 +144,14 @@ jobs:
           assert p['runtime'] == 'js', p
           assert p.get('error') in (None, ''), p
           assert p['tasks'] == 2, f"插件报的任务数是 {p['tasks']}，期望 2"
-          # 任务名要去**顶层** tasks 里按 plugin 过滤（插件条目里的 tasks 是数量，不是列表）
-          names = sorted(t['name'] for t in state.get('tasks', []) if t.get('plugin') == 'mcloud')
+          # 任务定义在 **jobs** 里（`tasks` 是「正在跑的调用」，见 F-004）；
+          # 插件条目上的 `tasks` 是数量，不是列表
+          mine = [j for j in state.get('jobs', []) if j.get('plugin') == 'mcloud']
+          names = sorted(j['name'] for j in mine)
           assert names == ['diag', 'selftest'], f"实际任务名 {names}"
-          print(f"✅ 插件 mcloud 已加载：runtime={p['runtime']} 任务 {names}（调度器里都登记了）")
+          assert all(not j.get('deleted') for j in mine), mine
+          assert all(j.get('last_error') in (None, '') for j in mine), mine
+          print(f"✅ 插件 mcloud 已加载：runtime={p['runtime']} 任务 {names}（调度器里都登记了、无 last_error）")
           PY
 
       - name: 沙箱内的自检必须通过（这是 M0 的核心证据）
