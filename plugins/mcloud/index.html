@@ -45,6 +45,14 @@
         页面上的输入框不会被回填。
       </p>
       <div class="row">
+        <label class="label">原生凭据</label>
+        <input id="h5-auth" class="input" type="password" autocomplete="off"
+               placeholder="Basic base64(mobile:号:token) —— 就是 mcloud 的 auth.raw">
+        <button id="h5-save" class="btn btn-primary">换票</button>
+        <button id="h5-clear" class="btn">清除</button>
+      </div>
+      <p class="hint" id="h5-hint"></p>
+      <div class="row">
         <label class="label">上游地址</label>
         <input id="base-url" class="input" placeholder="留空 = 用默认上游">
         <button id="base-save" class="btn">保存</button>

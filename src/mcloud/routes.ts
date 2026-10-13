@@ -36,6 +36,17 @@ import {
 } from './tasks/liveRoom.ts';
 import { XIAOHONGSHU_KOULING_PROFILE_URL } from './liveKouling.ts';
 import {
+  JWT_TTL_MS,
+  authStatus,
+  clearAuth,
+  loadExchange,
+  loadJwt,
+  maskMobile,
+  runExchangeStep,
+  startExchange,
+  jwtFresh,
+} from './sessionExchange.ts';
+import {
   claimEnabled,
   collectCodes,
   loadDrawState,
@@ -257,6 +268,75 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
             state: loadDrawState(deps.store),
           },
         }),
+    },
+    {
+      // H5 换票（三步）：凭据状态 + 进度 + 换到的票。**都不回显凭据本身。**
+      path: `${base}/h5`,
+      method: 'GET',
+      handler: () => {
+        const jwt = loadJwt(deps.store);
+        return json(200, {
+          auth: authStatus(deps.store),
+          exchange: loadExchange(deps.store),
+          // ⚠ 票**不**回显（长度也不给 —— 它比凭据更接近"能直接用"）
+          jwt: jwt
+            ? {
+                present: true,
+                at: jwt.at,
+                fresh: jwtFresh(deps.store, Date.now()),
+                // 脱敏放**响应边界**（存储里留真值）：手机号不是凭据，
+                // 但也没必要整串进界面与日志 —— 与凭据的处理同一套纪律
+                mobile: jwt.mobile ? maskMobile(jwt.mobile) : null,
+                ttlMinutes: Math.round(JWT_TTL_MS / 60000),
+              }
+            : { present: false },
+          note:
+            '贴一份**原生凭据**（`Basic base64("mobile:号:token")`，' +
+            '也就是 mcloud 的 `auth.raw` 那个形状），插件自己走三步换成 H5 的 jwttoken，' +
+            '并按 100 分钟自动续 —— 不用再手工从浏览器抄票（它 2 小时就废）。',
+        });
+      },
+    },
+    {
+      path: `${base}/h5/auth`,
+      method: 'POST',
+      handler: (req) => {
+        const body = readBody(req);
+        if (body.clear === true) {
+          clearAuth(deps.store, deps.now());
+          deps.log('原生凭据与换到的票：已清空');
+          return json(200, { cleared: true });
+        }
+        const raw =
+          typeof body.authorization === 'string'
+            ? body.authorization
+            : typeof body.session === 'string'
+              ? body.session
+              : '';
+        if (!raw.trim()) {
+          return json(400, { error: '需要 {"authorization": "Basic …"} 或 {"clear": true}' });
+        }
+        const r = startExchange(deps.store, raw, deps.now());
+        if (!r.ok) return json(400, { error: r.error });
+        // ⚠ 日志只出指纹，不出凭据
+        deps.log(`原生凭据已收下（指纹 ${r.fingerprint}）—— 点「换票」走三步`);
+        return json(200, { stored: true, fingerprint: r.fingerprint, ...authStatus(deps.store) });
+      },
+    },
+    {
+      // **推进一步**（一次调用一个上游请求）。界面上的按钮循环调这里直到 done。
+      path: `${base}/h5/step`,
+      method: 'POST',
+      handler: () => {
+        const r = runExchangeStep({
+          store: deps.store,
+          transport: deps.transport,
+          nowIso: deps.now(),
+          baseUrl: loadBaseUrl(deps.store),
+        });
+        deps.log(`换票：${r.note}`);
+        return json(200, { ...r, exchange: loadExchange(deps.store) });
+      },
     },
     {
       // **只读探针**：一枪 `user/info`，回答"这一族能不能通"（不记账、不写状态）。

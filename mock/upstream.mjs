@@ -171,6 +171,34 @@ export async function startMock(options = {}) {
         return json(res, 200, { code: 0, msg: 'success', result: 3 });
       }
 
+      // ── H5 换票三步 ──────────────────────────────────────────────────────
+      //
+      // ① `querySpecTokenV2`（**原生族**：Authorization 鉴权、无签名；双层信封、
+      //    `code` 是**字符串** `"0000"`）
+      // ② `api/timestamp`（无鉴权，只回一个 13 位毫秒）
+      // ③ `tyrzLogin`（H5 族：带签名，`code` 是**数字** 0）
+      //
+      // 三个信封形状**各不相同** —— 插件那边有三套解析器，这里就要有三套形状，
+      // 否则"解析器能认"这件事根本没被测到。
+      if (url.pathname === '/user/querySpecTokenV2') {
+        return json(res, 200, {
+          success: true,
+          code: '0000',
+          message: 'ok',
+          data: { token: 'SSO-MOCK' },
+        });
+      }
+      if (url.pathname === '/ycloud/api/timestamp') {
+        return json(res, 200, { code: 0, msg: 'success', result: 1700000000000 });
+      }
+      if (url.pathname === '/ycloud/auth-service/auth/tyrzLogin') {
+        return json(res, 200, {
+          code: 0,
+          msg: 'success',
+          result: { token: 'JWT-MOCK-0123456789', mobile: '13800000000' },
+        });
+      }
+
       const finish = () => {
         if (behavior === 'http-500') return json(res, 500, { code: -1, msg: 'boom' });
         if (behavior === 'not-json') {

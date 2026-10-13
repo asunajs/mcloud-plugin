@@ -861,10 +861,12 @@ function loadSession(store2) {
   if (!raw) return null;
   try {
     const v = JSON.parse(raw);
-    if (typeof v.cookie !== "string" || v.cookie === "") return null;
+    const cookie = typeof v.cookie === "string" ? v.cookie : "";
+    const jwt = typeof v.jwt === "string" ? v.jwt : "";
+    if (cookie === "" && jwt === "") return null;
     return {
-      cookie: v.cookie,
-      jwt: typeof v.jwt === "string" ? v.jwt : void 0,
+      cookie,
+      jwt: jwt === "" ? void 0 : jwt,
       deviceId: typeof v.deviceId === "string" ? v.deviceId : void 0,
       userAgent: typeof v.userAgent === "string" ? v.userAgent : void 0,
       savedAt: typeof v.savedAt === "string" ? v.savedAt : ""
@@ -2181,6 +2183,299 @@ function sameList(a, b) {
   return a.length === b.length && a.every((v, i) => v === b[i]);
 }
 
+// src/mcloud/h5session.ts
+var BASE_USER_YUN = "https://user-njs.yun.139.com";
+var BASE_MCLOUD = "https://m.mcloud.139.com";
+var H5_SALT_KEY = 2;
+var H5_CONTENT_TYPE = "application/json;charset=UTF-8";
+var H5_APP_VERSION2 = "12.6.0.0";
+var SPEC_TOKEN_PATH = "/user/querySpecTokenV2";
+var TIMESTAMP_PATH = "/ycloud/api/timestamp";
+var TYRZ_LOGIN_PATH = "/ycloud/auth-service/auth/tyrzLogin";
+var SIGN_IN_RECIPE = {
+  toSourceId: "001005",
+  marketName: "sign_in_3",
+  sourceId: "1002",
+  h5AppId: "cy62d5a5e8373a272aeca467accad61722c51cfd48",
+  pagePath: "newsignin",
+  portalPage: "mobilecloud",
+  targetSourceId: "001005"
+};
+function pageUrl(p, ssoToken) {
+  let url = `${BASE_MCLOUD}/portal/${p.portalPage}/index.html?path=${p.pagePath}&sourceid=${p.sourceId}`;
+  if (p.h5AppId !== void 0) url += `&enableShare=1&appID=${p.h5AppId}`;
+  url += `&token=${ssoToken}`;
+  if (p.targetSourceId !== void 0) url += `&targetSourceId=${p.targetSourceId}`;
+  if (p.h5AppId === void 0) url += "&enableShare=1";
+  return url;
+}
+function h5Headers(params, referer, jwt, showLoading) {
+  const h = {
+    Accept: "*/*",
+    activityid: params.marketName,
+    appversion: H5_APP_VERSION2,
+    Referer: referer,
+    showloading: showLoading
+  };
+  if (jwt !== void 0) h.jwttoken = jwt;
+  return h;
+}
+function specTokenRequest(params, authorization, base) {
+  return {
+    url: `${(base ?? BASE_USER_YUN).replace(/\/+$/, "")}${SPEC_TOKEN_PATH}`,
+    method: "POST",
+    headers: { "Content-Type": H5_CONTENT_TYPE, Authorization: authorization },
+    body: JSON.stringify({ toSourceId: params.toSourceId })
+  };
+}
+function timestampRequest(params, referer, base) {
+  return {
+    url: `${(base ?? BASE_MCLOUD).replace(/\/+$/, "")}${TIMESTAMP_PATH}`,
+    method: "GET",
+    headers: h5Headers(params, referer, void 0, "true"),
+    body: void 0
+  };
+}
+function tyrzLoginRequest(params, ssoToken, sign, referer, base) {
+  const body = JSON.stringify({
+    marketName: params.marketName,
+    openAccount: 0,
+    sourceId: params.sourceId,
+    token: ssoToken
+  });
+  return {
+    url: `${(base ?? BASE_MCLOUD).replace(/\/+$/, "")}${TYRZ_LOGIN_PATH}`,
+    method: "POST",
+    headers: {
+      ...h5Headers(params, referer, void 0, "true"),
+      Origin: BASE_MCLOUD,
+      "x-request-id": sign["x-request-id"],
+      "x-timestamp": sign["x-timestamp"],
+      "x-nonce": sign["x-nonce"],
+      "x-signature": sign["x-signature"]
+    },
+    body
+  };
+}
+function makeSign(serverTimestamp) {
+  return signHeadersWith(uuidV4(), nonce(), serverTimestamp, H5_SALT_KEY, "");
+}
+function parseSsoToken(body) {
+  let v;
+  try {
+    v = JSON.parse(body);
+  } catch (e) {
+    return { ok: false, error: `querySpecTokenV2 响应不是 JSON：${e instanceof Error ? e.message : String(e)}` };
+  }
+  if (v.success !== true) {
+    return {
+      ok: false,
+      error: `querySpecTokenV2 失败：code=${String(v.code ?? "?")} message=${String(v.message ?? "")}`
+    };
+  }
+  const data = v.data;
+  const token = data && typeof data === "object" ? data.token : void 0;
+  if (typeof token !== "string" || token === "") {
+    return { ok: false, error: "querySpecTokenV2 响应没有 data.token" };
+  }
+  return { ok: true, value: token };
+}
+function parseServerTimestamp(body) {
+  let v;
+  try {
+    v = JSON.parse(body);
+  } catch (e) {
+    return { ok: false, error: `api/timestamp 响应不是 JSON：${e instanceof Error ? e.message : String(e)}` };
+  }
+  const r = v.result;
+  if (typeof r === "number" && Number.isFinite(r)) return { ok: true, value: String(r) };
+  if (typeof r === "string" && r !== "") return { ok: true, value: r };
+  if (r === void 0) return { ok: false, error: "api/timestamp 响应没有 result" };
+  return { ok: false, error: `api/timestamp 的 result 不是整数：${JSON.stringify(r)}` };
+}
+function parseJwtToken(body) {
+  let v;
+  try {
+    v = JSON.parse(body);
+  } catch (e) {
+    return { ok: false, error: `tyrzLogin 响应不是 JSON：${e instanceof Error ? e.message : String(e)}` };
+  }
+  const code = v.code;
+  let codeOk;
+  if (typeof code === "number") codeOk = code === 0;
+  else if (typeof code === "string") codeOk = code === "0" || code === "0000";
+  else if (code === null || code === void 0) codeOk = v.success === true;
+  else return { ok: false, error: `tyrzLogin 的 code 类型意外：${JSON.stringify(code)}` };
+  if (!codeOk) {
+    const msg = typeof v.msg === "string" ? v.msg : typeof v.message === "string" ? v.message : "(无消息)";
+    return { ok: false, error: `tyrzLogin 失败：code=${JSON.stringify(code ?? null)} msg=${msg}` };
+  }
+  const result = v.result;
+  if (!result || typeof result !== "object") return { ok: false, error: "tyrzLogin 响应没有 result" };
+  const r = result;
+  if (typeof r.token !== "string" || r.token === "") {
+    return { ok: false, error: "tyrzLogin 响应没有 result.token" };
+  }
+  return {
+    ok: true,
+    // `mobile` 可能缺失 —— 它是"确认签的是哪个账号"的回显，不是凭据的一部分，
+    // 缺了不该让整次登录失败
+    value: { jwt: r.token, mobile: typeof r.mobile === "string" ? r.mobile : void 0 }
+  };
+}
+function normalizeAuthorization(raw) {
+  const v = raw.trim();
+  if (v === "") return { ok: false, error: "凭据是空的" };
+  if (/^(basic|bearer)\s/i.test(v)) return { ok: true, value: v };
+  if (/\s/.test(v)) {
+    return {
+      ok: false,
+      error: '这个值里有空格但又不是 Basic/Bearer 开头 —— 像是抄断了。正确形状是 `Basic base64("mobile:手机号:token")`（整串一个空格）'
+    };
+  }
+  return { ok: true, value: `Basic ${v}` };
+}
+function authFingerprint(sha256hex) {
+  return sha256hex.slice(0, 16);
+}
+
+// src/mcloud/sessionExchange.ts
+var STATE_AUTH = "mcloud.h5.auth";
+var STATE_EXCHANGE = "mcloud.h5.exchange";
+var STATE_JWT = "mcloud.h5.jwt";
+var JWT_TTL_MS = 100 * 60 * 1e3;
+function parse(raw) {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+function authStatus(store2) {
+  const v = store2.getState(STATE_AUTH);
+  if (!v) return { present: false };
+  return { present: true, fingerprint: authFingerprint(sha256Hex(v)), length: v.length };
+}
+function loadExchange(store2) {
+  return parse(store2.getState(STATE_EXCHANGE));
+}
+function loadJwt(store2) {
+  return parse(store2.getState(STATE_JWT));
+}
+function jwtFresh(store2, nowMs) {
+  const r = loadJwt(store2);
+  if (!r) return false;
+  const at = Date.parse(r.at);
+  return Number.isFinite(at) && nowMs - at < JWT_TTL_MS;
+}
+function startExchange(store2, raw, nowIso) {
+  const norm = normalizeAuthorization(raw);
+  if (!norm.ok || norm.value === void 0) return { ok: false, error: norm.error };
+  const fingerprint = authFingerprint(sha256Hex(norm.value));
+  store2.setState(STATE_AUTH, norm.value, nowIso);
+  store2.setState(
+    STATE_EXCHANGE,
+    JSON.stringify({ step: "spec-token", fingerprint, startedAt: nowIso }),
+    nowIso
+  );
+  return { ok: true, fingerprint };
+}
+function clearAuth(store2, nowIso) {
+  store2.setState(STATE_AUTH, "", nowIso);
+  store2.setState(STATE_EXCHANGE, "", nowIso);
+  store2.setState(STATE_JWT, "", nowIso);
+}
+function runExchangeStep(deps) {
+  const st = loadExchange(deps.store);
+  const auth = deps.store.getState(STATE_AUTH);
+  if (!st || st.step === "done" || !auth) {
+    return { ok: true, note: "没有待换票的任务（先去界面上贴一份原生凭据）", done: true };
+  }
+  const finish2 = (s, ok, note) => {
+    s.step = "done";
+    s.finishedAt = deps.nowIso;
+    s.ok = ok;
+    s.note = note;
+    delete s.ssoToken;
+    delete s.ts;
+    deps.store.setState(STATE_EXCHANGE, JSON.stringify(s), deps.nowIso);
+    return { ok, note, done: true };
+  };
+  if (st.step === "spec-token") {
+    const res2 = callRawText(deps.transport, specTokenRequest(SIGN_IN_RECIPE, auth, deps.baseUrl));
+    if (!res2.ok) return failStep(deps, st, `① 换 SSO token 失败：${res2.error ?? "未知失败"}`);
+    const p2 = parseSsoToken(res2.text);
+    if (!p2.ok || p2.value === void 0) return failStep(deps, st, `① ${p2.error}`);
+    st.ssoToken = p2.value;
+    st.referer = pageUrl(SIGN_IN_RECIPE, p2.value);
+    st.step = "timestamp";
+    deps.store.setState(STATE_EXCHANGE, JSON.stringify(st), deps.nowIso);
+    return { ok: true, note: "① 换到 SSO token（**不缓存**，下一步立刻用）", done: false };
+  }
+  if (st.step === "timestamp") {
+    const res2 = callRawText(deps.transport, timestampRequest(SIGN_IN_RECIPE, st.referer ?? "", deps.baseUrl));
+    if (!res2.ok) return failStep(deps, st, `② 取时间戳失败：${res2.error ?? "未知失败"}`);
+    const p2 = parseServerTimestamp(res2.text);
+    if (!p2.ok || p2.value === void 0) return failStep(deps, st, `② ${p2.error}`);
+    st.ssoToken = st.ssoToken ?? "";
+    st.ts = p2.value;
+    st.step = "tyrz-login";
+    deps.store.setState(STATE_EXCHANGE, JSON.stringify(st), deps.nowIso);
+    return { ok: true, note: `② 服务端时间戳 ${p2.value}（**必须用它**，本地时钟偏一点就是 401）`, done: false };
+  }
+  const ts = st.ts;
+  if (ts === void 0 || !st.ssoToken) {
+    return finish2(st, false, "③ 前置状态丢了（SSO token 或时间戳）—— SSO token 不缓存，得从头再来");
+  }
+  const res = callRawText(
+    deps.transport,
+    tyrzLoginRequest(SIGN_IN_RECIPE, st.ssoToken, makeSign(ts), st.referer ?? "", deps.baseUrl)
+  );
+  if (!res.ok) return failStep(deps, st, `③ 换 jwttoken 失败：${res.error ?? "未知失败"}`);
+  const p = parseJwtToken(res.text);
+  if (!p.ok || p.value === void 0) return failStep(deps, st, `③ ${p.error}`);
+  const rec = {
+    at: deps.nowIso,
+    jwt: p.value.jwt,
+    referer: st.referer ?? "",
+    mobile: p.value.mobile,
+    fingerprint: st.fingerprint
+  };
+  deps.store.setState(STATE_JWT, JSON.stringify(rec), deps.nowIso);
+  const sess = loadSession(deps.store);
+  if (sess) saveSession(deps.store, { ...sess, jwt: p.value.jwt }, deps.nowIso);
+  return finish2(
+    st,
+    true,
+    `③ 换到 jwttoken（${p.value.jwt.length} 字符${p.value.mobile ? `，账号 ${maskMobile(p.value.mobile)}` : ""}）—— 约 ${Math.round(JWT_TTL_MS / 6e4)} 分钟后该续`
+  );
+}
+function failStep(deps, st, note) {
+  st.step = "done";
+  st.finishedAt = deps.nowIso;
+  st.ok = false;
+  st.note = note;
+  delete st.ssoToken;
+  delete st.ts;
+  deps.store.setState(STATE_EXCHANGE, JSON.stringify(st), deps.nowIso);
+  return { ok: false, note, done: true };
+}
+var RETRY_AFTER_MS = 30 * 60 * 1e3;
+function needExchange(store2, nowMs) {
+  if (!store2.getState(STATE_AUTH)) return false;
+  if (jwtFresh(store2, nowMs)) return false;
+  const st = loadExchange(store2);
+  if (!st) return true;
+  if (st.step !== "done") return true;
+  if (st.ok === true) return true;
+  const at = Date.parse(st.finishedAt ?? st.startedAt);
+  return !Number.isFinite(at) || nowMs - at > RETRY_AFTER_MS;
+}
+function maskMobile(m) {
+  return m.length >= 7 ? `${m.slice(0, 3)}****${m.slice(-4)}` : "***";
+}
+
 // src/mcloud/tasks/receive.ts
 var STATE_QUEUE = "mcloud.receive.queue";
 var STATE_RECEIVE = "mcloud.receive.last";
@@ -2529,6 +2824,10 @@ var TASK_META = [
   { name: "selftest", title: "沙箱自检", group: "plugin", kind: "Query", risk: "none", missed: "catch-up", deps: [], batch: false, hidden: false, implemented: true, note: "密码学/UTF-8/base64/SQLite 都跑一遍" },
   { name: "diag", title: "调度健康", group: "plugin", kind: "Query", risk: "none", missed: "catch-up", deps: [], batch: false, hidden: false, implemented: true, note: "记录每次触发的调度延迟（面板 F-001 的那条测量）" },
   { name: "session-check", title: "会话体检", group: "plugin", kind: "Query", risk: "none", missed: "catch-up", deps: [], batch: false, hidden: false, implemented: true, note: "每天 7:50 先问一次上游还认不认这份凭据" },
+  // H5 换票（三步）：原生凭据 → `jwttoken`。**这是插件能不能用的前提** ——
+  // 之前只能靠人手从浏览器抄票，而票 2 小时即废（过期时所有任务一起回 90001，
+  // 看起来像"账号被踢了"）。现在自己换、自己续，鉴权细节见 mcloud/h5session.ts。
+  { name: "session-refresh", title: "会话续期（H5 换票）", group: "plugin", kind: "Action", risk: "none", missed: "catch-up", deps: [], batch: false, hidden: false, implemented: true, evidence: "captured", note: "原生凭据 → 三步换 jwttoken，约 2 小时自动续；票新鲜时**一个请求都不发**" },
   // ── 签到族（8 条，全实现）──
   { name: "sign", title: "每日签到", group: "signin", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["jwt"], batch: true, hidden: false, implemented: true, evidence: "captured", note: "三段式：问状态 → 提交 → 回查（判据是回查）" },
   { name: "receive", title: "领取AI豆", group: "signin", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["jwt"], batch: true, hidden: false, implemented: true, evidence: "captured", note: "逐条独立；延期领取走另一口端点" },
@@ -2544,7 +2843,13 @@ var TASK_META = [
   { name: "exchange-list", title: "兑换清单（只看）", group: "activity", kind: "Query", risk: "none", missed: "catch-up", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "captured", note: "逐件判能不能兑；**不碰余额、不碰滑块、不下单**" },
   { name: "app-task-matrix", title: "App 任务矩阵（只看）", group: "signin", kind: "Query", risk: "none", missed: "catch-up", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "captured", note: "8 个 group 一次读一个；只读，一个字节都不写" },
   { name: "notice", title: "开启通知领AI豆", group: "daily", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["jwt"], batch: true, hidden: false, implemented: true, evidence: "partial", note: "有手动前置（判不出来，见 notice.ts 文件头 ③）；reward 不报到账数 ⇒ 靠下一轮回查" },
-  // 更正：换出该页 jwttoken 的那一步**在实拍归档里没有** ⇒ 现在做不了（不是"只依赖 jwt"）
+  // ⚠️ 2026-10-14 第三次更正：**换票那一步现在有了**（通用机制，见 mcloud/h5session.ts
+  //    与 sessionExchange.ts：原生凭据 → querySpecTokenV2 → 时间戳 → tyrzLogin → jwttoken）。
+  //    所以"换票做不了"这句话**不再成立** —— 我连着两轮把"我没有"说成了"不能做"：
+  //      ① 「实拍归档里没有」→ 那是**实拍**没有，**实现**有（Rust 侧那三百行）
+  //      ② 「⇒ 现在做不了」 → 做不到的只是"照实拍逐字复刻"，而通用那套是**照实现**复刻的
+  //    这一条真正缺的是**它自己那一页的换票参数**（`marketName` / `sourceId`）——
+  //    签到页与 msgpushon 页有实拍，这一页没有。缺参数 ≠ 缺机制。
   { name: "fun-ai", title: "趣玩AI抽奖", group: "activity", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["activity-token"], batch: true, hidden: false, implemented: false, evidence: "no-ticket", note: "换票那步没抓到 ⇒ 做不了" },
   // 更正：整条链在 `/ycloud/msgPushOn/` 下、要**另一张票**（marketName=msgpushon /
   // sourceId=1062）。`task/status` 有实拍，`task/obtain` **零样本** ——
@@ -2774,6 +3079,64 @@ function mcloudRoutes(deps) {
           state: loadDrawState(deps.store)
         }
       })
+    },
+    {
+      // H5 换票（三步）：凭据状态 + 进度 + 换到的票。**都不回显凭据本身。**
+      path: `${base}/h5`,
+      method: "GET",
+      handler: () => {
+        const jwt = loadJwt(deps.store);
+        return json(200, {
+          auth: authStatus(deps.store),
+          exchange: loadExchange(deps.store),
+          // ⚠ 票**不**回显（长度也不给 —— 它比凭据更接近"能直接用"）
+          jwt: jwt ? {
+            present: true,
+            at: jwt.at,
+            fresh: jwtFresh(deps.store, Date.now()),
+            // 脱敏放**响应边界**（存储里留真值）：手机号不是凭据，
+            // 但也没必要整串进界面与日志 —— 与凭据的处理同一套纪律
+            mobile: jwt.mobile ? maskMobile(jwt.mobile) : null,
+            ttlMinutes: Math.round(JWT_TTL_MS / 6e4)
+          } : { present: false },
+          note: '贴一份**原生凭据**（`Basic base64("mobile:号:token")`，也就是 mcloud 的 `auth.raw` 那个形状），插件自己走三步换成 H5 的 jwttoken，并按 100 分钟自动续 —— 不用再手工从浏览器抄票（它 2 小时就废）。'
+        });
+      }
+    },
+    {
+      path: `${base}/h5/auth`,
+      method: "POST",
+      handler: (req) => {
+        const body = readBody(req);
+        if (body.clear === true) {
+          clearAuth(deps.store, deps.now());
+          deps.log("原生凭据与换到的票：已清空");
+          return json(200, { cleared: true });
+        }
+        const raw = typeof body.authorization === "string" ? body.authorization : typeof body.session === "string" ? body.session : "";
+        if (!raw.trim()) {
+          return json(400, { error: '需要 {"authorization": "Basic …"} 或 {"clear": true}' });
+        }
+        const r = startExchange(deps.store, raw, deps.now());
+        if (!r.ok) return json(400, { error: r.error });
+        deps.log(`原生凭据已收下（指纹 ${r.fingerprint}）—— 点「换票」走三步`);
+        return json(200, { stored: true, fingerprint: r.fingerprint, ...authStatus(deps.store) });
+      }
+    },
+    {
+      // **推进一步**（一次调用一个上游请求）。界面上的按钮循环调这里直到 done。
+      path: `${base}/h5/step`,
+      method: "POST",
+      handler: () => {
+        const r = runExchangeStep({
+          store: deps.store,
+          transport: deps.transport,
+          nowIso: deps.now(),
+          baseUrl: loadBaseUrl(deps.store)
+        });
+        deps.log(`换票：${r.note}`);
+        return json(200, { ...r, exchange: loadExchange(deps.store) });
+      }
     },
     {
       // **只读探针**：一枪 `user/info`，回答"这一族能不能通"（不记账、不写状态）。
@@ -3053,6 +3416,30 @@ register_cron("live-draw", "*/5 7-23 * * *", (p) => {
 });
 register_cron("prizes", "20 8 * * *", makeRunner("待领取奖品", runPrizes));
 register_cron("cloud-snapshot", "30 8 * * *", makeRunner("AI豆快照", runCloudSnapshot));
+register_cron("session-refresh", "*/2 * * * *", (p) => {
+  try {
+    if (!needExchange(store, Date.now())) return;
+    const r = runExchangeStep({
+      store,
+      transport,
+      nowIso: (/* @__PURE__ */ new Date()).toISOString(),
+      baseUrl: loadBaseUrl(store)
+    });
+    store.recordRun({
+      task: p.name,
+      runs: p.runs,
+      scheduledAt: p.scheduledAt,
+      firedAt: p.firedAt,
+      lateMs: p.lateMs,
+      ok: r.ok,
+      note: r.note
+    });
+    if (r.ok) log(`换票：${r.note}`);
+    else warn(`换票失败：${r.note}`);
+  } catch (e) {
+    error(`换票抛异常（这是插件 bug）：${e instanceof Error ? e.message : String(e)}`);
+  }
+});
 every("selftest", "5m", (p) => {
   try {
     const r = selftest();

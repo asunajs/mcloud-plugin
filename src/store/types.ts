@@ -42,7 +42,7 @@ export interface Store {
 
 /** 会话（云盘账号的凭据）。存在 state 表里，序列化成 JSON。 */
 export interface Session {
-  /** cookie 串（`k=v; k2=v2`） */
+  /** cookie 串（`k=v; k2=v2`）。⚠ 换过票之后**可以为空** —— 见 [`loadSession`]。 */
   cookie: string;
   /** H5 的 `jwttoken` */
   jwt?: string | undefined;
@@ -61,10 +61,21 @@ export function loadSession(store: Store): Session | null {
   if (!raw) return null;
   try {
     const v = JSON.parse(raw) as Partial<Session>;
-    if (typeof v.cookie !== 'string' || v.cookie === '') return null;
+    const cookie = typeof v.cookie === 'string' ? v.cookie : '';
+    const jwt = typeof v.jwt === 'string' ? v.jwt : '';
+    // ⚠️ 判据是「**有 cookie 或 有票**」，不是「必须有 cookie」。
+    //
+    // 改动理由：H5 那一族（`h5_headers`）走的是 `jwttoken`，**根本不发 cookie**
+    // —— 所以"只有票、没有 cookie"是一份**合法且够用**的会话。
+    // 而插件现在能自己换票了（见 mcloud/sessionExchange.ts）：
+    // 用户只给一份原生凭据、没贴 cookie 时，换出来的票就是这么一份会话。
+    // 旧判据会把它判成"未登录" —— 那不是保守，是把能用的情况说成不能用。
+    //
+    // 反过来仍然成立：两样都没有 ⇒ 没有会话（这一步没放松）。
+    if (cookie === '' && jwt === '') return null;
     return {
-      cookie: v.cookie,
-      jwt: typeof v.jwt === 'string' ? v.jwt : undefined,
+      cookie,
+      jwt: jwt === '' ? undefined : jwt,
       deviceId: typeof v.deviceId === 'string' ? v.deviceId : undefined,
       userAgent: typeof v.userAgent === 'string' ? v.userAgent : undefined,
       savedAt: typeof v.savedAt === 'string' ? v.savedAt : '',

@@ -339,6 +339,81 @@ async function clearLiveCodes() {
   await loadLive();
 }
 
+// ──────────────────────────── H5 换票（原生凭据 → jwttoken）
+
+async function loadH5() {
+  const d = await req('/plugins/mcloud/api/h5');
+  if (!d.ok) return;
+  const h = $('h5-hint');
+  const a = d.auth || {};
+  const j = d.jwt || {};
+  const parts = [];
+  if (a.present) parts.push(`已收下凭据（指纹 ${esc(a.fingerprint)}，${a.length} 字符）`);
+  else parts.push('还没贴原生凭据 —— 没它就只能手工贴 jwttoken（那个 2 小时就废）');
+  if (j.present) {
+    parts.push(j.fresh
+      ? `票新鲜（${esc((j.at || '').slice(0, 16).replace('T', ' '))} 换的${j.mobile ? `，账号 ${esc(j.mobile)}` : ''}）`
+      : `票**已过期**（该续了，cron 每 2 分钟会自己推一步）`);
+  } else {
+    parts.push('还没有票');
+  }
+  const ex = d.exchange;
+  if (ex && ex.step !== 'done') parts.push(`换票进行中：${esc(ex.step)}`);
+  else if (ex && ex.note) parts.push(`上一轮：${esc(ex.note)}`);
+  h.textContent = parts.join(' · ');
+}
+
+async function saveH5Auth() {
+  const v = $('h5-auth').value.trim();
+  if (!v) {
+    showError('先贴一份原生凭据');
+    return;
+  }
+  const d = await req('/plugins/mcloud/api/h5/auth', { method: 'POST', body: { authorization: v } });
+  if (!d.ok) {
+    showError('收下凭据失败：' + d.error);
+    return;
+  }
+  $('h5-auth').value = '';
+  showError('');
+  await runH5Steps();
+}
+
+/** 循环推三步 —— 每次 HTTP 一个上游请求（面板预算 2000ms，见 sessionExchange.ts）。 */
+async function runH5Steps() {
+  const btn = $('h5-save');
+  btn.disabled = true;
+  const h = $('h5-hint');
+  for (let i = 0; ; i += 1) {
+    const d = await req('/plugins/mcloud/api/h5/step', { method: 'POST' });
+    if (d.error) {
+      showError('换票失败：' + d.error);
+      break;
+    }
+    h.textContent = d.note || '';
+    if (!d.ok) showError(d.note || '这一步失败了');
+    else showError('');
+    if (d.done) break;
+    if (i > 8) {
+      h.textContent = `推了 ${i + 1} 步还没完，停下（${d.note || ''}）`;
+      break;
+    }
+  }
+  btn.disabled = false;
+  await loadH5();
+  await loadLive();
+}
+
+async function clearH5() {
+  const d = await req('/plugins/mcloud/api/h5/auth', { method: 'POST', body: { clear: true } });
+  if (!d.ok) {
+    showError('清空失败：' + d.error);
+    return;
+  }
+  showError('');
+  await loadH5();
+}
+
 // ──────────────────────────── 会话与上游地址
 
 async function loadSession() {
@@ -439,10 +514,13 @@ $('refresh').addEventListener('click', () => {
   loadMatrix();
   loadExchange();
   loadLive();
+  loadH5();
 });
 $('session-save').addEventListener('click', saveSession);
 $('session-check').addEventListener('click', checkSession);
 $('base-save').addEventListener('click', saveBase);
+$('h5-save').addEventListener('click', saveH5Auth);
+$('h5-clear').addEventListener('click', clearH5);
 $('live-url-save').addEventListener('click', saveLiveUrl);
 $('live-save').addEventListener('click', saveLiveCodes);
 $('live-clear').addEventListener('click', clearLiveCodes);
@@ -454,4 +532,5 @@ loadSession();
 loadMatrix();
 loadExchange();
 loadLive();
+loadH5();
 loadBase();

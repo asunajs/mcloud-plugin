@@ -30,6 +30,7 @@ import { runAppTaskMatrix } from './mcloud/tasks/appTaskMatrix.ts';
 import { runExchangeList } from './mcloud/tasks/exchangeList.ts';
 import { runLiveRoom } from './mcloud/tasks/liveRoom.ts';
 import { runLiveDraw } from './mcloud/tasks/liveDraw.ts';
+import { needExchange, runExchangeStep } from './mcloud/sessionExchange.ts';
 import { runReceive } from './mcloud/tasks/receive.ts';
 import { runMultiple } from './mcloud/tasks/multiple.ts';
 import { runRevival } from './mcloud/tasks/revival.ts';
@@ -288,6 +289,40 @@ register_cron('live-draw', '*/5 7-23 * * *', (p) => {
 });
 register_cron('prizes', '20 8 * * *', makeRunner('待领取奖品', runPrizes));
 register_cron('cloud-snapshot', '30 8 * * *', makeRunner('AI豆快照', runCloudSnapshot));
+
+// ── 任务：会话续期（H5 的 jwttoken 约 2 小时即废，自己续）──
+//
+// 为什么值得单独一条：手工贴的票过期时**所有任务一起**回 `90001 未登录`
+// ——那个现象看起来像"账号被踢了"，而其实只是票到期。
+// 有原生凭据（界面上贴一份）就自己走三步续上。
+//
+// 节奏是每 **2 分钟**一跳而不是每 30 分钟：三步 = 三个请求，而一次调用只发一个
+// （面板预算 2000ms），所以要跳三次才走完一轮 —— 30 分钟一跳会让续票拖一个半小时。
+// 票新鲜时这条 cron **不发请求、也不记 run**（见 needExchange）。
+register_cron('session-refresh', '*/2 * * * *', (p) => {
+  try {
+    if (!needExchange(store, Date.now())) return; // idle：不发请求、不记 run
+    const r = runExchangeStep({
+      store,
+      transport,
+      nowIso: new Date().toISOString(),
+      baseUrl: loadBaseUrl(store),
+    });
+    store.recordRun({
+      task: p.name,
+      runs: p.runs,
+      scheduledAt: p.scheduledAt,
+      firedAt: p.firedAt,
+      lateMs: p.lateMs,
+      ok: r.ok,
+      note: r.note,
+    });
+    if (r.ok) log(`换票：${r.note}`);
+    else warn(`换票失败：${r.note}`);
+  } catch (e) {
+    error(`换票抛异常（这是插件 bug）：${e instanceof Error ? e.message : String(e)}`);
+  }
+});
 
 // ── 任务：自检（装上去先跑一次这个，确认沙箱这一层是好的）──
 every('selftest', '5m', (p) => {

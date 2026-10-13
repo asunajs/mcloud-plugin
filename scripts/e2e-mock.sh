@@ -375,3 +375,81 @@ assert '18_7' in draws[0]['headers'].get('user-agent', ''), draws[0]['headers']
 assert 'x-signature' not in draws[0]['headers'], draws[0]['headers']
 print('   ✅ 领小红花：六步链 11 个请求、一次一个、200118 与 200108 分得清、进账按 ⑥−①')
 PY
+
+# ── H5 换票（原生凭据 → jwttoken）：三步 ────────────────────────────────────
+#
+# 这条链是**插件能不能用的前提**：之前只能靠人手从浏览器抄 jwttoken，
+# 而那个票 2 小时就废（过期时所有任务一起回 90001，看起来像"账号被踢了"）。
+echo "⑥ H5 换票：原生凭据 → 三步 → jwttoken"
+curl -fsS -o /dev/null "${W[@]}" -X POST -H 'content-type: application/json' \
+  -d '{"authorization":"Basic bW9iaWxlOjEzODAwMDAwMDAwOnRva2Vu"}' "$B/plugins/mcloud/api/h5/auth"
+for i in 1 2 3 4; do
+  curl -fsS "${W[@]}" -X POST "$B/plugins/mcloud/api/h5/step" -o "$TMP/h5.json"
+  if python3 -c "import json,sys; sys.exit(0 if json.load(open('$TMP/h5.json'))['done'] else 1)"; then
+    printf '   换完（第 %s 步）\n' "$i"
+    break
+  fi
+  if [ "$i" = 4 ]; then echo "❌ 4 步还没换完" >&2; cat "$TMP/h5.json" >&2; exit 1; fi
+done
+curl -fsS "${H[@]}" "$B/plugins/mcloud/api/h5" -o "$TMP/h5status.json"
+curl -fsS "http://127.0.0.1:$MOCK_PORT/_debug/requests" -o "$TMP/mock.json"
+python3 - "$TMP/h5status.json" "$TMP/mock.json" "$TMP/h5.json" <<'H5PY'
+import hashlib, json, sys
+
+status = json.load(open(sys.argv[1]))
+reqs = json.load(open(sys.argv[2]))
+final = json.load(open(sys.argv[3]))
+
+h5 = [r for r in reqs if 'querySpecTokenV2' in r['path'] or 'api/timestamp' in r['path']
+      or 'tyrzLogin' in r['path']]
+# 三步的顺序是**固定的**，而且是这条链的全部意义（拆开调就是"每个接口都报未登录"）
+seq = [r['path'].split('?')[0] for r in h5]
+assert seq == ['/user/querySpecTokenV2', '/ycloud/api/timestamp',
+               '/ycloud/auth-service/auth/tyrzLogin'], seq
+spec, ts, login = h5
+
+# ① 原生族：Authorization **逐字**用（多加一次 `Basic ` 会得到 `Basic Basic …`，
+#    而上游回的是「非法的token！」—— 听起来像凭据过期，会把人带去查有效期）
+assert spec['method'] == 'POST', spec['method']
+assert spec['headers'].get('authorization') == 'Basic bW9iaWxlOjEzODAwMDAwMDAwOnRva2Vu', spec['headers']
+assert spec['headers'].get('content-type') == 'application/json;charset=UTF-8', spec['headers']
+assert spec['body'] == '{"toSourceId":"001005"}', spec['body']
+assert 'x-signature' not in spec['headers'], '这一族无签名'
+
+# ② 时间戳：无鉴权，但要有 H5 那套头 + 指向那一页的 Referer
+assert ts['method'] == 'GET', ts['method']
+assert ts['headers'].get('activityid') == 'sign_in_3', ts['headers']
+assert ts['headers'].get('appversion') == '12.6.0.0', ts['headers']
+assert 'jwttoken' not in ts['headers'], '建会话这三步都还没有票'
+referer = ts['headers'].get('referer', '')
+assert 'portal/mobilecloud/index.html' in referer, referer
+assert 'path=newsignin' in referer and 'sourceid=1002' in referer, referer
+assert 'token=SSO-MOCK' in referer, referer
+# ⚠ `targetSourceId` 必须带、且排在 token **之后**（参考实现漏过它，一次排查被带偏）
+assert referer.index('token=') < referer.index('targetSourceId='), referer
+assert referer.endswith('targetSourceId=001005'), referer
+
+# ③ H5 族：body 的键序是**字典序**（签名能不能用取决于它，不是插入序）
+assert login['method'] == 'POST', login['method']
+assert login['body'] == '{"marketName":"sign_in_3","openAccount":0,"sourceId":"1002","token":"SSO-MOCK"}', login['body']
+assert login['headers'].get('origin') == 'https://m.mcloud.139.com', login['headers']
+assert 'jwttoken' not in login['headers'], '这一步正是**为了**拿票'
+
+# 签名自洽：用 mock 收到的那三个值重算，必须等于收到的 x-signature
+salt = 'sekaMdYYLIZfbCfm'  # 盐表第 2 个 —— H5 建会话用的就是它
+expect = hashlib.md5(
+    (salt + login['headers']['x-request-id'] + login['headers']['x-timestamp']
+     + login['headers']['x-nonce'] + '' + salt).encode()).hexdigest()
+assert login['headers']['x-signature'] == expect, (login['headers']['x-signature'], expect)
+# ⚠ x-timestamp 必须**逐字等于服务端给的那个**（本地时钟偏一点就是 401）
+assert login['headers']['x-timestamp'] == '1700000000000', login['headers']['x-timestamp']
+
+# 换到的票：存住了、是新鲜的、手机号脱敏；而**凭据不回显**
+assert status['jwt']['present'] is True, status
+assert status['jwt']['fresh'] is True, status
+assert status['jwt']['mobile'] == '138****0000', status['jwt']['mobile']
+assert 'bW9iaWxl' not in json.dumps(status), '凭据不该出现在响应里'
+assert status['auth']['fingerprint'] and len(status['auth']['fingerprint']) == 16, status['auth']
+assert final['done'] is True, final
+print('   ✅ H5 换票：三步顺序固定、签名自洽、x-timestamp 用服务端的、凭据不回显')
+H5PY

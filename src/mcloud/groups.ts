@@ -155,6 +155,10 @@ export const TASK_META: TaskMeta[] = [
   { name: 'selftest', title: '沙箱自检', group: 'plugin', kind: 'Query', risk: 'none', missed: 'catch-up', deps: [], batch: false, hidden: false, implemented: true, note: '密码学/UTF-8/base64/SQLite 都跑一遍' },
   { name: 'diag', title: '调度健康', group: 'plugin', kind: 'Query', risk: 'none', missed: 'catch-up', deps: [], batch: false, hidden: false, implemented: true, note: '记录每次触发的调度延迟（面板 F-001 的那条测量）' },
   { name: 'session-check', title: '会话体检', group: 'plugin', kind: 'Query', risk: 'none', missed: 'catch-up', deps: [], batch: false, hidden: false, implemented: true, note: '每天 7:50 先问一次上游还认不认这份凭据' },
+  // H5 换票（三步）：原生凭据 → `jwttoken`。**这是插件能不能用的前提** ——
+  // 之前只能靠人手从浏览器抄票，而票 2 小时即废（过期时所有任务一起回 90001，
+  // 看起来像"账号被踢了"）。现在自己换、自己续，鉴权细节见 mcloud/h5session.ts。
+  { name: 'session-refresh', title: '会话续期（H5 换票）', group: 'plugin', kind: 'Action', risk: 'none', missed: 'catch-up', deps: [], batch: false, hidden: false, implemented: true, evidence: 'captured', note: '原生凭据 → 三步换 jwttoken，约 2 小时自动续；票新鲜时**一个请求都不发**' },
 
   // ── 签到族（8 条，全实现）──
   { name: 'sign', title: '每日签到', group: 'signin', kind: 'Action', risk: 'ledger', missed: 'catch-up', deps: ['jwt'], batch: true, hidden: false, implemented: true, evidence: 'captured', note: '三段式：问状态 → 提交 → 回查（判据是回查）' },
@@ -172,7 +176,13 @@ export const TASK_META: TaskMeta[] = [
   { name: 'exchange-list', title: '兑换清单（只看）', group: 'activity', kind: 'Query', risk: 'none', missed: 'catch-up', deps: ['jwt'], batch: false, hidden: false, implemented: true, evidence: 'captured', note: '逐件判能不能兑；**不碰余额、不碰滑块、不下单**' },
   { name: 'app-task-matrix', title: 'App 任务矩阵（只看）', group: 'signin', kind: 'Query', risk: 'none', missed: 'catch-up', deps: ['jwt'], batch: false, hidden: false, implemented: true, evidence: 'captured', note: '8 个 group 一次读一个；只读，一个字节都不写' },
   { name: 'notice', title: '开启通知领AI豆', group: 'daily', kind: 'Action', risk: 'ledger', missed: 'catch-up', deps: ['jwt'], batch: true, hidden: false, implemented: true, evidence: 'partial', note: '有手动前置（判不出来，见 notice.ts 文件头 ③）；reward 不报到账数 ⇒ 靠下一轮回查' },
-  // 更正：换出该页 jwttoken 的那一步**在实拍归档里没有** ⇒ 现在做不了（不是"只依赖 jwt"）
+  // ⚠️ 2026-10-14 第三次更正：**换票那一步现在有了**（通用机制，见 mcloud/h5session.ts
+  //    与 sessionExchange.ts：原生凭据 → querySpecTokenV2 → 时间戳 → tyrzLogin → jwttoken）。
+  //    所以"换票做不了"这句话**不再成立** —— 我连着两轮把"我没有"说成了"不能做"：
+  //      ① 「实拍归档里没有」→ 那是**实拍**没有，**实现**有（Rust 侧那三百行）
+  //      ② 「⇒ 现在做不了」 → 做不到的只是"照实拍逐字复刻"，而通用那套是**照实现**复刻的
+  //    这一条真正缺的是**它自己那一页的换票参数**（`marketName` / `sourceId`）——
+  //    签到页与 msgpushon 页有实拍，这一页没有。缺参数 ≠ 缺机制。
   { name: 'fun-ai', title: '趣玩AI抽奖', group: 'activity', kind: 'Action', risk: 'ledger', missed: 'catch-up', deps: ['activity-token'], batch: true, hidden: false, implemented: false, evidence: 'no-ticket', note: '换票那步没抓到 ⇒ 做不了' },
   // 更正：整条链在 `/ycloud/msgPushOn/` 下、要**另一张票**（marketName=msgpushon /
   // sourceId=1062）。`task/status` 有实拍，`task/obtain` **零样本** ——
