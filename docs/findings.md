@@ -590,3 +590,81 @@ Go 参考实现按 `pos = headEnd` 推进会多解出一条）。
 
 现在：贴一份**原生凭据**（就是 mcloud `auth.raw` 那个形状），插件自己走三步换票，
 并按 100 分钟自动续（`session-refresh`，`*/2 * * * *`，票新鲜时**一个请求都不发**）。
+
+---
+
+## F-015 · 真机实测抓到「默认 content-type」：漏了它，线上回的是**看起来像"路径不存在"的 404**
+
+### 怎么发现的
+
+把 F-014 那三步链实现完之后，拿 mcloud 里那份**真凭据**（`data/accounts.json`
+→ `auth.raw`）在本地真跑了一次。结果：
+
+```text
+① querySpecTokenV2  HTTP 200  ✓ SSO token 42 字符
+② api/timestamp     HTTP 200  ✓
+③ tyrzLogin         HTTP 404  ✗ —— nginx 说路径不存在
+```
+
+`404` 是个**会把人带偏的信号**：它说"你这个地址没有这个接口"，
+于是第一反应是"端点改版了"。我先探了几条路径，拿到一组很有意思的对照：
+
+| 路径 | 方法 | 回 |
+|---|---|---|
+| `/ycloud/auth-service/auth/tyrzLogin` | POST（只带 content-type: application/json） | **404** |
+| `/auth-service/auth/tyrzLogin` | POST | 405 |
+| `/ycloud/api/timestamp` | POST | 405 |
+| **`/ycloud/auth-service/auth/tyrzLogin`** | **POST + H5 全套头 + `content-type: application/json;charset=UTF-8`** | **200 `{"code":401,"msg":"请求签名校验失败"}`** |
+
+最后一行是关键：**同一个路径，带上 content-type 就"存在"了**。
+⇒ 线上网关**按 content-type 路由**，而"缺它"的表现是 404，不是 400。
+
+### 根因：补它的是**传输层**，不是构造器
+
+真实现里请求构造器（`live_flower::*_request` / `session::tyrz_login_request`）
+**不设** content-type；补它的是 `mcloud-upstream/src/client.rs`：
+
+```rust
+fn default_content_type(req) -> Option<&'static str> {
+    if !has_body(req) { return None; }                 // 无体 ⇒ 不补
+    if 已有 content-type 头（大小写不敏感）{ return None; }  // 声明过 ⇒ 不覆盖
+    Some("application/json;charset=UTF-8")
+}
+```
+
+### 我在这件事上连着错了三轮（记下来，比结论值钱）
+
+| 轮 | 我做的 | 错在哪 |
+|---|---|---|
+| ① | 按**模块文档**给 `user/info` 在**构造器**里加了 `application/json` | 位置错（该在传输层）、值也错（缺 charset）。文档那张表写着 json，而代码里没设 |
+| ② | 拿真实现**构造出来的请求**对拍，把构造器里那枚**删掉了** | 对拍的是构造器 —— 而构造器本来就没有。我"验证"了一个本来就对的输出，却得出"不该有"的结论 |
+| ③ | 真机实测 + 路径对照 | 才定位到"补它的是传输层" |
+
+三轮的共同错误是同一个：**把"某一层的输出"当成了"线上发的字节"**。
+构造器只是链条的第一段，后面还有传输层（补 content-type、补 UA、去重头……）。
+
+⇒ 所以现在这条规则**放在传输层**（`main.ts` 注入的 transport 上包一层
+`applyDefaultContentType`），与真实现同构 —— 散在各个构造器里就会漏，③ 就是漏的那个。
+
+### 修完之后，真机全绿
+
+```text
+① querySpecTokenV2  HTTP 200  ✓ SSO token 42 字符
+② api/timestamp     HTTP 200  ✓
+③ tyrzLogin         HTTP 200  ✓ jwttoken 907 字符
+④ infoV3（签到族）   HTTP 200  code:0 —— 真实账号数据
+④ user/info（小红花）HTTP 200  code:0 flowerCnt 有值
+```
+
+**两个族（签到族 / 小红花族）都在真账号上验证通过了。**
+这是这个插件第一次有"真机证据" —— 之前所有结论都建立在 mock 与对拍之上。
+
+⚠ 仍未验证的：**写那一枪**（`redFlower/draw`）。它要一条**当场有效**的口令，
+而"试一条过期口令"和"真领一朵花"之间的区别只有上游知道 ——
+所以那一枪留给你在界面上点（那里有二次确认）。
+
+### 方法上的结论
+
+"拿真实现构造出来的请求对拍"（F-013）抓到了**一层**的错误，但它抓不到**层与层之间**的错。
+要抓后者，只有两条路：读**传输层**的代码，或者真打一枪。
+这次是后者抓到的 —— 而它抓到的表现（404）**看起来完全不像** content-type 的问题。

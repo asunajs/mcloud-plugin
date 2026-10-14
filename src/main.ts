@@ -19,7 +19,7 @@ import { md5Hex, sha256Hex, toBase64, fromBase64, fromUtf8, utf8 } from './crypt
 import { hostStore } from './store/host.ts';
 import type { Store } from './store/types.ts';
 import type { Transport } from './mcloud/client.ts';
-import { SLOW_CALL_MS } from './mcloud/client.ts';
+import { SLOW_CALL_MS, applyDefaultContentType } from './mcloud/client.ts';
 import { runTaskList } from './mcloud/tasks/taskList.ts';
 import { runPrizes } from './mcloud/tasks/prizes.ts';
 import { runCloudSnapshot } from './mcloud/tasks/cloudSnapshot.ts';
@@ -53,15 +53,21 @@ store.ensureSchema();
  *  只调一个会退化成上面那种「动作发生了但报失败」。 */
 const REQUEST_TIMEOUT_MS = 1500;
 
-const transport: Transport = (req) =>
+const transport: Transport = (req) => {
+  // ⚠ 补默认 content-type **在这一层**，不是各个构造器里 —— 与真实现同构
+  // （`client.rs::default_content_type`）。散在构造器里就会漏，而漏的表现是
+  // 一个**看起来像"路径不存在"**的 404（线上网关按 content-type 路由）。
+  // 这一条是踩出来的，见 client.ts 的 applyDefaultContentType 与 findings F-015。
+  const r = applyDefaultContentType(req);
   // 返回值可能是 {status,headers,body}，也可能是失败形状 {"error":…} ——
   // client.ts 的 callOnce 负责认形状（实测踩过，见 docs/findings.md F-006）
-  http_fetch(req.url, {
-    method: req.method,
-    headers: req.headers,
-    body: req.body,
+  return http_fetch(r.url, {
+    method: r.method,
+    headers: r.headers,
+    body: r.body,
     timeout_ms: REQUEST_TIMEOUT_MS,
   });
+};
 
 /** 在沙箱里自证：密码学 + 编码 + SQLite 三件事都对。
  *

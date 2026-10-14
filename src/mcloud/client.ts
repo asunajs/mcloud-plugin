@@ -116,6 +116,40 @@ export function callOnce(transport: Transport, req: BuiltRequest): CallResult {
   };
 }
 
+/** 带体请求在调用方**未**声明 `content-type` 时补的默认值。
+ *
+ *  ⚠ 逐字抄自 `mcloud-upstream/src/client.rs` 的 `CONTENT_TYPE_JSON`（带 charset）。 */
+export const CONTENT_TYPE_JSON = 'application/json;charset=UTF-8';
+
+/** 给带体请求补默认 `content-type`（`undefined` = 不补）。
+ *
+ *  # ⚠⚠ 这一层是**传输层**的事，不是构造器的事 —— 我是踩出来的
+ *
+ *  真实现里，请求构造器（`live_flower::*_request` / `session::tyrz_login_request`）
+ *  **不设** `content-type`；补它的是 `client.rs` 的 `default_content_type`
+ *  （条件：**有体** 且 **没有**任何 `content-type` 头，头名大小写不敏感）。
+ *
+ *  我第一版把这件事理解反了，而且连着错了两轮：
+ *    ① 先按**模块文档**给 `user/info` 在**构造器**里加了 `application/json`
+ *       （文档那张表写着 json，而代码里没设）—— 位置错（该在传输层）、值也错（缺 charset）；
+ *    ② 拿真实现构造出来的请求对拍后，**从构造器里删掉了它** —— 对拍的是构造器，
+ *       而构造器本来就没有，所以我"验证"了一个本来就对的输出，却得出"不该有"的结论；
+ *    ③ 真机实测发现 `tyrzLogin` 回 **404** —— 因为线上网关**按 content-type 路由**：
+ *       不带它 → 404（路径看起来不存在）；带上它 → 200（是真的在，只是签不过）。
+ *       ⇒ 到这一步才定位到"补它的是传输层"。
+ *
+ *  所以这条规则要**放在传输层**（main.ts 注入的那个 transport 上包一层），
+ *  而不是散在各个构造器里 —— 散着写就会漏（③ 就是漏的那个）。
+ *
+ *  ⚠ "有体"的判据只认 `body !== undefined`：别顺手加 `&& body !== ''` 之类的判断，
+ *  那是第二份定义（真实现那边为此专门写了 `has_body` 单一判据）。 */
+export function applyDefaultContentType(req: BuiltRequest): BuiltRequest {
+  if (req.body === undefined) return req;
+  const declared = Object.keys(req.headers).some((k) => k.toLowerCase() === 'content-type');
+  if (declared) return req;
+  return { ...req, headers: { ...req.headers, 'content-type': CONTENT_TYPE_JSON } };
+}
+
 /** 原样取回响应**文本**的结果。 */
 export interface RawTextResult {
   ok: boolean;

@@ -623,6 +623,13 @@ function callOnce(transport2, req) {
     setCookies: extractSetCookies(res.headers)
   };
 }
+var CONTENT_TYPE_JSON = "application/json;charset=UTF-8";
+function applyDefaultContentType(req) {
+  if (req.body === void 0) return req;
+  const declared = Object.keys(req.headers).some((k) => k.toLowerCase() === "content-type");
+  if (declared) return req;
+  return { ...req, headers: { ...req.headers, "content-type": CONTENT_TYPE_JSON } };
+}
 function callRawText(transport2, req) {
   const t0 = Date.now();
   const fail = (error2) => ({
@@ -3258,16 +3265,15 @@ function mcloudRoutes(deps) {
 var store = hostStore();
 store.ensureSchema();
 var REQUEST_TIMEOUT_MS = 1500;
-var transport = (req) => (
-  // 返回值可能是 {status,headers,body}，也可能是失败形状 {"error":…} ——
-  // client.ts 的 callOnce 负责认形状（实测踩过，见 docs/findings.md F-006）
-  http_fetch(req.url, {
-    method: req.method,
-    headers: req.headers,
-    body: req.body,
+var transport = (req) => {
+  const r = applyDefaultContentType(req);
+  return http_fetch(r.url, {
+    method: r.method,
+    headers: r.headers,
+    body: r.body,
     timeout_ms: REQUEST_TIMEOUT_MS
-  })
-);
+  });
+};
 function selftest() {
   const checks = [];
   checks.push(['md5("abc")', md5Hex("abc") === "900150983cd24fb0d6963f7d28e17f72"]);
