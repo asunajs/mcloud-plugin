@@ -102,14 +102,14 @@
 
 ### 阶段 ① 面板侧补 5 件（仓库 `rust-plugin-panel`，一件一提交）
 
-- [ ] **①-1 插件声明式 worker 归属**
-  现在：分配靠「源码文本扫描最细间隔」猜，逃生门是 `ENGINE_PIN` 环境变量。
-  问题：`mcloud-exchange` 的 cron 是 `0 10 * * *`（粗粒度），启发式会把它和长任务
-  放进同一个 LPT 池 ⇒ **抢兑会被日常的 3 分钟挡住**。而这是**多用户部署**，
-  不能让每个用户去配 `ENGINE_PIN`。
-  要做：插件能自己声明 `register_worker_hint({ exclusive: true })`；
-  分配器认它并给出独立 worker；日志与面板上可见；`ENGINE_WORKERS` 的下限自动抬。
-  验收：`mcloud-exchange` 与一个跑 3 分钟的任务同时存在时，前者的触发延迟 < 5ms。
+- [x] **①-1 插件声明式 worker 归属**　✅ `rust-plugin-panel` `7d6e41a`（第二十三轮）
+  做法：`worker_hint('precision' | 'exclusive')`。声明 `exclusive` 时面板**自动**把
+  `ENGINE_WORKERS` 抬到 `独占数 + 1`（只抬不降），用户不配任何环境变量。
+  声明是**源码文本扫描**读走的（分配必须早于解释器存在），运行时调用只做参数校验。
+  验收：`python3 scripts/worker_hint.py` —— 基线 9ms / 不声明+阻塞 310ms /
+  声明+阻塞 9ms（三次运行 `ENGINE_WORKERS` 都是 1）。
+  顺带记下两个实测结论（`README.md` §16.26）：cron 比 `@every` 晚 3-9ms（根因未定位，
+  不影响 mcloud）；A/B 对照的两个任务**时间网格必须对齐**，否则测的是运气。
 
 - [ ] **①-2 任务带参数**
   `jobs` 加 `params`（JSON）列；`register_cron(name, expr, fn, { params })`；
@@ -188,4 +188,5 @@
 
 | 日期 | 做了什么 | 提交 |
 |---|---|---|
-| 2026-10-14 | 与用户逐条定稿规格，写出本计划 | （本次） |
+| 2026-10-14 | 与用户逐条定稿规格，写出本计划 | `a301856` |
+| 2026-10-14 | ①-1 插件声明式 worker 归属（`worker_hint`） | `rust-plugin-panel` `7d6e41a` |
