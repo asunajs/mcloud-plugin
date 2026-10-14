@@ -45,6 +45,25 @@ async function req(path, opts = {}) {
   return Object.assign({ ok: true }, data);
 }
 
+/** 把任务报错里**给开发者看的东西**剥掉，只留用户能懂的。
+ *
+ *  ⚠ 实机截图上出现过：`失败：未登录：state 里没有会话（见 docs/howto-session.md）
+ *  @ 2026-10-14T10:51:52.537Z` —— 仓库文档路径、表名、ISO 时间戳，
+ *  三样都是"我们自己人"才需要的信息（见 docs/ui-wording.md）。
+ *  ⇒ 统一在这里剥：文档路径、时间戳、`state 表`、`Authorization`、markdown 记号。 */
+function humanNote(s) {
+  if (s === undefined || s === null || s === '') return '';
+  let t = String(s);
+  t = t.replace(/（?见\s*docs\/[\w.\-]+）?/g, '');
+  t = t.replace(/@?\s*\d{4}-\d{2}-\d{2}T[\d:.]+Z?/g, '');
+  t = t.replace(/state\s*里没有会话/g, '还没登录');
+  t = t.replace(/原生凭据\s*[（(]?`?Authorization`?[)）]?/g, '凭据');
+  t = t.replace(/\*\*/g, '').replace(/`/g, '');
+  t = t.replace(/\s{2,}/g, ' ').replace(/[：:、,，]\s*$/, '').trim();
+  if (t.includes('还没登录')) return '还没登录，先贴一次凭据';
+  return t;
+}
+
 function showError(msg) {
   const el = $('error');
   if (!msg) {
@@ -70,6 +89,7 @@ const esc = (s) =>
 
 /** 一条任务在界面上的行。 */
 function taskRow(t) {
+  // 报错先过话术（见 humanNote）：用户不该看见文档路径与 ISO 时间戳
   const risk = RISK[t.risk] || RISK.none;
   // 最近一次的结果：优先显示失败原因（那才是要看的东西）
   let last = '';
@@ -77,9 +97,9 @@ function taskRow(t) {
     last = `<span class="bad">失败：${esc(t.lastError).slice(0, 90)}</span>`;
   } else if (t.recent && t.recent.length) {
     const r = t.recent[0];
-    last = `<span class="dim">${esc(r.note).slice(0, 90)}</span>`;
+    last = `<span class="dim">${esc(humanNote(r.note)).slice(0, 90)}</span>`;
   } else if (t.note) {
-    last = `<span class="dim">${esc(t.note).slice(0, 90)}</span>`;
+    last = `<span class="dim">${esc(humanNote(t.note)).slice(0, 90)}</span>`;
   }
 
   const mark = t.implemented ? '✅' : '·';
@@ -109,6 +129,17 @@ function groupSection(g) {
       <tbody>${g.tasks.map(taskRow).join('')}</tbody>
     </table>
   </section>`;
+}
+
+/** 把"插件自身"那一族（自检/调度健康/会话体检/续期）整段收进高级。
+ *
+ *  ⚠ 按**标题文字**找而不是按 id：那一族是插件自己声明的分组（见 groups.ts），
+ *  给它加 id 要动插件侧的数据结构，而这里只需要"用户看不见它"。 */
+function hideSelfCheck() {
+  for (const sec of document.querySelectorAll('#groups section, #groups .card, #groups > div')) {
+    const head = sec.querySelector('h2, h3, .card-head');
+    if (head && /插件自身|自检/.test(head.textContent || '')) sec.classList.add('adv');
+  }
 }
 
 async function loadGroups() {
@@ -339,7 +370,7 @@ async function loadLive() {
   }
   const rows = (st && st.results) || [];
   $('live-draw-result').innerHTML = rows.length
-    ? `<ul class="ok-list">${rows.map((r) => `<li>${esc(r.note)}</li>`).join('')}</ul>`
+    ? `<ul class="ok-list">${rows.map((r) => `<li>${esc(humanNote(r.note))}</li>`).join('')}</ul>`
     : '';
 }
 
@@ -570,7 +601,7 @@ async function loadH5() {
   }
   const ex = d.exchange;
   if (ex && ex.step !== 'done') parts.push(`换票进行中：${esc(ex.step)}`);
-  else if (ex && ex.note) parts.push(`上一轮：${esc(ex.note)}`);
+  else if (ex && ex.note) parts.push(`上一轮：${esc(humanNote(ex.note))}`);
   h.textContent = parts.join(' · ');
 }
 
@@ -724,6 +755,7 @@ async function saveLiveUrl() {
   showError('');
   await loadBase();
   await loadLive();
+  hideSelfCheck();
 }
 
 async function saveBase() {
@@ -760,6 +792,47 @@ for (const id of ADV_IDS) {
   if (row) row.classList.add('adv');
 }
 $('adv-toggle').addEventListener('click', () => document.body.classList.toggle('show-adv'));
+
+/** 默认编排（学 mcloud：给用户一份"直接跑"的编排，而不是一张任务表）。
+ *
+ *  ⚠ 为什么是"前端按顺序点"而不是插件里写一条大任务：面板单次执行预算 2000ms，
+ *  而这一串是几十个请求 ⇒ 一次跑完必然在第 2、3 个请求处被判超时（见 F-007）。
+ *  浏览器按顺序逐个点，每一步都落在预算内。
+ *
+ *  顺序：会话体检/续期 → 签到族 → 查询族 → 直播（听 + 领）。
+ *  "插件自身"那族（自检/调度健康）**不跑** —— 那是排查用的。 */
+const RUN_ORDER = [
+  'session-check', 'session-refresh',
+  'sign', 'receive', 'multiple', 'backup-gift',
+  'prizes', 'task-list', 'cloud-snapshot',
+  'live-gate', 'live-listen', 'live-draw',
+];
+
+async function runAll() {
+  const btn = $('run-all');
+  btn.disabled = true;
+  const old = btn.textContent;
+  try {
+    for (let i = 0; i < RUN_ORDER.length; i++) {
+      const name = RUN_ORDER[i];
+      btn.textContent = `跑 ${i + 1}/${RUN_ORDER.length}：${name}`;
+      const d = await req(`/api/tasks/mcloud/${name}/run`, { method: 'POST' });
+      if (!d.ok) {
+        // 单个失败不停 —— 用户要的是"一遍过完"，具体哪条失败在下面看
+        showError(`${name}：${humanNote(d.error || '失败')}`);
+      }
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    showError('');
+    await loadGroups();
+    await loadLive();
+  } finally {
+    btn.textContent = old;
+    btn.disabled = false;
+  }
+}
+
+$('run-all').addEventListener('click', runAll);
 
 $('refresh').addEventListener('click', () => {
   loadGroups();
