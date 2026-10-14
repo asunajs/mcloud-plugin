@@ -3346,12 +3346,415 @@ function runAuthRefresh(deps, force = false, leadDays = DEFAULT_LEAD_DAYS) {
   };
 }
 
+// src/mcloud/cloudUpload.ts
+var PERSONAL_KD = "https://personal-kd-njs.yun.139.com";
+var FILE_CREATE_PATH = "/hcy/file/create";
+var FILE_COMPLETE_PATH = "/hcy/file/complete";
+var CREATE_CONTENT_TYPE = "application/oct-stream";
+var PUT_CONTENT_TYPE = "application/octet-stream";
+var PUT_ORIGIN = "https://yun.139.com";
+var PUT_REFERER = "https://yun.139.com/";
+var PUT_UPLOAD_COMPLETE = "?1";
+var PUT_UPLOAD_DRAFT_INTEROP_VERSION = "6";
+var HASH_ALGORITHM = "SHA256";
+var FILE_TYPE_FILE = "file";
+var RENAME_FORCE = "force_rename";
+var OP_TYPE_UPLOAD = "2";
+var SUB_OP_TYPE_UPLOAD = "200";
+var OP_TYPE_BACKUP = "0";
+var SUB_OP_TYPE_BACKUP = "0";
+var AUTH_DOMAINS = [
+  "yun.139.com",
+  "mcloud.139.com",
+  "feixin.10086.cn",
+  "mail.10086.cn"
+];
+function hostOf(rawUrl) {
+  const m = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/([^/?#]+)/.exec(rawUrl);
+  if (!m) return "";
+  let host = m[1].toLowerCase();
+  const at = host.lastIndexOf("@");
+  if (at >= 0) host = host.slice(at + 1);
+  const colon = host.lastIndexOf(":");
+  if (colon >= 0) host = host.slice(0, colon);
+  return host;
+}
+function sendsAuthorizationTo(rawUrl) {
+  const host = hostOf(rawUrl);
+  if (host === "") return false;
+  return AUTH_DOMAINS.some((suffix) => host.endsWith(suffix));
+}
+function contentHashOf(bytes) {
+  return sha256Hex(bytes);
+}
+function createBody(input) {
+  const body = {
+    name: input.name,
+    type: FILE_TYPE_FILE,
+    size: input.size,
+    fileRenameMode: input.renameMode ?? RENAME_FORCE,
+    contentHash: input.contentHash,
+    contentHashAlgorithm: HASH_ALGORITHM,
+    contentType: input.contentType ?? CREATE_CONTENT_TYPE,
+    parallelUpload: input.parallelUpload ?? false
+  };
+  body[input.locate.key] = input.locate.value;
+  if (input.localCreatedAt !== void 0) body.localCreatedAt = input.localCreatedAt;
+  body.partInfos = [
+    { parallelHashCtx: { partOffset: 0 }, partNumber: 1, partSize: input.size }
+  ];
+  return JSON.stringify(body);
+}
+function buildCreateRequest(input) {
+  return {
+    url: `${PERSONAL_KD}${FILE_CREATE_PATH}`,
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: createBody(input)
+  };
+}
+function parseCreate(body) {
+  let v;
+  try {
+    v = JSON.parse(body);
+  } catch (e) {
+    return { ok: false, error: `create 响应不是 JSON：${e instanceof Error ? e.message : String(e)}` };
+  }
+  if (v.code !== void 0 && v.code !== 0 && v.code !== "0000" && v.code !== "0") {
+    return { ok: false, error: `create 失败：code=${String(v.code)}` };
+  }
+  const data = v.data ?? v.result;
+  if (!data || typeof data !== "object") return { ok: false, error: "create 响应没有 data/result" };
+  const fileId = data.fileId;
+  const uploadId = data.uploadId;
+  const uploadUrl = data.uploadUrl;
+  const rapid = data.rapidUpload === true;
+  if (typeof fileId !== "string" || fileId === "") return { ok: false, error: "create 响应缺 fileId" };
+  if (!rapid) {
+    if (typeof uploadId !== "string" || uploadId === "") {
+      return { ok: false, error: "create 响应缺 uploadId（且不是秒传）" };
+    }
+    if (typeof uploadUrl !== "string" || uploadUrl === "") {
+      return { ok: false, error: "create 响应缺 uploadUrl（且不是秒传）" };
+    }
+  }
+  return {
+    ok: true,
+    created: {
+      fileId,
+      uploadId: typeof uploadId === "string" ? uploadId : "",
+      uploadUrl: typeof uploadUrl === "string" ? uploadUrl : "",
+      rapidUpload: rapid
+    }
+  };
+}
+function buildPutRequest(uploadUrl, bytes, backup = false) {
+  const req = {
+    url: uploadUrl,
+    method: "PUT",
+    headers: {
+      "Content-Type": PUT_CONTENT_TYPE,
+      origin: PUT_ORIGIN,
+      referer: PUT_REFERER,
+      // ⚠ 值是**带问号**的 `?1`
+      "upload-complete": PUT_UPLOAD_COMPLETE,
+      "upload-draft-interop-version": PUT_UPLOAD_DRAFT_INTEROP_VERSION,
+      "x-yun-op-type": backup ? OP_TYPE_BACKUP : OP_TYPE_UPLOAD,
+      "x-yun-sub-op-type": backup ? SUB_OP_TYPE_BACKUP : SUB_OP_TYPE_UPLOAD
+    },
+    // 二进制体：插件里用 latin1 字符串承载（每个字符一个字节）
+    body: latin1FromBytes(bytes)
+  };
+  return { req, leaksCredential: sendsAuthorizationTo(uploadUrl) };
+}
+function latin1FromBytes(bytes) {
+  let out = "";
+  const CHUNK = 8192;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    const end = Math.min(i + CHUNK, bytes.length);
+    let s = "";
+    for (let j = i; j < end; j += 1) s += String.fromCharCode(bytes[j]);
+    out += s;
+  }
+  return out;
+}
+function completeBody(fileId, uploadId, contentHash) {
+  return JSON.stringify({
+    fileId,
+    uploadId,
+    contentHash,
+    contentHashAlgorithm: HASH_ALGORITHM
+  });
+}
+function buildCompleteRequest(fileId, uploadId, contentHash) {
+  return {
+    url: `${PERSONAL_KD}${FILE_COMPLETE_PATH}`,
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: completeBody(fileId, uploadId, contentHash)
+  };
+}
+function parseComplete(body) {
+  try {
+    const v = JSON.parse(body);
+    const code = v.code;
+    if (code === void 0 || code === 0 || code === "0000" || code === "0") return { ok: true };
+    return { ok: false, error: `complete 失败：code=${String(code)}` };
+  } catch (e) {
+    return { ok: false, error: `complete 响应不是 JSON：${e instanceof Error ? e.message : String(e)}` };
+  }
+}
+function deterministicFile(seed, bytes = 1024) {
+  const out = new Uint8Array(bytes);
+  const base = utf8(seed);
+  for (let i = 0; i < bytes; i += 1) out[i] = base[i % base.length] ^ i & 255;
+  return out;
+}
+
+// src/mcloud/tasks/upload.ts
+var STATE_UPLOAD = "mcloud.upload.state";
+var STEP_TEXT = {
+  create: "① 声明要传一个文件",
+  put: "② 传字节（预签名直传）",
+  complete: "③ 告诉上游传完了",
+  done: "完成"
+};
+function loadUpload(deps) {
+  const raw = deps.store.getState(STATE_UPLOAD);
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw);
+    return typeof v.step === "string" ? v : null;
+  } catch {
+    return null;
+  }
+}
+function save(deps, st) {
+  deps.store.setState(STATE_UPLOAD, JSON.stringify(st), deps.nowIso);
+}
+function startUpload(deps, opts) {
+  if (opts.name.trim() === "") return { ok: false, note: "上传要有文件名" };
+  if (opts.bytes.length === 0) return { ok: false, note: "上传的内容是空的" };
+  const st = {
+    step: "create",
+    name: opts.name,
+    size: opts.bytes.length,
+    // ⚠ 摘要在这里就算好：第 ③ 枪 `complete` 要用**同一份**，而且它必须跨调用活下来
+    contentHash: contentHashOf(opts.bytes),
+    locateKey: opts.locateKey ?? "parentFileId",
+    locateValue: opts.locateValue ?? "/"
+  };
+  save(deps, st);
+  return {
+    ok: true,
+    note: `已排队上传「${opts.name}」（${st.size} 字节，摘要 ${st.contentHash.slice(0, 12)}…）—— 每次触发走一步`
+  };
+}
+function runUploadStep(deps, bytes) {
+  const st = loadUpload(deps);
+  if (!st) return { ok: true, idle: true, note: "没有在排队的上传" };
+  if (st.step === "done") return { ok: true, idle: true, note: "这一次上传已经走完" };
+  const label = STEP_TEXT[st.step];
+  if (st.step === "create") {
+    const req = buildCreateRequest({
+      name: st.name,
+      size: st.size,
+      contentHash: st.contentHash,
+      locate: { key: st.locateKey, value: st.locateValue }
+    });
+    const res2 = callRawText(deps.transport, req);
+    if (!res2.ok) return { ok: false, note: `${label}失败：${res2.error ?? "未知失败"}` };
+    const parsed2 = parseCreate(res2.text);
+    if (!parsed2.ok || !parsed2.created) return { ok: false, note: `${label}：${parsed2.error}` };
+    const c = parsed2.created;
+    const next = { ...st, fileId: c.fileId };
+    if (c.rapidUpload) {
+      next.step = "done";
+      next.rapidUpload = true;
+      save(deps, next);
+      return { ok: true, note: `${label}：秒传命中（fileId ${c.fileId.length} 字符）⇒ 不用传字节，这次上传已完成` };
+    }
+    next.step = "put";
+    next.uploadId = c.uploadId;
+    next.uploadUrl = c.uploadUrl;
+    next.rapidUpload = false;
+    save(deps, next);
+    return { ok: true, note: `${label}：拿到 fileId 与预签名地址（${c.uploadUrl.length} 字符）—— 下一步传字节` };
+  }
+  if (st.step === "put") {
+    if (!st.uploadUrl || !st.uploadId) {
+      return { ok: false, note: `${label}：状态里没有 uploadUrl/uploadId ⇒ 这一趟作废（重起一次上传）` };
+    }
+    if (!bytes || bytes.length === 0) {
+      return {
+        ok: false,
+        note: `${label}：这次调用没带字节 ⇒ 不发（拿空体去 PUT 会真的传一个 0 字节文件上去）`
+      };
+    }
+    const { req, leaksCredential } = buildPutRequest(st.uploadUrl, bytes, false);
+    if (leaksCredential) {
+      return {
+        ok: false,
+        note: `${label}：目标主机落在应带凭据的域里（不是预签名直传该有的形状）⇒ 不发，先查 create 的响应`
+      };
+    }
+    const res2 = callRawText(deps.transport, req);
+    if (!res2.ok) return { ok: false, note: `${label}失败：${res2.error ?? "未知失败"}` };
+    save(deps, { ...st, step: "complete" });
+    return { ok: true, note: `${label}：${bytes.length} 字节已发（HTTP ${res2.status}）—— 下一步确认` };
+  }
+  const res = callRawText(deps.transport, buildCompleteRequest(st.fileId, st.uploadId, st.contentHash));
+  if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? "未知失败"}` };
+  const parsed = parseComplete(res.text);
+  if (!parsed.ok) return { ok: false, note: `${label}：${parsed.error}` };
+  save(deps, { ...st, step: "done" });
+  return { ok: true, note: `${label}：已确认（fileId ${(st.fileId ?? "").length} 字符）—— 这次上传完成` };
+}
+function uploadDone(deps) {
+  return loadUpload(deps)?.step === "done";
+}
+
+// src/mcloud/tasks/taskExpansion.ts
+function signedGet(deps, path) {
+  const session = loadSession(deps.store);
+  return buildH5Request({
+    url: withBase(deps, path),
+    method: "GET",
+    body: void 0,
+    referer: REFERER_SIGN_IN,
+    showLoading: SHOW_LOADING,
+    isDeviceId: false,
+    saltKey: 1,
+    marketName: "sign_in_3",
+    session: session ? sessionHeaders(session) : {}
+  });
+}
+function digResult(text) {
+  try {
+    const v = JSON.parse(text);
+    const r = v.result;
+    return r && typeof r === "object" ? r : v;
+  } catch {
+    return {};
+  }
+}
+var STATE_EXPAND = "mcloud.taskexpansion.state";
+var STEP_TEXT2 = {
+  read: "① 读任务拓展状态",
+  upload: "② 传一个文件触发本月备份",
+  recheck: "②b 再过一遍状态",
+  claim: "③ 领云朵",
+  done: "完成"
+};
+function shouldUpload(read) {
+  return read.curMonthBackup === false;
+}
+function asInt2(v) {
+  if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
+  if (typeof v === "string" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
+  return void 0;
+}
+function parseExpand(result) {
+  const o = result && typeof result === "object" ? result : {};
+  return {
+    curMonthBackup: typeof o.curMonthBackup === "boolean" ? o.curMonthBackup : void 0,
+    curMonthTaskRecordCount: asInt2(o.curMonthTaskRecordCount),
+    acceptDate: typeof o.acceptDate === "string" ? o.acceptDate : void 0,
+    nextMonthTaskRecordCount: asInt2(o.nextMonthTaskRecordCount)
+  };
+}
+function load(deps) {
+  const raw = deps.store.getState(STATE_EXPAND);
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw);
+    return typeof v.step === "string" ? v : null;
+  } catch {
+    return null;
+  }
+}
+var save2 = (deps, st) => deps.store.setState(STATE_EXPAND, JSON.stringify(st), deps.nowIso);
+function startExpansion(deps) {
+  save2(deps, { step: "read" });
+  return { ok: true, note: "已排队：读状态 → （需要时）传文件触发备份 → 领云朵" };
+}
+function runExpansionStep(deps) {
+  const st = load(deps) ?? { step: "read" };
+  if (st.step === "done") return { ok: true, idle: true, note: "这一趟已经走完" };
+  const label = STEP_TEXT2[st.step];
+  if (st.step === "upload") {
+    if (uploadDone(deps)) {
+      save2(deps, { ...st, step: "recheck" });
+      return { ok: true, note: `${label}：文件已传完 —— 下一步再过一遍状态` };
+    }
+    const out2 = runUploadStep(deps, deterministicFile(EXPAND_FILE_SEED, EXPAND_FILE_BYTES));
+    if (out2.idle || uploadDone(deps)) {
+      save2(deps, { ...st, step: "recheck" });
+      return {
+        ok: true,
+        note: out2.idle ? `${label}：没有待传的（可能上次已传完）—— 下一步再过一遍状态` : `${label}：文件已传完 —— 下一步再过一遍状态`
+      };
+    }
+    return out2;
+  }
+  if (st.step === "read" || st.step === "recheck") {
+    const res2 = callRawText(deps.transport, signedGet(deps, "/ycloud/signin/page/taskExpansion"));
+    if (!res2.ok) return { ok: false, note: `${label}失败：${res2.error ?? "未知失败"}` };
+    let read;
+    try {
+      read = parseExpand(digResult(res2.text));
+    } catch (e) {
+      return { ok: false, note: `${label}：响应解析不了（${e instanceof Error ? e.message : String(e)}）` };
+    }
+    const next = {
+      step: "claim",
+      curMonthBackup: read.curMonthBackup,
+      curMonthTaskRecordCount: read.curMonthTaskRecordCount,
+      nextMonthTaskRecordCount: read.nextMonthTaskRecordCount
+    };
+    if (st.step === "read" && shouldUpload(read)) {
+      save2(deps, { ...next, step: "upload" });
+      startUpload(deps, { name: EXPAND_FILE_NAME, bytes: deterministicFile(EXPAND_FILE_SEED, EXPAND_FILE_BYTES) });
+      return { ok: true, note: `${label}：本月**未开启备份** ⇒ 传一个文件把它做出来 —— 下一步开始传` };
+    }
+    save2(deps, next);
+    const tail = read.nextMonthTaskRecordCount === void 0 ? "" : `；下月可领 ${read.nextMonthTaskRecordCount} 个`;
+    return {
+      ok: true,
+      note: `${label}：备份=${read.curMonthBackup === void 0 ? "没读到" : String(read.curMonthBackup)}，可领次数=${read.curMonthTaskRecordCount ?? "没读到"}${tail} —— 下一步领`
+    };
+  }
+  const res = callRawText(deps.transport, signedGet(deps, "/ycloud/signin/page/receiveTaskExpansion"));
+  save2(deps, { ...st, step: "done" });
+  if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? "未知失败"}` };
+  let out;
+  try {
+    out = JSON.parse(res.text);
+  } catch {
+    out = void 0;
+  }
+  const raw = out?.result;
+  if (typeof raw === "number") {
+    return { ok: true, note: `${label}：上游回 ${raw}（这一族的 result 是裸数字）` };
+  }
+  return {
+    ok: true,
+    note: `${label}：上游回 ${res.text.slice(0, 120)}（⚠ 这一枪**缺成功样本**，形状没被实拍验过）`
+  };
+}
+var EXPAND_FILE_NAME = "panel-backup-marker.txt";
+var EXPAND_FILE_SEED = "mcloud-panel-backup-marker-v1";
+var EXPAND_FILE_BYTES = 256;
+function withBase(deps, path) {
+  return `${deps.baseUrl ?? "https://m.mcloud.139.com"}${path}`;
+}
+
 // src/mcloud/tasks/notice.ts
 var STATE_CAN3 = "mcloud.notice.can_claim";
 var STATE_INFO2 = "mcloud.notice.info";
 var NOTICE_CLOUD_STATUS_UNCLAIMED = 1;
 var NOTICE_TASK_STATUS_DONE = 3;
-function asInt2(v) {
+function asInt3(v) {
   if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
   if (typeof v === "string" && v.trim() !== "" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
   return void 0;
@@ -3360,10 +3763,10 @@ function parseNoticeSlot(raw) {
   if (raw === null || raw === void 0 || typeof raw !== "object") return void 0;
   const o = raw;
   const slot = {
-    cloudStatus: asInt2(o.cloudStatus ?? o.cloud_status),
-    sum: asInt2(o.sum),
-    progress: asInt2(o.progress),
-    taskStatus: asInt2(o.taskStatus ?? o.task_status)
+    cloudStatus: asInt3(o.cloudStatus ?? o.cloud_status),
+    sum: asInt3(o.sum),
+    progress: asInt3(o.progress),
+    taskStatus: asInt3(o.taskStatus ?? o.task_status)
   };
   const any = slot.cloudStatus !== void 0 || slot.sum !== void 0 || slot.progress !== void 0 || slot.taskStatus !== void 0;
   return any ? slot : void 0;
@@ -3468,7 +3871,7 @@ var MATRIX_GROUPS = [
   "month",
   "hidden"
 ];
-function asInt3(v) {
+function asInt4(v) {
   if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
   if (typeof v === "string" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
   return void 0;
@@ -3480,14 +3883,14 @@ function parseMatrixItem(raw) {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return void 0;
   const o = raw;
   const it = {
-    taskId: asInt3(o.id ?? o.taskId ?? o.task_id),
+    taskId: asInt4(o.id ?? o.taskId ?? o.task_id),
     name: asStr(o.name),
     description: asStr(o.description),
     groupId: asStr(o.groupid ?? o.groupId),
     state: asStr(o.state),
     limitType: asStr(o.limitType ?? o.limit_type),
-    enable: asInt3(o.enable),
-    currStep: asInt3(o.currstep ?? o.currStep)
+    enable: asInt4(o.enable),
+    currStep: asInt4(o.currstep ?? o.currStep)
   };
   const any = it.taskId !== void 0 || it.name !== void 0 || it.state !== void 0 || it.enable !== void 0;
   return any ? it : void 0;
@@ -3611,7 +4014,7 @@ var VERDICT_TEXT = {
   "month-limit": "本月额度可能已用完",
   unknown: "判不了"
 };
-function asInt4(v) {
+function asInt5(v) {
   if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
   if (typeof v === "string" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
   return void 0;
@@ -3630,29 +4033,29 @@ function parseMonthLimit(v) {
   }
   if (o === null || typeof o !== "object" || Array.isArray(o)) return void 0;
   const r = o;
-  return asInt4(r.limitMonthQuantity ?? r.limit_month_quantity);
+  return asInt5(r.limitMonthQuantity ?? r.limit_month_quantity);
 }
 function parsePrize(raw) {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return void 0;
   const o = raw;
   const p = {
     // ⚠ 实拍是**数字**，不是字符串（原项目特意标了这一点）
-    prizeId: asInt4(o.prizeId ?? o.prize_id),
+    prizeId: asInt5(o.prizeId ?? o.prize_id),
     // ⚠ 真机 51/51 是 `prizeName`；`name` 保留是为兼容 mock 与将来可能的另一种形状
     name: asStr2(o.prizeName ?? o.name),
     monthLimit: parseMonthLimit(o.probability2),
-    received: asInt4(o.receiveQuantity ?? o.receive_quantity),
-    groupId: asInt4(o.groupId ?? o.group_id),
+    received: asInt5(o.receiveQuantity ?? o.receive_quantity),
+    groupId: asInt5(o.groupId ?? o.group_id),
     // ⚠⚠ 价格是 **`pOrder`**（不是 `price`）—— 而且同一份响应里 `POrder` 与 `pOrder`
     // **两种拼法并存**，只读一个键的写法会把一部分商品的价格判成"没给"，
     // 于是"余额够不够"那道判断对那几件**恒假**（看着像"没配置价格"，其实是不检查就下单）。
     // 逐字照 mcloud 的 `parse_price`：小写先试，大写兜底。
-    price: asInt4(o.pOrder) ?? asInt4(o.POrder),
-    limit: asInt4(o.limit),
-    count: asInt4(o.count),
-    totalCount: asInt4(o.totalCount ?? o.total_count),
-    dailyRemainderCount: asInt4(o.dailyRemainderCount ?? o.daily_remainder_count),
-    onLine: asInt4(o.onLine ?? o.on_line),
+    price: asInt5(o.pOrder) ?? asInt5(o.POrder),
+    limit: asInt5(o.limit),
+    count: asInt5(o.count),
+    totalCount: asInt5(o.totalCount ?? o.total_count),
+    dailyRemainderCount: asInt5(o.dailyRemainderCount ?? o.daily_remainder_count),
+    onLine: asInt5(o.onLine ?? o.on_line),
     startTime: asStr2(o.startTime ?? o.start_time),
     endTime: asStr2(o.endTime ?? o.end_time)
   };
@@ -4758,7 +5161,12 @@ var TASK_META = [
   //      多一个空参数就是**另一个请求**。（`receive` 那条同坑，那边已经照做了。）
   //   ② 云朵与「云盘专属 AI豆」是**同一个东西的两个名字**（2026-07-31 按 1:1 改名），
   //      不是两种货币 —— 别把它们当两笔账记。
-  { name: "task-expansion", title: "任务拓展", group: "cloud-write", kind: "Action", risk: "write-cloud", missed: "skip", deps: ["jwt"], batch: false, hidden: false, implemented: false, note: "三件：读状态 → **上传一个文件**把本月备份做出来 → 领云朵（**裸 GET**，见注释①）。上传是它的内容不是副作用；缺的是共用上传流程（建/取址/传/确认）" },
+  // ✅ 2026-10-14 实现：读状态 → （**严格**读到 curMonthBackup===false 才）传文件触发备份
+  //    → 裸 GET 领云朵。⚠ 领那枪缺成功样本（两个测试号本月都已领过，见 app_signin.rs:28），
+  //    所以成功形状没被实拍验过 —— 实现照源码逐字，不假装验过。
+  //    ⚠ 与 mcloud 一处刻意分歧：它只在 `curMonthTaskRecordCount > 0` 才发领那一枪；
+  //    本插件**不判**（用户定的口径）：那枪只读、成了有云朵、败了什么也不花 ⇒ 直接发。
+  { name: "task-expansion", title: "任务拓展", group: "activity", kind: "Action", risk: "write-cloud", missed: "skip", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "partial", note: "三件：读状态 → 传一个文件触发本月备份 → 领云朵（**裸 GET**）。传上去的文件**不留 id、不删**（删了就是删用户的东西）" },
   { name: "ai-avatar", title: "AI 头像生成与抽奖", group: "cloud-write", kind: "Action", risk: "write-cloud", missed: "skip", deps: ["basic+jwt"], batch: false, hidden: false, implemented: false, note: '生成的头像要落到网盘才能抽奖 —— 那是它的流程，不是副作用。原实现里默认关的是**开关**，不是"要不要写"' },
   // ── 高风险（未实现）──
   // ✅ 2026-10-14 实现并**真机跑通**（50 豆换到「移动云盘100G云空间月卡」，上游回 oid，
@@ -5461,7 +5869,7 @@ function signedReq(deps, spec) {
     session: session ? sessionHeaders(session) : {}
   });
 }
-function digResult(text) {
+function digResult2(text) {
   try {
     const v = JSON.parse(text);
     const r = v.result;
@@ -5502,7 +5910,7 @@ function pickPrize(prizes, query) {
   if (/^\d+$/.test(q)) return prizes.find((p) => String(p.prizeId) === q);
   return prizes.find((p) => p.name === q);
 }
-var STEP_TEXT = {
+var STEP_TEXT3 = {
   list: "① 读清单",
   balance: "② 读基准余额（成交复查要拿它算差值）",
   "warm-1": "③ 预热第一枪",
@@ -5517,7 +5925,7 @@ function runOrderStep(deps) {
   if (!st) return { ok: true, idle: true, note: "没有在排队的兑换（先用 startOrder 起一单）" };
   const query = deps.store.getState(STATE_PLAN) ?? "";
   const step = st.step;
-  const label = STEP_TEXT[step];
+  const label = STEP_TEXT3[step];
   const done = (note, ok = true) => {
     saveState(deps, { ...st, step: "done" });
     return { ok, note };
@@ -5532,7 +5940,7 @@ function runOrderStep(deps) {
       })
     );
     if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? "未知失败"}` };
-    const { prizes } = parseExchangeList(digResult(res.text));
+    const { prizes } = parseExchangeList(digResult2(res.text));
     const p = pickPrize(prizes, query);
     if (!p) return done(`${label}：清单里没有「${query}」—— 这一单不做（名字要**精确**匹配）`, false);
     const prizeId = num(p.prizeId);
@@ -5551,7 +5959,7 @@ function runOrderStep(deps) {
     if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? "未知失败"}` };
     let balance;
     try {
-      const env = digResult(res.text);
+      const env = digResult2(res.text);
       const v = env.total ?? env.point ?? env.balance;
       if (typeof v === "number") balance = v;
       else if (typeof v === "string" && /^\d+$/.test(v)) balance = Number(v);
@@ -5595,7 +6003,7 @@ function runOrderStep(deps) {
     let puzzle;
     let picture;
     try {
-      const env = digResult(res.text);
+      const env = digResult2(res.text);
       const pz = env.puzzleImg ?? env.puzzle ?? env.puzzleImage;
       const bg = env.pictureImg ?? env.picture ?? env.backgroundImg;
       if (typeof pz === "string") puzzle = pz;
@@ -5646,7 +6054,7 @@ function runOrderStep(deps) {
     if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? "未知失败"}` };
     let code;
     try {
-      const env = digResult(res.text);
+      const env = digResult2(res.text);
       const c = env.code;
       code = typeof c === "number" ? c : typeof c === "string" && /^-?\d+$/.test(c) ? Number(c) : void 0;
     } catch {
@@ -5671,7 +6079,7 @@ function runOrderStep(deps) {
     if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? "未知失败"}` };
     let after;
     try {
-      const env = digResult(res.text);
+      const env = digResult2(res.text);
       const v = env.total ?? env.point ?? env.balance;
       if (typeof v === "number") after = v;
     } catch {
@@ -5686,7 +6094,7 @@ function runOrderStep(deps) {
   return { ok: false, note: `不认识的步骤「${step}」` };
 }
 function env0(text) {
-  const r = digResult(text);
+  const r = digResult2(text);
   return Object.keys(r).length > 0 ? r : text.slice(0, 140);
 }
 
@@ -6199,6 +6607,11 @@ register_cron("receive", SIGNIN_CRON, makeRunner("领取AI豆", runReceive));
 register_cron("multiple", SIGNIN_CRON, makeRunner("签到翻倍", runMultiple));
 register_cron("revival", SIGNIN_CRON, makeRunner("复活卡", runRevival));
 register_cron("backup-gift", SIGNIN_CRON, makeRunner("备份好礼", runBackupGift));
+register_cron("task-expansion", SIGNIN_CRON, makeRunner("任务拓展", (deps) => {
+  const r = deps.store.getState("mcloud.taskexpansion.state");
+  if (!r) startExpansion(deps);
+  return runExpansionStep(deps);
+}));
 register_cron("auth-refresh", "0 6 * * *", makeRunner("凭据续期", (deps) => runAuthRefresh(deps)));
 register_cron("msg-push", SIGNIN_CRON, makeRunner("消息推送奖励（问状态）", runMsgPushStatus));
 register_cron("msg-push-obtain", SIGNIN_CRON, makeRunner("消息推送奖励（领）", runMsgPushObtain));

@@ -28,6 +28,7 @@ import { runSign } from './mcloud/tasks/sign.ts';
 import { runBackupGift } from './mcloud/tasks/backupGift.ts';
 import { runMsgPushObtain, runMsgPushStatus } from './mcloud/tasks/msgPush.ts';
 import { runAuthRefresh } from './mcloud/authRefresh.ts';
+import { runExpansionStep, startExpansion } from './mcloud/tasks/taskExpansion.ts';
 import { runNotice } from './mcloud/tasks/notice.ts';
 import { runAppTaskMatrix } from './mcloud/tasks/appTaskMatrix.ts';
 import { runExchangeList } from './mcloud/tasks/exchangeList.ts';
@@ -258,6 +259,14 @@ register_cron('backup-gift', SIGNIN_CRON, makeRunner('备份好礼', runBackupGi
 // 凭据续期：**每天一次**（mcloud 那边是 `auth refresh --lead-days`，
 // 默认提前 10 天）。它自己也带判据，所以每天跑不等于每天打上游 ——
 // 离过期还远时它**一个请求都不发**。见 authRefresh.ts 文件头。
+// 任务拓展：**状态机**（读 → 传文件触发备份 → 领），一次调用走一步。
+// ⚠ 领那一枪是**裸 GET**（抓包 §3.6.6）；判据**严格**读到 `false` 才传文件。
+register_cron('task-expansion', SIGNIN_CRON, makeRunner('任务拓展', (deps) => {
+  // 没有在跑的就把这一趟起起来（起单只写字、不发请求）
+  const r = deps.store.getState('mcloud.taskexpansion.state');
+  if (!r) startExpansion(deps);
+  return runExpansionStep(deps);
+}));
 register_cron('auth-refresh', '0 6 * * *', makeRunner('凭据续期', (deps) => runAuthRefresh(deps)));
 register_cron('msg-push', SIGNIN_CRON, makeRunner('消息推送奖励（问状态）', runMsgPushStatus));
 register_cron('msg-push-obtain', SIGNIN_CRON, makeRunner('消息推送奖励（领）', runMsgPushObtain));
