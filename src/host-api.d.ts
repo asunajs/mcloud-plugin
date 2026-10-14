@@ -98,3 +98,47 @@ export function register_route(
   method: string,
   handler: (req: RouteRequest) => RouteResponse | void,
 ): void;
+
+// ══════════════════════════ WebSocket（面板第二十一轮加的）══════════════════════════
+//
+// 权威源是**面板**：`rust-plugin-panel/src/wsclient.rs` + `docs/host-api.md` §1 末尾。
+// 插件这边只声明形状，语义照抄那两处 —— 有分歧以面板为准（它是实现方）。
+//
+// ⚠ 三件最容易写错的事：
+//   ① `ws_recv` 的 `{type:'timeout'}` **不是错误**（正常"这一步没收到东西"）；
+//   ② 句柄不存在（关过了 / **面板重启过**）是**抛异常**，不是返回 close；
+//   ③ 一次调用最多等 1800ms（面板执行预算 2000ms）—— 别按"长连接就能一直读"写。
+
+export interface WsOptions {
+  /** 握手请求的头（同名头**覆盖**而不是追加）。 */
+  headers?: Record<string, string>;
+  /** 握手总超时（含 DNS/TCP/TLS/Upgrade），默认 8000，钳制到 [500, 30000]。 */
+  timeout_ms?: number;
+}
+
+/** `ws_recv` 的结果。**五种形状**，不是异常。 */
+export type WsFrame =
+  /** 收到一帧文本。 */
+  | { type: 'text'; data: string }
+  /** 收到二进制帧（hex；SockJS 走文本，一般用不上）。 */
+  | { type: 'binary'; hex: string }
+  /** 等满了超时 —— **不是错误**，存好状态下次再收。 */
+  | { type: 'timeout' }
+  /** 连接关了（`reason` 是给人看的一句话）⇒ 要重连。 */
+  | { type: 'close'; reason: string }
+  /** 出错（`message`）⇒ 要重连。 */
+  | { type: 'error'; message: string };
+
+/** 开一条连接，返回**句柄**（数字）。握手失败**抛异常**（不留半死的句柄）。
+ *
+ *  ⚠ 上限：同时最多 8 条；单帧 256 KiB（超了回 `error` 并关掉，**不静默截断**）。 */
+export function ws_open(url: string, options?: WsOptions): number;
+
+/** 发一帧文本。**入队即返回**（不等对端确认）。句柄不存在时抛异常。 */
+export function ws_send(id: number, text: string): true;
+
+/** 收一帧，最多等 `timeout_ms`（默认 1500，最大 1800）。句柄不存在时抛异常。 */
+export function ws_recv(id: number, timeout_ms?: number): WsFrame;
+
+/** 关掉一条连接（**幂等**：已经关掉的再关一次也算成功）。 */
+export function ws_close(id: number): true;
