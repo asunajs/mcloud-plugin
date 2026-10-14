@@ -76,6 +76,7 @@ import { log } from 'host-api';
 | `mcloud-signin` | 签到族 + **`app-task` 等每日/月默认任务** | 签到那 8 条已完；`app-task` 的**只读半边**（`app-task-matrix`）可做 |
 | `mcloud-exchange` | 兑换 | **只读半边**可做（读清单 + 判"能不能兑"，不碰余额/滑块/下单）|
 | `mcloud-live` | 直播 | **两半都做了**：只读那半（`live-room`，抓公开主页 + 口令输入口，不需要凭据）＋ 写那半（`live-draw`，六步链领小红花，**默认关**）|
+| `mcloud-session` | 会话 | **插件现在能自己换票**：贴一份**原生凭据**（`Basic base64("mobile:号:token")`，就是 mcloud 的 `auth.raw`），`session-refresh` 自己走三步换成 H5 的 `jwttoken`，并按 100 分钟自动续（票新鲜时一个请求都不发）。ⓘ **两个族都在真账号上实测通过了**，见 `docs/findings.md` F-015 |
 
 三族各自"写的那半"卡在不同东西上：`app-task` 会往网盘传文件且 `task/click`
 不可回滚；`exchange` 下单要过滑块（而滑块接口计失败次数）；`live-room` 的
