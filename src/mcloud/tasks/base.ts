@@ -63,6 +63,13 @@ export interface TaskSpec {
   stateKey?: string | undefined;
   /** 比计划晚超过这么多毫秒就**不做**（只给不可逆动作用）。负数/缺省 = 总是做 */
   skipIfLaterThanMs?: number | undefined;
+  /** 把**文案骗人的**上游失败码翻成人话（返回 `undefined` = 不翻，照原话报）。
+   *
+   *  为什么需要它：`receiveV3` 的 615 回的是「活动太火爆啦，兑换失败」——
+   *  那句话让人以为是限流，而抓包实证（`app-signin-samples.txt` §4.2）说它是
+   *  **请求没带 `deviceId`**；614 是 `deviceId` 内容无效，文案是「锁定失败」。
+   *  照原话报的后果：一个**参数错误**被当成**瞬时失败**，于是无限重试。 */
+  explainFail?: ((env: SignInEnvelope | undefined, raw: string) => string | undefined) | undefined;
   /** 上游回的**错误**里有些其实是"已经完成了"（例如复活卡的「已领取」）。
    *  给一个判据，命中时算成功、并把这个判据的说明写进 note。
    *  不这么做的后果：面板里每天多一条红，而实际上什么都没坏。 */
@@ -147,6 +154,15 @@ export function runTask(
   }
 
   if (!res.ok) {
+    // ⚠ 上游有些失败**文案是骗人的**：`receiveV3` 的 615 回「活动太火爆啦」，
+    // 看着像限流，实际是**请求没带 `deviceId`**（另有 614 = `deviceId` 内容无效）。
+    // 按原话归类会把"参数问题"当成"过一会儿再试"，于是重试到天荒地老也不成。
+    // 所以给任务一个口子，把这类码翻成人话 —— 翻不了就照原话报（不猜）。
+    const explained = spec.explainFail?.(res.env, res.error ?? '');
+    if (explained !== undefined) {
+      recordError(deps.store, spec.task, explained, deps.nowIso);
+      return { ok: false, note: explained };
+    }
     const note = res.error ?? '未知失败';
     // 「上游说失败，其实是已经做过了」这一类：算完成，但把上游原话留在 note 里
     if (spec.okWhenError?.(note)) {

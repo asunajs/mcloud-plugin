@@ -71,6 +71,51 @@ export function readAcceptDate(raw: unknown): string | undefined {
   return typeof v === 'string' && v.trim() !== '' ? v.trim() : undefined;
 }
 
+/** ⚠ 614 / 615 **不是在限流**，是 `deviceId` 的问题 —— 别照着上游文案归类。
+ *
+ *  抓包实证（`mcloud-capture/docs/capture/app-signin-samples.txt` §4.2，2026-09-19
+ *  账号 B，同一条请求只换 `deviceId` 一项）：
+ *
+ *  | `deviceId` | code | 上游 msg（**骗人的**） |
+ *  |---|---|---|
+ *  | 不带 | `615` | 活动太火爆啦，**兑换失败**，试试其他奖品吧 |
+ *  | 长度对、只错一个字符 | `614` | 活动太火爆啦，**锁定失败**，试试其他奖品吧 |
+ *  | 真实值（`B` + 88 字符 base64 ⇒ 64 字节） | `0` | 正常 |
+ *
+ *  而且那份**有效值不是登录时那个** `device_id`：mcloud 实测拿它去领回来的是 `614`
+ *  （`signin.rs::h5_device_id` 的文档记了这次复现）—— 有效的那个要靠 **smid 指纹链**
+ *  换回来，而本插件**没有实现那条链**。
+ *
+ *  ⇒ 这一族在"只有原生凭据 / 手工贴的会话"下**大概率就是领不了**，
+ *  而界面看到的那句话（"活动太火爆"）会让人以为过会儿就好。
+ *  翻出来，是为了让**参数问题**不再伪装成**稍后再试**。
+ *
+ *  2026-10-14 真机复现：换票建出来的会话没有 `deviceId` ⇒ 这一枪回的就是 `615`。 */
+export function explainReceiveFail(
+  env: { code?: number | undefined } | undefined,
+  raw: string,
+): string | undefined {
+  // ⚠ 优先用信封里的数字码；**退路是从原话里抠** ——
+  // 真机上跑到这一枪时 `env` 往往是空的（`callOnce` 的失败形状只保证有字符串），
+  // 只认 `env.code` 的话这个钩子在真机上**一次都不会生效**（实测踩过）。
+  let code = env?.code;
+  if (typeof code !== 'number') {
+    const m = /\bcode=(-?\d+)/.exec(raw);
+    if (m) code = Number(m[1]);
+  }
+  if (code === 615) {
+    return '领取失败：这一枪**没带 `deviceId`**（上游文案说"活动太火爆啦"，但它不是在限流）。' +
+      '领取类接口要一份 **H5 的 deviceId**，那份得靠 smid 指纹链换回来 —— 本插件还没实现那条链；' +
+      '在会话 JSON 里手工带上 `deviceId`（`B` + 88 字符 base64）即可用。';
+  }
+  if (code === 614) {
+    return '领取失败：`deviceId` **内容无效**（上游文案说"锁定失败"，同样不是在限流）。' +
+      '⚠ 登录时那个 `device_id`（32 hex + `-ENDIN`）**不是** H5 要的那一份 —— ' +
+      'mcloud 实测拿它去领回的就是这个 614。H5 要的是 `B` + 88 字符 base64。';
+  }
+  return undefined;
+}
+
 /** `receiveV3` 的请求体（逐字照抄，`cloudType` 缺省空串）。 */
 export function receiveV3Body(cloudId: string, cloudType: number | undefined, deviceId: string): string {
   return JSON.stringify({
@@ -142,6 +187,8 @@ export function runReceive(deps: TaskDeps): TaskOutcome {
       method: 'POST',
       body: receiveV3Body(item.recordId, item.cloudType, session.deviceId ?? ''),
       stateKey: STATE_RECEIVE,
+      // 615/614 的原话是"活动太火爆啦"，而真相是 deviceId 的事 —— 翻成人话
+      explainFail: explainReceiveFail,
     },
     (env) => ({
       ok: true,

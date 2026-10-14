@@ -217,7 +217,15 @@ export const TASK_META: TaskMeta[] = [
 
   // ── 高风险（未实现）──
   { name: 'exchange', title: '兑换奖品', group: 'risky', kind: 'Action', risk: 'spend', missed: 'skip', deps: ['jwt', 'slider'], batch: false, hidden: true, implemented: false, note: '**真扣 AI豆、不可回滚**，还要过滑块 —— 上游没有幂等，本插件里必须默认关 + 二次确认' },
-  { name: 'auth-refresh', title: '刷新 auth 凭据', group: 'risky', kind: 'Action', risk: 'irreversible', missed: 'catch-up', deps: ['basic+jwt'], batch: false, hidden: true, implemented: false, note: '换 token —— 唯一不需要 jwt 的写操作' },
+  // ⚠️ 2026-10-14 更正一处**我口头说过的错话**：我曾讲这条"会换掉现有授权"——
+  //    那句话**没有出处**。`auth_refresh.rs` 的叙述是「**续期**」：刷新返回一个自带
+  //    30 天有效期的新 token，并被编进后续请求的 `Authorization`；而**旧凭据会不会被
+  //    这一枪作废，没有任何一处说过**（我把它当成了"替换"）。
+  //    另外它在本插件里是 `implemented: false` —— **根本没实装**，
+  //    所以"我不替你动"这个说法本身就站不住（当时没有可动的东西）。
+  //    ⚠ `risk` 暂时维持 `irreversible`（风险档保守取值的默认），
+  //    但这一档的**依据同样缺样本** —— 真要落地前先把"旧 token 是否仍可用"测出来。
+  { name: 'auth-refresh', title: '刷新 auth 凭据（**续期**，不是替换）', group: 'risky', kind: 'Action', risk: 'irreversible', missed: 'catch-up', deps: ['basic+jwt'], batch: false, hidden: true, implemented: false, note: '续期：返回一个自带 30 天有效期的新 token —— 唯一不需要 jwt 的写操作。⚠ 未实装' },
 ];
 
 /** 一条任务在界面上的完整一行：静态元信息 + **运行时的实际状态**。 */

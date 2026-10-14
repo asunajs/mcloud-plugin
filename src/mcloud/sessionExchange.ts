@@ -243,7 +243,14 @@ export function runExchangeStep(deps: TaskDeps): { ok: boolean; note: string; do
     st,
     true,
     `③ 换到 jwttoken（${p.value.jwt.length} 字符${p.value.mobile ? `，回显 ${maskMobile(p.value.mobile)}` : ''}）` +
-      `—— 约 ${Math.round(JWT_TTL_MS / 60000)} 分钟后该续`,
+      `—— 约 ${Math.round(JWT_TTL_MS / 60000)} 分钟后该续` +
+      // ⚠ 主动说出"缺 deviceId"：不说的话，用户第一次用 `receive` 会看到
+      // 「活动太火爆啦」，然后以为过会儿就好 —— 而它其实永远不会好（是参数问题）。
+      (((sess?.deviceId ?? '') === '' && (loadSession(deps.store)?.deviceId ?? '') === '')
+        ? '。⚠ 这份会话**没有 `deviceId`**：领取类接口（receive）会回 615，' +
+          '而它的文案是「活动太火爆啦」—— 那不是在限流，是缺参数。' +
+          '要修：在会话 JSON 里带上 `deviceId`（H5 那一份是 `B` + 88 字符 base64）'
+        : ''),
   );
 }
 

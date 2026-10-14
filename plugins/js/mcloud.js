@@ -934,6 +934,11 @@ function runTask(deps, spec, judge2) {
     );
   }
   if (!res.ok) {
+    const explained = spec.explainFail?.(res.env, res.error ?? "");
+    if (explained !== void 0) {
+      recordError(deps.store, spec.task, explained, deps.nowIso);
+      return { ok: false, note: explained };
+    }
     const note = res.error ?? "未知失败";
     if (spec.okWhenError?.(note)) {
       clearError(deps.store, spec.task, deps.nowIso);
@@ -2487,7 +2492,9 @@ function runExchangeStep(deps) {
   return finish2(
     st,
     true,
-    `③ 换到 jwttoken（${p.value.jwt.length} 字符${p.value.mobile ? `，回显 ${maskMobile(p.value.mobile)}` : ""}）—— 约 ${Math.round(JWT_TTL_MS / 6e4)} 分钟后该续`
+    `③ 换到 jwttoken（${p.value.jwt.length} 字符${p.value.mobile ? `，回显 ${maskMobile(p.value.mobile)}` : ""}）—— 约 ${Math.round(JWT_TTL_MS / 6e4)} 分钟后该续` + // ⚠ 主动说出"缺 deviceId"：不说的话，用户第一次用 `receive` 会看到
+    // 「活动太火爆啦」，然后以为过会儿就好 —— 而它其实永远不会好（是参数问题）。
+    ((sess?.deviceId ?? "") === "" && (loadSession(deps.store)?.deviceId ?? "") === "" ? "。⚠ 这份会话**没有 `deviceId`**：领取类接口（receive）会回 615，而它的文案是「活动太火爆啦」—— 那不是在限流，是缺参数。要修：在会话 JSON 里带上 `deviceId`（H5 那一份是 `B` + 88 字符 base64）" : "")
   );
 }
 function failStep(deps, st, note) {
@@ -2540,6 +2547,20 @@ function readAcceptDate(raw) {
   if (typeof raw !== "object" || raw === null) return void 0;
   const v = raw.acceptDate ?? raw.accept_date;
   return typeof v === "string" && v.trim() !== "" ? v.trim() : void 0;
+}
+function explainReceiveFail(env, raw) {
+  let code = env?.code;
+  if (typeof code !== "number") {
+    const m = /\bcode=(-?\d+)/.exec(raw);
+    if (m) code = Number(m[1]);
+  }
+  if (code === 615) {
+    return '领取失败：这一枪**没带 `deviceId`**（上游文案说"活动太火爆啦"，但它不是在限流）。领取类接口要一份 **H5 的 deviceId**，那份得靠 smid 指纹链换回来 —— 本插件还没实现那条链；在会话 JSON 里手工带上 `deviceId`（`B` + 88 字符 base64）即可用。';
+  }
+  if (code === 614) {
+    return '领取失败：`deviceId` **内容无效**（上游文案说"锁定失败"，同样不是在限流）。⚠ 登录时那个 `device_id`（32 hex + `-ENDIN`）**不是** H5 要的那一份 —— mcloud 实测拿它去领回的就是这个 614。H5 要的是 `B` + 88 字符 base64。';
+  }
+  return void 0;
 }
 function receiveV3Body(cloudId, cloudType, deviceId) {
   return JSON.stringify({
@@ -2599,7 +2620,9 @@ function runReceive(deps) {
       endpoint: "receiveV3",
       method: "POST",
       body: receiveV3Body(item.recordId, item.cloudType, session.deviceId ?? ""),
-      stateKey: STATE_RECEIVE
+      stateKey: STATE_RECEIVE,
+      // 615/614 的原话是"活动太火爆啦"，而真相是 deviceId 的事 —— 翻成人话
+      explainFail: explainReceiveFail
     },
     (env) => ({
       ok: true,
@@ -2920,7 +2943,15 @@ var TASK_META = [
   { name: "ai-avatar", title: "AI 头像生成与抽奖", group: "cloud-write", kind: "Action", risk: "write-cloud", missed: "skip", deps: ["basic+jwt"], batch: false, hidden: false, implemented: false, note: "往网盘写图 —— 原实现里默认就是**关**的" },
   // ── 高风险（未实现）──
   { name: "exchange", title: "兑换奖品", group: "risky", kind: "Action", risk: "spend", missed: "skip", deps: ["jwt", "slider"], batch: false, hidden: true, implemented: false, note: "**真扣 AI豆、不可回滚**，还要过滑块 —— 上游没有幂等，本插件里必须默认关 + 二次确认" },
-  { name: "auth-refresh", title: "刷新 auth 凭据", group: "risky", kind: "Action", risk: "irreversible", missed: "catch-up", deps: ["basic+jwt"], batch: false, hidden: true, implemented: false, note: "换 token —— 唯一不需要 jwt 的写操作" }
+  // ⚠️ 2026-10-14 更正一处**我口头说过的错话**：我曾讲这条"会换掉现有授权"——
+  //    那句话**没有出处**。`auth_refresh.rs` 的叙述是「**续期**」：刷新返回一个自带
+  //    30 天有效期的新 token，并被编进后续请求的 `Authorization`；而**旧凭据会不会被
+  //    这一枪作废，没有任何一处说过**（我把它当成了"替换"）。
+  //    另外它在本插件里是 `implemented: false` —— **根本没实装**，
+  //    所以"我不替你动"这个说法本身就站不住（当时没有可动的东西）。
+  //    ⚠ `risk` 暂时维持 `irreversible`（风险档保守取值的默认），
+  //    但这一档的**依据同样缺样本** —— 真要落地前先把"旧 token 是否仍可用"测出来。
+  { name: "auth-refresh", title: "刷新 auth 凭据（**续期**，不是替换）", group: "risky", kind: "Action", risk: "irreversible", missed: "catch-up", deps: ["basic+jwt"], batch: false, hidden: true, implemented: false, note: "续期：返回一个自带 30 天有效期的新 token —— 唯一不需要 jwt 的写操作。⚠ 未实装" }
 ];
 function groupView(store2) {
   const recent = store2.recentRuns(200);
