@@ -157,6 +157,22 @@
   误取底层 TcpStream ⇒ 绕过 TLS 明文发命令**（只有对着真 TLS 服务器跑才露出来）。
   **未做**：两个适配器还没有 `smtp_send`（已在运行时差异表标出）。
 
+- [x] **①-6 按任务/路由声明执行预算**　✅ `rust-plugin-panel` `0dbbe8a`（第二十三轮）
+  **这一项是计划里漏掉的**：①-1 只解决了「长任务要独占线程」，但全局执行预算
+  （`EXEC_BUDGET_MS=2000`）还在 —— 一个「一个函数从头跑到尾」的任务必然超过 2 秒，
+  然后被判「疑似死循环」掐断。**没有它，阶段 ② 的日常/兑换/直播三条任务都跑不起来。**
+
+      worker_hint('exclusive');   // 长预算必须配独占线程
+      register_cron('日常', '*/30 7-22 * * *', runDaily, { budget_ms: 120000 });
+      register_route('/plugins/x/run', 'POST', handler, { budget_ms: 120000 });
+
+  范围 100ms ~ 10 分钟，越界报错；落 `jobs.budget_ms`（面板可见、重启还在）；
+  长预算 + 没 exclusive ⇒ **加载期警告并点名插件**；没声明预算的任务**依然**被
+  全局值拦下（保护还在，验收脚本里有对照组）。
+  验收：`python3 scripts/budget_check.py`（14 项断言）全过。
+  踩坑：**HTTP 那一层用的是全局预算** —— 路由声明 8 秒、Axum 侧 3 秒就 504，
+  声明等于没声明。
+
 ### 阶段 ② 插件骨架（仓库 `mcloud-plugin`，能真跑起来）
 
 - [ ] ②-1 拆成 4 个插件：`mcloud`（路由/登录/设置/读数）· `mcloud-daily` ·
@@ -222,3 +238,4 @@
 | 2026-10-14 | ①-4 随机表达式（抖动后缀） | `rust-plugin-panel` `d9894fb` |
 | 2026-10-15 | ①-3 插件声明的侧边栏入口 | `rust-plugin-panel` `8cdaf77` |
 | 2026-10-15 | ①-5 `smtp_send`（发邮件） | `rust-plugin-panel` `b8643c1` |
+| 2026-10-15 | ①-6 按任务/路由声明执行预算（**计划外，②的硬前提**） | `rust-plugin-panel` `0dbbe8a` |
