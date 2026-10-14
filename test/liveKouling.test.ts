@@ -187,6 +187,16 @@ test('末尾的收批标记要去掉：` 无` / ` 无随机` / `无随机口令`
     assert.deepEqual(extractKouling(input), [want], `输入「${input}」`);
   }
   assert.equal(trimKoulingTail('秋游影集轻松做 无'), '秋游影集轻松做');
+  // ⚠ "有尾巴的多半是网友手打的"（用户给的现场知识）⇒ 形态更杂：标记后面还可能带标点
+  assert.equal(trimKoulingTail('秋游影集轻松做 无随机。'), '秋游影集轻松做');
+  assert.equal(trimKoulingTail('秋游影集轻松做 无！'), '秋游影集轻松做');
+  // ⚠ 但**连着写**的短标记（没有空格）**刻意不动**：`相伴无` 这种"尾字本身就是无"的真口令
+  //   被啃掉一个字不会报错、只会安静地回 200108，所以短标记一律要求前面有空白
+  //   （五字标记 `无随机口令` 例外 —— 语义明确，见实现）。
+  //   代价：网友连着写的 `…做无随机～` 会白跑一枪 —— 那个**看得见**（池里留一条 200108），
+  //   比"静默少一个字"好查。
+  assert.equal(trimKoulingTail('秋游影集轻松做无随机～'), '秋游影集轻松做无随机');
+  assert.deepEqual(extractKouling('小红花口令：秋游影集轻松做 无随机！'), ['秋游影集轻松做']);
   assert.equal(trimKoulingTail('秋游影集轻松做无随机口令'), '秋游影集轻松做');
   // 只余标记 ⇒ 空串（会被滤掉，不当口令）
   assert.equal(trimKoulingTail('无随机'), '');
