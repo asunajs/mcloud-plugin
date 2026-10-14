@@ -16,6 +16,10 @@ import {
   runMsgPushObtain,
   runMsgPushStatus,
 } from '../src/mcloud/tasks/msgPush.ts';
+import {
+  planMsgPush,
+  firstRewardPending,
+} from '../src/mcloud/tasks/msgPush.ts';
 import { SESSION_KEY } from '../src/store/types.ts';
 import { memStore } from '../src/store/memory.ts';
 import type { Transport } from '../src/mcloud/client.ts';
@@ -92,7 +96,7 @@ test('⚠ 闸门：上一步说不可领 ⇒ **一个请求都不发**（否则�
   const out = runMsgPushObtain({ store, transport, nowIso: NOW, baseUrl: undefined });
   assert.equal(sent.length, 0, '闸门没挡住');
   assert.equal(out.skipped, true);
-  assert.match(out.note, /没问过|no/);
+  assert.match(out.note, /没问过|不该领/);
 });
 
 test('没问过状态也**不发**（默认就是不发）', () => {
@@ -154,4 +158,22 @@ test('没有会话 ⇒ 一个请求都不发', () => {
   const out = runMsgPushStatus({ store, transport, nowIso: NOW, baseUrl: undefined });
   assert.equal(out.ok, false);
   assert.equal(sent.length, 0);
+});
+
+test('判定档位**逐条照 mcloud 的四档**（unknown 不许压成 nothing）', () => {
+  // mcloud: plan_msg_push —— 先 pushOn，再 secondTaskStatus；缺失 ⇒ unknown
+  assert.equal(planMsgPush({ pushOn: 0, secondTaskStatus: 2 }), 'manual', '⚠ pushOn 先判');
+  assert.equal(planMsgPush({ secondTaskStatus: 2 }), 'obtain');
+  assert.equal(planMsgPush({ secondTaskStatus: 1 }), 'nothing');
+  assert.equal(planMsgPush({ secondTaskStatus: 3 }), 'nothing');
+  assert.equal(planMsgPush({}), 'unknown', '⚠ 判据字段缺失 ⇒ 判不了（一个写请求都不发）');
+  assert.equal(planMsgPush({ pushOn: 1 }), 'unknown');
+});
+
+test('第一份奖励：**字段缺失时不算待领**（旧 TS 的 `!== 3` 会误判）', () => {
+  // mcloud 注释点名的坑：`undefined !== 3` 恒真 ⇒ 旧版缺字段时会误判成"该领"
+  assert.equal(firstRewardPending({}), false, '⚠ 缺字段 ⇒ false');
+  assert.equal(firstRewardPending({ firstTaskStatus: 3 }), false, '已完成');
+  assert.equal(firstRewardPending({ firstTaskStatus: 1 }), true);
+  assert.equal(firstRewardPending({ firstTaskStatus: 0 }), true);
 });
