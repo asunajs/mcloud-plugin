@@ -50,6 +50,10 @@ function fakeUpstream(over: { specFail?: boolean; login?: string } = {}) {
     if (req.url.includes('/api/timestamp')) {
       return { status: 200, headers: {}, body: JSON.stringify({ code: 0, result: 1700000000000 }) };
     }
+    // ④ smid 风控上报（换 `deviceId`）—— 它是**另一台主机**，判据也是数字码 1100
+    if (req.url.includes('/deviceprofile/v4')) {
+      return { status: 200, headers: {}, body: JSON.stringify({ code: 1100, detail: { deviceId: 'MOCKDEV' } }) };
+    }
     return {
       status: 200,
       headers: {},
@@ -98,8 +102,16 @@ test('三步：一次调用一个请求，顺序固定，跑完存住票', () =>
   assert.equal(last.ok, true, notes.join('\n'));
   assert.deepEqual(
     sent.map((r) => r.url.replace(/^https?:\/\/[^/]+/, '').split('?')[0]),
-    ['/user/querySpecTokenV2', '/ycloud/api/timestamp', '/ycloud/auth-service/auth/tyrzLogin'],
+    [
+      '/user/querySpecTokenV2',
+      '/ycloud/api/timestamp',
+      '/ycloud/auth-service/auth/tyrzLogin',
+      // ⚠ 第四步是**另一条链**：换 `deviceId`（smid 风控上报）。
+      // 没有它，领取类接口会回 615 而文案说"活动太火爆啦"（findings F-018）
+      '/deviceprofile/v4',
+    ],
   );
+  assert.equal(loadSession(store)!.deviceId, 'BMOCKDEV', 'deviceId 要写进会话（前面拼了 B）');
   const rec = loadJwt(store)!;
   assert.equal(rec.jwt, 'JWT-1');
   assert.equal(rec.mobile, '13800000000');
