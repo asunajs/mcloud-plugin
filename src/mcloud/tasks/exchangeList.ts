@@ -17,6 +17,22 @@
 //
 // 还有一条：`onLine` 非 1 是下架，但**非 1 的取值零样本** ⇒ 只认"明确给了且不是 1"，
 // 缺字段不算下架。
+//
+// # ⚠ 2026-10-14 真机实测改掉的两处（都是 mock 藏不住的）
+//
+// ① **名字的字段名是 `prizeName`，不是 `name`**。原先读 `o.name` ⇒ 51 件**全都读不到名字**，
+//    界面只能显示 `#260630012` 这种 id。而 mock 那边是按 `name` 造的 ⇒ 测试全绿、真机全瞎。
+// 现在是 `prizeName ?? name`（两个都认，取值顺序有据：真机 51/51 都是 `prizeName`）。
+//
+// ② **月度限领次数在 `probability2` 里，而它是个 JSON 字符串**：
+//    `{"multi":true,"limitMonthQuantity":3}`；配合 `receiveQuantity`（本月已领几次）。
+//    原先完全不读 ⇒ 额度用完后仍然报"可兑"—— 而这**正是本文件头 ② 最反对的那类假结论**
+//    （"当成'多半可兑'会白发一笔真扣豆的请求"）。
+//    现在读它，并给出一个**不说"可兑"**的档位 `month-limit`。
+//
+//    ⚠ 语义边界照实说：`receiveQuantity` 到底是"本月已领"还是"累计已领"**没有样本**
+//    （真机上它恒为 0）。所以文案写的是"**可能**已达本月额度"，而不是"已达"——
+//    宁可少报一次可兑，也不要报出一个会被上游挡下的"可兑"。
 
 import { resultObject } from '../envelope.ts';
 import { runTask } from './base.ts';
@@ -36,6 +52,10 @@ export const LIMIT_GROUP_EXCHANGED = 4;
 export interface ExchangePrize {
   prizeId?: number;
   name?: string;
+  /** 本月限领次数（来自 `probability2.limitMonthQuantity`）。缺 = 这一件没设月度额度。 */
+  monthLimit?: number;
+  /** 本月已领几次（`receiveQuantity`）。语义有边界，见文件头。 */
+  received?: number;
   groupId?: number;
   price?: number;
   /** 本账号对**这一件**的可兑状态 */
@@ -55,10 +75,16 @@ export type Verdict =
   | 'exchanged' // 这一件本月已兑
   | 'group-exchanged' // 这一组本月已兑
   | 'offline' // 明确下架
+  | 'month-limit' // 本月额度**可能**已用完 —— 不说可兑
   | 'unknown'; // 判不了（字段缺 / 没见过的档位）—— **不说可兑**
 
 export function verdictOf(p: ExchangePrize): Verdict {
   if (p.onLine !== undefined && p.onLine !== 1) return 'offline';
+  // 月度额度先于 `limit` 判：`limit=0`（可兑）说的是这一件的**当天/当期**状态，
+  // 而月度额度用完后上游仍会挡下 —— 两边冲突时以更保守的那个为准
+  if (p.monthLimit !== undefined && p.received !== undefined && p.received >= p.monthLimit) {
+    return 'month-limit';
+  }
   if (p.limit === undefined) return 'unknown';
   switch (p.limit) {
     case LIMIT_AVAILABLE:
@@ -80,6 +106,7 @@ export const VERDICT_TEXT: Record<Verdict, string> = {
   exchanged: '本件本月已兑',
   'group-exchanged': '本组本月已兑',
   offline: '已下架',
+  'month-limit': '本月额度可能已用完',
   unknown: '判不了',
 };
 
@@ -92,13 +119,30 @@ function asStr(v: unknown): string | undefined {
   return typeof v === 'string' && v !== '' ? v : undefined;
 }
 
+/** 解 `probability2` 里的月度限领次数。
+ *
+ *  ⚠ 它是个 **JSON 字符串**（不是对象）：`{"multi":true,"limitMonthQuantity":3}`。
+ *  解不出来就返回 `undefined` —— 缺字段**不算**额度用完（宁可放过，不可误报）。 */
+export function parseMonthLimit(v: unknown): number | undefined {
+  let o: unknown = v;
+  if (typeof v === 'string') {
+    try { o = JSON.parse(v); } catch { return undefined; }
+  }
+  if (o === null || typeof o !== 'object' || Array.isArray(o)) return undefined;
+  const r = o as Record<string, unknown>;
+  return asInt(r.limitMonthQuantity ?? r.limit_month_quantity);
+}
+
 export function parsePrize(raw: unknown): ExchangePrize | undefined {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
   const o = raw as Record<string, unknown>;
   const p: ExchangePrize = {
     // ⚠ 实拍是**数字**，不是字符串（原项目特意标了这一点）
     prizeId: asInt(o.prizeId ?? o.prize_id),
-    name: asStr(o.name),
+    // ⚠ 真机 51/51 是 `prizeName`；`name` 保留是为兼容 mock 与将来可能的另一种形状
+    name: asStr(o.prizeName ?? o.name),
+    monthLimit: parseMonthLimit(o.probability2),
+    received: asInt(o.receiveQuantity ?? o.receive_quantity),
     groupId: asInt(o.groupId ?? o.group_id),
     price: asInt(o.price),
     limit: asInt(o.limit),
@@ -174,7 +218,13 @@ export function runExchangeList(deps: TaskDeps): TaskOutcome {
       const s = summarizeList(prizes);
       const reading: ExchangeReading = { at: deps.nowIso, groups: groups.length, ...s };
       deps.store.setState(STATE_LIST, JSON.stringify(reading), deps.nowIso);
-      const names = s.ok.slice(0, 3).map((x) => `${x.name ?? '#' + x.prizeId}(${x.price ?? '?'}豆)`);
+      // ⚠ 价格**只在有值时才写**。2026-10-14 真机实测：这个端点**一件都不带价格字段**
+      // （51/51 都没有），所以原先那版会输出 `移动云盘100G云空间月卡(?豆)` ——
+      // 那个 `?` 会被读成"这里有个数没解析出来"，而真相是"这个端根本不报价格"。
+      // 价格要在**下单那一步**才知道（那也是它真扣豆的地方）。
+      const names = s.ok.slice(0, 3).map((x) =>
+        x.price === undefined ? (x.name ?? '#' + x.prizeId) : `${x.name ?? '#' + x.prizeId}(${x.price}豆)`,
+      );
       return {
         ok: true,
         note:

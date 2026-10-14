@@ -15,6 +15,8 @@ import {
   runExchangeList,
   summarizeList,
   verdictOf,
+  parseMonthLimit,
+  parsePrize,
 } from '../src/mcloud/tasks/exchangeList.ts';
 import { SESSION_KEY } from '../src/store/types.ts';
 import { memStore } from '../src/store/memory.ts';
@@ -64,6 +66,18 @@ test('判据：五档 + 缺字段 ⇒ 判不了（**不是**可兑）', () => {
   // ⚠ 缺 limit ⇒ 判不了。当成"多半可兑"会白发一笔真扣豆的请求
   assert.equal(verdictOf({ onLine: 1 }), 'unknown');
   assert.notEqual(verdictOf({ name: 'x' }), 'ok');
+  // 月度额度：`limit` 说可兑、月度额度说满了 ⇒ **必须**落在保守的那一边
+  assert.equal(
+    verdictOf({ limit: 0, monthLimit: 3, received: 3 }),
+    'month-limit',
+    '额度用完后仍报"可兑"＝白发一笔真扣豆的请求',
+  );
+  assert.equal(verdictOf({ limit: 0, monthLimit: 3, received: 2 }), 'ok', '没满就该照常说可兑');
+  // 缺任一边 ⇒ **不算**用完（宁可放过，不可误报）
+  assert.equal(verdictOf({ limit: 0, monthLimit: 3 }), 'ok');
+  assert.equal(verdictOf({ limit: 0, received: 3 }), 'ok');
+  // 下架优先于额度：两者都命中时说"已下架"（更明确的那一个）
+  assert.equal(verdictOf({ onLine: 0, limit: 0, monthLimit: 3, received: 3 }), 'offline');
   // 下架只认"明确给了且不是 1"；缺 onLine 不算下架
   assert.equal(verdictOf({ limit: 0, onLine: 0 }), 'offline');
   assert.equal(verdictOf({ limit: 0 }), 'ok', '缺 onLine 不等于下架');
@@ -77,6 +91,10 @@ test('汇总：各档计数 + 可兑清单（缺 limit 的不进可兑）', () =
   assert.equal(s.byVerdict.unknown, 1, '缺 limit 那件算判不了');
   assert.equal(s.byVerdict.offline, 1);
   assert.deepEqual(s.ok.map((x) => x.name), ['云朵1个']);
+  // ⚠ 名字的字段名是 `prizeName`（2026-10-14 真机 51/51），`name` 只是回退
+  assert.equal(parsePrize({ prizeId: 1, prizeName: '真机形状' })!.name, '真机形状');
+  assert.equal(parsePrize({ prizeId: 1, name: '旧形状' })!.name, '旧形状');
+  assert.equal(parsePrize({ prizeId: 1, prizeName: '真机形状', name: '旧形状' })!.name, '真机形状');
 });
 
 test('只读：整轮只发一个 GET exchangeList，落库可读回', () => {

@@ -1481,6 +1481,9 @@ var LIMIT_EXCHANGED = 2;
 var LIMIT_GROUP_EXCHANGED = 4;
 function verdictOf(p) {
   if (p.onLine !== void 0 && p.onLine !== 1) return "offline";
+  if (p.monthLimit !== void 0 && p.received !== void 0 && p.received >= p.monthLimit) {
+    return "month-limit";
+  }
   if (p.limit === void 0) return "unknown";
   switch (p.limit) {
     case LIMIT_AVAILABLE:
@@ -1501,6 +1504,7 @@ var VERDICT_TEXT = {
   exchanged: "本件本月已兑",
   "group-exchanged": "本组本月已兑",
   offline: "已下架",
+  "month-limit": "本月额度可能已用完",
   unknown: "判不了"
 };
 function asInt3(v) {
@@ -1511,13 +1515,29 @@ function asInt3(v) {
 function asStr2(v) {
   return typeof v === "string" && v !== "" ? v : void 0;
 }
+function parseMonthLimit(v) {
+  let o = v;
+  if (typeof v === "string") {
+    try {
+      o = JSON.parse(v);
+    } catch {
+      return void 0;
+    }
+  }
+  if (o === null || typeof o !== "object" || Array.isArray(o)) return void 0;
+  const r = o;
+  return asInt3(r.limitMonthQuantity ?? r.limit_month_quantity);
+}
 function parsePrize(raw) {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return void 0;
   const o = raw;
   const p = {
     // ⚠ 实拍是**数字**，不是字符串（原项目特意标了这一点）
     prizeId: asInt3(o.prizeId ?? o.prize_id),
-    name: asStr2(o.name),
+    // ⚠ 真机 51/51 是 `prizeName`；`name` 保留是为兼容 mock 与将来可能的另一种形状
+    name: asStr2(o.prizeName ?? o.name),
+    monthLimit: parseMonthLimit(o.probability2),
+    received: asInt3(o.receiveQuantity ?? o.receive_quantity),
     groupId: asInt3(o.groupId ?? o.group_id),
     price: asInt3(o.price),
     limit: asInt3(o.limit),
@@ -1576,7 +1596,9 @@ function runExchangeList(deps) {
       const s = summarizeList(prizes);
       const reading = { at: deps.nowIso, groups: groups.length, ...s };
       deps.store.setState(STATE_LIST, JSON.stringify(reading), deps.nowIso);
-      const names = s.ok.slice(0, 3).map((x) => `${x.name ?? "#" + x.prizeId}(${x.price ?? "?"}豆)`);
+      const names = s.ok.slice(0, 3).map(
+        (x) => x.price === void 0 ? x.name ?? "#" + x.prizeId : `${x.name ?? "#" + x.prizeId}(${x.price}豆)`
+      );
       return {
         ok: true,
         note: `兑换清单：${groups.length} 组 / ${s.total} 件，可兑 ${s.okCount} 件` + (names.length ? `（${names.join("、")}）` : "") + (s.byVerdict.unknown ? `；判不了 ${s.byVerdict.unknown} 件` : ""),

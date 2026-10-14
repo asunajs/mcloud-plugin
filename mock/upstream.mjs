@@ -247,8 +247,14 @@ export async function startMock(options = {}) {
             msg: 'success',
             result: {
               0: [
-                { prizeId: 251230053, name: '云朵1个', groupId: 0, price: 100, limit: 0, onLine: 1 },
+                // ⚠ 名字字段是 **`prizeName`**（2026-10-14 真机 51/51 都是它，而一件都没有 `name`）
+                { prizeId: 251230053, prizeName: '云朵1个', groupId: 0, limit: 0, onLine: 1 },
+                // 这一件故意用旧字段名，覆盖 `prizeName ?? name` 的回退那一条
                 { prizeId: 251230054, name: '会员1天', groupId: 0, price: 500, limit: 2, onLine: 1 },
+                // 月度额度用完：`limit` 说可兑（0），而 `probability2` 说本月已领满
+                // ⇒ 判据必须落在更保守的那一边（不然就是"白发一笔真扣豆的请求"）
+                { prizeId: 251230055, prizeName: '月度额度款', groupId: 0, limit: 0, onLine: 1,
+                  probability2: '{"multi":true,"limitMonthQuantity":3}', receiveQuantity: 3 },
               ],
               2: [{ prizeId: 251230061, name: '明日再来款', groupId: 2, price: 300, limit: 1, onLine: 1 }],
               15: [
