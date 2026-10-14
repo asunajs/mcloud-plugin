@@ -41,6 +41,13 @@ import {
 import { XIAOHONGSHU_KOULING_PROFILE_URL } from './liveKouling.ts';
 import { localStamp } from './koulingPool.ts';
 import {
+  loadGateBase,
+  loadGateState,
+  readGateReading,
+  runLiveGate,
+  saveGateBase,
+} from './tasks/liveGateTask.ts';
+import {
   JWT_TTL_MS,
   authStatus,
   clearAuth,
@@ -189,6 +196,8 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
           baseUrl: loadBaseUrl(deps.store) || '(真上游)',
           liveUrl: loadLiveUrl(deps.store),
           liveUrlDefault: XIAOHONGSHU_KOULING_PROFILE_URL,
+          // 门的两个主机（user-njs / v.cmcc-cs.cn）—— 一个口子，见 liveGateTask.loadGateBase
+          gateBase: loadGateBase(deps.store) || '(真主机)',
         }),
     },
     {
@@ -224,8 +233,18 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
           out.liveUrl = v || XIAOHONGSHU_KOULING_PROFILE_URL;
         }
 
+        if ('gateBase' in body) {
+          const v = typeof body.gateBase === 'string' ? body.gateBase.trim() : '';
+          if (v && !/^https?:\/\//.test(v)) {
+            return json(400, { error: 'gateBase 要以 http:// 或 https:// 开头（清空 = 用真主机）' });
+          }
+          saveGateBase(deps.store, v, deps.now());
+          deps.log(v ? `直播日程的上游已改为 ${v}` : '直播日程的上游已恢复为真主机');
+          out.gateBase = v || '(真主机)';
+        }
+
         if (Object.keys(out).length === 0) {
-          return json(400, { error: '要传 baseUrl 或 liveUrl（清空就传空串）' });
+          return json(400, { error: '要传 baseUrl / liveUrl / gateBase（清空就传空串）' });
         }
         return json(200, out);
       },
@@ -272,6 +291,8 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
           // 口令池（业务档，照 mcloud）：**口令的权威来源**（读数只是最近一次抓取的快照）。
           // 界面要能看见「够没够 2 条有效」「还要等多久才能再抓」「哪些判过无效」。
           pool: readPoolSummary(deps.store, localStamp(Date.parse(deps.now())), Date.parse(deps.now())),
+          // 直播日程（门）：只读探针的读数 —— 门开没开、看到几间房、「下一场」在 pool 里
+          gate: readGateReading(deps.store),
           note:
             '口令本身**没法自动化**（主播在弹幕/小红书发，那边无法鉴权）⇒ 要人给；' +
             '能自动的只有「抓主页 + 列出看到的口令」。',
@@ -447,6 +468,28 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
           note: out.note,
           done: state?.step === 'done' || out.idle === true,
           state,
+        });
+      },
+    },
+    {
+      // 直播日程（门）：**推进一步**（handshake 步两发 / rooms 步两发，见 liveGateTask.ts）。
+      // 与 `live/draw/step` 同一个形状：界面上的按钮是浏览器循环调这里直到 `done`。
+      path: `${base}/live/gate/step`,
+      method: 'POST',
+      handler: () => {
+        const out = runLiveGate({
+          store: deps.store,
+          transport: deps.transport,
+          nowIso: deps.now(),
+        });
+        const st = loadGateState(deps.store);
+        return json(200, {
+          ok: out.ok,
+          note: out.note,
+          done: st?.step === 'done' || out.idle === true,
+          step: st?.step ?? 'handshake',
+          reading: readGateReading(deps.store),
+          pool: readPoolSummary(deps.store, localStamp(Date.parse(deps.now())), Date.parse(deps.now())),
         });
       },
     },

@@ -160,9 +160,15 @@ export function h5Headers(
 
 // ── 三个请求构造器 ──────────────────────────────────────────────────────
 
-/** ① `POST /user/querySpecTokenV2` —— 原生族，靠 `Authorization` 鉴权、**无签名**。 */
+/** ① `POST /user/querySpecTokenV2` —— 原生族，靠 `Authorization` 鉴权、**无签名**。
+ *
+ *  ⚠ 参数只收 `toSourceId`（**不是**整份配方）：这个构造器只用到它那一格，
+ *  而调用方不止一个 —— 签到族的配方是 `001005`，**直播侧**的是 `017027`
+ *  （mcloud 的 `live_gate_spec_token_request` 与这个函数逐字节相同，只差这一格）。
+ *  要求传整份配方会逼着调用方编一堆用不上的字段（`marketName` / `portalPage`…），
+ *  而那些字段**一旦被编出来就会有人以为它们有用**。 */
 export function specTokenRequest(
-  params: RecipeParams,
+  params: Pick<RecipeParams, 'toSourceId'>,
   authorization: string,
   base?: string | undefined,
 ): { url: string; method: 'POST'; headers: Record<string, string>; body: string } {

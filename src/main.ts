@@ -34,6 +34,7 @@ import { runAppTaskMatrix } from './mcloud/tasks/appTaskMatrix.ts';
 import { runAppTaskStep, startAppTask } from './mcloud/tasks/appTask.ts';
 import { runExchangeList } from './mcloud/tasks/exchangeList.ts';
 import { runLiveRoom } from './mcloud/tasks/liveRoom.ts';
+import { runLiveGate } from './mcloud/tasks/liveGateTask.ts';
 import { runLiveDraw } from './mcloud/tasks/liveDraw.ts';
 import { needExchange, runExchangeStep } from './mcloud/sessionExchange.ts';
 import { runReceive } from './mcloud/tasks/receive.ts';
@@ -298,6 +299,18 @@ register_cron('exchange-list', SIGNIN_CRON, makeRunner('兑换清单（只看）
 // 节奏：直播多在晚上，但口令笔记白天也可能发 ⇒ 白天每 30 分钟抓一次。
 // 一次只发一个请求（面板执行预算 2000ms，见 liveRoom.ts 文件头）。
 register_cron('live-room', '*/30 7-23 * * *', makeRunner('直播口令（只看）', runLiveRoom));
+
+// 直播日程（**门**）：只读地问上游「今天开播了吗 / 下一场几点」。
+//
+// 为什么值得单独一条任务：口令只在**开播那一小时**有效，而人要知道的是
+// 「今天几点开」—— 那是**预告场**给的，不需要开播也能读到（门的第③步是 GET）。
+//
+// 节奏 10 分钟，与池里那条「门关 + 10 分钟宽限才封场」的宽限**同一个量级**：
+// 门是按分钟抖动的，探测比宽限还稀会让"封场"判得比实际晚一截。
+//
+// 一次调用**最多两发**（handshake 步 ①② / rooms 步 ③③）——
+// 为什么不能拆得更细见 liveGateTask.ts 文件头（SSO token 只活几分钟）。
+register_cron('live-gate', '*/10 7-23 * * *', makeRunner('直播日程（门）', runLiveGate));
 
 // 领小红花（**写那半**）：六步链 9+N 个请求，一次调用只推进一步（面板预算 2000ms）。
 //

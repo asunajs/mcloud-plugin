@@ -64,6 +64,12 @@
         <button id="live-url-save" class="btn">保存</button>
       </div>
       <p class="hint" id="live-url-hint"></p>
+      <div class="row">
+        <label class="label">直播主机</label>
+        <input id="gate-base" class="input" placeholder="留空 = 用真主机（user-njs / v.cmcc-cs.cn）">
+        <button id="gate-base-save" class="btn">保存</button>
+      </div>
+      <p class="hint" id="gate-base-hint"></p>
     </section>
 
     <!-- 只读任务采集来的读数：界面要能看见，否则"只读"就只是日志里的一行数 -->
@@ -99,6 +105,13 @@
         <span class="card-sub" id="live-sub"></span>
       </div>
       <p class="why" id="live-note"></p>
+
+      <div class="row">
+        <label class="label">直播日程（门）</label>
+        <button id="live-gate" class="btn">现在探一次</button>
+      </div>
+      <p class="hint" id="live-gate-hint"></p>
+      <div id="live-gate-rooms"></div>
 
       <div class="row">
         <label class="label">抓到的口令</label>
