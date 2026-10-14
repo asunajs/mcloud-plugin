@@ -383,13 +383,13 @@ PY
 echo "⑥ H5 换票：原生凭据 → 三步 → jwttoken"
 curl -fsS -o /dev/null "${W[@]}" -X POST -H 'content-type: application/json' \
   -d '{"authorization":"Basic bW9iaWxlOjEzODAwMDAwMDAwOnRva2Vu"}' "$B/plugins/mcloud/api/h5/auth"
-for i in 1 2 3 4; do
+for i in 1 2 3 4 5; do
   curl -fsS "${W[@]}" -X POST "$B/plugins/mcloud/api/h5/step" -o "$TMP/h5.json"
   if python3 -c "import json,sys; sys.exit(0 if json.load(open('$TMP/h5.json'))['done'] else 1)"; then
     printf '   换完（第 %s 步）\n' "$i"
     break
   fi
-  if [ "$i" = 4 ]; then echo "❌ 4 步还没换完" >&2; cat "$TMP/h5.json" >&2; exit 1; fi
+  if [ "$i" = 5 ]; then echo "❌ 5 步还没换完" >&2; cat "$TMP/h5.json" >&2; exit 1; fi
 done
 curl -fsS "${H[@]}" "$B/plugins/mcloud/api/h5" -o "$TMP/h5status.json"
 curl -fsS "http://127.0.0.1:$MOCK_PORT/_debug/requests" -o "$TMP/mock.json"
@@ -400,13 +400,15 @@ status = json.load(open(sys.argv[1]))
 reqs = json.load(open(sys.argv[2]))
 final = json.load(open(sys.argv[3]))
 
+# ⚠ 过滤器必须把**第 4 步（smid 上报）**算进来 —— 漏了它，`h5` 就只有 3 条，
+# 而断言会以"顺序不对"的面目出现（其实请求是发全了的）
 h5 = [r for r in reqs if 'querySpecTokenV2' in r['path'] or 'api/timestamp' in r['path']
-      or 'tyrzLogin' in r['path']]
+      or 'tyrzLogin' in r['path'] or 'deviceprofile' in r['path']]
 # 三步的顺序是**固定的**，而且是这条链的全部意义（拆开调就是"每个接口都报未登录"）
 seq = [r['path'].split('?')[0] for r in h5]
 assert seq == ['/user/querySpecTokenV2', '/ycloud/api/timestamp',
-               '/ycloud/auth-service/auth/tyrzLogin'], seq
-spec, ts, login = h5
+               '/ycloud/auth-service/auth/tyrzLogin', '/deviceprofile/v4'], seq
+spec, ts, login, smid = h5
 
 # ① 原生族：Authorization **逐字**用（多加一次 `Basic ` 会得到 `Basic Basic …`，
 #    而上游回的是「非法的token！」—— 听起来像凭据过期，会把人带去查有效期）
@@ -451,5 +453,20 @@ assert status['jwt']['mobile'] == '138****0000', status['jwt']['mobile']
 assert 'bW9iaWxl' not in json.dumps(status), '凭据不该出现在响应里'
 assert status['auth']['fingerprint'] and len(status['auth']['fingerprint']) == 16, status['auth']
 assert final['done'] is True, final
-print('   ✅ H5 换票：三步顺序固定、签名自洽、x-timestamp 用服务端的、凭据不回显')
+# ④ smid 风控上报（换 deviceId）—— **另一台主机、另一套码**
+assert smid['headers'].get('user-agent', '').startswith('Mozilla/5.0 (Linux; Android 14'), smid['headers']
+assert smid['headers'].get('origin') == 'https://m.mcloud.139.com', smid['headers']
+smid_body = json.loads(smid['body'])
+assert sorted(smid_body) == ['appId', 'compress', 'data', 'encode', 'ep', 'organization', 'os'], smid_body
+assert smid_body['encode'] == 5 and smid_body['compress'] == 2, smid_body
+assert smid_body['os'] == 'web' and smid_body['appId'] == 'default', smid_body
+# `data` 是 **hex**（AES 那条路），`ep` 是 base64（RSA 那条路）—— 两条路别混
+assert all(c in '0123456789abcdef' for c in smid_body['data']), 'data 该是 hex'
+assert len(smid_body['data']) % 32 == 0, 'AES-CBC+PKCS7 ⇒ 16 字节对齐'
+# ⚠ 换到的 deviceId 要落进会话（领取类接口靠它；没有它回 615 而文案说"活动太火爆"）。
+# `/api/h5` 不回显凭据，所以这里断在**换票结果那句话**上，而不是断在会话原文上。
+assert 'deviceId' in (status['exchange'].get('note') or ''), status['exchange']
+assert status['exchange']['step'] == 'done', status['exchange']
+assert status['exchange']['ok'] is True, status['exchange']
+print('   ✅ H5 换票：四步顺序固定（含 smid）、签名自洽、x-timestamp 用服务端的、凭据不回显')
 H5PY

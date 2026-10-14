@@ -191,6 +191,11 @@ export async function startMock(options = {}) {
       if (url.pathname === '/ycloud/api/timestamp') {
         return json(res, 200, { code: 0, msg: 'success', result: 1700000000000 });
       }
+      // ④ smid 风控上报 —— **另一台主机、另一套码**（数字 1100，不是字符串 "0000"）。
+      // 没有它，换票链的第 4 步会去真的打第三方域（见 smid.ts 的 base 覆盖那条注释）
+      if (url.pathname === '/deviceprofile/v4') {
+        return json(res, 200, { code: 1100, detail: { deviceId: 'MOCKDEV' } });
+      }
       if (url.pathname === '/ycloud/auth-service/auth/tyrzLogin') {
         return json(res, 200, {
           code: 0,

@@ -180,7 +180,13 @@ export function runExchangeStep(deps: TaskDeps): { ok: boolean; note: string; do
   // ④ 换 `deviceId`（smid 风控上报）—— 只发一枪，结果写进会话
   if (st.step === 'smid') {
     const fp = ensureFingerprint(deps.store, deps.nowIso);
-    const req = smidUploadRequest(fp, deps.store.getState(STATE_DEVICE_ID) ?? '', new Date(deps.nowIso));
+    const req = smidUploadRequest(
+      fp,
+      deps.store.getState(STATE_DEVICE_ID) ?? '',
+      new Date(deps.nowIso),
+      Math.random,
+      deps.baseUrl,
+    );
     const res = callRawText(deps.transport, req);
     if (!res.ok) return failStep(deps, st, `④ 换 deviceId 失败：${res.error ?? '未知失败'}`);
     const got = parseDeviceId(res.text);
