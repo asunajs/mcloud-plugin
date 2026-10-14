@@ -1,23 +1,41 @@
-// 由 src/**/*.ts 打包生成 —— **不要手改这个文件**。
+// 由 src/entries/mcloud.ts 打包生成 —— **不要手改这个文件**。
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.0.0
+//   mcloud-plugin 0.0.0 · 插件 `mcloud`
 
-// src/main.ts
+// src/entries/mcloud.ts
 import {
   error,
-  every,
-  http_fetch,
   log,
-  register_cron,
-  register_route,
-  warn,
-  ws_close,
-  ws_open,
-  ws_recv,
-  ws_send
+  register_nav,
+  register_route
 } from "host-api";
+
+// src/store/types.ts
+var SESSION_KEY = "mcloud.session";
+function loadSession(store2) {
+  const raw = store2.getState(SESSION_KEY);
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw);
+    const cookie = typeof v.cookie === "string" ? v.cookie : "";
+    const jwt = typeof v.jwt === "string" ? v.jwt : "";
+    if (cookie === "" && jwt === "") return null;
+    return {
+      cookie,
+      jwt: jwt === "" ? void 0 : jwt,
+      deviceId: typeof v.deviceId === "string" ? v.deviceId : void 0,
+      userAgent: typeof v.userAgent === "string" ? v.userAgent : void 0,
+      savedAt: typeof v.savedAt === "string" ? v.savedAt : ""
+    };
+  } catch {
+    return null;
+  }
+}
+function saveSession(store2, s, nowIso) {
+  store2.setState(SESSION_KEY, JSON.stringify({ ...s, savedAt: nowIso }), nowIso);
+}
 
 // src/mcloud/envelope.ts
 var isRecord = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -46,9 +64,6 @@ function parseSignInEnvelope(body) {
     ok: code === 0
   };
 }
-function resultArray(env) {
-  return Array.isArray(env.result) ? env.result : [];
-}
 function resultObject(env) {
   return isRecord(env.result) ? env.result : {};
 }
@@ -68,7 +83,6 @@ function hostFetchOptions(req, timeoutMs) {
   if (req.tls !== void 0 && req.url.startsWith("https:")) opts.tls = req.tls;
   return opts;
 }
-var SLOW_CALL_MS = 1500;
 function callOnce(transport2, req) {
   const t0 = Date.now();
   const fail = (error3) => ({
@@ -176,24 +190,6 @@ function extractSetCookies(headers) {
     }
   }
   return out;
-}
-function mergeCookieJar(existing, incoming) {
-  const jar = /* @__PURE__ */ new Map();
-  const eat = (s) => {
-    for (const part of s.split(";")) {
-      const p = part.trim();
-      if (!p) continue;
-      const eq = p.indexOf("=");
-      if (eq <= 0) continue;
-      const k = p.slice(0, eq).trim();
-      const v = p.slice(eq + 1).trim();
-      if (v === "" || /^(deleted|expired)$/i.test(v)) jar.delete(k);
-      else jar.set(k, v);
-    }
-  };
-  eat(existing);
-  for (const c of incoming) eat(c);
-  return [...jar.entries()].map(([k, v]) => `${k}=${v}`).join("; ");
 }
 
 // src/crypto/bytes.ts
@@ -641,119 +637,6 @@ function anyBytes(d) {
   return typeof d === "string" ? utf8(d) : d;
 }
 
-// src/store/host.ts
-import { sqlite_exec, sqlite_query } from "host-api";
-function hostStore() {
-  let schemaReady = false;
-  return {
-    ensureSchema: () => {
-      if (schemaReady) return;
-      sqlite_exec(
-        `CREATE TABLE IF NOT EXISTS runs (
-           id           INTEGER PRIMARY KEY AUTOINCREMENT,
-           task         TEXT    NOT NULL,
-           runs         INTEGER NOT NULL,
-           scheduled_at TEXT    NOT NULL,
-           fired_at     TEXT    NOT NULL,
-           late_ms      INTEGER NOT NULL,
-           ok           INTEGER NOT NULL,
-           note         TEXT
-         )`
-      );
-      sqlite_exec(`CREATE INDEX IF NOT EXISTS idx_runs_task_fired ON runs (task, fired_at)`);
-      sqlite_exec(
-        `CREATE TABLE IF NOT EXISTS state (
-           key   TEXT PRIMARY KEY,
-           value TEXT NOT NULL,
-           updated_at TEXT NOT NULL
-         )`
-      );
-      schemaReady = true;
-    },
-    getState: (key) => {
-      const rows = sqlite_query(`SELECT value FROM state WHERE key = ?1`, [key]);
-      const row = rows[0];
-      return row ? String(row.value) : null;
-    },
-    setState: (key, value, nowIso) => {
-      sqlite_exec(
-        `INSERT INTO state (key, value, updated_at) VALUES (?1, ?2, ?3)
-         ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = ?3`,
-        [key, value, nowIso]
-      );
-    },
-    recordRun: (r) => {
-      const res = sqlite_exec(
-        `INSERT INTO runs (task, runs, scheduled_at, fired_at, late_ms, ok, note)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`,
-        [r.task, r.runs, r.scheduledAt, r.firedAt, Math.round(r.lateMs), r.ok ? 1 : 0, r.note ?? null]
-      );
-      return res.lastInsertRowid;
-    },
-    // 分位数在 SQL 里算，不把行拉回来算：`sqlite_query` 一次最多返回 1000 行，
-    // 跑到几万次触发之后「拉回来再算」会静默丢数据 —— 那种错很难发现（数字看着还合理）。
-    // 另外两点和内存实现必须同口径：**排除负延迟**（F-001）、**按值排序取分位**（不是按 id）。
-    lateStats: (task, lastN = 500) => {
-      const agg = sqlite_query(
-        `SELECT COUNT(*) AS n, MAX(late_ms) AS mx FROM (
-           SELECT late_ms FROM runs WHERE task = ?1 AND late_ms >= 0 ORDER BY id DESC LIMIT ?2
-         )`,
-        [task, lastN]
-      );
-      const n = Number(agg[0]?.n ?? 0);
-      const neg = sqlite_query(
-        `SELECT COUNT(*) AS c FROM (
-           SELECT late_ms FROM runs WHERE task = ?1 ORDER BY id DESC LIMIT ?2
-         ) WHERE late_ms < 0`,
-        [task, lastN]
-      );
-      const pick2 = (q) => {
-        if (n === 0) return 0;
-        const offset = Math.min(n - 1, Math.max(0, Math.ceil(n * q) - 1));
-        const rows = sqlite_query(
-          `SELECT late_ms AS v FROM (
-             SELECT late_ms FROM runs WHERE task = ?1 AND late_ms >= 0 ORDER BY id DESC LIMIT ?2
-           ) ORDER BY late_ms ASC LIMIT 1 OFFSET ?3`,
-          [task, lastN, offset]
-        );
-        const v = rows[0]?.v;
-        return v === void 0 || v === null ? 0 : Number(v);
-      };
-      return {
-        task,
-        n,
-        lateP50: pick2(0.5),
-        lateP99: pick2(0.99),
-        lateMax: Number(agg[0]?.mx ?? 0),
-        excluded: Number(neg[0]?.c ?? 0)
-      };
-    },
-    recentRuns: (limit = 20) => sqlite_query(
-      `SELECT task, runs, fired_at, late_ms, ok, note FROM runs ORDER BY id DESC LIMIT ?1`,
-      [Math.min(limit, 1e3)]
-    )
-  };
-}
-
-// src/mcloud/caps.ts
-function sandboxCaps() {
-  const g = globalThis;
-  let applyOk = "ok";
-  try {
-    String.fromCharCode.apply(null, new Array(1e5).fill(65));
-  } catch (e) {
-    applyOk = e instanceof Error ? `抛(${e.constructor.name})` : "抛";
-  }
-  return [
-    `BigInt=${typeof g.BigInt}`,
-    `DataView=${typeof g.DataView}`,
-    `10万字符apply=${applyOk}`
-  ].join(" ");
-}
-function hasBigInt() {
-  return typeof globalThis.BigInt === "function";
-}
-
 // src/mcloud/sign.ts
 var SALT_MAP = [
   [1, "seedMdYYLIZfbCxg"],
@@ -809,7 +692,6 @@ function nonce() {
 // src/mcloud/h5.ts
 var MARKET_NAME = "sign_in_3";
 var H5_APP_VERSION = "12.6.0.0";
-var TASK_CLIENT_VERSION = "12.6.0";
 function buildH5Request(spec) {
   const ts = spec.signInputs?.timestampMs ?? String(Date.now());
   const sign = signHeadersWith(
@@ -911,38 +793,9 @@ var EP_METHOD = {
   // 这一族用 POST，body `{"type":2}`
 };
 var CLIENT_QUERY = "client=app";
-function taskListV3Body(market = MARKET_NAME) {
-  return JSON.stringify({ marketname: market, clientVersion: TASK_CLIENT_VERSION, group: "" });
-}
-var TASK_LIST_V3_CONTENT_TYPE = "application/json;charset=UTF-8";
 function rootOrDefault(base, fallback) {
   const t = (base ?? "").trim();
   return t === "" ? fallback : t.replace(/\/+$/, "");
-}
-
-// src/store/types.ts
-var SESSION_KEY = "mcloud.session";
-function loadSession(store2) {
-  const raw = store2.getState(SESSION_KEY);
-  if (!raw) return null;
-  try {
-    const v = JSON.parse(raw);
-    const cookie = typeof v.cookie === "string" ? v.cookie : "";
-    const jwt = typeof v.jwt === "string" ? v.jwt : "";
-    if (cookie === "" && jwt === "") return null;
-    return {
-      cookie,
-      jwt: jwt === "" ? void 0 : jwt,
-      deviceId: typeof v.deviceId === "string" ? v.deviceId : void 0,
-      userAgent: typeof v.userAgent === "string" ? v.userAgent : void 0,
-      savedAt: typeof v.savedAt === "string" ? v.savedAt : ""
-    };
-  } catch {
-    return null;
-  }
-}
-function saveSession(store2, s, nowIso) {
-  store2.setState(SESSION_KEY, JSON.stringify({ ...s, savedAt: nowIso }), nowIso);
 }
 
 // src/mcloud/tasks/base.ts
@@ -956,67 +809,158 @@ function clearError(store2, task, nowIso) {
 function sessionHeaders(s) {
   return { jwt: s.jwt, deviceId: s.deviceId, userAgent: s.userAgent, cookie: s.cookie };
 }
-function runTask(deps, spec, judge2) {
-  const late = deps.lateMs ?? 0;
-  if (spec.skipIfLaterThanMs !== void 0 && late > spec.skipIfLaterThanMs) {
-    const mins = Math.round(late / 6e4);
-    const note2 = `错过太久（晚了 ${mins} 分钟，阈值 ${Math.round(spec.skipIfLaterThanMs / 6e4)} 分钟）→ 主动跳过`;
-    recordError(deps.store, spec.task, note2, deps.nowIso);
-    return { ok: true, skipped: true, note: note2 };
+
+// src/mcloud/session.ts
+function parseSessionInput(raw, nowIso) {
+  const text = raw.trim();
+  if (text === "") return { ok: false, reason: "内容是空的" };
+  if (!text.startsWith("{")) {
+    if (!text.includes("=")) return { ok: false, reason: "既不是 JSON，也不像 cookie 串" };
+    return { ok: true, session: { cookie: normalizeCookie(text), savedAt: nowIso } };
   }
-  const session = loadSession(deps.store);
-  if (!session) {
-    const note2 = "未登录：state 里没有会话（见 docs/howto-session.md）";
-    recordError(deps.store, spec.task, note2, deps.nowIso);
-    return { ok: false, note: note2 };
+  let v;
+  try {
+    v = JSON.parse(text);
+  } catch (e) {
+    return { ok: false, reason: `不是合法 JSON：${e instanceof Error ? e.message : String(e)}` };
   }
-  const method = spec.method ?? EP_METHOD[spec.endpoint] ?? "GET";
-  const url = resolveUrl(spec.endpoint, deps.baseUrl) + (spec.query ? `?${spec.query}` : "");
+  if (typeof v !== "object" || v === null || Array.isArray(v)) {
+    return { ok: false, reason: "JSON 顶层要是对象" };
+  }
+  const o = v;
+  const inner = typeof o.session === "string" ? (() => {
+    try {
+      return JSON.parse(o.session);
+    } catch {
+      return o.session;
+    }
+  })() : o.session ?? o;
+  if (typeof inner === "string") return parseSessionInput(inner, nowIso);
+  if (typeof inner !== "object" || inner === null) {
+    return { ok: false, reason: "session 字段既不是对象也不是字符串" };
+  }
+  const s = inner;
+  const pick2 = (k) => {
+    const x = s[k];
+    if (typeof x !== "string" || x.trim() === "") return void 0;
+    return x.trim();
+  };
+  let cookie = pick2("cookie") ?? pick2("cookies") ?? "";
+  if (!cookie && Array.isArray(s.cookies)) {
+    cookie = s.cookies.filter((c) => typeof c === "string").map((c) => c.trim()).filter((c) => c.includes("=")).join("; ");
+  }
+  if (!cookie && Array.isArray(s.cookie)) {
+    cookie = s.cookie.filter((c) => typeof c === "string").join("; ");
+  }
+  if (!cookie) {
+    return { ok: false, reason: "没有 cookie —— 云盘账号的凭据就在 cookie 和 jwt 里，这两样至少要有 cookie" };
+  }
+  return {
+    ok: true,
+    session: {
+      cookie: normalizeCookie(cookie),
+      jwt: pick2("jwt") ?? pick2("jwttoken") ?? pick2("JWT_TOKEN"),
+      deviceId: pick2("deviceId") ?? pick2("deviceid"),
+      userAgent: pick2("userAgent") ?? pick2("user-agent"),
+      savedAt: nowIso
+    }
+  };
+}
+function normalizeCookie(raw) {
+  const parts = [];
+  for (const seg of raw.split(";")) {
+    const p = seg.trim();
+    if (!p || !p.includes("=")) continue;
+    const name = p.slice(0, p.indexOf("=")).trim();
+    if (/^(path|domain|expires|max-age|samesite|secure|httponly)$/i.test(name)) continue;
+    parts.push(p);
+  }
+  return parts.join("; ");
+}
+function redact(secret) {
+  if (!secret) return "（无）";
+  if (secret.length <= 8) return `（${secret.length} 字符，太短不显示）`;
+  return `${secret.slice(0, 4)}…（共 ${secret.length} 字符）`;
+}
+var STATE_LAST_CHECK = "mcloud.session.last_check";
+function sessionStatus(store2, nowIso) {
+  const s = loadSession(store2);
+  const checkRaw = store2.getState(STATE_LAST_CHECK);
+  let lastCheck = "";
+  let lastCheckOk = null;
+  let lastCheckNote = "";
+  if (checkRaw) {
+    try {
+      const c = JSON.parse(checkRaw);
+      lastCheck = c.at ?? "";
+      lastCheckOk = typeof c.ok === "boolean" ? c.ok : null;
+      lastCheckNote = c.note ?? "";
+    } catch {
+      lastCheckNote = "（检查记录坏了）";
+    }
+  }
+  let ageHours = null;
+  if (s?.savedAt) {
+    const t = Date.parse(s.savedAt);
+    const n = Date.parse(nowIso);
+    if (!Number.isNaN(t) && !Number.isNaN(n)) {
+      ageHours = Math.round((n - t) / 36e5 * 10) / 10;
+    }
+  }
+  return {
+    present: !!s,
+    savedAt: s?.savedAt ?? "",
+    ageHours,
+    cookie: redact(s?.cookie),
+    jwt: redact(s?.jwt),
+    deviceId: s?.deviceId ?? "",
+    userAgent: s?.userAgent ?? "",
+    lastCheck,
+    lastCheckOk,
+    lastCheckNote
+  };
+}
+function verifySession(deps) {
+  const s = loadSession(deps.store);
+  if (!s) {
+    const note3 = "没有会话";
+    deps.store.setState(STATE_LAST_CHECK, JSON.stringify({ at: deps.nowIso, ok: false, note: note3 }), deps.nowIso);
+    return { ok: false, note: note3 };
+  }
   const req = buildH5Request({
-    url,
-    method,
-    body: spec.body,
-    contentType: spec.contentType,
+    url: `${resolveUrl("infoV3", deps.baseUrl)}?${CLIENT_QUERY}`,
+    method: EP_METHOD.infoV3 === "GET" ? "GET" : "POST",
     referer: REFERER_SIGN_IN,
     showLoading: SHOW_LOADING,
-    isDeviceId: spec.isDeviceId ?? method === "POST",
+    isDeviceId: !!s.deviceId,
     saltKey: 1,
-    marketName: spec.marketName,
-    session: sessionHeaders(session)
+    session: sessionHeaders(s)
   });
   const res = callOnce(deps.transport, req);
-  if (res.setCookies.length > 0) {
-    saveSession(
-      deps.store,
-      { ...session, cookie: mergeCookieJar(session.cookie, res.setCookies) },
-      deps.nowIso
-    );
-  }
-  if (!res.ok) {
-    const explained = spec.explainFail?.(res.env, res.error ?? "");
-    if (explained !== void 0) {
-      recordError(deps.store, spec.task, explained, deps.nowIso);
-      return { ok: false, note: explained };
-    }
-    const note2 = res.error ?? "未知失败";
-    if (spec.okWhenError?.(note2)) {
-      clearError(deps.store, spec.task, deps.nowIso);
-      return { ok: true, note: `上游说「${note2}」—— 按"已经完成"处理（见 okWhenError）` };
-    }
-    recordError(deps.store, spec.task, note2, deps.nowIso);
-    return { ok: false, note: note2 };
-  }
-  const verdict = judge2(res.env, res);
-  if (verdict.snapshot !== void 0 && spec.stateKey) {
-    deps.store.setState(
-      spec.stateKey,
-      JSON.stringify({ at: deps.nowIso, lateMs: late, value: verdict.snapshot }),
-      deps.nowIso
-    );
-  }
-  if (verdict.ok) clearError(deps.store, spec.task, deps.nowIso);
-  else recordError(deps.store, spec.task, verdict.note, deps.nowIso);
-  return { ok: verdict.ok, note: verdict.note };
+  const ok = res.ok;
+  const note2 = ok ? `会话有效（${res.tookMs}ms）` : `会话可能已失效：${res.error ?? "未知失败"}`;
+  deps.store.setState(
+    STATE_LAST_CHECK,
+    JSON.stringify({ at: deps.nowIso, ok, note: note2 }),
+    deps.nowIso
+  );
+  return { ok, note: note2 };
+}
+function importSession(store2, s, nowIso) {
+  saveSession(store2, s, nowIso);
+  store2.setState(
+    STATE_LAST_CHECK,
+    JSON.stringify({ at: nowIso, ok: null, note: "刚导入，还没验" }),
+    nowIso
+  );
+}
+var STATE_BASE_URL = "mcloud.base_url";
+function loadBaseUrl(store2) {
+  const v = store2.getState(STATE_BASE_URL);
+  if (!v) return "";
+  const t = v.trim();
+  if (!/^https?:\/\//.test(t)) return "";
+  return t.replace(/\/+$/, "");
 }
 
 // src/mcloud/tasks/taskList.ts
@@ -1034,368 +978,233 @@ var TASK_NAMES = [
   "cloud-snapshot"
 ];
 var STATE_LAST_TASKLIST = "mcloud.tasklist.last";
-function isFinished(t) {
-  if (typeof t !== "object" || t === null) return false;
-  const state = t.state;
-  return typeof state === "string" && state.toUpperCase() === "FINISH";
-}
-function runTaskList(deps) {
-  return runTask(
-    deps,
-    {
-      task: "task-list",
-      endpoint: "taskListV3",
-      method: "POST",
-      body: taskListV3Body(),
-      contentType: TASK_LIST_V3_CONTENT_TYPE,
-      isDeviceId: false,
-      stateKey: STATE_LAST_TASKLIST
-    },
-    (env) => {
-      const list = resultArray(env);
-      const done = list.filter(isFinished).length;
-      return {
-        ok: true,
-        note: `清单 ${list.length} 条，已完成 ${done} 条`,
-        snapshot: { total: list.length, done, items: list }
-      };
-    }
-  );
-}
 
-// src/mcloud/tasks/prizes.ts
-var STATE_PRIZES = "mcloud.prizes.last";
-var PRIZE_QUERY = {
-  status: 1,
-  pageNumber: 1,
-  pageSize: 10
-};
-function prizeQuery(market) {
-  return `marketname=${encodeURIComponent(market)}&type=${PRIZE_QUERY.status}&pageNumber=${PRIZE_QUERY.pageNumber}&pageSize=${PRIZE_QUERY.pageSize}`;
-}
-function runPrizes(deps, market = "sign_in_3") {
-  return runTask(
-    deps,
-    {
-      task: "prizes",
-      endpoint: "prizeRecord",
-      method: "GET",
-      query: prizeQuery(market),
-      isDeviceId: false,
-      stateKey: STATE_PRIZES
-    },
-    (env) => {
-      const list = resultArray(env);
-      const items = list.map((x) => {
-        const o = typeof x === "object" && x !== null ? x : {};
-        return {
-          id: typeof o.id === "number" ? o.id : void 0,
-          name: typeof o.name === "string" ? o.name : void 0,
-          state: typeof o.state === "string" ? o.state : void 0
-        };
+// src/mcloud/groups.ts
+var GROUPS = [
+  {
+    id: "plugin",
+    title: "插件自身",
+    why: "不是云盘的事，是这个插件自己的健康检查与自检",
+    order: 0
+  },
+  {
+    id: "signin",
+    title: "签到族",
+    why: "无害且幂等：重复只会回「今日已签到」。可以放心点、可以补跑",
+    order: 1
+  },
+  { id: "daily", title: "通知与趣玩", why: "记账类，幂等，漏了可以补", order: 2 },
+  { id: "query", title: "查询与快照", why: "只读，点多少次都无所谓", order: 3 },
+  {
+    id: "activity",
+    title: "活动与站票",
+    why: "要**另一套凭据**（活动会话票，与 jwt 无关）—— 那份票不在，点了必然失败",
+    order: 4
+  },
+  {
+    id: "cloud-write",
+    title: "要用网盘",
+    // ⚠ 措辞改过（2026-10-14）：原先写的是"会往你的网盘里写文件……想清楚再点"，
+    //    把**任务的目的**说成了风险。可任务的定义就是改上游状态 ——
+    //    "上传任务不上传文件"根本不是完成任务，"做任务"不落到上游那也不叫做过。
+    //    写文件不是副作用，**它就是这一组任务本身**。要提醒的只是"它会占用你的网盘"。
+    why: "这一组任务**本身就是往网盘写**（上传文件 / 建外链 / 发邮件）—— 不是副作用，是它的内容。会在你的网盘里留下东西",
+    order: 5
+  },
+  {
+    id: "risky",
+    title: "要花豆",
+    // ⚠ 措辞改过（2026-10-14）：原先写的是"真扣 AI豆、不可回滚"，把**扣豆讲成了损失**。
+    //    扣豆是**成交的标志** —— 扣了就是拿到奖品了，那正是用户要的结果。
+    //    真正不可回滚的是**选择**（花掉豆换到的是不是你想要的那一件）；
+    //    而"花了豆什么也没拿到"这一族里不会发生：不成交就不扣豆。
+    why: "会花掉 AI豆去换东西。扣豆即成交（拿到了才算），不可回滚的是**选择**本身 —— 花之前先看清是哪一件",
+    order: 6
+  }
+];
+var TASK_META = [
+  // ── 插件自身 ──
+  { name: "selftest", title: "沙箱自检", group: "plugin", kind: "Query", risk: "none", missed: "catch-up", deps: [], batch: false, hidden: false, implemented: true, note: "密码学/UTF-8/base64/SQLite 都跑一遍" },
+  { name: "diag", title: "调度健康", group: "plugin", kind: "Query", risk: "none", missed: "catch-up", deps: [], batch: false, hidden: false, implemented: true, note: "记录每次触发的调度延迟（面板 F-001 的那条测量）" },
+  { name: "session-check", title: "会话体检", group: "plugin", kind: "Query", risk: "none", missed: "catch-up", deps: [], batch: false, hidden: false, implemented: true, note: "每天 7:50 先问一次上游还认不认这份凭据" },
+  // H5 换票（三步）：原生凭据 → `jwttoken`。**这是插件能不能用的前提** ——
+  // 之前只能靠人手从浏览器抄票，而票 2 小时即废（过期时所有任务一起回 90001，
+  // 看起来像"账号被踢了"）。现在自己换、自己续，鉴权细节见 mcloud/h5session.ts。
+  { name: "session-refresh", title: "会话续期（H5 换票）", group: "plugin", kind: "Action", risk: "none", missed: "catch-up", deps: [], batch: false, hidden: false, implemented: true, evidence: "captured", note: "原生凭据 → 三步换 jwttoken，约 2 小时自动续；票新鲜时**一个请求都不发**" },
+  // ── 签到族（8 条，全实现）──
+  { name: "sign", title: "每日签到", group: "signin", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["jwt"], batch: true, hidden: false, implemented: true, evidence: "captured", note: "三段式：问状态 → 提交 → 回查（判据是回查）" },
+  { name: "receive", title: "领取AI豆", group: "signin", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["jwt"], batch: true, hidden: false, implemented: true, evidence: "captured", note: "逐条独立；延期领取走另一口端点" },
+  { name: "multiple", title: "签到翻倍", group: "signin", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["jwt"], batch: true, hidden: false, implemented: true, evidence: "captured", note: "每月一次机会 —— 门槛由插件自己判，条件不成立时一个字节都不发" },
+  { name: "backup-gift", title: "备份好礼", group: "signin", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["jwt"], batch: true, hidden: false, implemented: true, evidence: "captured", note: "**GET 却是写**；两步：先问能不能领，能领才领" },
+  { name: "revival", title: "用复活卡/回馈卡", group: "signin", kind: "Action", risk: "irreversible", missed: "skip", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "captured", note: "**不可逆** —— 晚超过 2 小时就不做" },
+  { name: "prizes", title: "待领取奖品", group: "query", kind: "Query", risk: "none", missed: "catch-up", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "captured" },
+  { name: "task-list", title: "任务清单", group: "query", kind: "Query", risk: "none", missed: "catch-up", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "captured" },
+  { name: "cloud-snapshot", title: "AI豆余额快照", group: "query", kind: "Query", risk: "none", missed: "catch-up", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "captured", note: "只取第一页；一页装满会如实说可能还有下一页" },
+  // ── 通知与趣玩（未实现）──
+  // 它用**签到页那张票**（`SessionRecipe::SignInPage`）—— 就是本插件手里已有的会话，
+  // 所以「只依赖 jwt」这条是对的。`getTaskInfo` 有实拍；`reward` 只实拍到成功那一枪。
+  { name: "exchange-list", title: "兑换清单（只看）", group: "activity", kind: "Query", risk: "none", missed: "catch-up", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "captured", note: "逐件判能不能兑；**不碰余额、不碰滑块、不下单**" },
+  { name: "app-task-matrix", title: "App 任务矩阵（只看）", group: "signin", kind: "Query", risk: "none", missed: "catch-up", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "captured", note: "8 个 group 一次读一个；只读，一个字节都不写" },
+  { name: "notice", title: "开启通知领AI豆", group: "daily", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["jwt"], batch: true, hidden: false, implemented: true, evidence: "partial", note: "有手动前置（判不出来，见 notice.ts 文件头 ③）；reward 不报到账数 ⇒ 靠下一轮回查" },
+  // ⚠️ 2026-10-14 第三次更正：**换票那一步现在有了**（通用机制，见 mcloud/h5session.ts
+  //    与 sessionExchange.ts：原生凭据 → querySpecTokenV2 → 时间戳 → tyrzLogin → jwttoken）。
+  //    所以"换票做不了"这句话**不再成立** —— 我连着两轮把"我没有"说成了"不能做"：
+  //      ① 「实拍归档里没有」→ 那是**实拍**没有，**实现**有（Rust 侧那三百行）
+  //      ② 「⇒ 现在做不了」 → 做不到的只是"照实拍逐字复刻"，而通用那套是**照实现**复刻的
+  //    这一条真正缺的是**它自己那一页的换票参数**（`marketName` / `sourceId`）——
+  //    签到页与 msgpushon 页有实拍，这一页没有。缺参数 ≠ 缺机制。
+  { name: "fun-ai", title: "趣玩AI抽奖", group: "activity", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["activity-token"], batch: true, hidden: false, implemented: false, evidence: "no-ticket", note: "换票那步没抓到 ⇒ 做不了" },
+  // 更正：整条链在 `/ycloud/msgPushOn/` 下、要**另一张票**（marketName=msgpushon /
+  // sourceId=1062）。`task/status` 有实拍，`task/obtain` **零样本** ——
+  // "什么值该做什么"仍是旧项目口径，一条都没被上游证实过。
+  // ⚠️ 2026-10-14 修正认知：这一族与 `notice` **不是同一件事**（域/配方/端点全不同，
+  //    见 tasks/msgPush.ts 的文件头对照表）。两步：问状态（只读）+ 领（写）。
+  { name: "msg-push", title: "消息推送奖励", group: "activity", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "captured", note: "两步：问状态 + 领（`secondTaskStatus===2` 才领）。⚠ `pushOn===0` 与首次奖励都要用户去 App 手动" },
+  { name: "msg-push-obtain", title: "消息推送奖励（领）", group: "activity", kind: "Action", risk: "ledger", missed: "skip", deps: ["jwt"], batch: false, hidden: true, implemented: true, evidence: "captured", note: "上一步说可领才发" },
+  // ── 活动与站票（未实现）──
+  { name: "cloud-phone-redpack", title: "红包派对", group: "activity", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["activity-token"], batch: false, hidden: false, implemented: false, note: "⚠ 读到没见过的状态码时**刻意不发写**（旧 TS 会发）" },
+  { name: "play-ai-special", title: "拍拍盘点", group: "activity", kind: "Query", risk: "none", missed: "catch-up", deps: ["jwt", "activity-token"], batch: false, hidden: false, implemented: false },
+  // ⚠️ 这条我**改过两次口径**，第三次才对：
+  //   ① 先说「需要 WebSocket ⇒ 做不了」✗
+  //   ② 再说「两个来源地位相同（WS 弹幕 / 小红书主页），少一条腿不等于走不了」——
+  //      这一半是对的：小红书主页确实只是一次**公开 GET**
+  //   ③ 但源码里还有一句我漏了：**口令（codes）不是可选项** ——
+  //      「小红书那条口令**没法自动化**（那边**无法鉴权**）」，只能由**人给**
+  //   ⇒ 能自动的是「抓主页」，不能自动的是「口令本身」。这是两件事。
+  //   所以拦路石不是 WS，是**缺一个输入口**（让人把口令填进来）。
+  //
+  // 2026-10-13：**只读那一半已实现**（用户选的方案：加口令输入框 + 只做「抓主页 + 列出口令」）。
+  // 抓主页走的是原项目 `xiaohongshu.ts` 的公开 GET + 逐字移植的提取器（41 条黄金向量守着）。
+  // 领小红花那一步（写、会入群足迹）**仍然没做** —— 所以 risk 维持 `ledger` 不变。
+  { name: "live-room", title: "直播口令（只看）", group: "activity", kind: "Query", risk: "none", missed: "catch-up", deps: [], batch: false, hidden: false, implemented: true, evidence: "partial", note: "抓口令发布方的**公开**主页 + 列出口令（**不需要凭据**）；口令要人给（那边无法鉴权）" },
+  // 门（直播日程）：只读地问上游「今天开播了吗 / 下一场几点」。
+  // ⚠ 它**不需要**会话（云盘那套），要的是**原生凭据**（换直播侧 JWT 用）——
+  //   所以 deps 是 ['auth'] 而不是 ['jwt']。缺凭据时它如实失败并说清缺什么。
+  // 证据等级 `captured`：mcloud 那边这一段是**实证**的（只读探针主动走过一遍，
+  //   出处 `docs/capture/app-live-redflower-samples.txt` §5.3），与 WS 那半段分开标。
+  { name: "live-gate", title: "直播日程（门）", group: "activity", kind: "Query", risk: "none", missed: "catch-up", deps: ["basic"], batch: false, hidden: false, implemented: true, evidence: "captured", note: "只读：①②换直播侧 JWT（SSO 只活几分钟 ⇒ 两发同一次调用）+ ③两个页签各一发。结果落**口令池**（日程/门/场次）与界面读数" },
+  // 写那半。**默认关**（`mcloud.live.claim_enabled`），开关与二次确认都在插件界面上。
+  // 它虽然记账，但**基本幂等**：同一条口令再领一次回 `200112`（已兑换过），不会重复发奖。
+  // 所以 risk 是 `ledger` 而不是 `irreversible`。
+  { name: "live-listen", title: "听弹幕口令（只读）", group: "activity", kind: "Query", risk: "none", missed: "catch-up", deps: ["basic"], batch: false, hidden: false, implemented: true, evidence: "captured", note: "真机验过：SockJS 握手 + PROVISION + 心跳（15s 一拍）+ ack + 弹幕文本进池（来源 danmaku）。一次调用读 ~1.6 秒（面板预算 2000ms），窗口默认 10 分钟；门关着时**一个请求都不发**" },
+  // 定时器：**只算时刻、零上游请求**（mcloud 的 `live_auto`）。
+  // 它和听弹幕那条链的分工写在 liveAuto.ts 模块头：定时器负责**叫醒**，
+  // 链自己负责"窗口到点 → 收尾 → 下一拍重走门"。
+  { name: "live-auto", title: "直播自动定时", group: "activity", kind: "Query", risk: "none", missed: "skip", deps: ["basic"], batch: false, hidden: false, implemented: true, evidence: "captured", note: '照 mcloud 的 `live_auto`：时刻 = **最早的「下一场」+ 1 小时**（那一小时留给主播发口令）；每 5 分钟重算一次、**一个上游请求都不发**。听弹幕那条链被判"门关着"时就睡到那一刻（原来固定 5 分钟 ⇒ 一天白问 288 次门）。⚠ 面板的 cron 不能在运行时改表达式 ⇒ 精度最坏晚 5 分钟' },
+  { name: "live-draw", title: "领小红花（写）", group: "activity", kind: "Action", risk: "ledger", missed: "skip", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "partial", note: "六步链 9+N 个请求，一次调用一步；**默认关**。同口令重领回 200112 ⇒ 基本幂等。⚠ 请求头形状未在真账号上验过" },
+  // ── 要用网盘（未实现；原因见各条的 note，**不是**"它会写网盘"）──
+  // ⚠ 未实现 —— 而理由**不是**"它会写网盘"（那是它的内容，不是风险）。
+  //    真理由：App 原生族（上传 / 分享 / 固定入口）的报文形状还没抓全。
+  // ✅ 2026-10-14 实现（判据层纯函数 + 动作层一枪一步）。
+  //    ⚠ 与 `app-task-matrix` **不是同一个 code**：只读那半填读数，这半消费读数去行动。
+  //    ⚠ 传上去的文件**必须收尾**（移回收站）—— 不收，用户网盘里就会慢慢堆垃圾。
+  //    ⚠ `task/click` **不可回滚** ⇒ 同一轮不重发；`batchTrash` **不许发空 fileIds**。
+  { name: "app-task", title: "App 任务（做任务）", group: "activity", kind: "Action", risk: "write-cloud", missed: "skip", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "partial", note: "一枪一步：传文件（需要时）→ `task/click`（不可回滚，同一轮不重发）→ 收尾移回收站。判据是纯函数（106/113/522 与 beiyong1 两道门）；矩阵得先跑过" },
+  // ⚠ 实现时两处**照抓包、别照 TS**：
+  //   ① `receiveTaskExpansion` 发的是**裸 GET**，不许写 `?acceptDate=`。
+  //      抓包 §3.6.6 实测：H5 传的是 `{acceptDate: t.acceptDate}`，而两个真实账号的
+  //      `receiveList[]` 里**根本没有 acceptDate 这个字段**（只有 cloudNum/cloudType）
+  //      ⇒ 值是 undefined ⇒ axios 把整个键丢掉 ⇒ 线上是**一个查询参数都没有**。
+  //      多一个空参数就是**另一个请求**。（`receive` 那条同坑，那边已经照做了。）
+  //   ② 云朵与「云盘专属 AI豆」是**同一个东西的两个名字**（2026-07-31 按 1:1 改名），
+  //      不是两种货币 —— 别把它们当两笔账记。
+  // ✅ 2026-10-14 实现：读状态 → （**严格**读到 curMonthBackup===false 才）传文件触发备份
+  //    → 裸 GET 领云朵。⚠ 领那枪缺成功样本（两个测试号本月都已领过，见 app_signin.rs:28），
+  //    所以成功形状没被实拍验过 —— 实现照源码逐字，不假装验过。
+  //    ⚠ 与 mcloud 一处刻意分歧：它只在 `curMonthTaskRecordCount > 0` 才发领那一枪；
+  //    本插件**不判**（用户定的口径）：那枪只读、成了有云朵、败了什么也不花 ⇒ 直接发。
+  //    ⚠ 领那一枪**必须带 `?acceptDate=`**（值可空，键必须在）—— 真机实测：裸 GET 回 404。
+  //      抓包 §3.6.6 说"要裸 GET"那条被真机推翻了，见 F-021（抓包记的是"客户端发了什么"，
+  //      而那个请求本身是失败的）。
+  { name: "task-expansion", title: "任务拓展", group: "cloud-write", kind: "Action", risk: "write-cloud", missed: "skip", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "partial", note: "三件：读状态 → 传一个文件触发本月备份 → 领云朵（**裸 GET**）。传上去的文件**不留 id、不删**（删了就是删用户的东西）" },
+  // ❌ 2026-10-14 真机探过：**整族 404/405**，且**不是**签名或 marketName 的问题
+  //    （带签名/不带签名、两个 marketName 各试一遍，读数一字不差；与 mcloud 2026-09-25
+  //    的读数逐条一致）。405 说明网关**认得** `/market/rabactive/ai/image/` 这个 location
+  //    但不服务该组合；`image/*` 那一支连 location 都没有。仍不足以判定"活动下线"
+  //    还是"方法不对" ⇒ **不据此改路径**（那些字面量来自能跑的那份旧 TS）。
+  //    所以**默认不开**：一跑就 404 的任务开着只会烧请求并让人以为"跑过了"。见 F-022。
+  { name: "ai-avatar", title: "AI 头像生成与抽奖", group: "activity", kind: "Action", risk: "write-cloud", missed: "skip", deps: ["basic+jwt"], batch: false, hidden: true, implemented: false, evidence: "dead", note: "八口全在 `/market/rabactive/*`，今天真机 404/405（已排除签名与 marketName）⇒ 默认关。恢复条件与读数见 F-022" },
+  // ── 高风险（未实现）──
+  // ✅ 2026-10-14 实现并**真机跑通**（50 豆换到「移动云盘100G云空间月卡」，上游回 oid，
+  //    余额 9238 → 9188 正好少 50）。
+  //
+  // 口径（用户定的）：**优先发出去** —— 清单判据说不能兑、余额看着不够，都**照样发**
+  // （那两处是本地估算，上游仍可能放行；失败不扣豆）。
+  // ⚠ 但**滑块**不属这一类：offset 算错那一枪**不可能成功**（回 514、不成交也不扣豆），
+  //    所以算不出就不发 —— 那不是"少一次机会"，是"多一次白打"。
+  { name: "exchange", title: "兑换奖品", group: "risky", kind: "Action", risk: "spend", missed: "skip", deps: ["jwt", "slider"], batch: false, hidden: false, implemented: true, evidence: "captured", note: "枪序：清单 → 余额 → 预热×2 → 取滑块本地解 → 下单 → 查余额差。**成交判据是余额差**（上游没有幂等，那句话不算数）；滑块算不出就不发" },
+  // ⚠️ 2026-10-14 更正一处**我口头说过的错话**：我曾讲这条"会换掉现有授权"——
+  //    那句话**没有出处**。`auth_refresh.rs` 的叙述是「**续期**」：刷新返回一个自带
+  //    30 天有效期的新 token，并被编进后续请求的 `Authorization`；而**旧凭据会不会被
+  //    这一枪作废，没有任何一处说过**（我把它当成了"替换"）。
+  //    另外它在本插件里是 `implemented: false` —— **根本没实装**，
+  //    所以"我不替你动"这个说法本身就站不住（当时没有可动的东西）。
+  //    ⚠ `risk` 暂时维持 `irreversible`（风险档保守取值的默认），
+  //    但这一档的**依据同样缺样本** —— 真要落地前先把"旧 token 是否仍可用"测出来。
+  // ✅ 2026-10-14 实现。**一个字段都不用用户给**：手机号/端别在 `Authorization` 里解出来，
+  //    `userDomainId` 在 jwttoken 的 `payload.sub` 里。判据照 mcloud 的 `decide`（默认提前 10 天）。
+  // ⚠ `risk` 从 `spend` 改成 `none`：**续期不花任何豆**，原先那一档没有依据
+  //    （我早先说它"会换掉现有授权"，那句没有出处）。真机实测过：
+  //    续期后**旧凭据仍然可用**（两枚都 200），所以它也不是 `irreversible`。
+  { name: "auth-refresh", title: "凭据续期", group: "daily", kind: "Action", risk: "none", missed: "skip", deps: ["basic+jwt"], batch: false, hidden: false, implemented: true, evidence: "captured", note: "离过期还远时**一个请求都不发**；续出的是一枚**全新的** token（30 天），不是把旧的延长。真机验过：旧凭据不会因此失效" }
+];
+function groupView(store2) {
+  const recent = store2.recentRuns(200);
+  const byTask = /* @__PURE__ */ new Map();
+  for (const r of recent) {
+    const t = String(r.task ?? "");
+    if (!t) continue;
+    const list = byTask.get(t) ?? [];
+    if (list.length < 3) {
+      list.push({
+        firedAt: String(r.fired_at ?? ""),
+        ok: Number(r.ok ?? 0) === 1,
+        note: String(r.note ?? ""),
+        lateMs: Number(r.late_ms ?? 0)
       });
-      const unreceived = items.filter((i) => (i.state ?? "").toUpperCase().includes("UNRECEIVED"));
-      return {
-        ok: true,
-        note: `奖品 ${items.length} 条（未领取 ${unreceived.length} 条）`,
-        snapshot: items
-      };
     }
-  );
-}
-
-// src/mcloud/tasks/cloudSnapshot.ts
-var STATE_SNAPSHOT = "mcloud.cloudsnapshot.last";
-var LEDGER_AI_DOU = 1;
-var TYPE_ALL = 0;
-var PAGE_SIZE = 100;
-function snapshotQuery(pageNumber = 1) {
-  return `aiDou=${LEDGER_AI_DOU}&type=${TYPE_ALL}&pageNumber=${pageNumber}&pageSize=${PAGE_SIZE}`;
-}
-function runCloudSnapshot(deps) {
-  return runTask(
-    deps,
-    {
-      task: "cloud-snapshot",
-      endpoint: "cloudRecordV2",
-      method: "GET",
-      query: snapshotQuery(),
-      isDeviceId: false,
-      stateKey: STATE_SNAPSHOT
-    },
-    (env) => {
-      const list = resultArray(env);
-      const entries = list.map((x) => {
-        const o = typeof x === "object" && x !== null ? x : {};
-        const num3 = (v) => typeof v === "number" ? v : void 0;
-        const str2 = (v) => typeof v === "string" ? v : void 0;
-        return {
-          id: num3(o.id),
-          value: num3(o.aiDou ?? o.value ?? o.change),
-          reason: str2(o.typeName ?? o.reason ?? o.type),
-          insertTime: str2(o.insertTime ?? o.time)
-        };
-      });
-      const latest = [...entries].reverse().find((e) => e.value !== void 0);
-      const full = entries.length === PAGE_SIZE;
-      return {
-        ok: true,
-        note: `流水 ${entries.length} 条` + (latest ? `，最新一笔 ${latest.value}（${latest.reason ?? "—"}）` : "") + (full ? `；== pageSize(${PAGE_SIZE}) 说明可能还有下一页（本任务只取第一页）` : ""),
-        snapshot: { entries, truncated: full }
-      };
-    }
-  );
-}
-
-// src/mcloud/tasks/info.ts
-var bool = (v, dflt = false) => typeof v === "boolean" ? v : dflt;
-function parseInfoV3(result) {
-  const o = resultObject({ code: 0, message: "", result, ok: true });
-  const pick2 = (...keys) => {
-    for (const k of keys) if (o[k] !== void 0) return o[k];
-    return void 0;
-  };
-  const listRaw = pick2("receiveList", "receive_list");
-  const receiveList = Array.isArray(listRaw) ? listRaw.map((x) => {
-    const it = typeof x === "object" && x !== null ? x : {};
-    const rid = it.recordId ?? it.record_id ?? it.cloudId ?? it.cloud_id;
-    const ct = it.cloudType ?? it.cloud_type;
+    byTask.set(t, list);
+  }
+  const groups = GROUPS.map((g) => {
+    const tasks = TASK_META.filter((t) => t.group === g.id).map((t) => ({
+      ...t,
+      lastError: store2.getState(`mcloud.last_error.${t.name}`) ?? "",
+      recent: byTask.get(t.name) ?? []
+    }));
     return {
-      recordId: typeof rid === "string" ? rid : rid === void 0 || rid === null ? "" : String(rid),
-      cloudType: typeof ct === "number" ? ct : void 0,
-      raw: x
+      ...g,
+      tasks,
+      implemented: tasks.filter((t) => t.implemented).length,
+      total: tasks.length
     };
-  }) : [];
-  return {
-    todaySigned: bool(pick2("todaySignIn", "today_sign_in")),
-    receiveList,
-    curMonthBackup: bool(pick2("curMonthBackup", "cur_month_backup")),
-    curMonthBackupSignAccept: bool(pick2("curMonthBackupSignAccept", "cur_month_backup_sign_accept")),
-    raw: result ?? null
-  };
-}
-function fetchInfoV3(deps) {
-  const session = loadSession(deps.store);
-  if (!session) return { ok: false, error: "未登录：state 里没有会话" };
-  const req = buildH5Request({
-    url: `${resolveUrl("infoV3", deps.baseUrl)}?${CLIENT_QUERY}`,
-    method: EP_METHOD.infoV3 === "GET" ? "GET" : "POST",
-    referer: REFERER_SIGN_IN,
-    showLoading: SHOW_LOADING,
-    isDeviceId: !!session.deviceId,
-    saltKey: 1,
-    session: sessionHeaders(session)
   });
-  const res = callOnce(deps.transport, req);
-  if (!res.ok) return { ok: false, error: res.error ?? "未知失败" };
-  const env = res.env;
-  return { ok: true, info: parseInfoV3(env.result), tookMs: res.tookMs };
-}
-
-// src/mcloud/tasks/sign.ts
-var STATE_SIGN = "mcloud.sign.last";
-var STATE_STAGE = "mcloud.sign.stage";
-function runSign(deps) {
-  const session = loadSession(deps.store);
-  if (!session) {
-    return { ok: false, note: "未登录：state 里没有会话（见 docs/howto-session.md）" };
-  }
-  const stage = deps.store.getState(STATE_STAGE) ?? "";
-  if (stage === "need-verify") {
-    const info2 = fetchInfoV3({ store: deps.store, transport: deps.transport, baseUrl: deps.baseUrl });
-    if (!info2.ok) return { ok: false, note: `回查失败：${info2.error}` };
-    if (info2.info.todaySigned) {
-      deps.store.setState(STATE_STAGE, "", deps.nowIso);
-      return { ok: true, note: "签到完成（回查 infoV3 确认今日已签）" };
-    }
-    return { ok: false, note: "已提交签到，但回查 infoV3 显示今日仍未签（上游可能延迟入账）" };
-  }
-  const info = fetchInfoV3({ store: deps.store, transport: deps.transport, baseUrl: deps.baseUrl });
-  if (!info.ok) return { ok: false, note: `查询签到状态失败：${info.error}` };
-  if (info.info.todaySigned) {
-    return { ok: true, note: "今日已签到（infoV3 判据）" };
-  }
-  const deviceId = session.deviceId;
-  const out = runTask(
-    deps,
-    {
-      task: "sign",
-      endpoint: "startSignIn",
-      method: "GET",
-      query: deviceId ? `client=app&deviceId=${encodeURIComponent(deviceId)}` : "client=app",
-      isDeviceId: !!deviceId,
-      stateKey: STATE_SIGN
-    },
-    (env) => ({
-      ok: true,
-      // ⚠️ 这里**不说"签到成功"** —— 动作响应不是判据（见文件头）。
-      note: `签到已提交（下次触发回查状态；上游回 ${JSON.stringify(env.result ?? env.message).slice(0, 80)}）`,
-      snapshot: { result: env.result ?? null, message: env.message }
-    })
-  );
-  if (out.ok) deps.store.setState(STATE_STAGE, "need-verify", deps.nowIso);
-  return out;
-}
-
-// src/mcloud/tasks/backupGift.ts
-var STATE_INFO = "mcloud.backupgift.info";
-var STATE_CAN = "mcloud.backupgift.can_receive";
-function parseCanReceive(result) {
-  const o = resultObject({ code: 0, message: "", result, ok: true });
-  const v = o.canReceive ?? o.can_receive ?? o.receivable ?? o.status;
-  if (typeof v === "boolean") return { can: v, raw: v };
-  if (typeof v === "number") return { can: v === 1, raw: v };
-  if (typeof v === "string") {
-    const s = v.toLowerCase();
-    if (s === "true" || s === "1" || s === "yes" || s === "can") return { can: true, raw: v };
-    return { can: false, raw: v };
-  }
-  return { can: false, raw: result ?? null };
-}
-function runBackupGiftInfo(deps) {
-  return runTask(
-    deps,
-    {
-      task: "backup-gift",
-      endpoint: "backupGiftInfo",
-      method: "GET",
-      marketName: "backupgift",
-      isDeviceId: false,
-      stateKey: STATE_INFO
-    },
-    (env) => {
-      const { can, raw } = parseCanReceive(env.result);
-      deps.store.setState(STATE_CAN, can ? "yes" : `no:${JSON.stringify(raw)?.slice(0, 80)}`, deps.nowIso);
-      return {
-        ok: true,
-        note: can ? "备份好礼：可以领取（下一次触发会去领）" : "备份好礼：当前没有可领的",
-        snapshot: env.result ?? null
-      };
-    }
-  );
-}
-function runBackupGiftReceive(deps) {
-  const can = deps.store.getState(STATE_CAN);
-  if (can !== "yes") {
-    return {
-      ok: true,
-      skipped: true,
-      note: `上次问过状态是「${can ?? "没问过"}」，不发领取请求`
-    };
-  }
-  const out = runTask(
-    deps,
-    {
-      task: "backup-gift",
-      endpoint: "backupGiftReceive",
-      method: "GET",
-      marketName: "backupgift",
-      isDeviceId: false
-    },
-    (env) => ({
-      ok: true,
-      note: `备份好礼已领取（上游回 ${JSON.stringify(env.result ?? env.message).slice(0, 120)}）`
-    })
-  );
-  if (out.ok) deps.store.setState(STATE_CAN, "no:claimed", deps.nowIso);
-  return out;
-}
-function runBackupGift(deps) {
-  const can = deps.store.getState(STATE_CAN);
-  if (can === "yes") return runBackupGiftReceive(deps);
-  return runBackupGiftInfo(deps);
-}
-
-// src/mcloud/tasks/msgPush.ts
-var STATE_STATUS = "mcloud.msgpush.last";
-var STATE_CAN2 = "mcloud.msgpush.can";
-var SECOND_STATUS_CLAIMABLE = 2;
-function asInt(v) {
-  if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
-  if (typeof v === "string" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
-  return void 0;
-}
-function parseStatus(result) {
-  const o = resultObject({ code: 0, message: "", result, ok: true });
   return {
-    pushOn: asInt(o.pushOn),
-    onDuaration: asInt(o.onDuaration),
-    firstTaskStatus: asInt(o.firstTaskStatus),
-    secondTaskStatus: asInt(o.secondTaskStatus)
+    groups,
+    totals: {
+      tasks: TASK_META.length,
+      implemented: TASK_META.filter((t) => t.implemented).length,
+      risky: TASK_META.filter((t) => t.risk === "spend" || t.risk === "irreversible").length
+    }
   };
 }
-var PUSH_ON_OFF = 0;
-function planMsgPush(s) {
-  if (s.pushOn !== void 0 && s.pushOn === PUSH_ON_OFF) return "manual";
-  if (s.secondTaskStatus === void 0) return "unknown";
-  if (s.secondTaskStatus === SECOND_STATUS_CLAIMABLE) return "obtain";
-  return "nothing";
-}
-function runMsgPushStatus(deps) {
-  return runTask(
-    deps,
-    {
-      task: "msg-push",
-      endpoint: "msgPushStatus",
-      method: "GET",
-      // ⚠ 这一族的 `activityid` 是 **msgpushon**，不是签到页那个 `sign_in_3`：
-      // 「每个页面用自己的参数换自己的票，票与票之间逐字节不等」（见 session.rs 的配方表）
-      marketName: "msgpushon",
-      isDeviceId: false,
-      stateKey: STATE_STATUS
-    },
-    (env) => {
-      const s = parseStatus(env.result);
-      const plan = planMsgPush(s);
-      const can = plan === "obtain";
-      deps.store.setState(STATE_CAN2, can ? "yes" : plan === "unknown" ? "unknown" : "no", deps.nowIso);
-      let note2;
-      if (plan === "unknown") {
-        note2 = "消息推送：判据字段缺失（没读到 secondTaskStatus）⇒ **判不了**，一个写请求都不发";
-      } else if (s.pushOn === 0) {
-        note2 = "消息推送：通知已被关闭，需要你在 App 里手动打开（这一步我们做不了）";
-      } else if (can) {
-        note2 = "消息推送：有可领的奖励（下一次触发会去领）";
-      } else if (s.firstTaskStatus !== void 0 && s.firstTaskStatus !== 3) {
-        note2 = "消息推送：首次奖励未领 —— 那一步要在 App 里手动完成，我们做不了";
-      } else {
-        note2 = `消息推送：暂无可领${s.onDuaration === void 0 ? "" : `（已开启 ${s.onDuaration} 天）`}`;
-      }
-      return { ok: true, note: note2, snapshot: env.result ?? null };
-    }
-  );
-}
-function runMsgPushObtain(deps) {
-  const can = deps.store.getState(STATE_CAN2);
-  if (can !== "yes") {
-    return {
-      ok: true,
-      skipped: true,
-      note: `上次问到的状态是「${can === "unknown" ? "判不了（判据字段缺失）" : can === "no" ? "不该领" : can === "yes" ? "该领" : "没问过"}」，不发领取请求`
-    };
+
+// src/mcloud/caps.ts
+function sandboxCaps() {
+  const g = globalThis;
+  let applyOk = "ok";
+  try {
+    String.fromCharCode.apply(null, new Array(1e5).fill(65));
+  } catch (e) {
+    applyOk = e instanceof Error ? `抛(${e.constructor.name})` : "抛";
   }
-  const out = runTask(
-    deps,
-    {
-      task: "msg-push",
-      endpoint: "msgPushObtain",
-      method: "POST",
-      body: JSON.stringify({ type: 2 }),
-      marketName: "msgpushon",
-      isDeviceId: false
-    },
-    (env) => {
-      const o = resultObject(env);
-      const code = asInt(o.obtainCode);
-      if (code === 0) return { ok: true, note: "消息推送奖励：已领取" };
-      return {
-        ok: false,
-        note: `消息推送奖励：没领到（obtainCode=${code ?? "缺字段"}；上游回 ${JSON.stringify(env.result ?? env.message).slice(0, 120)}）`
-      };
-    }
-  );
-  if (out.ok) deps.store.setState(STATE_CAN2, "no", deps.nowIso);
-  return out;
+  return [
+    `BigInt=${typeof g.BigInt}`,
+    `DataView=${typeof g.DataView}`,
+    `10万字符apply=${applyOk}`
+  ].join(" ");
+}
+function hasBigInt() {
+  return typeof globalThis.BigInt === "function";
 }
 
 // src/mcloud/accounts.ts
@@ -3256,16 +3065,6 @@ function failStep(deps, st, note2) {
   return { ok: false, note: note2, done: true };
 }
 var RETRY_AFTER_MS = 30 * 60 * 1e3;
-function needExchange(store2, nowMs) {
-  if (loadAuthRaw(store2) === "") return false;
-  if (jwtFresh(store2, nowMs)) return false;
-  const st = loadExchange(store2);
-  if (!st) return true;
-  if (st.step !== "done") return true;
-  if (st.ok === true) return true;
-  const at = Date.parse(st.finishedAt ?? st.startedAt);
-  return !Number.isFinite(at) || nowMs - at > RETRY_AFTER_MS;
-}
 function maskMobile(m) {
   return m.length >= 7 ? `${m.slice(0, 3)}****${m.slice(-4)}` : "***";
 }
@@ -3474,1035 +3273,612 @@ function runAuthRefresh(deps, force = false, leadDays = DEFAULT_LEAD_DAYS) {
   };
 }
 
-// src/mcloud/cloudUpload.ts
-var PERSONAL_KD = "https://personal-kd-njs.yun.139.com";
-var FILE_CREATE_PATH = "/hcy/file/create";
-var FILE_COMPLETE_PATH = "/hcy/file/complete";
-var CREATE_CONTENT_TYPE = "application/oct-stream";
-var PUT_CONTENT_TYPE = "application/octet-stream";
-var PUT_ORIGIN = "https://yun.139.com";
-var PUT_REFERER = "https://yun.139.com/";
-var PUT_UPLOAD_COMPLETE = "?1";
-var PUT_UPLOAD_DRAFT_INTEROP_VERSION = "6";
-var HASH_ALGORITHM = "SHA256";
-var FILE_TYPE_FILE = "file";
-var CHANNEL_ANDROID = "10000023";
-var RENAME_FORCE = "force_rename";
-var OP_TYPE_UPLOAD = "2";
-var SUB_OP_TYPE_UPLOAD = "200";
-var OP_TYPE_BACKUP = "0";
-var SUB_OP_TYPE_BACKUP = "0";
-var CLIENT_INFO_ANDROID = "1|127.0.0.1|1|12.6.0|Xiaomi|22041216C||02-00-00-00-00-00|android 14|1080X2360|zh||||032|0|";
-function androidOpCodes(op) {
-  const code = op === "backup" ? 2 : op === "upload" ? 1 : 0;
-  return { opType: String(code), subOpType: String(code * 100) };
+// node_modules/fflate/esm/browser.js
+var u8 = Uint8Array;
+var u16 = Uint16Array;
+var i32 = Int32Array;
+var fleb = new u8([
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  1,
+  1,
+  1,
+  1,
+  2,
+  2,
+  2,
+  2,
+  3,
+  3,
+  3,
+  3,
+  4,
+  4,
+  4,
+  4,
+  5,
+  5,
+  5,
+  5,
+  0,
+  /* unused */
+  0,
+  0,
+  /* impossible */
+  0
+]);
+var fdeb = new u8([
+  0,
+  0,
+  0,
+  0,
+  1,
+  1,
+  2,
+  2,
+  3,
+  3,
+  4,
+  4,
+  5,
+  5,
+  6,
+  6,
+  7,
+  7,
+  8,
+  8,
+  9,
+  9,
+  10,
+  10,
+  11,
+  11,
+  12,
+  12,
+  13,
+  13,
+  /* unused */
+  0,
+  0
+]);
+var clim = new u8([16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15]);
+var freb = function(eb, start) {
+  var b = new u16(31);
+  for (var i = 0; i < 31; ++i) {
+    b[i] = start += 1 << eb[i - 1];
+  }
+  var r = new i32(b[30]);
+  for (var i = 1; i < 30; ++i) {
+    for (var j = b[i]; j < b[i + 1]; ++j) {
+      r[j] = j - b[i] << 5 | i;
+    }
+  }
+  return { b, r };
+};
+var _a = freb(fleb, 2);
+var fl = _a.b;
+var revfl = _a.r;
+fl[28] = 258, revfl[258] = 28;
+var _b = freb(fdeb, 0);
+var fd = _b.b;
+var revfd = _b.r;
+var rev = new u16(32768);
+for (i = 0; i < 32768; ++i) {
+  x = (i & 43690) >> 1 | (i & 21845) << 1;
+  x = (x & 52428) >> 2 | (x & 13107) << 2;
+  x = (x & 61680) >> 4 | (x & 3855) << 4;
+  rev[i] = ((x & 65280) >> 8 | (x & 255) << 8) >> 1;
 }
-function cloudFileOpHeaders(op, channel = CHANNEL_ANDROID) {
-  const { opType, subOpType } = androidOpCodes(op);
-  return {
-    // base 三枚（三档都有）
-    "x-yun-api-version": "v1",
-    "x-yun-app-channel": channel,
-    "x-yun-op-type": opType,
-    // Android 档那三枚
-    "x-huawei-channelSrc": channel,
-    "x-yun-client-info": CLIENT_INFO_ANDROID,
-    "x-yun-sub-op-type": subOpType
-  };
-}
-var AUTH_DOMAINS = [
-  "yun.139.com",
-  "mcloud.139.com",
-  "feixin.10086.cn",
-  "mail.10086.cn"
+var x;
+var i;
+var hMap = (function(cd, mb, r) {
+  var s = cd.length;
+  var i = 0;
+  var l = new u16(mb);
+  for (; i < s; ++i) {
+    if (cd[i])
+      ++l[cd[i] - 1];
+  }
+  var le = new u16(mb);
+  for (i = 1; i < mb; ++i) {
+    le[i] = le[i - 1] + l[i - 1] << 1;
+  }
+  var co;
+  if (r) {
+    co = new u16(1 << mb);
+    var rvb = 15 - mb;
+    for (i = 0; i < s; ++i) {
+      if (cd[i]) {
+        var sv = i << 4 | cd[i];
+        var r_1 = mb - cd[i];
+        var v = le[cd[i] - 1]++ << r_1;
+        for (var m = v | (1 << r_1) - 1; v <= m; ++v) {
+          co[rev[v] >> rvb] = sv;
+        }
+      }
+    }
+  } else {
+    co = new u16(s);
+    for (i = 0; i < s; ++i) {
+      if (cd[i]) {
+        co[i] = rev[le[cd[i] - 1]++] >> 15 - cd[i];
+      }
+    }
+  }
+  return co;
+});
+var flt = new u8(288);
+for (i = 0; i < 144; ++i)
+  flt[i] = 8;
+var i;
+for (i = 144; i < 256; ++i)
+  flt[i] = 9;
+var i;
+for (i = 256; i < 280; ++i)
+  flt[i] = 7;
+var i;
+for (i = 280; i < 288; ++i)
+  flt[i] = 8;
+var i;
+var fdt = new u8(32);
+for (i = 0; i < 32; ++i)
+  fdt[i] = 5;
+var i;
+var flrm = /* @__PURE__ */ hMap(flt, 9, 1);
+var fdrm = /* @__PURE__ */ hMap(fdt, 5, 1);
+var max = function(a) {
+  var m = a[0];
+  for (var i = 1; i < a.length; ++i) {
+    if (a[i] > m)
+      m = a[i];
+  }
+  return m;
+};
+var bits = function(d, p, m) {
+  var o = p / 8 | 0;
+  return (d[o] | d[o + 1] << 8) >> (p & 7) & m;
+};
+var bits16 = function(d, p) {
+  var o = p / 8 | 0;
+  return (d[o] | d[o + 1] << 8 | d[o + 2] << 16) >> (p & 7);
+};
+var shft = function(p) {
+  return (p + 7) / 8 | 0;
+};
+var slc = function(v, s, e) {
+  if (s == null || s < 0)
+    s = 0;
+  if (e == null || e > v.length)
+    e = v.length;
+  return new u8(v.subarray(s, e));
+};
+var ec = [
+  "unexpected EOF",
+  "invalid block type",
+  "invalid length/literal",
+  "invalid distance",
+  "stream finished",
+  "no stream handler",
+  ,
+  // determined by compression function
+  "no callback",
+  "invalid UTF-8 data",
+  "extra field too long",
+  "date not in range 1980-2099",
+  "filename too long",
+  "stream finishing",
+  "invalid zip data"
+  // determined by unknown compression method
 ];
-function hostOf(rawUrl) {
-  const m = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/([^/?#]+)/.exec(rawUrl);
-  if (!m) return "";
-  let host = m[1].toLowerCase();
-  const at = host.lastIndexOf("@");
-  if (at >= 0) host = host.slice(at + 1);
-  const colon = host.lastIndexOf(":");
-  if (colon >= 0) host = host.slice(0, colon);
-  return host;
-}
-function sendsAuthorizationTo(rawUrl) {
-  const host = hostOf(rawUrl);
-  if (host === "") return false;
-  return AUTH_DOMAINS.some((suffix) => host.endsWith(suffix));
-}
-function contentHashOf(bytes) {
-  return sha256Hex(bytes);
-}
-function createBody(input) {
-  const body = {
-    name: input.name,
-    type: FILE_TYPE_FILE,
-    size: input.size,
-    fileRenameMode: input.renameMode ?? RENAME_FORCE,
-    contentHash: input.contentHash,
-    contentHashAlgorithm: HASH_ALGORITHM,
-    contentType: input.contentType ?? CREATE_CONTENT_TYPE,
-    parallelUpload: input.parallelUpload ?? false
-  };
-  body[input.locate.key] = input.locate.value;
-  if (input.localCreatedAt !== void 0) body.localCreatedAt = input.localCreatedAt;
-  body.partInfos = [
-    { parallelHashCtx: { partOffset: 0 }, partNumber: 1, partSize: input.size }
-  ];
-  return JSON.stringify(body);
-}
-function buildCreateRequest(input) {
-  return {
-    url: `${PERSONAL_KD}${FILE_CREATE_PATH}`,
-    method: "POST",
-    // ⚠ 真机实测（2026-10-14）：这一口**要 `application/json`**。
-    //   写成 `application/oct-stream` / `octet-stream` 会回 `04000018 请求体媒体格式不支持`。
-    //   ⚠ 我一开始把 404 归因成 content-type —— **认错了**：那次同时改了两样（头画像 +
-    //   content-type），而真因是**缺头画像**。一次只改一样才分得清。
-    headers: { "Content-Type": "application/json", ...cloudFileOpHeaders(input.op ?? "backup") },
-    body: createBody(input)
-  };
-}
-function parseCreate(body) {
-  let v;
-  try {
-    v = JSON.parse(body);
-  } catch (e) {
-    return { ok: false, error: `create 响应不是 JSON：${e instanceof Error ? e.message : String(e)}` };
-  }
-  if (v.code !== void 0 && v.code !== 0 && v.code !== "0000" && v.code !== "0") {
-    return { ok: false, error: `create 失败：code=${String(v.code)}` };
-  }
-  const data = v.data ?? v.result;
-  if (!data || typeof data !== "object") return { ok: false, error: "create 响应没有 data/result" };
-  const fileId = data.fileId;
-  const uploadId = data.uploadId;
-  const parts = Array.isArray(data.partInfos) ? data.partInfos : [];
-  const first = parts[0];
-  const nested = first !== null && typeof first === "object" ? first.uploadUrl : void 0;
-  const uploadUrl = nested ?? data.uploadUrl;
-  const rapid = data.rapidUpload === true;
-  if (typeof fileId !== "string" || fileId === "") return { ok: false, error: "create 响应缺 fileId" };
-  if (!rapid) {
-    if (typeof uploadId !== "string" || uploadId === "") {
-      return { ok: false, error: "create 响应缺 uploadId（且不是秒传）" };
-    }
-    if (typeof uploadUrl !== "string" || uploadUrl === "") {
-      return { ok: false, error: "create 响应缺 uploadUrl（且不是秒传）" };
-    }
-  }
-  return {
-    ok: true,
-    created: {
-      fileId,
-      uploadId: typeof uploadId === "string" ? uploadId : "",
-      uploadUrl: typeof uploadUrl === "string" ? uploadUrl : "",
-      rapidUpload: rapid
-    }
-  };
-}
-function buildPutRequest(uploadUrl, bytes, backup = false) {
-  const req = {
-    url: uploadUrl,
-    method: "PUT",
-    headers: {
-      "Content-Type": PUT_CONTENT_TYPE,
-      origin: PUT_ORIGIN,
-      referer: PUT_REFERER,
-      // ⚠ 值是**带问号**的 `?1`
-      "upload-complete": PUT_UPLOAD_COMPLETE,
-      "upload-draft-interop-version": PUT_UPLOAD_DRAFT_INTEROP_VERSION,
-      "x-yun-op-type": backup ? OP_TYPE_BACKUP : OP_TYPE_UPLOAD,
-      "x-yun-sub-op-type": backup ? SUB_OP_TYPE_BACKUP : SUB_OP_TYPE_UPLOAD
-    },
-    // 二进制体：插件里用 latin1 字符串承载（每个字符一个字节）
-    body: latin1FromBytes(bytes)
-  };
-  return { req, leaksCredential: sendsAuthorizationTo(uploadUrl) };
-}
-function latin1FromBytes(bytes) {
-  let out = "";
-  const CHUNK = 8192;
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    const end = Math.min(i + CHUNK, bytes.length);
-    let s = "";
-    for (let j = i; j < end; j += 1) s += String.fromCharCode(bytes[j]);
-    out += s;
-  }
-  return out;
-}
-function completeBody(fileId, uploadId, contentHash) {
-  return JSON.stringify({
-    fileId,
-    uploadId,
-    contentHash,
-    contentHashAlgorithm: HASH_ALGORITHM
-  });
-}
-function buildCompleteRequest(fileId, uploadId, contentHash, op = "backup") {
-  return {
-    url: `${PERSONAL_KD}${FILE_COMPLETE_PATH}`,
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...cloudFileOpHeaders(op) },
-    body: completeBody(fileId, uploadId, contentHash)
-  };
-}
-function parseComplete(body) {
-  try {
-    const v = JSON.parse(body);
-    const code = v.code;
-    if (code === void 0 || code === 0 || code === "0000" || code === "0") return { ok: true };
-    return { ok: false, error: `complete 失败：code=${String(code)}` };
-  } catch (e) {
-    return { ok: false, error: `complete 响应不是 JSON：${e instanceof Error ? e.message : String(e)}` };
-  }
-}
-function deterministicFile(seed, bytes = 1024) {
-  const out = new Uint8Array(bytes);
-  const base = utf8(seed);
-  for (let i = 0; i < bytes; i += 1) {
-    out[i] = 33 + ((base[i % base.length] ^ i & 127) - 33 + 94) % 94;
-  }
-  return out;
-}
-
-// src/mcloud/tasks/upload.ts
-var STATE_UPLOAD = "mcloud.upload.state";
-var STEP_TEXT = {
-  create: "① 声明要传一个文件",
-  put: "② 传字节（预签名直传）",
-  complete: "③ 告诉上游传完了",
-  done: "完成"
+var err = function(ind, msg, nt) {
+  var e = new Error(msg || ec[ind]);
+  e.code = ind;
+  if (Error.captureStackTrace)
+    Error.captureStackTrace(e, err);
+  if (!nt)
+    throw e;
+  return e;
 };
-function loadUpload(deps) {
-  const raw = deps.store.getState(STATE_UPLOAD);
-  if (!raw) return null;
-  try {
-    const v = JSON.parse(raw);
-    return typeof v.step === "string" ? v : null;
-  } catch {
-    return null;
-  }
-}
-function save(deps, st) {
-  deps.store.setState(STATE_UPLOAD, JSON.stringify(st), deps.nowIso);
-}
-function startUpload(deps, opts) {
-  if (opts.name.trim() === "") return { ok: false, note: "上传要有文件名" };
-  if (opts.bytes.length === 0) return { ok: false, note: "上传的内容是空的" };
-  const st = {
-    step: "create",
-    name: opts.name,
-    size: opts.bytes.length,
-    // ⚠ 摘要在这里就算好：第 ③ 枪 `complete` 要用**同一份**，而且它必须跨调用活下来
-    contentHash: contentHashOf(opts.bytes),
-    locateKey: opts.locateKey ?? "parentFileId",
-    locateValue: opts.locateValue ?? "/"
+var inflt = function(dat, st, buf, dict) {
+  var sl = dat.length, dl = dict ? dict.length : 0;
+  if (!sl || st.f && !st.l)
+    return buf || new u8(0);
+  var noBuf = !buf;
+  var resize = noBuf || st.i != 2;
+  var noSt = st.i;
+  if (noBuf)
+    buf = new u8(sl * 3);
+  var cbuf = function(l2) {
+    var bl = buf.length;
+    if (l2 > bl) {
+      var nbuf = new u8(Math.max(bl * 2, l2));
+      nbuf.set(buf);
+      buf = nbuf;
+    }
   };
-  save(deps, st);
-  return {
-    ok: true,
-    note: `已排队上传「${opts.name}」（${st.size} 字节，摘要 ${st.contentHash.slice(0, 12)}…）—— 每次触发走一步`
-  };
-}
-function runUploadStep(deps, bytes) {
-  const st = loadUpload(deps);
-  if (!st) return { ok: true, idle: true, note: "没有在排队的上传" };
-  if (st.step === "done") return { ok: true, idle: true, note: "这一次上传已经走完" };
-  const label = STEP_TEXT[st.step];
-  if (st.step === "create") {
-    const req = buildCreateRequest({
-      name: st.name,
-      size: st.size,
-      contentHash: st.contentHash,
-      locate: { key: st.locateKey, value: st.locateValue }
-    });
-    const res2 = callRawText(deps.transport, req);
-    if (!res2.ok) return { ok: false, note: `${label}失败：${res2.error ?? "未知失败"}` };
-    const parsed2 = parseCreate(res2.text);
-    if (!parsed2.ok || !parsed2.created) return { ok: false, note: `${label}：${parsed2.error}` };
-    const c = parsed2.created;
-    const next = { ...st, fileId: c.fileId };
-    if (c.rapidUpload) {
-      next.step = "done";
-      next.rapidUpload = true;
-      save(deps, next);
-      return { ok: true, note: `${label}：秒传命中（fileId ${c.fileId.length} 字符）⇒ 不用传字节，这次上传已完成` };
-    }
-    next.step = "put";
-    next.uploadId = c.uploadId;
-    next.uploadUrl = c.uploadUrl;
-    next.rapidUpload = false;
-    save(deps, next);
-    return { ok: true, note: `${label}：拿到 fileId 与预签名地址（${c.uploadUrl.length} 字符）—— 下一步传字节` };
-  }
-  if (st.step === "put") {
-    if (!st.uploadUrl || !st.uploadId) {
-      return { ok: false, note: `${label}：状态里没有 uploadUrl/uploadId ⇒ 这一趟作废（重起一次上传）` };
-    }
-    if (!bytes || bytes.length === 0) {
-      return {
-        ok: false,
-        note: `${label}：这次调用没带字节 ⇒ 不发（拿空体去 PUT 会真的传一个 0 字节文件上去）`
-      };
-    }
-    const { req, leaksCredential } = buildPutRequest(st.uploadUrl, bytes, false);
-    if (leaksCredential) {
-      return {
-        ok: false,
-        note: `${label}：目标主机落在应带凭据的域里（不是预签名直传该有的形状）⇒ 不发，先查 create 的响应`
-      };
-    }
-    const res2 = callRawText(deps.transport, req);
-    if (!res2.ok) return { ok: false, note: `${label}失败：${res2.error ?? "未知失败"}` };
-    save(deps, { ...st, step: "complete" });
-    return { ok: true, note: `${label}：${bytes.length} 字节已发（HTTP ${res2.status}）—— 下一步确认` };
-  }
-  const res = callRawText(deps.transport, buildCompleteRequest(st.fileId, st.uploadId, st.contentHash));
-  if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? "未知失败"}` };
-  const parsed = parseComplete(res.text);
-  if (!parsed.ok) return { ok: false, note: `${label}：${parsed.error}` };
-  save(deps, { ...st, step: "done" });
-  return { ok: true, note: `${label}：已确认（fileId ${(st.fileId ?? "").length} 字符）—— 这次上传完成` };
-}
-function uploadDone(deps) {
-  return loadUpload(deps)?.step === "done";
-}
-
-// src/mcloud/tasks/taskExpansion.ts
-function signedGet(deps, path) {
-  const session = loadSession(deps.store);
-  return buildH5Request({
-    url: withBase(deps, path),
-    method: "GET",
-    body: void 0,
-    referer: REFERER_SIGN_IN,
-    showLoading: SHOW_LOADING,
-    isDeviceId: false,
-    saltKey: 1,
-    marketName: "sign_in_3",
-    session: session ? sessionHeaders(session) : {}
-  });
-}
-function digResult(text) {
-  try {
-    const v = JSON.parse(text);
-    const r = v.result;
-    return r && typeof r === "object" ? r : v;
-  } catch {
-    return {};
-  }
-}
-var STATE_EXPAND = "mcloud.taskexpansion.state";
-var STEP_TEXT2 = {
-  read: "① 读任务拓展状态",
-  upload: "② 传一个文件触发本月备份",
-  recheck: "②b 再过一遍状态",
-  claim: "③ 领云朵",
-  done: "完成"
-};
-function shouldUpload(read) {
-  return read.curMonthBackup === false;
-}
-function asInt2(v) {
-  if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
-  if (typeof v === "string" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
-  return void 0;
-}
-function parseExpand(result) {
-  const o = result && typeof result === "object" ? result : {};
-  return {
-    curMonthBackup: typeof o.curMonthBackup === "boolean" ? o.curMonthBackup : void 0,
-    curMonthTaskRecordCount: asInt2(o.curMonthTaskRecordCount),
-    acceptDate: typeof o.acceptDate === "string" ? o.acceptDate : void 0,
-    nextMonthTaskRecordCount: asInt2(o.nextMonthTaskRecordCount)
-  };
-}
-function load(deps) {
-  const raw = deps.store.getState(STATE_EXPAND);
-  if (!raw) return null;
-  try {
-    const v = JSON.parse(raw);
-    return typeof v.step === "string" ? v : null;
-  } catch {
-    return null;
-  }
-}
-var save2 = (deps, st) => deps.store.setState(STATE_EXPAND, JSON.stringify(st), deps.nowIso);
-function startExpansion(deps) {
-  save2(deps, { step: "read" });
-  return { ok: true, note: "已排队：读状态 → （需要时）传文件触发备份 → 领云朵" };
-}
-function runExpansionStep(deps) {
-  const st = load(deps) ?? { step: "read" };
-  if (st.step === "done") return { ok: true, idle: true, note: "这一趟已经走完" };
-  const label = STEP_TEXT2[st.step];
-  if (st.step === "upload") {
-    if (uploadDone(deps)) {
-      save2(deps, { ...st, step: "recheck" });
-      return { ok: true, note: `${label}：文件已传完 —— 下一步再过一遍状态` };
-    }
-    const out2 = runUploadStep(deps, deterministicFile(EXPAND_FILE_SEED, EXPAND_FILE_BYTES));
-    if (out2.idle || uploadDone(deps)) {
-      save2(deps, { ...st, step: "recheck" });
-      return {
-        ok: true,
-        note: out2.idle ? `${label}：没有待传的（可能上次已传完）—— 下一步再过一遍状态` : `${label}：文件已传完 —— 下一步再过一遍状态`
-      };
-    }
-    return out2;
-  }
-  if (st.step === "read" || st.step === "recheck") {
-    const res2 = callRawText(deps.transport, signedGet(deps, "/ycloud/signin/page/taskExpansion"));
-    if (!res2.ok) return { ok: false, note: `${label}失败：${res2.error ?? "未知失败"}` };
-    let read;
-    try {
-      read = parseExpand(digResult(res2.text));
-    } catch (e) {
-      return { ok: false, note: `${label}：响应解析不了（${e instanceof Error ? e.message : String(e)}）` };
-    }
-    const next = {
-      step: "claim",
-      acceptDate: read.acceptDate,
-      curMonthBackup: read.curMonthBackup,
-      curMonthTaskRecordCount: read.curMonthTaskRecordCount,
-      nextMonthTaskRecordCount: read.nextMonthTaskRecordCount
-    };
-    if (st.step === "read" && shouldUpload(read)) {
-      save2(deps, { ...next, step: "upload" });
-      startUpload(deps, { name: EXPAND_FILE_NAME, bytes: deterministicFile(EXPAND_FILE_SEED, EXPAND_FILE_BYTES) });
-      return { ok: true, note: `${label}：本月**未开启备份** ⇒ 传一个文件把它做出来 —— 下一步开始传` };
-    }
-    save2(deps, next);
-    const tail = read.nextMonthTaskRecordCount === void 0 ? "" : `；下月可领 ${read.nextMonthTaskRecordCount} 个`;
-    return {
-      ok: true,
-      note: `${label}：备份=${read.curMonthBackup === void 0 ? "没读到" : String(read.curMonthBackup)}，可领次数=${read.curMonthTaskRecordCount ?? "没读到"}${tail} —— 下一步领`
-    };
-  }
-  const res = callRawText(
-    deps.transport,
-    signedGet(deps, `/ycloud/signin/page/receiveTaskExpansion?acceptDate=${st.acceptDate ?? ""}`)
-  );
-  save2(deps, { ...st, step: "done" });
-  if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? "未知失败"}` };
-  let out;
-  try {
-    out = JSON.parse(res.text);
-  } catch {
-    out = void 0;
-  }
-  const code = out?.code;
-  const codeOk = code === void 0 || code === 0 || code === "0" || code === "0000";
-  const raw = out?.result;
-  const detail = typeof raw === "number" ? `${raw}（这一族的 result 是裸数字）` : `${res.text.slice(0, 120)}（⚠ 这一枪**缺成功样本**，形状没被实拍验过）`;
-  if (!codeOk) {
-    const msg = typeof out?.msg === "string" ? out.msg : "";
-    return { ok: false, note: `${label}：上游拒绝 —— code=${String(code)}${msg === "" ? "" : ` ${msg}`}` };
-  }
-  return { ok: true, note: `${label}：上游回 ${detail}` };
-}
-var EXPAND_FILE_NAME = "panel-backup-marker.txt";
-var EXPAND_FILE_SEED = "mcloud-panel-backup-marker-v1";
-var EXPAND_FILE_BYTES = 256;
-function withBase(deps, path) {
-  return `${deps.baseUrl ?? "https://m.mcloud.139.com"}${path}`;
-}
-
-// src/mcloud/tasks/notice.ts
-var STATE_CAN3 = "mcloud.notice.can_claim";
-var STATE_INFO2 = "mcloud.notice.info";
-var NOTICE_CLOUD_STATUS_UNCLAIMED = 1;
-var NOTICE_TASK_STATUS_DONE = 3;
-function asInt3(v) {
-  if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
-  if (typeof v === "string" && v.trim() !== "" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
-  return void 0;
-}
-function parseNoticeSlot(raw) {
-  if (raw === null || raw === void 0 || typeof raw !== "object") return void 0;
-  const o = raw;
-  const slot = {
-    cloudStatus: asInt3(o.cloudStatus ?? o.cloud_status),
-    sum: asInt3(o.sum),
-    progress: asInt3(o.progress),
-    taskStatus: asInt3(o.taskStatus ?? o.task_status)
-  };
-  const any = slot.cloudStatus !== void 0 || slot.sum !== void 0 || slot.progress !== void 0 || slot.taskStatus !== void 0;
-  return any ? slot : void 0;
-}
-function parseNoticeInfo(result) {
-  const o = resultObject({ code: 0, message: "", result, ok: true });
-  return {
-    one: parseNoticeSlot(o.taskOneInfo ?? o.task_one_info),
-    two: parseNoticeSlot(o.taskTwoInfo ?? o.task_two_info)
-  };
-}
-function slotJudged(slot) {
-  return !!slot && slot.cloudStatus !== void 0 && slot.taskStatus !== void 0;
-}
-function slotClaimable(slot) {
-  if (!slotJudged(slot)) return false;
-  return slot.cloudStatus === NOTICE_CLOUD_STATUS_UNCLAIMED && slot.taskStatus === NOTICE_TASK_STATUS_DONE;
-}
-function noticePlan(info) {
-  const slots = [
-    ["槽一", info.one],
-    ["槽二", info.two]
-  ];
-  const claimable = slots.filter(([, s]) => slotClaimable(s)).map(([n]) => n);
-  const unjudged = slots.filter(([, s]) => s && !slotJudged(s)).map(([n]) => n);
-  const missing = slots.filter(([, s]) => !s).map(([n]) => n);
-  const parts = [];
-  if (claimable.length) parts.push(`${claimable.join("/")}可领`);
-  if (unjudged.length) parts.push(`${unjudged.join("/")}判据字段不全（不参与判断，避免静默漏领）`);
-  if (missing.length) parts.push(`${missing.join("/")}上游没给`);
-  if (!parts.length) parts.push("两槽都已入账或无可领");
-  return {
-    claimable: claimable.length > 0,
-    unjudged: unjudged.length > 0,
-    detail: parts.join("；")
-  };
-}
-function runNoticeInfo(deps) {
-  return runTask(
-    deps,
-    {
-      task: "notice",
-      endpoint: "noticeInfo",
-      method: "GET",
-      marketName: "sign_in_3",
-      isDeviceId: false,
-      stateKey: STATE_INFO2
-    },
-    (env) => {
-      const info = parseNoticeInfo(env.result);
-      const plan = noticePlan(info);
-      deps.store.setState(STATE_CAN3, plan.claimable ? "yes" : `no:${plan.detail}`, deps.nowIso);
-      return {
-        ok: true,
-        note: plan.claimable ? `通知任务：${plan.detail}（下一次触发会去领）` : `通知任务：${plan.detail}`,
-        snapshot: { one: info.one ?? null, two: info.two ?? null }
-      };
-    }
-  );
-}
-function runNoticeReward(deps) {
-  const can = deps.store.getState(STATE_CAN3);
-  if (can !== "yes") {
-    return { ok: true, skipped: true, note: `上次问过状态是「${can ?? "没问过"}」，不发领取请求` };
-  }
-  const out = runTask(
-    deps,
-    {
-      task: "notice",
-      endpoint: "noticeReward",
-      method: "GET",
-      marketName: "sign_in_3",
-      isDeviceId: false
-    },
-    (env) => ({
-      ok: true,
-      // 上游不报到账数 —— 这句必须说，否则下一个人会以为这里能看到领了多少
-      note: `通知任务：已发领取请求（上游不报到账数，下一次触发回查 ${JSON.stringify(
-        env.message ?? "success"
-      ).slice(0, 40)}）`
-    })
-  );
-  if (out.ok) deps.store.setState(STATE_CAN3, "no:sent", deps.nowIso);
-  return out;
-}
-function runNotice(deps) {
-  const can = deps.store.getState(STATE_CAN3);
-  if (can === "yes") return runNoticeReward(deps);
-  return runNoticeInfo(deps);
-}
-
-// src/mcloud/tasks/appTaskMatrix.ts
-var STATE_GROUP_INDEX = "mcloud.apptaskmatrix.group_index";
-var STATE_LAST2 = "mcloud.apptaskmatrix.last";
-var MATRIX_MARKETS = ["sign_in_3", "newsign_139mail"];
-var MATRIX_GROUPS = [
-  "new",
-  "beiyong1",
-  "beiyong2",
-  "cloudEmail",
-  "time",
-  "day",
-  "month",
-  "hidden"
-];
-function asInt4(v) {
-  if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
-  if (typeof v === "string" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
-  return void 0;
-}
-function asStr(v) {
-  return typeof v === "string" && v !== "" ? v : void 0;
-}
-function nestedLink(button) {
-  if (button === null || typeof button !== "object") return void 0;
-  const app = button.app;
-  if (app === null || typeof app !== "object") return void 0;
-  return asStr(app.link);
-}
-function parseMatrixItem(raw) {
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return void 0;
-  const o = raw;
-  const it = {
-    taskId: asInt4(o.id ?? o.taskId ?? o.task_id),
-    name: asStr(o.name),
-    description: asStr(o.description),
-    groupId: asStr(o.groupid ?? o.groupId),
-    state: asStr(o.state),
-    limitType: asStr(o.limitType ?? o.limit_type),
-    enable: asInt4(o.enable),
-    currStep: asInt4(o.currstep ?? o.currStep),
-    buttonAppLink: asStr(o.buttonAppLink ?? o.button_app_link) ?? nestedLink(o.button)
-  };
-  const any = it.taskId !== void 0 || it.name !== void 0 || it.state !== void 0 || it.enable !== void 0;
-  return any ? it : void 0;
-}
-function parseMatrix(result, group) {
-  let list = result;
-  if (list !== null && typeof list === "object" && !Array.isArray(list)) {
-    const o = list;
-    if (group !== void 0 && Array.isArray(o[group])) list = o[group];
-    else list = o.list ?? o.tasks ?? o.taskList ?? o.items ?? [];
-  }
-  if (!Array.isArray(list)) return [];
-  return list.map(parseMatrixItem).filter((x) => !!x);
-}
-function judgeItem(i) {
-  if (i.state === "FINISH") return "done";
-  if (i.enable === 1) return "todo";
-  return "skip";
-}
-function matrixKey(group) {
-  return `mcloud.apptaskmatrix.g.${group}`;
-}
-function readMatrix(store2) {
-  return MATRIX_MARKETS.map((g) => {
-    const raw = store2.getState(matrixKey(g));
-    if (!raw) return null;
-    try {
-      const v = JSON.parse(raw);
-      return typeof v === "object" && v ? { ...v, group: g } : null;
-    } catch {
-      return null;
-    }
-  });
-}
-function summarize(items) {
-  let done = 0;
-  let todo = 0;
-  let skip = 0;
-  const todoNames = [];
-  for (const i of items) {
-    const j = judgeItem(i);
-    if (j === "done") done += 1;
-    else if (j === "todo") {
-      todo += 1;
-      if (todoNames.length < 3) todoNames.push(i.name ?? i.description ?? `#${i.taskId ?? "?"}`);
-    } else skip += 1;
-  }
-  return { done, todo, skip, todoNames };
-}
-function runAppTaskMatrix(deps) {
-  const raw = deps.store.getState(STATE_GROUP_INDEX);
-  const parsed = raw === void 0 || raw === null ? 0 : Number(raw);
-  const idx = Number.isFinite(parsed) && parsed >= 0 && parsed < MATRIX_MARKETS.length ? parsed : 0;
-  const market = MATRIX_MARKETS[idx];
-  const out = runTask(
-    deps,
-    {
-      task: "app-task-matrix",
-      endpoint: "taskListV3",
-      method: "POST",
-      // ⚠ `activityid` 跟着**本次的 marketname** 走（mcloud 的 V3 构造器：先剥再补）
-      marketName: market,
-      isDeviceId: false,
-      stateKey: STATE_LAST2,
-      // 实拍体：{"clientVersion":"12.6.0","group":<group>,"marketname":"sign_in_3"}
-      // 体是**字符串**（与 receiveV3Body 同一约定）
-      // ⚠ V3：`group` 是**空串** = 一次拿整个市场（实拍 content-length 62 逐字节对出来的）
-      body: JSON.stringify({ marketname: market, clientVersion: TASK_CLIENT_VERSION, group: "" })
-    },
-    (env) => {
-      const items = parseMatrix(env.result, market);
-      const s = summarize(items);
-      deps.store.setState(STATE_GROUP_INDEX, String((idx + 1) % MATRIX_MARKETS.length), deps.nowIso);
-      const reading = {
-        group: market,
-        at: deps.nowIso,
-        ...s,
-        items,
-        groupState: env.groupState
-      };
-      deps.store.setState(matrixKey(market), JSON.stringify(reading), deps.nowIso);
-      const names = s.todoNames.length ? `（可做：${s.todoNames.join("、")}）` : "";
-      return {
-        ok: true,
-        note: `App 任务矩阵[${idx + 1}/${MATRIX_MARKETS.length} market=${market}]：已完成 ${s.done} 条、可做 ${s.todo} 条、不参与 ${s.skip} 条${names}`,
-        snapshot: { group: market, ...s, items: items.slice(0, 20) }
-      };
-    }
-  );
-  return out;
-}
-
-// src/mcloud/appTaskRules.ts
-var UPLOAD_ONE = {
-  rounds: 1,
-  stopAtProcess: 0,
-  topUpFromProcess: false,
-  perRoundMs: 0,
-  fileExt: ".bin",
-  channel: "android"
-};
-var UPLOAD_TEN = {
-  rounds: 10,
-  stopAtProcess: 10,
-  topUpFromProcess: true,
-  perRoundMs: 300,
-  fileExt: ".jpg",
-  channel: "android"
-};
-var UPLOAD_ONE_PC = {
-  rounds: 1,
-  stopAtProcess: 0,
-  topUpFromProcess: false,
-  perRoundMs: 0,
-  fileExt: ".bin",
-  channel: "pc"
-};
-var ROUNDS_PER_RUN = 5;
-var STOP_AT_PROCESS = 100;
-var PC_UPLOAD_TASK_ID = 113;
-var UPLOAD_TASK_ID = 106;
-var GATE_UPLOAD_TASK_ID = 522;
-var SKIP_TASK_LIST = [
-  117,
-  437,
-  991,
-  406,
-  385,
-  480,
-  1022,
-  1018,
-  603,
-  1021,
-  120
-];
-var PORTAL_ENTRY_TASK_IDS = [1017, 604];
-var CLICK_ONLY_TASK_IDS = [
-  115,
-  431,
-  435,
-  1009,
-  1010,
-  1013,
-  1016,
-  447,
-  547
-];
-function beiyong1NameGate(name) {
-  return name.includes("上传") && (name.includes("图") || name.includes("照"));
-}
-function beiyong1ButtonGate(link) {
-  return typeof link === "string" && link.includes("uploadView");
-}
-function uploadShapeFor(item) {
-  if (item.taskId === PC_UPLOAD_TASK_ID) return UPLOAD_ONE_PC;
-  if (item.taskId === UPLOAD_TASK_ID) return UPLOAD_ONE;
-  if (item.taskId === GATE_UPLOAD_TASK_ID) {
-    return {
-      rounds: ROUNDS_PER_RUN,
-      stopAtProcess: STOP_AT_PROCESS,
-      // ⚠ 522 是"闸"不是"剩余量"：那个 `process` 在循环里不会变
-      topUpFromProcess: false,
-      perRoundMs: 500,
-      fileExt: ".bin",
-      channel: "android"
-    };
-  }
-  if (item.groupId === "beiyong1") {
-    if (typeof item.name === "string" && beiyong1NameGate(item.name)) return UPLOAD_ONE;
-    if (beiyong1ButtonGate(item.buttonAppLink)) return UPLOAD_TEN;
-  }
-  return void 0;
-}
-function shouldSkip(taskId) {
-  return taskId !== void 0 && SKIP_TASK_LIST.includes(taskId);
-}
-function isClickOnly(taskId) {
-  return taskId !== void 0 && CLICK_ONLY_TASK_IDS.includes(taskId);
-}
-function needsPortalEntry(taskId) {
-  return taskId !== void 0 && PORTAL_ENTRY_TASK_IDS.includes(taskId);
-}
-function stepFor(item) {
-  if (shouldSkip(item.taskId)) return void 0;
-  const shape = uploadShapeFor(item);
-  if (shape) return { kind: "upload", shape };
-  if (isClickOnly(item.taskId)) return { kind: "clickOnly" };
-  if (needsPortalEntry(item.taskId)) return { kind: "portalEntry" };
-  return void 0;
-}
-
-// src/mcloud/tasks/appTask.ts
-var STATE_TASK = "mcloud.apptask.state";
-var CLICK_HOST = "https://m.mcloud.139.com";
-var CLICK_PATH = "/ycloud/signin/task/click";
-var JOURNALING_PATH = "/ycloud/visitlog/journaling";
-var JOURNALING_SOURCE_ID = "1077";
-var BATCH_TRASH_URL = "https://personal-kd-njs.yun.139.com/hcy/recyclebin/batchTrash";
-function clickRequest(deps, id) {
-  const session = loadSession(deps.store);
-  return buildH5Request({
-    url: `${CLICK_HOST}${CLICK_PATH}?key=task&id=${id}`,
-    method: "GET",
-    body: void 0,
-    referer: REFERER_SIGN_IN,
-    showLoading: SHOW_LOADING,
-    isDeviceId: false,
-    saltKey: 1,
-    marketName: "sign_in_3",
-    session: session ? sessionHeaders(session) : {}
-  });
-}
-function journalingRequest(deps, taskId, marketname = "sign_in_3") {
-  const session = loadSession(deps.store);
-  return {
-    url: `${CLICK_HOST}${JOURNALING_PATH}`,
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
-      ...session ? sessionHeaders(session) : {}
-    },
-    body: `module=uservisit&optkeyword=139newsignin_index_task_${taskId}&sourceid=${JOURNALING_SOURCE_ID}&marketName=${marketname}`
-  };
-}
-function trashRequest(deps, fileIds) {
-  void deps;
-  return {
-    url: BATCH_TRASH_URL,
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...cloudFileOpHeaders("upload") },
-    body: JSON.stringify({ fileIds })
-  };
-}
-function load2(deps) {
-  const raw = deps.store.getState(STATE_TASK);
-  if (!raw) return null;
-  try {
-    const v = JSON.parse(raw);
-    return typeof v.phase === "string" ? v : null;
-  } catch {
-    return null;
-  }
-}
-var save3 = (deps, st) => deps.store.setState(STATE_TASK, JSON.stringify(st), deps.nowIso);
-function today(deps) {
-  return deps.nowIso.slice(0, 10);
-}
-function freshClicked(st, deps) {
-  return st.day === today(deps) ? st.clicked : [];
-}
-function clickedButIneffective(deps, st) {
-  const clicked = freshClicked(st, deps);
-  if (clicked.length === 0) return [];
-  const still = pendingItems(deps).filter((p) => clicked.includes(p.itemId));
-  return still.map((p) => p.itemId);
-}
-function advance(deps, st) {
-  const clicked = freshClicked(st, deps);
-  const next = pendingItems(deps).find((p) => !clicked.includes(p.itemId));
-  if (!next) {
-    save3(deps, { ...st, phase: "done", fileId: void 0, clicked, day: today(deps) });
-    const dead = clickedButIneffective(deps, { ...st, clicked });
-    const warn2 = dead.length === 0 ? "" : `。⚠ 其中 ${dead.length} 条**点了但状态没变**（#${dead.join("、")}）—— HTTP 200 只说明"请求被接受了"。这类多半要**先做那个动作**（开启备份 / 开启通知），光点一下不算数`;
-    return { ok: dead.length === 0, note: `待办都走完了（这一趟点了 ${clicked.length} 条）${warn2}` };
-  }
-  if (next.needUpload) beginUpload(deps, next.itemId, next.name);
-  save3(deps, {
-    gi: next.gi,
-    ii: next.ii,
-    phase: next.needUpload ? "upload" : "visit",
-    itemId: next.itemId,
-    clicked,
-    day: today(deps)
-  });
-  return { ok: true, note: `下一条 #${next.itemId}（「${next.name}」）` };
-}
-var lastSkipped = [];
-function pendingItems(deps) {
-  const out = [];
-  const skipped = [];
-  const readings = readMatrix(deps.store);
-  readings.forEach((reading, gi) => {
-    if (!reading) return;
-    for (const [ii, item] of (reading.items ?? []).entries()) {
-      if (judgeItem(item) !== "todo") continue;
-      if (stepFor({ taskId: item.taskId, groupId: item.groupId, name: item.name, buttonAppLink: item.buttonAppLink }) === void 0) {
-        skipped.push(item.taskId ?? 0);
+  var final = st.f || 0, pos = st.p || 0, bt = st.b || 0, lm = st.l, dm = st.d, lbt = st.m, dbt = st.n;
+  var tbts = sl * 8;
+  do {
+    if (!lm) {
+      final = bits(dat, pos, 1);
+      var type = bits(dat, pos + 1, 3);
+      pos += 3;
+      if (!type) {
+        var s = shft(pos) + 4, l = dat[s - 4] | dat[s - 3] << 8, t = s + l;
+        if (t > sl) {
+          if (noSt)
+            err(0);
+          break;
+        }
+        if (resize)
+          cbuf(bt + l);
+        buf.set(dat.subarray(s, t), bt);
+        st.b = bt += l, st.p = pos = t * 8, st.f = final;
         continue;
+      } else if (type == 1)
+        lm = flrm, dm = fdrm, lbt = 9, dbt = 5;
+      else if (type == 2) {
+        var hLit = bits(dat, pos, 31) + 257, hcLen = bits(dat, pos + 10, 15) + 4;
+        var tl = hLit + bits(dat, pos + 5, 31) + 1;
+        pos += 14;
+        var ldt = new u8(tl);
+        var clt = new u8(19);
+        for (var i = 0; i < hcLen; ++i) {
+          clt[clim[i]] = bits(dat, pos + i * 3, 7);
+        }
+        pos += hcLen * 3;
+        var clb = max(clt), clbmsk = (1 << clb) - 1;
+        var clm = hMap(clt, clb, 1);
+        for (var i = 0; i < tl; ) {
+          var r = clm[bits(dat, pos, clbmsk)];
+          pos += r & 15;
+          var s = r >> 4;
+          if (s < 16) {
+            ldt[i++] = s;
+          } else {
+            var c = 0, n = 0;
+            if (s == 16)
+              n = 3 + bits(dat, pos, 3), pos += 2, c = ldt[i - 1];
+            else if (s == 17)
+              n = 3 + bits(dat, pos, 7), pos += 3;
+            else if (s == 18)
+              n = 11 + bits(dat, pos, 127), pos += 7;
+            while (n--)
+              ldt[i++] = c;
+          }
+        }
+        var lt = ldt.subarray(0, hLit), dt = ldt.subarray(hLit);
+        lbt = max(lt);
+        dbt = max(dt);
+        lm = hMap(lt, lbt, 1);
+        dm = hMap(dt, dbt, 1);
+      } else
+        err(1);
+      if (pos > tbts) {
+        if (noSt)
+          err(0);
+        break;
       }
-      out.push({
-        gi,
-        ii,
-        itemId: item.taskId ?? 0,
-        name: item.name ?? `task-${item.taskId ?? 0}`,
-        needUpload: uploadShapeFor({
-          taskId: item.taskId,
-          groupId: item.groupId,
-          name: item.name,
-          buttonAppLink: item.buttonAppLink
-        }) !== void 0
-      });
     }
-  });
+    if (resize)
+      cbuf(bt + 131072);
+    var lms = (1 << lbt) - 1, dms = (1 << dbt) - 1;
+    var lpos = pos;
+    for (; ; lpos = pos) {
+      var c = lm[bits16(dat, pos) & lms], sym = c >> 4;
+      pos += c & 15;
+      if (pos > tbts) {
+        if (noSt)
+          err(0);
+        break;
+      }
+      if (!c)
+        err(2);
+      if (sym < 256)
+        buf[bt++] = sym;
+      else if (sym == 256) {
+        lpos = pos, lm = null;
+        break;
+      } else {
+        var add = sym - 254;
+        if (sym > 264) {
+          var i = sym - 257, b = fleb[i];
+          add = bits(dat, pos, (1 << b) - 1) + fl[i];
+          pos += b;
+        }
+        var d = dm[bits16(dat, pos) & dms], dsym = d >> 4;
+        if (!d)
+          err(3);
+        pos += d & 15;
+        var dt = fd[dsym];
+        if (dsym > 3) {
+          var b = fdeb[dsym];
+          dt += bits16(dat, pos) & (1 << b) - 1, pos += b;
+        }
+        if (pos > tbts) {
+          if (noSt)
+            err(0);
+          break;
+        }
+        if (resize)
+          cbuf(bt + 131072);
+        var end = bt + add;
+        if (bt < dt) {
+          var shift = dl - dt, dend = Math.min(dt, end);
+          if (shift + bt < 0)
+            err(3);
+          for (; bt < dend; ++bt)
+            buf[bt] = dict[shift + bt];
+        }
+        for (; bt < end; ++bt)
+          buf[bt] = buf[bt - dt];
+      }
+    }
+    st.l = lm, st.p = lpos, st.b = bt, st.f = final;
+    if (lm)
+      final = 1, st.m = lbt, st.d = dm, st.n = dbt;
+  } while (!final);
+  return bt != buf.length && noBuf ? slc(buf, 0, bt) : buf.subarray(0, bt);
+};
+var et = /* @__PURE__ */ new u8(0);
+var zls = function(d, dict) {
+  if ((d[0] & 15) != 8 || d[0] >> 4 > 7 || (d[0] << 8 | d[1]) % 31)
+    err(6, "invalid zlib data");
+  if ((d[1] >> 5 & 1) == +!dict)
+    err(6, "invalid zlib data: " + (d[1] & 32 ? "need" : "unexpected") + " dictionary");
+  return (d[1] >> 3 & 4) + 2;
+};
+function unzlibSync(data, opts) {
+  return inflt(data.subarray(zls(data, opts && opts.dictionary), -4), { i: 2 }, opts && opts.out, opts && opts.dictionary);
+}
+var td = typeof TextDecoder != "undefined" && /* @__PURE__ */ new TextDecoder();
+var tds = 0;
+try {
+  td.decode(et, { stream: true });
+  tds = 1;
+} catch (e) {
+}
+
+// src/crypto/png.ts
+var SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10];
+function u32(b, o) {
+  return (b[o] << 24 | b[o + 1] << 16 | b[o + 2] << 8 | b[o + 3]) >>> 0;
+}
+function channelsOf(colorType) {
+  switch (colorType) {
+    case 0:
+      return 1;
+    // 灰度
+    case 2:
+      return 3;
+    // RGB
+    case 3:
+      return 1;
+    // 调色板索引
+    case 4:
+      return 2;
+    // 灰度 + alpha
+    case 6:
+      return 4;
+    // RGBA
+    default:
+      throw new Error(`PNG 色彩类型不认识：${colorType}`);
+  }
+}
+function unfilter(raw, w, h, bpp) {
+  const stride = w * bpp;
+  const out = new Uint8Array(stride * h);
+  let pos = 0;
+  for (let y = 0; y < h; y += 1) {
+    const ft = raw[pos];
+    pos += 1;
+    const rowStart = y * stride;
+    const prevStart = (y - 1) * stride;
+    for (let x = 0; x < stride; x += 1) {
+      const cur = raw[pos + x];
+      const a = x >= bpp ? out[rowStart + x - bpp] : 0;
+      const b = y > 0 ? out[prevStart + x] : 0;
+      const c = y > 0 && x >= bpp ? out[prevStart + x - bpp] : 0;
+      let v;
+      switch (ft) {
+        case 0:
+          v = cur;
+          break;
+        case 1:
+          v = cur + a;
+          break;
+        case 2:
+          v = cur + b;
+          break;
+        case 3:
+          v = cur + (a + b >> 1);
+          break;
+        case 4: {
+          const p = a + b - c;
+          const pa = Math.abs(p - a);
+          const pb = Math.abs(p - b);
+          const pc = Math.abs(p - c);
+          v = cur + (pa <= pb && pa <= pc ? a : pb <= pc ? b : c);
+          break;
+        }
+        default:
+          throw new Error(`PNG 滤波类型不认识：${ft}（第 ${y} 行）`);
+      }
+      out[rowStart + x] = v & 255;
+    }
+    pos += stride;
+  }
   return out;
 }
-function beginUpload(deps, itemId, name) {
-  startUpload(deps, {
-    name: `${name}.bin`,
-    bytes: deterministicFile(`app-task-${itemId}`, 256)
-  });
+function decodeImage(bytes) {
+  for (let i = 0; i < 8; i += 1) {
+    if (bytes[i] !== SIGNATURE[i]) throw new Error("不是 PNG（签名不对）");
+  }
+  let w = 0;
+  let h = 0;
+  let bitDepth = 0;
+  let colorType = 0;
+  let interlace = 0;
+  let palette;
+  let transparency;
+  const idat = [];
+  let p = 8;
+  while (p + 8 <= bytes.length) {
+    const len = u32(bytes, p);
+    const type = String.fromCharCode(bytes[p + 4], bytes[p + 5], bytes[p + 6], bytes[p + 7]);
+    const body = bytes.subarray(p + 8, p + 8 + len);
+    if (type === "IHDR") {
+      w = u32(body, 0);
+      h = u32(body, 4);
+      bitDepth = body[8];
+      colorType = body[9];
+      interlace = body[12];
+    } else if (type === "PLTE") {
+      palette = body.slice();
+    } else if (type === "tRNS") {
+      transparency = body.slice();
+    } else if (type === "IDAT") {
+      idat.push(body);
+    } else if (type === "IEND") {
+      break;
+    }
+    p += 12 + len;
+  }
+  if (w <= 0 || h <= 0) throw new Error(`PNG 尺寸不合法：${w}x${h}`);
+  if (bitDepth !== 8) throw new Error(`PNG 位深只支持 8（这张是 ${bitDepth}）`);
+  if (interlace !== 0) throw new Error("PNG 是隔行的，不支持（硬解会得到错位的图）");
+  if (idat.length === 0) throw new Error("PNG 没有 IDAT");
+  const ch = channelsOf(colorType);
+  let total = 0;
+  for (const d of idat) total += d.length;
+  const merged = new Uint8Array(total);
+  let off = 0;
+  for (const d of idat) {
+    merged.set(d, off);
+    off += d.length;
+  }
+  const raw = unfilter(unzlibSync(merged), w, h, ch);
+  const n = w * h;
+  const rgba = new Uint8ClampedArray(n * 4);
+  if (colorType === 0) {
+    for (let i = 0; i < n; i += 1) {
+      const v = raw[i];
+      rgba[i * 4] = v;
+      rgba[i * 4 + 1] = v;
+      rgba[i * 4 + 2] = v;
+      rgba[i * 4 + 3] = 255;
+    }
+  } else if (colorType === 2) {
+    for (let i = 0; i < n; i += 1) {
+      rgba[i * 4] = raw[i * 3];
+      rgba[i * 4 + 1] = raw[i * 3 + 1];
+      rgba[i * 4 + 2] = raw[i * 3 + 2];
+      rgba[i * 4 + 3] = 255;
+    }
+  } else if (colorType === 3) {
+    if (!palette) throw new Error("PNG 是调色板图但没有 PLTE");
+    for (let i = 0; i < n; i += 1) {
+      const idx = raw[i];
+      rgba[i * 4] = palette[idx * 3] ?? 0;
+      rgba[i * 4 + 1] = palette[idx * 3 + 1] ?? 0;
+      rgba[i * 4 + 2] = palette[idx * 3 + 2] ?? 0;
+      rgba[i * 4 + 3] = transparency?.[idx] ?? 255;
+    }
+  } else if (colorType === 4) {
+    for (let i = 0; i < n; i += 1) {
+      const v = raw[i * 2];
+      rgba[i * 4] = v;
+      rgba[i * 4 + 1] = v;
+      rgba[i * 4 + 2] = v;
+      rgba[i * 4 + 3] = raw[i * 2 + 1];
+    }
+  } else {
+    rgba.set(raw.subarray(0, n * 4));
+  }
+  return { data: rgba, width: w, height: h };
 }
-function startAppTask(deps) {
-  const prev = load2(deps);
-  const clicked = prev ? freshClicked(prev, deps) : [];
-  const all = pendingItems(deps);
-  if (all.length === 0) {
-    const sk = lastSkipped;
-    const extra = sk.length === 0 ? "（先跑一次 `app-task-matrix` 把读数填上）" : `；另有 ${sk.length} 条上游列为待做，但**本插件还没实现**（#${sk.slice(0, 6).join("、")}${sk.length > 6 ? "…" : ""}）⇒ 不动它们（点了也不变状态）`;
-    return { ok: true, idle: true, note: `矩阵里没有本插件能做的待办${extra}` };
-  }
-  const todo = all.filter((p) => !clicked.includes(p.itemId));
-  if (todo.length === 0) {
-    return {
-      ok: true,
-      idle: true,
-      note: `读数里 ${all.length} 条待办**今天都点过了** —— 不重发（读数刷新后会自然变 FINISH）`
-    };
-  }
-  const first = todo[0];
-  if (first.needUpload) beginUpload(deps, first.itemId, first.name);
-  save3(deps, {
-    gi: first.gi,
-    ii: first.ii,
-    phase: first.needUpload ? "upload" : "visit",
-    itemId: first.itemId,
-    clicked,
-    day: today(deps)
-  });
-  return { ok: true, note: `已排队 ${todo.length} 条待办（今天已点过 ${clicked.length} 条），从 #${first.itemId} 开始` };
+
+// src/mcloud/slide.ts
+var ALPHA_OPAQUE_THRESHOLD = 128;
+function toGrayFast(data, i) {
+  return data[i] * 77 + data[i + 1] * 150 + data[i + 2] * 29 >> 8;
 }
-function runAppTaskStep(deps) {
-  const st = load2(deps);
-  if (!st) return { ok: true, idle: true, note: "没有在跑的 app-task" };
-  if (st.phase === "done") {
-    return { ok: true, idle: true, note: "这一趟已经走完（读数刷新后新出现的待办要重新起一趟）" };
-  }
-  const pend = pendingItems(deps);
-  const cur = pend.find((p) => p.gi === st.gi && p.ii === st.ii);
-  if (!cur) {
-    return advance(deps, st);
-  }
-  if (st.phase === "upload") {
-    if (uploadDone(deps)) {
-      const up = JSON.parse(deps.store.getState("mcloud.upload.state") ?? "{}");
-      save3(deps, { ...st, phase: "visit", fileId: up.fileId, day: today(deps) });
-      return { ok: true, note: `文件已传完（收尾要用它的 id）—— 下一步记访问日志` };
+function matchSlide(bgData, puzzleData, bgW, bgH, pzW, pzH) {
+  const bgPixels = bgData.data;
+  const pzPixels = puzzleData.data;
+  const contourX = [];
+  const contourY = [];
+  const bgEdge = new Uint8Array(bgW * bgH);
+  for (let y = 1; y < bgH - 1; y += 1) {
+    for (let x = 1; x < bgW - 1; x += 1) {
+      const tl = toGrayFast(bgPixels, (y - 1) * bgW + (x - 1) << 2);
+      const tc = toGrayFast(bgPixels, (y - 1) * bgW + x << 2);
+      const tr = toGrayFast(bgPixels, (y - 1) * bgW + (x + 1) << 2);
+      const ml = toGrayFast(bgPixels, y * bgW + (x - 1) << 2);
+      const mr = toGrayFast(bgPixels, y * bgW + (x + 1) << 2);
+      const bl = toGrayFast(bgPixels, (y + 1) * bgW + (x - 1) << 2);
+      const bc = toGrayFast(bgPixels, (y + 1) * bgW + x << 2);
+      const br = toGrayFast(bgPixels, (y + 1) * bgW + (x + 1) << 2);
+      const gx = -tl + tr - 2 * ml + 2 * mr - bl + br;
+      const gy = -tl - 2 * tc - tr + bl + 2 * bc + br;
+      bgEdge[y * bgW + x] = Math.min(255, Math.abs(gx) + Math.abs(gy) >> 2);
     }
-    const out2 = runUploadStep(deps, deterministicFile(`app-task-${st.itemId}`, 256));
-    if (out2.idle) {
-      save3(deps, { ...st, phase: "visit", day: today(deps) });
-      return { ok: true, note: "没有待传的 —— 下一步记访问日志" };
-    }
-    if (uploadDone(deps)) {
-      const up = JSON.parse(deps.store.getState("mcloud.upload.state") ?? "{}");
-      save3(deps, { ...st, phase: "visit", fileId: up.fileId, day: today(deps) });
-    }
-    return out2;
   }
-  if (st.phase === "visit") {
-    const res2 = callRawText(deps.transport, journalingRequest(deps, st.itemId));
-    if (!res2.ok) return { ok: false, note: `记访问日志 #${st.itemId} 失败：${res2.error ?? "未知失败"}` };
-    save3(deps, { ...st, phase: "click", day: today(deps) });
-    return { ok: true, note: `已记访问日志 #${st.itemId}（HTTP ${res2.status}）—— 下一步打卡` };
-  }
-  if (st.phase === "click") {
-    if (freshClicked(st, deps).includes(st.itemId)) {
-      if (st.fileId) {
-        save3(deps, { ...st, phase: "trash", day: today(deps) });
-        return { ok: true, note: `#${st.itemId} 今天已经点过了 —— 不重发，去收尾` };
+  for (let y = 1; y < pzH - 1; y += 1) {
+    for (let x = 1; x < pzW - 1; x += 1) {
+      const pi = y * pzW + x << 2;
+      if (pzPixels[pi + 3] <= ALPHA_OPAQUE_THRESHOLD) continue;
+      const above = pzPixels[((y - 1) * pzW + x) * 4 + 3] <= ALPHA_OPAQUE_THRESHOLD;
+      const below = pzPixels[((y + 1) * pzW + x) * 4 + 3] <= ALPHA_OPAQUE_THRESHOLD;
+      const left = pzPixels[(y * pzW + (x - 1)) * 4 + 3] <= ALPHA_OPAQUE_THRESHOLD;
+      const right = pzPixels[(y * pzW + (x + 1)) * 4 + 3] <= ALPHA_OPAQUE_THRESHOLD;
+      if (above || below || left || right) {
+        contourX.push(x);
+        contourY.push(y);
       }
-      const out3 = advance(deps, st);
-      return { ok: true, note: `#${st.itemId} 今天已经点过了 —— 不重发。${out3.note}` };
     }
-    const res2 = callRawText(deps.transport, clickRequest(deps, st.itemId));
-    if (!res2.ok) return { ok: false, note: `打卡 #${st.itemId} 失败：${res2.error ?? "未知失败"}` };
-    const clicked = [...freshClicked(st, deps), st.itemId];
-    if (st.fileId) {
-      save3(deps, { ...st, phase: "trash", clicked, day: today(deps) });
-      return { ok: true, note: `打卡 #${st.itemId}（HTTP ${res2.status}）—— 下一步收尾` };
+  }
+  const numContours = contourX.length;
+  if (numContours === 0) return { offsetX: 0, confidence: 0 };
+  const maxOffset = bgW - pzW;
+  if (maxOffset < 0) return { offsetX: 0, confidence: 0 };
+  let bestOffset = 0;
+  let bestScore = 0;
+  let totalScore = 0;
+  for (let offset = 0; offset <= maxOffset; offset += 1) {
+    let sum = 0;
+    for (let c = 0; c < numContours; c += 1) {
+      const bx = offset + contourX[c];
+      if (bx < bgW) sum += bgEdge[contourY[c] * bgW + bx];
     }
-    const out2 = advance(deps, { ...st, clicked });
-    return {
-      ok: out2.ok,
-      note: `打卡 #${st.itemId}（HTTP ${res2.status}）—— 这条没有要收尾的文件。${out2.note}`
-    };
+    totalScore += sum;
+    if (sum > bestScore) {
+      bestScore = sum;
+      bestOffset = offset;
+    }
   }
-  if (!st.fileId) {
-    const out2 = advance(deps, st);
-    return { ok: true, note: `这条没有要收尾的文件 —— 不发空数组那一枪。${out2.note}` };
-  }
-  const res = callRawText(deps.transport, trashRequest(deps, [st.fileId]));
-  if (!res.ok) return { ok: false, note: `收尾 #${st.itemId} 失败：${res.error ?? "未知失败"}` };
-  let ok = true;
-  let why = "";
-  try {
-    const v = JSON.parse(res.text);
-    const code = typeof v.code === "string" ? v.code : String(v.code ?? "");
-    ok = v.success === true || code === "0000" || code === "0";
-    if (!ok) why = `（code=${code}${typeof v.msg === "string" ? ` ${v.msg}` : ""}）`;
-  } catch {
-    ok = false;
-    why = "（响应不是 JSON）";
-  }
-  const out = advance(deps, { ...st, fileId: void 0 });
-  return ok ? { ok: true, note: `收尾 #${st.itemId}：文件已移进回收站。${out.note}` } : { ok: false, note: `收尾 #${st.itemId} 被拒 ${why}` };
+  const avgScore = totalScore / (maxOffset + 1);
+  return { offsetX: bestOffset, confidence: avgScore > 0 ? bestScore / avgScore : 0 };
+}
+function calcPuzzleOffset(puzzleBase64, pictureBase64) {
+  const puzzle = decodeImage(fromBase64(puzzleBase64));
+  const picture = decodeImage(fromBase64(pictureBase64));
+  return matchSlide(picture, puzzle, picture.width, picture.height, puzzle.width, puzzle.height);
+}
+var MIN_CONFIDENCE = 1.5;
+function usable(r) {
+  return r.offsetX > 0 && r.confidence >= MIN_CONFIDENCE;
 }
 
 // src/mcloud/tasks/exchangeList.ts
 var STATE_LIST = "mcloud.exchangelist.last";
-var STATE_RAW = "mcloud.exchangelist.raw";
-var LIMIT_AVAILABLE = 0;
-var LIMIT_TOMORROW = 1;
-var LIMIT_EXCHANGED = 2;
-var LIMIT_GROUP_EXCHANGED = 4;
-function verdictOf(p) {
-  if (p.onLine !== void 0 && p.onLine !== 1) return "offline";
-  if (p.monthLimit !== void 0 && p.received !== void 0 && p.received >= p.monthLimit) {
-    return "month-limit";
-  }
-  if (p.limit === void 0) return "unknown";
-  switch (p.limit) {
-    case LIMIT_AVAILABLE:
-      return "ok";
-    case LIMIT_TOMORROW:
-      return "tomorrow";
-    case LIMIT_EXCHANGED:
-      return "exchanged";
-    case LIMIT_GROUP_EXCHANGED:
-      return "group-exchanged";
-    default:
-      return "unknown";
-  }
-}
 var VERDICT_TEXT = {
   ok: "可兑",
   tomorrow: "明日再来",
@@ -4512,12 +3888,12 @@ var VERDICT_TEXT = {
   "month-limit": "本月额度可能已用完",
   unknown: "判不了"
 };
-function asInt5(v) {
+function asInt(v) {
   if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
   if (typeof v === "string" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
   return void 0;
 }
-function asStr2(v) {
+function asStr(v) {
   return typeof v === "string" && v !== "" ? v : void 0;
 }
 function parseMonthLimit(v) {
@@ -4531,31 +3907,31 @@ function parseMonthLimit(v) {
   }
   if (o === null || typeof o !== "object" || Array.isArray(o)) return void 0;
   const r = o;
-  return asInt5(r.limitMonthQuantity ?? r.limit_month_quantity);
+  return asInt(r.limitMonthQuantity ?? r.limit_month_quantity);
 }
 function parsePrize(raw) {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return void 0;
   const o = raw;
   const p = {
     // ⚠ 实拍是**数字**，不是字符串（原项目特意标了这一点）
-    prizeId: asInt5(o.prizeId ?? o.prize_id),
+    prizeId: asInt(o.prizeId ?? o.prize_id),
     // ⚠ 真机 51/51 是 `prizeName`；`name` 保留是为兼容 mock 与将来可能的另一种形状
-    name: asStr2(o.prizeName ?? o.name),
+    name: asStr(o.prizeName ?? o.name),
     monthLimit: parseMonthLimit(o.probability2),
-    received: asInt5(o.receiveQuantity ?? o.receive_quantity),
-    groupId: asInt5(o.groupId ?? o.group_id),
+    received: asInt(o.receiveQuantity ?? o.receive_quantity),
+    groupId: asInt(o.groupId ?? o.group_id),
     // ⚠⚠ 价格是 **`pOrder`**（不是 `price`）—— 而且同一份响应里 `POrder` 与 `pOrder`
     // **两种拼法并存**，只读一个键的写法会把一部分商品的价格判成"没给"，
     // 于是"余额够不够"那道判断对那几件**恒假**（看着像"没配置价格"，其实是不检查就下单）。
     // 逐字照 mcloud 的 `parse_price`：小写先试，大写兜底。
-    price: asInt5(o.pOrder) ?? asInt5(o.POrder),
-    limit: asInt5(o.limit),
-    count: asInt5(o.count),
-    totalCount: asInt5(o.totalCount ?? o.total_count),
-    dailyRemainderCount: asInt5(o.dailyRemainderCount ?? o.daily_remainder_count),
-    onLine: asInt5(o.onLine ?? o.on_line),
-    startTime: asStr2(o.startTime ?? o.start_time),
-    endTime: asStr2(o.endTime ?? o.end_time)
+    price: asInt(o.pOrder) ?? asInt(o.POrder),
+    limit: asInt(o.limit),
+    count: asInt(o.count),
+    totalCount: asInt(o.totalCount ?? o.total_count),
+    dailyRemainderCount: asInt(o.dailyRemainderCount ?? o.daily_remainder_count),
+    onLine: asInt(o.onLine ?? o.on_line),
+    startTime: asStr(o.startTime ?? o.start_time),
+    endTime: asStr(o.endTime ?? o.end_time)
   };
   return p.prizeId !== void 0 || p.name !== void 0 ? p : void 0;
 }
@@ -4577,45 +3953,6 @@ function parseExchangeList(result) {
   all.sort((a, b) => (a.groupId ?? 0) - (b.groupId ?? 0) || (a.prizeId ?? 0) - (b.prizeId ?? 0));
   return { groups, prizes: all };
 }
-function summarizeList(prizes) {
-  const byVerdict = {};
-  const ok = [];
-  for (const p of prizes) {
-    const v = verdictOf(p);
-    byVerdict[v] = (byVerdict[v] ?? 0) + 1;
-    if (v === "ok" && ok.length < 20) {
-      ok.push({ prizeId: p.prizeId, name: p.name, price: p.price, groupId: p.groupId });
-    }
-  }
-  return { total: prizes.length, okCount: byVerdict.ok ?? 0, byVerdict, ok };
-}
-function runExchangeList(deps) {
-  return runTask(
-    deps,
-    {
-      task: "exchange-list",
-      endpoint: "exchangeList",
-      method: "GET",
-      marketName: "sign_in_3",
-      isDeviceId: false,
-      stateKey: STATE_RAW
-    },
-    (env) => {
-      const { groups, prizes } = parseExchangeList(env.result);
-      const s = summarizeList(prizes);
-      const reading = { at: deps.nowIso, groups: groups.length, ...s };
-      deps.store.setState(STATE_LIST, JSON.stringify(reading), deps.nowIso);
-      const names = s.ok.slice(0, 3).map(
-        (x) => x.price === void 0 ? x.name ?? "#" + x.prizeId : `${x.name ?? "#" + x.prizeId}(${x.price}豆)`
-      );
-      return {
-        ok: true,
-        note: `兑换清单：${groups.length} 组 / ${s.total} 件，可兑 ${s.okCount} 件` + (names.length ? `（${names.join("、")}）` : "") + (s.byVerdict.unknown ? `；判不了 ${s.byVerdict.unknown} 件` : ""),
-        snapshot: reading
-      };
-    }
-  );
-}
 function readExchangeList(store2) {
   const raw = store2.getState(STATE_LIST);
   if (!raw) return null;
@@ -4626,16 +3963,298 @@ function readExchangeList(store2) {
   }
 }
 
+// src/mcloud/tasks/exchangeOrder.ts
+var STATE_STEP = "mcloud.exchange.order.step";
+var STATE_PLAN = "mcloud.exchange.order.plan";
+var STATE_BASE = "mcloud.exchange.order.baseline";
+var STATE_ROUND = "mcloud.exchange.order.round";
+var SLIDER_ROUNDS = 2;
+var EXCHANGE_CLIENT_VERSION = "12.6.0";
+var SLIDE_FORM_CONTENT_TYPE = "application/x-www-form-urlencoded;charset=UTF-8";
+var VISIT_LOG_KEYWORD_EXCHANGE = "newsignin_index_to_exchange";
+var VISIT_LOG_KEYWORD_EXCHANGE_TIMES = "newsignin_index_exchange_times";
+var VISIT_LOG_MARKET_NAME = "sign_in_3";
+var CODE_SLIDER_WRONG = 514;
+function num(v) {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
+  return void 0;
+}
+function signedReq(deps, spec) {
+  const session = loadSession(deps.store);
+  return buildH5Request({
+    url: spec.url,
+    method: spec.method,
+    body: spec.body,
+    contentType: spec.contentType,
+    referer: REFERER_SIGN_IN,
+    showLoading: SHOW_LOADING,
+    // ⚠ `isDeviceId` 是**逐接口**的：下单那条要，取滑块那条**不要**（照实拍）
+    isDeviceId: spec.isDeviceId ?? false,
+    saltKey: 1,
+    marketName: "sign_in_3",
+    session: session ? sessionHeaders(session) : {}
+  });
+}
+function digResult(text) {
+  try {
+    const v = JSON.parse(text);
+    const r = v.result;
+    return r && typeof r === "object" ? r : v;
+  } catch {
+    return {};
+  }
+}
+function loadState(deps) {
+  const raw = deps.store.getState(STATE_STEP);
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw);
+    return typeof v.step === "string" ? v : null;
+  } catch {
+    return null;
+  }
+}
+function saveState(deps, st) {
+  deps.store.setState(STATE_STEP, JSON.stringify(st), deps.nowIso);
+}
+function clearOrder(deps) {
+  deps.store.setState(STATE_STEP, "", deps.nowIso);
+  deps.store.setState(STATE_PLAN, "", deps.nowIso);
+  deps.store.setState(STATE_BASE, "", deps.nowIso);
+  deps.store.setState(STATE_ROUND, "", deps.nowIso);
+}
+function startOrder(deps, query) {
+  if (query.trim() === "") {
+    return { ok: false, note: "兑换要指定奖品（名字或 prizeId）—— 没有它无从下手" };
+  }
+  saveState(deps, { step: "list", round: 0 });
+  deps.store.setState(STATE_PLAN, query.trim(), deps.nowIso);
+  return { ok: true, note: `已排队兑换「${query.trim()}」—— 后面每次触发走一步（一次调用一个请求）` };
+}
+function pickPrize(prizes, query) {
+  const q = query.trim();
+  if (/^\d+$/.test(q)) return prizes.find((p) => String(p.prizeId) === q);
+  return prizes.find((p) => p.name === q);
+}
+var STEP_TEXT = {
+  list: "① 读清单",
+  balance: "② 读基准余额（成交复查要拿它算差值）",
+  "warm-1": "③ 预热第一枪",
+  "warm-2": "③ 预热第二枪",
+  slide: "④ 取滑块题面并本地解",
+  order: "⑤ 下单",
+  verify: "⑥ 复查余额差",
+  done: "完成"
+};
+function runOrderStep(deps) {
+  const st = loadState(deps);
+  if (!st) return { ok: true, idle: true, note: "没有在排队的兑换（先用 startOrder 起一单）" };
+  const query = deps.store.getState(STATE_PLAN) ?? "";
+  const step = st.step;
+  const label = STEP_TEXT[step];
+  const done = (note2, ok = true) => {
+    saveState(deps, { ...st, step: "done" });
+    return { ok, note: note2 };
+  };
+  if (step === "done") return { ok: true, idle: true, note: "这一单已经走完了（要再来一单得重新起）" };
+  if (step === "list") {
+    const res = callRawText(
+      deps.transport,
+      signedReq(deps, {
+        url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/signin/page/exchangeList?client=app&clientVersion=${encodeURIComponent(EXCHANGE_CLIENT_VERSION)}`,
+        method: "GET"
+      })
+    );
+    if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? "未知失败"}` };
+    const { prizes } = parseExchangeList(digResult(res.text));
+    const p = pickPrize(prizes, query);
+    if (!p) return done(`${label}：清单里没有「${query}」—— 这一单不做（名字要**精确**匹配）`, false);
+    const prizeId = num(p.prizeId);
+    if (prizeId === void 0) {
+      return done(`${label}：清单里那条没有可用的 prizeId ⇒ 这一单不做（不许编一个数字发出去）`, false);
+    }
+    const plan = { prizeId, prizeName: String(p.name ?? ""), price: num(p.price), query };
+    saveState(deps, { ...st, step: "balance", plan });
+    return { ok: true, note: `${label}：目标「${p.name}」（prizeId=${p.prizeId}）${p.price === void 0 ? "" : `，${p.price} 豆`} —— 下一步读基准余额` };
+  }
+  if (step === "balance") {
+    const res = callRawText(
+      deps.transport,
+      signedReq(deps, { url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/signin/page/infoV3?client=app`, method: "GET" })
+    );
+    if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? "未知失败"}` };
+    let balance;
+    try {
+      const env = digResult(res.text);
+      const v = env.total ?? env.point ?? env.balance;
+      if (typeof v === "number") balance = v;
+      else if (typeof v === "string" && /^\d+$/.test(v)) balance = Number(v);
+    } catch {
+    }
+    if (balance !== void 0) deps.store.setState(STATE_BASE, String(balance), deps.nowIso);
+    saveState(deps, { ...st, step: "warm-1" });
+    return { ok: true, note: `${label}：${balance ?? "没读到"}${balance === void 0 ? "（照样往下走 —— 它只是基准，不是判据）" : "，作为成交复查的基准"} —— 下一步预热` };
+  }
+  if (step === "warm-1" || step === "warm-2") {
+    const keyword = step === "warm-1" ? VISIT_LOG_KEYWORD_EXCHANGE : VISIT_LOG_KEYWORD_EXCHANGE_TIMES;
+    const res = callRawText(
+      deps.transport,
+      signedReq(deps, {
+        url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/visitlog/journaling?module=uservisit&optkeyword=${encodeURIComponent(keyword)}&sourceid=1002&marketName=${encodeURIComponent(VISIT_LOG_MARKET_NAME)}`,
+        method: "POST",
+        body: ""
+      })
+    );
+    const warn = res.ok ? "" : `（埋点失败但不挡路：${res.error ?? "未知"}）`;
+    if (step === "warm-1") {
+      saveState(deps, { ...st, step: "warm-2" });
+      return { ok: true, note: `${label}：${keyword}${warn} —— 下一步第二枪（中间那 500ms 由面板的下一次触发承担）` };
+    }
+    saveState(deps, { ...st, step: "slide" });
+    return { ok: true, note: `${label}：${keyword}${warn} —— 下一步取滑块题面` };
+  }
+  if (step === "slide") {
+    const res = callRawText(
+      deps.transport,
+      signedReq(deps, {
+        url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/auth-service/slide/getSlide`,
+        method: "POST",
+        // ⚠ 这一条用 **form** content-type（不是 JSON）—— 逐接口的，不是一刀切
+        contentType: SLIDE_FORM_CONTENT_TYPE,
+        body: "{}",
+        isDeviceId: false
+      })
+    );
+    if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? "未知失败"}` };
+    let puzzle;
+    let picture;
+    try {
+      const env = digResult(res.text);
+      const pz = env.puzzleImg ?? env.puzzle ?? env.puzzleImage;
+      const bg = env.pictureImg ?? env.picture ?? env.backgroundImg;
+      if (typeof pz === "string") puzzle = pz;
+      if (typeof bg === "string") picture = bg;
+    } catch (e) {
+      return { ok: false, note: `${label}：题面解析不了（${e instanceof Error ? e.message : String(e)}）` };
+    }
+    if (!puzzle || !picture) {
+      return { ok: false, note: `${label}：题面上没有两张图（回 ${res.text.slice(0, 120)}）` };
+    }
+    let solution;
+    try {
+      solution = calcPuzzleOffset(puzzle, picture);
+    } catch (e) {
+      return done(
+        `${label}：图解码失败（${e instanceof Error ? e.message : String(e)}）⇒ 不发下单那一枪（offset 错了那一枪不可能成功，只会白耗一次题面）`,
+        false
+      );
+    }
+    if (!usable(solution)) {
+      return done(
+        `${label}：算不出可用的 offset（解出 ${solution.offsetX}，置信度 ${solution.confidence.toFixed(2)}）⇒ 不发下单那一枪 —— 这一枪发出去是无效的，不是"少一次机会"而是"多一次白打"`,
+        false
+      );
+    }
+    saveState(deps, { ...st, step: "order", offset: solution.offsetX });
+    return { ok: true, note: `${label}：offset=${solution.offsetX}（置信度 ${solution.confidence.toFixed(2)}）—— 下一步下单` };
+  }
+  if (step === "order") {
+    const plan = st.plan;
+    if (!plan) return done("内部状态缺计划，这一单作废", false);
+    const sess = loadSession(deps.store);
+    const deviceId = sess?.deviceId ?? "";
+    if (deviceId === "") {
+      return done('没有 deviceId（它要现换，见 smid 链）—— 不带它下单会回 615，文案却像"活动太火爆"', false);
+    }
+    if (st.offset === void 0) return done("内部状态缺 offset，这一单作废（不发一个没算出来的数）", false);
+    const body = `{"prizeId":${plan.prizeId},"client":"app","clientVersion":"${EXCHANGE_CLIENT_VERSION}","puzzleOffset":${st.offset},"smsCode":"","deviceId":"${deviceId}"}`;
+    const req = signedReq(deps, {
+      url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/signin/page/exchangeV3`,
+      method: "POST",
+      body,
+      isDeviceId: true
+      // 这条**要** isdeviceid，而取滑块那条不要
+    });
+    req.headers.origin = MCLOUD_HOST;
+    const res = callRawText(deps.transport, req);
+    if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? "未知失败"}` };
+    let code;
+    try {
+      const env = digResult(res.text);
+      const c = env.code;
+      code = typeof c === "number" ? c : typeof c === "string" && /^-?\d+$/.test(c) ? Number(c) : void 0;
+    } catch {
+    }
+    if (code === CODE_SLIDER_WRONG) {
+      const round = (st.round ?? 0) + 1;
+      if (round > SLIDER_ROUNDS) {
+        return done(`${label}：滑块连续 ${SLIDER_ROUNDS} 轮被判错 ⇒ 停手（上限 SLIDER_ROUNDS 轮）`, false);
+      }
+      saveState(deps, { ...st, step: "slide", round, offset: void 0 });
+      return { ok: true, note: `${label}：514（滑块算错）⇒ 重取一题再来一枪（第 ${round}/${SLIDER_ROUNDS} 轮），**没有重复下单**` };
+    }
+    saveState(deps, { ...st, step: "verify" });
+    return { ok: true, note: `${label}：上游回 ${JSON.stringify(env0(res.text)).slice(0, 140)} —— 下一步查余额差（**那句话不算数**）` };
+  }
+  if (step === "verify") {
+    const before = deps.store.getState(STATE_BASE);
+    const res = callRawText(
+      deps.transport,
+      signedReq(deps, { url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/signin/page/infoV3?client=app`, method: "GET" })
+    );
+    if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? "未知失败"}` };
+    let after;
+    try {
+      const env = digResult(res.text);
+      const v = env.total ?? env.point ?? env.balance;
+      if (typeof v === "number") after = v;
+    } catch {
+    }
+    if (!before || after === void 0) {
+      return done(`${label}：拿不到余额差（基准「${before || "缺"}」/ 现在「${after ?? "缺"}」）⇒ 成交与否**不知道**，如实报`, false);
+    }
+    const delta = Number(before) - after;
+    if (delta > 0) return done(`${label}：✅ 成交（余额 ${before} → ${after}，扣了 ${delta} 豆）`);
+    return done(`${label}：❌ 没成交（余额 ${before} → ${after}，没扣豆）—— 上游那句话不算数，只有余额差算数`, false);
+  }
+  return { ok: false, note: `不认识的步骤「${step}」` };
+}
+function env0(text) {
+  const r = digResult(text);
+  return Object.keys(r).length > 0 ? r : text.slice(0, 140);
+}
+
+// src/mcloud/tasks/appTaskMatrix.ts
+var MATRIX_MARKETS = ["sign_in_3", "newsign_139mail"];
+var MATRIX_GROUPS = [
+  "new",
+  "beiyong1",
+  "beiyong2",
+  "cloudEmail",
+  "time",
+  "day",
+  "month",
+  "hidden"
+];
+function matrixKey(group) {
+  return `mcloud.apptaskmatrix.g.${group}`;
+}
+function readMatrix(store2) {
+  return MATRIX_MARKETS.map((g) => {
+    const raw = store2.getState(matrixKey(g));
+    if (!raw) return null;
+    try {
+      const v = JSON.parse(raw);
+      return typeof v === "object" && v ? { ...v, group: g } : null;
+    } catch {
+      return null;
+    }
+  });
+}
+
 // src/mcloud/liveKouling.ts
 var XIAOHONGSHU_KOULING_PROFILE_URL = "https://www.xiaohongshu.com/user/profile/568caf13aed7585949773b30";
-function xiaohongshuProfileHeaders() {
-  return {
-    accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "accept-language": "zh-CN,zh;q=0.9",
-    referer: "https://www.xiaohongshu.com/",
-    "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
-  };
-}
 function isKoulingHead(text) {
   return /(?:复制)?口令\s*\d*\s*[：:]\s*$/.test(text.trim());
 }
@@ -4707,74 +4326,6 @@ function extractKouling(msg) {
     }
   }
   return [...new Set(result.map(trimKoulingTail))].filter((code) => code !== "" && !isQuestion(code));
-}
-var NAMED_ENTITIES = {
-  amp: "&",
-  apos: "'",
-  gt: ">",
-  lt: "<",
-  nbsp: " ",
-  quot: '"'
-};
-function decodeHtmlEntities(text) {
-  return text.replace(/&(?:#(\d+)|#x([\da-f]+)|(\w+));/gi, (entity, decimal, hex, named) => {
-    if (typeof decimal === "string" && decimal !== "") {
-      const n = Number(decimal);
-      return safeFromCodePoint(n, entity);
-    }
-    if (typeof hex === "string" && hex !== "") {
-      return safeFromCodePoint(Number.parseInt(hex, 16), entity);
-    }
-    if (typeof named === "string") {
-      return NAMED_ENTITIES[named.toLowerCase()] ?? entity;
-    }
-    return entity;
-  });
-}
-function safeFromCodePoint(n, fallback) {
-  if (!Number.isFinite(n) || n < 0 || n > 1114111) return fallback;
-  try {
-    return String.fromCodePoint(n);
-  } catch {
-    return fallback;
-  }
-}
-function decodeJsonString(value) {
-  try {
-    return JSON.parse(`"${value}"`);
-  } catch {
-    return value.replace(/\\n/g, "\n").replace(/\\r/g, "\r").replace(/\\t/g, "	").replace(/\\"/g, '"').replace(/\\\\/g, "\\");
-  }
-}
-function htmlToText(html) {
-  return decodeHtmlEntities(
-    html.replace(/<br\s*\/?\s*>/gi, "\n").replace(/<\/(?:a|article|div|h\d|li|p|section)>/gi, "\n").replace(/<[^>]+>/g, " ")
-  ).replace(/[ \t]+/g, " ").replace(/\n\s+/g, "\n").trim();
-}
-function collectCandidateTexts(html) {
-  const candidates = [];
-  const seen = /* @__PURE__ */ new Set();
-  const add = (value) => {
-    const text = decodeHtmlEntities(value).replace(/\s+/g, " ").trim();
-    if (!text || !hasKouling(text) || seen.has(text)) return;
-    seen.add(text);
-    candidates.push(text);
-  };
-  const jsonFieldPattern = /"(?:displayTitle|title|desc)"\s*:\s*"((?:\\.|[^"\\])*)"/g;
-  for (const match of html.matchAll(jsonFieldPattern)) add(decodeJsonString(match[1] ?? ""));
-  const elementPattern = /<(?:a|article|div|h\d|p)[^>]*>([\s\S]*?)<\/(?:a|article|div|h\d|p)>/gi;
-  for (const match of html.matchAll(elementPattern)) add(htmlToText(match[1] ?? ""));
-  const metaPattern = /<meta\b[^>]*(?:content=["']([^"']+)["'])[^>]*>/gi;
-  for (const match of html.matchAll(metaPattern)) add(match[1] ?? "");
-  for (const line of htmlToText(html).split(/\r?\n/)) add(line);
-  return candidates;
-}
-function extractKoulingFromXiaohongshuHtml(html) {
-  for (const candidate of collectCandidateTexts(html)) {
-    const codes = extractKouling(candidate);
-    if (codes.length > 0) return codes;
-  }
-  return [];
 }
 var MAX_CODE_CHARS = 128;
 var MAX_CODES = 10;
@@ -4985,12 +4536,6 @@ function pickFor(pool, account) {
   const mine = pool.claims[account];
   return pool.codes.filter((c) => c.state !== "invalid").filter((c) => mine === void 0 || !Object.prototype.hasOwnProperty.call(mine, c.value)).map((c) => c.value);
 }
-function xhsReady(pool, nowMs) {
-  return pool.lastXhsAtMs === null || nowMs - pool.lastXhsAtMs >= XHS_MIN_INTERVAL_MS;
-}
-function noteXhs(pool, nowMs) {
-  pool.lastXhsAtMs = nowMs;
-}
 function xhsWaitMs(pool, nowMs) {
   if (pool.lastXhsAtMs === null) return 0;
   return Math.max(0, XHS_MIN_INTERVAL_MS - (nowMs - pool.lastXhsAtMs));
@@ -5013,15 +4558,15 @@ function parsePool(raw) {
   }
   const o = v;
   const pool = emptyPool();
-  pool.cycleAtMs = num(o["cycleAtMs"]) ?? 0;
+  pool.cycleAtMs = num2(o["cycleAtMs"]) ?? 0;
   pool.codes = codeList(o["codes"]);
   pool.claims = claimsOf(o["claims"]);
-  pool.lastLiveAtMs = num(o["lastLiveAtMs"]) ?? null;
-  pool.gateClosedAtMs = num(o["gateClosedAtMs"]) ?? null;
-  pool.lastXhsAtMs = num(o["lastXhsAtMs"]) ?? null;
-  pool.lastScrapeAtMs = num(o["lastScrapeAtMs"]) ?? null;
+  pool.lastLiveAtMs = num2(o["lastLiveAtMs"]) ?? null;
+  pool.gateClosedAtMs = num2(o["gateClosedAtMs"]) ?? null;
+  pool.lastXhsAtMs = num2(o["lastXhsAtMs"]) ?? null;
+  pool.lastScrapeAtMs = num2(o["lastScrapeAtMs"]) ?? null;
   pool.schedule = roomsOf(o["schedule"]);
-  pool.scheduleAtMs = num(o["scheduleAtMs"]) ?? null;
+  pool.scheduleAtMs = num2(o["scheduleAtMs"]) ?? null;
   pool.scheduleAnchor = typeof o["scheduleAnchor"] === "string" ? o["scheduleAnchor"] : null;
   pool.sessions = sessionsOf(o["sessions"]);
   return { pool, reset: false };
@@ -5035,7 +4580,7 @@ function loadPoolFrom(store2) {
 function savePoolTo(store2, pool, nowIso) {
   store2.setState(POOL_KEY, serializePool(pool), nowIso);
 }
-function num(v) {
+function num2(v) {
   return typeof v === "number" && Number.isFinite(v) ? Math.trunc(v) : void 0;
 }
 function str(v) {
@@ -5056,11 +4601,11 @@ function codeList(v) {
       // 而"当成有效"会让 stopScraping 提前为真。
       state: state === "valid" || state === "invalid" ? state : "unknown",
       source: sourceOf(o["source"]),
-      firstSeenMs: num(o["firstSeenMs"]) ?? 0
+      firstSeenMs: num2(o["firstSeenMs"]) ?? 0
     };
     const reason = str(o["reason"]);
     if (reason !== "") code.reason = reason;
-    const validAt = num(o["validAtMs"]);
+    const validAt = num2(o["validAtMs"]);
     if (validAt !== void 0) code.validAtMs = validAt;
     out.push(code);
   }
@@ -5069,7 +4614,7 @@ function codeList(v) {
 function sourceOf(v) {
   return v === "danmaku" || v === "xiaohongshu" || v === "manual" || v === "auto" ? v : "auto";
 }
-function verdictOf2(v) {
+function verdictOf(v) {
   return v === "claimed" || v === "alreadyClaimed" || v === "invalid" || v === "expired" || v === "other" ? v : void 0;
 }
 function claimsOf(v) {
@@ -5079,7 +4624,7 @@ function claimsOf(v) {
     if (codes === null || typeof codes !== "object" || Array.isArray(codes)) continue;
     const mine = {};
     for (const [code, verdict] of Object.entries(codes)) {
-      const v2 = verdictOf2(verdict);
+      const v2 = verdictOf(verdict);
       if (v2 !== void 0) mine[code] = v2;
     }
     out[account] = mine;
@@ -5093,9 +4638,9 @@ function roomsOf(v) {
     if (item === null || typeof item !== "object") continue;
     const o = item;
     out.push({
-      roomId: num(o["roomId"]) ?? 0,
+      roomId: num2(o["roomId"]) ?? 0,
       title: str(o["title"]),
-      status: num(o["status"]) ?? 0,
+      status: num2(o["status"]) ?? 0,
       expectStartTime: str(o["expectStartTime"]),
       anchorNickname: str(o["anchorNickname"])
     });
@@ -5108,10 +4653,10 @@ function sessionsOf(v) {
   for (const item of v) {
     if (item === null || typeof item !== "object") continue;
     const o = item;
-    const started = num(o["startedAtMs"]);
+    const started = num2(o["startedAtMs"]);
     if (started === void 0) continue;
     const s = { startedAtMs: started };
-    const ended = num(o["endedAtMs"]);
+    const ended = num2(o["endedAtMs"]);
     if (ended !== void 0) s.endedAtMs = ended;
     out.push(s);
   }
@@ -5211,59 +4756,6 @@ function saveLiveUrl(store2, url, nowIso) {
   store2.setState(STATE_LIVE_URL, url.trim().replace(/\/+$/, ""), nowIso);
 }
 var EMPTY_SHELL_HINT_CHARS = 5e3;
-function runLiveRoom(deps) {
-  const url = loadLiveUrl(deps.store);
-  const nowMs = Date.parse(deps.nowIso);
-  const loaded = loadPoolFrom(deps.store);
-  const pool = loaded.pool;
-  normalize(pool, nowMs);
-  if (stopScraping(pool)) {
-    return {
-      ok: true,
-      idle: true,
-      note: `口令池已有 ${validCount(pool)} 条**有效**口令 ⇒ 按口径停止抓取（这一场只发那么几条，继续抓只会重复撞同一批）`
-    };
-  }
-  if (!xhsReady(pool, nowMs)) {
-    const mins = Math.ceil(xhsWaitMs(pool, nowMs) / 6e4);
-    return {
-      ok: true,
-      idle: true,
-      note: `距上次抓主页还不到 30 分钟（还要 ${mins} 分钟）—— 频繁抓会被风控挡成空壳，而空壳与"这期没发"在解析层长得一样，混起来没法排查`
-    };
-  }
-  noteXhs(pool, nowMs);
-  savePoolTo(deps.store, pool, deps.nowIso);
-  const res = callRawText(deps.transport, {
-    url,
-    method: "GET",
-    headers: xiaohongshuProfileHeaders(),
-    body: void 0
-  });
-  if (!res.ok) {
-    const note3 = `抓小红书主页失败：${res.error ?? "未知失败"}`;
-    recordError(deps.store, "live-room", note3, deps.nowIso);
-    return { ok: false, note: note3 };
-  }
-  const codes = extractKoulingFromXiaohongshuHtml(res.text);
-  const added = note(pool, codes, "xiaohongshu", nowMs);
-  savePoolTo(deps.store, pool, deps.nowIso);
-  const guess = res.chars < EMPTY_SHELL_HINT_CHARS;
-  const reset = loaded.reset ? "（⚠ 盘上那份池解不出来，已按空池重开 —— 这一场的领取记录丢了）" : "";
-  const poolLine = `池：新增 ${added} 条，有效 ${validCount(pool)} 条${stopScraping(pool) ? "（已够 2 条 ⇒ 停止抓取）" : ""}`;
-  const note2 = codes.length ? `小红书主页：${codes.length} 条口令（${codes.join("、")}）· ${poolLine}` : `小红书主页：没读到口令（页面 ${res.chars} 字符）· ${poolLine}` + (guess ? ` —— 页面小得可疑，**猜**是被挡成了空壳（不是判据）` : ` —— 也可能是这期没发：空壳页与"没发"在解析层长得一样`) + reset;
-  const reading = {
-    at: deps.nowIso,
-    url,
-    codes,
-    chars: res.chars,
-    tookMs: res.tookMs,
-    note: note2
-  };
-  deps.store.setState(STATE_READING, JSON.stringify(reading), deps.nowIso);
-  clearError(deps.store, "live-room", deps.nowIso);
-  return { ok: true, note: note2 };
-}
 function readPoolSummary(store2, nowLocal, nowMs) {
   const { pool } = loadPoolFrom(store2);
   return poolSummary(pool, nowLocal, nowMs);
@@ -5652,122 +5144,6 @@ function parseJson2(raw) {
   }
 }
 
-// src/mcloud/liveAuto.ts
-var ONE_HOUR_MS = 60 * 60 * 1e3;
-var DAY_MS = 24 * ONE_HOUR_MS;
-var BEIJING_OFFSET_MS = 8 * ONE_HOUR_MS;
-function parseLocalMs(local) {
-  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/.exec(local.trim());
-  if (m === null) return void 0;
-  const [, y, mo, d, h, mi, s] = m;
-  const year = Number(y);
-  const month = Number(mo);
-  const day = Number(d);
-  const hour = Number(h);
-  const minute = Number(mi);
-  const second = Number(s ?? "0");
-  if (month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 || second > 59) {
-    return void 0;
-  }
-  const ms = Date.UTC(year, month - 1, day, hour, minute, second) - BEIJING_OFFSET_MS;
-  if (formatLocalMs(ms) !== `${y}-${mo}-${d} ${h}:${mi}:${String(second).padStart(2, "0")}`) {
-    return void 0;
-  }
-  return ms;
-}
-function formatLocalMs(ms) {
-  const t = new Date(ms + BEIJING_OFFSET_MS);
-  const p = (n, w = 2) => String(n).padStart(w, "0");
-  return `${p(t.getUTCFullYear(), 4)}-${p(t.getUTCMonth() + 1)}-${p(t.getUTCDate())} ${p(t.getUTCHours())}:${p(t.getUTCMinutes())}:${p(t.getUTCSeconds())}`;
-}
-function earliestPlusOneHour(nexts, nowMs) {
-  const candidates = nexts.map((s) => s.trim()).filter((s) => s !== "");
-  if (candidates.length === 0) return void 0;
-  const earliest = candidates.reduce((a, b) => a <= b ? a : b);
-  const ms = parseLocalMs(earliest);
-  if (ms === void 0) return void 0;
-  void nowMs;
-  return formatLocalMs(ms + ONE_HOUR_MS);
-}
-function oneShotExpr(local) {
-  const ms = parseLocalMs(local);
-  if (ms === void 0) return void 0;
-  const t = new Date(ms + BEIJING_OFFSET_MS);
-  return `${t.getUTCSeconds()} ${t.getUTCMinutes()} ${t.getUTCHours()} ${t.getUTCDate()} ${t.getUTCMonth() + 1} *`;
-}
-function planDue(plan, nowMs) {
-  return plan !== null && nowMs >= plan.wakeAtMs;
-}
-function planInWindow(plan, nowMs) {
-  return plan !== null && nowMs >= plan.wakeAtMs && nowMs < plan.wakeAtMs + plan.windowMs;
-}
-
-// src/mcloud/tasks/liveAutoTask.ts
-var STATE_WAKE_PLAN = "mcloud.live.wake_plan";
-var SCHEDULE_TRUST_MS = 6 * ONE_HOUR_MS;
-function loadWakePlan(store2) {
-  const raw = store2.getState(STATE_WAKE_PLAN);
-  if (!raw) return null;
-  try {
-    const v = JSON.parse(raw);
-    return typeof v?.wakeAtMs === "number" && typeof v?.wakeAt === "string" ? v : null;
-  } catch {
-    return null;
-  }
-}
-function saveWakePlan(store2, plan, nowIso) {
-  store2.setState(STATE_WAKE_PLAN, plan === null ? "" : JSON.stringify(plan), nowIso);
-}
-function planTrusted(scheduleAtMs, nowMs) {
-  return scheduleAtMs !== null && nowMs - scheduleAtMs <= SCHEDULE_TRUST_MS;
-}
-function refreshWakePlan(deps, opts) {
-  const nowMs = Date.parse(deps.nowIso);
-  const { pool } = loadPoolFrom(deps.store);
-  const summary = poolSummary(pool, formatLocalMs(nowMs), nowMs);
-  const trusted = planTrusted(summary.scheduleAtMs, nowMs);
-  const fromStart = summary.nextStart ?? "";
-  const wakeAt = trusted && fromStart !== "" ? earliestPlusOneHour([fromStart], nowMs) : void 0;
-  if (wakeAt === void 0) {
-    saveWakePlan(deps.store, null, deps.nowIso);
-    return {
-      plan: null,
-      why: fromStart === "" ? "池里没有「下一场」⇒ 不排定时（等门下次探到日程再说）" : "池里那份日程太旧（超过 6 小时）⇒ 不按它睡，退回默认重查"
-    };
-  }
-  const plan = {
-    wakeAt,
-    wakeAtMs: Date.parse(`${wakeAt.replace(" ", "T")}+08:00`),
-    fromStart,
-    computedAt: formatLocalMs(nowMs),
-    expr: oneShotExpr(wakeAt),
-    windowMs: opts.windowMs
-  };
-  saveWakePlan(deps.store, plan, deps.nowIso);
-  return { plan, why: `按「${fromStart}」+1 小时 ⇒ ${wakeAt}` };
-}
-function runLiveAuto(deps, opts) {
-  const nowMs = Date.parse(deps.nowIso);
-  const before = loadWakePlan(deps.store);
-  const { plan, why } = refreshWakePlan(deps, opts);
-  const changed = before?.wakeAt !== plan?.wakeAt;
-  const due = planDue(plan, nowMs);
-  return {
-    ok: true,
-    note: plan === null ? `不排定时（${why}）` : `${changed ? "排定" : "仍是"} ${plan.wakeAt} 醒（= ${plan.fromStart} +1h；等价 cron ${plan.expr ?? "?"}）${due ? " —— 已到点" : ""}`
-  };
-}
-function wakeSleepMs(store2, nowMs, windowMs) {
-  const plan = loadWakePlan(store2);
-  if (plan === null) return void 0;
-  if (!planInWindow(plan, nowMs) && planDue(plan, nowMs)) {
-    return void 0;
-  }
-  if (planDue(plan, nowMs)) return void 0;
-  void windowMs;
-  return plan.wakeAtMs - nowMs;
-}
-
 // src/mcloud/msync.ts
 var CMD_ACK = 0;
 var CMD_HEARTBEAT = 1;
@@ -6114,6 +5490,44 @@ function parseApplyRoom(body) {
       serverTimestamp: typeof v["timestamp"] === "number" ? v["timestamp"] : 0
     }
   };
+}
+
+// src/mcloud/liveAuto.ts
+var ONE_HOUR_MS = 60 * 60 * 1e3;
+var DAY_MS = 24 * ONE_HOUR_MS;
+var BEIJING_OFFSET_MS = 8 * ONE_HOUR_MS;
+function planDue(plan, nowMs) {
+  return plan !== null && nowMs >= plan.wakeAtMs;
+}
+function planInWindow(plan, nowMs) {
+  return plan !== null && nowMs >= plan.wakeAtMs && nowMs < plan.wakeAtMs + plan.windowMs;
+}
+
+// src/mcloud/tasks/liveAutoTask.ts
+var STATE_WAKE_PLAN = "mcloud.live.wake_plan";
+var SCHEDULE_TRUST_MS = 6 * ONE_HOUR_MS;
+function loadWakePlan(store2) {
+  const raw = store2.getState(STATE_WAKE_PLAN);
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw);
+    return typeof v?.wakeAtMs === "number" && typeof v?.wakeAt === "string" ? v : null;
+  } catch {
+    return null;
+  }
+}
+function planTrusted(scheduleAtMs, nowMs) {
+  return scheduleAtMs !== null && nowMs - scheduleAtMs <= SCHEDULE_TRUST_MS;
+}
+function wakeSleepMs(store2, nowMs, windowMs) {
+  const plan = loadWakePlan(store2);
+  if (plan === null) return void 0;
+  if (!planInWindow(plan, nowMs) && planDue(plan, nowMs)) {
+    return void 0;
+  }
+  if (planDue(plan, nowMs)) return void 0;
+  void windowMs;
+  return plan.wakeAtMs - nowMs;
 }
 
 // src/mcloud/liveWs.ts
@@ -6842,7 +6256,7 @@ function listenReadingLine(st) {
 // src/mcloud/liveFlower.ts
 var LIVE_ROOM_ORIGIN = "https://m.mcloud.139.com";
 var USER_INFO_PATH = "/ycloud/liveRoomFeedback/user/info";
-var JOURNALING_PATH2 = "/ycloud/visitlog/journaling";
+var JOURNALING_PATH = "/ycloud/visitlog/journaling";
 var FIRST_PARTICIPATE_GIVE_PATH = "/ycloud/liveRoomFeedback/firstParticipate/give";
 var DRAW_PATH = "/ycloud/liveRoomFeedback/redFlower/draw";
 var QUERY_REVIVAL_FLOWERS_PATH = "/ycloud/liveRoomFeedback/redFlower/queryRevivalFlowers";
@@ -6888,9 +6302,9 @@ function userInfoRequest(base) {
     body: "{}"
   };
 }
-function journalingRequest2(optkeyword, base) {
+function journalingRequest(optkeyword, base) {
   return {
-    url: liveRoomUrl(JOURNALING_PATH2, base),
+    url: liveRoomUrl(JOURNALING_PATH, base),
     method: "POST",
     headers: {
       ...liveRoomHeaders(),
@@ -7042,7 +6456,7 @@ function stepRequest(s, base) {
     case "journaling": {
       const ev = JOURNALING_EVENTS[s.journalingSent];
       if (ev === void 0) return null;
-      return { request: journalingRequest2(ev, base), label: `② 埋点 ${s.journalingSent + 1}/5` };
+      return { request: journalingRequest(ev, base), label: `② 埋点 ${s.journalingSent + 1}/5` };
     }
     case "first-participate":
       return { request: firstParticipateGiveRequest(base), label: "③ 首次参与惊喜奖" };
@@ -7105,22 +6519,22 @@ function runLiveDraw(deps, opts = {}) {
   }
   const res = callOnce(deps.transport, withSession(step.request, session.jwt));
   const before = s.results.length;
-  const advance2 = judge(s, step.label, res, deps.nowIso);
-  deps.store.setState(STATE_DRAW, JSON.stringify(advance2.state), deps.nowIso);
-  if (s.step === "draw" && advance2.state.results.length > before) {
-    const row = advance2.state.results[advance2.state.results.length - 1];
+  const advance = judge(s, step.label, res, deps.nowIso);
+  deps.store.setState(STATE_DRAW, JSON.stringify(advance.state), deps.nowIso);
+  if (s.step === "draw" && advance.state.results.length > before) {
+    const row = advance.state.results[advance.state.results.length - 1];
     if (row !== void 0) {
       const loaded = loadPoolFrom(deps.store);
       noteClaim(loaded.pool, accountOf(deps.store), row.code, claimVerdictOf(row.kind), Date.parse(deps.nowIso));
       savePoolTo(deps.store, loaded.pool, deps.nowIso);
     }
   }
-  if (!advance2.ok) {
-    recordError(deps.store, TASK, advance2.note, deps.nowIso);
-    return { ok: false, note: advance2.note };
+  if (!advance.ok) {
+    recordError(deps.store, TASK, advance.note, deps.nowIso);
+    return { ok: false, note: advance.note };
   }
   clearError(deps.store, TASK, deps.nowIso);
-  return { ok: true, note: advance2.note };
+  return { ok: true, note: advance.note };
 }
 function withSession(req, jwt) {
   return {
@@ -7204,1405 +6618,6 @@ function judge(s, label, res, nowIso) {
 }
 function sameList(a, b) {
   return a.length === b.length && a.every((v, i) => v === b[i]);
-}
-
-// src/mcloud/tasks/receive.ts
-var STATE_QUEUE = "mcloud.receive.queue";
-var STATE_RECEIVE = "mcloud.receive.last";
-function loadQueue(store2) {
-  const raw = store2.getState(STATE_QUEUE);
-  if (!raw) return [];
-  try {
-    const v = JSON.parse(raw);
-    if (!Array.isArray(v)) return [];
-    return v.filter((x) => typeof x === "object" && x !== null).map((o) => ({
-      recordId: typeof o.recordId === "string" ? o.recordId : "",
-      cloudType: typeof o.cloudType === "number" ? o.cloudType : void 0,
-      raw: o.raw
-    }));
-  } catch {
-    return [];
-  }
-}
-function saveQueue(store2, q, nowIso) {
-  store2.setState(STATE_QUEUE, JSON.stringify(q), nowIso);
-}
-function readAcceptDate(raw) {
-  if (typeof raw !== "object" || raw === null) return void 0;
-  const v = raw.acceptDate ?? raw.accept_date;
-  return typeof v === "string" && v.trim() !== "" ? v.trim() : void 0;
-}
-function explainReceiveFail(env, raw) {
-  let code = env?.code;
-  if (typeof code !== "number") {
-    const m = /\bcode=(-?\d+)/.exec(raw);
-    if (m) code = Number(m[1]);
-  }
-  if (code === 615) {
-    return '领取失败：这一枪**没带 `deviceId`**（上游文案说"活动太火爆啦"，但它不是在限流）。领取类接口要一份 **H5 的 deviceId**，那份得靠 smid 指纹链换回来 —— 本插件还没实现那条链；在会话 JSON 里手工带上 `deviceId`（`B` + 88 字符 base64）即可用。';
-  }
-  if (code === 614) {
-    return '领取失败：`deviceId` **内容无效**（上游文案说"锁定失败"，同样不是在限流）。⚠ 登录时那个 `device_id`（32 hex + `-ENDIN`）**不是** H5 要的那一份 —— mcloud 实测拿它去领回的就是这个 614。H5 要的是 `B` + 88 字符 base64。';
-  }
-  return void 0;
-}
-function receiveV3Body(cloudId, cloudType, deviceId) {
-  return JSON.stringify({
-    client: "app",
-    cloudId,
-    cloudType: cloudType === void 0 ? "" : cloudType,
-    deviceId
-  });
-}
-function runReceive(deps) {
-  const session = loadSession(deps.store);
-  if (!session) {
-    return { ok: false, note: "未登录：state 里没有会话（见 docs/howto-session.md）" };
-  }
-  let queue = loadQueue(deps.store);
-  if (queue.length === 0) {
-    const info = fetchInfoV3({ store: deps.store, transport: deps.transport, baseUrl: deps.baseUrl });
-    if (!info.ok) return { ok: false, note: `查询待领清单失败：${info.error}` };
-    if (info.info.receiveList.length === 0) {
-      return { ok: true, skipped: true, note: "没有待领取的东西（infoV3.receiveList 为空）" };
-    }
-    saveQueue(deps.store, info.info.receiveList, deps.nowIso);
-    return {
-      ok: true,
-      note: `发现 ${info.info.receiveList.length} 条待领取，已入队（下面几次触发逐条领）`
-    };
-  }
-  const item = queue[0];
-  const rest = queue.slice(1);
-  if (item.cloudType === 1) {
-    const acceptDate = readAcceptDate(item.raw);
-    const out2 = runTask(
-      deps,
-      {
-        task: "receive",
-        endpoint: "receiveTaskExpansion",
-        method: "GET",
-        query: acceptDate ? `acceptDate=${encodeURIComponent(acceptDate)}` : void 0,
-        // 原实现是 h5(false, …)：这一口不发 isdeviceid
-        isDeviceId: false,
-        stateKey: STATE_RECEIVE
-      },
-      (env) => ({
-        ok: true,
-        note: `延期领取已完成（上游回 ${JSON.stringify(env.result ?? env.message).slice(0, 80)}）`,
-        snapshot: { item: item.raw, result: env.result ?? null }
-      })
-    );
-    saveQueue(deps.store, rest, deps.nowIso);
-    const left1 = rest.length;
-    return { ...out2, note: `${out2.note}${left1 > 0 ? `（队列还剩 ${left1} 条）` : "（队列已清空）"}` };
-  }
-  const out = runTask(
-    deps,
-    {
-      task: "receive",
-      endpoint: "receiveV3",
-      method: "POST",
-      body: receiveV3Body(item.recordId, item.cloudType, session.deviceId ?? ""),
-      stateKey: STATE_RECEIVE,
-      // 615/614 的原话是"活动太火爆啦"，而真相是 deviceId 的事 —— 翻成人话
-      explainFail: explainReceiveFail
-    },
-    (env) => ({
-      ok: true,
-      note: `已领取（cloudId=${item.recordId || "空"}；上游回 ${JSON.stringify(env.result ?? env.message).slice(0, 80)}）`,
-      snapshot: { item: item.raw, result: env.result ?? null }
-    })
-  );
-  saveQueue(deps.store, rest, deps.nowIso);
-  const left = rest.length;
-  return { ...out, note: `${out.note}${left > 0 ? `（队列还剩 ${left} 条）` : "（队列已清空）"}` };
-}
-
-// src/mcloud/tasks/multiple.ts
-var STATE_MULTIPLE = "mcloud.multiple.last";
-function runMultiple(deps) {
-  const info = fetchInfoV3({ store: deps.store, transport: deps.transport, baseUrl: deps.baseUrl });
-  if (!info.ok) return { ok: false, note: `查询状态失败：${info.error}` };
-  const { curMonthBackup, curMonthBackupSignAccept } = info.info;
-  if (!curMonthBackup) {
-    return { ok: true, skipped: true, note: "本月没有翻倍机会（infoV3.curMonthBackup=false）" };
-  }
-  if (curMonthBackupSignAccept) {
-    return { ok: true, skipped: true, note: "本月翻倍机会已用过（infoV3.curMonthBackupSignAccept=true）" };
-  }
-  return runTask(
-    deps,
-    {
-      task: "multiple",
-      endpoint: "multiple",
-      method: "GET",
-      isDeviceId: false,
-      stateKey: STATE_MULTIPLE
-    },
-    (env) => ({
-      ok: true,
-      note: `已领取翻倍（上游回 ${JSON.stringify(env.result ?? env.message).slice(0, 100)}）`,
-      snapshot: env.result ?? null
-    })
-  );
-}
-
-// src/mcloud/tasks/revival.ts
-var STATE_REVIVAL = "mcloud.revival.last";
-var REVIVAL_SKIP_AFTER_MS = 2 * 36e5;
-function revivalMessageAlreadyClaimed(message) {
-  if (!message.includes("已领取") && !message.includes("已领过")) return false;
-  return message.includes("复活卡") || message.includes("回馈卡") || message.includes("奖励");
-}
-function runRevival(deps) {
-  return runTask(
-    deps,
-    {
-      task: "revival",
-      endpoint: "receiveRevivalReward",
-      method: "POST",
-      body: "{}",
-      stateKey: STATE_REVIVAL,
-      // 不可逆：晚了太久就不做
-      skipIfLaterThanMs: REVIVAL_SKIP_AFTER_MS,
-      // 「已领取」是**完成**，不是失败（否则面板每天多一条红）
-      okWhenError: revivalMessageAlreadyClaimed
-    },
-    (env) => ({
-      ok: true,
-      note: `已用掉一张卡（上游回 ${JSON.stringify(env.result ?? env.message).slice(0, 100)}）`,
-      snapshot: env.result ?? null
-    })
-  );
-}
-
-// src/mcloud/session.ts
-function parseSessionInput(raw, nowIso) {
-  const text = raw.trim();
-  if (text === "") return { ok: false, reason: "内容是空的" };
-  if (!text.startsWith("{")) {
-    if (!text.includes("=")) return { ok: false, reason: "既不是 JSON，也不像 cookie 串" };
-    return { ok: true, session: { cookie: normalizeCookie(text), savedAt: nowIso } };
-  }
-  let v;
-  try {
-    v = JSON.parse(text);
-  } catch (e) {
-    return { ok: false, reason: `不是合法 JSON：${e instanceof Error ? e.message : String(e)}` };
-  }
-  if (typeof v !== "object" || v === null || Array.isArray(v)) {
-    return { ok: false, reason: "JSON 顶层要是对象" };
-  }
-  const o = v;
-  const inner = typeof o.session === "string" ? (() => {
-    try {
-      return JSON.parse(o.session);
-    } catch {
-      return o.session;
-    }
-  })() : o.session ?? o;
-  if (typeof inner === "string") return parseSessionInput(inner, nowIso);
-  if (typeof inner !== "object" || inner === null) {
-    return { ok: false, reason: "session 字段既不是对象也不是字符串" };
-  }
-  const s = inner;
-  const pick2 = (k) => {
-    const x = s[k];
-    if (typeof x !== "string" || x.trim() === "") return void 0;
-    return x.trim();
-  };
-  let cookie = pick2("cookie") ?? pick2("cookies") ?? "";
-  if (!cookie && Array.isArray(s.cookies)) {
-    cookie = s.cookies.filter((c) => typeof c === "string").map((c) => c.trim()).filter((c) => c.includes("=")).join("; ");
-  }
-  if (!cookie && Array.isArray(s.cookie)) {
-    cookie = s.cookie.filter((c) => typeof c === "string").join("; ");
-  }
-  if (!cookie) {
-    return { ok: false, reason: "没有 cookie —— 云盘账号的凭据就在 cookie 和 jwt 里，这两样至少要有 cookie" };
-  }
-  return {
-    ok: true,
-    session: {
-      cookie: normalizeCookie(cookie),
-      jwt: pick2("jwt") ?? pick2("jwttoken") ?? pick2("JWT_TOKEN"),
-      deviceId: pick2("deviceId") ?? pick2("deviceid"),
-      userAgent: pick2("userAgent") ?? pick2("user-agent"),
-      savedAt: nowIso
-    }
-  };
-}
-function normalizeCookie(raw) {
-  const parts = [];
-  for (const seg of raw.split(";")) {
-    const p = seg.trim();
-    if (!p || !p.includes("=")) continue;
-    const name = p.slice(0, p.indexOf("=")).trim();
-    if (/^(path|domain|expires|max-age|samesite|secure|httponly)$/i.test(name)) continue;
-    parts.push(p);
-  }
-  return parts.join("; ");
-}
-function redact(secret) {
-  if (!secret) return "（无）";
-  if (secret.length <= 8) return `（${secret.length} 字符，太短不显示）`;
-  return `${secret.slice(0, 4)}…（共 ${secret.length} 字符）`;
-}
-var STATE_LAST_CHECK = "mcloud.session.last_check";
-function sessionStatus(store2, nowIso) {
-  const s = loadSession(store2);
-  const checkRaw = store2.getState(STATE_LAST_CHECK);
-  let lastCheck = "";
-  let lastCheckOk = null;
-  let lastCheckNote = "";
-  if (checkRaw) {
-    try {
-      const c = JSON.parse(checkRaw);
-      lastCheck = c.at ?? "";
-      lastCheckOk = typeof c.ok === "boolean" ? c.ok : null;
-      lastCheckNote = c.note ?? "";
-    } catch {
-      lastCheckNote = "（检查记录坏了）";
-    }
-  }
-  let ageHours = null;
-  if (s?.savedAt) {
-    const t = Date.parse(s.savedAt);
-    const n = Date.parse(nowIso);
-    if (!Number.isNaN(t) && !Number.isNaN(n)) {
-      ageHours = Math.round((n - t) / 36e5 * 10) / 10;
-    }
-  }
-  return {
-    present: !!s,
-    savedAt: s?.savedAt ?? "",
-    ageHours,
-    cookie: redact(s?.cookie),
-    jwt: redact(s?.jwt),
-    deviceId: s?.deviceId ?? "",
-    userAgent: s?.userAgent ?? "",
-    lastCheck,
-    lastCheckOk,
-    lastCheckNote
-  };
-}
-function verifySession(deps) {
-  const s = loadSession(deps.store);
-  if (!s) {
-    const note3 = "没有会话";
-    deps.store.setState(STATE_LAST_CHECK, JSON.stringify({ at: deps.nowIso, ok: false, note: note3 }), deps.nowIso);
-    return { ok: false, note: note3 };
-  }
-  const req = buildH5Request({
-    url: `${resolveUrl("infoV3", deps.baseUrl)}?${CLIENT_QUERY}`,
-    method: EP_METHOD.infoV3 === "GET" ? "GET" : "POST",
-    referer: REFERER_SIGN_IN,
-    showLoading: SHOW_LOADING,
-    isDeviceId: !!s.deviceId,
-    saltKey: 1,
-    session: sessionHeaders(s)
-  });
-  const res = callOnce(deps.transport, req);
-  const ok = res.ok;
-  const note2 = ok ? `会话有效（${res.tookMs}ms）` : `会话可能已失效：${res.error ?? "未知失败"}`;
-  deps.store.setState(
-    STATE_LAST_CHECK,
-    JSON.stringify({ at: deps.nowIso, ok, note: note2 }),
-    deps.nowIso
-  );
-  return { ok, note: note2 };
-}
-function importSession(store2, s, nowIso) {
-  saveSession(store2, s, nowIso);
-  store2.setState(
-    STATE_LAST_CHECK,
-    JSON.stringify({ at: nowIso, ok: null, note: "刚导入，还没验" }),
-    nowIso
-  );
-}
-var STATE_BASE_URL = "mcloud.base_url";
-function loadBaseUrl(store2) {
-  const v = store2.getState(STATE_BASE_URL);
-  if (!v) return "";
-  const t = v.trim();
-  if (!/^https?:\/\//.test(t)) return "";
-  return t.replace(/\/+$/, "");
-}
-
-// src/mcloud/groups.ts
-var GROUPS = [
-  {
-    id: "plugin",
-    title: "插件自身",
-    why: "不是云盘的事，是这个插件自己的健康检查与自检",
-    order: 0
-  },
-  {
-    id: "signin",
-    title: "签到族",
-    why: "无害且幂等：重复只会回「今日已签到」。可以放心点、可以补跑",
-    order: 1
-  },
-  { id: "daily", title: "通知与趣玩", why: "记账类，幂等，漏了可以补", order: 2 },
-  { id: "query", title: "查询与快照", why: "只读，点多少次都无所谓", order: 3 },
-  {
-    id: "activity",
-    title: "活动与站票",
-    why: "要**另一套凭据**（活动会话票，与 jwt 无关）—— 那份票不在，点了必然失败",
-    order: 4
-  },
-  {
-    id: "cloud-write",
-    title: "要用网盘",
-    // ⚠ 措辞改过（2026-10-14）：原先写的是"会往你的网盘里写文件……想清楚再点"，
-    //    把**任务的目的**说成了风险。可任务的定义就是改上游状态 ——
-    //    "上传任务不上传文件"根本不是完成任务，"做任务"不落到上游那也不叫做过。
-    //    写文件不是副作用，**它就是这一组任务本身**。要提醒的只是"它会占用你的网盘"。
-    why: "这一组任务**本身就是往网盘写**（上传文件 / 建外链 / 发邮件）—— 不是副作用，是它的内容。会在你的网盘里留下东西",
-    order: 5
-  },
-  {
-    id: "risky",
-    title: "要花豆",
-    // ⚠ 措辞改过（2026-10-14）：原先写的是"真扣 AI豆、不可回滚"，把**扣豆讲成了损失**。
-    //    扣豆是**成交的标志** —— 扣了就是拿到奖品了，那正是用户要的结果。
-    //    真正不可回滚的是**选择**（花掉豆换到的是不是你想要的那一件）；
-    //    而"花了豆什么也没拿到"这一族里不会发生：不成交就不扣豆。
-    why: "会花掉 AI豆去换东西。扣豆即成交（拿到了才算），不可回滚的是**选择**本身 —— 花之前先看清是哪一件",
-    order: 6
-  }
-];
-var TASK_META = [
-  // ── 插件自身 ──
-  { name: "selftest", title: "沙箱自检", group: "plugin", kind: "Query", risk: "none", missed: "catch-up", deps: [], batch: false, hidden: false, implemented: true, note: "密码学/UTF-8/base64/SQLite 都跑一遍" },
-  { name: "diag", title: "调度健康", group: "plugin", kind: "Query", risk: "none", missed: "catch-up", deps: [], batch: false, hidden: false, implemented: true, note: "记录每次触发的调度延迟（面板 F-001 的那条测量）" },
-  { name: "session-check", title: "会话体检", group: "plugin", kind: "Query", risk: "none", missed: "catch-up", deps: [], batch: false, hidden: false, implemented: true, note: "每天 7:50 先问一次上游还认不认这份凭据" },
-  // H5 换票（三步）：原生凭据 → `jwttoken`。**这是插件能不能用的前提** ——
-  // 之前只能靠人手从浏览器抄票，而票 2 小时即废（过期时所有任务一起回 90001，
-  // 看起来像"账号被踢了"）。现在自己换、自己续，鉴权细节见 mcloud/h5session.ts。
-  { name: "session-refresh", title: "会话续期（H5 换票）", group: "plugin", kind: "Action", risk: "none", missed: "catch-up", deps: [], batch: false, hidden: false, implemented: true, evidence: "captured", note: "原生凭据 → 三步换 jwttoken，约 2 小时自动续；票新鲜时**一个请求都不发**" },
-  // ── 签到族（8 条，全实现）──
-  { name: "sign", title: "每日签到", group: "signin", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["jwt"], batch: true, hidden: false, implemented: true, evidence: "captured", note: "三段式：问状态 → 提交 → 回查（判据是回查）" },
-  { name: "receive", title: "领取AI豆", group: "signin", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["jwt"], batch: true, hidden: false, implemented: true, evidence: "captured", note: "逐条独立；延期领取走另一口端点" },
-  { name: "multiple", title: "签到翻倍", group: "signin", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["jwt"], batch: true, hidden: false, implemented: true, evidence: "captured", note: "每月一次机会 —— 门槛由插件自己判，条件不成立时一个字节都不发" },
-  { name: "backup-gift", title: "备份好礼", group: "signin", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["jwt"], batch: true, hidden: false, implemented: true, evidence: "captured", note: "**GET 却是写**；两步：先问能不能领，能领才领" },
-  { name: "revival", title: "用复活卡/回馈卡", group: "signin", kind: "Action", risk: "irreversible", missed: "skip", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "captured", note: "**不可逆** —— 晚超过 2 小时就不做" },
-  { name: "prizes", title: "待领取奖品", group: "query", kind: "Query", risk: "none", missed: "catch-up", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "captured" },
-  { name: "task-list", title: "任务清单", group: "query", kind: "Query", risk: "none", missed: "catch-up", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "captured" },
-  { name: "cloud-snapshot", title: "AI豆余额快照", group: "query", kind: "Query", risk: "none", missed: "catch-up", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "captured", note: "只取第一页；一页装满会如实说可能还有下一页" },
-  // ── 通知与趣玩（未实现）──
-  // 它用**签到页那张票**（`SessionRecipe::SignInPage`）—— 就是本插件手里已有的会话，
-  // 所以「只依赖 jwt」这条是对的。`getTaskInfo` 有实拍；`reward` 只实拍到成功那一枪。
-  { name: "exchange-list", title: "兑换清单（只看）", group: "activity", kind: "Query", risk: "none", missed: "catch-up", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "captured", note: "逐件判能不能兑；**不碰余额、不碰滑块、不下单**" },
-  { name: "app-task-matrix", title: "App 任务矩阵（只看）", group: "signin", kind: "Query", risk: "none", missed: "catch-up", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "captured", note: "8 个 group 一次读一个；只读，一个字节都不写" },
-  { name: "notice", title: "开启通知领AI豆", group: "daily", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["jwt"], batch: true, hidden: false, implemented: true, evidence: "partial", note: "有手动前置（判不出来，见 notice.ts 文件头 ③）；reward 不报到账数 ⇒ 靠下一轮回查" },
-  // ⚠️ 2026-10-14 第三次更正：**换票那一步现在有了**（通用机制，见 mcloud/h5session.ts
-  //    与 sessionExchange.ts：原生凭据 → querySpecTokenV2 → 时间戳 → tyrzLogin → jwttoken）。
-  //    所以"换票做不了"这句话**不再成立** —— 我连着两轮把"我没有"说成了"不能做"：
-  //      ① 「实拍归档里没有」→ 那是**实拍**没有，**实现**有（Rust 侧那三百行）
-  //      ② 「⇒ 现在做不了」 → 做不到的只是"照实拍逐字复刻"，而通用那套是**照实现**复刻的
-  //    这一条真正缺的是**它自己那一页的换票参数**（`marketName` / `sourceId`）——
-  //    签到页与 msgpushon 页有实拍，这一页没有。缺参数 ≠ 缺机制。
-  { name: "fun-ai", title: "趣玩AI抽奖", group: "activity", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["activity-token"], batch: true, hidden: false, implemented: false, evidence: "no-ticket", note: "换票那步没抓到 ⇒ 做不了" },
-  // 更正：整条链在 `/ycloud/msgPushOn/` 下、要**另一张票**（marketName=msgpushon /
-  // sourceId=1062）。`task/status` 有实拍，`task/obtain` **零样本** ——
-  // "什么值该做什么"仍是旧项目口径，一条都没被上游证实过。
-  // ⚠️ 2026-10-14 修正认知：这一族与 `notice` **不是同一件事**（域/配方/端点全不同，
-  //    见 tasks/msgPush.ts 的文件头对照表）。两步：问状态（只读）+ 领（写）。
-  { name: "msg-push", title: "消息推送奖励", group: "activity", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "captured", note: "两步：问状态 + 领（`secondTaskStatus===2` 才领）。⚠ `pushOn===0` 与首次奖励都要用户去 App 手动" },
-  { name: "msg-push-obtain", title: "消息推送奖励（领）", group: "activity", kind: "Action", risk: "ledger", missed: "skip", deps: ["jwt"], batch: false, hidden: true, implemented: true, evidence: "captured", note: "上一步说可领才发" },
-  // ── 活动与站票（未实现）──
-  { name: "cloud-phone-redpack", title: "红包派对", group: "activity", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["activity-token"], batch: false, hidden: false, implemented: false, note: "⚠ 读到没见过的状态码时**刻意不发写**（旧 TS 会发）" },
-  { name: "play-ai-special", title: "拍拍盘点", group: "activity", kind: "Query", risk: "none", missed: "catch-up", deps: ["jwt", "activity-token"], batch: false, hidden: false, implemented: false },
-  // ⚠️ 这条我**改过两次口径**，第三次才对：
-  //   ① 先说「需要 WebSocket ⇒ 做不了」✗
-  //   ② 再说「两个来源地位相同（WS 弹幕 / 小红书主页），少一条腿不等于走不了」——
-  //      这一半是对的：小红书主页确实只是一次**公开 GET**
-  //   ③ 但源码里还有一句我漏了：**口令（codes）不是可选项** ——
-  //      「小红书那条口令**没法自动化**（那边**无法鉴权**）」，只能由**人给**
-  //   ⇒ 能自动的是「抓主页」，不能自动的是「口令本身」。这是两件事。
-  //   所以拦路石不是 WS，是**缺一个输入口**（让人把口令填进来）。
-  //
-  // 2026-10-13：**只读那一半已实现**（用户选的方案：加口令输入框 + 只做「抓主页 + 列出口令」）。
-  // 抓主页走的是原项目 `xiaohongshu.ts` 的公开 GET + 逐字移植的提取器（41 条黄金向量守着）。
-  // 领小红花那一步（写、会入群足迹）**仍然没做** —— 所以 risk 维持 `ledger` 不变。
-  { name: "live-room", title: "直播口令（只看）", group: "activity", kind: "Query", risk: "none", missed: "catch-up", deps: [], batch: false, hidden: false, implemented: true, evidence: "partial", note: "抓口令发布方的**公开**主页 + 列出口令（**不需要凭据**）；口令要人给（那边无法鉴权）" },
-  // 门（直播日程）：只读地问上游「今天开播了吗 / 下一场几点」。
-  // ⚠ 它**不需要**会话（云盘那套），要的是**原生凭据**（换直播侧 JWT 用）——
-  //   所以 deps 是 ['auth'] 而不是 ['jwt']。缺凭据时它如实失败并说清缺什么。
-  // 证据等级 `captured`：mcloud 那边这一段是**实证**的（只读探针主动走过一遍，
-  //   出处 `docs/capture/app-live-redflower-samples.txt` §5.3），与 WS 那半段分开标。
-  { name: "live-gate", title: "直播日程（门）", group: "activity", kind: "Query", risk: "none", missed: "catch-up", deps: ["basic"], batch: false, hidden: false, implemented: true, evidence: "captured", note: "只读：①②换直播侧 JWT（SSO 只活几分钟 ⇒ 两发同一次调用）+ ③两个页签各一发。结果落**口令池**（日程/门/场次）与界面读数" },
-  // 写那半。**默认关**（`mcloud.live.claim_enabled`），开关与二次确认都在插件界面上。
-  // 它虽然记账，但**基本幂等**：同一条口令再领一次回 `200112`（已兑换过），不会重复发奖。
-  // 所以 risk 是 `ledger` 而不是 `irreversible`。
-  { name: "live-listen", title: "听弹幕口令（只读）", group: "activity", kind: "Query", risk: "none", missed: "catch-up", deps: ["basic"], batch: false, hidden: false, implemented: true, evidence: "captured", note: "真机验过：SockJS 握手 + PROVISION + 心跳（15s 一拍）+ ack + 弹幕文本进池（来源 danmaku）。一次调用读 ~1.6 秒（面板预算 2000ms），窗口默认 10 分钟；门关着时**一个请求都不发**" },
-  // 定时器：**只算时刻、零上游请求**（mcloud 的 `live_auto`）。
-  // 它和听弹幕那条链的分工写在 liveAuto.ts 模块头：定时器负责**叫醒**，
-  // 链自己负责"窗口到点 → 收尾 → 下一拍重走门"。
-  { name: "live-auto", title: "直播自动定时", group: "activity", kind: "Query", risk: "none", missed: "skip", deps: ["basic"], batch: false, hidden: false, implemented: true, evidence: "captured", note: '照 mcloud 的 `live_auto`：时刻 = **最早的「下一场」+ 1 小时**（那一小时留给主播发口令）；每 5 分钟重算一次、**一个上游请求都不发**。听弹幕那条链被判"门关着"时就睡到那一刻（原来固定 5 分钟 ⇒ 一天白问 288 次门）。⚠ 面板的 cron 不能在运行时改表达式 ⇒ 精度最坏晚 5 分钟' },
-  { name: "live-draw", title: "领小红花（写）", group: "activity", kind: "Action", risk: "ledger", missed: "skip", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "partial", note: "六步链 9+N 个请求，一次调用一步；**默认关**。同口令重领回 200112 ⇒ 基本幂等。⚠ 请求头形状未在真账号上验过" },
-  // ── 要用网盘（未实现；原因见各条的 note，**不是**"它会写网盘"）──
-  // ⚠ 未实现 —— 而理由**不是**"它会写网盘"（那是它的内容，不是风险）。
-  //    真理由：App 原生族（上传 / 分享 / 固定入口）的报文形状还没抓全。
-  // ✅ 2026-10-14 实现（判据层纯函数 + 动作层一枪一步）。
-  //    ⚠ 与 `app-task-matrix` **不是同一个 code**：只读那半填读数，这半消费读数去行动。
-  //    ⚠ 传上去的文件**必须收尾**（移回收站）—— 不收，用户网盘里就会慢慢堆垃圾。
-  //    ⚠ `task/click` **不可回滚** ⇒ 同一轮不重发；`batchTrash` **不许发空 fileIds**。
-  { name: "app-task", title: "App 任务（做任务）", group: "activity", kind: "Action", risk: "write-cloud", missed: "skip", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "partial", note: "一枪一步：传文件（需要时）→ `task/click`（不可回滚，同一轮不重发）→ 收尾移回收站。判据是纯函数（106/113/522 与 beiyong1 两道门）；矩阵得先跑过" },
-  // ⚠ 实现时两处**照抓包、别照 TS**：
-  //   ① `receiveTaskExpansion` 发的是**裸 GET**，不许写 `?acceptDate=`。
-  //      抓包 §3.6.6 实测：H5 传的是 `{acceptDate: t.acceptDate}`，而两个真实账号的
-  //      `receiveList[]` 里**根本没有 acceptDate 这个字段**（只有 cloudNum/cloudType）
-  //      ⇒ 值是 undefined ⇒ axios 把整个键丢掉 ⇒ 线上是**一个查询参数都没有**。
-  //      多一个空参数就是**另一个请求**。（`receive` 那条同坑，那边已经照做了。）
-  //   ② 云朵与「云盘专属 AI豆」是**同一个东西的两个名字**（2026-07-31 按 1:1 改名），
-  //      不是两种货币 —— 别把它们当两笔账记。
-  // ✅ 2026-10-14 实现：读状态 → （**严格**读到 curMonthBackup===false 才）传文件触发备份
-  //    → 裸 GET 领云朵。⚠ 领那枪缺成功样本（两个测试号本月都已领过，见 app_signin.rs:28），
-  //    所以成功形状没被实拍验过 —— 实现照源码逐字，不假装验过。
-  //    ⚠ 与 mcloud 一处刻意分歧：它只在 `curMonthTaskRecordCount > 0` 才发领那一枪；
-  //    本插件**不判**（用户定的口径）：那枪只读、成了有云朵、败了什么也不花 ⇒ 直接发。
-  //    ⚠ 领那一枪**必须带 `?acceptDate=`**（值可空，键必须在）—— 真机实测：裸 GET 回 404。
-  //      抓包 §3.6.6 说"要裸 GET"那条被真机推翻了，见 F-021（抓包记的是"客户端发了什么"，
-  //      而那个请求本身是失败的）。
-  { name: "task-expansion", title: "任务拓展", group: "cloud-write", kind: "Action", risk: "write-cloud", missed: "skip", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "partial", note: "三件：读状态 → 传一个文件触发本月备份 → 领云朵（**裸 GET**）。传上去的文件**不留 id、不删**（删了就是删用户的东西）" },
-  // ❌ 2026-10-14 真机探过：**整族 404/405**，且**不是**签名或 marketName 的问题
-  //    （带签名/不带签名、两个 marketName 各试一遍，读数一字不差；与 mcloud 2026-09-25
-  //    的读数逐条一致）。405 说明网关**认得** `/market/rabactive/ai/image/` 这个 location
-  //    但不服务该组合；`image/*` 那一支连 location 都没有。仍不足以判定"活动下线"
-  //    还是"方法不对" ⇒ **不据此改路径**（那些字面量来自能跑的那份旧 TS）。
-  //    所以**默认不开**：一跑就 404 的任务开着只会烧请求并让人以为"跑过了"。见 F-022。
-  { name: "ai-avatar", title: "AI 头像生成与抽奖", group: "activity", kind: "Action", risk: "write-cloud", missed: "skip", deps: ["basic+jwt"], batch: false, hidden: true, implemented: false, evidence: "dead", note: "八口全在 `/market/rabactive/*`，今天真机 404/405（已排除签名与 marketName）⇒ 默认关。恢复条件与读数见 F-022" },
-  // ── 高风险（未实现）──
-  // ✅ 2026-10-14 实现并**真机跑通**（50 豆换到「移动云盘100G云空间月卡」，上游回 oid，
-  //    余额 9238 → 9188 正好少 50）。
-  //
-  // 口径（用户定的）：**优先发出去** —— 清单判据说不能兑、余额看着不够，都**照样发**
-  // （那两处是本地估算，上游仍可能放行；失败不扣豆）。
-  // ⚠ 但**滑块**不属这一类：offset 算错那一枪**不可能成功**（回 514、不成交也不扣豆），
-  //    所以算不出就不发 —— 那不是"少一次机会"，是"多一次白打"。
-  { name: "exchange", title: "兑换奖品", group: "risky", kind: "Action", risk: "spend", missed: "skip", deps: ["jwt", "slider"], batch: false, hidden: false, implemented: true, evidence: "captured", note: "枪序：清单 → 余额 → 预热×2 → 取滑块本地解 → 下单 → 查余额差。**成交判据是余额差**（上游没有幂等，那句话不算数）；滑块算不出就不发" },
-  // ⚠️ 2026-10-14 更正一处**我口头说过的错话**：我曾讲这条"会换掉现有授权"——
-  //    那句话**没有出处**。`auth_refresh.rs` 的叙述是「**续期**」：刷新返回一个自带
-  //    30 天有效期的新 token，并被编进后续请求的 `Authorization`；而**旧凭据会不会被
-  //    这一枪作废，没有任何一处说过**（我把它当成了"替换"）。
-  //    另外它在本插件里是 `implemented: false` —— **根本没实装**，
-  //    所以"我不替你动"这个说法本身就站不住（当时没有可动的东西）。
-  //    ⚠ `risk` 暂时维持 `irreversible`（风险档保守取值的默认），
-  //    但这一档的**依据同样缺样本** —— 真要落地前先把"旧 token 是否仍可用"测出来。
-  // ✅ 2026-10-14 实现。**一个字段都不用用户给**：手机号/端别在 `Authorization` 里解出来，
-  //    `userDomainId` 在 jwttoken 的 `payload.sub` 里。判据照 mcloud 的 `decide`（默认提前 10 天）。
-  // ⚠ `risk` 从 `spend` 改成 `none`：**续期不花任何豆**，原先那一档没有依据
-  //    （我早先说它"会换掉现有授权"，那句没有出处）。真机实测过：
-  //    续期后**旧凭据仍然可用**（两枚都 200），所以它也不是 `irreversible`。
-  { name: "auth-refresh", title: "凭据续期", group: "daily", kind: "Action", risk: "none", missed: "skip", deps: ["basic+jwt"], batch: false, hidden: false, implemented: true, evidence: "captured", note: "离过期还远时**一个请求都不发**；续出的是一枚**全新的** token（30 天），不是把旧的延长。真机验过：旧凭据不会因此失效" }
-];
-function groupView(store2) {
-  const recent = store2.recentRuns(200);
-  const byTask = /* @__PURE__ */ new Map();
-  for (const r of recent) {
-    const t = String(r.task ?? "");
-    if (!t) continue;
-    const list = byTask.get(t) ?? [];
-    if (list.length < 3) {
-      list.push({
-        firedAt: String(r.fired_at ?? ""),
-        ok: Number(r.ok ?? 0) === 1,
-        note: String(r.note ?? ""),
-        lateMs: Number(r.late_ms ?? 0)
-      });
-    }
-    byTask.set(t, list);
-  }
-  const groups = GROUPS.map((g) => {
-    const tasks = TASK_META.filter((t) => t.group === g.id).map((t) => ({
-      ...t,
-      lastError: store2.getState(`mcloud.last_error.${t.name}`) ?? "",
-      recent: byTask.get(t.name) ?? []
-    }));
-    return {
-      ...g,
-      tasks,
-      implemented: tasks.filter((t) => t.implemented).length,
-      total: tasks.length
-    };
-  });
-  return {
-    groups,
-    totals: {
-      tasks: TASK_META.length,
-      implemented: TASK_META.filter((t) => t.implemented).length,
-      risky: TASK_META.filter((t) => t.risk === "spend" || t.risk === "irreversible").length
-    }
-  };
-}
-
-// node_modules/fflate/esm/browser.js
-var u8 = Uint8Array;
-var u16 = Uint16Array;
-var i32 = Int32Array;
-var fleb = new u8([
-  0,
-  0,
-  0,
-  0,
-  0,
-  0,
-  0,
-  0,
-  1,
-  1,
-  1,
-  1,
-  2,
-  2,
-  2,
-  2,
-  3,
-  3,
-  3,
-  3,
-  4,
-  4,
-  4,
-  4,
-  5,
-  5,
-  5,
-  5,
-  0,
-  /* unused */
-  0,
-  0,
-  /* impossible */
-  0
-]);
-var fdeb = new u8([
-  0,
-  0,
-  0,
-  0,
-  1,
-  1,
-  2,
-  2,
-  3,
-  3,
-  4,
-  4,
-  5,
-  5,
-  6,
-  6,
-  7,
-  7,
-  8,
-  8,
-  9,
-  9,
-  10,
-  10,
-  11,
-  11,
-  12,
-  12,
-  13,
-  13,
-  /* unused */
-  0,
-  0
-]);
-var clim = new u8([16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15]);
-var freb = function(eb, start) {
-  var b = new u16(31);
-  for (var i = 0; i < 31; ++i) {
-    b[i] = start += 1 << eb[i - 1];
-  }
-  var r = new i32(b[30]);
-  for (var i = 1; i < 30; ++i) {
-    for (var j = b[i]; j < b[i + 1]; ++j) {
-      r[j] = j - b[i] << 5 | i;
-    }
-  }
-  return { b, r };
-};
-var _a = freb(fleb, 2);
-var fl = _a.b;
-var revfl = _a.r;
-fl[28] = 258, revfl[258] = 28;
-var _b = freb(fdeb, 0);
-var fd = _b.b;
-var revfd = _b.r;
-var rev = new u16(32768);
-for (i = 0; i < 32768; ++i) {
-  x = (i & 43690) >> 1 | (i & 21845) << 1;
-  x = (x & 52428) >> 2 | (x & 13107) << 2;
-  x = (x & 61680) >> 4 | (x & 3855) << 4;
-  rev[i] = ((x & 65280) >> 8 | (x & 255) << 8) >> 1;
-}
-var x;
-var i;
-var hMap = (function(cd, mb, r) {
-  var s = cd.length;
-  var i = 0;
-  var l = new u16(mb);
-  for (; i < s; ++i) {
-    if (cd[i])
-      ++l[cd[i] - 1];
-  }
-  var le = new u16(mb);
-  for (i = 1; i < mb; ++i) {
-    le[i] = le[i - 1] + l[i - 1] << 1;
-  }
-  var co;
-  if (r) {
-    co = new u16(1 << mb);
-    var rvb = 15 - mb;
-    for (i = 0; i < s; ++i) {
-      if (cd[i]) {
-        var sv = i << 4 | cd[i];
-        var r_1 = mb - cd[i];
-        var v = le[cd[i] - 1]++ << r_1;
-        for (var m = v | (1 << r_1) - 1; v <= m; ++v) {
-          co[rev[v] >> rvb] = sv;
-        }
-      }
-    }
-  } else {
-    co = new u16(s);
-    for (i = 0; i < s; ++i) {
-      if (cd[i]) {
-        co[i] = rev[le[cd[i] - 1]++] >> 15 - cd[i];
-      }
-    }
-  }
-  return co;
-});
-var flt = new u8(288);
-for (i = 0; i < 144; ++i)
-  flt[i] = 8;
-var i;
-for (i = 144; i < 256; ++i)
-  flt[i] = 9;
-var i;
-for (i = 256; i < 280; ++i)
-  flt[i] = 7;
-var i;
-for (i = 280; i < 288; ++i)
-  flt[i] = 8;
-var i;
-var fdt = new u8(32);
-for (i = 0; i < 32; ++i)
-  fdt[i] = 5;
-var i;
-var flrm = /* @__PURE__ */ hMap(flt, 9, 1);
-var fdrm = /* @__PURE__ */ hMap(fdt, 5, 1);
-var max = function(a) {
-  var m = a[0];
-  for (var i = 1; i < a.length; ++i) {
-    if (a[i] > m)
-      m = a[i];
-  }
-  return m;
-};
-var bits = function(d, p, m) {
-  var o = p / 8 | 0;
-  return (d[o] | d[o + 1] << 8) >> (p & 7) & m;
-};
-var bits16 = function(d, p) {
-  var o = p / 8 | 0;
-  return (d[o] | d[o + 1] << 8 | d[o + 2] << 16) >> (p & 7);
-};
-var shft = function(p) {
-  return (p + 7) / 8 | 0;
-};
-var slc = function(v, s, e) {
-  if (s == null || s < 0)
-    s = 0;
-  if (e == null || e > v.length)
-    e = v.length;
-  return new u8(v.subarray(s, e));
-};
-var ec = [
-  "unexpected EOF",
-  "invalid block type",
-  "invalid length/literal",
-  "invalid distance",
-  "stream finished",
-  "no stream handler",
-  ,
-  // determined by compression function
-  "no callback",
-  "invalid UTF-8 data",
-  "extra field too long",
-  "date not in range 1980-2099",
-  "filename too long",
-  "stream finishing",
-  "invalid zip data"
-  // determined by unknown compression method
-];
-var err = function(ind, msg, nt) {
-  var e = new Error(msg || ec[ind]);
-  e.code = ind;
-  if (Error.captureStackTrace)
-    Error.captureStackTrace(e, err);
-  if (!nt)
-    throw e;
-  return e;
-};
-var inflt = function(dat, st, buf, dict) {
-  var sl = dat.length, dl = dict ? dict.length : 0;
-  if (!sl || st.f && !st.l)
-    return buf || new u8(0);
-  var noBuf = !buf;
-  var resize = noBuf || st.i != 2;
-  var noSt = st.i;
-  if (noBuf)
-    buf = new u8(sl * 3);
-  var cbuf = function(l2) {
-    var bl = buf.length;
-    if (l2 > bl) {
-      var nbuf = new u8(Math.max(bl * 2, l2));
-      nbuf.set(buf);
-      buf = nbuf;
-    }
-  };
-  var final = st.f || 0, pos = st.p || 0, bt = st.b || 0, lm = st.l, dm = st.d, lbt = st.m, dbt = st.n;
-  var tbts = sl * 8;
-  do {
-    if (!lm) {
-      final = bits(dat, pos, 1);
-      var type = bits(dat, pos + 1, 3);
-      pos += 3;
-      if (!type) {
-        var s = shft(pos) + 4, l = dat[s - 4] | dat[s - 3] << 8, t = s + l;
-        if (t > sl) {
-          if (noSt)
-            err(0);
-          break;
-        }
-        if (resize)
-          cbuf(bt + l);
-        buf.set(dat.subarray(s, t), bt);
-        st.b = bt += l, st.p = pos = t * 8, st.f = final;
-        continue;
-      } else if (type == 1)
-        lm = flrm, dm = fdrm, lbt = 9, dbt = 5;
-      else if (type == 2) {
-        var hLit = bits(dat, pos, 31) + 257, hcLen = bits(dat, pos + 10, 15) + 4;
-        var tl = hLit + bits(dat, pos + 5, 31) + 1;
-        pos += 14;
-        var ldt = new u8(tl);
-        var clt = new u8(19);
-        for (var i = 0; i < hcLen; ++i) {
-          clt[clim[i]] = bits(dat, pos + i * 3, 7);
-        }
-        pos += hcLen * 3;
-        var clb = max(clt), clbmsk = (1 << clb) - 1;
-        var clm = hMap(clt, clb, 1);
-        for (var i = 0; i < tl; ) {
-          var r = clm[bits(dat, pos, clbmsk)];
-          pos += r & 15;
-          var s = r >> 4;
-          if (s < 16) {
-            ldt[i++] = s;
-          } else {
-            var c = 0, n = 0;
-            if (s == 16)
-              n = 3 + bits(dat, pos, 3), pos += 2, c = ldt[i - 1];
-            else if (s == 17)
-              n = 3 + bits(dat, pos, 7), pos += 3;
-            else if (s == 18)
-              n = 11 + bits(dat, pos, 127), pos += 7;
-            while (n--)
-              ldt[i++] = c;
-          }
-        }
-        var lt = ldt.subarray(0, hLit), dt = ldt.subarray(hLit);
-        lbt = max(lt);
-        dbt = max(dt);
-        lm = hMap(lt, lbt, 1);
-        dm = hMap(dt, dbt, 1);
-      } else
-        err(1);
-      if (pos > tbts) {
-        if (noSt)
-          err(0);
-        break;
-      }
-    }
-    if (resize)
-      cbuf(bt + 131072);
-    var lms = (1 << lbt) - 1, dms = (1 << dbt) - 1;
-    var lpos = pos;
-    for (; ; lpos = pos) {
-      var c = lm[bits16(dat, pos) & lms], sym = c >> 4;
-      pos += c & 15;
-      if (pos > tbts) {
-        if (noSt)
-          err(0);
-        break;
-      }
-      if (!c)
-        err(2);
-      if (sym < 256)
-        buf[bt++] = sym;
-      else if (sym == 256) {
-        lpos = pos, lm = null;
-        break;
-      } else {
-        var add = sym - 254;
-        if (sym > 264) {
-          var i = sym - 257, b = fleb[i];
-          add = bits(dat, pos, (1 << b) - 1) + fl[i];
-          pos += b;
-        }
-        var d = dm[bits16(dat, pos) & dms], dsym = d >> 4;
-        if (!d)
-          err(3);
-        pos += d & 15;
-        var dt = fd[dsym];
-        if (dsym > 3) {
-          var b = fdeb[dsym];
-          dt += bits16(dat, pos) & (1 << b) - 1, pos += b;
-        }
-        if (pos > tbts) {
-          if (noSt)
-            err(0);
-          break;
-        }
-        if (resize)
-          cbuf(bt + 131072);
-        var end = bt + add;
-        if (bt < dt) {
-          var shift = dl - dt, dend = Math.min(dt, end);
-          if (shift + bt < 0)
-            err(3);
-          for (; bt < dend; ++bt)
-            buf[bt] = dict[shift + bt];
-        }
-        for (; bt < end; ++bt)
-          buf[bt] = buf[bt - dt];
-      }
-    }
-    st.l = lm, st.p = lpos, st.b = bt, st.f = final;
-    if (lm)
-      final = 1, st.m = lbt, st.d = dm, st.n = dbt;
-  } while (!final);
-  return bt != buf.length && noBuf ? slc(buf, 0, bt) : buf.subarray(0, bt);
-};
-var et = /* @__PURE__ */ new u8(0);
-var zls = function(d, dict) {
-  if ((d[0] & 15) != 8 || d[0] >> 4 > 7 || (d[0] << 8 | d[1]) % 31)
-    err(6, "invalid zlib data");
-  if ((d[1] >> 5 & 1) == +!dict)
-    err(6, "invalid zlib data: " + (d[1] & 32 ? "need" : "unexpected") + " dictionary");
-  return (d[1] >> 3 & 4) + 2;
-};
-function unzlibSync(data, opts) {
-  return inflt(data.subarray(zls(data, opts && opts.dictionary), -4), { i: 2 }, opts && opts.out, opts && opts.dictionary);
-}
-var td = typeof TextDecoder != "undefined" && /* @__PURE__ */ new TextDecoder();
-var tds = 0;
-try {
-  td.decode(et, { stream: true });
-  tds = 1;
-} catch (e) {
-}
-
-// src/crypto/png.ts
-var SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10];
-function u32(b, o) {
-  return (b[o] << 24 | b[o + 1] << 16 | b[o + 2] << 8 | b[o + 3]) >>> 0;
-}
-function channelsOf(colorType) {
-  switch (colorType) {
-    case 0:
-      return 1;
-    // 灰度
-    case 2:
-      return 3;
-    // RGB
-    case 3:
-      return 1;
-    // 调色板索引
-    case 4:
-      return 2;
-    // 灰度 + alpha
-    case 6:
-      return 4;
-    // RGBA
-    default:
-      throw new Error(`PNG 色彩类型不认识：${colorType}`);
-  }
-}
-function unfilter(raw, w, h, bpp) {
-  const stride = w * bpp;
-  const out = new Uint8Array(stride * h);
-  let pos = 0;
-  for (let y = 0; y < h; y += 1) {
-    const ft = raw[pos];
-    pos += 1;
-    const rowStart = y * stride;
-    const prevStart = (y - 1) * stride;
-    for (let x = 0; x < stride; x += 1) {
-      const cur = raw[pos + x];
-      const a = x >= bpp ? out[rowStart + x - bpp] : 0;
-      const b = y > 0 ? out[prevStart + x] : 0;
-      const c = y > 0 && x >= bpp ? out[prevStart + x - bpp] : 0;
-      let v;
-      switch (ft) {
-        case 0:
-          v = cur;
-          break;
-        case 1:
-          v = cur + a;
-          break;
-        case 2:
-          v = cur + b;
-          break;
-        case 3:
-          v = cur + (a + b >> 1);
-          break;
-        case 4: {
-          const p = a + b - c;
-          const pa = Math.abs(p - a);
-          const pb = Math.abs(p - b);
-          const pc = Math.abs(p - c);
-          v = cur + (pa <= pb && pa <= pc ? a : pb <= pc ? b : c);
-          break;
-        }
-        default:
-          throw new Error(`PNG 滤波类型不认识：${ft}（第 ${y} 行）`);
-      }
-      out[rowStart + x] = v & 255;
-    }
-    pos += stride;
-  }
-  return out;
-}
-function decodeImage(bytes) {
-  for (let i = 0; i < 8; i += 1) {
-    if (bytes[i] !== SIGNATURE[i]) throw new Error("不是 PNG（签名不对）");
-  }
-  let w = 0;
-  let h = 0;
-  let bitDepth = 0;
-  let colorType = 0;
-  let interlace = 0;
-  let palette;
-  let transparency;
-  const idat = [];
-  let p = 8;
-  while (p + 8 <= bytes.length) {
-    const len = u32(bytes, p);
-    const type = String.fromCharCode(bytes[p + 4], bytes[p + 5], bytes[p + 6], bytes[p + 7]);
-    const body = bytes.subarray(p + 8, p + 8 + len);
-    if (type === "IHDR") {
-      w = u32(body, 0);
-      h = u32(body, 4);
-      bitDepth = body[8];
-      colorType = body[9];
-      interlace = body[12];
-    } else if (type === "PLTE") {
-      palette = body.slice();
-    } else if (type === "tRNS") {
-      transparency = body.slice();
-    } else if (type === "IDAT") {
-      idat.push(body);
-    } else if (type === "IEND") {
-      break;
-    }
-    p += 12 + len;
-  }
-  if (w <= 0 || h <= 0) throw new Error(`PNG 尺寸不合法：${w}x${h}`);
-  if (bitDepth !== 8) throw new Error(`PNG 位深只支持 8（这张是 ${bitDepth}）`);
-  if (interlace !== 0) throw new Error("PNG 是隔行的，不支持（硬解会得到错位的图）");
-  if (idat.length === 0) throw new Error("PNG 没有 IDAT");
-  const ch = channelsOf(colorType);
-  let total = 0;
-  for (const d of idat) total += d.length;
-  const merged = new Uint8Array(total);
-  let off = 0;
-  for (const d of idat) {
-    merged.set(d, off);
-    off += d.length;
-  }
-  const raw = unfilter(unzlibSync(merged), w, h, ch);
-  const n = w * h;
-  const rgba = new Uint8ClampedArray(n * 4);
-  if (colorType === 0) {
-    for (let i = 0; i < n; i += 1) {
-      const v = raw[i];
-      rgba[i * 4] = v;
-      rgba[i * 4 + 1] = v;
-      rgba[i * 4 + 2] = v;
-      rgba[i * 4 + 3] = 255;
-    }
-  } else if (colorType === 2) {
-    for (let i = 0; i < n; i += 1) {
-      rgba[i * 4] = raw[i * 3];
-      rgba[i * 4 + 1] = raw[i * 3 + 1];
-      rgba[i * 4 + 2] = raw[i * 3 + 2];
-      rgba[i * 4 + 3] = 255;
-    }
-  } else if (colorType === 3) {
-    if (!palette) throw new Error("PNG 是调色板图但没有 PLTE");
-    for (let i = 0; i < n; i += 1) {
-      const idx = raw[i];
-      rgba[i * 4] = palette[idx * 3] ?? 0;
-      rgba[i * 4 + 1] = palette[idx * 3 + 1] ?? 0;
-      rgba[i * 4 + 2] = palette[idx * 3 + 2] ?? 0;
-      rgba[i * 4 + 3] = transparency?.[idx] ?? 255;
-    }
-  } else if (colorType === 4) {
-    for (let i = 0; i < n; i += 1) {
-      const v = raw[i * 2];
-      rgba[i * 4] = v;
-      rgba[i * 4 + 1] = v;
-      rgba[i * 4 + 2] = v;
-      rgba[i * 4 + 3] = raw[i * 2 + 1];
-    }
-  } else {
-    rgba.set(raw.subarray(0, n * 4));
-  }
-  return { data: rgba, width: w, height: h };
-}
-
-// src/mcloud/slide.ts
-var ALPHA_OPAQUE_THRESHOLD = 128;
-function toGrayFast(data, i) {
-  return data[i] * 77 + data[i + 1] * 150 + data[i + 2] * 29 >> 8;
-}
-function matchSlide(bgData, puzzleData, bgW, bgH, pzW, pzH) {
-  const bgPixels = bgData.data;
-  const pzPixels = puzzleData.data;
-  const contourX = [];
-  const contourY = [];
-  const bgEdge = new Uint8Array(bgW * bgH);
-  for (let y = 1; y < bgH - 1; y += 1) {
-    for (let x = 1; x < bgW - 1; x += 1) {
-      const tl = toGrayFast(bgPixels, (y - 1) * bgW + (x - 1) << 2);
-      const tc = toGrayFast(bgPixels, (y - 1) * bgW + x << 2);
-      const tr = toGrayFast(bgPixels, (y - 1) * bgW + (x + 1) << 2);
-      const ml = toGrayFast(bgPixels, y * bgW + (x - 1) << 2);
-      const mr = toGrayFast(bgPixels, y * bgW + (x + 1) << 2);
-      const bl = toGrayFast(bgPixels, (y + 1) * bgW + (x - 1) << 2);
-      const bc = toGrayFast(bgPixels, (y + 1) * bgW + x << 2);
-      const br = toGrayFast(bgPixels, (y + 1) * bgW + (x + 1) << 2);
-      const gx = -tl + tr - 2 * ml + 2 * mr - bl + br;
-      const gy = -tl - 2 * tc - tr + bl + 2 * bc + br;
-      bgEdge[y * bgW + x] = Math.min(255, Math.abs(gx) + Math.abs(gy) >> 2);
-    }
-  }
-  for (let y = 1; y < pzH - 1; y += 1) {
-    for (let x = 1; x < pzW - 1; x += 1) {
-      const pi = y * pzW + x << 2;
-      if (pzPixels[pi + 3] <= ALPHA_OPAQUE_THRESHOLD) continue;
-      const above = pzPixels[((y - 1) * pzW + x) * 4 + 3] <= ALPHA_OPAQUE_THRESHOLD;
-      const below = pzPixels[((y + 1) * pzW + x) * 4 + 3] <= ALPHA_OPAQUE_THRESHOLD;
-      const left = pzPixels[(y * pzW + (x - 1)) * 4 + 3] <= ALPHA_OPAQUE_THRESHOLD;
-      const right = pzPixels[(y * pzW + (x + 1)) * 4 + 3] <= ALPHA_OPAQUE_THRESHOLD;
-      if (above || below || left || right) {
-        contourX.push(x);
-        contourY.push(y);
-      }
-    }
-  }
-  const numContours = contourX.length;
-  if (numContours === 0) return { offsetX: 0, confidence: 0 };
-  const maxOffset = bgW - pzW;
-  if (maxOffset < 0) return { offsetX: 0, confidence: 0 };
-  let bestOffset = 0;
-  let bestScore = 0;
-  let totalScore = 0;
-  for (let offset = 0; offset <= maxOffset; offset += 1) {
-    let sum = 0;
-    for (let c = 0; c < numContours; c += 1) {
-      const bx = offset + contourX[c];
-      if (bx < bgW) sum += bgEdge[contourY[c] * bgW + bx];
-    }
-    totalScore += sum;
-    if (sum > bestScore) {
-      bestScore = sum;
-      bestOffset = offset;
-    }
-  }
-  const avgScore = totalScore / (maxOffset + 1);
-  return { offsetX: bestOffset, confidence: avgScore > 0 ? bestScore / avgScore : 0 };
-}
-function calcPuzzleOffset(puzzleBase64, pictureBase64) {
-  const puzzle = decodeImage(fromBase64(puzzleBase64));
-  const picture = decodeImage(fromBase64(pictureBase64));
-  return matchSlide(picture, puzzle, picture.width, picture.height, puzzle.width, puzzle.height);
-}
-var MIN_CONFIDENCE = 1.5;
-function usable(r) {
-  return r.offsetX > 0 && r.confidence >= MIN_CONFIDENCE;
-}
-
-// src/mcloud/tasks/exchangeOrder.ts
-var STATE_STEP = "mcloud.exchange.order.step";
-var STATE_PLAN = "mcloud.exchange.order.plan";
-var STATE_BASE = "mcloud.exchange.order.baseline";
-var STATE_ROUND = "mcloud.exchange.order.round";
-var SLIDER_ROUNDS = 2;
-var EXCHANGE_CLIENT_VERSION = "12.6.0";
-var SLIDE_FORM_CONTENT_TYPE = "application/x-www-form-urlencoded;charset=UTF-8";
-var VISIT_LOG_KEYWORD_EXCHANGE = "newsignin_index_to_exchange";
-var VISIT_LOG_KEYWORD_EXCHANGE_TIMES = "newsignin_index_exchange_times";
-var VISIT_LOG_MARKET_NAME = "sign_in_3";
-var CODE_SLIDER_WRONG = 514;
-function num2(v) {
-  if (typeof v === "number" && Number.isFinite(v)) return v;
-  if (typeof v === "string" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
-  return void 0;
-}
-function signedReq(deps, spec) {
-  const session = loadSession(deps.store);
-  return buildH5Request({
-    url: spec.url,
-    method: spec.method,
-    body: spec.body,
-    contentType: spec.contentType,
-    referer: REFERER_SIGN_IN,
-    showLoading: SHOW_LOADING,
-    // ⚠ `isDeviceId` 是**逐接口**的：下单那条要，取滑块那条**不要**（照实拍）
-    isDeviceId: spec.isDeviceId ?? false,
-    saltKey: 1,
-    marketName: "sign_in_3",
-    session: session ? sessionHeaders(session) : {}
-  });
-}
-function digResult2(text) {
-  try {
-    const v = JSON.parse(text);
-    const r = v.result;
-    return r && typeof r === "object" ? r : v;
-  } catch {
-    return {};
-  }
-}
-function loadState(deps) {
-  const raw = deps.store.getState(STATE_STEP);
-  if (!raw) return null;
-  try {
-    const v = JSON.parse(raw);
-    return typeof v.step === "string" ? v : null;
-  } catch {
-    return null;
-  }
-}
-function saveState(deps, st) {
-  deps.store.setState(STATE_STEP, JSON.stringify(st), deps.nowIso);
-}
-function clearOrder(deps) {
-  deps.store.setState(STATE_STEP, "", deps.nowIso);
-  deps.store.setState(STATE_PLAN, "", deps.nowIso);
-  deps.store.setState(STATE_BASE, "", deps.nowIso);
-  deps.store.setState(STATE_ROUND, "", deps.nowIso);
-}
-function startOrder(deps, query) {
-  if (query.trim() === "") {
-    return { ok: false, note: "兑换要指定奖品（名字或 prizeId）—— 没有它无从下手" };
-  }
-  saveState(deps, { step: "list", round: 0 });
-  deps.store.setState(STATE_PLAN, query.trim(), deps.nowIso);
-  return { ok: true, note: `已排队兑换「${query.trim()}」—— 后面每次触发走一步（一次调用一个请求）` };
-}
-function pickPrize(prizes, query) {
-  const q = query.trim();
-  if (/^\d+$/.test(q)) return prizes.find((p) => String(p.prizeId) === q);
-  return prizes.find((p) => p.name === q);
-}
-var STEP_TEXT3 = {
-  list: "① 读清单",
-  balance: "② 读基准余额（成交复查要拿它算差值）",
-  "warm-1": "③ 预热第一枪",
-  "warm-2": "③ 预热第二枪",
-  slide: "④ 取滑块题面并本地解",
-  order: "⑤ 下单",
-  verify: "⑥ 复查余额差",
-  done: "完成"
-};
-function runOrderStep(deps) {
-  const st = loadState(deps);
-  if (!st) return { ok: true, idle: true, note: "没有在排队的兑换（先用 startOrder 起一单）" };
-  const query = deps.store.getState(STATE_PLAN) ?? "";
-  const step = st.step;
-  const label = STEP_TEXT3[step];
-  const done = (note2, ok = true) => {
-    saveState(deps, { ...st, step: "done" });
-    return { ok, note: note2 };
-  };
-  if (step === "done") return { ok: true, idle: true, note: "这一单已经走完了（要再来一单得重新起）" };
-  if (step === "list") {
-    const res = callRawText(
-      deps.transport,
-      signedReq(deps, {
-        url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/signin/page/exchangeList?client=app&clientVersion=${encodeURIComponent(EXCHANGE_CLIENT_VERSION)}`,
-        method: "GET"
-      })
-    );
-    if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? "未知失败"}` };
-    const { prizes } = parseExchangeList(digResult2(res.text));
-    const p = pickPrize(prizes, query);
-    if (!p) return done(`${label}：清单里没有「${query}」—— 这一单不做（名字要**精确**匹配）`, false);
-    const prizeId = num2(p.prizeId);
-    if (prizeId === void 0) {
-      return done(`${label}：清单里那条没有可用的 prizeId ⇒ 这一单不做（不许编一个数字发出去）`, false);
-    }
-    const plan = { prizeId, prizeName: String(p.name ?? ""), price: num2(p.price), query };
-    saveState(deps, { ...st, step: "balance", plan });
-    return { ok: true, note: `${label}：目标「${p.name}」（prizeId=${p.prizeId}）${p.price === void 0 ? "" : `，${p.price} 豆`} —— 下一步读基准余额` };
-  }
-  if (step === "balance") {
-    const res = callRawText(
-      deps.transport,
-      signedReq(deps, { url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/signin/page/infoV3?client=app`, method: "GET" })
-    );
-    if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? "未知失败"}` };
-    let balance;
-    try {
-      const env = digResult2(res.text);
-      const v = env.total ?? env.point ?? env.balance;
-      if (typeof v === "number") balance = v;
-      else if (typeof v === "string" && /^\d+$/.test(v)) balance = Number(v);
-    } catch {
-    }
-    if (balance !== void 0) deps.store.setState(STATE_BASE, String(balance), deps.nowIso);
-    saveState(deps, { ...st, step: "warm-1" });
-    return { ok: true, note: `${label}：${balance ?? "没读到"}${balance === void 0 ? "（照样往下走 —— 它只是基准，不是判据）" : "，作为成交复查的基准"} —— 下一步预热` };
-  }
-  if (step === "warm-1" || step === "warm-2") {
-    const keyword = step === "warm-1" ? VISIT_LOG_KEYWORD_EXCHANGE : VISIT_LOG_KEYWORD_EXCHANGE_TIMES;
-    const res = callRawText(
-      deps.transport,
-      signedReq(deps, {
-        url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/visitlog/journaling?module=uservisit&optkeyword=${encodeURIComponent(keyword)}&sourceid=1002&marketName=${encodeURIComponent(VISIT_LOG_MARKET_NAME)}`,
-        method: "POST",
-        body: ""
-      })
-    );
-    const warn2 = res.ok ? "" : `（埋点失败但不挡路：${res.error ?? "未知"}）`;
-    if (step === "warm-1") {
-      saveState(deps, { ...st, step: "warm-2" });
-      return { ok: true, note: `${label}：${keyword}${warn2} —— 下一步第二枪（中间那 500ms 由面板的下一次触发承担）` };
-    }
-    saveState(deps, { ...st, step: "slide" });
-    return { ok: true, note: `${label}：${keyword}${warn2} —— 下一步取滑块题面` };
-  }
-  if (step === "slide") {
-    const res = callRawText(
-      deps.transport,
-      signedReq(deps, {
-        url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/auth-service/slide/getSlide`,
-        method: "POST",
-        // ⚠ 这一条用 **form** content-type（不是 JSON）—— 逐接口的，不是一刀切
-        contentType: SLIDE_FORM_CONTENT_TYPE,
-        body: "{}",
-        isDeviceId: false
-      })
-    );
-    if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? "未知失败"}` };
-    let puzzle;
-    let picture;
-    try {
-      const env = digResult2(res.text);
-      const pz = env.puzzleImg ?? env.puzzle ?? env.puzzleImage;
-      const bg = env.pictureImg ?? env.picture ?? env.backgroundImg;
-      if (typeof pz === "string") puzzle = pz;
-      if (typeof bg === "string") picture = bg;
-    } catch (e) {
-      return { ok: false, note: `${label}：题面解析不了（${e instanceof Error ? e.message : String(e)}）` };
-    }
-    if (!puzzle || !picture) {
-      return { ok: false, note: `${label}：题面上没有两张图（回 ${res.text.slice(0, 120)}）` };
-    }
-    let solution;
-    try {
-      solution = calcPuzzleOffset(puzzle, picture);
-    } catch (e) {
-      return done(
-        `${label}：图解码失败（${e instanceof Error ? e.message : String(e)}）⇒ 不发下单那一枪（offset 错了那一枪不可能成功，只会白耗一次题面）`,
-        false
-      );
-    }
-    if (!usable(solution)) {
-      return done(
-        `${label}：算不出可用的 offset（解出 ${solution.offsetX}，置信度 ${solution.confidence.toFixed(2)}）⇒ 不发下单那一枪 —— 这一枪发出去是无效的，不是"少一次机会"而是"多一次白打"`,
-        false
-      );
-    }
-    saveState(deps, { ...st, step: "order", offset: solution.offsetX });
-    return { ok: true, note: `${label}：offset=${solution.offsetX}（置信度 ${solution.confidence.toFixed(2)}）—— 下一步下单` };
-  }
-  if (step === "order") {
-    const plan = st.plan;
-    if (!plan) return done("内部状态缺计划，这一单作废", false);
-    const sess = loadSession(deps.store);
-    const deviceId = sess?.deviceId ?? "";
-    if (deviceId === "") {
-      return done('没有 deviceId（它要现换，见 smid 链）—— 不带它下单会回 615，文案却像"活动太火爆"', false);
-    }
-    if (st.offset === void 0) return done("内部状态缺 offset，这一单作废（不发一个没算出来的数）", false);
-    const body = `{"prizeId":${plan.prizeId},"client":"app","clientVersion":"${EXCHANGE_CLIENT_VERSION}","puzzleOffset":${st.offset},"smsCode":"","deviceId":"${deviceId}"}`;
-    const req = signedReq(deps, {
-      url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/signin/page/exchangeV3`,
-      method: "POST",
-      body,
-      isDeviceId: true
-      // 这条**要** isdeviceid，而取滑块那条不要
-    });
-    req.headers.origin = MCLOUD_HOST;
-    const res = callRawText(deps.transport, req);
-    if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? "未知失败"}` };
-    let code;
-    try {
-      const env = digResult2(res.text);
-      const c = env.code;
-      code = typeof c === "number" ? c : typeof c === "string" && /^-?\d+$/.test(c) ? Number(c) : void 0;
-    } catch {
-    }
-    if (code === CODE_SLIDER_WRONG) {
-      const round = (st.round ?? 0) + 1;
-      if (round > SLIDER_ROUNDS) {
-        return done(`${label}：滑块连续 ${SLIDER_ROUNDS} 轮被判错 ⇒ 停手（上限 SLIDER_ROUNDS 轮）`, false);
-      }
-      saveState(deps, { ...st, step: "slide", round, offset: void 0 });
-      return { ok: true, note: `${label}：514（滑块算错）⇒ 重取一题再来一枪（第 ${round}/${SLIDER_ROUNDS} 轮），**没有重复下单**` };
-    }
-    saveState(deps, { ...st, step: "verify" });
-    return { ok: true, note: `${label}：上游回 ${JSON.stringify(env0(res.text)).slice(0, 140)} —— 下一步查余额差（**那句话不算数**）` };
-  }
-  if (step === "verify") {
-    const before = deps.store.getState(STATE_BASE);
-    const res = callRawText(
-      deps.transport,
-      signedReq(deps, { url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/signin/page/infoV3?client=app`, method: "GET" })
-    );
-    if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? "未知失败"}` };
-    let after;
-    try {
-      const env = digResult2(res.text);
-      const v = env.total ?? env.point ?? env.balance;
-      if (typeof v === "number") after = v;
-    } catch {
-    }
-    if (!before || after === void 0) {
-      return done(`${label}：拿不到余额差（基准「${before || "缺"}」/ 现在「${after ?? "缺"}」）⇒ 成交与否**不知道**，如实报`, false);
-    }
-    const delta = Number(before) - after;
-    if (delta > 0) return done(`${label}：✅ 成交（余额 ${before} → ${after}，扣了 ${delta} 豆）`);
-    return done(`${label}：❌ 没成交（余额 ${before} → ${after}，没扣豆）—— 上游那句话不算数，只有余额差算数`, false);
-  }
-  return { ok: false, note: `不认识的步骤「${step}」` };
-}
-function env0(text) {
-  const r = digResult2(text);
-  return Object.keys(r).length > 0 ? r : text.slice(0, 140);
 }
 
 // src/mcloud/routes.ts
@@ -9184,15 +7199,133 @@ function mcloudRoutes(deps) {
   ];
 }
 
-// src/main.ts
-var store = hostStore();
-store.ensureSchema();
-var REQUEST_TIMEOUT_MS = 1500;
-var transport = (req) => {
-  const r = applyDefaultContentType(req);
-  return http_fetch(r.url, hostFetchOptions(r, REQUEST_TIMEOUT_MS));
-};
-function selftest() {
+// src/entries/shared.ts
+import {
+  http_fetch,
+  ws_close,
+  ws_open,
+  ws_recv,
+  ws_send
+} from "host-api";
+
+// src/store/host.ts
+import { sqlite_exec, sqlite_query } from "host-api";
+function hostStore() {
+  let schemaReady = false;
+  return {
+    ensureSchema: () => {
+      if (schemaReady) return;
+      sqlite_exec(
+        `CREATE TABLE IF NOT EXISTS runs (
+           id           INTEGER PRIMARY KEY AUTOINCREMENT,
+           task         TEXT    NOT NULL,
+           runs         INTEGER NOT NULL,
+           scheduled_at TEXT    NOT NULL,
+           fired_at     TEXT    NOT NULL,
+           late_ms      INTEGER NOT NULL,
+           ok           INTEGER NOT NULL,
+           note         TEXT
+         )`
+      );
+      sqlite_exec(`CREATE INDEX IF NOT EXISTS idx_runs_task_fired ON runs (task, fired_at)`);
+      sqlite_exec(
+        `CREATE TABLE IF NOT EXISTS state (
+           key   TEXT PRIMARY KEY,
+           value TEXT NOT NULL,
+           updated_at TEXT NOT NULL
+         )`
+      );
+      schemaReady = true;
+    },
+    getState: (key) => {
+      const rows = sqlite_query(`SELECT value FROM state WHERE key = ?1`, [key]);
+      const row = rows[0];
+      return row ? String(row.value) : null;
+    },
+    setState: (key, value, nowIso) => {
+      sqlite_exec(
+        `INSERT INTO state (key, value, updated_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = ?3`,
+        [key, value, nowIso]
+      );
+    },
+    recordRun: (r) => {
+      const res = sqlite_exec(
+        `INSERT INTO runs (task, runs, scheduled_at, fired_at, late_ms, ok, note)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`,
+        [r.task, r.runs, r.scheduledAt, r.firedAt, Math.round(r.lateMs), r.ok ? 1 : 0, r.note ?? null]
+      );
+      return res.lastInsertRowid;
+    },
+    // 分位数在 SQL 里算，不把行拉回来算：`sqlite_query` 一次最多返回 1000 行，
+    // 跑到几万次触发之后「拉回来再算」会静默丢数据 —— 那种错很难发现（数字看着还合理）。
+    // 另外两点和内存实现必须同口径：**排除负延迟**（F-001）、**按值排序取分位**（不是按 id）。
+    lateStats: (task, lastN = 500) => {
+      const agg = sqlite_query(
+        `SELECT COUNT(*) AS n, MAX(late_ms) AS mx FROM (
+           SELECT late_ms FROM runs WHERE task = ?1 AND late_ms >= 0 ORDER BY id DESC LIMIT ?2
+         )`,
+        [task, lastN]
+      );
+      const n = Number(agg[0]?.n ?? 0);
+      const neg = sqlite_query(
+        `SELECT COUNT(*) AS c FROM (
+           SELECT late_ms FROM runs WHERE task = ?1 ORDER BY id DESC LIMIT ?2
+         ) WHERE late_ms < 0`,
+        [task, lastN]
+      );
+      const pick2 = (q) => {
+        if (n === 0) return 0;
+        const offset = Math.min(n - 1, Math.max(0, Math.ceil(n * q) - 1));
+        const rows = sqlite_query(
+          `SELECT late_ms AS v FROM (
+             SELECT late_ms FROM runs WHERE task = ?1 AND late_ms >= 0 ORDER BY id DESC LIMIT ?2
+           ) ORDER BY late_ms ASC LIMIT 1 OFFSET ?3`,
+          [task, lastN, offset]
+        );
+        const v = rows[0]?.v;
+        return v === void 0 || v === null ? 0 : Number(v);
+      };
+      return {
+        task,
+        n,
+        lateP50: pick2(0.5),
+        lateP99: pick2(0.99),
+        lateMax: Number(agg[0]?.mx ?? 0),
+        excluded: Number(neg[0]?.c ?? 0)
+      };
+    },
+    recentRuns: (limit = 20) => sqlite_query(
+      `SELECT task, runs, fired_at, late_ms, ok, note FROM runs ORDER BY id DESC LIMIT ?1`,
+      [Math.min(limit, 1e3)]
+    )
+  };
+}
+
+// src/entries/shared.ts
+var DEFAULT_REQUEST_TIMEOUT_MS = 1500;
+function makeTransport(timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
+  return (req) => {
+    const r = applyDefaultContentType(req);
+    return http_fetch(r.url, hostFetchOptions(r, timeoutMs));
+  };
+}
+function makeStore() {
+  const store2 = hostStore();
+  store2.ensureSchema();
+  return store2;
+}
+function makeHost() {
+  return {
+    wsOpen: (url, opts) => ws_open(url, opts),
+    wsSend: (id, text) => ws_send(id, text),
+    wsRecv: (id, timeoutMs) => ws_recv(id, timeoutMs),
+    wsClose: (id) => ws_close(id)
+  };
+}
+
+// src/selftest.ts
+function selftest(store2) {
   const checks = [];
   checks.push(['md5("abc")', md5Hex("abc") === "900150983cd24fb0d6963f7d28e17f72"]);
   checks.push([
@@ -9203,265 +7336,71 @@ function selftest() {
   checks.push(["utf8 往返（含 emoji）", fromUtf8(utf8(cn)) === cn]);
   const raw = utf8("mcloud-plugin");
   checks.push(["base64 往返", fromUtf8(fromBase64(toBase64(raw))) === "mcloud-plugin"]);
-  const id = store.recordRun({
-    task: "__selftest__",
-    runs: 0,
-    scheduledAt: (/* @__PURE__ */ new Date(0)).toISOString(),
-    firedAt: (/* @__PURE__ */ new Date(0)).toISOString(),
-    lateMs: 0,
-    ok: true,
-    note: "selftest"
-  });
+  let id = 0;
+  let statsOk = false;
+  try {
+    id = store2.recordRun({
+      task: "__selftest__",
+      runs: 0,
+      scheduledAt: (/* @__PURE__ */ new Date(0)).toISOString(),
+      firedAt: (/* @__PURE__ */ new Date(0)).toISOString(),
+      lateMs: 0,
+      ok: true,
+      note: "selftest"
+    });
+    statsOk = store2.lateStats("__selftest__", 10).n >= 1;
+  } catch {
+    statsOk = false;
+  }
   checks.push(["sqlite 自增主键返回", id > 0]);
-  const stats = store.lateStats("__selftest__", 10);
-  checks.push(["sqlite 聚合查询可用", stats.n >= 1]);
+  checks.push(["sqlite 聚合查询可用", statsOk]);
   const caps = sandboxCaps();
   const bad = checks.filter(([, ok]) => !ok).map(([name]) => name);
   return {
     ok: bad.length === 0,
-    detail: (bad.length === 0 ? `${checks.length}/${checks.length} 通过` : `失败：${bad.join("、")}`) + ` · ${caps}`
+    detail: (bad.length === 0 ? `${checks.length}/${checks.length} 通过` : `失败：${bad.join("、")}`) + ` · ${caps}`,
+    checks: checks.map(([name, ok]) => ({ name, ok })),
+    caps
   };
 }
-for (const r of mcloudRoutes({
-  store,
-  transport,
-  now: () => (/* @__PURE__ */ new Date()).toISOString(),
-  log,
-  baseUrl: void 0,
-  // 路由内部按需读 state（改了配置立刻生效）
-  ws: {
-    wsOpen: (url, opts) => ws_open(url, opts),
-    wsSend: (id, text) => ws_send(id, text),
-    wsRecv: (id, timeoutMs) => ws_recv(id, timeoutMs),
-    wsClose: (id) => ws_close(id)
-  }
-})) {
-  register_route(r.path, r.method, r.handler);
-}
-register_cron("session-check", "50 7 * * *", (p) => {
-  const check = verifySession({
+
+// src/entries/mcloud.ts
+var store = makeStore();
+var transport = makeTransport();
+var host = makeHost();
+register_nav({
+  label: "云盘",
+  icon: "☁"
+  // 不写 path：面板默认 `plugins/mcloud/index.html`，正是我们放页面的地方
+});
+var registered = 0;
+try {
+  for (const r of mcloudRoutes({
     store,
     transport,
-    nowIso: (/* @__PURE__ */ new Date()).toISOString(),
-    baseUrl: loadBaseUrl(store)
-  });
-  store.recordRun({
-    task: p.name,
-    runs: p.runs,
-    scheduledAt: p.scheduledAt,
-    firedAt: p.firedAt,
-    lateMs: p.lateMs,
-    ok: check.ok,
-    note: check.note
-  });
-  if (check.ok) log(`会话体检：${check.note}`);
-  else warn(`会话体检：${check.note} —— 需要用 POST /plugins/mcloud/api/session 重新导入`);
-});
-register_cron("task-list", "0 8 * * *", (p) => {
-  const t0 = Date.now();
-  try {
-    const out = runTaskList({
-      store,
-      transport,
-      nowIso: (/* @__PURE__ */ new Date()).toISOString(),
-      // 每次调用都重新读：改了基址不用重载插件（CI 与手工联调都靠这条）
-      baseUrl: loadBaseUrl(store)
-    });
-    store.recordRun({
-      task: p.name,
-      runs: p.runs,
-      scheduledAt: p.scheduledAt,
-      firedAt: p.firedAt,
-      lateMs: p.lateMs,
-      ok: out.ok,
-      note: out.note
-    });
-    if (out.ok) log(`任务清单：${out.note}`);
-    else warn(`任务清单失败：${out.note}`);
-    const took = Date.now() - t0;
-    if (took > SLOW_CALL_MS) warn(`这次调用用了 ${took}ms —— 接近执行预算，注意上游是否变慢`);
-  } catch (e) {
-    error(`任务清单抛异常（这是插件 bug）：${e instanceof Error ? e.message : String(e)}`);
+    now: () => (/* @__PURE__ */ new Date()).toISOString(),
+    log: (msg) => log(msg),
+    ws: host
+  })) {
+    register_route(r.path, r.method, r.handler);
+    registered++;
   }
-});
-var lastLogged = /* @__PURE__ */ new Map();
-function makeRunner(name, run) {
-  return (p) => {
-    try {
-      const out = run({
-        store,
-        transport,
-        // ⚠ 这一族**只有嵌入式 JS 宿主有**；Node 适配器与 Python 侧都是"函数存在、调用时抛"
-        //   （见面板 docs/host-api.md）。所以任何用到它的任务都必须能在测试里换桩。
-        host: {
-          wsOpen: (url, opts) => ws_open(url, opts),
-          wsSend: (id, text) => ws_send(id, text),
-          wsRecv: (id, timeoutMs) => ws_recv(id, timeoutMs),
-          wsClose: (id) => ws_close(id)
-        },
-        nowIso: (/* @__PURE__ */ new Date()).toISOString(),
-        baseUrl: loadBaseUrl(store),
-        lateMs: p.lateMs
-      });
-      store.recordRun({
-        task: p.name,
-        runs: p.runs,
-        scheduledAt: p.scheduledAt,
-        firedAt: p.firedAt,
-        lateMs: p.lateMs,
-        ok: out.ok,
-        note: out.note
-      });
-      const last = lastLogged.get(name);
-      const now = `${out.ok ? "" : "失败："}${out.note}`;
-      if (last !== now) {
-        lastLogged.set(name, now);
-        if (out.ok) log(`${name}：${out.note}`);
-        else warn(`${name} 失败：${out.note}`);
-      }
-    } catch (e) {
-      error(`${name} 抛异常（这是插件 bug）：${e instanceof Error ? e.message : String(e)}`);
-    }
-  };
+} catch (e) {
+  error(`路由注册失败（第 ${registered + 1} 条）：${e instanceof Error ? e.message : String(e)}`);
+  throw e;
 }
-var SIGNIN_CRON = "*/15 7-22 * * *";
-register_cron("sign", SIGNIN_CRON, makeRunner("签到", runSign));
-register_cron("receive", SIGNIN_CRON, makeRunner("领取AI豆", runReceive));
-register_cron("multiple", SIGNIN_CRON, makeRunner("签到翻倍", runMultiple));
-register_cron("revival", SIGNIN_CRON, makeRunner("复活卡", runRevival));
-register_cron("backup-gift", SIGNIN_CRON, makeRunner("备份好礼", runBackupGift));
-register_cron("task-expansion", SIGNIN_CRON, makeRunner("任务拓展", (deps) => {
-  const r = deps.store.getState("mcloud.taskexpansion.state");
-  if (!r) startExpansion(deps);
-  return runExpansionStep(deps);
-}));
-register_cron("auth-refresh", "0 6 * * *", makeRunner("凭据续期", (deps) => runAuthRefresh(deps)));
-register_cron("msg-push", SIGNIN_CRON, makeRunner("消息推送奖励（问状态）", runMsgPushStatus));
-register_cron("msg-push-obtain", SIGNIN_CRON, makeRunner("消息推送奖励（领）", runMsgPushObtain));
-register_cron("notice", SIGNIN_CRON, makeRunner("开启通知领AI豆", runNotice));
-register_cron("app-task-matrix", SIGNIN_CRON, makeRunner("App 任务矩阵（只看）", runAppTaskMatrix));
-register_cron("app-task", SIGNIN_CRON, makeRunner("App 任务（做任务）", (deps) => {
-  if (!deps.store.getState("mcloud.apptask.state")) {
-    const started = startAppTask(deps);
-    if (started.idle) return started;
+var selftestRoute = {
+  path: "/plugins/mcloud/api/selftest",
+  method: "GET",
+  handler: () => {
+    const r = selftest(store);
+    return {
+      status: 200,
+      headers: { "content-type": "application/json; charset=utf-8" },
+      body: JSON.stringify(r)
+    };
   }
-  return runAppTaskStep(deps);
-}));
-register_cron("exchange-list", SIGNIN_CRON, makeRunner("兑换清单（只看）", runExchangeList));
-register_cron("live-room", "*/30 7-23 * * *", makeRunner("直播口令（只看）", runLiveRoom));
-register_cron("live-gate", "*/10 7-23 * * *", makeRunner("直播日程（门）", runLiveGate));
-register_cron("live-listen", "@every 10s", makeRunner("听弹幕口令", runLiveListen));
-register_cron("live-auto", "@every 5m", (p) => {
-  try {
-    const out = runLiveAuto(
-      {
-        store,
-        transport,
-        nowIso: (/* @__PURE__ */ new Date()).toISOString(),
-        baseUrl: loadBaseUrl(store),
-        lateMs: p.lateMs
-      },
-      { windowMs: loadListenSeconds(store) * 1e3 }
-    );
-    return { ok: out.ok, note: out.note };
-  } catch (e) {
-    return { ok: false, note: `直播自动定时抛异常：${e instanceof Error ? e.message : String(e)}` };
-  }
-});
-register_cron("live-draw", "@every 30s", (p) => {
-  try {
-    const out = runLiveDraw({
-      store,
-      transport,
-      nowIso: (/* @__PURE__ */ new Date()).toISOString(),
-      baseUrl: loadBaseUrl(store),
-      lateMs: p.lateMs
-    });
-    if (out.idle) return;
-    store.recordRun({
-      task: p.name,
-      runs: p.runs,
-      scheduledAt: p.scheduledAt,
-      firedAt: p.firedAt,
-      lateMs: p.lateMs,
-      ok: out.ok,
-      note: out.note
-    });
-    if (out.ok) log(`领小红花：${out.note}`);
-    else warn(`领小红花失败：${out.note}`);
-  } catch (e) {
-    error(`领小红花抛异常（这是插件 bug）：${e instanceof Error ? e.message : String(e)}`);
-  }
-});
-register_cron("prizes", "20 8 * * *", makeRunner("待领取奖品", runPrizes));
-register_cron("cloud-snapshot", "30 8 * * *", makeRunner("AI豆快照", runCloudSnapshot));
-register_cron("session-refresh", "*/2 * * * *", (p) => {
-  try {
-    if (!needExchange(store, Date.now())) return;
-    const r = runExchangeStep({
-      store,
-      transport,
-      nowIso: (/* @__PURE__ */ new Date()).toISOString(),
-      baseUrl: loadBaseUrl(store)
-    });
-    store.recordRun({
-      task: p.name,
-      runs: p.runs,
-      scheduledAt: p.scheduledAt,
-      firedAt: p.firedAt,
-      lateMs: p.lateMs,
-      ok: r.ok,
-      note: r.note
-    });
-    if (r.ok) log(`换票：${r.note}`);
-    else warn(`换票失败：${r.note}`);
-  } catch (e) {
-    error(`换票抛异常（这是插件 bug）：${e instanceof Error ? e.message : String(e)}`);
-  }
-});
-every("selftest", "5m", (p) => {
-  try {
-    const r = selftest();
-    store.recordRun({
-      task: p.name,
-      runs: p.runs,
-      scheduledAt: p.scheduledAt,
-      firedAt: p.firedAt,
-      lateMs: p.lateMs,
-      ok: r.ok,
-      note: r.detail
-    });
-    if (r.ok) {
-      log(`自检通过（${r.detail}）· lateMs=${Math.round(p.lateMs)}`);
-    } else {
-      error(`自检失败（${r.detail}）—— 沙箱环境与预期不符，先别接上游任务`);
-    }
-  } catch (e) {
-    error(`自检抛异常：${e instanceof Error ? e.message : String(e)}`);
-  }
-});
-every("diag", "30s", (p) => {
-  try {
-    store.recordRun({
-      task: p.name,
-      runs: p.runs,
-      scheduledAt: p.scheduledAt,
-      firedAt: p.firedAt,
-      lateMs: p.lateMs,
-      ok: true
-    });
-    if (p.runs % 10 === 0) {
-      const s = store.lateStats(p.name, 500);
-      log(
-        `调度健康：n=${s.n} p50=${s.lateP50}ms p99=${s.lateP99}ms max=${s.lateMax}ms` + (s.excluded > 0 ? ` · 排除负延迟 ${s.excluded} 条（手动触发，见 F-001）` : "") + (s.lateP99 > 200 ? " ⚠️ p99 偏高，同轮可能有慢任务" : "")
-      );
-    }
-  } catch (e) {
-    warn(`diag 记录失败：${e instanceof Error ? e.message : String(e)}`);
-  }
-});
-store.setState("plugin.loaded_at", (/* @__PURE__ */ new Date()).toISOString(), (/* @__PURE__ */ new Date()).toISOString());
-log("mcloud 插件已加载（自检 + 调度健康 + 任务清单；其余签到族任务在 M2 逐个接）");
-export {
-  selftest
 };
+register_route(selftestRoute.path, selftestRoute.method, selftestRoute.handler);
+store.setState("plugin.loaded_at", (/* @__PURE__ */ new Date()).toISOString(), (/* @__PURE__ */ new Date()).toISOString());
+log(`mcloud（服务型）：${registered + 1} 条路由 + 侧边栏入口，**没有 cron 任务**`);

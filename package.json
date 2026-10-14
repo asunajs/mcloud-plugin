@@ -9,8 +9,9 @@
     "check-build": "node scripts/check-build.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
     "test": "node --test \"test/*.test.ts\"",
-    "all": "npm run gen && npm run typecheck && npm test && npm run check-build",
-    "gen": "node scripts/gen-constants.mjs"
+    "all": "npm run gen && npm run typecheck && npm test && npm run check-build && npm run check-split",
+    "gen": "node scripts/gen-constants.mjs",
+    "check-split": "python3 scripts/split_check.py"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
