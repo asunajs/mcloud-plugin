@@ -39,7 +39,9 @@ export interface SessionHeaders {
 
 export interface H5RequestSpec {
   url: string;
-  method: 'GET' | 'POST';
+  // ⚠ 含 `PUT`：网盘上传的数据面那枪是 **PUT**（预签名直传）。
+  //   宿主 API 的 `method` 是字符串、不收窄（`hostapi.rs:269`），所以这里放开是安全的。
+  method: 'GET' | 'POST' | 'PUT';
   /** POST 的 body（字符串，通常是 JSON 文本）；GET 时忽略 */
   body?: string | undefined;
   /** `Referer`。原实现按端点给不同的值 */
@@ -67,7 +69,9 @@ export interface H5RequestSpec {
 
 export interface BuiltRequest {
   url: string;
-  method: 'GET' | 'POST';
+  // ⚠ 含 `PUT`：网盘上传的数据面那枪是 **PUT**（预签名直传）。
+  //   宿主 API 的 `method` 是字符串、不收窄（`hostapi.rs:269`），所以这里放开是安全的。
+  method: 'GET' | 'POST' | 'PUT';
   headers: Record<string, string>;
   body: string | undefined;
 }
