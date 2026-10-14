@@ -5490,7 +5490,7 @@ function pickPrize(prizes, query) {
 }
 var STEP_TEXT = {
   list: "① 读清单",
-  balance: "② 读余额（成交后的对照基准）",
+  balance: "② 读基准余额（成交复查要拿它算差值）",
   "warm-1": "③ 预热第一枪",
   "warm-2": "③ 预热第二枪",
   slide: "④ 取滑块题面并本地解",
@@ -5521,15 +5521,13 @@ function runOrderStep(deps) {
     const { prizes } = parseExchangeList(digResult(res.text));
     const p = pickPrize(prizes, query);
     if (!p) return done(`${label}：清单里没有「${query}」—— 这一单不做（名字要**精确**匹配）`, false);
-    const verdict = verdictOf(p);
-    const verdictNote = verdict === "ok" ? "" : `（上游判据说「${VERDICT_TEXT[verdict]}」，照样发）`;
     const prizeId = num(p.prizeId);
     if (prizeId === void 0) {
       return done(`${label}：清单里那条没有可用的 prizeId ⇒ 这一单不做（不许编一个数字发出去）`, false);
     }
     const plan = { prizeId, prizeName: String(p.name ?? ""), price: num(p.price), query };
     saveState(deps, { ...st, step: "balance", plan });
-    return { ok: true, note: `${label}：目标「${p.name}」（prizeId=${p.prizeId}）${p.price === void 0 ? "" : `，${p.price} 豆`}${verdictNote} —— 下一步读余额` };
+    return { ok: true, note: `${label}：目标「${p.name}」（prizeId=${p.prizeId}）${p.price === void 0 ? "" : `，${p.price} 豆`} —— 下一步读基准余额` };
   }
   if (step === "balance") {
     const res = callRawText(
@@ -5545,14 +5543,9 @@ function runOrderStep(deps) {
       else if (typeof v === "string" && /^\d+$/.test(v)) balance = Number(v);
     } catch {
     }
-    let shortNote = "";
-    if (balance !== void 0) {
-      const price = st.plan?.price;
-      if (price !== void 0 && balance < price) shortNote = `（余额 ${balance} < 价格 ${price}，照样发）`;
-      deps.store.setState(STATE_BASE, String(balance), deps.nowIso);
-    }
+    if (balance !== void 0) deps.store.setState(STATE_BASE, String(balance), deps.nowIso);
     saveState(deps, { ...st, step: "warm-1" });
-    return { ok: true, note: `${label}：${balance ?? "没读到"}${balance === void 0 ? "（照样往下走，成交判据靠余额差）" : ""}${shortNote} —— 下一步预热` };
+    return { ok: true, note: `${label}：${balance ?? "没读到"}${balance === void 0 ? "（照样往下走 —— 它只是基准，不是判据）" : "，作为成交复查的基准"} —— 下一步预热` };
   }
   if (step === "warm-1" || step === "warm-2") {
     const keyword = step === "warm-1" ? VISIT_LOG_KEYWORD_EXCHANGE : VISIT_LOG_KEYWORD_EXCHANGE_TIMES;
