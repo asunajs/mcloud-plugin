@@ -148,6 +148,7 @@ mcloud-plugin/
 | [`docs/smid-chain.md`](docs/smid-chain.md) · [`docs/upload-chain.md`](docs/upload-chain.md) | 两条比较绕的链路的实测记录 |
 | [`docs/shots/`](docs/shots/README.md) | 界面截图（七个区块各一张 + 扫码） |
 | [`docs/design-history.md`](docs/design-history.md) | **开工前的设计稿**（历史；有些判断后来被推翻了，为什么留着见文件头） |
+| [`docs/acceptance-real.md`](docs/acceptance-real.md) | **真机验收清单**（这一步只能在你的真机上做 —— 照着点，每步写清看什么算过） |
 
 ## 起名即分组
 
