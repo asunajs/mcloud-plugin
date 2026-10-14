@@ -60,6 +60,7 @@ import { parseAuthorization } from '../authRefresh.ts';
 import { extractKouling, hasKouling } from '../liveKouling.ts';
 import { loadPoolFrom, note, savePoolTo } from '../koulingPool.ts';
 import { createListener, sockjsDataFrames } from '../liveWs.ts';
+import { CMD_ACK, decodeMsync } from '../msync.ts';
 import type { Listener } from '../liveWs.ts';
 import type { LiveRoom } from '../liveGate.ts';
 import type { Store } from '../../store/types.ts';
@@ -68,6 +69,27 @@ import type { Store } from '../../store/types.ts';
 export const STATE_LISTEN = 'mcloud.live.listen';
 /** WS 主机基址（**CI 的口子**，与门的 `gateBase` 同一套路）。 */
 export const STATE_WS_BASE = 'mcloud.live.ws_base';
+
+/** "收到 SockJS 心跳帧 `h` 回什么" 的口子（空串 = 不回）。
+ *
+ *  ⚠ 抓包答不了这件事（`h` 只在连接静默满 25 秒后才发，而那次 73.6 秒里发了 133 帧、
+ *  从未静默满 25 秒 ⇒ **零样本**）。2026-10-14 实机第一次拿到样本：
+ *  房间安静满 25 秒 ⇒ 服务端真的发了 `h`，**回一帧 `h` 之后连接继续可用**
+ *  （96 秒里帧数 3→10、`closedReason` 一直空）。
+ *  ⇒ 默认就是 `'h'`。留这个口子是为了让"**不回**会怎样"那一支也能在真机上被验一次
+ *  （F-039），而不是靠猜。 */
+export const STATE_WS_HEARTBEAT = 'mcloud.live.ws_heartbeat_reply';
+export const DEFAULT_WS_HEARTBEAT = 'h';
+
+export function loadWsHeartbeat(store: Pick<Store, 'getState'>): string {
+  const v = store.getState(STATE_WS_HEARTBEAT);
+  // ⚠ 没配过（`null`）⇒ 用默认；配成**空串** ⇒ 就是"不回"（那是用户的显式选择）
+  return v === null || v === undefined ? DEFAULT_WS_HEARTBEAT : v;
+}
+
+export function saveWsHeartbeat(store: Store, v: string, nowIso: string): void {
+  store.setState(STATE_WS_HEARTBEAT, v, nowIso);
+}
 
 /** 生产 WS 端点。**逐字**来自抓包 §一：`wss://videoim.cmcc-cs.cn:20102`。 */
 export const BASE_VIDEO_IM_WS = 'wss://videoim.cmcc-cs.cn:20102';
@@ -130,6 +152,18 @@ export interface ListenState {
   chatRoomId?: string;
   /** `member/apply` 过了没有。 */
   applied?: boolean;
+  /** 按 `command` 分的收帧计数（`{"0":n,"1":n,"2":n,...}`）—— 诊断用。 */
+  kinds?: Record<string, number>;
+  /** 连"是不是 SockJS 数据帧"都没认出来的文本帧条数（探针自己的失败计数）。 */
+  decodeFail?: number;
+  /** 收到的**服务端回执帧**（`cmd=0`）条数。
+   *
+   *  ⭐ 这是"我们那条**缩短过的 ack** 服务端认不认"的**证据位**：
+   *  我们每收到一条弹幕就回一条 `{1:{1:msgId}}`（实拍客户端回的是 464 B 整条回显），
+   *  服务端如果**明白**我们在确认，就会回一条 94 B 的 `cmd=0`。
+   *  所以这个数只要在涨，就说明短 ack 是被理解的（F-032 里那一支"未判定"）。
+   *  ⚠ 它**不涨**也可能是"服务端不回执"，不能单凭它下结论说 ack 被拒。 */
+  serverAcks?: number;
   /** WS 句柄（宿主侧的编号；**面板重启后就失效** ⇒ 那时必须重新 `ws_open`）。 */
   handle?: number;
   lastHeartbeatAtMs?: number;
@@ -223,7 +257,13 @@ let current:
   | { handle: number; windowStartMs: number; chatRoomId: string; listener: Listener }
   | undefined;
 
+/** 口子那格字符串 ⇒ listener 的选项（空串 = 不回 = `undefined`）。 */
+function parseHeartbeatReply(v: string): string | undefined {
+  return v === '' ? undefined : v;
+}
+
 function listenerFor(
+  deps: ListenDeps,
   st: ListenState,
   nowMs: number,
   opts: { accessToken: string; chatRoomId: string; phone: string },
@@ -247,7 +287,7 @@ function listenerFor(
     //   2026-10-14 那场房间里安静满 25 秒 ⇒ 服务端真的发了 `h`；回一帧 `h`
     //   之后连接继续可用（读数与判据见 docs/findings.md F-032）。
     //   回 `[""]` 是**错的**：那是 SockJS 的**关闭**帧（抓包 §二 末帧）。
-    sockjsHeartbeatReply: 'h',
+    sockjsHeartbeatReply: parseHeartbeatReply(loadWsHeartbeat(deps.store)),
   });
   current = {
     handle,
@@ -533,7 +573,7 @@ function openStep(deps: ListenDeps, st: ListenState, nowMs: number): TaskOutcome
   }
 
   st.handle = handle;
-  const listener = listenerFor(st, nowMs, {
+  const listener = listenerFor(deps, st, nowMs, {
     accessToken: st.jwt,
     chatRoomId: st.chatRoomId,
     phone: parsed.phone,
@@ -600,7 +640,7 @@ function listenStep(deps: ListenDeps, st: ListenState, nowMs: number, windowMs: 
   if (parsed === null || st.jwt === undefined || st.chatRoomId === undefined) {
     return stepFail(deps, st, '听的那一步缺凭据/票/聊天室号');
   }
-  const listener = listenerFor(st, nowMs, {
+  const listener = listenerFor(deps, st, nowMs, {
     accessToken: st.jwt,
     chatRoomId: st.chatRoomId,
     phone: parsed.phone,
@@ -633,6 +673,25 @@ function listenStep(deps: ListenDeps, st: ListenState, nowMs: number, windowMs: 
     }
     if (frame.type !== 'text') continue; // timeout / binary：继续等
     st.frames += 1;
+    // ⚠ 这里自己解一遍**只是为了计数**（状态机那边已经解过了）。按 `command` 分类记：
+    //
+    //   `cmd=0` = 服务端对我们 ack 的**回执** ⇒ 这一格只要在涨，就说明
+    //   **我们那条缩短过的 ack 是被理解的**（实拍客户端回 464 B 整条回显，
+    //   我们只回 `{1:{1:msgId}}` —— F-032 里这一支标的是"未判定"）。
+    //
+    //   ⚠⚠ 探针**不许影响主流程**：`sockjsDataFrames` 只认 `a[...]`，遇到 `h`/`o`/`c[`
+    //   会抛 ⇒ 必须自己接住。第一版没接住、而且接错了位置（那段替换没落在循环里），
+    //   现象是"回执恒 0 而主流程看着正常" —— 探针把自己的读数弄坏了两次。
+    try {
+      for (const bytes of sockjsDataFrames(frame.data)) {
+        const cmd = decodeMsync(bytes).command;
+        const k = String(cmd);
+        st.kinds = { ...(st.kinds ?? {}), [k]: ((st.kinds ?? {})[k] ?? 0) + 1 };
+        if (cmd === CMD_ACK) st.serverAcks = (st.serverAcks ?? 0) + 1;
+      }
+    } catch {
+      st.decodeFail = (st.decodeFail ?? 0) + 1;
+    }
     const actions = listener.onFrame(frame.data, Date.now());
     flush(deps, handle, actions.outbound);
     if (actions.outbound.length > 0) st.acks += 1;
@@ -766,7 +825,13 @@ export { sockjsDataFrames };
 /** 给界面/日志用的一行读数。 */
 export function listenReadingLine(st: ListenState | null): string {
   if (st === null) return '还没听过';
-  if (st.step === 'listen') return `听着（帧 ${st.frames}、弹幕 ${st.danmakuFrames}、口令 ${st.codes.length}）`;
+  if (st.step === 'listen') {
+    return (
+      `听着（帧 ${st.frames}、弹幕 ${st.danmakuFrames}、口令 ${st.codes.length}、回执 ${st.serverAcks ?? 0}` +
+      (st.decodeFail ? `、认不出的帧 ${st.decodeFail}` : '') +
+      '）'
+    );
+  }
   if (st.step === 'done') return st.note ?? '这一轮结束';
   return `准备中（${st.step}）`;
 }
