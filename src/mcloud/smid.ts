@@ -283,6 +283,7 @@ export function smidUploadRequest(
   box: string,
   now: Date,
   rnd: () => number = Math.random,
+  base?: string | undefined,
 ): BuiltRequest {
   const uid = uuidV4();
   const priId = md5Hex(uid).slice(0, 16);
@@ -297,7 +298,10 @@ export function smidUploadRequest(
   );
   const data = encryptSmBody(buildSmBody(fp, box, now, rnd), priId);
   return {
-    url: `${SMID_HOST}${SMID_PATH}`,
+    // ⚠ `base` 覆盖**必须**有：这台主机是第三方（cmpassport 风控），
+    // 而"CI 全程只打 mock"是本仓的硬规则。少了这个口子，E2E 会真去打那个域 ——
+    // 那不是"测试不严"，是**把 CI 变成对外发流量**。
+    url: `${(base ?? SMID_HOST).replace(/\/+$/, '')}${SMID_PATH}`,
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

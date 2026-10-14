@@ -3612,7 +3612,7 @@ function encryptSmBody(body, priId, rules = DES_RULE) {
   const gz = gzipWithOs19Base64(utf8(JSON.stringify(encryptByDesRules(body, rules))));
   return aesEncryptCompatHex(priId, gz);
 }
-function smidUploadRequest(fp, box, now, rnd = Math.random) {
+function smidUploadRequest(fp, box, now, rnd = Math.random, base) {
   const uid = uuidV4();
   const priId = md5Hex(uid).slice(0, 16);
   const ep = rsaEncryptBase64(
@@ -3626,7 +3626,10 @@ function smidUploadRequest(fp, box, now, rnd = Math.random) {
   );
   const data = encryptSmBody(buildSmBody(fp, box, now, rnd), priId);
   return {
-    url: `${SMID_HOST}${SMID_PATH}`,
+    // ⚠ `base` 覆盖**必须**有：这台主机是第三方（cmpassport 风控），
+    // 而"CI 全程只打 mock"是本仓的硬规则。少了这个口子，E2E 会真去打那个域 ——
+    // 那不是"测试不严"，是**把 CI 变成对外发流量**。
+    url: `${(base ?? SMID_HOST).replace(/\/+$/, "")}${SMID_PATH}`,
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -3885,7 +3888,13 @@ function runExchangeStep(deps) {
   };
   if (st.step === "smid") {
     const fp = ensureFingerprint(deps.store, deps.nowIso);
-    const req = smidUploadRequest(fp, deps.store.getState(STATE_DEVICE_ID) ?? "", new Date(deps.nowIso));
+    const req = smidUploadRequest(
+      fp,
+      deps.store.getState(STATE_DEVICE_ID) ?? "",
+      new Date(deps.nowIso),
+      Math.random,
+      deps.baseUrl
+    );
     const res2 = callRawText(deps.transport, req);
     if (!res2.ok) return failStep(deps, st, `④ 换 deviceId 失败：${res2.error ?? "未知失败"}`);
     const got = parseDeviceId(res2.text);
