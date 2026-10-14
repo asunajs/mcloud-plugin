@@ -913,8 +913,8 @@ function saveSession(store2, s, nowIso) {
 
 // src/mcloud/tasks/base.ts
 var ERR_PREFIX = "mcloud.last_error.";
-function recordError(store2, task, note, nowIso) {
-  store2.setState(`${ERR_PREFIX}${task}`, `${note} @ ${nowIso}`, nowIso);
+function recordError(store2, task, note2, nowIso) {
+  store2.setState(`${ERR_PREFIX}${task}`, `${note2} @ ${nowIso}`, nowIso);
 }
 function clearError(store2, task, nowIso) {
   store2.setState(`${ERR_PREFIX}${task}`, "", nowIso);
@@ -926,15 +926,15 @@ function runTask(deps, spec, judge2) {
   const late = deps.lateMs ?? 0;
   if (spec.skipIfLaterThanMs !== void 0 && late > spec.skipIfLaterThanMs) {
     const mins = Math.round(late / 6e4);
-    const note = `错过太久（晚了 ${mins} 分钟，阈值 ${Math.round(spec.skipIfLaterThanMs / 6e4)} 分钟）→ 主动跳过`;
-    recordError(deps.store, spec.task, note, deps.nowIso);
-    return { ok: true, skipped: true, note };
+    const note2 = `错过太久（晚了 ${mins} 分钟，阈值 ${Math.round(spec.skipIfLaterThanMs / 6e4)} 分钟）→ 主动跳过`;
+    recordError(deps.store, spec.task, note2, deps.nowIso);
+    return { ok: true, skipped: true, note: note2 };
   }
   const session = loadSession(deps.store);
   if (!session) {
-    const note = "未登录：state 里没有会话（见 docs/howto-session.md）";
-    recordError(deps.store, spec.task, note, deps.nowIso);
-    return { ok: false, note };
+    const note2 = "未登录：state 里没有会话（见 docs/howto-session.md）";
+    recordError(deps.store, spec.task, note2, deps.nowIso);
+    return { ok: false, note: note2 };
   }
   const method = spec.method ?? EP_METHOD[spec.endpoint] ?? "GET";
   const url = resolveUrl(spec.endpoint, deps.baseUrl) + (spec.query ? `?${spec.query}` : "");
@@ -964,13 +964,13 @@ function runTask(deps, spec, judge2) {
       recordError(deps.store, spec.task, explained, deps.nowIso);
       return { ok: false, note: explained };
     }
-    const note = res.error ?? "未知失败";
-    if (spec.okWhenError?.(note)) {
+    const note2 = res.error ?? "未知失败";
+    if (spec.okWhenError?.(note2)) {
       clearError(deps.store, spec.task, deps.nowIso);
-      return { ok: true, note: `上游说「${note}」—— 按"已经完成"处理（见 okWhenError）` };
+      return { ok: true, note: `上游说「${note2}」—— 按"已经完成"处理（见 okWhenError）` };
     }
-    recordError(deps.store, spec.task, note, deps.nowIso);
-    return { ok: false, note };
+    recordError(deps.store, spec.task, note2, deps.nowIso);
+    return { ok: false, note: note2 };
   }
   const verdict = judge2(res.env, res);
   if (verdict.snapshot !== void 0 && spec.stateKey) {
@@ -1093,13 +1093,13 @@ function runCloudSnapshot(deps) {
       const list = resultArray(env);
       const entries = list.map((x) => {
         const o = typeof x === "object" && x !== null ? x : {};
-        const num2 = (v) => typeof v === "number" ? v : void 0;
-        const str = (v) => typeof v === "string" ? v : void 0;
+        const num3 = (v) => typeof v === "number" ? v : void 0;
+        const str2 = (v) => typeof v === "string" ? v : void 0;
         return {
-          id: num2(o.id),
-          value: num2(o.aiDou ?? o.value ?? o.change),
-          reason: str(o.typeName ?? o.reason ?? o.type),
-          insertTime: str(o.insertTime ?? o.time)
+          id: num3(o.id),
+          value: num3(o.aiDou ?? o.value ?? o.change),
+          reason: str2(o.typeName ?? o.reason ?? o.type),
+          insertTime: str2(o.insertTime ?? o.time)
         };
       });
       const latest = [...entries].reverse().find((e) => e.value !== void 0);
@@ -1315,19 +1315,19 @@ function runMsgPushStatus(deps) {
       const plan = planMsgPush(s);
       const can = plan === "obtain";
       deps.store.setState(STATE_CAN2, can ? "yes" : plan === "unknown" ? "unknown" : "no", deps.nowIso);
-      let note;
+      let note2;
       if (plan === "unknown") {
-        note = "消息推送：判据字段缺失（没读到 secondTaskStatus）⇒ **判不了**，一个写请求都不发";
+        note2 = "消息推送：判据字段缺失（没读到 secondTaskStatus）⇒ **判不了**，一个写请求都不发";
       } else if (s.pushOn === 0) {
-        note = "消息推送：通知已被关闭，需要你在 App 里手动打开（这一步我们做不了）";
+        note2 = "消息推送：通知已被关闭，需要你在 App 里手动打开（这一步我们做不了）";
       } else if (can) {
-        note = "消息推送：有可领的奖励（下一次触发会去领）";
+        note2 = "消息推送：有可领的奖励（下一次触发会去领）";
       } else if (s.firstTaskStatus !== void 0 && s.firstTaskStatus !== 3) {
-        note = "消息推送：首次奖励未领 —— 那一步要在 App 里手动完成，我们做不了";
+        note2 = "消息推送：首次奖励未领 —— 那一步要在 App 里手动完成，我们做不了";
       } else {
-        note = `消息推送：暂无可领${s.onDuaration === void 0 ? "" : `（已开启 ${s.onDuaration} 天）`}`;
+        note2 = `消息推送：暂无可领${s.onDuaration === void 0 ? "" : `（已开启 ${s.onDuaration} 天）`}`;
       }
-      return { ok: true, note, snapshot: env.result ?? null };
+      return { ok: true, note: note2, snapshot: env.result ?? null };
     }
   );
 }
@@ -3004,15 +3004,15 @@ function runExchangeStep(deps) {
   if (!st || st.step === "done" || !auth) {
     return { ok: true, note: "没有待换票的任务（先去界面上贴一份原生凭据）", done: true };
   }
-  const finish2 = (s, ok, note) => {
+  const finish2 = (s, ok, note2) => {
     s.step = "done";
     s.finishedAt = deps.nowIso;
     s.ok = ok;
-    s.note = note;
+    s.note = note2;
     delete s.ssoToken;
     delete s.ts;
     deps.store.setState(STATE_EXCHANGE, JSON.stringify(s), deps.nowIso);
-    return { ok, note, done: true };
+    return { ok, note: note2, done: true };
   };
   if (st.step === "smid") {
     const fp = ensureFingerprint(deps.store, deps.nowIso);
@@ -3124,15 +3124,15 @@ function runExchangeStep(deps) {
     ((sess?.deviceId ?? "") === "" && (loadSession(deps.store)?.deviceId ?? "") === "" ? "。⚠ 这份会话**没有 `deviceId`**：领取类接口（receive）会回 615，而它的文案是「活动太火爆啦」—— 那不是在限流，是缺参数。要修：在会话 JSON 里带上 `deviceId`（H5 那一份是 `B` + 88 字符 base64）" : "")
   );
 }
-function failStep(deps, st, note) {
+function failStep(deps, st, note2) {
   st.step = "done";
   st.finishedAt = deps.nowIso;
   st.ok = false;
-  st.note = note;
+  st.note = note2;
   delete st.ssoToken;
   delete st.ts;
   deps.store.setState(STATE_EXCHANGE, JSON.stringify(st), deps.nowIso);
-  return { ok: false, note, done: true };
+  return { ok: false, note: note2, done: true };
 }
 var RETRY_AFTER_MS = 30 * 60 * 1e3;
 function needExchange(store2, nowMs) {
@@ -4521,6 +4521,9 @@ function isKoulingHead(text) {
 function hasKouling(text) {
   return /口令|小红花/.test(text);
 }
+function isKoulingMarker(text) {
+  return /无随机/.test(text);
+}
 var TRAILING_PARTICLE = /[呀啊吧呢嘛哦]+$/;
 var QUESTION_WORDS = ["什么", "啥", "多少", "几", "哪个", "哪些"];
 function isQuestion(code) {
@@ -4642,25 +4645,31 @@ var MAX_CODE_CHARS = 128;
 var MAX_CODES = 10;
 function parseCodeInput(raw) {
   const text = raw.trim();
-  if (!text) return { ok: false, codes: [], how: "", error: "先贴一条口令" };
+  if (!text) return { ok: false, codes: [], how: "", matchedFormat: false, error: "先贴一条口令" };
   const extracted = extractKouling(text);
   if (extracted.length > 0) {
-    return finish(extracted, `按弹幕格式解出 ${extracted.length} 条`);
+    return finish(extracted, `按弹幕格式解出 ${extracted.length} 条`, true);
   }
   const lines = text.split(/\r?\n/).map((l) => l.trim()).filter((l) => l !== "");
-  if (lines.length === 0) return { ok: false, codes: [], how: "", error: "先贴一条口令" };
+  if (lines.length === 0) {
+    return { ok: false, codes: [], how: "", matchedFormat: false, error: "先贴一条口令" };
+  }
   const bad = lines.find((l) => looksLikeQuestionAboutKouling(l));
   if (bad !== void 0) {
     return {
       ok: false,
       codes: [],
       how: "",
+      matchedFormat: false,
       error: `「${bad.slice(0, 20)}」看着是观众的提问，不是口令 —— 拿去领只会白跑一枪（上游回 200108）`
     };
   }
-  return finish(lines, `按原文收下 ${lines.length} 条（没匹配到任何弹幕格式）`);
+  return finish(lines, `按原文收下 ${lines.length} 条（没匹配到任何弹幕格式）`, false);
 }
-function finish(codes, how) {
+function checkCodeLimits(codes) {
+  return finish(codes.slice(), "（只做护栏检查）", false);
+}
+function finish(codes, how, matchedFormat) {
   const uniq = [...new Set(codes.map((c) => c.trim()).filter((c) => c !== ""))];
   const tooLong = uniq.find((c) => c.length > MAX_CODE_CHARS);
   if (tooLong !== void 0) {
@@ -4668,13 +4677,369 @@ function finish(codes, how) {
       ok: false,
       codes: [],
       how: "",
+      matchedFormat: false,
       error: `有一条 ${tooLong.length} 个字符，超过 ${MAX_CODE_CHARS} 的上限 —— 这不像口令`
     };
   }
   if (uniq.length > MAX_CODES) {
-    return { ok: false, codes: [], how: "", error: `一次最多 ${MAX_CODES} 条（收到 ${uniq.length} 条）` };
+    return {
+      ok: false,
+      codes: [],
+      how: "",
+      matchedFormat: false,
+      error: `一次最多 ${MAX_CODES} 条（收到 ${uniq.length} 条）`
+    };
   }
-  return { ok: true, codes: uniq, how };
+  return { ok: true, codes: uniq, how, matchedFormat };
+}
+
+// src/mcloud/koulingPool.ts
+var CYCLE_TTL_MS = 5 * 60 * 60 * 1e3;
+var GATE_CLOSE_GRACE_MS = 10 * 60 * 1e3;
+var VALID_ENOUGH = 2;
+var SCRAPE_MIN_INTERVAL_MS = 180 * 1e3;
+var XHS_MIN_INTERVAL_MS = 30 * 60 * 1e3;
+var MAX_POOL_CODES = 200;
+var KOULING_ANCHOR = "中国移动云盘";
+var POOL_KEY = "mcloud.kouling.pool";
+function emptyPool() {
+  return {
+    cycleAtMs: 0,
+    codes: [],
+    claims: {},
+    lastLiveAtMs: null,
+    gateClosedAtMs: null,
+    lastXhsAtMs: null,
+    lastScrapeAtMs: null,
+    schedule: [],
+    scheduleAtMs: null,
+    scheduleAnchor: null,
+    sessions: []
+  };
+}
+function startCycle(pool, nowMs) {
+  pool.cycleAtMs = nowMs;
+  pool.codes = [];
+  pool.claims = {};
+  pool.lastLiveAtMs = null;
+  pool.gateClosedAtMs = null;
+}
+function isStale(pool, nowMs) {
+  if (pool.cycleAtMs === 0) {
+    return false;
+  }
+  if (nowMs - pool.cycleAtMs > CYCLE_TTL_MS) return true;
+  return pool.gateClosedAtMs !== null && nowMs - pool.gateClosedAtMs > GATE_CLOSE_GRACE_MS;
+}
+function closeOpenSession(pool) {
+  const open = pool.sessions[pool.sessions.length - 1];
+  if (open && open.endedAtMs === void 0) {
+    open.endedAtMs = pool.lastLiveAtMs ?? pool.cycleAtMs;
+  }
+}
+function normalize(pool, nowMs) {
+  if (isStale(pool, nowMs)) {
+    closeOpenSession(pool);
+    startCycle(pool, nowMs);
+  }
+  if (pool.cycleAtMs === 0) pool.cycleAtMs = nowMs;
+}
+function note(pool, values, source, nowMs) {
+  normalize(pool, nowMs);
+  let added = 0;
+  for (const raw of values) {
+    const value = raw.trim();
+    if (value === "") continue;
+    const existing = pool.codes.find((c) => c.value === value);
+    if (existing !== void 0) continue;
+    if (pool.codes.length >= MAX_POOL_CODES) break;
+    pool.codes.push({
+      value,
+      state: "unknown",
+      source,
+      firstSeenMs: nowMs
+    });
+    added += 1;
+  }
+  return added;
+}
+function noteClaim(pool, account, code, verdict, nowMs) {
+  normalize(pool, nowMs);
+  const value = code.trim();
+  if (value === "") return;
+  const mine = pool.claims[account] ?? {};
+  mine[value] = verdict;
+  pool.claims[account] = mine;
+  let state;
+  let reason;
+  switch (verdict) {
+    case "claimed":
+      state = "valid";
+      reason = "已验证有效";
+      break;
+    case "alreadyClaimed":
+      state = "valid";
+      reason = "已验证有效（这个账号已领过）";
+      break;
+    case "invalid":
+      state = "invalid";
+      reason = "口令无效";
+      break;
+    case "expired":
+      state = "invalid";
+      reason = "口令已过期";
+      break;
+    case "other":
+      break;
+  }
+  if (state === void 0) return;
+  const slot = pool.codes.find((c) => c.value === value);
+  if (slot !== void 0) {
+    const downgrade = slot.state === "valid" && state === "invalid";
+    if (!downgrade) slot.state = state;
+    slot.reason = reason;
+    if (state === "valid" && slot.validAtMs === void 0) slot.validAtMs = nowMs;
+    return;
+  }
+  if (pool.codes.length >= MAX_POOL_CODES) return;
+  pool.codes.push({
+    value,
+    state,
+    source: "manual",
+    reason,
+    firstSeenMs: nowMs,
+    ...state === "valid" ? { validAtMs: nowMs } : {}
+  });
+}
+function validCount(pool) {
+  return pool.codes.filter((c) => c.state === "valid").length;
+}
+function stopScraping(pool) {
+  return validCount(pool) >= VALID_ENOUGH;
+}
+function accountClaimed(pool, account, code) {
+  const mine = pool.claims[account];
+  return mine !== void 0 && Object.prototype.hasOwnProperty.call(mine, code.trim());
+}
+function codeState(pool, code) {
+  return pool.codes.find((c) => c.value === code.trim())?.state;
+}
+function pickFor(pool, account) {
+  const mine = pool.claims[account];
+  return pool.codes.filter((c) => c.state !== "invalid").filter((c) => mine === void 0 || !Object.prototype.hasOwnProperty.call(mine, c.value)).map((c) => c.value);
+}
+function xhsReady(pool, nowMs) {
+  return pool.lastXhsAtMs === null || nowMs - pool.lastXhsAtMs >= XHS_MIN_INTERVAL_MS;
+}
+function noteXhs(pool, nowMs) {
+  pool.lastXhsAtMs = nowMs;
+}
+function xhsWaitMs(pool, nowMs) {
+  if (pool.lastXhsAtMs === null) return 0;
+  return Math.max(0, XHS_MIN_INTERVAL_MS - (nowMs - pool.lastXhsAtMs));
+}
+function accountKey(phone) {
+  const p = phone.trim();
+  if (p === "") return "default";
+  return toHex(sha256(utf8(`mcloud.kouling.account:${p}`))).slice(0, 16);
+}
+function parsePool(raw) {
+  if (!raw) return { pool: emptyPool(), reset: false };
+  let v;
+  try {
+    v = JSON.parse(raw);
+  } catch {
+    return { pool: emptyPool(), reset: true };
+  }
+  if (v === null || typeof v !== "object" || Array.isArray(v)) {
+    return { pool: emptyPool(), reset: true };
+  }
+  const o = v;
+  const pool = emptyPool();
+  pool.cycleAtMs = num(o["cycleAtMs"]) ?? 0;
+  pool.codes = codeList(o["codes"]);
+  pool.claims = claimsOf(o["claims"]);
+  pool.lastLiveAtMs = num(o["lastLiveAtMs"]) ?? null;
+  pool.gateClosedAtMs = num(o["gateClosedAtMs"]) ?? null;
+  pool.lastXhsAtMs = num(o["lastXhsAtMs"]) ?? null;
+  pool.lastScrapeAtMs = num(o["lastScrapeAtMs"]) ?? null;
+  pool.schedule = roomsOf(o["schedule"]);
+  pool.scheduleAtMs = num(o["scheduleAtMs"]) ?? null;
+  pool.scheduleAnchor = typeof o["scheduleAnchor"] === "string" ? o["scheduleAnchor"] : null;
+  pool.sessions = sessionsOf(o["sessions"]);
+  return { pool, reset: false };
+}
+function serializePool(pool) {
+  return JSON.stringify(pool);
+}
+function loadPoolFrom(store2) {
+  return parsePool(store2.getState(POOL_KEY));
+}
+function savePoolTo(store2, pool, nowIso) {
+  store2.setState(POOL_KEY, serializePool(pool), nowIso);
+}
+function num(v) {
+  return typeof v === "number" && Number.isFinite(v) ? Math.trunc(v) : void 0;
+}
+function str(v) {
+  return typeof v === "string" ? v : "";
+}
+function codeList(v) {
+  if (!Array.isArray(v)) return [];
+  const out = [];
+  for (const item of v) {
+    if (item === null || typeof item !== "object") continue;
+    const o = item;
+    const value = str(o["value"]);
+    if (value === "") continue;
+    const state = o["state"];
+    const code = {
+      value,
+      // 认不出的状态按 **unknown**（不是 valid）：保守方向是"还要再验一次"，
+      // 而"当成有效"会让 stopScraping 提前为真。
+      state: state === "valid" || state === "invalid" ? state : "unknown",
+      source: sourceOf(o["source"]),
+      firstSeenMs: num(o["firstSeenMs"]) ?? 0
+    };
+    const reason = str(o["reason"]);
+    if (reason !== "") code.reason = reason;
+    const validAt = num(o["validAtMs"]);
+    if (validAt !== void 0) code.validAtMs = validAt;
+    out.push(code);
+  }
+  return out;
+}
+function sourceOf(v) {
+  return v === "danmaku" || v === "xiaohongshu" || v === "manual" || v === "auto" ? v : "auto";
+}
+function verdictOf2(v) {
+  return v === "claimed" || v === "alreadyClaimed" || v === "invalid" || v === "expired" || v === "other" ? v : void 0;
+}
+function claimsOf(v) {
+  const out = {};
+  if (v === null || typeof v !== "object" || Array.isArray(v)) return out;
+  for (const [account, codes] of Object.entries(v)) {
+    if (codes === null || typeof codes !== "object" || Array.isArray(codes)) continue;
+    const mine = {};
+    for (const [code, verdict] of Object.entries(codes)) {
+      const v2 = verdictOf2(verdict);
+      if (v2 !== void 0) mine[code] = v2;
+    }
+    out[account] = mine;
+  }
+  return out;
+}
+function roomsOf(v) {
+  if (!Array.isArray(v)) return [];
+  const out = [];
+  for (const item of v) {
+    if (item === null || typeof item !== "object") continue;
+    const o = item;
+    out.push({
+      roomId: num(o["roomId"]) ?? 0,
+      title: str(o["title"]),
+      status: num(o["status"]) ?? 0,
+      expectStartTime: str(o["expectStartTime"]),
+      anchorNickname: str(o["anchorNickname"])
+    });
+  }
+  return out;
+}
+function sessionsOf(v) {
+  if (!Array.isArray(v)) return [];
+  const out = [];
+  for (const item of v) {
+    if (item === null || typeof item !== "object") continue;
+    const o = item;
+    const started = num(o["startedAtMs"]);
+    if (started === void 0) continue;
+    const s = { startedAtMs: started };
+    const ended = num(o["endedAtMs"]);
+    if (ended !== void 0) s.endedAtMs = ended;
+    out.push(s);
+  }
+  return out;
+}
+function localStamp(nowMs) {
+  const d = new Date(nowMs);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+function poolSummary(pool, nowLocal, nowMs) {
+  const next = nextRoomAt(pool.schedule, nowLocal);
+  const s = {
+    cycleAtMs: pool.cycleAtMs,
+    validCount: validCount(pool),
+    stopScraping: stopScraping(pool),
+    codes: pool.codes.slice(),
+    scheduleAtMs: pool.scheduleAtMs,
+    sessions: pool.sessions.slice().reverse(),
+    xhsWaitMs: xhsWaitMs(pool, nowMs)
+  };
+  if (next !== void 0) {
+    s.nextStart = next.expectStartTime;
+    if (next.title !== "") s.nextTitle = next.title;
+    if (next.anchorNickname !== "") s.nextAnchor = next.anchorNickname;
+  }
+  return s;
+}
+function nextRoomAt(rooms, nowLocal) {
+  return earliestPreviewIn(rooms, true, nowLocal);
+}
+function earliestPreviewIn(rooms, onlyTarget, notBefore) {
+  let best;
+  for (const r of rooms) {
+    if (r.status !== 0) continue;
+    if (r.expectStartTime === "") continue;
+    if (onlyTarget && r.anchorNickname !== KOULING_ANCHOR) continue;
+    if (notBefore !== void 0 && r.expectStartTime < notBefore) continue;
+    if (best === void 0 || r.expectStartTime < best.expectStartTime) best = r;
+  }
+  return best;
+}
+
+// src/mcloud/tasks/liveRoomRules.ts
+function accountOf(store2) {
+  const raw = store2.getState(STATE_AUTH) ?? "";
+  if (raw === "") return accountKey("");
+  const seg = parseAuthorization(raw);
+  return accountKey(seg?.phone ?? "");
+}
+function mergeKouling(sources) {
+  const out = [];
+  for (const raw of sources) {
+    const code = raw.trim();
+    if (code === "" || out.includes(code)) continue;
+    out.push(code);
+  }
+  return out;
+}
+function splitKouling(raw) {
+  return mergeKouling(raw.split(/[\s,，、]+/));
+}
+function claimVerdictOf(kind) {
+  switch (kind) {
+    case "succeeded":
+      return "claimed";
+    case "already-drawn":
+      return "alreadyClaimed";
+    case "invalid-kouling":
+      return "invalid";
+    case "kouling-expired":
+      return "expired";
+    default:
+      return "other";
+  }
+}
+function planDrawCodes(pool, account, humanCodes) {
+  const picked = pickFor(pool, account);
+  const out = [];
+  for (const code of mergeKouling([...humanCodes, ...picked])) {
+    if (codeState(pool, code) === "invalid") continue;
+    if (accountClaimed(pool, account, code)) continue;
+    out.push(code);
+  }
+  return out;
 }
 
 // src/mcloud/tasks/liveRoom.ts
@@ -4691,6 +5056,27 @@ function saveLiveUrl(store2, url, nowIso) {
 var EMPTY_SHELL_HINT_CHARS = 5e3;
 function runLiveRoom(deps) {
   const url = loadLiveUrl(deps.store);
+  const nowMs = Date.parse(deps.nowIso);
+  const loaded = loadPoolFrom(deps.store);
+  const pool = loaded.pool;
+  normalize(pool, nowMs);
+  if (stopScraping(pool)) {
+    return {
+      ok: true,
+      idle: true,
+      note: `口令池已有 ${validCount(pool)} 条**有效**口令 ⇒ 按口径停止抓取（这一场只发那么几条，继续抓只会重复撞同一批）`
+    };
+  }
+  if (!xhsReady(pool, nowMs)) {
+    const mins = Math.ceil(xhsWaitMs(pool, nowMs) / 6e4);
+    return {
+      ok: true,
+      idle: true,
+      note: `距上次抓主页还不到 30 分钟（还要 ${mins} 分钟）—— 频繁抓会被风控挡成空壳，而空壳与"这期没发"在解析层长得一样，混起来没法排查`
+    };
+  }
+  noteXhs(pool, nowMs);
+  savePoolTo(deps.store, pool, deps.nowIso);
   const res = callRawText(deps.transport, {
     url,
     method: "GET",
@@ -4698,24 +5084,32 @@ function runLiveRoom(deps) {
     body: void 0
   });
   if (!res.ok) {
-    const note2 = `抓小红书主页失败：${res.error ?? "未知失败"}`;
-    recordError(deps.store, "live-room", note2, deps.nowIso);
-    return { ok: false, note: note2 };
+    const note3 = `抓小红书主页失败：${res.error ?? "未知失败"}`;
+    recordError(deps.store, "live-room", note3, deps.nowIso);
+    return { ok: false, note: note3 };
   }
   const codes = extractKoulingFromXiaohongshuHtml(res.text);
+  const added = note(pool, codes, "xiaohongshu", nowMs);
+  savePoolTo(deps.store, pool, deps.nowIso);
   const guess = res.chars < EMPTY_SHELL_HINT_CHARS;
-  const note = codes.length ? `小红书主页：${codes.length} 条口令（${codes.join("、")}）` : `小红书主页：没读到口令（页面 ${res.chars} 字符）` + (guess ? ` —— 页面小得可疑，**猜**是被挡成了空壳（不是判据）` : ` —— 也可能是这期没发：空壳页与"没发"在解析层长得一样`);
+  const reset = loaded.reset ? "（⚠ 盘上那份池解不出来，已按空池重开 —— 这一场的领取记录丢了）" : "";
+  const poolLine = `池：新增 ${added} 条，有效 ${validCount(pool)} 条${stopScraping(pool) ? "（已够 2 条 ⇒ 停止抓取）" : ""}`;
+  const note2 = codes.length ? `小红书主页：${codes.length} 条口令（${codes.join("、")}）· ${poolLine}` : `小红书主页：没读到口令（页面 ${res.chars} 字符）· ${poolLine}` + (guess ? ` —— 页面小得可疑，**猜**是被挡成了空壳（不是判据）` : ` —— 也可能是这期没发：空壳页与"没发"在解析层长得一样`) + reset;
   const reading = {
     at: deps.nowIso,
     url,
     codes,
     chars: res.chars,
     tookMs: res.tookMs,
-    note
+    note: note2
   };
   deps.store.setState(STATE_READING, JSON.stringify(reading), deps.nowIso);
   clearError(deps.store, "live-room", deps.nowIso);
-  return { ok: true, note };
+  return { ok: true, note: note2 };
+}
+function readPoolSummary(store2, nowLocal, nowMs) {
+  const { pool } = loadPoolFrom(store2);
+  return poolSummary(pool, nowLocal, nowMs);
 }
 function readLiveReading(store2) {
   return parseJson(store2.getState(STATE_READING));
@@ -4726,9 +5120,18 @@ function loadLiveCodes(store2) {
 function saveLiveCodes(store2, raw, nowIso) {
   const parsed = parseCodeInput(raw);
   if (!parsed.ok) return { ok: false, codes: [], how: "", error: parsed.error ?? "解不出口令" };
-  const v = { at: nowIso, codes: parsed.codes, raw: raw.trim(), how: parsed.how };
+  const cut = parsed.codes.flatMap((c) => splitKouling(c));
+  const kept = cut.filter((c) => !isQuestion(c) && !isKoulingMarker(c));
+  const limited = checkCodeLimits(kept);
+  if (!limited.ok) return { ok: false, codes: [], how: "", error: limited.error ?? "解不出口令" };
+  const codes = limited.codes;
+  if (codes.length === 0) {
+    return { ok: false, codes: [], how: "", error: "拆完之后一条口令都不剩（剩下的看着都像提问或格式标记）" };
+  }
+  const how = cut.length === codes.length ? parsed.how : `${parsed.how}；按分隔符切开 ${cut.length} 段，滤掉提问/标记、去重后剩 ${codes.length} 条`;
+  const v = { at: nowIso, codes, raw: raw.trim(), how };
   store2.setState(STATE_CODES, JSON.stringify(v), nowIso);
-  return { ok: true, codes: parsed.codes, how: parsed.how };
+  return { ok: true, codes, how };
 }
 function clearLiveCodes(store2, nowIso) {
   store2.setState(STATE_CODES, "", nowIso);
@@ -4896,14 +5299,8 @@ var STATE_DRAW = "mcloud.live.draw";
 var STATE_CLAIM_ENABLED = "mcloud.live.claim_enabled";
 function collectCodes(store2) {
   const human = loadLiveCodes(store2)?.codes ?? [];
-  const auto = readLiveReading(store2)?.codes ?? [];
-  const out = [];
-  for (const c of [...human, ...auto]) {
-    const v = c.trim();
-    if (v && !out.includes(v)) out.push(v);
-    if (out.length >= MAX_CODES) break;
-  }
-  return out;
+  const { pool } = loadPoolFrom(store2);
+  return planDrawCodes(pool, accountOf(store2), human);
 }
 function loadDrawState(store2) {
   const raw = store2.getState(STATE_DRAW);
@@ -4980,7 +5377,12 @@ function runLiveDraw(deps, opts = {}) {
   const codes = collectCodes(deps.store);
   if (!s || s.step === "done") {
     const done = s?.codes ?? [];
-    if (codes.length === 0) return { ok: true, idle: true, note: "没有口令可领（先抓主页或把口令填进输入框）" };
+    const { pool } = loadPoolFrom(deps.store);
+    const account = accountOf(deps.store);
+    const allClaimed = done.length > 0 && done.every((c) => accountClaimed(pool, account, c));
+    if (codes.length === 0) {
+      return allClaimed ? { ok: true, idle: true, note: `这一轮已跑完（${s?.summary ?? ""}）；口令没变，不重复领` } : { ok: true, idle: true, note: "没有口令可领（先抓主页或把口令填进输入框）" };
+    }
     if (s?.step === "done" && sameList(done, codes)) {
       return { ok: true, idle: true, note: `这一轮已跑完（${s.summary ?? ""}）；口令没变，不重复领` };
     }
@@ -4996,9 +5398,9 @@ function runLiveDraw(deps, opts = {}) {
   }
   const session = loadSession(deps.store);
   if (!session || !session.jwt) {
-    const note = "未登录：领小红花要 jwttoken（见 docs/howto-session.md）";
-    recordError(deps.store, TASK, note, deps.nowIso);
-    return { ok: false, note };
+    const note2 = "未登录：领小红花要 jwttoken（见 docs/howto-session.md）";
+    recordError(deps.store, TASK, note2, deps.nowIso);
+    return { ok: false, note: note2 };
   }
   const step = stepRequest(s, deps.baseUrl);
   if (!step) {
@@ -5007,8 +5409,17 @@ function runLiveDraw(deps, opts = {}) {
     return { ok: true, note: "步骤下标越界，已跳到收尾" };
   }
   const res = callOnce(deps.transport, withSession(step.request, session.jwt));
+  const before = s.results.length;
   const advance2 = judge(s, step.label, res, deps.nowIso);
   deps.store.setState(STATE_DRAW, JSON.stringify(advance2.state), deps.nowIso);
+  if (s.step === "draw" && advance2.state.results.length > before) {
+    const row = advance2.state.results[advance2.state.results.length - 1];
+    if (row !== void 0) {
+      const loaded = loadPoolFrom(deps.store);
+      noteClaim(loaded.pool, accountOf(deps.store), row.code, claimVerdictOf(row.kind), Date.parse(deps.nowIso));
+      savePoolTo(deps.store, loaded.pool, deps.nowIso);
+    }
+  }
   if (!advance2.ok) {
     recordError(deps.store, TASK, advance2.note, deps.nowIso);
     return { ok: false, note: advance2.note };
@@ -5384,9 +5795,9 @@ function sessionStatus(store2, nowIso) {
 function verifySession(deps) {
   const s = loadSession(deps.store);
   if (!s) {
-    const note2 = "没有会话";
-    deps.store.setState(STATE_LAST_CHECK, JSON.stringify({ at: deps.nowIso, ok: false, note: note2 }), deps.nowIso);
-    return { ok: false, note: note2 };
+    const note3 = "没有会话";
+    deps.store.setState(STATE_LAST_CHECK, JSON.stringify({ at: deps.nowIso, ok: false, note: note3 }), deps.nowIso);
+    return { ok: false, note: note3 };
   }
   const req = buildH5Request({
     url: `${resolveUrl("infoV3", deps.baseUrl)}?${CLIENT_QUERY}`,
@@ -5399,13 +5810,13 @@ function verifySession(deps) {
   });
   const res = callOnce(deps.transport, req);
   const ok = res.ok;
-  const note = ok ? `会话有效（${res.tookMs}ms）` : `会话可能已失效：${res.error ?? "未知失败"}`;
+  const note2 = ok ? `会话有效（${res.tookMs}ms）` : `会话可能已失效：${res.error ?? "未知失败"}`;
   deps.store.setState(
     STATE_LAST_CHECK,
-    JSON.stringify({ at: deps.nowIso, ok, note }),
+    JSON.stringify({ at: deps.nowIso, ok, note: note2 }),
     deps.nowIso
   );
-  return { ok, note };
+  return { ok, note: note2 };
 }
 function importSession(store2, s, nowIso) {
   saveSession(store2, s, nowIso);
@@ -6238,7 +6649,7 @@ var VISIT_LOG_KEYWORD_EXCHANGE = "newsignin_index_to_exchange";
 var VISIT_LOG_KEYWORD_EXCHANGE_TIMES = "newsignin_index_exchange_times";
 var VISIT_LOG_MARKET_NAME = "sign_in_3";
 var CODE_SLIDER_WRONG = 514;
-function num(v) {
+function num2(v) {
   if (typeof v === "number" && Number.isFinite(v)) return v;
   if (typeof v === "string" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
   return void 0;
@@ -6316,9 +6727,9 @@ function runOrderStep(deps) {
   const query = deps.store.getState(STATE_PLAN) ?? "";
   const step = st.step;
   const label = STEP_TEXT3[step];
-  const done = (note, ok = true) => {
+  const done = (note2, ok = true) => {
     saveState(deps, { ...st, step: "done" });
-    return { ok, note };
+    return { ok, note: note2 };
   };
   if (step === "done") return { ok: true, idle: true, note: "这一单已经走完了（要再来一单得重新起）" };
   if (step === "list") {
@@ -6333,11 +6744,11 @@ function runOrderStep(deps) {
     const { prizes } = parseExchangeList(digResult2(res.text));
     const p = pickPrize(prizes, query);
     if (!p) return done(`${label}：清单里没有「${query}」—— 这一单不做（名字要**精确**匹配）`, false);
-    const prizeId = num(p.prizeId);
+    const prizeId = num2(p.prizeId);
     if (prizeId === void 0) {
       return done(`${label}：清单里那条没有可用的 prizeId ⇒ 这一单不做（不许编一个数字发出去）`, false);
     }
-    const plan = { prizeId, prizeName: String(p.name ?? ""), price: num(p.price), query };
+    const plan = { prizeId, prizeName: String(p.name ?? ""), price: num2(p.price), query };
     saveState(deps, { ...st, step: "balance", plan });
     return { ok: true, note: `${label}：目标「${p.name}」（prizeId=${p.prizeId}）${p.price === void 0 ? "" : `，${p.price} 豆`} —— 下一步读基准余额` };
   }
@@ -6642,6 +7053,9 @@ function mcloudRoutes(deps) {
         codes: loadLiveCodes(deps.store),
         url: loadLiveUrl(deps.store),
         emptyShellHintChars: EMPTY_SHELL_HINT_CHARS,
+        // 口令池（业务档，照 mcloud）：**口令的权威来源**（读数只是最近一次抓取的快照）。
+        // 界面要能看见「够没够 2 条有效」「还要等多久才能再抓」「哪些判过无效」。
+        pool: readPoolSummary(deps.store, localStamp(Date.parse(deps.now())), Date.parse(deps.now())),
         note: "口令本身**没法自动化**（主播在弹幕/小红书发，那边无法鉴权）⇒ 要人给；能自动的只有「抓主页 + 列出看到的口令」。",
         // 写那半（领小红花）：默认关，开关在这里
         claim: {
