@@ -123,6 +123,21 @@ test('② `object` **就是那串 JWT 本身**（不是包着它的对象）', (
   assert.equal(parseCmpassLogin({ rtnCode: '0', object: '' }).ok, false);
 });
 
+test("TLS：cmlive 那两枪带 `tls:'native'`，而 SSO 那枪**不带**", () => {
+  // 判据来自 2026-10-14 实机（docs/findings.md F-030/F-031）：
+  //   `v.cmcc-cs.cn` **只给 CBC 套件**（ECDHE-RSA-AES128-SHA），rustls 不实现 CBC
+  //   ⇒ 凡是打这个主机的请求都必须走平台 TLS（面板 `legacy-tls` + `tls:"native"`）。
+  //   而 `user-njs.yun.139.com` 是现代套件（TLS 1.3，实测）—— **它不该带**：
+  //   带了会在没编那个 feature 的宿主上直接报错，白搭一次失败。
+  assert.equal(cmpassLoginRequest('SSO-1').tls, 'native');
+  assert.equal(tabContentListRequest(127, 'JWT').tls, 'native');
+  assert.equal(tabContentListRequest(129, 'JWT').tls, 'native');
+  assert.equal(gateSpecTokenRequest('Basic xxx').tls, undefined);
+  // ⚠ 主机判据是**同一个常量**：换主机必须同时换这一处，否则"只给 CBC"那个事实会被忘掉
+  assert.ok(cmpassLoginRequest('SSO-1').url.startsWith(BASE_CMLIVE));
+  assert.ok(!gateSpecTokenRequest('Basic xxx').url.startsWith(BASE_CMLIVE));
+});
+
 test('③ 两个页签的 URL 逐字：`tabId→contentType→pageNo→channelId` 顺序照实拍', () => {
   const a = tabContentListRequest(127, 'JWT');
   const b = tabContentListRequest(129, 'JWT');

@@ -6,7 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { CONTENT_TYPE_JSON, applyDefaultContentType } from '../src/mcloud/client.ts';
+import { CONTENT_TYPE_JSON, applyDefaultContentType, hostFetchOptions } from '../src/mcloud/client.ts';
 import { userInfoRequest } from '../src/mcloud/liveFlower.ts';
 import { drawRequest, journalingRequest, firstParticipateGiveRequest } from '../src/mcloud/liveFlower.ts';
 import { tyrzLoginRequest, SIGN_IN_RECIPE, makeSign } from '../src/mcloud/h5session.ts';
@@ -69,4 +69,28 @@ test('逐条按真实现的形状过一遍：哪几个该补、哪几个不该',
       src.headers['content-type'] === undefined && out.headers['content-type'] === CONTENT_TYPE_JSON;
     assert.equal(added, shouldAdd, `${name}：期望${shouldAdd ? '补' : '不补'}，实际 ${out.headers['content-type'] ?? '（无）'}`);
   }
+});
+
+// ── hostFetchOptions：`tls` 只对 https 生效（e2e 能在默认构建上跑的原因）──────
+
+test("hostFetchOptions：https + tls ⇒ 带上；http + tls ⇒ **丢掉**", () => {
+  // ⚠ 这条守卫不是"顺手":宿主对 `tls:"native"` 是**先校验选项再发请求**
+  //   （面板 `hostapi::parse_tls_choice`）⇒ 给 http 请求填它，在没有 `legacy-tls`
+  //   的宿主上会直接报错，连"反正用不上"的机会都没有。
+  //   而本仓 e2e 全程只打 mock（`http://127.0.0.1`）—— 这条守卫正是
+  //   「e2e 可以在默认构建的面板上跑」的原因。
+  const base = { method: 'POST', headers: {}, body: 'x' } as const;
+
+  const https = hostFetchOptions({ ...base, url: 'https://v.cmcc-cs.cn/a', tls: 'native' }, 1500);
+  assert.equal(https.tls, 'native');
+
+  const http = hostFetchOptions({ ...base, url: 'http://127.0.0.1:19000/a', tls: 'native' }, 1500);
+  assert.equal(http.tls, undefined);
+  assert.equal('tls' in http, false);
+
+  // 没写 tls 的请求（绝大多数）一个字段都不多 —— 宿主默认 rustls
+  const plain = hostFetchOptions({ ...base, url: 'https://user-njs.yun.139.com/x' }, 1500);
+  assert.equal('tls' in plain, false);
+  assert.equal(plain.timeout_ms, 1500);
+  assert.equal(plain.method, 'POST');
 });

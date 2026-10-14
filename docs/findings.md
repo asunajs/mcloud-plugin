@@ -1550,3 +1550,102 @@ musl 静态二进制不需要 OpenSSL）：
 在补上之前，**弹幕那一支在面板里连"连不上时如实报错"都算不上** —— 现在会报
 `HandshakeFailure`，而那个措辞会让人以为是我们写错了协议（真因是 TLS 套件不重叠）。
 所以补 TLS 的同时，错误信息也要能区分这两件事。
+
+---
+
+## F-031 · 实机（同一天 15:2x）：**面板真的连上了直播侧** —— 门的三步 + WS 的 `o` 帧，都是真上游给的
+
+承 F-030：那一刻我认定「面板连不上那两个主机（rustls vs CBC）」。**结论没错，但它不是终点** ——
+用户说"现在也可以实机"，所以我把那条路补出来了，并在**正在进行的直播**上验到真数据。
+
+### 补的是什么（面板侧，`legacy-tls` 这个 cargo feature）
+
+```text
+默认构建（一个字节都没变）：ureq + rustls（http_fetch）、tokio-tungstenite + rustls（ws_*）
+--features legacy-tls      ：多一条**能谈 CBC** 的路，插件用 tls:"native" 显式要
+   · HTTP → reqwest(blocking) + native-tls
+   · WS   → tokio-tungstenite 的 Connector::NativeTls
+   · macOS 走 Security.framework（不拉 OpenSSL）；Linux 走 OpenSSL ⇒ 所以**默认必须关**
+```
+
+⚠ 两个实现细节值得记（都是"踩了才知道"）：
+1. **不能直接开 `ureq/native-tls`**：它要 `der 0.8.2`，而本机离线缓存里只有 `0.7.10`
+   ⇒ 半版本不兼容、离线编不出来。所以 HTTP 那条路换成 `reqwest + native-tls`
+   （mcloud 生产用的同一套，缓存里全在）。
+2. `tls:"native"` 在**没编这个 feature 的宿主里是明确报错**，不是静默退化：
+
+```text
+{"error":"tls:\"native\" 需要宿主用 `--features legacy-tls` 构建（本构建里只有 rustls；…）"}
+```
+
+   —— 实测确认（我先启动的是默认构建的二进制，拿到了这句话；换成 feature 构建后同一个调用就通了）。
+
+### 实机结果 ①：门的三步**从面板的宿主 API**走通了（真直播，869 ms）
+
+```text
+① SSO  HTTP 200  {"success":true,"code":"0000",…"token":"YZsidssolgee…"}（42 字符）
+② JWT  HTTP 200  {"rtnCode":"0","rtnMsg":null,"object":"eyJ0eXAiOiJKV1Q…"}（180 字符）
+③ tab127 HTTP 200 rtnCode="0" 房间 8 在播 ["147868/中国移动云盘","147698/福建移动"]
+   tab129 HTTP 200 rtnCode="0" 房间 8 在播 ["147868/中国移动云盘"]
+   合计 16 间房，耗时 869 ms
+```
+
+⭐ 与 F-030 里那条 Node/OpenSSL 探针**逐字一致**（同一时刻、同一批房间、同样两间在播）
+—— 两个独立通路同答，这不是"某一条路自己说自己行"。
+
+### 实机结果 ②（本轮真正的目的）：**面板连上了直播弹幕的 WS，收到 SockJS 的 `o` 帧**
+
+```text
+URL  wss://videoim.cmcc-cs.cn:20102/ws/699/3jrpsvrn/websocket
+句柄 1（typeof = number）                      ← 握手成功（CBC 套件，靠 native-tls）
+帧0  {"type":"text","data":"o"}                ← ⭐ **SockJS 的 `o`，真的是它**
+帧1  {"type":"timeout"}                        ← 1.5s 内没有更多帧（还没发 PROVISION，服务端不推）
+（ws_close 后正常收工，耗时 1 655 ms）
+```
+
+这一条同时钉住了四件事（都是 F-029/F-030 里只能"推测"的）：
+
+```text
+① WS 端点的形状对：/ws/<serverId 0-999>/<sessionId>/websocket，Origin + iPad UA 都被接受
+② 「面板有能力接长连接」这件事**从"能写出来"变成"实测到了"**（先前只有 mock 的假服务端）
+③ ws_recv 的 timeout 语义在真环境里成立：`o` 之后没东西就是 timeout，**不是错误**
+④ 弹幕那一支的**传输层已经通了** —— 剩下的只有 PROVISION/msync 那层（protobuf），
+   而它已经有实拍文档（F-029 更正里那份 133 帧的样本）可以照着写
+```
+
+⚠ 仍然如实标档：**`o` 之后没有业务帧**（因为我没发 PROVISION）。所以
+「弹幕文本能不能拿到」这件事，本仓**还没有**自己的实机证据 —— 它有别的证据面
+（2026-09-23 的实拍 + Go 对拍），但**面板这条路**只走通到"连接已建立"。
+
+### 实机结果 ③：**插件自己的 gate 任务**在真直播上跑通了（不是只有宿主 API）
+
+把插件侧那条路也接上（`BuiltRequest.tls`，cmlive 那两枪带 `tls:'native'`），
+重新打包后在同一个面板里触发 `live-gate` 两次：
+
+```json
+gate: {"at":"2026-10-14T07:25:47.010Z", "active":true, "liveCount":2,
+       "rooms":[{"roomId":147868,"title":"重阳云盘存暖意！好礼赢不停！","status":1,
+                 "expectStartTime":"2026-10-14 14:30:00","anchorNickname":"中国移动云盘"},
+                {"roomId":147698,"title":"权益流量特惠购","status":1,
+                 "expectStartTime":"2026-10-14 15:00:00","anchorNickname":"福建移动"}, …]}
+pool: {"scheduleAtMs":1791962747010, "sessions":[{"startedAtMs":1791962747010}]}
+```
+
+⭐ `active:true` 就是门的结论（那个主播**在播**），而 `liveCount:2` 说明**同一刻有两间房在播**
+—— 「按昵称精确匹配」这条判据不是洁癖，是必须的（F-028 的判据在真数据上站住了）。
+
+⚠ `tls` 的**作用域**是一条判据，不是随手加的：`hostFetchOptions` 里加了
+「**只对 `https:` 生效**」的守卫。理由是宿主对 `tls:"native"` 会**先校验再发请求**
+⇒ 给 `http://` 的 mock 请求填它会直接报错 —— 而本仓 e2e **全程只打 mock**（`http://127.0.0.1`）。
+没有这条守卫，e2e 就得改用 `--features legacy-tls` 的构建才能跑，那就把
+"默认构建能不能跑 e2e"这件事给出卖了。
+
+### 下一步（已经很具体了）
+
+```text
+① 插件侧：live 这一族的请求要能带 `tls:"native"`（今天 gate 的请求还是 rustls ⇒ 面板里跑不通）
+② 面板侧：把 legacy-tls 的价值讲清楚（README/host-api.md）—— 它是**给上游兼容**，
+   不是"更安全的默认"，所以默认关闭、按需开启
+③ 弹幕：照 F-029 更正里那份实拍写 PROVISION/msync（protobuf），然后用同样的
+   `tls:"native"` + `ws_*` 在真直播间验到弹幕文本
+```
