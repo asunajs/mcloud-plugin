@@ -6805,7 +6805,7 @@ function runLiveDraw(deps, opts = {}) {
     if (codes.length === 0) {
       return allClaimed ? { ok: true, idle: true, note: `这一轮已跑完（${s?.summary ?? ""}）；口令没变，不重复领` } : { ok: true, idle: true, note: "没有口令可领（先抓主页或把口令填进输入框）" };
     }
-    if (s?.step === "done" && sameList(done, codes)) {
+    if (s?.step === "done" && sameList(done, codes) && s.account === account) {
       return { ok: true, idle: true, note: `这一轮已跑完（${s.summary ?? ""}）；口令没变，不重复领` };
     }
     s = {
@@ -6813,6 +6813,7 @@ function runLiveDraw(deps, opts = {}) {
       journalingSent: 0,
       drawIndex: 0,
       codes,
+      account,
       results: [],
       startedAt: deps.nowIso
     };

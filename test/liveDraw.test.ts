@@ -33,6 +33,7 @@ import {
   validCount,
 } from '../src/mcloud/koulingPool.ts';
 import { accountOf, claimVerdictOf } from '../src/mcloud/tasks/liveRoomRules.ts';
+import { STATE_AUTH as STATE_AUTH_KEY } from '../src/mcloud/sessionExchange.ts';
 import { classifyDraw, rejectedKouling } from '../src/mcloud/liveFlower.ts';
 import { SESSION_KEY } from '../src/store/types.ts';
 import { memStore } from '../src/store/memory.ts';
@@ -417,4 +418,37 @@ test('⚠ baseUrl 指到 mock 时，六步链**全部**打 mock（一个字节�
   assert.ok(sent.length > 0);
   const stray = sent.filter((r) => !r.url.startsWith(base));
   assert.deepEqual(stray.map((r) => r.url), [], '有请求打到真上游了 —— 这是"测试污染真环境"');
+});
+
+test('**换账号**之后，同一批口令必须重新领 —— 判据不能只看"口令变没变"', () => {
+  // ⚠ 2026-10-14 实机踩出来的：口令是**共享资源**（谁拿到都能用），余额是**每个账号
+  //   自己的**。第二、第三个账号跑的时候，因为"口令没变"，那一轮被直接跳过 ⇒
+  //   **一条都领不到，而界面看起来一切正常**。守卫要连账号一起比。
+  const store = seeded({ codes: ['秋游影集轻松做'], enabled: true });
+  const up = fakeUpstream();
+  const deps = { store, transport: up.transport, nowIso: NOW };
+
+  // 账号 A 跑完一轮
+  for (let i = 0; i < 20; i += 1) {
+    const out = runLiveDraw(deps);
+    if (out.idle || (loadDrawState(store)?.step ?? '') === 'done') break;
+  }
+  const first = loadDrawState(store);
+  assert.equal(first?.step, 'done');
+  assert.equal(first?.account, accountOf(store), '第一轮要把账号记下来');
+
+  // 同一个账号再跑：跳过（这是原本就有的判据，要保住）
+  const again = runLiveDraw(deps);
+  assert.equal(again.idle, true, '同一账号 + 同一批口令 ⇒ 不重复领');
+  assert.match(again.note, /没变/);
+
+  // **换账号**再跑：必须重新起一轮（否则第二个账号永远领不到）
+  // 换一个账号：`accountOf` 是从 `Authorization` 里解手机号的（同一副凭据形状）
+  const other = 'Basic ' + Buffer.from('mobile:13900000001:tok', 'utf8').toString('base64');
+  store.setState(STATE_AUTH_KEY, other, NOW);
+  assert.notEqual(accountOf(store), first?.account, '换了账号之后 accountOf 必须变（否则这条测试没意义）');
+  const third = runLiveDraw(deps);
+  assert.notEqual(third.idle, true, `换账号之后不该被跳过；实际 note=${third.note}`);
+  const st2 = loadDrawState(store);
+  assert.equal(st2?.account, accountOf(store), '新的一轮记的是新账号');
 });
