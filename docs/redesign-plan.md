@@ -146,9 +146,16 @@
   验收：单测钉住解析与钳制；`@every 1d -1h` 跑 N 拍后理论时间线不漂移；
   `lateMs` 里抖动量被扣掉。
 
-- [ ] **①-5 `smtp_send`**
-  宿主 API：`smtp_send(cfg, to, subject, body)`。TLS/STARTTLS。
-  验收：对着本地假 SMTP 服务器跑通（CI 里可跑，不依赖外网）。
+- [x] **①-5 `smtp_send`（发邮件）**　✅ `rust-plugin-panel` `b8643c1`（第二十三轮）
+  裸 SMTP 客户端（`EHLO`/`STARTTLS`/`AUTH`/`MAIL`/`RCPT`/`DATA`），支持
+  `starttls` / `implicit`(465) / `none`；MIME 头编码（RFC 2047 折行）+ base64 正文 +
+  `multipart/alternative` + 点填充。`ca_file` 支持私有 CA（自建 SMTP / 内网中继）。
+  **零新编译单元**（rustls / webpki-roots / base64 本来就在 ureq 的依赖树里）。
+  验收：`python3 scripts/smtp_check.py` —— 自带假 SMTP 服务器 + 真邮件解析器，
+  30 项断言全过（含 STARTTLS / implicit TLS 实握手、失败路径、点填充）。
+  踩坑：信封地址不能带显示名（`MAIL FROM:<机器人 <a@b>>`）；**`Conn::writer()`
+  误取底层 TcpStream ⇒ 绕过 TLS 明文发命令**（只有对着真 TLS 服务器跑才露出来）。
+  **未做**：两个适配器还没有 `smtp_send`（已在运行时差异表标出）。
 
 ### 阶段 ② 插件骨架（仓库 `mcloud-plugin`，能真跑起来）
 
@@ -214,3 +221,4 @@
 | 2026-10-14 | ①-2 任务带参数（`opts.params`） | `rust-plugin-panel` `b94a111` |
 | 2026-10-14 | ①-4 随机表达式（抖动后缀） | `rust-plugin-panel` `d9894fb` |
 | 2026-10-15 | ①-3 插件声明的侧边栏入口 | `rust-plugin-panel` `8cdaf77` |
+| 2026-10-15 | ①-5 `smtp_send`（发邮件） | `rust-plugin-panel` `b8643c1` |
