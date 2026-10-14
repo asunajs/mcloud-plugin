@@ -834,7 +834,10 @@ var EP = {
   noticeInfo: { origin: MCLOUD_HOST, path: "/ycloud/openemailsms-service/openEmailsms/getTaskInfo" },
   noticeReward: { origin: MCLOUD_HOST, path: "/ycloud/openemailsms-service/openEmailsms/reward" },
   backupGiftInfo: { origin: BACKUP_GIFT_HOST, path: "/market/backupgift/info" },
-  backupGiftReceive: { origin: BACKUP_GIFT_HOST, path: "/market/backupgift/receive" }
+  backupGiftReceive: { origin: BACKUP_GIFT_HOST, path: "/market/backupgift/receive" },
+  // 消息推送奖励（msgpushon 那一页）—— **同一台主机、不同一族**
+  msgPushStatus: { origin: BACKUP_GIFT_HOST, path: "/market/msgPushOn/task/status" },
+  msgPushObtain: { origin: BACKUP_GIFT_HOST, path: "/market/msgPushOn/task/obtain" }
 };
 function resolveUrl(name, base) {
   const ep = EP[name];
@@ -871,8 +874,11 @@ var EP_METHOD = {
   // 写（会真入账），但上游用 GET
   backupGiftInfo: "GET",
   // 另一个域
-  backupGiftReceive: "GET"
+  backupGiftReceive: "GET",
   // 另一个域
+  msgPushStatus: "GET",
+  msgPushObtain: "POST"
+  // 这一族用 POST，body `{"type":2}`
 };
 var CLIENT_QUERY = "client=app";
 function taskListV3Body(market = MARKET_NAME) {
@@ -1266,12 +1272,97 @@ function runBackupGift(deps) {
   return runBackupGiftInfo(deps);
 }
 
+// src/mcloud/tasks/msgPush.ts
+var STATE_STATUS = "mcloud.msgpush.last";
+var STATE_CAN2 = "mcloud.msgpush.can";
+var SECOND_STATUS_CLAIMABLE = 2;
+function asInt(v) {
+  if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
+  if (typeof v === "string" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
+  return void 0;
+}
+function parseStatus(result) {
+  const o = resultObject({ code: 0, message: "", result, ok: true });
+  return {
+    pushOn: asInt(o.pushOn),
+    onDuaration: asInt(o.onDuaration),
+    firstTaskStatus: asInt(o.firstTaskStatus),
+    secondTaskStatus: asInt(o.secondTaskStatus)
+  };
+}
+function claimable(s) {
+  return s.secondTaskStatus === SECOND_STATUS_CLAIMABLE;
+}
+function runMsgPushStatus(deps) {
+  return runTask(
+    deps,
+    {
+      task: "msg-push",
+      endpoint: "msgPushStatus",
+      method: "GET",
+      // ⚠ 这一族的 `activityid` 是 **msgpushon**，不是签到页那个 `sign_in_3`：
+      // 「每个页面用自己的参数换自己的票，票与票之间逐字节不等」（见 session.rs 的配方表）
+      marketName: "msgpushon",
+      isDeviceId: false,
+      stateKey: STATE_STATUS
+    },
+    (env) => {
+      const s = parseStatus(env.result);
+      const can = claimable(s);
+      deps.store.setState(STATE_CAN2, can ? "yes" : "no", deps.nowIso);
+      let note;
+      if (s.pushOn === 0) {
+        note = "消息推送：通知已被关闭，需要你在 App 里手动打开（这一步我们做不了）";
+      } else if (can) {
+        note = "消息推送：有可领的奖励（下一次触发会去领）";
+      } else if (s.firstTaskStatus !== void 0 && s.firstTaskStatus !== 3) {
+        note = "消息推送：首次奖励未领 —— 那一步要在 App 里手动完成，我们做不了";
+      } else {
+        note = `消息推送：暂无可领${s.onDuaration === void 0 ? "" : `（已开启 ${s.onDuaration} 天）`}`;
+      }
+      return { ok: true, note, snapshot: env.result ?? null };
+    }
+  );
+}
+function runMsgPushObtain(deps) {
+  const can = deps.store.getState(STATE_CAN2);
+  if (can !== "yes") {
+    return {
+      ok: true,
+      skipped: true,
+      note: `上次问到的状态是「${can ?? "没问过"}」，不发领取请求`
+    };
+  }
+  const out = runTask(
+    deps,
+    {
+      task: "msg-push",
+      endpoint: "msgPushObtain",
+      method: "POST",
+      body: JSON.stringify({ type: 2 }),
+      marketName: "msgpushon",
+      isDeviceId: false
+    },
+    (env) => {
+      const o = resultObject(env);
+      const code = asInt(o.obtainCode);
+      if (code === 0) return { ok: true, note: "消息推送奖励：已领取" };
+      return {
+        ok: false,
+        note: `消息推送奖励：没领到（obtainCode=${code ?? "缺字段"}；上游回 ${JSON.stringify(env.result ?? env.message).slice(0, 120)}）`
+      };
+    }
+  );
+  if (out.ok) deps.store.setState(STATE_CAN2, "no", deps.nowIso);
+  return out;
+}
+
 // src/mcloud/tasks/notice.ts
-var STATE_CAN2 = "mcloud.notice.can_claim";
+var STATE_CAN3 = "mcloud.notice.can_claim";
 var STATE_INFO2 = "mcloud.notice.info";
 var NOTICE_CLOUD_STATUS_UNCLAIMED = 1;
 var NOTICE_TASK_STATUS_DONE = 3;
-function asInt(v) {
+function asInt2(v) {
   if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
   if (typeof v === "string" && v.trim() !== "" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
   return void 0;
@@ -1280,10 +1371,10 @@ function parseNoticeSlot(raw) {
   if (raw === null || raw === void 0 || typeof raw !== "object") return void 0;
   const o = raw;
   const slot = {
-    cloudStatus: asInt(o.cloudStatus ?? o.cloud_status),
-    sum: asInt(o.sum),
-    progress: asInt(o.progress),
-    taskStatus: asInt(o.taskStatus ?? o.task_status)
+    cloudStatus: asInt2(o.cloudStatus ?? o.cloud_status),
+    sum: asInt2(o.sum),
+    progress: asInt2(o.progress),
+    taskStatus: asInt2(o.taskStatus ?? o.task_status)
   };
   const any = slot.cloudStatus !== void 0 || slot.sum !== void 0 || slot.progress !== void 0 || slot.taskStatus !== void 0;
   return any ? slot : void 0;
@@ -1307,16 +1398,16 @@ function noticePlan(info) {
     ["槽一", info.one],
     ["槽二", info.two]
   ];
-  const claimable = slots.filter(([, s]) => slotClaimable(s)).map(([n]) => n);
+  const claimable2 = slots.filter(([, s]) => slotClaimable(s)).map(([n]) => n);
   const unjudged = slots.filter(([, s]) => s && !slotJudged(s)).map(([n]) => n);
   const missing = slots.filter(([, s]) => !s).map(([n]) => n);
   const parts = [];
-  if (claimable.length) parts.push(`${claimable.join("/")}可领`);
+  if (claimable2.length) parts.push(`${claimable2.join("/")}可领`);
   if (unjudged.length) parts.push(`${unjudged.join("/")}判据字段不全（不参与判断，避免静默漏领）`);
   if (missing.length) parts.push(`${missing.join("/")}上游没给`);
   if (!parts.length) parts.push("两槽都已入账或无可领");
   return {
-    claimable: claimable.length > 0,
+    claimable: claimable2.length > 0,
     unjudged: unjudged.length > 0,
     detail: parts.join("；")
   };
@@ -1335,7 +1426,7 @@ function runNoticeInfo(deps) {
     (env) => {
       const info = parseNoticeInfo(env.result);
       const plan = noticePlan(info);
-      deps.store.setState(STATE_CAN2, plan.claimable ? "yes" : `no:${plan.detail}`, deps.nowIso);
+      deps.store.setState(STATE_CAN3, plan.claimable ? "yes" : `no:${plan.detail}`, deps.nowIso);
       return {
         ok: true,
         note: plan.claimable ? `通知任务：${plan.detail}（下一次触发会去领）` : `通知任务：${plan.detail}`,
@@ -1345,7 +1436,7 @@ function runNoticeInfo(deps) {
   );
 }
 function runNoticeReward(deps) {
-  const can = deps.store.getState(STATE_CAN2);
+  const can = deps.store.getState(STATE_CAN3);
   if (can !== "yes") {
     return { ok: true, skipped: true, note: `上次问过状态是「${can ?? "没问过"}」，不发领取请求` };
   }
@@ -1366,11 +1457,11 @@ function runNoticeReward(deps) {
       ).slice(0, 40)}）`
     })
   );
-  if (out.ok) deps.store.setState(STATE_CAN2, "no:sent", deps.nowIso);
+  if (out.ok) deps.store.setState(STATE_CAN3, "no:sent", deps.nowIso);
   return out;
 }
 function runNotice(deps) {
-  const can = deps.store.getState(STATE_CAN2);
+  const can = deps.store.getState(STATE_CAN3);
   if (can === "yes") return runNoticeReward(deps);
   return runNoticeInfo(deps);
 }
@@ -1388,7 +1479,7 @@ var MATRIX_GROUPS = [
   "month",
   "hidden"
 ];
-function asInt2(v) {
+function asInt3(v) {
   if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
   if (typeof v === "string" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
   return void 0;
@@ -1400,14 +1491,14 @@ function parseMatrixItem(raw) {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return void 0;
   const o = raw;
   const it = {
-    taskId: asInt2(o.id ?? o.taskId ?? o.task_id),
+    taskId: asInt3(o.id ?? o.taskId ?? o.task_id),
     name: asStr(o.name),
     description: asStr(o.description),
     groupId: asStr(o.groupid ?? o.groupId),
     state: asStr(o.state),
     limitType: asStr(o.limitType ?? o.limit_type),
-    enable: asInt2(o.enable),
-    currStep: asInt2(o.currstep ?? o.currStep)
+    enable: asInt3(o.enable),
+    currStep: asInt3(o.currstep ?? o.currStep)
   };
   const any = it.taskId !== void 0 || it.name !== void 0 || it.state !== void 0 || it.enable !== void 0;
   return any ? it : void 0;
@@ -1531,7 +1622,7 @@ var VERDICT_TEXT = {
   "month-limit": "本月额度可能已用完",
   unknown: "判不了"
 };
-function asInt3(v) {
+function asInt4(v) {
   if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
   if (typeof v === "string" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
   return void 0;
@@ -1550,25 +1641,25 @@ function parseMonthLimit(v) {
   }
   if (o === null || typeof o !== "object" || Array.isArray(o)) return void 0;
   const r = o;
-  return asInt3(r.limitMonthQuantity ?? r.limit_month_quantity);
+  return asInt4(r.limitMonthQuantity ?? r.limit_month_quantity);
 }
 function parsePrize(raw) {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return void 0;
   const o = raw;
   const p = {
     // ⚠ 实拍是**数字**，不是字符串（原项目特意标了这一点）
-    prizeId: asInt3(o.prizeId ?? o.prize_id),
+    prizeId: asInt4(o.prizeId ?? o.prize_id),
     // ⚠ 真机 51/51 是 `prizeName`；`name` 保留是为兼容 mock 与将来可能的另一种形状
     name: asStr2(o.prizeName ?? o.name),
     monthLimit: parseMonthLimit(o.probability2),
-    received: asInt3(o.receiveQuantity ?? o.receive_quantity),
-    groupId: asInt3(o.groupId ?? o.group_id),
-    price: asInt3(o.price),
-    limit: asInt3(o.limit),
-    count: asInt3(o.count),
-    totalCount: asInt3(o.totalCount ?? o.total_count),
-    dailyRemainderCount: asInt3(o.dailyRemainderCount ?? o.daily_remainder_count),
-    onLine: asInt3(o.onLine ?? o.on_line),
+    received: asInt4(o.receiveQuantity ?? o.receive_quantity),
+    groupId: asInt4(o.groupId ?? o.group_id),
+    price: asInt4(o.price),
+    limit: asInt4(o.limit),
+    count: asInt4(o.count),
+    totalCount: asInt4(o.totalCount ?? o.total_count),
+    dailyRemainderCount: asInt4(o.dailyRemainderCount ?? o.daily_remainder_count),
+    onLine: asInt4(o.onLine ?? o.on_line),
     startTime: asStr2(o.startTime ?? o.start_time),
     endTime: asStr2(o.endTime ?? o.end_time)
   };
@@ -4415,7 +4506,10 @@ var TASK_META = [
   // 更正：整条链在 `/ycloud/msgPushOn/` 下、要**另一张票**（marketName=msgpushon /
   // sourceId=1062）。`task/status` 有实拍，`task/obtain` **零样本** ——
   // "什么值该做什么"仍是旧项目口径，一条都没被上游证实过。
-  { name: "msg-push", title: "消息推送任务", group: "activity", kind: "Action", risk: "ledger", missed: "skip", deps: ["activity-token"], batch: false, hidden: false, implemented: false, evidence: "partial", note: "要另一张票（msgpushon）；obtain 零样本" },
+  // ⚠️ 2026-10-14 修正认知：这一族与 `notice` **不是同一件事**（域/配方/端点全不同，
+  //    见 tasks/msgPush.ts 的文件头对照表）。两步：问状态（只读）+ 领（写）。
+  { name: "msg-push", title: "消息推送奖励", group: "activity", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "captured", note: "两步：问状态 + 领（`secondTaskStatus===2` 才领）。⚠ `pushOn===0` 与首次奖励都要用户去 App 手动" },
+  { name: "msg-push-obtain", title: "消息推送奖励（领）", group: "activity", kind: "Action", risk: "ledger", missed: "skip", deps: ["jwt"], batch: false, hidden: true, implemented: true, evidence: "captured", note: "上一步说可领才发" },
   // ── 活动与站票（未实现）──
   { name: "cloud-phone-redpack", title: "红包派对", group: "activity", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["activity-token"], batch: false, hidden: false, implemented: false, note: "⚠ 读到没见过的状态码时**刻意不发写**（旧 TS 会发）" },
   { name: "play-ai-special", title: "拍拍盘点", group: "activity", kind: "Query", risk: "none", missed: "catch-up", deps: ["jwt", "activity-token"], batch: false, hidden: false, implemented: false },
@@ -4961,6 +5055,8 @@ register_cron("receive", SIGNIN_CRON, makeRunner("领取AI豆", runReceive));
 register_cron("multiple", SIGNIN_CRON, makeRunner("签到翻倍", runMultiple));
 register_cron("revival", SIGNIN_CRON, makeRunner("复活卡", runRevival));
 register_cron("backup-gift", SIGNIN_CRON, makeRunner("备份好礼", runBackupGift));
+register_cron("msg-push", SIGNIN_CRON, makeRunner("消息推送奖励（问状态）", runMsgPushStatus));
+register_cron("msg-push-obtain", SIGNIN_CRON, makeRunner("消息推送奖励（领）", runMsgPushObtain));
 register_cron("notice", SIGNIN_CRON, makeRunner("开启通知领AI豆", runNotice));
 register_cron("app-task-matrix", SIGNIN_CRON, makeRunner("App 任务矩阵（只看）", runAppTaskMatrix));
 register_cron("exchange-list", SIGNIN_CRON, makeRunner("兑换清单（只看）", runExchangeList));

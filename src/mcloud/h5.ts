@@ -136,6 +136,9 @@ export const EP = {
   noticeReward: { origin: MCLOUD_HOST, path: '/ycloud/openemailsms-service/openEmailsms/reward' },
   backupGiftInfo: { origin: BACKUP_GIFT_HOST, path: '/market/backupgift/info' },
   backupGiftReceive: { origin: BACKUP_GIFT_HOST, path: '/market/backupgift/receive' },
+  // 消息推送奖励（msgpushon 那一页）—— **同一台主机、不同一族**
+  msgPushStatus: { origin: BACKUP_GIFT_HOST, path: '/market/msgPushOn/task/status' },
+  msgPushObtain: { origin: BACKUP_GIFT_HOST, path: '/market/msgPushOn/task/obtain' },
 } as const;
 
 export type EndpointName = keyof typeof EP;
@@ -188,6 +191,8 @@ export const EP_METHOD: Record<string, 'GET' | 'POST'> = {
   noticeReward: 'GET', // 写（会真入账），但上游用 GET
   backupGiftInfo: 'GET', // 另一个域
   backupGiftReceive: 'GET', // 另一个域
+  msgPushStatus: 'GET',
+  msgPushObtain: 'POST', // 这一族用 POST，body `{"type":2}`
 };
 
 /** `infoV3` / `startSignIn` 这类 GET 端点带的固定 query。 */

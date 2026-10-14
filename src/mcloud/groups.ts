@@ -187,7 +187,10 @@ export const TASK_META: TaskMeta[] = [
   // 更正：整条链在 `/ycloud/msgPushOn/` 下、要**另一张票**（marketName=msgpushon /
   // sourceId=1062）。`task/status` 有实拍，`task/obtain` **零样本** ——
   // "什么值该做什么"仍是旧项目口径，一条都没被上游证实过。
-  { name: 'msg-push', title: '消息推送任务', group: 'activity', kind: 'Action', risk: 'ledger', missed: 'skip', deps: ['activity-token'], batch: false, hidden: false, implemented: false, evidence: 'partial', note: '要另一张票（msgpushon）；obtain 零样本' },
+    // ⚠️ 2026-10-14 修正认知：这一族与 `notice` **不是同一件事**（域/配方/端点全不同，
+  //    见 tasks/msgPush.ts 的文件头对照表）。两步：问状态（只读）+ 领（写）。
+  { name: 'msg-push', title: '消息推送奖励', group: 'activity', kind: 'Action', risk: 'ledger', missed: 'catch-up', deps: ['jwt'], batch: false, hidden: false, implemented: true, evidence: 'captured', note: '两步：问状态 + 领（`secondTaskStatus===2` 才领）。⚠ `pushOn===0` 与首次奖励都要用户去 App 手动' },
+  { name: 'msg-push-obtain', title: '消息推送奖励（领）', group: 'activity', kind: 'Action', risk: 'ledger', missed: 'skip', deps: ['jwt'], batch: false, hidden: true, implemented: true, evidence: 'captured', note: '上一步说可领才发' },
 
   // ── 活动与站票（未实现）──
   { name: 'cloud-phone-redpack', title: '红包派对', group: 'activity', kind: 'Action', risk: 'ledger', missed: 'catch-up', deps: ['activity-token'], batch: false, hidden: false, implemented: false, note: '⚠ 读到没见过的状态码时**刻意不发写**（旧 TS 会发）' },
