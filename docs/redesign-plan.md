@@ -120,10 +120,16 @@
   踩坑：改 pyhost 引导脚本的参数个数时漏改 `argc != 2` 的判据，所有 `.py` 插件一起
   加载失败，冒烟 6 项红。**教训：pyhost 只有冒烟能跑，改完必须立刻冒烟。**
 
-- [ ] **①-3 插件侧载侧边栏入口**
-  SPA 侧边栏（`web/index.html` 的 `<nav id="nav">`）支持插件注入一项。
-  插件：`register_nav({ label, icon, path })`。
-  验收：插件加载后面板侧边栏出现该项，点击进入插件页面；卸载/禁用后消失。
+- [x] **①-3 插件声明的侧边栏入口**　✅ `rust-plugin-panel` `8cdaf77`（第二十三轮）
+  `register_nav({ label, icon, path })`；名字由**插件**给（面板推导不出该叫什么），
+  页面位置复用**已有**约定（`{name}/index.html`，不写 path 就用它）；
+  面板用 **iframe** 装插件页面（同源但独立文档，插件的 JS 动不了面板本身）；
+  一个插件只能声明一个；停用的插件不摆入口。
+  验收：`node scripts/nav_check.mjs` —— 接口层 + **浏览器里**（CDP）双重断言：
+  侧边栏真的多出一项、字是插件给的、点进去载入插件页面、iframe 里的页面能调到
+  插件自己的接口、停用后入口消失。
+  踩坑：`LoadedPlugin` 不是对外序列化的那个类型（是 `PluginInfo`）；
+  cookie 名写死导致浏览器其实没登录、所有 DOM 断言对着空 DOM 跑。
 
 - [x] **①-4 随机表达式（抖动）**　✅ `rust-plugin-panel` `d9894fb`（第二十三轮）
   `@every` 只允许负偏移、上限周期 20%（提前是安全的，单调性天然成立、不用钳制）；
@@ -207,3 +213,4 @@
 | 2026-10-14 | ①-1 插件声明式 worker 归属（`worker_hint`） | `rust-plugin-panel` `7d6e41a` |
 | 2026-10-14 | ①-2 任务带参数（`opts.params`） | `rust-plugin-panel` `b94a111` |
 | 2026-10-14 | ①-4 随机表达式（抖动后缀） | `rust-plugin-panel` `d9894fb` |
+| 2026-10-15 | ①-3 插件声明的侧边栏入口 | `rust-plugin-panel` `8cdaf77` |
