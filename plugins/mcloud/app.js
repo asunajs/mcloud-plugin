@@ -183,8 +183,64 @@ async function runTask(btn) {
 
 // ──────────────────────────── App 任务矩阵（只读任务的读数）
 
+/** 看板：把读数里的**数字**画成条。
+ *
+ *  ⚠ 为什么是"通用扫描"而不是给每个任务写一套图表：这些读数的形状是任务自己定的
+ *  （余额、奖品条数、快照字节…），逐个写会变成 30 个适配器，而用户要的只是
+ *  "一眼看得出多少"。所以这里只做一件事：**找出第一个数字，按最大值画成条**。
+ *  形状不对时它什么都不画（宁可空着，也不画错的东西）。 */
+let lastMatrix = null;
+
+function numbersOf(o, depth = 0) {
+  // 收集对象里所有 `数字` 字段（浅一点，避免把嵌套结构里的 id/时间戳也捞进来）
+  const out = [];
+  if (o === null || typeof o !== 'object' || depth > 2) return out;
+  for (const [k, v] of Object.entries(o)) {
+    if (typeof v === 'number' && Number.isFinite(v) && v >= 0 && v < 1e12) out.push([k, v]);
+    else if (Array.isArray(v) && v.length > 0 && typeof v[0] === 'number') out.push([`${k}.length`, v.length]);
+  }
+  return out;
+}
+
+function renderBoard() {
+  const d = lastMatrix;
+  const box = $('board');
+  const rows = [];
+  if (d && Array.isArray(d.groups)) {
+    for (const g of d.groups) {
+      for (const t of g.tasks || []) {
+        const nums = numbersOf(t.reading);
+        if (nums.length === 0) continue;
+        const [k, v] = nums[0];
+        rows.push({ label: t.title || t.name, key: k, value: v });
+      }
+    }
+  }
+  if (rows.length === 0) {
+    $('board-sub').textContent = '还没有数字可画';
+    box.innerHTML = '<p class="hint">先去跑一遍（右上角「全部跑一遍」），有余额/奖品这类读数就会画在这里。</p>';
+    return;
+  }
+  const max = Math.max(...rows.map((r) => r.value), 1);
+  $('board-sub').textContent = `${rows.length} 项`;
+  box.innerHTML =
+    '<ul class="ok-list">' +
+    rows
+      .map((r) => {
+        const pct = Math.round((r.value / max) * 100);
+        return (
+          `<li><b>${esc(r.label)}</b> <span class="hint">${esc(r.key)}</span> = <b>${r.value}</b>` +
+          `<div style="height:8px;background:var(--c-line);border-radius:4px;margin-top:4px">` +
+          `<div style="height:8px;width:${pct}%;background:var(--c-accent);border-radius:4px"></div></div></li>`
+        );
+      })
+      .join('') +
+    '</ul>';
+}
+
 async function loadMatrix() {
   const d = await req('/plugins/mcloud/api/matrix');
+  lastMatrix = d;   // 看板要用（见 renderBoard）
   const card = $('matrix-card');
   if (!d.ok || !Array.isArray(d.groups)) {
     card.hidden = true;
@@ -756,6 +812,7 @@ async function saveLiveUrl() {
   await loadBase();
   await loadLive();
   hideSelfCheck();
+  renderBoard();
 }
 
 async function saveBase() {
@@ -777,6 +834,9 @@ async function saveBase() {
 //   听弹幕那条链、自动定时的重算、以及插件自身的自检族。
 //   见 docs/ui-wording.md —— 主界面只说"你要做什么、成了没有"。
 const ADV_IDS = [
+  // ⚠ 任务矩阵（`#groups`）整体退到高级：用户日常只需要"全部跑一遍"那一个按钮，
+  //   30 条任务 + 30 个「立即执行」是**内部结构**，不该当产品摆着（见 docs/ui-wording.md）。
+  'groups',
   // ⚠ 会话卡整张：它与"账号"卡**在问同一件事**（同一串凭据）—— 用户不该看到两个框
   //   问同一个东西。贴凭据的地方只留"账号"卡那一处；会话/换票的机制进高级。
   'session-card',
