@@ -78,6 +78,7 @@ import {
   runLiveDraw,
   setClaimEnabled,
 } from './tasks/liveDraw.ts';
+import { loadWakePlan, planTrusted } from './tasks/liveAutoTask.ts';
 import type { Store } from '../store/types.ts';
 import type { Transport } from './client.ts';
 import type { HostWs } from './tasks/base.ts';
@@ -356,6 +357,27 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
             reading: loadListenState(deps.store),
             line: listenReadingLine(loadListenState(deps.store)),
           },
+          // 直播自动定时（mcloud 的 `live_auto`）：**下一次几点醒**。
+          // 它只有读数、没有动作 —— 定时器算时刻，听弹幕那条链到点才动。
+          auto: (() => {
+            const nowMs = Date.parse(deps.now());
+            const plan = loadWakePlan(deps.store);
+            const sum = readPoolSummary(deps.store, localStamp(nowMs), nowMs);
+            return {
+              nextStart: sum.nextStart ?? '',
+              wakeAt: plan?.wakeAt ?? '',
+              wakeInMs: plan === null ? 0 : Math.max(0, plan.wakeAtMs - nowMs),
+              expr: plan?.expr ?? '',
+              fromStart: plan?.fromStart ?? '',
+              trusted: planTrusted(sum.scheduleAtMs, nowMs),
+              line:
+                plan === null
+                  ? sum.nextStart === undefined || sum.nextStart === ''
+                    ? '没有日程 ⇒ 不排定时（门探到「下一场」才会排）'
+                    : '日程太旧 ⇒ 不按它睡（等门下次探到再说）'
+                  : `下一次醒 ${plan.wakeAt}（= ${plan.fromStart} +1 小时）`,
+            };
+          })(),
           note:
             '口令本身**没法自动化**（主播在弹幕/小红书发，那边无法鉴权）⇒ 要人给；' +
             '能自动的只有「抓主页 + 列出看到的口令」。',
