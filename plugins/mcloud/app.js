@@ -910,17 +910,23 @@ const RUN_ORDER = [
 ];
 
 async function runAll() {
+  // ⚠ 这是**会写进账号**的动作（签到、领豆、领小红花），所以点之前说清后果 ——
+  //   用户看不懂"跑一遍"这种词，但看得懂"会写进你的账号"（F-043 那七条里的一条）。
+  if (!confirm('会做这些：签到、领AI豆、领口令小红花、查余额与奖品。\n其中领取会**写进你的账号**（重复领只会回「已领过」，不会重复发）。现在做？')) {
+    return;
+  }
   const btn = $('run-all');
   btn.disabled = true;
   const old = btn.textContent;
   try {
     for (let i = 0; i < RUN_ORDER.length; i++) {
       const name = RUN_ORDER[i];
-      btn.textContent = `跑 ${i + 1}/${RUN_ORDER.length}：${name}`;
+      // ⚠ 进度里**不许出现任务名**（`multiple`/`cloud-snapshot` 是内部叫法，见 docs/ui-wording.md）
+      btn.textContent = `正在处理 ${i + 1}/${RUN_ORDER.length}…`;
       const d = await req(`/api/tasks/mcloud/${name}/run`, { method: 'POST' });
       if (!d.ok) {
         // 单个失败不停 —— 用户要的是"一遍过完"，具体哪条失败在下面看
-        showError(`${name}：${humanNote(d.error || '失败')}`);
+        showError(humanNote(d.error || '有一步没成，稍后会自动重试'));
       }
       await new Promise((r) => setTimeout(r, 250));
     }
