@@ -5565,6 +5565,122 @@ function parseJson2(raw) {
   }
 }
 
+// src/mcloud/liveAuto.ts
+var ONE_HOUR_MS = 60 * 60 * 1e3;
+var DAY_MS = 24 * ONE_HOUR_MS;
+var BEIJING_OFFSET_MS = 8 * ONE_HOUR_MS;
+function parseLocalMs(local) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/.exec(local.trim());
+  if (m === null) return void 0;
+  const [, y, mo, d, h, mi, s] = m;
+  const year = Number(y);
+  const month = Number(mo);
+  const day = Number(d);
+  const hour = Number(h);
+  const minute = Number(mi);
+  const second = Number(s ?? "0");
+  if (month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 || second > 59) {
+    return void 0;
+  }
+  const ms = Date.UTC(year, month - 1, day, hour, minute, second) - BEIJING_OFFSET_MS;
+  if (formatLocalMs(ms) !== `${y}-${mo}-${d} ${h}:${mi}:${String(second).padStart(2, "0")}`) {
+    return void 0;
+  }
+  return ms;
+}
+function formatLocalMs(ms) {
+  const t = new Date(ms + BEIJING_OFFSET_MS);
+  const p = (n, w = 2) => String(n).padStart(w, "0");
+  return `${p(t.getUTCFullYear(), 4)}-${p(t.getUTCMonth() + 1)}-${p(t.getUTCDate())} ${p(t.getUTCHours())}:${p(t.getUTCMinutes())}:${p(t.getUTCSeconds())}`;
+}
+function earliestPlusOneHour(nexts, nowMs) {
+  const candidates = nexts.map((s) => s.trim()).filter((s) => s !== "");
+  if (candidates.length === 0) return void 0;
+  const earliest = candidates.reduce((a, b) => a <= b ? a : b);
+  const ms = parseLocalMs(earliest);
+  if (ms === void 0) return void 0;
+  void nowMs;
+  return formatLocalMs(ms + ONE_HOUR_MS);
+}
+function oneShotExpr(local) {
+  const ms = parseLocalMs(local);
+  if (ms === void 0) return void 0;
+  const t = new Date(ms + BEIJING_OFFSET_MS);
+  return `${t.getUTCSeconds()} ${t.getUTCMinutes()} ${t.getUTCHours()} ${t.getUTCDate()} ${t.getUTCMonth() + 1} *`;
+}
+function planDue(plan, nowMs) {
+  return plan !== null && nowMs >= plan.wakeAtMs;
+}
+function planInWindow(plan, nowMs) {
+  return plan !== null && nowMs >= plan.wakeAtMs && nowMs < plan.wakeAtMs + plan.windowMs;
+}
+
+// src/mcloud/tasks/liveAutoTask.ts
+var STATE_WAKE_PLAN = "mcloud.live.wake_plan";
+var SCHEDULE_TRUST_MS = 6 * ONE_HOUR_MS;
+function loadWakePlan(store2) {
+  const raw = store2.getState(STATE_WAKE_PLAN);
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw);
+    return typeof v?.wakeAtMs === "number" && typeof v?.wakeAt === "string" ? v : null;
+  } catch {
+    return null;
+  }
+}
+function saveWakePlan(store2, plan, nowIso) {
+  store2.setState(STATE_WAKE_PLAN, plan === null ? "" : JSON.stringify(plan), nowIso);
+}
+function planTrusted(scheduleAtMs, nowMs) {
+  return scheduleAtMs !== null && nowMs - scheduleAtMs <= SCHEDULE_TRUST_MS;
+}
+function refreshWakePlan(deps, opts) {
+  const nowMs = Date.parse(deps.nowIso);
+  const { pool } = loadPoolFrom(deps.store);
+  const summary = poolSummary(pool, formatLocalMs(nowMs), nowMs);
+  const trusted = planTrusted(summary.scheduleAtMs, nowMs);
+  const fromStart = summary.nextStart ?? "";
+  const wakeAt = trusted && fromStart !== "" ? earliestPlusOneHour([fromStart], nowMs) : void 0;
+  if (wakeAt === void 0) {
+    saveWakePlan(deps.store, null, deps.nowIso);
+    return {
+      plan: null,
+      why: fromStart === "" ? "池里没有「下一场」⇒ 不排定时（等门下次探到日程再说）" : "池里那份日程太旧（超过 6 小时）⇒ 不按它睡，退回默认重查"
+    };
+  }
+  const plan = {
+    wakeAt,
+    wakeAtMs: Date.parse(`${wakeAt.replace(" ", "T")}+08:00`),
+    fromStart,
+    computedAt: formatLocalMs(nowMs),
+    expr: oneShotExpr(wakeAt),
+    windowMs: opts.windowMs
+  };
+  saveWakePlan(deps.store, plan, deps.nowIso);
+  return { plan, why: `按「${fromStart}」+1 小时 ⇒ ${wakeAt}` };
+}
+function runLiveAuto(deps, opts) {
+  const nowMs = Date.parse(deps.nowIso);
+  const before = loadWakePlan(deps.store);
+  const { plan, why } = refreshWakePlan(deps, opts);
+  const changed = before?.wakeAt !== plan?.wakeAt;
+  const due = planDue(plan, nowMs);
+  return {
+    ok: true,
+    note: plan === null ? `不排定时（${why}）` : `${changed ? "排定" : "仍是"} ${plan.wakeAt} 醒（= ${plan.fromStart} +1h；等价 cron ${plan.expr ?? "?"}）${due ? " —— 已到点" : ""}`
+  };
+}
+function wakeSleepMs(store2, nowMs, windowMs) {
+  const plan = loadWakePlan(store2);
+  if (plan === null) return void 0;
+  if (!planInWindow(plan, nowMs) && planDue(plan, nowMs)) {
+    return void 0;
+  }
+  if (planDue(plan, nowMs)) return void 0;
+  void windowMs;
+  return plan.wakeAtMs - nowMs;
+}
+
 // src/mcloud/msync.ts
 var CMD_ACK = 0;
 var CMD_HEARTBEAT = 1;
@@ -6112,6 +6228,12 @@ var STATE_WS_BASE = "mcloud.live.ws_base";
 var BASE_VIDEO_IM_WS = "wss://videoim.cmcc-cs.cn:20102";
 var DEFAULT_LISTEN_SECONDS = 600;
 var IDLE_RECHECK_MS = 5 * 60 * 1e3;
+var MAX_IDLE_RECHECK_MS = 12 * 60 * 60 * 1e3;
+function idleCooldownMs(deps, nowMs) {
+  const sleep = wakeSleepMs(deps.store, nowMs, loadListenSeconds(deps.store) * 1e3);
+  if (sleep === void 0 || sleep <= 0) return IDLE_RECHECK_MS;
+  return Math.min(sleep, MAX_IDLE_RECHECK_MS);
+}
 var READ_BURST_MS = 1600;
 var RECV_SLICE_MS = 700;
 var WS_OPEN_TIMEOUT_MS = 8e3;
@@ -6284,10 +6406,11 @@ function roomsStep2(deps, st, nowMs) {
   const anchorLive = koulingRooms(merged);
   if (anchorLive.length === 0) {
     st.step = "done";
-    st.nextCheckAtMs = Date.parse(deps.nowIso) + IDLE_RECHECK_MS;
+    const coolMs = idleCooldownMs(deps, Date.parse(deps.nowIso));
+    st.nextCheckAtMs = Date.parse(deps.nowIso) + coolMs;
     st.closedReason = "那个主播没在播";
     st.finishedAt = deps.nowIso;
-    st.note = `门关着（合并后 ${merged.length} 间房）—— 隔 ${Math.round(IDLE_RECHECK_MS / 6e4)} 分钟再看`;
+    st.note = coolMs > IDLE_RECHECK_MS ? `门关着（合并后 ${merged.length} 间房）—— 按日程睡到下一场之后（${Math.round(coolMs / 6e4)} 分钟）` : `门关着（合并后 ${merged.length} 间房）—— 隔 ${Math.round(coolMs / 6e4)} 分钟再看`;
     persist(deps, st);
     return { ok: true, note: st.note };
   }
@@ -6327,7 +6450,7 @@ function roomBeatStep(deps, st, nowMs) {
   const beat = parsed.value;
   if (beat.chatRoomId === void 0) {
     st.step = "done";
-    st.nextCheckAtMs = Date.parse(deps.nowIso) + IDLE_RECHECK_MS;
+    st.nextCheckAtMs = Date.parse(deps.nowIso) + idleCooldownMs(deps, Date.parse(deps.nowIso));
     st.closedReason = `房间 ${st.roomId} 没有聊天室（status=${beat.status}）`;
     st.finishedAt = deps.nowIso;
     st.note = st.closedReason;
@@ -7380,6 +7503,10 @@ var TASK_META = [
   // 它虽然记账，但**基本幂等**：同一条口令再领一次回 `200112`（已兑换过），不会重复发奖。
   // 所以 risk 是 `ledger` 而不是 `irreversible`。
   { name: "live-listen", title: "听弹幕口令（只读）", group: "activity", kind: "Query", risk: "none", missed: "catch-up", deps: ["basic"], batch: false, hidden: false, implemented: true, evidence: "captured", note: "真机验过：SockJS 握手 + PROVISION + 心跳（15s 一拍）+ ack + 弹幕文本进池（来源 danmaku）。一次调用读 ~1.6 秒（面板预算 2000ms），窗口默认 10 分钟；门关着时**一个请求都不发**" },
+  // 定时器：**只算时刻、零上游请求**（mcloud 的 `live_auto`）。
+  // 它和听弹幕那条链的分工写在 liveAuto.ts 模块头：定时器负责**叫醒**，
+  // 链自己负责"窗口到点 → 收尾 → 下一拍重走门"。
+  { name: "live-auto", title: "直播自动定时", group: "activity", kind: "Query", risk: "none", missed: "skip", deps: ["basic"], batch: false, hidden: false, implemented: true, evidence: "captured", note: '照 mcloud 的 `live_auto`：时刻 = **最早的「下一场」+ 1 小时**（那一小时留给主播发口令）；每 5 分钟重算一次、**一个上游请求都不发**。听弹幕那条链被判"门关着"时就睡到那一刻（原来固定 5 分钟 ⇒ 一天白问 288 次门）。⚠ 面板的 cron 不能在运行时改表达式 ⇒ 精度最坏晚 5 分钟' },
   { name: "live-draw", title: "领小红花（写）", group: "activity", kind: "Action", risk: "ledger", missed: "skip", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "partial", note: "六步链 9+N 个请求，一次调用一步；**默认关**。同口令重领回 200112 ⇒ 基本幂等。⚠ 请求头形状未在真账号上验过" },
   // ── 要用网盘（未实现；原因见各条的 note，**不是**"它会写网盘"）──
   // ⚠ 未实现 —— 而理由**不是**"它会写网盘"（那是它的内容，不是风险）。
@@ -8555,6 +8682,22 @@ function mcloudRoutes(deps) {
           reading: loadListenState(deps.store),
           line: listenReadingLine(loadListenState(deps.store))
         },
+        // 直播自动定时（mcloud 的 `live_auto`）：**下一次几点醒**。
+        // 它只有读数、没有动作 —— 定时器算时刻，听弹幕那条链到点才动。
+        auto: (() => {
+          const nowMs = Date.parse(deps.now());
+          const plan = loadWakePlan(deps.store);
+          const sum = readPoolSummary(deps.store, localStamp(nowMs), nowMs);
+          return {
+            nextStart: sum.nextStart ?? "",
+            wakeAt: plan?.wakeAt ?? "",
+            wakeInMs: plan === null ? 0 : Math.max(0, plan.wakeAtMs - nowMs),
+            expr: plan?.expr ?? "",
+            fromStart: plan?.fromStart ?? "",
+            trusted: planTrusted(sum.scheduleAtMs, nowMs),
+            line: plan === null ? sum.nextStart === void 0 || sum.nextStart === "" ? "没有日程 ⇒ 不排定时（门探到「下一场」才会排）" : "日程太旧 ⇒ 不按它睡（等门下次探到再说）" : `下一次醒 ${plan.wakeAt}（= ${plan.fromStart} +1 小时）`
+          };
+        })(),
         note: "口令本身**没法自动化**（主播在弹幕/小红书发，那边无法鉴权）⇒ 要人给；能自动的只有「抓主页 + 列出看到的口令」。",
         // 写那半（领小红花）：默认关，开关在这里
         claim: {
@@ -8993,6 +9136,23 @@ register_cron("exchange-list", SIGNIN_CRON, makeRunner("兑换清单（只看）
 register_cron("live-room", "*/30 7-23 * * *", makeRunner("直播口令（只看）", runLiveRoom));
 register_cron("live-gate", "*/10 7-23 * * *", makeRunner("直播日程（门）", runLiveGate));
 register_cron("live-listen", "@every 10s", makeRunner("听弹幕口令", runLiveListen));
+register_cron("live-auto", "@every 5m", (p) => {
+  try {
+    const out = runLiveAuto(
+      {
+        store,
+        transport,
+        nowIso: (/* @__PURE__ */ new Date()).toISOString(),
+        baseUrl: loadBaseUrl(store),
+        lateMs: p.lateMs
+      },
+      { windowMs: loadListenSeconds(store) * 1e3 }
+    );
+    return { ok: out.ok, note: out.note };
+  } catch (e) {
+    return { ok: false, note: `直播自动定时抛异常：${e instanceof Error ? e.message : String(e)}` };
+  }
+});
 register_cron("live-draw", "*/5 7-23 * * *", (p) => {
   try {
     const out = runLiveDraw({
