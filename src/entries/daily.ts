@@ -56,6 +56,8 @@ import { runRevival } from '../mcloud/tasks/revival.ts';
 import { STATE_STAGE as SIGN_STAGE, runSign } from '../mcloud/tasks/sign.ts';
 import { runExpansionStep, startExpansion } from '../mcloud/tasks/taskExpansion.ts';
 import type { TaskDeps, TaskOutcome } from '../mcloud/tasks/base.ts';
+import { DAILY_DONE_KEY, DAILY_LAST_KEY } from '../mcloud/dailyState.ts';
+import type { DailyStep } from '../mcloud/dailyState.ts';
 import {
   LONG_REQUEST_TIMEOUT_MS,
   drain,
@@ -79,7 +81,18 @@ const BUDGET_MS = 120_000;
  *  「主动收手和被掐断在日志里长得完全不一样」。 */
 const DEADLINE_MS = BUDGET_MS - 15_000;
 
-const DONE_KEY = 'mcloud.daily.done_date';
+// 状态键与读数字形放在 `mcloud/dailyState.ts`：写它的是这里（引 host-api），
+// 读它的是路由层（**故意不引 host-api**，那样才能在 Node 里测）。放这里的话
+// 路由层就得从 entries/ import，会把 host-api 一起拖进来。
+//
+// 为什么每步都要落盘：面板的日志是**环形 200 行**、混着所有插件 ——
+// 用户在上面只看到「日常：15 步全部完成」一行。「哪一步做了什么」只在我打进
+// 日志的那些 warn 行里，而成功的那些**故意没打**（打了就是刷屏）。
+// 界面要的是「这一次运行，每一步的结果」⇒ 整趟的结果落一条**读数**。
+// 这正是「按一次运行组织的日志」那条需求的落点：组织单位是**一次运行**，
+// 而运行的结果是一条读数，不是一个滚动窗口。
+const DONE_KEY = DAILY_DONE_KEY;
+const LAST_KEY = DAILY_LAST_KEY;
 
 /** 一步的调度：跑一次 `step`，把结果收进 `steps` 数组。
  *
@@ -105,8 +118,13 @@ function once(
   }
 }
 
-/** 一趟日常。返回一行结果 + 每一步的原话（进日志）。 */
-function runDaily(deps: TaskDeps): { ok: boolean; note: string; detail: string[] } {
+/** 一趟日常。返回一行结果 + 每一步的结果（落盘给界面读，同时进日志）。 */
+function runDaily(deps: TaskDeps): {
+  ok: boolean;
+  note: string;
+  detail: string[];
+  steps: DailyStep[];
+} {
   const started = Date.now();
   const steps: StepResult[] = [];
   const detail: string[] = [];
@@ -248,17 +266,26 @@ function runDaily(deps: TaskDeps): { ok: boolean; note: string; detail: string[]
   const elapsed = Date.now() - started;
   const done = steps.filter((s) => !s.idle).length;
 
+  const shape = (r: StepResult): DailyStep => ({
+    name: r.name,
+    ok: r.ok,
+    note: r.note,
+    idle: r.idle === true,
+  });
+
   if (failed.length === 0) {
     return {
       ok: true,
       note: `${steps.length} 步全部完成（${done} 步有动作，用时 ${(elapsed / 1000).toFixed(1)}s）`,
       detail,
+      steps: steps.map(shape),
     };
   }
   return {
     ok: false,
     note: `${failed.length}/${steps.length} 步失败：${failed.map((f) => f.name).join('、')}`,
     detail,
+    steps: steps.map(shape),
   };
 }
 
@@ -293,6 +320,18 @@ register_cron(
       ok: r.ok,
       note: r.note,
     });
+
+    // 「一次运行」的完整结果落一条读数 —— 界面读它，不用去翻环形日志
+    store.setState(
+      LAST_KEY,
+      JSON.stringify({
+        at: nowIso,
+        ok: r.ok,
+        note: r.note,
+        steps: r.steps,
+      }),
+      nowIso,
+    );
 
     if (r.ok) {
       store.setState(DONE_KEY, today, nowIso);

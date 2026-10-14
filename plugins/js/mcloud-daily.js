@@ -4397,6 +4397,10 @@ function withBase(deps, path) {
   return `${deps.baseUrl ?? "https://m.mcloud.139.com"}${path}`;
 }
 
+// src/mcloud/dailyState.ts
+var DAILY_DONE_KEY = "mcloud.daily.done_date";
+var DAILY_LAST_KEY = "mcloud.daily.last_run";
+
 // src/entries/shared.ts
 import {
   http_fetch,
@@ -4593,7 +4597,8 @@ var store = makeStore();
 var transport = makeTransport(LONG_REQUEST_TIMEOUT_MS);
 var BUDGET_MS = 12e4;
 var DEADLINE_MS = BUDGET_MS - 15e3;
-var DONE_KEY = "mcloud.daily.done_date";
+var DONE_KEY = DAILY_DONE_KEY;
+var LAST_KEY = DAILY_LAST_KEY;
 function once(name, fn, deps) {
   try {
     const r = fn(deps);
@@ -4708,17 +4713,25 @@ function runDaily(deps) {
   const failed = steps.filter((s) => !s.ok);
   const elapsed = Date.now() - started;
   const done = steps.filter((s) => !s.idle).length;
+  const shape = (r) => ({
+    name: r.name,
+    ok: r.ok,
+    note: r.note,
+    idle: r.idle === true
+  });
   if (failed.length === 0) {
     return {
       ok: true,
       note: `${steps.length} 步全部完成（${done} 步有动作，用时 ${(elapsed / 1e3).toFixed(1)}s）`,
-      detail
+      detail,
+      steps: steps.map(shape)
     };
   }
   return {
     ok: false,
     note: `${failed.length}/${steps.length} 步失败：${failed.map((f) => f.name).join("、")}`,
-    detail
+    detail,
+    steps: steps.map(shape)
   };
 }
 register_cron(
@@ -4742,6 +4755,16 @@ register_cron(
       ok: r.ok,
       note: r.note
     });
+    store.setState(
+      LAST_KEY,
+      JSON.stringify({
+        at: nowIso,
+        ok: r.ok,
+        note: r.note,
+        steps: r.steps
+      }),
+      nowIso
+    );
     if (r.ok) {
       store.setState(DONE_KEY, today2, nowIso);
       log(`日常：${r.note}`);
