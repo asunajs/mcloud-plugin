@@ -24,6 +24,7 @@ import {
 import { TASK_NAMES, STATE_LAST_TASKLIST } from './tasks/taskList.ts';
 import { groupView } from './groups.ts';
 import { hasBigInt, sandboxCaps } from './caps.ts';
+import { runAuthRefresh } from './authRefresh.ts';
 import { MATRIX_GROUPS, readMatrix } from './tasks/appTaskMatrix.ts';
 import { VERDICT_TEXT, readExchangeList } from './tasks/exchangeList.ts';
 import {
@@ -344,6 +345,24 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
         });
         deps.log(`换票：${r.note}`);
         return json(200, { ...r, exchange: loadExchange(deps.store) });
+      },
+    },
+    {
+      // 凭据续期。默认**按判据**（离过期还远就一个请求都不发）；
+      // `{"force":true}` 对应 mcloud CLI 的 `--force`，用来"我现在就想试一下"。
+      path: `${base}/auth/refresh`,
+      method: 'POST',
+      handler: (req) => {
+        const b = readBody(req) as { force?: unknown; leadDays?: unknown };
+        const force = b.force === true;
+        const leadDays = typeof b.leadDays === 'number' ? b.leadDays : undefined;
+        const r = runAuthRefresh(
+          { store: deps.store, transport: deps.transport, nowIso: deps.now(), baseUrl: loadBaseUrl(deps.store) },
+          force,
+          leadDays,
+        );
+        deps.log(`凭据续期：${r.note}`);
+        return json(200, { ...r, auth: authStatus(deps.store) });
       },
     },
     {

@@ -228,7 +228,9 @@ export const TASK_META: TaskMeta[] = [
   //    所以"我不替你动"这个说法本身就站不住（当时没有可动的东西）。
   //    ⚠ `risk` 暂时维持 `irreversible`（风险档保守取值的默认），
   //    但这一档的**依据同样缺样本** —— 真要落地前先把"旧 token 是否仍可用"测出来。
-  { name: 'auth-refresh', title: '刷新 auth 凭据（**续期**，不是替换）', group: 'risky', kind: 'Action', risk: 'irreversible', missed: 'catch-up', deps: ['basic+jwt'], batch: false, hidden: true, implemented: false, note: '续期：返回一个自带 30 天有效期的新 token —— 唯一不需要 jwt 的写操作。⚠ 未实装' },
+    // ✅ 2026-10-14 实现。**一个字段都不用用户给**：手机号/端别在 `Authorization` 里解出来，
+  //    `userDomainId` 在 jwttoken 的 `payload.sub` 里。判据照 mcloud 的 `decide`（默认提前 10 天）。
+  { name: 'auth-refresh', title: '凭据续期', group: 'daily', kind: 'Action', risk: 'spend', missed: 'skip', deps: ['basic+jwt'], batch: false, hidden: false, implemented: true, evidence: 'captured', note: '离过期还远时**一个请求都不发**；续出的是一枚**全新的** token（30 天），不是把旧的延长' },
 ];
 
 /** 一条任务在界面上的完整一行：静态元信息 + **运行时的实际状态**。 */
