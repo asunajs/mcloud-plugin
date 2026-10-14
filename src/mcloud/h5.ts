@@ -220,3 +220,17 @@ export function taskListV3Body(market: string = MARKET_NAME): string {
 
 /** 任务清单 V3 用的 content-type（注意 charset 后缀）。 */
 export const TASK_LIST_V3_CONTENT_TYPE = 'application/json;charset=UTF-8';
+
+/** 把"口子"归一：**空串与空白都等于"没有覆盖"**。
+ *
+ *  ⚠⚠ 这是 2026-10-14 实机踩出来的一类洞：`loadBaseUrl()` 用 `''` 表示"用真上游"
+ *  （界面也这么显示），而构建函数原来写 `base ?? DEFAULT` —— `??` 只挡 `undefined`，
+ *  空串一路穿到底，拼出**相对 URL**（`/user/querySpecTokenV2`），宿主报
+ *  `bad uri: … is missing scheme`。**真上游跑时那一步根本发不出去**，
+ *  而 e2e 里因为口子指着 mock，这个洞一直被挡着。
+ *
+ *  三个直播/换票模块（h5session / liveGate / liveIm）统一收到这里。 */
+export function rootOrDefault(base: string | undefined, fallback: string): string {
+  const t = (base ?? '').trim();
+  return t === '' ? fallback : t.replace(/\/+$/, '');
+}

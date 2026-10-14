@@ -35,6 +35,7 @@ import { KOULING_ANCHOR } from './koulingPool.ts';
 import type { ProbeRoom } from './koulingPool.ts';
 import { BASE_USER_YUN, H5_CONTENT_TYPE, specTokenRequest } from './h5session.ts';
 import type { Parsed } from './h5session.ts';
+import { rootOrDefault } from './h5.ts';
 import type { BuiltRequest } from './h5.ts';
 
 // 门的判据就是它（「昵称精确相等」比的正是这个值）—— 从这里再导出一份：
@@ -182,7 +183,8 @@ export function gateSpecTokenRequest(
   authorization: string,
   base?: string | undefined,
 ): BuiltRequest {
-  const req = specTokenRequest({ toSourceId: LIVE_SOURCE_ID }, authorization, base ?? BASE_USER_YUN);
+  // 口子的归一在 `specTokenRequest` 里做（空串 = 用默认主机）
+  const req = specTokenRequest({ toSourceId: LIVE_SOURCE_ID }, authorization, base);
   // ① 这一枪是 `user-njs`（现代套件），本来不需要 `tls` —— **不给**，
   //    让"哪一枪真的需要平台 TLS"这件事在代码里看得见（只有 cmlive 那几个要）。
   return req;
@@ -191,7 +193,7 @@ export function gateSpecTokenRequest(
 /** ② 用 SSO 换**直播侧 JWT**。 */
 export function cmpassLoginRequest(ssoToken: string, base?: string | undefined): BuiltRequest {
   return {
-    url: `${(base ?? BASE_CMLIVE).replace(/\/+$/, '')}/api/user/auth/cmpassLoginByCmToken`,
+    url: `${rootOrDefault(base, BASE_CMLIVE)}/api/user/auth/cmpassLoginByCmToken`,
     method: 'POST',
     headers: { ...cmliveHeaders(), 'content-type': 'application/json' },
     body: JSON.stringify({ cmpassToken: ssoToken }),
@@ -231,13 +233,55 @@ export function tabContentListRequest(
 ): BuiltRequest {
   return {
     url:
-      `${(base ?? BASE_CMLIVE).replace(/\/+$/, '')}/api/channel/channel/tabContentList` +
+      `${rootOrDefault(base, BASE_CMLIVE)}/api/channel/channel/tabContentList` +
       `?tabId=${tabId}&contentType=0&pageNo=1&channelId=${LIVE_CHANNEL_ID}`,
     method: 'GET',
     headers: cmliveHeaders(jwt),
     body: undefined,
     // 同一个主机（`v.cmcc-cs.cn`）⇒ 同一条理由：只给 CBC，必须平台 TLS。
     tls: 'native',
+  };
+}
+
+/** ③ 取 **WS 凭据**（`userToken`）—— ⚠ 它**不是**门换来的那个 JWT。
+ *
+ *  # 这一步是我先前漏掉的第一处（2026-10-14 实机）
+ *
+ *  门换来的 JWT 只用来**发 HTTP**；而 WS 的 PROVISION 里那个 `auth` 是
+ *  `$t$<access_token>`，`access_token` 来自这一口（`object.access_token`）。
+ *  用错的表现是"连得上、心跳也通、**就是没有弹幕**"。
+ *
+ *  ⚠ 它同时是 `member/apply` 的 `Authorization: Bearer <access_token>`（同一枚）。 */
+export function userTokenRequest(jwt: string, base?: string | undefined): BuiltRequest {
+  return {
+    url: `${rootOrDefault(base, BASE_CMLIVE)}/api/user/customer/userToken`,
+    method: 'POST',
+    headers: { ...cmliveHeaders(jwt), 'content-type': 'application/json' },
+    body: JSON.stringify({}),
+    tls: 'native',
+  };
+}
+
+/** 解析 `userToken`：要的是 `object.access_token`（空串也当没有）。 */
+export function parseUserToken(body: string): Parsed<{ accessToken: string; expiresIn: number }> {
+  const env = parseCmlive(body);
+  if (!env.ok) return { ok: false, error: env.error ?? '直播侧响应解不出来' };
+  if (env.value === undefined) return { ok: false, error: '直播侧响应是空的' };
+  const object = env.value.object;
+  if (typeof object !== 'object' || object === null || Array.isArray(object)) {
+    return { ok: false, error: 'userToken 的 object 不是对象' };
+  }
+  const o = object as Record<string, unknown>;
+  const token = o['access_token'];
+  if (typeof token !== 'string' || token === '') {
+    return { ok: false, error: 'userToken 响应缺少 object.access_token' };
+  }
+  return {
+    ok: true,
+    value: {
+      accessToken: token,
+      expiresIn: typeof o['expires_in'] === 'number' ? o['expires_in'] : 0,
+    },
   };
 }
 
@@ -255,7 +299,7 @@ export function roomBeatRequest(
   base?: string | undefined,
 ): BuiltRequest {
   return {
-    url: `${(base ?? BASE_CMLIVE).replace(/\/+$/, '')}/api/room/front/roomBeat`,
+    url: `${rootOrDefault(base, BASE_CMLIVE)}/api/room/front/roomBeat`,
     method: 'POST',
     headers: { ...cmliveHeaders(jwt), 'content-type': 'application/json' },
     body: JSON.stringify({ roomId: String(roomId), channelId: LIVE_CHANNEL_ID, sourceApp: 0 }),

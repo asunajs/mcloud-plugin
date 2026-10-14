@@ -50,6 +50,7 @@ import { desEncryptBase64 } from '../crypto/des.ts';
 import { gzipWithOs19Base64 } from '../crypto/gzip.ts';
 import { rsaEncryptBase64 } from '../crypto/rsa.ts';
 import { utf8 } from '../crypto/index.ts';
+import { rootOrDefault } from './h5.ts';
 import { uuidV4 } from './rand.ts';
 import { DES_RULE, SKLAND_SM_CONFIG } from './smidRules.ts';
 import type { DesRules } from './smidRules.ts';
@@ -301,7 +302,7 @@ export function smidUploadRequest(
     // ⚠ `base` 覆盖**必须**有：这台主机是第三方（cmpassport 风控），
     // 而"CI 全程只打 mock"是本仓的硬规则。少了这个口子，E2E 会真去打那个域 ——
     // 那不是"测试不严"，是**把 CI 变成对外发流量**。
-    url: `${(base ?? SMID_HOST).replace(/\/+$/, '')}${SMID_PATH}`,
+    url: `${rootOrDefault(base, SMID_HOST)}${SMID_PATH}`,
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

@@ -302,6 +302,14 @@ function toHex(b) {
   }
   return s;
 }
+function fromHex(h) {
+  const clean = h.replace(/[^0-9a-fA-F]/g, "");
+  const out = new Uint8Array(clean.length >> 1);
+  for (let i = 0; i < out.length; i += 1) {
+    out[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
+  }
+  return out;
+}
 var B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 function toBase64(b) {
   let s = "";
@@ -907,6 +915,10 @@ function taskListV3Body(market = MARKET_NAME) {
   return JSON.stringify({ marketname: market, clientVersion: TASK_CLIENT_VERSION, group: "" });
 }
 var TASK_LIST_V3_CONTENT_TYPE = "application/json;charset=UTF-8";
+function rootOrDefault(base, fallback) {
+  const t = (base ?? "").trim();
+  return t === "" ? fallback : t.replace(/\/+$/, "");
+}
 
 // src/store/types.ts
 var SESSION_KEY = "mcloud.session";
@@ -2779,7 +2791,7 @@ function smidUploadRequest(fp, box, now, rnd = Math.random, base) {
     // ⚠ `base` 覆盖**必须**有：这台主机是第三方（cmpassport 风控），
     // 而"CI 全程只打 mock"是本仓的硬规则。少了这个口子，E2E 会真去打那个域 ——
     // 那不是"测试不严"，是**把 CI 变成对外发流量**。
-    url: `${(base ?? SMID_HOST).replace(/\/+$/, "")}${SMID_PATH}`,
+    url: `${rootOrDefault(base, SMID_HOST)}${SMID_PATH}`,
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -2855,7 +2867,7 @@ function h5Headers(params, referer, jwt, showLoading) {
 }
 function specTokenRequest(params, authorization, base) {
   return {
-    url: `${(base ?? BASE_USER_YUN).replace(/\/+$/, "")}${SPEC_TOKEN_PATH}`,
+    url: `${rootOrDefault(base, BASE_USER_YUN)}${SPEC_TOKEN_PATH}`,
     method: "POST",
     headers: { "Content-Type": H5_CONTENT_TYPE, Authorization: authorization },
     body: JSON.stringify({ toSourceId: params.toSourceId })
@@ -2863,7 +2875,7 @@ function specTokenRequest(params, authorization, base) {
 }
 function timestampRequest(params, referer, base) {
   return {
-    url: `${(base ?? BASE_MCLOUD).replace(/\/+$/, "")}${TIMESTAMP_PATH}`,
+    url: `${rootOrDefault(base, BASE_MCLOUD)}${TIMESTAMP_PATH}`,
     method: "GET",
     headers: h5Headers(params, referer, void 0, "true"),
     body: void 0
@@ -2877,7 +2889,7 @@ function tyrzLoginRequest(params, ssoToken, sign, referer, base) {
     token: ssoToken
   });
   return {
-    url: `${(base ?? BASE_MCLOUD).replace(/\/+$/, "")}${TYRZ_LOGIN_PATH}`,
+    url: `${rootOrDefault(base, BASE_MCLOUD)}${TYRZ_LOGIN_PATH}`,
     method: "POST",
     headers: {
       ...h5Headers(params, referer, void 0, "true"),
@@ -5246,12 +5258,12 @@ function cmliveHeaders(jwt) {
   return h;
 }
 function gateSpecTokenRequest(authorization, base) {
-  const req = specTokenRequest({ toSourceId: LIVE_SOURCE_ID }, authorization, base ?? BASE_USER_YUN);
+  const req = specTokenRequest({ toSourceId: LIVE_SOURCE_ID }, authorization, base);
   return req;
 }
 function cmpassLoginRequest(ssoToken, base) {
   return {
-    url: `${(base ?? BASE_CMLIVE).replace(/\/+$/, "")}/api/user/auth/cmpassLoginByCmToken`,
+    url: `${rootOrDefault(base, BASE_CMLIVE)}/api/user/auth/cmpassLoginByCmToken`,
     method: "POST",
     headers: { ...cmliveHeaders(), "content-type": "application/json" },
     body: JSON.stringify({ cmpassToken: ssoToken }),
@@ -5273,7 +5285,7 @@ function parseCmpassLogin(env) {
 }
 function tabContentListRequest(tabId, jwt, base) {
   return {
-    url: `${(base ?? BASE_CMLIVE).replace(/\/+$/, "")}/api/channel/channel/tabContentList?tabId=${tabId}&contentType=0&pageNo=1&channelId=${LIVE_CHANNEL_ID}`,
+    url: `${rootOrDefault(base, BASE_CMLIVE)}/api/channel/channel/tabContentList?tabId=${tabId}&contentType=0&pageNo=1&channelId=${LIVE_CHANNEL_ID}`,
     method: "GET",
     headers: cmliveHeaders(jwt),
     body: void 0,
@@ -5281,9 +5293,39 @@ function tabContentListRequest(tabId, jwt, base) {
     tls: "native"
   };
 }
+function userTokenRequest(jwt, base) {
+  return {
+    url: `${rootOrDefault(base, BASE_CMLIVE)}/api/user/customer/userToken`,
+    method: "POST",
+    headers: { ...cmliveHeaders(jwt), "content-type": "application/json" },
+    body: JSON.stringify({}),
+    tls: "native"
+  };
+}
+function parseUserToken(body) {
+  const env = parseCmlive(body);
+  if (!env.ok) return { ok: false, error: env.error ?? "直播侧响应解不出来" };
+  if (env.value === void 0) return { ok: false, error: "直播侧响应是空的" };
+  const object = env.value.object;
+  if (typeof object !== "object" || object === null || Array.isArray(object)) {
+    return { ok: false, error: "userToken 的 object 不是对象" };
+  }
+  const o = object;
+  const token = o["access_token"];
+  if (typeof token !== "string" || token === "") {
+    return { ok: false, error: "userToken 响应缺少 object.access_token" };
+  }
+  return {
+    ok: true,
+    value: {
+      accessToken: token,
+      expiresIn: typeof o["expires_in"] === "number" ? o["expires_in"] : 0
+    }
+  };
+}
 function roomBeatRequest(roomId, jwt, base) {
   return {
-    url: `${(base ?? BASE_CMLIVE).replace(/\/+$/, "")}/api/room/front/roomBeat`,
+    url: `${rootOrDefault(base, BASE_CMLIVE)}/api/room/front/roomBeat`,
     method: "POST",
     headers: { ...cmliveHeaders(jwt), "content-type": "application/json" },
     body: JSON.stringify({ roomId: String(roomId), channelId: LIVE_CHANNEL_ID, sourceApp: 0 }),
@@ -5790,6 +5832,73 @@ function ackMsgIdOf(payload) {
   return inner !== void 0 && inner > 0n ? inner.toString() : void 0;
 }
 
+// src/mcloud/liveIm.ts
+var BASE_VIDEO_IM = "https://videoim.cmcc-cs.cn:20103";
+var LIVE_APPLY_VERSION = "v23.0.2";
+function timestampSuffix10(timestamp) {
+  return timestamp.length <= 10 ? timestamp : timestamp.slice(timestamp.length - 10);
+}
+var md5HexBytes = (bytes) => toHex(md5(bytes));
+function systemMd5(deviceInfoHex, timestamp) {
+  const device = fromHex(deviceInfoHex);
+  const ts = utf8(timestampSuffix10(timestamp));
+  const payload = new Uint8Array(device.length + ts.length);
+  payload.set(device, 0);
+  payload.set(ts, device.length);
+  return md5HexBytes(payload);
+}
+function tokenMd5(accessToken, timestamp) {
+  const head = accessToken.length > 10 ? accessToken.slice(0, 10) : accessToken;
+  const tail = accessToken.length > 10 ? accessToken.slice(10) : "";
+  return md5HexBytes(utf8(`Bearer ${head}${timestampSuffix10(timestamp)}${tail}`));
+}
+function applyRoomRequest(chatRoomId, userName, invoker, accessToken, timestamp, opts = {}) {
+  const deviceInfoHex = opts.deviceInfoHex ?? LIVE_DEVICE_INFO_ASCII;
+  return {
+    url: `${rootOrDefault(opts.base, BASE_VIDEO_IM)}/v3/room/member/apply`,
+    method: "POST",
+    headers: {
+      accept: "*/*",
+      version: LIVE_APPLY_VERSION,
+      timestamp,
+      authorization: `Bearer ${accessToken}`,
+      origin: LIVE_ORIGIN,
+      "user-agent": LIVE_USER_AGENT,
+      deviceinfo: deviceInfoHex,
+      systemmd5: systemMd5(deviceInfoHex, timestamp),
+      tokenmd5: tokenMd5(accessToken, timestamp),
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({ invoker, message: "", roomId: chatRoomId, userName }),
+    // ⚠ 这个主机与直播侧**同一类问题**：2026-10-14 实测只给 CBC 套件
+    //   （`ECDSA/ECDHE-RSA-AES128-SHA`），rustls 谈不下来 ⇒ 必须平台 TLS。
+    tls: "native"
+  };
+}
+function parseApplyRoom(body) {
+  let v;
+  try {
+    v = JSON.parse(body);
+  } catch (e) {
+    return { ok: false, error: `进聊天室的响应不是 JSON：${e instanceof Error ? e.message : String(e)}` };
+  }
+  const code = v["code"];
+  if (code !== 0) {
+    const msg = typeof v["msg"] === "string" ? v["msg"] : "";
+    return { ok: false, error: `进聊天室失败：code=${JSON.stringify(code)} msg=${msg || "(无)"}` };
+  }
+  const data = typeof v["data"] === "object" && v["data"] !== null ? v["data"] : {};
+  return {
+    ok: true,
+    value: {
+      appId: typeof data["appId"] === "string" ? data["appId"] : "",
+      appKey: typeof data["appKey"] === "string" ? data["appKey"] : "",
+      roomId: typeof data["roomId"] === "string" ? data["roomId"] : "",
+      serverTimestamp: typeof v["timestamp"] === "number" ? v["timestamp"] : 0
+    }
+  };
+}
+
 // src/mcloud/liveWs.ts
 var SOCKJS_OPEN = "o";
 var SOCKJS_HEARTBEAT = "h";
@@ -6082,8 +6191,12 @@ function runLiveListen(deps) {
       return handshakeStep(deps, st);
     case "rooms":
       return roomsStep2(deps, st, nowMs);
+    case "userToken":
+      return userTokenStep(deps, st);
     case "roomBeat":
       return roomBeatStep(deps, st, nowMs);
+    case "apply":
+      return applyStep(deps, st, nowMs);
     case "open":
       return openStep(deps, st, nowMs);
     case "listen":
@@ -6165,9 +6278,24 @@ function roomsStep2(deps, st, nowMs) {
     return { ok: true, note: st.note };
   }
   st.roomId = anchorLive[0]?.id;
+  st.step = "userToken";
+  persist(deps, st);
+  return { ok: true, note: `门开着：房间 ${st.roomId}，接着取 WS 凭据` };
+}
+function userTokenStep(deps, st) {
+  const base = loadGateBaseOf(deps.store);
+  const jwt = st.jwt ?? "";
+  if (jwt === "") return stepFail2(deps, st, "③ 没有票（上一拍的 JWT 不在）");
+  const r = callRawText(deps.transport, userTokenRequest(jwt, base));
+  if (!r.ok) return stepFail2(deps, st, `③ 取 WS 凭据失败：${r.error ?? "未知失败"}`);
+  const parsed = parseUserToken(r.text);
+  if (!parsed.ok || parsed.value === void 0) {
+    return stepFail2(deps, st, `③ 取 WS 凭据失败：${parsed.error ?? "响应里没有 access_token"}`);
+  }
+  st.accessToken = parsed.value.accessToken;
   st.step = "roomBeat";
   persist(deps, st);
-  return { ok: true, note: `门开着：房间 ${st.roomId}，接着问聊天室号` };
+  return { ok: true, note: `③ 取到 WS 凭据（${parsed.value.accessToken.length} 字符，${parsed.value.expiresIn}s）` };
 }
 function roomBeatStep(deps, st, nowMs) {
   void nowMs;
@@ -6193,11 +6321,35 @@ function roomBeatStep(deps, st, nowMs) {
     return { ok: true, note: st.note };
   }
   st.chatRoomId = beat.chatRoomId;
+  st.step = "apply";
+  persist(deps, st);
+  return {
+    ok: true,
+    note: `房间 ${st.roomId}（${beat.title || "无标题"}）聊天室 ${st.chatRoomId}，接着进房间`
+  };
+}
+function applyStep(deps, st, nowMs) {
+  const auth = deps.store.getState(STATE_AUTH) ?? "";
+  const parsed = parseAuthorization(auth);
+  if (parsed === null) return stepFail2(deps, st, "⑤ 进房间要手机号（`userName` 用 `cmlive_c_<手机>`）");
+  if (st.chatRoomId === void 0 || st.accessToken === void 0) {
+    return stepFail2(deps, st, "⑤ 进房间缺聊天室号或 WS 凭据（上一拍的状态不完整）");
+  }
+  const userName = `cmlive_c_${parsed.phone}`;
+  const req = applyRoomRequest(st.chatRoomId, userName, userName, st.accessToken, String(nowMs), {
+    // 没配口子 ⇒ `applyRoomRequest` 自己用真主机（`BASE_VIDEO_IM`）
+    base: loadImBase(deps.store)
+  });
+  const r = callRawText(deps.transport, req);
+  if (!r.ok) return stepFail2(deps, st, `⑤ 进房间失败：${r.error ?? "未知失败"}`);
+  const out = parseApplyRoom(r.text);
+  if (!out.ok) return stepFail2(deps, st, `⑤ 进房间失败：${out.error}`);
+  st.applied = true;
   st.step = "open";
   persist(deps, st);
   return {
     ok: true,
-    note: `房间 ${st.roomId}（${beat.title || "无标题"}）聊天室 ${st.chatRoomId}`
+    note: `⑤ 进房间成功（appId=${out.value.appId || "?"}，回显聊天室 ${out.value.roomId || "?"}）`
   };
 }
 function openStep(deps, st, nowMs) {
@@ -6396,6 +6548,14 @@ function finish2(deps, st, note2) {
   persist(deps, st);
   return { ok: true, note: note2 };
 }
+var STATE_IM_BASE = "mcloud.live.im_base";
+function loadImBase(store2) {
+  const v = store2.getState(STATE_IM_BASE);
+  return v && v.trim() ? v.trim().replace(/\/+$/, "") : void 0;
+}
+function saveImBase(store2, base, nowIso) {
+  store2.setState(STATE_IM_BASE, base.trim().replace(/\/+$/, ""), nowIso);
+}
 function loadGateBaseOf(store2) {
   const v = store2.getState("mcloud.live.gate_base");
   return v && v.trim() ? v.trim().replace(/\/+$/, "") : void 0;
@@ -6444,7 +6604,7 @@ function liveRoomHeaders() {
   };
 }
 function liveRoomUrl(path, base) {
-  return `${(base ?? LIVE_ROOM_ORIGIN).replace(/\/+$/, "")}${path}`;
+  return `${rootOrDefault(base, LIVE_ROOM_ORIGIN)}${path}`;
 }
 function userInfoRequest(base) {
   return {
@@ -8256,6 +8416,9 @@ function mcloudRoutes(deps) {
         // 它是 `wss://` 且带端口，与上面那两台 http 主机不是同一族（混成一个会写出
         // "指到 mock 之后协议的 scheme/端口丢了"这种错）。
         wsBase: loadWsBase(deps.store),
+        // 进房间那一台（videoim.cmcc-cs.cn:20103，HTTPS）—— **第三个口子**：
+        // 与上面两台 http 主机、以及带端口的 wss 主机都不是同一个。
+        imBase: loadImBase(deps.store) || "(真主机)",
         listenSeconds: loadListenSeconds(deps.store)
       })
     },
@@ -8303,6 +8466,15 @@ function mcloudRoutes(deps) {
           deps.log(v ? `听弹幕的 WS 主机已改为 ${v}` : "听弹幕的 WS 主机已恢复为真主机");
           out.wsBase = v || BASE_VIDEO_IM_WS;
         }
+        if ("imBase" in body) {
+          const v = typeof body.imBase === "string" ? body.imBase.trim() : "";
+          if (v && !/^https?:\/\//.test(v)) {
+            return json(400, { error: "imBase 要以 http:// 或 https:// 开头（清空 = 用真主机）" });
+          }
+          saveImBase(deps.store, v, deps.now());
+          deps.log(v ? `进房间的主机已改为 ${v}` : "进房间的主机已恢复为真主机");
+          out.imBase = v || "(真主机)";
+        }
         if ("listenSeconds" in body) {
           const n = Number.parseInt(String(body.listenSeconds), 10);
           if (!Number.isFinite(n) || n <= 0 || n > 3600) {
@@ -8314,7 +8486,7 @@ function mcloudRoutes(deps) {
         }
         if (Object.keys(out).length === 0) {
           return json(400, {
-            error: "要传 baseUrl / liveUrl / gateBase / wsBase / listenSeconds（清空就传空串）"
+            error: "要传 baseUrl / liveUrl / gateBase / wsBase / imBase / listenSeconds（清空就传空串）"
           });
         }
         return json(200, out);
