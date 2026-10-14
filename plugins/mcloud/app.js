@@ -105,7 +105,7 @@ function taskRow(t) {
   // 最近一次的结果：优先显示失败原因（那才是要看的东西）
   let last = '';
   if (t.lastError) {
-    last = `<span class="bad">失败：${esc(t.lastError).slice(0, 90)}</span>`;
+    last = `<span class="bad">失败：${esc(humanNote(t.lastError)).slice(0, 90)}</span>`;
   } else if (t.recent && t.recent.length) {
     const r = t.recent[0];
     last = `<span class="dim">${esc(humanNote(r.note)).slice(0, 90)}</span>`;
@@ -155,6 +155,7 @@ function hideSelfCheck() {
 
 async function loadGroups() {
   const d = await req('/plugins/mcloud/api/groups');
+  lastGroups = d;   // 看板要用（见 renderBoard）
   if (!d.ok) {
     showError('读分组失败：' + d.error);
     return;
@@ -200,37 +201,56 @@ async function runTask(btn) {
  *  （余额、奖品条数、快照字节…），逐个写会变成 30 个适配器，而用户要的只是
  *  "一眼看得出多少"。所以这里只做一件事：**找出第一个数字，按最大值画成条**。
  *  形状不对时它什么都不画（宁可空着，也不画错的东西）。 */
-let lastMatrix = null;
+let lastGroups = null;
 
-function numbersOf(o, depth = 0) {
-  // 收集对象里所有 `数字` 字段（浅一点，避免把嵌套结构里的 id/时间戳也捞进来）
+/** 从读数**文字**里抽数字。
+ *
+ *  ⚠ 为什么抽文字而不是读结构：这些读数是 30 个任务各自写的（"余额 130" / "领到 10 朵" /
+ *  "快照 2.1 MB"），形状不统一 —— 给每个任务写一个适配器就是 30 个适配器，
+ *  而用户要的只是"一眼看得出多少"。抽不出来就**什么都不画**（宁可空着，也不画错的）。
+ *
+ *  ⚠ 单位一起抽出来（KB/MB/朵/条…）：不然"2.1 MB"与"2.1 朵"会被画成同一条长度。 */
+function numbersInText(text) {
   const out = [];
-  if (o === null || typeof o !== 'object' || depth > 2) return out;
-  for (const [k, v] of Object.entries(o)) {
-    if (typeof v === 'number' && Number.isFinite(v) && v >= 0 && v < 1e12) out.push([k, v]);
-    else if (Array.isArray(v) && v.length > 0 && typeof v[0] === 'number') out.push([`${k}.length`, v.length]);
+  if (typeof text !== 'string' || text === '') return out;
+  for (const m of text.matchAll(/(\d[\d,]*(?:\.\d+)?)\s*(KB|MB|GB|朵|个|条|张|次|豆|元)?/g)) {
+    const v = Number(m[1].replace(/,/g, ''));
+    if (!Number.isFinite(v) || v <= 0 || v >= 1e9) continue;
+    out.push({ value: v, unit: m[2] || '' });
   }
   return out;
 }
 
+
 function renderBoard() {
-  const d = lastMatrix;
+  const d = lastGroups;
   const box = $('board');
   const rows = [];
   const groups = [];
   if (d && Array.isArray(d.groups)) {
     for (const g of d.groups) {
+      // ⚠ "插件自身"那族不画（自检/调度健康的数字对用户没意义）
+      if (/插件自身|自检/.test(g.title || '')) continue;
       const inGroup = [];
       for (const t of g.tasks || []) {
-        // 每条最多取三个数字（多了看板就成了另一张任务表）
-        const nums = numbersOf(t.reading).slice(0, 3);
-        for (const [k, v] of nums) {
-          const row = { label: t.title || t.name, key: k, value: v };
-          rows.push(row);
-          inGroup.push(row);
+        // 从最近的读数文字里抽数字：`recent` 优先（那是跑出来的），其次是报错与说明
+        const texts = [
+          ...((t.recent || []).map((r) => r && r.note).filter(Boolean)),
+          t.lastError,
+        ].filter((x) => typeof x === 'string' && x !== '');
+        const seen = new Set();
+        for (const text of texts.slice(0, 3)) {
+          for (const n of numbersInText(text).slice(0, 2)) {
+            const key = `${t.title || t.name}·${n.value}${n.unit}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            const row = { label: t.title || t.name, key: n.unit || '数量', value: n.value };
+            rows.push(row);
+            inGroup.push(row);
+          }
         }
       }
-      if (inGroup.length > 0) groups.push({ title: g.title || g.name || '', rows: inGroup });
+      if (inGroup.length > 0) groups.push({ title: g.title || '', rows: inGroup });
     }
   }
   if (rows.length === 0) {
