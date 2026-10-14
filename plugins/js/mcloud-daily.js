@@ -4668,7 +4668,17 @@ function runDaily(deps) {
       return { name: "任务拓展", ok: r.ok, note: r.note, idle: r.idle };
     })()
   );
-  push(once("App 任务矩阵（只看）", runAppTaskMatrix, deps));
+  push(
+    (() => {
+      const r = drain(runAppTaskMatrix, deps, {
+        label: "App 任务矩阵",
+        maxSteps: MATRIX_MARKETS.length,
+        deadlineMs: 25e3,
+        startedAt: started
+      });
+      return { name: "App 任务矩阵（只看）", ok: r.ok, note: r.note, idle: false };
+    })()
+  );
   if (!store.getState("mcloud.apptask.state") && startAppTask(deps).idle) {
     push({ name: "App 任务", ok: true, note: "没有待办", idle: true });
   } else {
