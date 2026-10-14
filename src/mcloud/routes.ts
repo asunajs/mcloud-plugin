@@ -42,10 +42,12 @@ import {
   savePushRules,
   type PushRule,
 } from './pushConfig.ts';
-import { hourKey, timingReading } from './exchangeTiming.ts';
+import { hourKey, planTargetWait, timingReading } from './exchangeTiming.ts';
 import { parseQuery } from './query.ts';
 import { readRun, recentRuns } from './runLog.ts';
-import { STATE_ORDERED_HOUR, exchangeLeadMs } from './tasks/exchangeOrder.ts';
+import { STATE_LEAD_MS, STATE_ORDERED_HOUR, exchangeLeadMs } from './tasks/exchangeOrder.ts';
+import { runExchange } from './tasks/exchangeRun.ts';
+import { STATE_TARGET_HOUR, targetHourOf } from './exchangeTiming.ts';
 import { drawReport } from './tasks/liveDraw.ts';
 import { MATRIX_MARKETS, readMatrix } from './tasks/appTaskMatrix.ts';
 import { readDailyRun } from './dailyState.ts';
@@ -325,8 +327,13 @@ function buildReadings(deps: RouteDeps): Record<string, unknown> {
       // 用户点了"现在试一次"然后看界面十几秒不动，第一反应是"卡住了" ——
       // 这个读数就是回答那个问题的。
       timing: timingReading(nowMs, exchangeLeadMs(deps.store)),
+      // 到目标时刻那一场还有多久（界面第一行用）
+      toTargetMs: planTargetWait(nowMs, targetHourOf(deps.store)).ms,
       // 这一小时已经发过单了吗（那道防重复花豆的闸）
       orderedThisHour: deps.store.getState(STATE_ORDERED_HOUR) === hourKey(nowMs),
+      // 目标时刻（几点抢）。`null` = 每小时都试。
+      targetHour: targetHourOf(deps.store),
+      leadMs: exchangeLeadMs(deps.store),
       plan: deps.store.getState('mcloud.exchange.plan') ?? '',
       reading: readExchangeList(deps.store),
       verdictText: VERDICT_TEXT,
@@ -991,6 +998,37 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
           out.baseUrl = v || '(真上游)';
         }
 
+        // ── 兑换的两个时间参数（③-3）───────────────────────────────
+        //
+        // 两个都是"用户的网络/习惯决定的"，所以必须是可配的：
+        //   · `targetHour`：几点抢（参考实现是一天一次 10 点）
+        //   · `leadMs`：压着整点提前多少毫秒发 —— 它是**本地到云端的传输耗时补偿**，
+        //     所以**网络慢的人该调大**。默认 10。
+        if ('targetHour' in body) {
+          const raw = body.targetHour;
+          const v = typeof raw === 'number' ? String(raw) : typeof raw === 'string' ? raw.trim() : '';
+          if (v !== '') {
+            const n = Number(v);
+            if (!Number.isInteger(n) || n < 0 || n > 23) {
+              return json(400, { error: '兑换时刻要是 0~23 的整点（清空 = 每小时都试）' });
+            }
+          }
+          deps.store.setState(STATE_TARGET_HOUR, v, deps.now());
+          deps.log(v === '' ? '兑换时刻：每小时都试' : `兑换时刻：每天 ${v} 点`);
+          out.targetHour = v;
+        }
+
+        if ('leadMs' in body) {
+          const raw = body.leadMs;
+          const n = typeof raw === 'number' ? raw : Number(String(raw ?? '').trim());
+          if (!Number.isFinite(n) || n < 0 || n > 2000) {
+            return json(400, { error: '提前量要是 0~2000 毫秒（网络慢就调大）' });
+          }
+          deps.store.setState(STATE_LEAD_MS, String(Math.round(n)), deps.now());
+          deps.log(`兑换提前量：${Math.round(n)}ms`);
+          out.leadMs = String(Math.round(n));
+        }
+
         if ('liveUrl' in body) {
           const v = typeof body.liveUrl === 'string' ? body.liveUrl.trim() : '';
           if (v && !/^https?:\/\//.test(v)) {
@@ -1253,6 +1291,31 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
         });
         deps.log(`换票：${r.note}`);
         return json(200, { ...r, exchange: loadExchange(deps.store) });
+      },
+    },
+    {
+      // 「现在试一次」—— **干跑**：清单 / 余额 / 预热 / 取题解滑块都做完，
+      // 到"只差下单"就停，**一枪都不发**。
+      //
+      // ⚠ 为什么不做成"现在就发一枪"：下单**不可逆**（没有幂等键，发出去就扣真豆）。
+      //   用户点这个按钮想知道的是「**现在能不能兑**」—— 判据过不过、余额够不够、
+      //   滑块算不算得出来。这些**不需要发那一枪**就能答。
+      //   真下单只走定时那一场（`@every 10s` + 时间闸 + 压整点）。
+      path: `${base}/exchange/try`,
+      method: 'POST',
+      handler: () => {
+        const d = {
+          store: deps.store,
+          transport: deps.transport,
+          nowIso: deps.now(),
+          baseUrl: loadBaseUrl(deps.store),
+        };
+        // ⚠ 干跑前先清掉上一条链的残留状态：不清的话会**接着上次的位置**跑
+        //   （比如直接停在 order 上，那就什么都不做了）
+        clearOrder(d);
+        const r = runExchange(d, { dryRun: true });
+        deps.log(`兑换试一次：${r.note}`);
+        return json(200, r);
       },
     },
     {

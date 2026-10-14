@@ -17,6 +17,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  DEFAULT_TARGET_HOUR,
   FIRE_LEAD_MS,
   WINDOW_LEAD_MS,
   WINDOW_SECOND,
@@ -24,7 +25,9 @@ import {
   hourKey,
   hourStartMs,
   planFireWait,
+  planTargetWait,
   planWindowWait,
+  targetHourOf,
   timingReading,
   waitUntil,
 } from '../src/mcloud/exchangeTiming.ts';
@@ -217,4 +220,69 @@ test('⚠ 自旋有上限（时钟不动时不能死循环）', () => {
     });
   }, /自旋上限/);
   assert.equal(n, 11);
+});
+
+// ══════════════════════ 目标时刻可配（③-3）══════════════════════
+
+test('目标时刻：读设置，坏的/越界的回落默认（不让链跑到不存在的时刻上）', () => {
+  const mk = (v: string | null) => ({ getState: () => v });
+  assert.equal(targetHourOf(mk(null)), DEFAULT_TARGET_HOUR, '没设过 ⇒ 默认 10 点');
+  assert.equal(targetHourOf(mk('10')), 10);
+  assert.equal(targetHourOf(mk('0')), 0, '0 点是合法的（不是"没设"）');
+  assert.equal(targetHourOf(mk('23')), 23);
+  assert.equal(targetHourOf(mk('')), null, '空串 = 每小时都试（**显式**的选择）');
+  assert.equal(targetHourOf(mk('24')), DEFAULT_TARGET_HOUR, '越界回落');
+  assert.equal(targetHourOf(mk('-1')), DEFAULT_TARGET_HOUR);
+  assert.equal(targetHourOf(mk('abc')), DEFAULT_TARGET_HOUR);
+  assert.equal(targetHourOf(mk('10.5')), DEFAULT_TARGET_HOUR, '非整数回落');
+});
+
+test('⚠ 目标时刻的窗口**跨整点**：(H-1):59:40 → H:00:15', () => {
+  // 用**本地时间**构造，因为目标小时是本地语义
+  const local = (h: number, m: number, sec: number, ms = 0): number =>
+    new Date(2026, 9, 15, h, m, sec, ms).getTime();
+
+  // 9:59:40 ⇒ 10 点那一场的窗口**刚开**，要跑
+  assert.equal(planTargetWait(local(9, 59, 40), 10).needed, false, '9:59:40 是窗口开头');
+  assert.equal(planTargetWait(local(9, 59, 59), 10).needed, false);
+  // 10:00:00 ～ 10:00:15 ⇒ 尾巴，仍要跑
+  assert.equal(planTargetWait(local(10, 0, 0), 10).needed, false, '整点那一刻');
+  assert.equal(planTargetWait(local(10, 0, 14), 10).needed, false);
+});
+
+test('⚠ 目标时刻：不在窗口里就**明确不等**（还差多久要算对）', () => {
+  const local = (h: number, m: number, sec: number): number =>
+    new Date(2026, 9, 15, h, m, sec, 0).getTime();
+
+  // 9:00 ⇒ 离 9:59:40 还有 59 分 40 秒
+  const w = planTargetWait(local(9, 0, 0), 10);
+  assert.equal(w.needed, true);
+  assert.equal(Math.round(w.ms / 1000), 59 * 60 + 40, `实际 ${Math.round(w.ms / 1000)}s`);
+
+  // 10:00:16 ⇒ 尾巴过了 ⇒ 等**明天**的 9:59:40
+  const w2 = planTargetWait(local(10, 0, 16), 10);
+  assert.equal(w2.needed, true);
+  assert.ok(w2.ms > 20 * 3_600_000, `该等到明天，实际只差 ${Math.round(w2.ms / 1000)}s`);
+
+  // 15:00 ⇒ 也是等明天
+  const w3 = planTargetWait(local(15, 0, 0), 10);
+  assert.equal(w3.needed, true);
+  assert.ok(w3.ms > 18 * 3_600_000, `实际 ${Math.round(w3.ms / 3_600_000)}h`);
+});
+
+test('目标时刻 `null`（每小时都试）⇒ 退化成"每小时抢一次"', () => {
+  const local = (h: number, m: number, sec: number): number =>
+    new Date(2026, 9, 15, h, m, sec, 0).getTime();
+  // 与 planWindowWait 一致
+  assert.equal(planTargetWait(local(9, 59, 45), null).needed, false);
+  assert.equal(planTargetWait(local(9, 30, 0), null).needed, true);
+});
+
+test('⚠ 目标 0 点：窗口跨**午夜**（23:59:40 → 00:00:15）', () => {
+  const local = (h: number, m: number, sec: number): number =>
+    new Date(2026, 9, 15, h, m, sec, 0).getTime();
+  assert.equal(planTargetWait(local(23, 59, 40), 0).needed, false, '23:59:40 是 0 点那一场的窗口');
+  assert.equal(planTargetWait(local(0, 0, 5), 0).needed, false, '0:00:05 是尾巴');
+  const w = planTargetWait(local(0, 30, 0), 0);
+  assert.equal(w.needed, true, '0:30 不在窗口里');
 });

@@ -37,6 +37,37 @@ function planFireWait(nowMs, leadMs = FIRE_LEAD_MS) {
   if (untilMs <= nowMs) return NO_WAIT;
   return { needed: true, untilMs, ms: untilMs - nowMs };
 }
+var DEFAULT_TARGET_HOUR = 10;
+var STATE_TARGET_HOUR = "mcloud.exchange.target_hour";
+function targetHourOf(store2) {
+  const raw = store2.getState(STATE_TARGET_HOUR);
+  if (raw === void 0 || raw === null) return DEFAULT_TARGET_HOUR;
+  const t = raw.trim();
+  if (t === "") return null;
+  const n = Number(t);
+  return Number.isInteger(n) && n >= 0 && n <= 23 ? n : DEFAULT_TARGET_HOUR;
+}
+function planTargetWait(nowMs, targetHour, tailMs = WINDOW_TAIL_MS) {
+  if (targetHour === null) return planWindowWait(nowMs);
+  const d = new Date(nowMs);
+  const localHour = d.getHours();
+  const minutesIntoHour = d.getMinutes() * 6e4 + d.getSeconds() * 1e3 + d.getMilliseconds();
+  if (localHour === targetHour && minutesIntoHour < tailMs) return NO_WAIT;
+  if (localHour === mod(targetHour - 1, 24) && minutesIntoHour >= (59 * 60 + WINDOW_SECOND) * 1e3) {
+    return NO_WAIT;
+  }
+  const openAt = (base) => {
+    const t = new Date(base.getTime());
+    t.setHours(mod(targetHour - 1, 24), 59, WINDOW_SECOND, 0);
+    return t.getTime();
+  };
+  let target = openAt(d);
+  if (target <= nowMs) {
+    const t = new Date(nowMs + 24 * 36e5);
+    target = openAt(t);
+  }
+  return { needed: true, untilMs: target, ms: target - nowMs };
+}
 
 // src/crypto/bytes.ts
 function utf8(s) {
@@ -2216,55 +2247,64 @@ function taskDeps(store2, transport2, payload) {
   };
 }
 
-// src/entries/exchange.ts
-worker_hint("exclusive");
-var store = makeStore();
-var transport = makeTransport(LONG_REQUEST_TIMEOUT_MS);
+// src/mcloud/tasks/exchangeRun.ts
 var BUDGET_MS = 9e4;
 var DEADLINE_MS = BUDGET_MS - 1e4;
 var PLAN_KEY = "mcloud.exchange.plan";
-function runExchange(deps) {
+function runExchange(deps, opts = {}) {
   const started = Date.now();
   const steps = [];
   const add = (name, ok, note, idle = false) => {
     steps.push({ name, ok, note, idle });
   };
+  const finish = (ok, note) => {
+    if (opts.dryRun) {
+      add("干跑", true, "只看了能不能兑，**一枪都没发**（真下单走定时那一场）", true);
+    }
+    return {
+      ok,
+      note,
+      detail: steps.map((x) => `${x.name}：${x.ok ? "" : "失败 "}${x.note}`),
+      steps
+    };
+  };
+  const targetHour = targetHourOf(deps.store);
+  const gate = planTargetWait(depsNowMs(deps), targetHour);
+  if (!opts.dryRun && gate.needed && gate.ms > MAX_SPIN_MS) {
+    add(
+      "时间闸",
+      true,
+      targetHour === null ? `还没到窗口（还差 ${Math.round(gate.ms / 1e3)}s）—— 本次零请求` : `不是 ${targetHour} 点那一场（还差 ${Math.round(gate.ms / 1e3)}s）—— 本次零请求`,
+      true
+    );
+    return finish(true, `还没到抢兑时间（还差 ${Math.round(gate.ms / 1e3)}s），本次零请求`);
+  }
   try {
     const l = runExchangeList(deps);
     add("清单", l.ok, l.note);
   } catch (e) {
     add("清单", false, `抛异常 ${e instanceof Error ? e.message : String(e)}`);
   }
-  const plan = store.getState(PLAN_KEY) ?? "";
+  const plan = deps.store.getState(PLAN_KEY) ?? "";
   if (plan === "") {
     add("下单", true, "没有设兑换目标（设置里填「兑换目标」之后才会下单）", true);
-    return {
-      ok: true,
-      note: "没有设兑换目标（设置里填「兑换目标」之后才会下单）",
-      detail: steps.map((x) => `${x.name}：${x.ok ? "" : "失败 "}${x.note}`),
-      steps
-    };
+    return finish(true, "没有设兑换目标（设置里填「兑换目标」之后才会下单）");
   }
-  if (!store.getState("mcloud.exchange.order.step")) {
+  if (!deps.store.getState("mcloud.exchange.order.step")) {
     const s = startOrder(deps, plan);
     add("起单", s.ok, s.note);
     if (!s.ok) {
-      return {
-        ok: false,
-        note: s.note,
-        detail: steps.map((x) => `${x.name}：${x.ok ? "" : "失败 "}${x.note}`),
-        steps
-      };
+      return finish(false, s.note);
     }
   }
-  const accounts = loadAccounts(store);
+  const accounts = loadAccounts(deps.store);
   const multi = accounts.length > 1;
   const snaps = /* @__PURE__ */ new Map();
   const offsets = [];
   let r;
   if (multi) {
     for (const acc of accounts) {
-      selectAccount(store, acc.id, deps.nowIso);
+      selectAccount(deps.store, acc.id, deps.nowIso);
       clearOrder(deps);
       startOrder(deps, plan);
       const a = drain(runOrderStep, deps, {
@@ -2273,11 +2313,11 @@ function runExchange(deps) {
         deadlineMs: Math.min(DEADLINE_MS, started + 3e4),
         startedAt: started,
         // 停在 `order` 之前 —— 下单那一枪留给阶段 B（那时才压整点）
-        more: () => currentStep(store) !== "order" && currentStep(store) !== null
+        more: () => currentStep(deps.store) !== "order" && currentStep(deps.store) !== null
       });
-      snaps.set(acc.id, snapshotOrder(store));
+      snaps.set(acc.id, snapshotOrder(deps.store));
       add(
-        `准备 ${maskAuth(loadAuthRaw(store) ?? "")}`,
+        `准备 ${maskAuth(loadAuthRaw(deps.store) ?? "")}`,
         a.ok,
         `${a.note}（已推到只差下单）`
       );
@@ -2288,19 +2328,21 @@ function runExchange(deps) {
     if (multi) {
       const snap = snaps.get(acc.id);
       if (snap === void 0) continue;
-      selectAccount(store, acc.id, deps.nowIso);
-      restoreOrder(store, snap, deps.nowIso);
+      selectAccount(deps.store, acc.id, deps.nowIso);
+      restoreOrder(deps.store, snap, deps.nowIso);
     }
     const one = drain(runOrderStep, deps, {
       label: "兑换",
       maxSteps: 10,
       deadlineMs: DEADLINE_MS,
-      startedAt: started
+      startedAt: started,
+      // ⚠ 干跑：停在 `order` **之前** —— 一枪都不发
+      ...opts.dryRun ? { more: () => currentStep(deps.store) !== "order" && currentStep(deps.store) !== null } : {}
     });
     if (multi) {
-      offsets.push(`${maskAuth(loadAuthRaw(store) ?? "")} +${Date.now() - fireStart}ms`);
+      offsets.push(`${maskAuth(loadAuthRaw(deps.store) ?? "")} +${Date.now() - fireStart}ms`);
       add(
-        `下单 ${maskAuth(loadAuthRaw(store) ?? "")}`,
+        `下单 ${maskAuth(loadAuthRaw(deps.store) ?? "")}`,
         one.ok,
         `${one.note} · 离第一枪 ${Date.now() - fireStart}ms`
       );
@@ -2323,13 +2365,13 @@ function runExchange(deps) {
     if (i < 0) add("兑换", true, line);
     else add(line.slice(0, i), true, line.slice(i + 1));
   }
-  return {
-    ok: r.ok,
-    note: `${r.note}（用时 ${((Date.now() - started) / 1e3).toFixed(1)}s）`,
-    detail: steps.map((x) => `${x.name}：${x.ok ? "" : "失败 "}${x.note}`),
-    steps
-  };
+  return finish(r.ok, `${r.note}（用时 ${((Date.now() - started) / 1e3).toFixed(1)}s）`);
 }
+
+// src/entries/exchange.ts
+worker_hint("exclusive");
+var store = makeStore();
+var transport = makeTransport(LONG_REQUEST_TIMEOUT_MS);
 register_cron(
   "兑换",
   // # 为什么是 `@every 10s` 而不是"整点前 20 秒起一次"
