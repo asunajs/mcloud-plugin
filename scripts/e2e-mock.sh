@@ -697,4 +697,28 @@ assert '一键9图出圈' in lis['codes'], lis
 code = [c for c in live['pool']['codes'] if c['value'] == '一键9图出圈']
 assert code and code[0]['source'] == 'danmaku', code
 print('   ✅ 弹幕：文本解出来、回了 ack、口令落池（来源 danmaku）')
+
 DANPY
+
+# ── ⑨ 直播自动定时（mcloud 的 `live_auto`）：时刻 = 「下一场」+ 1 小时 ──────────
+# ⚠ 这条判据只靠读数就能核：`live-auto` 每 5 分钟算一次、**零上游请求**，
+#   而它算出来的时刻必须等于"池里那间预告场的开播时间 + 1 小时"。
+curl -fsS "${W[@]}" -X POST "$B/api/tasks/mcloud/live-auto/run" -o /dev/null
+curl -fsS "${W[@]}" "$B/plugins/mcloud/api/live" -o "$TMP/live-auto.json"
+python3 - "$TMP/live-auto.json" <<'AUTOPY'
+import json, sys
+live = json.load(open(sys.argv[1]))
+auto = live['auto']
+pool = live['pool']
+assert auto['nextStart'] == pool['nextStart'], (auto, pool)
+assert auto['nextStart'] != '', 'mock 里有一间预告场，这里该有「下一场」'
+assert auto['wakeAt'] != '', ('没算出来', auto)
+# 时刻 = 下一场 + 1 小时（**按墙钟字符串**比：定长 ⇒ 字典序 = 时间序；
+# 东八区在这里又加回 8 小时，所以直接按字符串解析成 epoch 比毫秒）
+from datetime import datetime, timedelta
+start = datetime.strptime(auto['nextStart'], '%Y-%m-%d %H:%M:%S')
+want = (start + timedelta(hours=1)).strftime('%Y-%m-%d %H:%M:%S')
+assert auto['wakeAt'] == want, (auto['wakeAt'], want)
+assert auto['expr'].endswith(' *'), auto['expr']
+print(f"   ✅ 自动定时：下一场 {auto['nextStart']} ⇒ {auto['wakeAt']} 醒（等价 cron {auto['expr']}）")
+AUTOPY

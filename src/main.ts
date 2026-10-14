@@ -49,7 +49,8 @@ import { runAppTaskStep, startAppTask } from './mcloud/tasks/appTask.ts';
 import { runExchangeList } from './mcloud/tasks/exchangeList.ts';
 import { runLiveRoom } from './mcloud/tasks/liveRoom.ts';
 import { runLiveGate } from './mcloud/tasks/liveGateTask.ts';
-import { runLiveListen } from './mcloud/tasks/liveListen.ts';
+import { runLiveAuto } from './mcloud/tasks/liveAutoTask.ts';
+import { loadListenSeconds, runLiveListen } from './mcloud/tasks/liveListen.ts';
 import { runLiveDraw } from './mcloud/tasks/liveDraw.ts';
 import { needExchange, runExchangeStep } from './mcloud/sessionExchange.ts';
 import { runReceive } from './mcloud/tasks/receive.ts';
@@ -359,6 +360,30 @@ register_cron('live-gate', '*/10 7-23 * * *', makeRunner('直播日程（门）'
 //   会在宿主里排队、下一次调用一次性读出来 ⇒ 节奏影响的是"多快看到口令"。
 //   门关着时它一个请求都不发（`nextCheckAtMs` 冷却），所以放着不影响别的东西。
 register_cron('live-listen', '@every 10s', makeRunner('听弹幕口令', runLiveListen));
+// 直播自动定时（mcloud 的 `live_auto`）：**只算时刻，一个上游请求都不发**。
+// 每 5 分钟算一次「下一场 + 1 小时」，写进状态；听弹幕那条链在被判"门关着"时
+// 就睡到那一刻（而不是固定 5 分钟）。
+// ⚠ 面板的 `register_cron` **没有运行时改表达式的口子**（见 liveAuto.ts 模块头），
+//   所以这里是"粗粒度 cron + 到点才动"：等的期间零请求，醒来精度最坏晚 5 分钟
+//   （mcloud 用一次性 cron 是秒级，但它的宿主能改调度 —— 这是宿主能力的差）。
+register_cron('live-auto', '@every 5m', (p) => {
+  try {
+    const out = runLiveAuto(
+      {
+        store,
+        transport,
+        nowIso: new Date().toISOString(),
+        baseUrl: loadBaseUrl(store),
+        lateMs: p.lateMs,
+      },
+      { windowMs: loadListenSeconds(store) * 1000 },
+    );
+    return { ok: out.ok, note: out.note };
+  } catch (e) {
+    // 它只算时刻、不碰网络 ⇒ 真抛了就是插件自己的 bug，必须让它可见
+    return { ok: false, note: `直播自动定时抛异常：${e instanceof Error ? e.message : String(e)}` };
+  }
+});
 register_cron('live-draw', '*/5 7-23 * * *', (p) => {
   try {
     const out = runLiveDraw({

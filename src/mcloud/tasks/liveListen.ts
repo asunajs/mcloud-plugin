@@ -53,6 +53,7 @@ import {
   userTokenRequest,
 } from '../liveGate.ts';
 import { applyRoomRequest, parseApplyRoom } from '../liveIm.ts';
+import { wakeSleepMs } from './liveAutoTask.ts';
 import { parseSsoToken } from '../h5session.ts';
 import { STATE_AUTH } from '../sessionExchange.ts';
 import { parseAuthorization } from '../authRefresh.ts';
@@ -73,8 +74,26 @@ export const BASE_VIDEO_IM_WS = 'wss://videoim.cmcc-cs.cn:20102';
 
 /** 默认监听窗口（秒）。窗口到点就断开、把状态归零；下一次触发重新走一遍门。 */
 export const DEFAULT_LISTEN_SECONDS = 600;
-/** 门关着之后隔多久再看一次（毫秒）。**它不是"轮询间隔"，是"下一次检查时刻"**。 */
+/** 没开播时**默认**过多久再看一次（毫秒）。
+ *
+ *  ⚠ 它只是**兜底**。有「直播自动定时」的计划时，冷却会睡到那一刻
+ *  （`live-auto` 按「下一场」+1 小时算出来，mcloud 的口径）——
+ *  固定 5 分钟的话，一天要白问 288 次门。 */
 export const IDLE_RECHECK_MS = 5 * 60 * 1000;
+/** 冷却的上限（毫秒）：没有计划时不许比这个更久，有计划时也不许睡过头（12 小时）。 */
+export const MAX_IDLE_RECHECK_MS = 12 * 60 * 60 * 1000;
+
+/** **这一次**该隔多久再看门。
+ *
+ *  有「下一场」的计划 ⇒ 睡到那一刻（那是 `live-auto` 算的，mcloud 口径）；
+ *  没有/计划已到点 ⇒ 退回默认的 [`IDLE_RECHECK_MS`]。
+ *  ⚠ 上限 [`MAX_IDLE_RECHECK_MS`]：日程可能被平台改成很久以后，
+ *  但"睡 12 小时以上"这件事本身就该被怀疑（上游日程是几天前的读数）。 */
+function idleCooldownMs(deps: ListenDeps, nowMs: number): number {
+  const sleep = wakeSleepMs(deps.store, nowMs, loadListenSeconds(deps.store) * 1000);
+  if (sleep === undefined || sleep <= 0) return IDLE_RECHECK_MS;
+  return Math.min(sleep, MAX_IDLE_RECHECK_MS);
+}
 /** 单次调用里最多读多久（毫秒）—— 预算是 2000ms，留出余量给心跳/落库/日志。 */
 export const READ_BURST_MS = 1600;
 /** 一次 `ws_recv` 等多久（毫秒）。loop 起来凑满 [`READ_BURST_MS`]。 */
@@ -378,10 +397,14 @@ function roomsStep(deps: ListenDeps, st: ListenState, nowMs: number): TaskOutcom
   const anchorLive = koulingRooms(merged);
   if (anchorLive.length === 0) {
     st.step = 'done';
-    st.nextCheckAtMs = Date.parse(deps.nowIso) + IDLE_RECHECK_MS;
+    const coolMs = idleCooldownMs(deps, Date.parse(deps.nowIso));
+    st.nextCheckAtMs = Date.parse(deps.nowIso) + coolMs;
     st.closedReason = '那个主播没在播';
     st.finishedAt = deps.nowIso;
-    st.note = `门关着（合并后 ${merged.length} 间房）—— 隔 ${Math.round(IDLE_RECHECK_MS / 60000)} 分钟再看`;
+    st.note =
+      coolMs > IDLE_RECHECK_MS
+        ? `门关着（合并后 ${merged.length} 间房）—— 按日程睡到下一场之后（${Math.round(coolMs / 60000)} 分钟）`
+        : `门关着（合并后 ${merged.length} 间房）—— 隔 ${Math.round(coolMs / 60000)} 分钟再看`;
     persist(deps, st);
     return { ok: true, note: st.note };
   }
@@ -431,7 +454,7 @@ function roomBeatStep(deps: ListenDeps, st: ListenState, nowMs: number): TaskOut
   //   用"没有"而不是"给了个空串"是因为后面的动作完全相反（见 liveGate 的注释）。
   if (beat.chatRoomId === undefined) {
     st.step = 'done';
-    st.nextCheckAtMs = Date.parse(deps.nowIso) + IDLE_RECHECK_MS;
+    st.nextCheckAtMs = Date.parse(deps.nowIso) + idleCooldownMs(deps, Date.parse(deps.nowIso));
     st.closedReason = `房间 ${st.roomId} 没有聊天室（status=${beat.status}）`;
     st.finishedAt = deps.nowIso;
     st.note = st.closedReason;
