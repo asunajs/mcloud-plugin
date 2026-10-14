@@ -203,3 +203,47 @@ export function ws_recv(id: number, timeout_ms?: number): WsFrame;
 
 /** 关掉一条连接（**幂等**：已经关掉的再关一次也算成功）。 */
 export function ws_close(id: number): true;
+
+/** 发一封邮件（面板的 SMTP 客户端）。见面板 `docs/host-api.md`「发邮件」。
+ *
+ *  # 三条要记住的
+ *
+ *  · **失败抛错**，错误文本是服务器那句原话（`535 bad credentials` /
+ *    `550 no such user here`）—— 直接贴进日志就能排查。
+ *  · `tls` **拼错会报错**，不会默认成 `none` —— 那会明文发密码。
+ *  · 这是**阻塞调用**（默认超时 15 秒），比默认执行预算还长。
+ *    别把它放进需要毫秒精度的任务里（兑换那条链）。
+ *
+ *  中文主题走 RFC 2047 编码字；`from` 可以写 `显示名 <a@b>`，
+ *  信封里只用裸地址。不给 `port` 就按 `tls` 推（`implicit` → 465，其余 → 587）。 */
+export interface SmtpOpts {
+  host: string;
+  port?: number;
+  /** `starttls`（默认）/ `implicit`（465）/ `none`。**拼错报错**。 */
+  tls?: string;
+  /** 空就跳过 `AUTH`（内网中继常见）。 */
+  user?: string;
+  pass?: string;
+  /** 可以写 `显示名 <a@b>`；信封里只用裸地址。 */
+  from: string;
+  /** 字符串或字符串数组。 */
+  to: string | string[];
+  subject?: string;
+  /** 正文至少给一个（`text` / `html`）。两个都给就是 `multipart/alternative`。 */
+  text?: string;
+  html?: string;
+  /** 额外的信任锚（PEM）。自建 SMTP / 内网中继用。 */
+  ca_file?: string;
+  /** 默认 15000，夹在 1s ~ 60s。 */
+  timeout_ms?: number;
+  /** EHLO 自报的名字，默认 `localhost`。 */
+  ehlo?: string;
+}
+
+export interface SmtpResult {
+  ok: boolean;
+  /** 服务器那句原话，如 `250 message accepted`。 */
+  response?: string;
+}
+
+export function smtp_send(opts: SmtpOpts): SmtpResult;

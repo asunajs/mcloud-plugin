@@ -26,6 +26,22 @@ import { groupView } from './groups.ts';
 import { hasBigInt, sandboxCaps } from './caps.ts';
 import { runAuthRefresh } from './authRefresh.ts';
 import { clearOrder, runOrderStep, startOrder } from './tasks/exchangeOrder.ts';
+import {
+  CHANNELS,
+  configuredChannels,
+  sendPush,
+  type PushChannel,
+  type PushConfig,
+  type PushDeps,
+} from './push.ts';
+import {
+  loadPushConfig,
+  pushReading,
+  savePushBindings,
+  savePushConfig,
+  savePushRules,
+  type PushRule,
+} from './pushConfig.ts';
 import { drawReport } from './tasks/liveDraw.ts';
 import { MATRIX_MARKETS, readMatrix } from './tasks/appTaskMatrix.ts';
 import { readDailyRun } from './dailyState.ts';
@@ -178,6 +194,20 @@ export interface RouteDeps {
   /** 长连接那一族（`ws_*`）—— **可选**：宿主没有它时那个口子要如实 503。
    *  `routes.ts` 同样不 import `host-api`（见文件头），所以由 main.ts 注进来。 */
   ws?: HostWs | undefined;
+  /** 推送要用的宿主能力（`http_fetch` + `smtp_send`）。
+   *  同样**注入**（本文件不 import host-api）—— 「试发一条」那个路由要用它。 */
+  pushDeps: PushDeps;
+}
+
+/** 把请求体当 JSON 解。**解不出来给 `null`**（调用方按"格式不对"处理），
+ *  不抛异常 —— 路由里一个抛出去的异常会变成 500，而 400 才是对的。 */
+function parseJson(body: unknown): unknown {
+  if (typeof body !== 'string') return body ?? null;
+  try {
+    return JSON.parse(body) as unknown;
+  } catch {
+    return null;
+  }
 }
 
 const JSON_HEADERS = { 'content-type': 'application/json; charset=utf-8' };
@@ -326,7 +356,14 @@ function buildReadings(deps: RouteDeps): Record<string, unknown> {
     },
     // ⚠ 推送（10 渠道）在**阶段 ⑤**。这里给一个诚实的空壳而不是编一个假读数 ——
     //    界面据此显示「还没做」，而不是显示一个看着像好的空表。
-    push: { implemented: false, channels: [], rules: {} },
+    // 推送：配了哪几个渠道、有几条规则、三个任务各绑了哪条。
+    //
+    // ⚠ 是**顶层**块，不是挂在 `live` 里 —— 推送是「一次运行结束」的出口，
+    //   三条任务都用它，与直播没有从属关系。（第一版插错了位置，
+    //   表现是读数里 `live.push.channels` 为空而顶层根本没有 `push`。）
+    // **秘密只给掩码**（见 pushConfig.maskSecret）—— token / pass / secret
+    // 一个字符都不进这里。
+    push: pushReading(deps.store),
     settings: {
       baseUrl: loadBaseUrl(deps.store),
       liveUrl: loadLiveUrl(deps.store),
@@ -454,6 +491,113 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
       path: `${base}/caps`,
       method: 'GET',
       handler: () => json(200, { caps: sandboxCaps(), hasBigInt: hasBigInt() }),
+    },
+
+    // ── 推送 ────────────────────────────────────────────────────────
+    {
+      // 存推送配置。
+      //
+      // # 为什么是**合并**而不是整份覆盖
+      //
+      // 界面上**拿不到已经存着的值**（读数里只有掩码 —— token 不上屏是硬规则）。
+      // 所以界面没法"把整份发回来"，它只知道用户这次改了什么。
+      //
+      // 但纯合并又做不到"删掉一个渠道"（删了下次会被旧值补回来）——
+      // 所以请求体里带一个**显式的 `remove` 列表**：
+      //
+      //     { "set": { "bark": { "key": "…" } }, "remove": ["pushplus"] }
+      //
+      // 两种形状都收：给一个裸的配置对象就是"合并这几项"（写脚本时更顺手），
+      // 给 `{set, remove}` 就是完整语义。
+      path: `${base}/push/config`,
+      method: 'POST',
+      handler: (req) => {
+        const body = parseJson(req.body);
+        if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+          return json(400, { error: '请求体要是 JSON 对象' });
+        }
+        const raw = body as Record<string, unknown>;
+        // `{set, remove}` 形状 vs 裸配置对象
+        const isPatch = raw['set'] !== undefined || raw['remove'] !== undefined;
+        const setObj = (isPatch ? raw['set'] : raw) as Record<string, unknown> | undefined;
+        const remove = Array.isArray(raw['remove']) ? (raw['remove'] as unknown[]) : [];
+
+        const cur = loadPushConfig(deps.store);
+        if (setObj !== undefined && setObj !== null) {
+          for (const [k, v] of Object.entries(setObj)) {
+            if (k === 'title') {
+              cur.title = typeof v === 'string' ? v : undefined;
+              continue;
+            }
+            if (!CHANNELS.includes(k as PushChannel)) continue; // 不认识的键直接丢
+            if (v === null) delete (cur as Record<string, unknown>)[k];
+            else if (k === 'customPost') cur.customPost = v as PushConfig['customPost'];
+            else (cur as Record<string, unknown>)[k] = v;
+          }
+        }
+        for (const k of remove) {
+          if (typeof k === 'string' && CHANNELS.includes(k as PushChannel)) {
+            delete (cur as Record<string, unknown>)[k];
+          }
+        }
+        savePushConfig(deps.store, cur, deps.now());
+        const n = configuredChannels(cur);
+        deps.log(`推送配置已保存（配了 ${n.length} 个渠道）`);
+        return json(200, { ok: true, configured: n });
+      },
+    },
+    {
+      // 存推送规则（整份覆盖，同上的理由）。
+      path: `${base}/push/rules`,
+      method: 'POST',
+      handler: (req) => {
+        const body = parseJson(req.body);
+        if (!Array.isArray(body)) return json(400, { error: '请求体要是数组' });
+        // 只收形状对的那些 —— 一条坏规则不该让整份存不进去
+        const rules = (body as PushRule[]).filter(
+          (r) => r !== null && typeof r === 'object' && typeof r.id === 'string' && r.id !== '',
+        );
+        savePushRules(deps.store, rules, deps.now());
+        deps.log(`推送规则已保存（${rules.length} 条）`);
+        return json(200, { ok: true, count: rules.length });
+      },
+    },
+    {
+      // 存「哪个任务用哪条规则」。
+      path: `${base}/push/bindings`,
+      method: 'POST',
+      handler: (req) => {
+        const body = parseJson(req.body);
+        if (body === null || typeof body !== 'object') {
+          return json(400, { error: '请求体要是 JSON 对象' });
+        }
+        const src = body as Record<string, unknown>;
+        const b = {
+          daily: typeof src['daily'] === 'string' ? src['daily'] : '',
+          exchange: typeof src['exchange'] === 'string' ? src['exchange'] : '',
+          live: typeof src['live'] === 'string' ? src['live'] : '',
+        };
+        savePushBindings(deps.store, b, deps.now());
+        deps.log('推送绑定已保存');
+        return json(200, { ok: true, bindings: b });
+      },
+    },
+    {
+      // **试发一条**。存在的理由：推送最难受的失败方式是"配好了、但收不到"，
+      // 而那时用户不知道是配置错了、还是任务没跑、还是根本没到发送那一步。
+      // 这个按钮把这三件事分开：它直接发一条，成不成当场告诉你。
+      path: `${base}/push/test`,
+      method: 'POST',
+      handler: () => {
+        const cfg = loadPushConfig(deps.store);
+        const chans = configuredChannels(cfg);
+        if (chans.length === 0) {
+          return json(200, { ok: false, line: '一个渠道都没配', results: [] });
+        }
+        const r = sendPush(deps.pushDeps, cfg, '云盘 · 试发', '这是一条试发的推送。\n收到就说明配置对了。');
+        deps.log(`试发推送：${r.line}`);
+        return json(200, { ok: r.failed === 0 && r.sent > 0, line: r.line, results: r.results });
+      },
     },
 
     // ── 登录：读数 ──────────────────────────────────────────────────
