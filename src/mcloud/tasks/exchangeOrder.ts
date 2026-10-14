@@ -28,15 +28,18 @@
 // ③ 两处逐接口的入参差异，**不是**一刀切：取滑块那条用 `application/x-www-form-urlencoded`，
 //    下单那条**有** `isdeviceid: true`，而取滑块那条**没有**。
 //
-// # ⚠ 总方针：**优先发出去**
+// # ⚠ 总方针：**优先发出去，所以干脆不判**
 //
-// 这是**用户定的方向**，与 mcloud 的保守口径**不同**，所以写在这里免得被"顺手改稳"：
+// 这是**用户定的方向**：既然本地判据永远不该挡住发送，那它就不该存在 ——
+// **不挡路的判据是装饰**（算了不用，看的人还以为它在起作用）。
+// 所以这一层里没有"能不能兑"的判定：
 //
-// · 清单判据说"不能兑" ⇒ **照样发**（把判据写进 note，让人看得见）；
-// · 余额看着不够 ⇒ **照样发**（那是估算，上游才是真判据）。
+// · 清单那一步只做**选择**（按名字或 prizeId 找出目标那一件），不做判断；
+// · 余额那一读**留着**，但它的身份是**成交复查的基准**（第 ⑥ 步拿它算差值），
+//   不是"够不够"的判据 —— 原先那半段是死代码，删掉了。
 //
-// 理由：这两处**发了是可能成功的** —— 判据是本地估算，而放不放行由上游说了算。
-// 不发 = 少一次机会，发了被拒 = 一次失败响应（失败不扣豆，扣豆只发生在成交那一刻）。
+// 理由：放不放行由**上游**说了算。不发 = 少一次机会；发了被拒 = 一次失败响应
+// （失败不扣豆，扣豆只发生在成交那一刻）。
 //
 // # ⚠ 但**滑块**不属于这一类：算错了发出去是**无效的**，所以不发
 //
@@ -58,7 +61,7 @@ import { REFERER_SIGN_IN, SHOW_LOADING, buildH5Request, MCLOUD_HOST } from '../h
 import { sessionHeaders } from './base.ts';
 import { calcPuzzleOffset, usable } from '../slide.ts';
 import { loadSession, SESSION_KEY } from '../../store/types.ts';
-import { LIMIT_AVAILABLE, VERDICT_TEXT, parseExchangeList, verdictOf } from './exchangeList.ts';
+import { parseExchangeList } from './exchangeList.ts';
 import type { ExchangePrize } from './exchangeList.ts';
 import type { TaskDeps, TaskOutcome } from './base.ts';
 
@@ -189,7 +192,7 @@ export function pickPrize(prizes: readonly ExchangePrize[], query: string): Exch
 
 export const STEP_TEXT: Record<Step, string> = {
   list: '① 读清单',
-  balance: '② 读余额（成交后的对照基准）',
+  balance: '② 读基准余额（成交复查要拿它算差值）',
   'warm-1': '③ 预热第一枪',
   'warm-2': '③ 预热第二枪',
   slide: '④ 取滑块题面并本地解',
@@ -240,9 +243,8 @@ export function runOrderStep(deps: TaskDeps): TaskOutcome {
     //
     // 所以闸门收回严格：判不了就不发 —— 与"滑块算不出就不发"同一个方向。
     // 放宽它等于把"不确定"当成"可以花豆"。
-    // ⚠ 判据只记不挡（见文件头的总方针）：**优先发出去**
-    const verdict = verdictOf(p);
-    const verdictNote = verdict === 'ok' ? '' : `（上游判据说「${VERDICT_TEXT[verdict]}」，照样发）`;
+    // ⚠ 这里**不做判定**（见文件头）：只把目标挑出来就往下走。
+    //   本地算"能不能兑"没有意义 —— 它永远不该挡住发送，而挡不住的判据只会误导人。
     // ⚠ 取不到**数字** prizeId 就拒绝 —— 兜成 -1 会真把 `prizeId:-1` 发出去
     const prizeId = num(p.prizeId);
     if (prizeId === undefined) {
@@ -250,7 +252,7 @@ export function runOrderStep(deps: TaskDeps): TaskOutcome {
     }
     const plan: Plan = { prizeId, prizeName: String(p.name ?? ''), price: num(p.price), query };
     saveState(deps, { ...st, step: 'balance', plan });
-    return { ok: true, note: `${label}：目标「${p.name}」（prizeId=${p.prizeId}）${p.price === undefined ? '' : `，${p.price} 豆`}${verdictNote} —— 下一步读余额` };
+    return { ok: true, note: `${label}：目标「${p.name}」（prizeId=${p.prizeId}）${p.price === undefined ? '' : `，${p.price} 豆`} —— 下一步读基准余额` };
   }
 
   // ② 余额
@@ -270,15 +272,12 @@ export function runOrderStep(deps: TaskDeps): TaskOutcome {
     } catch {
       /* 余额读不出来不算致命：后面靠成交后的差值判，这里只做"够不够"的前置 */
     }
-    let shortNote = '';
-    if (balance !== undefined) {
-      const price = st.plan?.price;
-      // ⚠ 余额只记不挡（总方针）：它是**估算**，而且这一族失败不扣豆
-      if (price !== undefined && balance < price) shortNote = `（余额 ${balance} < 价格 ${price}，照样发）`;
-      deps.store.setState(STATE_BASE, String(balance), deps.nowIso);
-    }
+    // ⚠ 这一读**不是判据**，是**基准**：第 ⑥ 步要拿它算成交前后的差值
+    //   （成交判据是余额差 —— 上游没有幂等，"那句话"不算数）。
+    //   原先这里还有一段"余额 < 价格就不做"，删掉：既不挡路，留着就是死代码。
+    if (balance !== undefined) deps.store.setState(STATE_BASE, String(balance), deps.nowIso);
     saveState(deps, { ...st, step: 'warm-1' });
-    return { ok: true, note: `${label}：${balance ?? '没读到'}${balance === undefined ? '（照样往下走，成交判据靠余额差）' : ''}${shortNote} —— 下一步预热` };
+    return { ok: true, note: `${label}：${balance ?? '没读到'}${balance === undefined ? '（照样往下走 —— 它只是基准，不是判据）' : '，作为成交复查的基准'} —— 下一步预热` };
   }
 
   // ③ 预热两枪（中间夹 500ms，顺序是契约）
