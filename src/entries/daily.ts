@@ -43,7 +43,7 @@
 import { log, register_cron, warn, worker_hint } from 'host-api';
 import { runAuthRefresh } from '../mcloud/authRefresh.ts';
 import { needExchange, runExchangeStep } from '../mcloud/sessionExchange.ts';
-import { runAppTaskMatrix } from '../mcloud/tasks/appTaskMatrix.ts';
+import { MATRIX_MARKETS, runAppTaskMatrix } from '../mcloud/tasks/appTaskMatrix.ts';
 import { runAppTaskStep, startAppTask } from '../mcloud/tasks/appTask.ts';
 import { runBackupGift } from '../mcloud/tasks/backupGift.ts';
 import { runCloudSnapshot } from '../mcloud/tasks/cloudSnapshot.ts';
@@ -193,7 +193,22 @@ function runDaily(deps: TaskDeps): { ok: boolean; note: string; detail: string[]
   );
 
   // ④ App 任务：先读矩阵（只读），再做（写，且 `task/click` **不可回滚**）
-  push(once('App 任务矩阵（只看）', runAppTaskMatrix, deps));
+  // ⚠ 矩阵是**轮着读**的：一次调用只读一个市场（`MATRIX_MARKETS` 两个）。
+  //   旧的靠「每 15 分钟一跳」在几个小时内把一轮读满 —— 而一轮没读满时，
+  //   待办列表是**不全**的，App 任务就会漏做。
+  //   所以这里 drain **整一轮**：两发，很便宜，而且读完就是完整读数。
+  push(
+    (() => {
+      const r = drain(runAppTaskMatrix, deps, {
+        label: 'App 任务矩阵',
+        maxSteps: MATRIX_MARKETS.length,
+        deadlineMs: 25_000,
+        startedAt: started,
+      });
+      // 它不报 idle（每读一个市场都是"有事做"），所以 drain 会正好跑满 maxSteps
+      return { name: 'App 任务矩阵（只看）', ok: r.ok, note: r.note, idle: false };
+    })(),
+  );
   // 没有在跑的就起一趟（起单只写字、不发请求）；起不出来说明没有待办
   if (!store.getState('mcloud.apptask.state') && startAppTask(deps).idle) {
     push({ name: 'App 任务', ok: true, note: '没有待办', idle: true });

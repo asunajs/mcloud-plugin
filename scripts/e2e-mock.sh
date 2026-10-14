@@ -77,8 +77,11 @@ try:
     s = json.load(open(sys.argv[1]))
 except Exception:
     sys.exit(1)
-names = {j['name'] for j in s.get('jobs', []) if j.get('plugin') == 'mcloud'}
-sys.exit(0 if {'task-list', 'prizes', 'sign', 'backup-gift', 'cloud-snapshot', 'notice'} <= names else 1)
+# ⚠ 就位判据是**新的三条任务**（见 docs/redesign-plan.md 阶段 ②）：
+#   任务已经按家族拆到三个插件里，而且合成了一条任务一个函数。
+jobs = {(j.get('plugin'), j.get('name')) for j in s.get('jobs', [])}
+want = {('mcloud-daily', '日常'), ('mcloud-exchange', '兑换'), ('mcloud-live', '直播')}
+sys.exit(0 if want <= jobs else 1)
 PY
   sleep 0.5
 done
@@ -102,64 +105,58 @@ assert 'mock-jwttoken' not in json.dumps(d), 'jwt 也不能回显'
 print('   会话导入并对 mock 验证通过，响应里没有凭据原文')
 PY
 
-echo "④ 逐条跑。多步任务**跑多次**让步骤机推进（一次调用只发一个请求是这套架构的纪律）"
-for t in task-list prizes cloud-snapshot multiple revival backup-gift; do
-  curl -fsS -o /dev/null "${W[@]}" -X POST "$B/api/tasks/mcloud/$t/run"
-  printf '   %s ✓\n' "$t"
-  sleep 0.4
-done
-# 备份好礼：info 说能领 → 第二次才领
-curl -fsS -o /dev/null "${W[@]}" -X POST "$B/api/tasks/mcloud/backup-gift/run"
-printf '   backup-gift（第二次：真领）✓\n'
-# 签到：问状态 → 提交 → 回查（三段式）
-for i in 1 2 3; do
-  curl -fsS -o /dev/null "${W[@]}" -X POST "$B/api/tasks/mcloud/sign/run"
-  printf '   sign（第 %s 段）✓\n' "$i"
-  sleep 0.4
-done
-# 领取：入队 → 逐条（清单里 2 条，第 2 条是延期领取会被跳过）
-for i in 1 2 3; do
-  curl -fsS -o /dev/null "${W[@]}" -X POST "$B/api/tasks/mcloud/receive/run"
-  printf '   receive（第 %s 次）✓\n' "$i"
-  sleep 0.4
-done
-curl -fsS -o /dev/null "${W[@]}" -X POST "$B/api/tasks/mcloud/receive/run"
-printf '   receive（第 4 次：延期领取）✓\n'
-sleep 0.4
+echo "④ 跑三条任务（新模型：一条任务 = 一个函数从头跑到尾）"
+#
+# ⚠ 这里从「逐条驱动 25 条任务、多步任务跑多次让步骤机推进」改成了
+#   「三条任务各跑一次」。理由见 docs/redesign-plan.md 阶段 ②：
+#   任务声明了长预算（{ budget_ms }），所以一次触发里能把状态机 drain 到走完。
+#
+#   这一步同时是「协议层对着 mock 端到端还对」的证据：日常链会把签到族
+#   （含签到那个三段式的**回查**）、任务拓展、App 任务、通知、续期、收尾读数
+#   全部走一遍 —— 少走任何一段，下面的 mock 侧字节断言就会红。
 
-# 通知任务：查两个槽 → 能领才领 → 下一轮**回查**（reward 不报到账数，成败只能靠回查）
-for i in 1 2 3; do
-  curl -fsS -o /dev/null "${W[@]}" -X POST "$B/api/tasks/mcloud/notice/run"
-  printf '   notice（第 %s 次）✓\n' "$i"
-  sleep 0.4
-done
+# —— 日常：整条链一次跑完 ——
+curl -fsS "${W[@]}" -X POST "$B/api/tasks/mcloud-daily/%E6%97%A5%E5%B8%B8/run" -o "$TMP/daily.json"
+printf '   日常 ✓\n'
+python3 - "$TMP/daily.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d.get('ok') is True, '日常跑失败了：' + json.dumps(d, ensure_ascii=False)[:400]
+PY
 
-# App 任务矩阵（**只读**）：一次读一个 group，连读 3 次要落到不同 group
-for i in 1 2 3; do
-  curl -fsS -o /dev/null "${W[@]}" -X POST "$B/api/tasks/mcloud/app-task-matrix/run"
-  printf '   app-task-matrix（第 %s 次）✓\n' "$i"
-  sleep 0.3
-done
+# —— 兑换：清单 + （有目标时才下单）——
+# ⚠ 毫秒级窗口与多账号并行在阶段 ③，这里只验「链路能跑、不发不该发的请求」。
+curl -fsS "${W[@]}" -X POST "$B/api/tasks/mcloud-exchange/%E5%85%91%E6%8D%A2/run" -o "$TMP/exchange.json"
+printf '   兑换 ✓\n'
+python3 - "$TMP/exchange.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+# 没设兑换目标时它如实回「没有设兑换目标」—— 那也是成功（没有目标就不该下单）
+assert d.get('ok') is True, '兑换跑失败了：' + json.dumps(d, ensure_ascii=False)[:400]
+PY
 
-# 兑换清单（**只读**）：一个 GET，不带 deviceId
-curl -fsS -o /dev/null "${W[@]}" -X POST "$B/api/tasks/mcloud/exchange-list/run"
-printf '   exchange-list（只读）✓\n'
-sleep 0.3
-
-# 直播口令（**只读**）：抓的是**第三方页面**，所以先把它指到 mock 的 /xhs/profile
+# —— 直播：口令笔记（公开 GET）+ 门 + 听窗口 ——
+# 口令笔记抓的是**第三方页面**，所以先把它指到 mock 的 /xhs/profile
 # —— 本仓库唯一会打外站的一条链。CI 里不指走的话它会去敲小红书（不稳，也不该）。
 curl -fsS "${W[@]}" -X POST \
   -d "{\"liveUrl\":\"http://127.0.0.1:$MOCK_PORT/xhs/profile\"}" \
   "$B/plugins/mcloud/api/config" >/dev/null
-curl -fsS -o /dev/null "${W[@]}" -X POST "$B/api/tasks/mcloud/live-room/run"
-printf '   live-room（只读，主页指到 mock）✓\n'
+curl -fsS "${W[@]}" -X POST "$B/api/tasks/mcloud-live/%E7%9B%B4%E6%92%AD/run" -o "$TMP/live-run.json"
+printf '   直播 ✓\n'
+python3 - "$TMP/live-run.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d.get('ok') is True, '直播跑失败了：' + json.dumps(d, ensure_ascii=False)[:400]
+PY
 sleep 0.3
 
 # ── 口令池（业务档，照 mcloud）：**再抓一次必须一个请求都不发** ──────────────
 #
 # 这一条是"30 分钟窗口"的端到端证据，判据是 **mock 侧没有新请求** ——
 # 比"接口返回了 idle"有力得多（返回 idle 也可能只是文案对了）。
-curl -fsS -o /dev/null "${W[@]}" -X POST "$B/api/tasks/mcloud/live-room/run"
+# ⚠ 这里再跑一次「直播」任务 —— 口令笔记那一段（原来独立的 `live-room`）
+#   现在在它里面。判据不变：**mock 侧不该有新请求**。
+curl -fsS -o /dev/null "${W[@]}" -X POST "$B/api/tasks/mcloud-live/%E7%9B%B4%E6%92%AD/run"
 curl -fsS "${H[@]}" "$B/plugins/mcloud/api/live" -o "$TMP/live-pool.json"
 curl -fsS "http://127.0.0.1:$MOCK_PORT/_debug/requests" -o "$TMP/mock.json"
 python3 - "$TMP/live-pool.json" "$TMP/mock.json" <<'PY'
@@ -212,8 +209,20 @@ for r in reqs:
     paths.setdefault(r['path'].split('?')[0], []).append(r)
 line = lambda p: paths.get(p, [None])[-1]
 
-tl = line('/ycloud/signin/task/taskListV3')
-assert tl and tl['body'] == '{"marketname":"sign_in_3","clientVersion":"12.6.0","group":""}', tl
+# ⚠ 这一条原来钉的是「**最后一次**矩阵读是 sign_in_3」—— 那是旧 e2e 的产物：
+#   它连调 3 次矩阵（游标 0→1→0），最后一次正好回到 sign_in_3。
+#   新模型一次日常 drain **正好一轮**（两个市场各一次 = `MATRIX_MARKETS.length`），
+#   最后一次落在 newsign_139mail。
+#   所以这里改成钉**体的逐字节形状**（那一串是从实拍 content-length 对出来的），
+#   市场轮转由下面那一块单独钉。
+tls = paths.get('/ycloud/signin/task/taskListV3') or []
+assert tls, '矩阵一发都没发'
+for t in tls:
+    assert t['method'] == 'POST', t
+    assert t['body'] in (
+        '{"marketname":"sign_in_3","clientVersion":"12.6.0","group":""}',
+        '{"marketname":"newsign_139mail","clientVersion":"12.6.0","group":""}',
+    ), f'V3 的体必须逐字节对上（含键序）：{t["body"]}'
 assert line('/ycloud/signin/public/record')['path'] == (
     '/ycloud/signin/public/record?marketname=sign_in_3&type=1&pageNumber=1&pageSize=10')
 assert line('/ycloud/signin/public/cloudRecordV2')['path'] == (
@@ -281,7 +290,15 @@ python3 - "$TMP/mock.json" <<'PY'
 import json, sys
 reqs = json.load(open(sys.argv[1]))
 hits = [r for r in reqs if 'taskListV3' in r.get('path', '')]
-assert len(hits) >= 3, f'矩阵该读至少三次，实际 {len(hits)}'
+# ⚠ 判据从「至少三次」改成「一轮读满」：矩阵是**轮着读**的（两个市场），
+#   旧模型靠「每 15 分钟一跳」在几个小时内读满一轮；新模型在一次日常里
+#   drain 整一轮（`maxSteps = MATRIX_MARKETS.length`）—— 一轮没读满的话
+#   待办列表不全，App 任务会漏做。
+assert len(hits) >= 2, f'一轮该读满两个市场，实际 {len(hits)} 次'
+assert set(m for m in [json.loads(r.get('body') or '{}').get('marketname') for r in hits] if m) == {
+    'sign_in_3',
+    'newsign_139mail',
+}, '一轮必须把两个市场都读到'
 assert not [r for r in reqs if 'taskListV2' in r.get('path', '')], '列表**只走 V3**（V2 是陈旧视图，548/550/1078 出自它）'
 # ⚠ 逐条读 body，别用 json.dumps 之后的整串去 find —— 那样引号是转义的，
 #   我自己第一版就栽在这儿（断言写错，代码是对的）。
@@ -293,8 +310,8 @@ for r in hits:
         bodies.append({})
 assert all(b.get('group') == '' for b in bodies), f'V3 的 group 必须是**空串**：{[b.get("group") for b in bodies]}'
 markets = [b.get('marketname') for b in bodies]
-assert all(markets[:3]), f'前三次都该带 marketname，实际 {markets[:3]}'
-assert len(set(markets[:3])) == 2, f'游标该在两个市场之间轮转：{markets[:3]}'
+assert all(markets[:2]), f'前两次都该带 marketname，实际 {markets[:2]}'
+assert len(set(markets[:2])) == 2, f'游标该在两个市场之间轮转：{markets[:2]}'
 assert all(r.get('method') == 'POST' for r in hits), '这一口是 POST'
 print('   ✅ App 任务矩阵：只读、只走 V3（group 空串）、两个市场轮转')
 PY
@@ -703,7 +720,9 @@ DANPY
 # ── ⑨ 直播自动定时（mcloud 的 `live_auto`）：时刻 = 「下一场」+ 1 小时 ──────────
 # ⚠ 这条判据只靠读数就能核：`live-auto` 每 5 分钟算一次、**零上游请求**，
 #   而它算出来的时刻必须等于"池里那间预告场的开播时间 + 1 小时"。
-curl -fsS "${W[@]}" -X POST "$B/api/tasks/mcloud/live-auto/run" -o /dev/null
+# ⚠ `live-auto` 已经合成进「直播」任务（②-1）—— 它只算时刻、零请求，
+#   所以这里再跑一次直播任务来推进它
+curl -fsS "${W[@]}" -X POST "$B/api/tasks/mcloud-live/%E7%9B%B4%E6%92%AD/run" -o /dev/null
 curl -fsS "${W[@]}" "$B/plugins/mcloud/api/live" -o "$TMP/live-auto.json"
 python3 - "$TMP/live-auto.json" <<'AUTOPY'
 import json, sys
@@ -723,19 +742,30 @@ assert auto['expr'].endswith(' *'), auto['expr']
 print(f"   ✅ 自动定时：下一场 {auto['nextStart']} ⇒ {auto['wakeAt']} 醒（等价 cron {auto['expr']}）")
 AUTOPY
 
-# ── ⑩ 「听到就领」的节拍：`live-draw` 必须比"每 5 分钟"快 ─────────────────────
-# ⚠ 这条链是"听到 → 进池 → 领"的**衔接器**。5 分钟那一版意味着听到之后最多 5 分钟才动手，
-#   而口令是当场有效的东西（mcloud 的 `live-room` 就是听到即领）。
-#   便宜的理由：它没事时**一个请求都不发**就返回 idle —— 所以变快不花钱。
+# ── ⑩ 「听到就领」的节拍 ────────────────────────────────────────────────
+#
+# 旧模型用两条 cron 拼出这条链：`live-listen`（@every 10s 听）+ `live-draw`
+# （@every 30s 领）。判据是「领那条必须比每 5 分钟快」—— 因为听到之后最多
+# 5 分钟才动手是不可接受的（口令是**当场有效**的东西）。
+#
+# 新模型把「听」和「领」合进**同一条任务**的一个听窗口：`@every 1m` + 70 秒预算，
+# 窗口里连听几十秒，然后**紧接着**领。所以那条「衔接延迟」根本不存在了 ——
+# 听到的那一刻就在同一个函数里往下走。
+#
+# ⚠ 判据跟着换：不再问「领的节拍够不够快」，而是问
+#   ①「听」和「领」是不是**同一条任务**（分开就又回到衔接延迟的问题）
+#   ② 那条任务的周期是不是**分钟级**（不能是 5 分钟以上）
 curl -fsS "${H[@]}" "$B/api/state" -o "$TMP/state2.json"
 python3 - "$TMP/state2.json" <<'CADPY'
 import json, sys
 s = json.load(open(sys.argv[1]))
-jobs = {j['name']: j for j in s.get('jobs', []) if j.get('plugin') == 'mcloud'}
-d = jobs.get('live-draw')
-assert d is not None, '没有 live-draw 这条任务'
+live = [j for j in s.get('jobs', []) if j.get('plugin') == 'mcloud-live']
+assert len(live) == 1, f'直播插件该只有一条任务（听和领在同一条里），实际 {[j["name"] for j in live]}'
+d = live[0]
+assert d['name'] == '直播', d['name']
 expr = d.get('expr') or d.get('schedule') or ''
-assert expr == '@every 30s', f'live-draw 的调度是 {expr!r}，应当是 @every 30s（听到就领的衔接节拍）'
-assert jobs.get('live-listen') is not None and jobs.get('live-auto') is not None, jobs.keys()
-print('   ✅ 衔接节拍：live-draw 是 @every 30s（听到→进池→领，不用等人点）')
+assert expr == '@every 1m', f'直播的调度是 {expr!r}，应当是 @every 1m（分钟级听窗口）'
+# 长预算：一个听窗口要连续占几十秒
+assert (d.get('budget_ms') or 0) >= 60000, f'听窗口需要长预算，实际 {d.get("budget_ms")}'
+print(f'   ✅ 衔接：听与领在**同一条任务**里（{expr}，预算 {d["budget_ms"]}ms）—— 没有衔接延迟')
 CADPY
