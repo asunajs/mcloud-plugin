@@ -27,6 +27,7 @@ import { runCloudSnapshot } from './mcloud/tasks/cloudSnapshot.ts';
 import { runSign } from './mcloud/tasks/sign.ts';
 import { runBackupGift } from './mcloud/tasks/backupGift.ts';
 import { runMsgPushObtain, runMsgPushStatus } from './mcloud/tasks/msgPush.ts';
+import { runAuthRefresh } from './mcloud/authRefresh.ts';
 import { runNotice } from './mcloud/tasks/notice.ts';
 import { runAppTaskMatrix } from './mcloud/tasks/appTaskMatrix.ts';
 import { runExchangeList } from './mcloud/tasks/exchangeList.ts';
@@ -254,6 +255,10 @@ register_cron('revival', SIGNIN_CRON, makeRunner('复活卡', runRevival));
 register_cron('backup-gift', SIGNIN_CRON, makeRunner('备份好礼', runBackupGift));
 // 消息推送奖励：**两步**（问状态 → 领），所以两条 cron。
 // ⚠ 它**不是** `notice` —— 见 tasks/msgPush.ts 文件头那张对照表。
+// 凭据续期：**每天一次**（mcloud 那边是 `auth refresh --lead-days`，
+// 默认提前 10 天）。它自己也带判据，所以每天跑不等于每天打上游 ——
+// 离过期还远时它**一个请求都不发**。见 authRefresh.ts 文件头。
+register_cron('auth-refresh', '0 6 * * *', makeRunner('凭据续期', (deps) => runAuthRefresh(deps)));
 register_cron('msg-push', SIGNIN_CRON, makeRunner('消息推送奖励（问状态）', runMsgPushStatus));
 register_cron('msg-push-obtain', SIGNIN_CRON, makeRunner('消息推送奖励（领）', runMsgPushObtain));
 register_cron('notice', SIGNIN_CRON, makeRunner('开启通知领AI豆', runNotice));
