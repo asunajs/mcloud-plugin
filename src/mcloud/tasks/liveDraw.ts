@@ -442,3 +442,92 @@ function judge(s: DrawState, label: string, res: CallResult, nowIso: string): Ad
 function sameList(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((v, i) => v === b[i]);
 }
+
+// ══════════════════════════════ 一次领取的**结论** ══════════════════════════════
+//
+// 这一步单独抽出来，是因为"这一轮到底发生了什么"要**分四栏**说清楚，
+// 而分错的后果是**排查方向一开始就错**：
+//
+//   | 栏 | 上游的码 | 用户该怎么做 |
+//   |---|---|---|
+//   | 领到了 | `0` | 没事 |
+//   | 已领过 | `200112` | 没事（换个账号跑，或者等下一场） |
+//   | 口令无效 | `200108` | **口令抄错了** —— 值得重听一次 |
+//   | 本场已结束 | `200118` | **不是口令的问题** —— 口令是对的，是直播散了 |
+//   | 未分类 | 别的 | 上游说了个我们没见过的码，去看原始码 |
+//
+// ⚠ 「本场已结束」与「口令无效」**必须分开**：前者的口语说法是
+//   「这条口令本场已经结束了」，而如果把它归进"无效口令"，
+//   用户会去重新抄一遍口令 —— 而口令本来就是对的（错的才回 `200108`）。
+//
+// ⚠ 「未分类」也必须单独一栏：它是"上游加了个新码"，
+//   与"口令错"的排查方向**完全不同**；混进"口令无效"会触发一次
+//   **毫无意义**的重听（60 秒），而且把真正的原因藏起来。
+
+/** 一次领取的结论（四栏 + 进账）。 */
+export interface DrawReport {
+  /** 试了几条口令（一条都没发出去时是 0）。 */
+  attempted: number;
+  /** 真领到的条数。 */
+  succeeded: number;
+  /** **进账几朵** = ⑥ 的读数 − ① 的读数。
+   *
+   *  ⚠ 不是把各口令的 `flowerNum` 加起来 —— 相加会漏掉「首次参与惊喜奖」
+   *  进账的那几朵（它**不属于任何一个口令**），而那正是"总数对不上"最常见的来源。 */
+  gained: number;
+  balanceBefore: number | undefined;
+  balanceAfter: number | undefined;
+  /** 已领过的（`200112`）—— 不是失败。 */
+  alreadyDrawn: string[];
+  /** 口令无效的（`200108`）—— **这个才值得重听一次**。 */
+  invalid: string[];
+  /** 本场已结束的（`200118`）—— 口令是对的，别让人去重抄。 */
+  expired: string[];
+  /** 上游回了别的码的 —— 单独一栏，排查方向与上面两栏都不同。 */
+  other: string[];
+  /** 解不出来的（响应形状变了）。 */
+  unparsable: string[];
+  /** 一句话结论（界面上第一行显示的就是它）。 */
+  line: string;
+}
+
+/** 把一轮的状态收成结论。**纯函数**（同一份状态永远给同一份结论）。 */
+export function drawReport(st: DrawState | null): DrawReport | null {
+  if (st === null) return null;
+  const of = (k: DrawKind): string[] => st.results.filter((r) => r.kind === k).map((r) => r.code);
+  const succeeded = st.results.filter((r) => r.kind === 'succeeded').length;
+  const gained =
+    st.balanceBefore === undefined || st.balanceAfter === undefined
+      ? 0
+      : st.balanceAfter - st.balanceBefore;
+
+  const parts: string[] = [];
+  if (st.results.length === 0) parts.push('还没发出口令');
+  else parts.push(`${st.results.length} 条口令领到 ${succeeded} 条`);
+  if (st.balanceBefore !== undefined && st.balanceAfter !== undefined) {
+    parts.push(`进账 ${gained} 朵（${st.balanceBefore} → ${st.balanceAfter}）`);
+  }
+  const expired = of('kouling-expired');
+  if (expired.length > 0) {
+    // ⚠ 这句话必须说"不是口令的问题" —— 否则用户会去重抄一遍
+    parts.push(`${expired.length} 条口令认识但本场已经结束了（不是口令抄错）`);
+  }
+  const invalid = of('invalid-kouling');
+  if (invalid.length > 0) parts.push(`${invalid.length} 条口令无效`);
+  const other = [...of('other'), ...of('unparsable')];
+  if (other.length > 0) parts.push(`${other.length} 条回了没见过的结果`);
+
+  return {
+    attempted: st.results.length,
+    succeeded,
+    gained,
+    balanceBefore: st.balanceBefore,
+    balanceAfter: st.balanceAfter,
+    alreadyDrawn: of('already-drawn'),
+    invalid,
+    expired,
+    other: of('other'),
+    unparsable: of('unparsable'),
+    line: parts.join(' · '),
+  };
+}

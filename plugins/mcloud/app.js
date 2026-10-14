@@ -311,7 +311,22 @@ function renderLive(l) {
   if (l.listen && l.listen.line) bits.push(l.listen.line);
   setText('live-sub', bits.join(' · ') || '没有日程 —— 等它探到下一场。');
 
-  setText('live-pool-line', pool.line || pool.note || '');
+  // 领小红花的结论（四栏 + 进账）。这是「直播」这一块第二重要的读数 ——
+  // 它回答「上一轮到底领到没有、没领到是为什么」。
+  const draw = l.draw || {};
+  const rep = draw.report;
+  if (rep) {
+    const bits2 = [];
+    if (rep.expired.length > 0) bits2.push(`${rep.expired.length} 条本场已结束（不是口令抄错）`);
+    if (rep.invalid.length > 0) bits2.push(`${rep.invalid.length} 条口令无效`);
+    if (rep.alreadyDrawn.length > 0) bits2.push(`${rep.alreadyDrawn.length} 条这个账号已经领过`);
+    if (rep.other.length + rep.unparsable.length > 0) {
+      bits2.push(`${rep.other.length + rep.unparsable.length} 条回了没见过的结果`);
+    }
+    setText('live-pool-line', rep.line + (bits2.length > 0 ? ' · ' + bits2.join(' · ') : ''));
+  } else {
+    setText('live-pool-line', draw.line || pool.line || pool.note || '');
+  }
   paintList(
     'live-codes',
     codes.map((c) => [
