@@ -53,7 +53,7 @@ import { runNotice } from '../mcloud/tasks/notice.ts';
 import { runPrizes } from '../mcloud/tasks/prizes.ts';
 import { runReceive } from '../mcloud/tasks/receive.ts';
 import { runRevival } from '../mcloud/tasks/revival.ts';
-import { runSign } from '../mcloud/tasks/sign.ts';
+import { STATE_STAGE as SIGN_STAGE, runSign } from '../mcloud/tasks/sign.ts';
 import { runExpansionStep, startExpansion } from '../mcloud/tasks/taskExpansion.ts';
 import type { TaskDeps, TaskOutcome } from '../mcloud/tasks/base.ts';
 import {
@@ -134,13 +134,46 @@ function runDaily(deps: TaskDeps): { ok: boolean; note: string; detail: string[]
     push({ name: '换票', ok: true, note: '票还新鲜，不用换', idle: true });
   }
 
-  // ② 签到族 —— 每一条都是「查状态，需要才提交」，各自自带判据
+  // ② 签到族。
+  //
+  // ⚠ 这一族里三条是**多段**的，必须在一次触发里 drain 到走完 —— 见 shared.ts
+  //   里 `drain` 那段表格。最要命的是「签到」：它是「问状态 → 提交 → 回查」，
+  //   而**回查那一句才是成败判据**。只调一次的话签到会被提交出去、回查永远不跑，
+  //   而提交返回的是 ok ⇒ 整趟被判成功 ⇒ 落「今天已完成」标记 ⇒ 回查再也不发生。
+  //
+  // 判据从状态键读，不从返回值猜：`runSign` 提交完和回查完都是 ok。
+  const signPending = () => (store.getState(SIGN_STAGE) ?? '') === 'need-verify';
+  push(
+    (() => {
+      const r = drain(runSign, deps, {
+        label: '签到',
+        maxSteps: 4,
+        deadlineMs: 20_000,
+        startedAt: started,
+        more: signPending,
+      });
+      return { name: '签到', ok: r.ok, note: r.note, idle: r.idle };
+    })(),
+  );
+  // 这三条的「做完了」信号是 `skipped: true`（条件不成立时不发请求），
+  // 所以不给 `more` —— drain 认 skipped 就够
   for (const [name, fn] of [
-    ['签到', runSign],
     ['领取AI豆', runReceive],
+    ['备份好礼', runBackupGift],
+    ['开启通知领AI豆', runNotice],
+  ] as const) {
+    const r = drain(fn, deps, {
+      label: name,
+      maxSteps: 12,
+      deadlineMs: 40_000,
+      startedAt: started,
+    });
+    push({ name, ok: r.ok, note: r.note, idle: r.idle });
+  }
+  // 这两条是单发动作（各自只有一个状态键，没有多段）
+  for (const [name, fn] of [
     ['签到翻倍', runMultiple],
     ['复活卡', runRevival],
-    ['备份好礼', runBackupGift],
   ] as const) {
     push(once(name, fn, deps));
   }
@@ -174,10 +207,20 @@ function runDaily(deps: TaskDeps): { ok: boolean; note: string; detail: string[]
     push({ name: 'App 任务', ok: r.ok, note: r.note, idle: r.idle });
   }
 
-  // ⑤ 消息推送奖励（问状态 → 领，两步都在各自内部判据）+ 开启通知领AI豆
-  push(once('消息推送奖励（问状态）', runMsgPushStatus, deps));
-  push(once('消息推送奖励（领）', runMsgPushObtain, deps));
-  push(once('开启通知领AI豆', runNotice, deps));
+  // ⑤ 消息推送奖励：**两步**（问状态 → 领）。
+  //    两条都各自带判据，所以 drain 会让「没得领」的那条一次就停。
+  for (const [name, fn] of [
+    ['消息推送奖励（问状态）', runMsgPushStatus],
+    ['消息推送奖励（领）', runMsgPushObtain],
+  ] as const) {
+    const r = drain(fn, deps, {
+      label: name,
+      maxSteps: 6,
+      deadlineMs: 20_000,
+      startedAt: started,
+    });
+    push({ name, ok: r.ok, note: r.note, idle: r.idle });
+  }
 
   // ⑥ 凭据续期（每天判一次，离过期还远时一个请求都不发）
   push(once('凭据续期', (d) => runAuthRefresh(d), deps));
