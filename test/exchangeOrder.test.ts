@@ -148,7 +148,7 @@ test('⚠ **总方针**：余额看着不够 ⇒ **照样发**（那是估算，
   assert.equal(st.step, 'warm-1');
 });
 
-test('⚠ **总方针**：滑块解不出来 ⇒ 用 `puzzleOffset: null` **照样发**', () => {
+test('⚠ 滑块解不出来 ⇒ **不发**（这一枪发出去是无效的，不是"少一次机会"）', () => {
   const store = mkStore();
   const { transport, sent } = upstream({
     exchangeList: LIST_HIT,
@@ -160,13 +160,11 @@ test('⚠ **总方针**：滑块解不出来 ⇒ 用 `puzzleOffset: null` **照�
   startOrder(deps(store, transport), '钻石会员季卡');
   for (let i = 0; i < 4; i += 1) runOrderStep(deps(store, transport)); // 清单/余额/预热1/预热2
   const out = runOrderStep(deps(store, transport)); // 取题 → 解不出
-  assert.equal(out.ok, true, out.note);
-  assert.match(out.note, /puzzleOffset: null/);
-  // 下一步**真的发**，且带的是 null（"我不知道"），不是编出来的数字
-  const o = runOrderStep(deps(store, transport));
-  assert.equal(o.ok, true, o.note);
-  const body = JSON.parse(sent.filter((r) => r.url.includes('exchangeV3'))[0]!.body!) as Record<string, unknown>;
-  assert.equal(body.puzzleOffset, null, '解不出来时发的是 null，不是 0 —— 0 是编出来的数');
+  assert.equal(out.ok, false, out.note);
+  assert.match(out.note, /不发下单那一枪/);
+  assert.match(out.note, /不可能成功|白耗/);
+  assert.equal(sent.filter((r) => r.url.includes('exchangeV3')).length, 0, 'exchangeV3 一个字都不许发');
+  assert.equal(sent.length, 5, '清单/余额/预热×2/取题 —— 就到取题为止');
 });
 
 test('⚠ 没有 deviceId ⇒ 停在下单前（不回 615 让上游说"活动太火爆"）', () => {
@@ -318,8 +316,9 @@ test('⚠ 余额字段是 `total`（真机实测；写成 `point` 的现象是"�
 });
 
 
-test('**总方针**下的判据：**每一档否定都照样发**，但话要说清楚', () => {
-  // 用户定的方向：不发的代价是"少一次机会"，发了被拒只是失败响应（不扣豆）
+test('判据那一层：**每一档否定都照样发**，但话要说清楚（与滑块不同）', () => {
+  // 判据是本地估算，**发出去可能成功**（放不放行由上游说了算）⇒ 倾向于发。
+  // 滑块不是这一类：offset 错了那一枪**不可能成功** ⇒ 不发。
   for (const [limit, word] of [[1, '明日'], [2, '已兑'], [4, '已兑'], [9, '判不了'], [undefined, '判不了']] as const) {
     const store = mkStore();
     const { transport, sent } = upstream({
