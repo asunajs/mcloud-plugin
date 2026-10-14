@@ -260,6 +260,49 @@ export const MAX_WAIT_MS = 61 * 60_000;
  *  `npm test` 直接挂住 —— 因为 `Date.now()` 是真时钟。） */
 export const MAX_SPIN_MS = 30_000;
 
+// ══════════════════ 多账号：状态快照 / 恢复 ══════════════════
+//
+// # 为什么需要它
+//
+// 整条链的状态是**一整块** blob（`STATE_STEP` 里那个 JSON）。多账号要
+// **两阶段**跑：先把每个账号都推到"取完题、只差下单"，再等到整点依次发单。
+// 而两阶段之间必须把每个账号的状态**分别存下来** —— 否则第二个账号的
+// `startOrder` 会把第一个账号的进度覆盖掉。
+//
+// 比"给每个状态键加账号后缀"简单得多，而且不用改链上的任何一行。
+
+/** 一条链的状态快照。**只含链自己那两块**（计划与基准是别的键）。 */
+export interface OrderSnapshot {
+  step: string | null;
+  base: string | null;
+}
+
+export function snapshotOrder(store: Pick<Store, 'getState'>): OrderSnapshot {
+  return {
+    step: store.getState(STATE_STEP),
+    base: store.getState(STATE_BASE),
+  };
+}
+
+export function restoreOrder(store: Store, snap: OrderSnapshot, nowIso: string): void {
+  if (snap.step === null) store.setState(STATE_STEP, '', nowIso);
+  else store.setState(STATE_STEP, snap.step, nowIso);
+  if (snap.base === null) store.setState(STATE_BASE, '', nowIso);
+  else store.setState(STATE_BASE, snap.base, nowIso);
+}
+
+/** 链现在走到哪一步了（没在跑就 `null`）。多账号驱动靠它决定"该不该停"。 */
+export function currentStep(store: Pick<Store, 'getState'>): Step | null {
+  const raw = store.getState(STATE_STEP);
+  if (raw === undefined || raw === null || raw === '') return null;
+  try {
+    const v = JSON.parse(raw) as { step?: unknown };
+    return typeof v.step === 'string' ? (v.step as Step) : null;
+  } catch {
+    return null;
+  }
+}
+
 export function clearOrder(deps: TaskDeps): void {
   deps.store.setState(STATE_STEP, '', deps.nowIso);
   deps.store.setState(STATE_PLAN, '', deps.nowIso);
