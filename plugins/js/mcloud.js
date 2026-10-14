@@ -127,17 +127,17 @@ function toBase64(b) {
 function fromBase64(s) {
   const clean = s.replace(/[^A-Za-z0-9+/]/g, "");
   const out = new Uint8Array(Math.floor(clean.length * 6 / 8));
-  let bits = 0;
+  let bits2 = 0;
   let acc = 0;
   let o = 0;
   for (let i = 0; i < clean.length; i += 1) {
     const v = B64.indexOf(clean[i]);
     if (v < 0) continue;
     acc = acc << 6 | v;
-    bits += 6;
-    if (bits >= 8) {
-      bits -= 8;
-      out[o] = acc >> bits & 255;
+    bits2 += 6;
+    if (bits2 >= 8) {
+      bits2 -= 8;
+      out[o] = acc >> bits2 & 255;
       o += 1;
     }
   }
@@ -162,8 +162,8 @@ function readU32LE(b, off) {
   return (b[off + 3] << 24 | b[off + 2] << 16 | b[off + 1] << 8 | b[off]) >>> 0;
 }
 function lengthBits(bytes) {
-  const bits = bytes * 8;
-  return { hi: Math.floor(bits / 4294967296) >>> 0, lo: bits >>> 0 };
+  const bits2 = bytes * 8;
+  return { hi: Math.floor(bits2 / 4294967296) >>> 0, lo: bits2 >>> 0 };
 }
 
 // src/crypto/md5.ts
@@ -1093,11 +1093,11 @@ function runCloudSnapshot(deps) {
       const list = resultArray(env);
       const entries = list.map((x) => {
         const o = typeof x === "object" && x !== null ? x : {};
-        const num = (v) => typeof v === "number" ? v : void 0;
+        const num2 = (v) => typeof v === "number" ? v : void 0;
         const str = (v) => typeof v === "string" ? v : void 0;
         return {
-          id: num(o.id),
-          value: num(o.aiDou ?? o.value ?? o.change),
+          id: num2(o.id),
+          value: num2(o.aiDou ?? o.value ?? o.change),
           reason: str(o.typeName ?? o.reason ?? o.type),
           insertTime: str(o.insertTime ?? o.time)
         };
@@ -2352,10 +2352,10 @@ function parseSpkiRsaPublicKey(b64) {
   if (outer.tag !== 48) throw new Error("RSA: SPKI 不是 SEQUENCE");
   const algo = derRead(der, outer.start);
   if (algo.tag !== 48) throw new Error("RSA: AlgorithmIdentifier 缺失");
-  const bits = derRead(der, algo.end);
-  if (bits.tag !== 3) throw new Error("RSA: BIT STRING 缺失");
-  if (der[bits.start] !== 0) throw new Error("RSA: BIT STRING 有未用位");
-  const inner = derRead(der, bits.start + 1);
+  const bits2 = derRead(der, algo.end);
+  if (bits2.tag !== 3) throw new Error("RSA: BIT STRING 缺失");
+  if (der[bits2.start] !== 0) throw new Error("RSA: BIT STRING 有未用位");
+  const inner = derRead(der, bits2.start + 1);
   if (inner.tag !== 48) throw new Error("RSA: 公钥不是 SEQUENCE");
   const intAt2 = (p) => {
     const it = derRead(der, p);
@@ -3324,8 +3324,8 @@ function runAuthRefresh(deps, force = false, leadDays = DEFAULT_LEAD_DAYS) {
   if (!parsed.ok || !parsed.result) return { ok: false, note: parsed.error ?? "续期失败" };
   const applied = applyRefreshResult(raw, parsed.result);
   if (!applied.ok) return { ok: false, note: applied.error };
-  const usable = assertUsable(applied.raw);
-  if (!usable.ok) return { ok: false, note: `拒绝落库：${usable.error}` };
+  const usable2 = assertUsable(applied.raw);
+  if (!usable2.ok) return { ok: false, note: `拒绝落库：${usable2.error}` };
   deps.store.setState(STATE_AUTH, applied.raw, deps.nowIso);
   deps.store.setState(
     STATE_LAST,
@@ -4792,6 +4792,866 @@ function groupView(store2) {
   };
 }
 
+// node_modules/fflate/esm/browser.js
+var u8 = Uint8Array;
+var u16 = Uint16Array;
+var i32 = Int32Array;
+var fleb = new u8([
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  1,
+  1,
+  1,
+  1,
+  2,
+  2,
+  2,
+  2,
+  3,
+  3,
+  3,
+  3,
+  4,
+  4,
+  4,
+  4,
+  5,
+  5,
+  5,
+  5,
+  0,
+  /* unused */
+  0,
+  0,
+  /* impossible */
+  0
+]);
+var fdeb = new u8([
+  0,
+  0,
+  0,
+  0,
+  1,
+  1,
+  2,
+  2,
+  3,
+  3,
+  4,
+  4,
+  5,
+  5,
+  6,
+  6,
+  7,
+  7,
+  8,
+  8,
+  9,
+  9,
+  10,
+  10,
+  11,
+  11,
+  12,
+  12,
+  13,
+  13,
+  /* unused */
+  0,
+  0
+]);
+var clim = new u8([16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15]);
+var freb = function(eb, start) {
+  var b = new u16(31);
+  for (var i = 0; i < 31; ++i) {
+    b[i] = start += 1 << eb[i - 1];
+  }
+  var r = new i32(b[30]);
+  for (var i = 1; i < 30; ++i) {
+    for (var j = b[i]; j < b[i + 1]; ++j) {
+      r[j] = j - b[i] << 5 | i;
+    }
+  }
+  return { b, r };
+};
+var _a = freb(fleb, 2);
+var fl = _a.b;
+var revfl = _a.r;
+fl[28] = 258, revfl[258] = 28;
+var _b = freb(fdeb, 0);
+var fd = _b.b;
+var revfd = _b.r;
+var rev = new u16(32768);
+for (i = 0; i < 32768; ++i) {
+  x = (i & 43690) >> 1 | (i & 21845) << 1;
+  x = (x & 52428) >> 2 | (x & 13107) << 2;
+  x = (x & 61680) >> 4 | (x & 3855) << 4;
+  rev[i] = ((x & 65280) >> 8 | (x & 255) << 8) >> 1;
+}
+var x;
+var i;
+var hMap = (function(cd, mb, r) {
+  var s = cd.length;
+  var i = 0;
+  var l = new u16(mb);
+  for (; i < s; ++i) {
+    if (cd[i])
+      ++l[cd[i] - 1];
+  }
+  var le = new u16(mb);
+  for (i = 1; i < mb; ++i) {
+    le[i] = le[i - 1] + l[i - 1] << 1;
+  }
+  var co;
+  if (r) {
+    co = new u16(1 << mb);
+    var rvb = 15 - mb;
+    for (i = 0; i < s; ++i) {
+      if (cd[i]) {
+        var sv = i << 4 | cd[i];
+        var r_1 = mb - cd[i];
+        var v = le[cd[i] - 1]++ << r_1;
+        for (var m = v | (1 << r_1) - 1; v <= m; ++v) {
+          co[rev[v] >> rvb] = sv;
+        }
+      }
+    }
+  } else {
+    co = new u16(s);
+    for (i = 0; i < s; ++i) {
+      if (cd[i]) {
+        co[i] = rev[le[cd[i] - 1]++] >> 15 - cd[i];
+      }
+    }
+  }
+  return co;
+});
+var flt = new u8(288);
+for (i = 0; i < 144; ++i)
+  flt[i] = 8;
+var i;
+for (i = 144; i < 256; ++i)
+  flt[i] = 9;
+var i;
+for (i = 256; i < 280; ++i)
+  flt[i] = 7;
+var i;
+for (i = 280; i < 288; ++i)
+  flt[i] = 8;
+var i;
+var fdt = new u8(32);
+for (i = 0; i < 32; ++i)
+  fdt[i] = 5;
+var i;
+var flrm = /* @__PURE__ */ hMap(flt, 9, 1);
+var fdrm = /* @__PURE__ */ hMap(fdt, 5, 1);
+var max = function(a) {
+  var m = a[0];
+  for (var i = 1; i < a.length; ++i) {
+    if (a[i] > m)
+      m = a[i];
+  }
+  return m;
+};
+var bits = function(d, p, m) {
+  var o = p / 8 | 0;
+  return (d[o] | d[o + 1] << 8) >> (p & 7) & m;
+};
+var bits16 = function(d, p) {
+  var o = p / 8 | 0;
+  return (d[o] | d[o + 1] << 8 | d[o + 2] << 16) >> (p & 7);
+};
+var shft = function(p) {
+  return (p + 7) / 8 | 0;
+};
+var slc = function(v, s, e) {
+  if (s == null || s < 0)
+    s = 0;
+  if (e == null || e > v.length)
+    e = v.length;
+  return new u8(v.subarray(s, e));
+};
+var ec = [
+  "unexpected EOF",
+  "invalid block type",
+  "invalid length/literal",
+  "invalid distance",
+  "stream finished",
+  "no stream handler",
+  ,
+  // determined by compression function
+  "no callback",
+  "invalid UTF-8 data",
+  "extra field too long",
+  "date not in range 1980-2099",
+  "filename too long",
+  "stream finishing",
+  "invalid zip data"
+  // determined by unknown compression method
+];
+var err = function(ind, msg, nt) {
+  var e = new Error(msg || ec[ind]);
+  e.code = ind;
+  if (Error.captureStackTrace)
+    Error.captureStackTrace(e, err);
+  if (!nt)
+    throw e;
+  return e;
+};
+var inflt = function(dat, st, buf, dict) {
+  var sl = dat.length, dl = dict ? dict.length : 0;
+  if (!sl || st.f && !st.l)
+    return buf || new u8(0);
+  var noBuf = !buf;
+  var resize = noBuf || st.i != 2;
+  var noSt = st.i;
+  if (noBuf)
+    buf = new u8(sl * 3);
+  var cbuf = function(l2) {
+    var bl = buf.length;
+    if (l2 > bl) {
+      var nbuf = new u8(Math.max(bl * 2, l2));
+      nbuf.set(buf);
+      buf = nbuf;
+    }
+  };
+  var final = st.f || 0, pos = st.p || 0, bt = st.b || 0, lm = st.l, dm = st.d, lbt = st.m, dbt = st.n;
+  var tbts = sl * 8;
+  do {
+    if (!lm) {
+      final = bits(dat, pos, 1);
+      var type = bits(dat, pos + 1, 3);
+      pos += 3;
+      if (!type) {
+        var s = shft(pos) + 4, l = dat[s - 4] | dat[s - 3] << 8, t = s + l;
+        if (t > sl) {
+          if (noSt)
+            err(0);
+          break;
+        }
+        if (resize)
+          cbuf(bt + l);
+        buf.set(dat.subarray(s, t), bt);
+        st.b = bt += l, st.p = pos = t * 8, st.f = final;
+        continue;
+      } else if (type == 1)
+        lm = flrm, dm = fdrm, lbt = 9, dbt = 5;
+      else if (type == 2) {
+        var hLit = bits(dat, pos, 31) + 257, hcLen = bits(dat, pos + 10, 15) + 4;
+        var tl = hLit + bits(dat, pos + 5, 31) + 1;
+        pos += 14;
+        var ldt = new u8(tl);
+        var clt = new u8(19);
+        for (var i = 0; i < hcLen; ++i) {
+          clt[clim[i]] = bits(dat, pos + i * 3, 7);
+        }
+        pos += hcLen * 3;
+        var clb = max(clt), clbmsk = (1 << clb) - 1;
+        var clm = hMap(clt, clb, 1);
+        for (var i = 0; i < tl; ) {
+          var r = clm[bits(dat, pos, clbmsk)];
+          pos += r & 15;
+          var s = r >> 4;
+          if (s < 16) {
+            ldt[i++] = s;
+          } else {
+            var c = 0, n = 0;
+            if (s == 16)
+              n = 3 + bits(dat, pos, 3), pos += 2, c = ldt[i - 1];
+            else if (s == 17)
+              n = 3 + bits(dat, pos, 7), pos += 3;
+            else if (s == 18)
+              n = 11 + bits(dat, pos, 127), pos += 7;
+            while (n--)
+              ldt[i++] = c;
+          }
+        }
+        var lt = ldt.subarray(0, hLit), dt = ldt.subarray(hLit);
+        lbt = max(lt);
+        dbt = max(dt);
+        lm = hMap(lt, lbt, 1);
+        dm = hMap(dt, dbt, 1);
+      } else
+        err(1);
+      if (pos > tbts) {
+        if (noSt)
+          err(0);
+        break;
+      }
+    }
+    if (resize)
+      cbuf(bt + 131072);
+    var lms = (1 << lbt) - 1, dms = (1 << dbt) - 1;
+    var lpos = pos;
+    for (; ; lpos = pos) {
+      var c = lm[bits16(dat, pos) & lms], sym = c >> 4;
+      pos += c & 15;
+      if (pos > tbts) {
+        if (noSt)
+          err(0);
+        break;
+      }
+      if (!c)
+        err(2);
+      if (sym < 256)
+        buf[bt++] = sym;
+      else if (sym == 256) {
+        lpos = pos, lm = null;
+        break;
+      } else {
+        var add = sym - 254;
+        if (sym > 264) {
+          var i = sym - 257, b = fleb[i];
+          add = bits(dat, pos, (1 << b) - 1) + fl[i];
+          pos += b;
+        }
+        var d = dm[bits16(dat, pos) & dms], dsym = d >> 4;
+        if (!d)
+          err(3);
+        pos += d & 15;
+        var dt = fd[dsym];
+        if (dsym > 3) {
+          var b = fdeb[dsym];
+          dt += bits16(dat, pos) & (1 << b) - 1, pos += b;
+        }
+        if (pos > tbts) {
+          if (noSt)
+            err(0);
+          break;
+        }
+        if (resize)
+          cbuf(bt + 131072);
+        var end = bt + add;
+        if (bt < dt) {
+          var shift = dl - dt, dend = Math.min(dt, end);
+          if (shift + bt < 0)
+            err(3);
+          for (; bt < dend; ++bt)
+            buf[bt] = dict[shift + bt];
+        }
+        for (; bt < end; ++bt)
+          buf[bt] = buf[bt - dt];
+      }
+    }
+    st.l = lm, st.p = lpos, st.b = bt, st.f = final;
+    if (lm)
+      final = 1, st.m = lbt, st.d = dm, st.n = dbt;
+  } while (!final);
+  return bt != buf.length && noBuf ? slc(buf, 0, bt) : buf.subarray(0, bt);
+};
+var et = /* @__PURE__ */ new u8(0);
+var zls = function(d, dict) {
+  if ((d[0] & 15) != 8 || d[0] >> 4 > 7 || (d[0] << 8 | d[1]) % 31)
+    err(6, "invalid zlib data");
+  if ((d[1] >> 5 & 1) == +!dict)
+    err(6, "invalid zlib data: " + (d[1] & 32 ? "need" : "unexpected") + " dictionary");
+  return (d[1] >> 3 & 4) + 2;
+};
+function unzlibSync(data, opts) {
+  return inflt(data.subarray(zls(data, opts && opts.dictionary), -4), { i: 2 }, opts && opts.out, opts && opts.dictionary);
+}
+var td = typeof TextDecoder != "undefined" && /* @__PURE__ */ new TextDecoder();
+var tds = 0;
+try {
+  td.decode(et, { stream: true });
+  tds = 1;
+} catch (e) {
+}
+
+// src/crypto/png.ts
+var SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10];
+function u32(b, o) {
+  return (b[o] << 24 | b[o + 1] << 16 | b[o + 2] << 8 | b[o + 3]) >>> 0;
+}
+function channelsOf(colorType) {
+  switch (colorType) {
+    case 0:
+      return 1;
+    // 灰度
+    case 2:
+      return 3;
+    // RGB
+    case 3:
+      return 1;
+    // 调色板索引
+    case 4:
+      return 2;
+    // 灰度 + alpha
+    case 6:
+      return 4;
+    // RGBA
+    default:
+      throw new Error(`PNG 色彩类型不认识：${colorType}`);
+  }
+}
+function unfilter(raw, w, h, bpp) {
+  const stride = w * bpp;
+  const out = new Uint8Array(stride * h);
+  let pos = 0;
+  for (let y = 0; y < h; y += 1) {
+    const ft = raw[pos];
+    pos += 1;
+    const rowStart = y * stride;
+    const prevStart = (y - 1) * stride;
+    for (let x = 0; x < stride; x += 1) {
+      const cur = raw[pos + x];
+      const a = x >= bpp ? out[rowStart + x - bpp] : 0;
+      const b = y > 0 ? out[prevStart + x] : 0;
+      const c = y > 0 && x >= bpp ? out[prevStart + x - bpp] : 0;
+      let v;
+      switch (ft) {
+        case 0:
+          v = cur;
+          break;
+        case 1:
+          v = cur + a;
+          break;
+        case 2:
+          v = cur + b;
+          break;
+        case 3:
+          v = cur + (a + b >> 1);
+          break;
+        case 4: {
+          const p = a + b - c;
+          const pa = Math.abs(p - a);
+          const pb = Math.abs(p - b);
+          const pc = Math.abs(p - c);
+          v = cur + (pa <= pb && pa <= pc ? a : pb <= pc ? b : c);
+          break;
+        }
+        default:
+          throw new Error(`PNG 滤波类型不认识：${ft}（第 ${y} 行）`);
+      }
+      out[rowStart + x] = v & 255;
+    }
+    pos += stride;
+  }
+  return out;
+}
+function decodeImage(bytes) {
+  for (let i = 0; i < 8; i += 1) {
+    if (bytes[i] !== SIGNATURE[i]) throw new Error("不是 PNG（签名不对）");
+  }
+  let w = 0;
+  let h = 0;
+  let bitDepth = 0;
+  let colorType = 0;
+  let interlace = 0;
+  let palette;
+  let transparency;
+  const idat = [];
+  let p = 8;
+  while (p + 8 <= bytes.length) {
+    const len = u32(bytes, p);
+    const type = String.fromCharCode(bytes[p + 4], bytes[p + 5], bytes[p + 6], bytes[p + 7]);
+    const body = bytes.subarray(p + 8, p + 8 + len);
+    if (type === "IHDR") {
+      w = u32(body, 0);
+      h = u32(body, 4);
+      bitDepth = body[8];
+      colorType = body[9];
+      interlace = body[12];
+    } else if (type === "PLTE") {
+      palette = body.slice();
+    } else if (type === "tRNS") {
+      transparency = body.slice();
+    } else if (type === "IDAT") {
+      idat.push(body);
+    } else if (type === "IEND") {
+      break;
+    }
+    p += 12 + len;
+  }
+  if (w <= 0 || h <= 0) throw new Error(`PNG 尺寸不合法：${w}x${h}`);
+  if (bitDepth !== 8) throw new Error(`PNG 位深只支持 8（这张是 ${bitDepth}）`);
+  if (interlace !== 0) throw new Error("PNG 是隔行的，不支持（硬解会得到错位的图）");
+  if (idat.length === 0) throw new Error("PNG 没有 IDAT");
+  const ch = channelsOf(colorType);
+  let total = 0;
+  for (const d of idat) total += d.length;
+  const merged = new Uint8Array(total);
+  let off = 0;
+  for (const d of idat) {
+    merged.set(d, off);
+    off += d.length;
+  }
+  const raw = unfilter(unzlibSync(merged), w, h, ch);
+  const n = w * h;
+  const rgba = new Uint8ClampedArray(n * 4);
+  if (colorType === 0) {
+    for (let i = 0; i < n; i += 1) {
+      const v = raw[i];
+      rgba[i * 4] = v;
+      rgba[i * 4 + 1] = v;
+      rgba[i * 4 + 2] = v;
+      rgba[i * 4 + 3] = 255;
+    }
+  } else if (colorType === 2) {
+    for (let i = 0; i < n; i += 1) {
+      rgba[i * 4] = raw[i * 3];
+      rgba[i * 4 + 1] = raw[i * 3 + 1];
+      rgba[i * 4 + 2] = raw[i * 3 + 2];
+      rgba[i * 4 + 3] = 255;
+    }
+  } else if (colorType === 3) {
+    if (!palette) throw new Error("PNG 是调色板图但没有 PLTE");
+    for (let i = 0; i < n; i += 1) {
+      const idx = raw[i];
+      rgba[i * 4] = palette[idx * 3] ?? 0;
+      rgba[i * 4 + 1] = palette[idx * 3 + 1] ?? 0;
+      rgba[i * 4 + 2] = palette[idx * 3 + 2] ?? 0;
+      rgba[i * 4 + 3] = transparency?.[idx] ?? 255;
+    }
+  } else if (colorType === 4) {
+    for (let i = 0; i < n; i += 1) {
+      const v = raw[i * 2];
+      rgba[i * 4] = v;
+      rgba[i * 4 + 1] = v;
+      rgba[i * 4 + 2] = v;
+      rgba[i * 4 + 3] = raw[i * 2 + 1];
+    }
+  } else {
+    rgba.set(raw.subarray(0, n * 4));
+  }
+  return { data: rgba, width: w, height: h };
+}
+
+// src/mcloud/slide.ts
+var ALPHA_OPAQUE_THRESHOLD = 128;
+function toGrayFast(data, i) {
+  return data[i] * 77 + data[i + 1] * 150 + data[i + 2] * 29 >> 8;
+}
+function matchSlide(bgData, puzzleData, bgW, bgH, pzW, pzH) {
+  const bgPixels = bgData.data;
+  const pzPixels = puzzleData.data;
+  const contourX = [];
+  const contourY = [];
+  const bgEdge = new Uint8Array(bgW * bgH);
+  for (let y = 1; y < bgH - 1; y += 1) {
+    for (let x = 1; x < bgW - 1; x += 1) {
+      const tl = toGrayFast(bgPixels, (y - 1) * bgW + (x - 1) << 2);
+      const tc = toGrayFast(bgPixels, (y - 1) * bgW + x << 2);
+      const tr = toGrayFast(bgPixels, (y - 1) * bgW + (x + 1) << 2);
+      const ml = toGrayFast(bgPixels, y * bgW + (x - 1) << 2);
+      const mr = toGrayFast(bgPixels, y * bgW + (x + 1) << 2);
+      const bl = toGrayFast(bgPixels, (y + 1) * bgW + (x - 1) << 2);
+      const bc = toGrayFast(bgPixels, (y + 1) * bgW + x << 2);
+      const br = toGrayFast(bgPixels, (y + 1) * bgW + (x + 1) << 2);
+      const gx = -tl + tr - 2 * ml + 2 * mr - bl + br;
+      const gy = -tl - 2 * tc - tr + bl + 2 * bc + br;
+      bgEdge[y * bgW + x] = Math.min(255, Math.abs(gx) + Math.abs(gy) >> 2);
+    }
+  }
+  for (let y = 1; y < pzH - 1; y += 1) {
+    for (let x = 1; x < pzW - 1; x += 1) {
+      const pi = y * pzW + x << 2;
+      if (pzPixels[pi + 3] <= ALPHA_OPAQUE_THRESHOLD) continue;
+      const above = pzPixels[((y - 1) * pzW + x) * 4 + 3] <= ALPHA_OPAQUE_THRESHOLD;
+      const below = pzPixels[((y + 1) * pzW + x) * 4 + 3] <= ALPHA_OPAQUE_THRESHOLD;
+      const left = pzPixels[(y * pzW + (x - 1)) * 4 + 3] <= ALPHA_OPAQUE_THRESHOLD;
+      const right = pzPixels[(y * pzW + (x + 1)) * 4 + 3] <= ALPHA_OPAQUE_THRESHOLD;
+      if (above || below || left || right) {
+        contourX.push(x);
+        contourY.push(y);
+      }
+    }
+  }
+  const numContours = contourX.length;
+  if (numContours === 0) return { offsetX: 0, confidence: 0 };
+  const maxOffset = bgW - pzW;
+  if (maxOffset < 0) return { offsetX: 0, confidence: 0 };
+  let bestOffset = 0;
+  let bestScore = 0;
+  let totalScore = 0;
+  for (let offset = 0; offset <= maxOffset; offset += 1) {
+    let sum = 0;
+    for (let c = 0; c < numContours; c += 1) {
+      const bx = offset + contourX[c];
+      if (bx < bgW) sum += bgEdge[contourY[c] * bgW + bx];
+    }
+    totalScore += sum;
+    if (sum > bestScore) {
+      bestScore = sum;
+      bestOffset = offset;
+    }
+  }
+  const avgScore = totalScore / (maxOffset + 1);
+  return { offsetX: bestOffset, confidence: avgScore > 0 ? bestScore / avgScore : 0 };
+}
+function calcPuzzleOffset(puzzleBase64, pictureBase64) {
+  const puzzle = decodeImage(fromBase64(puzzleBase64));
+  const picture = decodeImage(fromBase64(pictureBase64));
+  return matchSlide(picture, puzzle, picture.width, picture.height, puzzle.width, puzzle.height);
+}
+var MIN_CONFIDENCE = 1.5;
+function usable(r) {
+  return r.offsetX > 0 && r.confidence >= MIN_CONFIDENCE;
+}
+
+// src/mcloud/tasks/exchangeOrder.ts
+var STATE_STEP = "mcloud.exchange.order.step";
+var STATE_PLAN = "mcloud.exchange.order.plan";
+var STATE_BASE = "mcloud.exchange.order.baseline";
+var STATE_ROUND = "mcloud.exchange.order.round";
+var SLIDER_ROUNDS = 2;
+var EXCHANGE_CLIENT_VERSION = "12.6.0";
+var SLIDE_FORM_CONTENT_TYPE = "application/x-www-form-urlencoded;charset=UTF-8";
+var VISIT_LOG_KEYWORD_EXCHANGE = "newsignin_index_to_exchange";
+var VISIT_LOG_KEYWORD_EXCHANGE_TIMES = "newsignin_index_exchange_times";
+var VISIT_LOG_MARKET_NAME = "sign_in_3";
+var CODE_SLIDER_WRONG = 514;
+function num(v) {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
+  return void 0;
+}
+function digResult(text) {
+  try {
+    const v = JSON.parse(text);
+    const r = v.result;
+    return r && typeof r === "object" ? r : v;
+  } catch {
+    return {};
+  }
+}
+function loadState(deps) {
+  const raw = deps.store.getState(STATE_STEP);
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw);
+    return typeof v.step === "string" ? v : null;
+  } catch {
+    return null;
+  }
+}
+function saveState(deps, st) {
+  deps.store.setState(STATE_STEP, JSON.stringify(st), deps.nowIso);
+}
+function clearOrder(deps) {
+  deps.store.setState(STATE_STEP, "", deps.nowIso);
+  deps.store.setState(STATE_PLAN, "", deps.nowIso);
+  deps.store.setState(STATE_BASE, "", deps.nowIso);
+  deps.store.setState(STATE_ROUND, "", deps.nowIso);
+}
+function startOrder(deps, query) {
+  if (query.trim() === "") {
+    return { ok: false, note: "兑换要指定奖品（名字或 prizeId）—— 没有它无从下手" };
+  }
+  saveState(deps, { step: "list", round: 0 });
+  deps.store.setState(STATE_PLAN, query.trim(), deps.nowIso);
+  return { ok: true, note: `已排队兑换「${query.trim()}」—— 后面每次触发走一步（一次调用一个请求）` };
+}
+function pickPrize(prizes, query) {
+  const q = query.trim();
+  if (/^\d+$/.test(q)) return prizes.find((p) => String(p.prizeId) === q);
+  return prizes.find((p) => p.name === q);
+}
+var STEP_TEXT = {
+  list: "① 读清单",
+  balance: "② 读余额（成交后的对照基准）",
+  "warm-1": "③ 预热第一枪",
+  "warm-2": "③ 预热第二枪",
+  slide: "④ 取滑块题面并本地解",
+  order: "⑤ 下单",
+  verify: "⑥ 复查余额差",
+  done: "完成"
+};
+function runOrderStep(deps) {
+  const st = loadState(deps);
+  if (!st) return { ok: true, idle: true, note: "没有在排队的兑换（先用 startOrder 起一单）" };
+  const query = deps.store.getState(STATE_PLAN) ?? "";
+  const step = st.step;
+  const label = STEP_TEXT[step];
+  const done = (note, ok = true) => {
+    saveState(deps, { ...st, step: "done" });
+    return { ok, note };
+  };
+  if (step === "done") return { ok: true, idle: true, note: "这一单已经走完了（要再来一单得重新起）" };
+  if (step === "list") {
+    const res = callRawText(deps.transport, {
+      url: `${deps.baseUrl ?? "https://m.mcloud.139.com"}/ycloud/signin/page/exchangeList?client=app&clientVersion=${encodeURIComponent(EXCHANGE_CLIENT_VERSION)}`,
+      method: "GET",
+      headers: {},
+      body: void 0
+    });
+    if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? "未知失败"}` };
+    let prizes = [];
+    try {
+      const env = digResult(res.text);
+      const groups = env;
+      for (const k of Object.keys(groups)) {
+        const g = groups[k];
+        if (g && typeof g === "object") {
+          const list = g.prizeList ?? g.prizes;
+          if (Array.isArray(list)) prizes.push(...list);
+        }
+      }
+    } catch (e) {
+      return { ok: false, note: `${label}：清单解析不了（${e instanceof Error ? e.message : String(e)}）` };
+    }
+    const p = pickPrize(prizes, query);
+    if (!p) return done(`${label}：清单里没有「${query}」—— 这一单不做（名字要**精确**匹配）`, false);
+    const verdict = verdictOf(p);
+    if (verdict !== "ok" && p.limit !== LIMIT_AVAILABLE) {
+      return done(`${label}：${p.name} 现在不能兑（${VERDICT_TEXT[verdict]}），不发下一枪`, false);
+    }
+    const prizeId = num(p.prizeId);
+    if (prizeId === void 0) {
+      return done(`${label}：清单里那条没有可用的 prizeId ⇒ 这一单不做（不许编一个数字发出去）`, false);
+    }
+    const plan = { prizeId, prizeName: String(p.name ?? ""), price: num(p.price), query };
+    saveState(deps, { ...st, step: "balance", plan });
+    return { ok: true, note: `${label}：目标「${p.name}」（prizeId=${p.prizeId}）${p.price === void 0 ? "" : `，${p.price} 豆`} —— 下一步读余额` };
+  }
+  if (step === "balance") {
+    const res = callRawText(deps.transport, {
+      url: `${deps.baseUrl ?? "https://m.mcloud.139.com"}/ycloud/signin/page/infoV3?client=app`,
+      method: "GET",
+      headers: {},
+      body: void 0
+    });
+    if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? "未知失败"}` };
+    let balance;
+    try {
+      const env = digResult(res.text);
+      const v = env.point ?? env.totalPoint ?? env.balance;
+      if (typeof v === "number") balance = v;
+      else if (typeof v === "string" && /^\d+$/.test(v)) balance = Number(v);
+    } catch {
+    }
+    if (balance !== void 0) {
+      const price = st.plan?.price;
+      if (price !== void 0 && balance < price) {
+        return done(`${label}：余额 ${balance} < 价格 ${price} ⇒ 这一单不做`, false);
+      }
+      deps.store.setState(STATE_BASE, String(balance), deps.nowIso);
+    }
+    saveState(deps, { ...st, step: "warm-1" });
+    return { ok: true, note: `${label}：${balance ?? "没读到"}${balance === void 0 ? "（照样往下走，成交判据靠余额差）" : ""} —— 下一步预热` };
+  }
+  if (step === "warm-1" || step === "warm-2") {
+    const keyword = step === "warm-1" ? VISIT_LOG_KEYWORD_EXCHANGE : VISIT_LOG_KEYWORD_EXCHANGE_TIMES;
+    const res = callRawText(deps.transport, {
+      url: `${deps.baseUrl ?? "https://m.mcloud.139.com"}/ycloud/visitlog/journaling?module=uservisit&optkeyword=${encodeURIComponent(keyword)}&sourceid=1002&marketName=${encodeURIComponent(VISIT_LOG_MARKET_NAME)}`,
+      method: "POST",
+      headers: {},
+      body: ""
+    });
+    const warn2 = res.ok ? "" : `（埋点失败但不挡路：${res.error ?? "未知"}）`;
+    if (step === "warm-1") {
+      saveState(deps, { ...st, step: "warm-2" });
+      return { ok: true, note: `${label}：${keyword}${warn2} —— 下一步第二枪（中间那 500ms 由面板的下一次触发承担）` };
+    }
+    saveState(deps, { ...st, step: "slide" });
+    return { ok: true, note: `${label}：${keyword}${warn2} —— 下一步取滑块题面` };
+  }
+  if (step === "slide") {
+    const res = callRawText(deps.transport, {
+      url: `${deps.baseUrl ?? "https://m.mcloud.139.com"}/ycloud/auth-service/slide/getSlide`,
+      method: "POST",
+      headers: { "Content-Type": SLIDE_FORM_CONTENT_TYPE },
+      body: "{}"
+    });
+    if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? "未知失败"}` };
+    let puzzle;
+    let picture;
+    try {
+      const env = digResult(res.text);
+      const pz = env.puzzleImg ?? env.puzzle ?? env.puzzleImage;
+      const bg = env.pictureImg ?? env.picture ?? env.backgroundImg;
+      if (typeof pz === "string") puzzle = pz;
+      if (typeof bg === "string") picture = bg;
+    } catch (e) {
+      return { ok: false, note: `${label}：题面解析不了（${e instanceof Error ? e.message : String(e)}）` };
+    }
+    if (!puzzle || !picture) {
+      return { ok: false, note: `${label}：题面上没有两张图（回 ${res.text.slice(0, 120)}）` };
+    }
+    let solution;
+    try {
+      solution = calcPuzzleOffset(puzzle, picture);
+    } catch (e) {
+      return done(`${label}：图解码失败（${e instanceof Error ? e.message : String(e)}）⇒ **不发下单那一枪**`, false);
+    }
+    if (!usable(solution)) {
+      return done(`${label}：算不出 offset（${solution.offsetX}，置信度 ${solution.confidence.toFixed(2)}）⇒ **不发下单那一枪** —— 拿 0 去凑是拿真豆去赌`, false);
+    }
+    saveState(deps, { ...st, step: "order", offset: solution.offsetX });
+    return { ok: true, note: `${label}：offset=${solution.offsetX}（置信度 ${solution.confidence.toFixed(2)}）—— 下一步下单` };
+  }
+  if (step === "order") {
+    const plan = st.plan;
+    if (!plan) return done("内部状态缺计划，这一单作废", false);
+    const sess = loadSession(deps.store);
+    const deviceId = sess?.deviceId ?? "";
+    if (deviceId === "") {
+      return done('没有 deviceId（它要现换，见 smid 链）—— 不带它下单会回 615，文案却像"活动太火爆"', false);
+    }
+    if (st.offset === void 0) return done("内部状态缺 offset，这一单作废", false);
+    const body = `{"prizeId":${plan.prizeId},"client":"app","clientVersion":"${EXCHANGE_CLIENT_VERSION}","puzzleOffset":${st.offset},"smsCode":"","deviceId":"${deviceId}"}`;
+    const res = callRawText(deps.transport, {
+      url: `${deps.baseUrl ?? "https://m.mcloud.139.com"}/ycloud/signin/page/exchangeV3`,
+      method: "POST",
+      headers: { isdeviceid: "true", origin: "https://m.mcloud.139.com" },
+      body
+    });
+    if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? "未知失败"}` };
+    let code;
+    try {
+      const env = digResult(res.text);
+      const c = env.code;
+      code = typeof c === "number" ? c : typeof c === "string" && /^-?\d+$/.test(c) ? Number(c) : void 0;
+    } catch {
+    }
+    if (code === CODE_SLIDER_WRONG) {
+      const round = (st.round ?? 0) + 1;
+      if (round > SLIDER_ROUNDS) {
+        return done(`${label}：滑块连续 ${SLIDER_ROUNDS} 轮被判错 ⇒ 停手（上限 SLIDER_ROUNDS 轮）`, false);
+      }
+      saveState(deps, { ...st, step: "slide", round, offset: void 0 });
+      return { ok: true, note: `${label}：514（滑块算错）⇒ 重取一题再来一枪（第 ${round}/${SLIDER_ROUNDS} 轮），**没有重复下单**` };
+    }
+    saveState(deps, { ...st, step: "verify" });
+    return { ok: true, note: `${label}：上游回 ${JSON.stringify(env0(res.text)).slice(0, 140)} —— 下一步查余额差（**那句话不算数**）` };
+  }
+  if (step === "verify") {
+    const before = deps.store.getState(STATE_BASE);
+    const res = callRawText(deps.transport, {
+      url: `${deps.baseUrl ?? "https://m.mcloud.139.com"}/ycloud/signin/page/infoV3?client=app`,
+      method: "GET",
+      headers: {},
+      body: void 0
+    });
+    if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? "未知失败"}` };
+    let after;
+    try {
+      const env = digResult(res.text);
+      const v = env.point ?? env.totalPoint ?? env.balance;
+      if (typeof v === "number") after = v;
+    } catch {
+    }
+    if (before === "" || after === void 0) {
+      return done(`${label}：拿不到余额差（基准「${before || "缺"}」/ 现在「${after ?? "缺"}」）⇒ 成交与否**不知道**，如实报`, false);
+    }
+    const delta = Number(before) - after;
+    if (delta > 0) return done(`${label}：✅ 成交（余额 ${before} → ${after}，扣了 ${delta} 豆）`);
+    return done(`${label}：❌ 没成交（余额 ${before} → ${after}，没扣豆）—— 上游那句话不算数，只有余额差算数`, false);
+  }
+  return { ok: false, note: `不认识的步骤「${step}」` };
+}
+function env0(text) {
+  const r = digResult(text);
+  return Object.keys(r).length > 0 ? r : text.slice(0, 140);
+}
+
 // src/mcloud/routes.ts
 var PLUGIN = "mcloud";
 var JSON_HEADERS = { "content-type": "application/json; charset=utf-8" };
@@ -5012,6 +5872,28 @@ function mcloudRoutes(deps) {
         });
         deps.log(`换票：${r.note}`);
         return json(200, { ...r, exchange: loadExchange(deps.store) });
+      }
+    },
+    {
+      // 兑换下单 —— **不可逆**（真扣豆）。起单只是写字（**不发请求**），
+      // 后面每次 `step` 走一步、发一枪。见 tasks/exchangeOrder.ts 的枪序。
+      path: `${base}/exchange/order`,
+      method: "POST",
+      handler: (req) => {
+        const b = readBody(req);
+        const d = { store: deps.store, transport: deps.transport, nowIso: deps.now(), baseUrl: loadBaseUrl(deps.store) };
+        if (b.action === "clear") {
+          clearOrder(d);
+          return json(200, { ok: true, note: "这一单已清掉" });
+        }
+        if (b.action === "step") {
+          const r2 = runOrderStep(d);
+          deps.log(`兑换：${r2.note}`);
+          return json(200, r2);
+        }
+        const r = startOrder(d, typeof b.query === "string" ? b.query : "");
+        deps.log(`兑换起单：${r.note}`);
+        return json(200, { ...r, queue: deps.store.getState("mcloud.exchange.order.step") ?? "" });
       }
     },
     {
