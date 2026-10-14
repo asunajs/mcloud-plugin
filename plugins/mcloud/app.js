@@ -164,7 +164,39 @@ function paintList(id, rows, emptyText) {
 
 // ──────────────────────────────────────────────────────────── 七个区块
 
-function renderAccount(a) {
+/** 登录那一节。三种方式各自的状态由**路由**推，界面只负责显示与触发。 */
+function renderLogin(l) {
+  const qr = l.qr;
+  const sms = l.sms;
+
+  if (qr) {
+    $('pane-qr').hidden = false;
+    // 二维码是**插件这一侧**渲染好的 SVG（浏览器里没有二维码库）
+    $('qr-box').innerHTML = qr.svg || '';
+    const sec = Math.ceil(qr.expiresInMs / 1000);
+    setText('qr-note', qr.scanned ? `${qr.note} · 剩 ${sec} 秒` : `${qr.note} · 剩 ${sec} 秒`);
+  } else {
+    $('pane-qr').hidden = true;
+  }
+
+  if (sms) {
+    $('pane-sms').hidden = false;
+    const ph = $('sms-phone');
+    if (ph && document.activeElement !== ph) ph.value = sms.phone;
+    setText('sms-note', sms.sent ? `${sms.note} · 看短信，填 6 位码` : sms.note);
+    // 滑块图只在"要过滑块"时出现 —— 它是**异常路径**（首次发码被风控拦下）
+    $('slider-box').hidden = !sms.hasSlider;
+    if (sms.hasSlider && sms.slider) {
+      setText('slider-note', '上游要滑块：下面这张图已经解出缺口位置，点「发验证码」会带着答案发。');
+      $('slider-bg').src = `data:image/jpeg;base64,${sms.slider.backgroundB64}`;
+    }
+  } else {
+    $('pane-sms').hidden = true;
+    $('slider-box').hidden = true;
+  }
+}
+
+function renderAccount(a, login) {
   const chip = $('acct-chip');
   const list = a.accounts || [];
   const n = list.length;
@@ -204,7 +236,11 @@ function renderAccount(a) {
   if (dev && document.activeElement !== dev) dev.value = ses.deviceId || '';
 
   // 登录方式：没做的**说清楚**，而不是留一个点了没反应的按钮
-  setText('login-note', '扫码 / 短信 / 账密登录还没做（阶段 ②-3）。现在能用的两条路在下面。');
+  setText(
+    'login-note',
+    '扫码 / 短信 / 账密都能用。也可以直接贴一段已有的会话串（下面那三个小按钮）。',
+  );
+  renderLogin(login || { qr: null, sms: null });
 }
 
 function renderDaily(d) {
@@ -331,10 +367,13 @@ function renderSettings(s) {
   fill('cfg-listenSeconds', s.listenSeconds);
   fill('cfg-wsHeartbeat', s.wsHeartbeat);
   fill('cfg-listenRoom', s.listenRoom);
+  fill('cfg-loginBase', s.loginBase);
+  const plat = $('cfg-loginPlatform');
+  if (plat && document.activeElement !== plat && s.loginPlatform) plat.value = s.loginPlatform;
 }
 
 function render(r) {
-  renderAccount(r.account || {});
+  renderAccount(r.account || {}, r.login || {});
   renderDaily(r.daily || {});
   renderExchange(r.exchange || {});
   renderLive(r.live || {});
@@ -372,12 +411,154 @@ $('menu').addEventListener('click', (ev) => {
 
 $('refresh').addEventListener('click', (e) => act(e.currentTarget, load, '已刷新'));
 
-// 账号
-const notYet = (what) => () =>
-  toast(`${what}还没做（阶段 ②-3）。先用下面的「贴会话串导入」。`, true);
-$('login-qr').addEventListener('click', notYet('扫码登录'));
-$('login-sms').addEventListener('click', notYet('短信登录'));
-$('login-pwd').addEventListener('click', notYet('账密登录'));
+// 账号：三种登录
+//  ⚠ 推进的触发者是**用户点按钮**（状态机是用户本人：出码 → 用户扫 → 用户确认）。
+$('login-qr').addEventListener('click', (e) =>
+  act(
+    e.currentTarget,
+    async () => {
+      // 换方式要把另一种的会话清掉（否则两边同时"进行中"，界面不知道该显示哪个）
+      await api('/login/cancel', { method: 'POST', write: true });
+      const r = await api('/login/qr/start', { method: 'POST', write: true });
+      // 出码是纯本地拼接（不发上游），所以立刻把码画出来
+      $('pane-qr').hidden = false;
+      $('pane-sms').hidden = true;
+      $('pane-pwd').hidden = true;
+      $('qr-box').innerHTML = r.svg || '';
+      setText('qr-note', r.note);
+      return r;
+    },
+    '出码了 —— 用手机 App 扫',
+  ),
+);
+
+$('qr-poll').addEventListener('click', (e) =>
+  act(
+    e.currentTarget,
+    async () => {
+      const r = await api('/login/qr/poll', { method: 'POST', write: true });
+      setText('qr-note', r.note);
+      if (r.account) toast(`登录成功：${r.account.label}`);
+      // ⚠ 只有"停"才抛出去让 act 弹提示；没扫到不是错误
+      if (r.stop && !r.ok) throw new Error(r.note);
+      return r;
+    },
+    '看到了',
+  ),
+);
+
+$('qr-cancel').addEventListener('click', (e) =>
+  act(
+    e.currentTarget,
+    async () => {
+      await api('/login/cancel', { method: 'POST', write: true });
+      $('pane-qr').hidden = true;
+      $('qr-box').innerHTML = '';
+      return null;
+    },
+    '已取消',
+  ),
+);
+
+$('login-sms').addEventListener('click', async () => {
+  await api('/login/cancel', { method: 'POST', write: true }).catch(() => {});
+  $('pane-sms').hidden = false;
+  $('pane-qr').hidden = true;
+  $('pane-pwd').hidden = true;
+  $('sms-phone').focus();
+});
+
+$('sms-start').addEventListener('click', (e) =>
+  act(
+    e.currentTarget,
+    () =>
+      api('/login/sms/start', {
+        method: 'POST',
+        write: true,
+        body: { phone: $('sms-phone').value.trim() },
+      }),
+    '手机号记下了 —— 点「发验证码」',
+  ),
+);
+
+$('sms-send').addEventListener('click', (e) =>
+  act(
+    e.currentTarget,
+    async () => {
+      const r = await api('/login/sms/send', { method: 'POST', write: true });
+      if (r.sent) return r;
+      if (r.needSlider) {
+        // 被风控拦下 ⇒ 去取图。**缺口坐标是解出来的**，不用人眼量像素。
+        const p = await api('/login/sms/slider', { method: 'POST', write: true });
+        if (!p.ok) throw new Error(p.note || '取滑块失败');
+        $('slider-box').hidden = false;
+        setText('slider-note', p.note);
+        $('slider-bg').src = `data:image/jpeg;base64,${p.background}`;
+        return p;
+      }
+      throw new Error(r.note || '发码没成');
+    },
+    (r) => (r && r.needSlider ? '上游要滑块 —— 图已取到，再点一次「发验证码」' : '验证码已发出'),
+  ),
+);
+
+$('sms-submit').addEventListener('click', (e) =>
+  act(
+    e.currentTarget,
+    async () => {
+      const r = await api('/login/sms/submit', {
+        method: 'POST',
+        write: true,
+        body: { code: $('sms-code').value.trim() },
+      });
+      if (r.account) {
+        $('sms-code').value = '';
+        $('pane-sms').hidden = true;
+        toast(`登录成功：${r.account.label}`);
+        return r;
+      }
+      throw new Error(r.note || '登录没成');
+    },
+    '登录成功',
+  ),
+);
+
+$('login-pwd').addEventListener('click', async () => {
+  await api('/login/cancel', { method: 'POST', write: true }).catch(() => {});
+  $('pane-pwd').hidden = false;
+  $('pane-qr').hidden = true;
+  $('pane-sms').hidden = true;
+  $('pwd-phone').focus();
+});
+
+$('pwd-submit').addEventListener('click', (e) =>
+  act(
+    e.currentTarget,
+    async () => {
+      const r = await api('/login/pwd', {
+        method: 'POST',
+        write: true,
+        body: { phone: $('pwd-phone').value.trim(), password: $('pwd-pass').value },
+      });
+      if (r.account) {
+        $('pwd-pass').value = '';
+        $('pane-pwd').hidden = true;
+        toast(`登录成功：${r.account.label}`);
+        return r;
+      }
+      throw new Error(r.note || '登录没成');
+    },
+    '登录成功',
+  ),
+);
+
+$('device-reset').addEventListener('click', (e) =>
+  act(
+    e.currentTarget,
+    () => api('/login/device/reset', { method: 'POST', write: true }),
+    (r) => r.note,
+  ),
+);
 
 $('paste-open').addEventListener('click', () => {
   $('pane-paste').hidden = !$('pane-paste').hidden;
@@ -518,6 +699,8 @@ $('cfg-save').addEventListener('click', (e) =>
           listenSeconds: Number($('cfg-listenSeconds').value) || 0,
           wsHeartbeat: $('cfg-wsHeartbeat').value.trim(),
           listenRoom: Number($('cfg-listenRoom').value) || 0,
+          loginBase: $('cfg-loginBase').value.trim(),
+          loginPlatform: $('cfg-loginPlatform').value,
         },
       }),
     '设置已保存',
