@@ -219,15 +219,30 @@ export function runExchangeStep(deps: TaskDeps): { ok: boolean; note: string; do
   };
   deps.store.setState(STATE_JWT, JSON.stringify(rec), deps.nowIso);
 
-  // 顺手补进**既有会话**（如果有）：这样已经配置好 cookie 的人什么都不用改，
-  // 所有任务立刻用上这张新票
+  // 写进**会话** —— 这是任务读票的唯一入口（`loadSession`）。
+  //
+  // ⚠ 没有会话时**要新建一个**，不能只写 STAT_JWT 那格。
+  // 这一条差点漏掉：原先只在"已有会话"时合并，于是"只贴了原生凭据、没贴 cookie"
+  // 的人换票成功、却依然被判未登录 —— 而这**正是这个功能的目标场景**
+  // （不用手抄 cookie/jwt，只给一份原生凭据）。
+  // `cookie` 留空是合法的：H5 那一族本来就不发 cookie（见 store/types.ts 的 loadSession）。
   const sess = loadSession(deps.store);
-  if (sess) saveSession(deps.store, { ...sess, jwt: p.value.jwt }, deps.nowIso);
+  saveSession(
+    deps.store,
+    {
+      cookie: sess?.cookie ?? '',
+      jwt: p.value.jwt,
+      deviceId: sess?.deviceId,
+      userAgent: sess?.userAgent,
+      savedAt: '',
+    },
+    deps.nowIso,
+  );
 
   return finish(
     st,
     true,
-    `③ 换到 jwttoken（${p.value.jwt.length} 字符${p.value.mobile ? `，账号 ${maskMobile(p.value.mobile)}` : ''}）` +
+    `③ 换到 jwttoken（${p.value.jwt.length} 字符${p.value.mobile ? `，回显 ${maskMobile(p.value.mobile)}` : ''}）` +
       `—— 约 ${Math.round(JWT_TTL_MS / 60000)} 分钟后该续`,
   );
 }
@@ -270,8 +285,14 @@ export function needExchange(store: Pick<Store, 'getState'>, nowMs: number): boo
   return !Number.isFinite(at) || nowMs - at > RETRY_AFTER_MS;
 }
 
-/** 手机号只留前 3 后 4 —— 它是"确认签的是哪个账号"的回显，不是凭据，
- *  但也没必要把整串放进界面与日志。 */
+/** 回显只留前 3 后 4 —— 它不是凭据，但也没必要整串进界面与日志。
+ *
+ *  ⚠⚠ 名字里的 `mobile` 是**上游字段名**（`result.mobile`），不代表它一定是手机号。
+ *  2026-10-14 真机实测：换出来的那个值是 `bpH…7ws=` 这个形状（24 字符、base64 味），
+ *  **不是号码**。所以界面上的文案写的是"回显"，不是"手机号"——
+ *  写"手机号"会让人拿它去核对账号，然后发现对不上。
+ *  字段里到底装什么**没有样本**（只见过这一种值），所以这里只做"截断展示"，
+ *  不对它的语义做任何假设。 */
 export function maskMobile(m: string): string {
   return m.length >= 7 ? `${m.slice(0, 3)}****${m.slice(-4)}` : '***';
 }

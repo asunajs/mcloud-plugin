@@ -135,6 +135,20 @@ test('换到的票顺手补进**既有会话**（已配好 cookie 的人什么�
   assert.equal(loadSession(store)!.cookie, 'c=1', 'cookie 不是这条链管的');
 });
 
+test('⚠ 没有会话时要**新建**一个 —— 只贴原生凭据的人也必须能用', () => {
+  const store = memStore();
+  store.ensureSchema();
+  startExchange(store, AUTH, NOW);
+  const { transport } = fakeUpstream();
+  drive(store, transport);
+  // 这一条差点漏掉：只写 `STATE_JWT` 的话，任务读票走的是 `loadSession`，
+  // 于是"换票成功却依然未登录" —— 而这正是这个功能的目标场景
+  const sess = loadSession(store);
+  assert.ok(sess, '换到票就该有一份会话');
+  assert.equal(sess.jwt, 'JWT-1');
+  assert.equal(sess.cookie, '', 'cookie 留空是合法的');
+});
+
 test('只有票、没有 cookie 也算一份会话（H5 那族本来就不发 cookie）', () => {
   const store = memStore();
   store.ensureSchema();

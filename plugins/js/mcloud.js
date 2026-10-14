@@ -2451,11 +2451,21 @@ function runExchangeStep(deps) {
   };
   deps.store.setState(STATE_JWT, JSON.stringify(rec), deps.nowIso);
   const sess = loadSession(deps.store);
-  if (sess) saveSession(deps.store, { ...sess, jwt: p.value.jwt }, deps.nowIso);
+  saveSession(
+    deps.store,
+    {
+      cookie: sess?.cookie ?? "",
+      jwt: p.value.jwt,
+      deviceId: sess?.deviceId,
+      userAgent: sess?.userAgent,
+      savedAt: ""
+    },
+    deps.nowIso
+  );
   return finish2(
     st,
     true,
-    `③ 换到 jwttoken（${p.value.jwt.length} 字符${p.value.mobile ? `，账号 ${maskMobile(p.value.mobile)}` : ""}）—— 约 ${Math.round(JWT_TTL_MS / 6e4)} 分钟后该续`
+    `③ 换到 jwttoken（${p.value.jwt.length} 字符${p.value.mobile ? `，回显 ${maskMobile(p.value.mobile)}` : ""}）—— 约 ${Math.round(JWT_TTL_MS / 6e4)} 分钟后该续`
   );
 }
 function failStep(deps, st, note) {
@@ -3101,8 +3111,9 @@ function mcloudRoutes(deps) {
             present: true,
             at: jwt.at,
             fresh: jwtFresh(deps.store, Date.now()),
-            // 脱敏放**响应边界**（存储里留真值）：手机号不是凭据，
-            // 但也没必要整串进界面与日志 —— 与凭据的处理同一套纪律
+            // 脱敏放**响应边界**（存储里留真值）：回显值不是凭据，
+            // 但也没必要整串进界面与日志 —— 与凭据的处理同一套纪律。
+            // ⚠ 上游字段叫 `mobile`，但真机上它不是手机号（见 maskMobile）
             mobile: jwt.mobile ? maskMobile(jwt.mobile) : null,
             ttlMinutes: Math.round(JWT_TTL_MS / 6e4)
           } : { present: false },

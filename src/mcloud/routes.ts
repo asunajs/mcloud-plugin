@@ -284,8 +284,9 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
                 present: true,
                 at: jwt.at,
                 fresh: jwtFresh(deps.store, Date.now()),
-                // 脱敏放**响应边界**（存储里留真值）：手机号不是凭据，
-                // 但也没必要整串进界面与日志 —— 与凭据的处理同一套纪律
+                // 脱敏放**响应边界**（存储里留真值）：回显值不是凭据，
+                // 但也没必要整串进界面与日志 —— 与凭据的处理同一套纪律。
+                // ⚠ 上游字段叫 `mobile`，但真机上它不是手机号（见 maskMobile）
                 mobile: jwt.mobile ? maskMobile(jwt.mobile) : null,
                 ttlMinutes: Math.round(JWT_TTL_MS / 60000),
               }
