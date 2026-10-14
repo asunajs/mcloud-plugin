@@ -1401,6 +1401,26 @@ function runMsgPushObtain(deps) {
 // src/mcloud/accounts.ts
 var STATE_ACCOUNTS = "mcloud.accounts";
 var STATE_CURRENT_ACCOUNT = "mcloud.account.current";
+function maskAuth(raw) {
+  const phone = phoneOf(raw);
+  const len = raw.length;
+  if (phone !== void 0) return `${phone.slice(0, 1)}****${phone.slice(-4)} · ${len} 字符`;
+  return `（认不出手机号）· ${len} 字符`;
+}
+function phoneOf(raw) {
+  const m = /1\d{10}/.exec(raw);
+  return m === null ? void 0 : m[0];
+}
+function idOf(raw) {
+  const phone = phoneOf(raw);
+  if (phone !== void 0) return phone;
+  let h = 2166136261;
+  for (let i = 0; i < raw.length; i++) {
+    h ^= raw.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return `anon-${(h >>> 0).toString(36)}`;
+}
 function loadAccounts(store2) {
   const raw = store2.getState(STATE_ACCOUNTS);
   if (raw === null || raw === void 0 || raw.trim() === "") return [];
@@ -1424,6 +1444,35 @@ function loadAccounts(store2) {
     });
   }
   return out;
+}
+function saveAccounts(store2, list, nowIso) {
+  store2.setState(STATE_ACCOUNTS, JSON.stringify(list), nowIso);
+}
+function upsertAccount(store2, auth, nowIso, label) {
+  const list = loadAccounts(store2);
+  const id = idOf(auth);
+  const idx = list.findIndex((a) => a.id === id);
+  const account = {
+    id,
+    label: label !== void 0 && label !== "" ? label : phoneOf(auth) ?? `账号 ${list.length + 1}`,
+    auth,
+    addedAt: idx >= 0 ? list[idx].addedAt : nowIso
+  };
+  if (idx >= 0) list[idx] = account;
+  else list.push(account);
+  saveAccounts(store2, list, nowIso);
+  return { list, account, created: idx < 0 };
+}
+function removeAccount(store2, id, nowIso) {
+  const list = loadAccounts(store2).filter((a) => a.id !== id);
+  saveAccounts(store2, list, nowIso);
+  if (store2.getState(STATE_CURRENT_ACCOUNT) === id) store2.setState(STATE_CURRENT_ACCOUNT, "", nowIso);
+  return list;
+}
+function selectAccount(store2, id, nowIso) {
+  if (id !== "" && !loadAccounts(store2).some((a) => a.id === id)) return false;
+  store2.setState(STATE_CURRENT_ACCOUNT, id, nowIso);
+  return true;
 }
 function currentAccount(store2) {
   const id = (store2.getState(STATE_CURRENT_ACCOUNT) ?? "").trim();
@@ -8559,6 +8608,19 @@ function env0(text) {
 // src/mcloud/routes.ts
 var PLUGIN = "mcloud";
 var JSON_HEADERS = { "content-type": "application/json; charset=utf-8" };
+function accountsView(store2) {
+  const cur = currentAccount(store2);
+  return {
+    current: cur?.id ?? "",
+    accounts: loadAccounts(store2).map((a) => ({
+      id: a.id,
+      label: a.label,
+      masked: maskAuth(a.auth),
+      current: cur?.id === a.id,
+      addedAt: a.addedAt
+    }))
+  };
+}
 var json = (status, obj) => ({
   status,
   headers: JSON_HEADERS,
@@ -8929,6 +8991,44 @@ function mcloudRoutes(deps) {
         });
         deps.log(`小红花探针：${r.note}`);
         return json(200, r);
+      }
+    },
+    {
+      // 账号列表（多账号第 2 片，见 accounts.ts 模块头）。
+      //
+      // ⚠ 只回**掩码**：凭据本身不许出这个口子（它已经能从别处拿，但少一个出口就少一处泄露面）。
+      path: `${base}/accounts`,
+      method: "GET",
+      handler: () => json(200, { ...accountsView(deps.store) })
+    },
+    {
+      path: `${base}/accounts`,
+      method: "POST",
+      handler: (req) => {
+        const body = readBody(req);
+        const op = typeof body.op === "string" ? body.op : "";
+        const now = deps.now();
+        if (op === "add") {
+          const auth = typeof body.auth === "string" ? body.auth.trim() : "";
+          if (auth === "") return json(400, { error: "要传 auth（原生凭据那一串）" });
+          const r = upsertAccount(deps.store, auth, now);
+          deps.log(`账号：${r.created ? "添加" : "更新"} ${r.account.label}`);
+          if (loadAccounts(deps.store).length === 1) selectAccount(deps.store, r.account.id, now);
+          return json(200, { ...accountsView(deps.store), note: `${r.created ? "已添加" : "已更新"} ${r.account.label}` });
+        }
+        if (op === "select") {
+          const id = typeof body.id === "string" ? body.id : "";
+          if (!selectAccount(deps.store, id, now)) return json(400, { error: `列表里没有这个账号：${id}` });
+          deps.log(id === "" ? '账号：清掉"当前"（回到单账号那格）' : `账号：当前切到 ${id}`);
+          return json(200, { ...accountsView(deps.store), note: id === "" ? "已清掉当前账号" : `当前：${id}` });
+        }
+        if (op === "remove") {
+          const id = typeof body.id === "string" ? body.id : "";
+          removeAccount(deps.store, id, now);
+          deps.log(`账号：删掉 ${id}`);
+          return json(200, { ...accountsView(deps.store), note: `已删掉 ${id}` });
+        }
+        return json(400, { error: '需要 {"op":"add|select|remove", …}' });
       }
     },
     {
