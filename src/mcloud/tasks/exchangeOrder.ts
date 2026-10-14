@@ -411,7 +411,10 @@ export function runOrderStep(deps: TaskDeps): TaskOutcome {
     } catch {
       /* ignore */
     }
-    if (before === '' || after === undefined) {
+    // ⚠ 判"没基准"要用 **falsy**，不能只判 `''`：store 里没落过库时读出来是 **`null`**，
+    //   只判空串的话会拿 `Number(null) = 0` 去算差值 ⇒ 得出"没成交"这个**错的结论**
+    //   （明明只是没读到基准，却被报成"确定没成交"）。
+    if (!before || after === undefined) {
       return done(`${label}：拿不到余额差（基准「${before || '缺'}」/ 现在「${after ?? '缺'}」）⇒ 成交与否**不知道**，如实报`, false);
     }
     const delta = Number(before) - after;
