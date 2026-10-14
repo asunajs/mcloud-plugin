@@ -1435,6 +1435,11 @@ var SBOX = (() => {
   }
   return s;
 })();
+var INV_SBOX = (() => {
+  const inv = new Uint8Array(256);
+  for (let a = 0; a < 256; a += 1) inv[SBOX[a]] = a;
+  return inv;
+})();
 var AES_FIXED_IV = (() => {
   const out = new Uint8Array(16);
   for (let i = 0; i < 16; i += 1) out[i] = "0102030405060708".charCodeAt(i);

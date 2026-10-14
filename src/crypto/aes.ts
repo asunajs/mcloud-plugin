@@ -7,15 +7,21 @@
 //   aes_cbc_encrypt(k, IV, msg)                 // CBC + **PKCS7**
 //   hex::encode(ct)                             // ⚠ 输出 **hex**（DES 那边才是 base64）
 //
-// ⚠ 这一层**没有解密**：生产链路不需要（上报是单向的）。
-// mcloud 那边留了一份解密只是为了它的测试能证明"发出去的那一份里装的确实是特征"——
-// 我们这边的等价物是**对着 Node 的 openssl 对拍**（见 test/aes.test.ts）。
+// ⚠ 加密那半**生产链路才用**（smid 特征体上报，单向）。
+// 解密那半是**登录链路**要的，两条独立的用途：
+//
+//   · `decryptWithDynamicIv` —— 滑块缺口坐标（`data.puzzleLeft` 是
+//     `base64(IV ‖ AES-128-CBC/PKCS7 密文)`）。解出来就是答案，
+//     **不需要图像识别**，也不需要人眼量像素。
+//   · `aesEcbPkcs7DecryptHex` —— 登录成功响应里 `data` 的 `userInfo`。
+//     注意它是 **ECB 不是 CBC**（客户端 `decryptByAes` 就是 ECB）；
+//     模式用错的表现是"解出来是乱码"，而人往往把它当成"密钥不对"，白查半天。
 //
 // S 盒是**算出来的**，不是抄表：抄一张 256 字节的表，抄错一个字节的表现是
 // "某个明文分段解出来是乱码"，而上游只会说参数错误。算出来的那份对着 FIPS-197
 // 的已知向量验（同一套测试里）。
 
-import { toHex, utf8 } from './bytes.ts';
+import { fromBase64, fromHex, fromUtf8, toBase64, toHex, utf8 } from './bytes.ts';
 
 /** GF(2^8) 乘法（`aes` 素数 0x11b）。 */
 function gfMul(a: number, b: number): number {
@@ -55,6 +61,17 @@ const SBOX: Uint8Array = (() => {
     s[a] = (inv ^ rotl8(inv, 1) ^ rotl8(inv, 2) ^ rotl8(inv, 3) ^ rotl8(inv, 4) ^ 0x63) & 0xff;
   }
   return s;
+})();
+
+/** FIPS-197 **逆** S 盒：由正向 S 盒**求逆排列**得到，不抄第二张 256 字节的表。
+ *
+ *  抄表的风险与正向那张一样（抄错一个字节 ⇒ 某个分段解出来是乱码，
+ *  而上游只会说"参数错误"）。求逆是 O(256)，且"确实是逆"这件事
+ *  由 `INV_SBOX[SBOX[a]] === a` 这条断言钉住 —— 抄表钉不住。 */
+export const INV_SBOX: Uint8Array = (() => {
+  const inv = new Uint8Array(256);
+  for (let a = 0; a < 256; a += 1) inv[SBOX[a]!] = a;
+  return inv;
 })();
 
 /** 复刻 `key.substring(0, 16).padEnd(16, "\0")`。 */
@@ -145,6 +162,75 @@ export function aes128EncryptBlock(rk: Uint8Array, block: Uint8Array): Uint8Arra
   return s;
 }
 
+/** 单块解密（16 字节）。AES 的逆密码，与 [`aes128EncryptBlock`] 逐轮对称。
+ *
+ *  状态同样按**列主序**铺：`state[r][c] = in[r + 4c]`。 */
+export function aes128DecryptBlock(rk: Uint8Array, block: Uint8Array): Uint8Array {
+  if (block.length !== 16) throw new Error(`AES: 块必须是 16 字节（得到 ${block.length}）`);
+  const s = new Uint8Array(block);
+
+  const addRoundKey = (round: number): void => {
+    for (let i = 0; i < 16; i += 1) s[i] = s[i]! ^ rk[round * 16 + i]!;
+  };
+
+  const invSubBytes = (): void => {
+    for (let i = 0; i < 16; i += 1) s[i] = INV_SBOX[s[i]!]!;
+  };
+
+  // InvShiftRows：第 r 行循环**右**移 r 个（加密是左移）
+  const invShiftRows = (): void => {
+    for (let r = 1; r < 4; r += 1) {
+      const row = [s[r]!, s[r + 4]!, s[r + 8]!, s[r + 12]!];
+      for (let c = 0; c < 4; c += 1) s[r + 4 * c] = row[(c - r + 4) % 4]!;
+    }
+  };
+
+  // InvMixColumns：矩阵是 [[14,11,13,9],[9,14,11,13],[13,9,14,11],[11,13,9,14]]
+  const invMixColumns = (): void => {
+    for (let c = 0; c < 4; c += 1) {
+      const i = 4 * c;
+      const a0 = s[i]!;
+      const a1 = s[i + 1]!;
+      const a2 = s[i + 2]!;
+      const a3 = s[i + 3]!;
+      s[i] = gfMul(a0, 14) ^ gfMul(a1, 11) ^ gfMul(a2, 13) ^ gfMul(a3, 9);
+      s[i + 1] = gfMul(a0, 9) ^ gfMul(a1, 14) ^ gfMul(a2, 11) ^ gfMul(a3, 13);
+      s[i + 2] = gfMul(a0, 13) ^ gfMul(a1, 9) ^ gfMul(a2, 14) ^ gfMul(a3, 11);
+      s[i + 3] = gfMul(a0, 11) ^ gfMul(a1, 13) ^ gfMul(a2, 9) ^ gfMul(a3, 14);
+    }
+  };
+
+  addRoundKey(10);
+  for (let round = 9; round >= 1; round -= 1) {
+    invShiftRows();
+    invSubBytes();
+    addRoundKey(round);
+    invMixColumns();
+  }
+  invShiftRows();
+  invSubBytes();
+  addRoundKey(0);
+  return s;
+}
+
+/** PKCS7 去填充。**带校验**：最后那个字节必须是 1..16，且那一段必须全是它。
+ *
+ *  ⚠ 不校验的写法（"取最后一个字节当长度，砍掉就行"）在密钥错的时候
+ *  会静默返回一段截断的垃圾 —— 而调用方看到的是"解出来是乱码"，
+ *  于是去查密钥，实际上错的是模式或密钥，本来就该报错。
+ *  这里宁可报错：**错的填充几乎一定意味着密钥/模式不对**。 */
+export function pkcs7Unpad(data: Uint8Array): Uint8Array {
+  if (data.length === 0 || data.length % 16 !== 0) {
+    throw new Error(`AES: 密文长度不是 16 的整数倍（得到 ${data.length}）`);
+  }
+  const pad = data[data.length - 1]!;
+  if (pad < 1 || pad > 16) throw new Error(`AES: PKCS7 填充长度非法（${pad}）`);
+  for (let i = data.length - pad; i < data.length; i += 1) {
+    if (data[i] !== pad) throw new Error('AES: PKCS7 填充字节不一致（密钥或模式不对）');
+  }
+  return data.subarray(0, data.length - pad);
+}
+
 /** PKCS7 填充（**这是 AES 那条路的填充**；DES 那边是零填充，别抄混）。
  *
  *  ⚠ 明文长度正好是块长整数倍时，**仍然要补一整块**（值 = 块长）。
@@ -171,6 +257,71 @@ export function aes128CbcEncrypt(key: Uint8Array, iv: Uint8Array, msg: Uint8Arra
     out.set(prev, off);
   }
   return out;
+}
+
+/** CBC 解密（无去填充，调用方自己处理）。 */
+export function aes128CbcDecrypt(key: Uint8Array, iv: Uint8Array, ct: Uint8Array): Uint8Array {
+  if (iv.length !== 16) throw new Error('AES: IV 必须是 16 字节');
+  if (ct.length === 0 || ct.length % 16 !== 0) {
+    throw new Error(`AES: 密文必须是 16 的整数倍（得到 ${ct.length}）`);
+  }
+  const rk = aes128KeyExpansion(key);
+  const out = new Uint8Array(ct.length);
+  let prev: Uint8Array = new Uint8Array(iv);
+  for (let off = 0; off < ct.length; off += 16) {
+    const blk = ct.subarray(off, off + 16);
+    const plain = aes128DecryptBlock(rk, blk);
+    for (let i = 0; i < 16; i += 1) out[off + i] = plain[i]! ^ prev[i]!;
+    prev = new Uint8Array(blk); // ⚠ 用**密文**块做下一轮的链接，不是明文
+  }
+  return out;
+}
+
+/** ECB 解密（逐块、无链接）。ECB 是**上游协议规定的**形态，不是我们的选择。 */
+export function aes128EcbDecrypt(key: Uint8Array, ct: Uint8Array): Uint8Array {
+  if (ct.length === 0 || ct.length % 16 !== 0) {
+    throw new Error(`AES: 密文必须是 16 的整数倍（得到 ${ct.length}）`);
+  }
+  const rk = aes128KeyExpansion(key);
+  const out = new Uint8Array(ct.length);
+  for (let off = 0; off < ct.length; off += 16) {
+    out.set(aes128DecryptBlock(rk, ct.subarray(off, off + 16)), off);
+  }
+  return out;
+}
+
+/** 动态 IV 加密：输出 `base64(IV ‖ 密文)`。
+ *
+ *  IV 在**明文里带着**，所以解密方不需要事先知道它 —— 这是协议的选择，
+ *  不是"IV 复用"那种错（每次调用方给的 IV 是固定常量，见 PUZZLE_AES_IV）。 */
+export function encryptWithDynamicIv(key: Uint8Array, iv: Uint8Array, plaintext: string): string {
+  const ct = aes128CbcEncrypt(key, iv, pkcs7Pad(utf8(plaintext), 16));
+  const joined = new Uint8Array(16 + ct.length);
+  joined.set(iv);
+  joined.set(ct, 16);
+  return toBase64(joined);
+}
+
+/** 动态 IV 解密，输入为 `base64(IV ‖ 密文)`。
+ *
+ *  ⚠ `raw.length < 32` 直接判非法：至少 IV + 一个块，否则不可能是合法密文。
+ *  不判的话，短输入会走到 `subarray` 拿到空块，报的错就变成
+ *  "密文长度不是 16 的整数倍（得到 0）" —— 离真正的原因（输入根本不是密文）很远。 */
+export function decryptWithDynamicIv(key: Uint8Array, payloadB64: string): string {
+  const raw = fromBase64(payloadB64);
+  if (raw.length < 32) throw new Error('AES: 动态 IV 载荷太短（至少 IV + 一个块）');
+  const iv = raw.subarray(0, 16);
+  const ct = raw.subarray(16);
+  return fromUtf8(pkcs7Unpad(aes128CbcDecrypt(key, iv, ct)));
+}
+
+/** AES-128-ECB/PKCS7 解密，输入是 **hex 字符串**（不是 base64）。
+ *
+ *  ⚠ 与上面的 CBC 路径**模式不同**，不能互相替代 —— 用错了表现为
+ *  "解出来是乱码"，而调用方往往会把它当成"密钥不对"。 */
+export function aesEcbPkcs7DecryptHex(key: string, ciphertextHex: string): string {
+  const ct = fromHex(ciphertextHex.trim());
+  return fromUtf8(pkcs7Unpad(aes128EcbDecrypt(fitKey16(key), ct)));
 }
 
 /** 固定 IV —— 逐字照抄 `AES_FIXED_IV`（ASCII 的 `"0102030405060708"`）。 */
