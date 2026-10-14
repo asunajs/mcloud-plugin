@@ -3894,6 +3894,7 @@ function runNotice(deps) {
 // src/mcloud/tasks/appTaskMatrix.ts
 var STATE_GROUP_INDEX = "mcloud.apptaskmatrix.group_index";
 var STATE_LAST2 = "mcloud.apptaskmatrix.last";
+var MATRIX_MARKETS = ["sign_in_3", "newsign_139mail"];
 var MATRIX_GROUPS = [
   "new",
   "beiyong1",
@@ -3954,7 +3955,7 @@ function matrixKey(group) {
   return `mcloud.apptaskmatrix.g.${group}`;
 }
 function readMatrix(store2) {
-  return MATRIX_GROUPS.map((g) => {
+  return MATRIX_MARKETS.map((g) => {
     const raw = store2.getState(matrixKey(g));
     if (!raw) return null;
     try {
@@ -3983,38 +3984,40 @@ function summarize(items) {
 function runAppTaskMatrix(deps) {
   const raw = deps.store.getState(STATE_GROUP_INDEX);
   const parsed = raw === void 0 || raw === null ? 0 : Number(raw);
-  const idx = Number.isFinite(parsed) && parsed >= 0 && parsed < MATRIX_GROUPS.length ? parsed : 0;
-  const group = MATRIX_GROUPS[idx];
+  const idx = Number.isFinite(parsed) && parsed >= 0 && parsed < MATRIX_MARKETS.length ? parsed : 0;
+  const market = MATRIX_MARKETS[idx];
   const out = runTask(
     deps,
     {
       task: "app-task-matrix",
-      endpoint: "taskListV2",
+      endpoint: "taskListV3",
       method: "POST",
-      marketName: MARKET_NAME,
+      // ⚠ `activityid` 跟着**本次的 marketname** 走（mcloud 的 V3 构造器：先剥再补）
+      marketName: market,
       isDeviceId: false,
       stateKey: STATE_LAST2,
       // 实拍体：{"clientVersion":"12.6.0","group":<group>,"marketname":"sign_in_3"}
       // 体是**字符串**（与 receiveV3Body 同一约定）
-      body: JSON.stringify({ clientVersion: TASK_CLIENT_VERSION, group, marketname: MARKET_NAME })
+      // ⚠ V3：`group` 是**空串** = 一次拿整个市场（实拍 content-length 62 逐字节对出来的）
+      body: JSON.stringify({ marketname: market, clientVersion: TASK_CLIENT_VERSION, group: "" })
     },
     (env) => {
-      const items = parseMatrix(env.result, group);
+      const items = parseMatrix(env.result, market);
       const s = summarize(items);
-      deps.store.setState(STATE_GROUP_INDEX, String((idx + 1) % MATRIX_GROUPS.length), deps.nowIso);
+      deps.store.setState(STATE_GROUP_INDEX, String((idx + 1) % MATRIX_MARKETS.length), deps.nowIso);
       const reading = {
-        group,
+        group: market,
         at: deps.nowIso,
         ...s,
         items,
         groupState: env.groupState
       };
-      deps.store.setState(matrixKey(group), JSON.stringify(reading), deps.nowIso);
+      deps.store.setState(matrixKey(market), JSON.stringify(reading), deps.nowIso);
       const names = s.todoNames.length ? `（可做：${s.todoNames.join("、")}）` : "";
       return {
         ok: true,
-        note: `App 任务矩阵[${idx + 1}/${MATRIX_GROUPS.length} group=${group}]：已完成 ${s.done} 条、可做 ${s.todo} 条、不参与 ${s.skip} 条${names}`,
-        snapshot: { group, ...s, items: items.slice(0, 20) }
+        note: `App 任务矩阵[${idx + 1}/${MATRIX_MARKETS.length} market=${market}]：已完成 ${s.done} 条、可做 ${s.todo} 条、不参与 ${s.skip} 条${names}`,
+        snapshot: { group: market, ...s, items: items.slice(0, 20) }
       };
     }
   );
@@ -4064,6 +4067,18 @@ var SKIP_TASK_LIST = [
   1021,
   120
 ];
+var PORTAL_ENTRY_TASK_IDS = [1017, 604];
+var CLICK_ONLY_TASK_IDS = [
+  115,
+  431,
+  435,
+  1009,
+  1010,
+  1013,
+  1016,
+  447,
+  547
+];
 function beiyong1NameGate(name) {
   return name.includes("上传") && (name.includes("图") || name.includes("照"));
 }
@@ -4093,11 +4108,27 @@ function uploadShapeFor(item) {
 function shouldSkip(taskId) {
   return taskId !== void 0 && SKIP_TASK_LIST.includes(taskId);
 }
+function isClickOnly(taskId) {
+  return taskId !== void 0 && CLICK_ONLY_TASK_IDS.includes(taskId);
+}
+function needsPortalEntry(taskId) {
+  return taskId !== void 0 && PORTAL_ENTRY_TASK_IDS.includes(taskId);
+}
+function stepFor(item) {
+  if (shouldSkip(item.taskId)) return void 0;
+  const shape = uploadShapeFor(item);
+  if (shape) return { kind: "upload", shape };
+  if (isClickOnly(item.taskId)) return { kind: "clickOnly" };
+  if (needsPortalEntry(item.taskId)) return { kind: "portalEntry" };
+  return void 0;
+}
 
 // src/mcloud/tasks/appTask.ts
 var STATE_TASK = "mcloud.apptask.state";
-var CLICK_HOST = "https://caiyun.feixin.10086.cn:7071";
+var CLICK_HOST = "https://m.mcloud.139.com";
 var CLICK_PATH = "/ycloud/signin/task/click";
+var JOURNALING_PATH = "/ycloud/visitlog/journaling";
+var JOURNALING_SOURCE_ID = "1077";
 var BATCH_TRASH_URL = "https://personal-kd-njs.yun.139.com/hcy/recyclebin/batchTrash";
 function clickRequest(deps, id) {
   const session = loadSession(deps.store);
@@ -4112,6 +4143,18 @@ function clickRequest(deps, id) {
     marketName: "sign_in_3",
     session: session ? sessionHeaders(session) : {}
   });
+}
+function journalingRequest(deps, taskId, marketname = "sign_in_3") {
+  const session = loadSession(deps.store);
+  return {
+    url: `${CLICK_HOST}${JOURNALING_PATH}`,
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+      ...session ? sessionHeaders(session) : {}
+    },
+    body: `module=uservisit&optkeyword=139newsignin_index_task_${taskId}&sourceid=${JOURNALING_SOURCE_ID}&marketName=${marketname}`
+  };
 }
 function trashRequest(deps, fileIds) {
   void deps;
@@ -4139,32 +4182,45 @@ function today(deps) {
 function freshClicked(st, deps) {
   return st.day === today(deps) ? st.clicked : [];
 }
+function clickedButIneffective(deps, st) {
+  const clicked = freshClicked(st, deps);
+  if (clicked.length === 0) return [];
+  const still = pendingItems(deps).filter((p) => clicked.includes(p.itemId));
+  return still.map((p) => p.itemId);
+}
 function advance(deps, st) {
   const clicked = freshClicked(st, deps);
   const next = pendingItems(deps).find((p) => !clicked.includes(p.itemId));
   if (!next) {
     save3(deps, { ...st, phase: "done", fileId: void 0, clicked, day: today(deps) });
-    return { ok: true, note: `待办都走完了（这一趟点了 ${clicked.length} 条）` };
+    const dead = clickedButIneffective(deps, { ...st, clicked });
+    const warn2 = dead.length === 0 ? "" : `。⚠ 其中 ${dead.length} 条**点了但状态没变**（#${dead.join("、")}）—— HTTP 200 只说明"请求被接受了"。这类多半要**先做那个动作**（开启备份 / 开启通知），光点一下不算数`;
+    return { ok: dead.length === 0, note: `待办都走完了（这一趟点了 ${clicked.length} 条）${warn2}` };
   }
   if (next.needUpload) beginUpload(deps, next.itemId, next.name);
   save3(deps, {
     gi: next.gi,
     ii: next.ii,
-    phase: next.needUpload ? "upload" : "click",
+    phase: next.needUpload ? "upload" : "visit",
     itemId: next.itemId,
     clicked,
     day: today(deps)
   });
   return { ok: true, note: `下一条 #${next.itemId}（「${next.name}」）` };
 }
+var lastSkipped = [];
 function pendingItems(deps) {
   const out = [];
+  const skipped = [];
   const readings = readMatrix(deps.store);
   readings.forEach((reading, gi) => {
     if (!reading) return;
     for (const [ii, item] of (reading.items ?? []).entries()) {
-      if (judgeItem(item) !== "todo") return;
-      if (shouldSkip(item.taskId)) return;
+      if (judgeItem(item) !== "todo") continue;
+      if (stepFor({ taskId: item.taskId, groupId: item.groupId, name: item.name, buttonAppLink: item.buttonAppLink }) === void 0) {
+        skipped.push(item.taskId ?? 0);
+        continue;
+      }
       out.push({
         gi,
         ii,
@@ -4192,7 +4248,9 @@ function startAppTask(deps) {
   const clicked = prev ? freshClicked(prev, deps) : [];
   const all = pendingItems(deps);
   if (all.length === 0) {
-    return { ok: true, idle: true, note: "矩阵里没有待办（先跑一次 `app-task-matrix` 把读数填上）" };
+    const sk = lastSkipped;
+    const extra = sk.length === 0 ? "（先跑一次 `app-task-matrix` 把读数填上）" : `；另有 ${sk.length} 条上游列为待做，但**本插件还没实现**（#${sk.slice(0, 6).join("、")}${sk.length > 6 ? "…" : ""}）⇒ 不动它们（点了也不变状态）`;
+    return { ok: true, idle: true, note: `矩阵里没有本插件能做的待办${extra}` };
   }
   const todo = all.filter((p) => !clicked.includes(p.itemId));
   if (todo.length === 0) {
@@ -4207,7 +4265,7 @@ function startAppTask(deps) {
   save3(deps, {
     gi: first.gi,
     ii: first.ii,
-    phase: first.needUpload ? "upload" : "click",
+    phase: first.needUpload ? "upload" : "visit",
     itemId: first.itemId,
     clicked,
     day: today(deps)
@@ -4228,19 +4286,25 @@ function runAppTaskStep(deps) {
   if (st.phase === "upload") {
     if (uploadDone(deps)) {
       const up = JSON.parse(deps.store.getState("mcloud.upload.state") ?? "{}");
-      save3(deps, { ...st, phase: "click", fileId: up.fileId, day: today(deps) });
-      return { ok: true, note: `文件已传完（收尾要用它的 id）—— 下一步打卡` };
+      save3(deps, { ...st, phase: "visit", fileId: up.fileId, day: today(deps) });
+      return { ok: true, note: `文件已传完（收尾要用它的 id）—— 下一步记访问日志` };
     }
     const out2 = runUploadStep(deps, deterministicFile(`app-task-${st.itemId}`, 256));
     if (out2.idle) {
-      save3(deps, { ...st, phase: "click" });
-      return { ok: true, note: "没有待传的 —— 下一步打卡" };
+      save3(deps, { ...st, phase: "visit", day: today(deps) });
+      return { ok: true, note: "没有待传的 —— 下一步记访问日志" };
     }
     if (uploadDone(deps)) {
       const up = JSON.parse(deps.store.getState("mcloud.upload.state") ?? "{}");
-      save3(deps, { ...st, phase: "click", fileId: up.fileId, day: today(deps) });
+      save3(deps, { ...st, phase: "visit", fileId: up.fileId, day: today(deps) });
     }
     return out2;
+  }
+  if (st.phase === "visit") {
+    const res2 = callRawText(deps.transport, journalingRequest(deps, st.itemId));
+    if (!res2.ok) return { ok: false, note: `记访问日志 #${st.itemId} 失败：${res2.error ?? "未知失败"}` };
+    save3(deps, { ...st, phase: "click", day: today(deps) });
+    return { ok: true, note: `已记访问日志 #${st.itemId}（HTTP ${res2.status}）—— 下一步打卡` };
   }
   if (st.phase === "click") {
     if (freshClicked(st, deps).includes(st.itemId)) {
@@ -4259,7 +4323,10 @@ function runAppTaskStep(deps) {
       return { ok: true, note: `打卡 #${st.itemId}（HTTP ${res2.status}）—— 下一步收尾` };
     }
     const out2 = advance(deps, { ...st, clicked });
-    return { ok: true, note: `打卡 #${st.itemId}（HTTP ${res2.status}）—— 这条没有要收尾的文件。${out2.note}` };
+    return {
+      ok: out2.ok,
+      note: `打卡 #${st.itemId}（HTTP ${res2.status}）—— 这条没有要收尾的文件。${out2.note}`
+    };
   }
   if (!st.fileId) {
     const out2 = advance(deps, st);
@@ -4671,7 +4738,7 @@ function parseJson(raw) {
 // src/mcloud/liveFlower.ts
 var LIVE_ROOM_ORIGIN = "https://m.mcloud.139.com";
 var USER_INFO_PATH = "/ycloud/liveRoomFeedback/user/info";
-var JOURNALING_PATH = "/ycloud/visitlog/journaling";
+var JOURNALING_PATH2 = "/ycloud/visitlog/journaling";
 var FIRST_PARTICIPATE_GIVE_PATH = "/ycloud/liveRoomFeedback/firstParticipate/give";
 var DRAW_PATH = "/ycloud/liveRoomFeedback/redFlower/draw";
 var QUERY_REVIVAL_FLOWERS_PATH = "/ycloud/liveRoomFeedback/redFlower/queryRevivalFlowers";
@@ -4717,9 +4784,9 @@ function userInfoRequest(base) {
     body: "{}"
   };
 }
-function journalingRequest(optkeyword, base) {
+function journalingRequest2(optkeyword, base) {
   return {
-    url: liveRoomUrl(JOURNALING_PATH, base),
+    url: liveRoomUrl(JOURNALING_PATH2, base),
     method: "POST",
     headers: {
       ...liveRoomHeaders(),
@@ -4877,7 +4944,7 @@ function stepRequest(s, base) {
     case "journaling": {
       const ev = JOURNALING_EVENTS[s.journalingSent];
       if (ev === void 0) return null;
-      return { request: journalingRequest(ev, base), label: `② 埋点 ${s.journalingSent + 1}/5` };
+      return { request: journalingRequest2(ev, base), label: `② 埋点 ${s.journalingSent + 1}/5` };
     }
     case "first-participate":
       return { request: firstParticipateGiveRequest(base), label: "③ 首次参与惊喜奖" };
