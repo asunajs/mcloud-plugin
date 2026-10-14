@@ -99,6 +99,26 @@
       <p class="hint" id="exchange-tiers"></p>
     </section>
 
+    <section class="card" id="accounts-card" hidden>
+      <div class="card-head">
+        <h2>账号</h2>
+        <span class="card-sub" id="accounts-sub"></span>
+      </div>
+      <p class="why">
+        可以放多个账号，选一个当「当前」—— 听弹幕、领小红花都用它。
+        列表为空时会回落到上面那一格单独的原生凭据（旧的那套照原样工作）。
+        <b>凭据只存本地</b>，界面上只显示掩码。
+      </p>
+      <div class="row">
+        <label class="label">加一个</label>
+        <input id="acc-input" class="input" autocomplete="off"
+               placeholder="粘贴原生凭据（Authorization 那一串）">
+        <button id="acc-add" class="btn btn-primary">添加</button>
+      </div>
+      <p class="hint" id="accounts-hint"></p>
+      <div id="accounts-list"></div>
+    </section>
+
     <section class="card" id="live-card" hidden>
       <div class="card-head">
         <h2>直播口令</h2>
