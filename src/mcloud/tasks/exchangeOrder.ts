@@ -25,14 +25,20 @@
 // 这是**用户定的方向**，与 mcloud 的保守口径**不同**，所以写在这里免得被"顺手改稳"：
 //
 // · 清单判据说"不能兑" ⇒ **照样发**（把判据写进 note，让人看得见）；
-// · 余额看着不够 ⇒ **照样发**（那是估算，上游才是真判据）；
-// · 滑块算不出来 ⇒ 用 `puzzleOffset: null` **照样发**（mcloud 的 `Option<i64>` 本来
-//   就有这条路径 —— 只有它那句"拿 0 去凑是拿真豆去赌"是针对**编一个数字**，
-//   而 `null` 是"我不知道"，不是编）。
+// · 余额看着不够 ⇒ **照样发**（那是估算，上游才是真判据）。
 //
-// 理由：**不发**的代价是"少一次机会"，而发了被拒的代价只是一次失败响应
-// （这一族的失败不扣豆 —— 扣豆只发生在成交那一刻）。所以两边不对称的方向是
-// **倾向于发**。判据仍然照算、照写进 note，只是**不拿它挡路**。
+// 理由：这两处**发了是可能成功的** —— 判据是本地估算，而放不放行由上游说了算。
+// 不发 = 少一次机会，发了被拒 = 一次失败响应（失败不扣豆，扣豆只发生在成交那一刻）。
+//
+// # ⚠ 但**滑块**不属于这一类：算错了发出去是**无效的**，所以不发
+//
+// 这一条我一度也按"倾向于发"改了（解不出来就用 `puzzleOffset: null` 发出去），
+// 方向是错的：offset 错了，那一枪**不可能成功** —— 它只会回 `514`，
+// 而且**白白消耗一次题面**（滑块接口计失败次数）。"发出去"在这里换不到任何机会，
+// 只多一次确定的失败。所以滑块的处置仍然是**算不出就不发**。
+//
+// 判断标准是这一句：**发出去有没有可能成功？**
+// 可能 ⇒ 倾向于发；不可能 ⇒ 不发（那不是"少一次机会"，是"多一次白打"）。
 //
 // # 为什么是"一次调用一个请求"的状态机
 //
@@ -88,8 +94,6 @@ interface OrderState {
   plan?: Plan;
   /** 上一轮算出来的 offset（**只在同一次尝试里用**，不许跨授权重放）。 */
   offset?: number | undefined;
-  /** 解不出来时**照样发**，带 `puzzleOffset: null`（"我不知道"）。 */
-  useNull?: boolean | undefined;
 }
 
 /** 从原始响应文本里取 `result`（取不到就给整个对象）。
@@ -318,25 +322,27 @@ export function runOrderStep(deps: TaskDeps): TaskOutcome {
     if (!puzzle || !picture) {
       return { ok: false, note: `${label}：题面上没有两张图（回 ${res.text.slice(0, 120)}）` };
     }
-    // ⚠ 解不出**照样发**（总方针），用 `puzzleOffset: null` —— 即"我不知道"。
-    //   只有"编一个数字"（比如拿 0 或上一题的答案）才是 mcloud 说的"拿真豆去赌"。
-    let offset: number | null = null;
-    let why = '';
+    // ⚠ **算不出就不发** —— 这一枪发出去是**无效的**（见文件头）：offset 错了必然回
+    //   `514`，还白白消耗一次题面。拿 0 或上一题的答案去凑更是"拿真豆去赌"。
+    let solution;
     try {
-      const solution = calcPuzzleOffset(puzzle, picture);
-      if (usable(solution)) offset = solution.offsetX;
-      else why = `（解出 ${solution.offsetX} 但置信度只有 ${solution.confidence.toFixed(2)}）`;
+      solution = calcPuzzleOffset(puzzle, picture);
     } catch (e) {
-      why = `（图解码失败：${e instanceof Error ? e.message : String(e)}）`;
+      return done(
+        `${label}：图解码失败（${e instanceof Error ? e.message : String(e)}）⇒ 不发下单那一枪` +
+          '（offset 错了那一枪不可能成功，只会白耗一次题面）',
+        false,
+      );
     }
-    saveState(deps, { ...st, step: 'order', offset: offset ?? undefined, useNull: offset === null });
-    return {
-      ok: true,
-      note:
-        offset === null
-          ? `${label}：算不出可用的 offset${why} ⇒ 用 \`puzzleOffset: null\` 照样发（那是"我不知道"，不是编一个数）—— 下一步下单`
-          : `${label}：offset=${offset}（置信度已过线）—— 下一步下单`,
-    };
+    if (!usable(solution)) {
+      return done(
+        `${label}：算不出可用的 offset（解出 ${solution.offsetX}，置信度 ${solution.confidence.toFixed(2)}）` +
+          '⇒ 不发下单那一枪 —— 这一枪发出去是无效的，不是"少一次机会"而是"多一次白打"',
+        false,
+      );
+    }
+    saveState(deps, { ...st, step: 'order', offset: solution.offsetX });
+    return { ok: true, note: `${label}：offset=${solution.offsetX}（置信度 ${solution.confidence.toFixed(2)}）—— 下一步下单` };
   }
 
   // ⑤ 下单
@@ -348,9 +354,8 @@ export function runOrderStep(deps: TaskDeps): TaskOutcome {
     if (deviceId === '') {
       return done('没有 deviceId（它要现换，见 smid 链）—— 不带它下单会回 615，文案却像"活动太火爆"', false);
     }
-    // ⚠ `puzzleOffset` 可以是 **null**（"我不知道"）—— mcloud 的 `Option<i64>` 就有这条路径
-    const offsetJson = st.useNull === true || st.offset === undefined ? 'null' : String(st.offset);
-    const body = `{"prizeId":${plan.prizeId},"client":"app","clientVersion":"${EXCHANGE_CLIENT_VERSION}","puzzleOffset":${offsetJson},"smsCode":"","deviceId":"${deviceId}"}`;
+    if (st.offset === undefined) return done('内部状态缺 offset，这一单作废（不发一个没算出来的数）', false);
+    const body = `{"prizeId":${plan.prizeId},"client":"app","clientVersion":"${EXCHANGE_CLIENT_VERSION}","puzzleOffset":${st.offset},"smsCode":"","deviceId":"${deviceId}"}`;
     const req = signedReq(deps, {
       url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/signin/page/exchangeV3`,
       method: 'POST',
