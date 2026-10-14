@@ -22,7 +22,7 @@ import type { FetchError, FetchResult } from 'host-api';
  *  否则测不到这条路径。） */
 export type HostFetchResult = FetchResult | FetchError;
 
-const isFetchError = (v: unknown): v is FetchError =>
+export const isFetchError = (v: unknown): v is FetchError =>
   typeof v === 'object' && v !== null && typeof (v as { error?: unknown }).error === 'string';
 
 /** 宿主消息里已经带了「请求失败:」就原样用，避免叠成「请求失败：请求失败: …」。 */

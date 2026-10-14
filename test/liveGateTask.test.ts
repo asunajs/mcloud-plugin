@@ -40,6 +40,7 @@ import {
   validCount,
 } from '../src/mcloud/koulingPool.ts';
 import { mcloudRoutes } from '../src/mcloud/routes.ts';
+import { testDeps } from './helpers.ts';
 import { memStore } from '../src/store/memory.ts';
 import { KOULING_ANCHOR } from '../src/mcloud/koulingPool.ts';
 import type { Transport } from '../src/mcloud/client.ts';
@@ -336,7 +337,7 @@ test('路由 POST /api/live/gate/step：一步一发（两步推完），读数�
   store.setState(STATE_AUTH, AUTH, NOW);
   const { transport } = fakeUpstream();
   const logged: string[] = [];
-  const d = { store, transport, now: () => NOW, log: (m: string) => logged.push(m) };
+  const d = testDeps(store, { transport, now: NOW, log: (m) => logged.push(m) });
 
   const first = JSON.parse(callRoute(d, 'POST', '/plugins/mcloud/api/live/gate/step').body) as {
     ok: boolean;
@@ -367,7 +368,7 @@ test('路由 GET /api/live：带上门的读数（界面那一行）', () => {
   store.ensureSchema();
   store.setState(STATE_AUTH, AUTH, NOW);
   const { transport } = fakeUpstream();
-  const d = { store, transport, now: () => NOW, log: () => {} };
+  const d = testDeps(store, { transport, now: NOW });
   runRound(store, transport);
 
   const body = JSON.parse(callRoute(d, 'GET', '/plugins/mcloud/api/live').body) as {
@@ -380,7 +381,7 @@ test('路由 GET /api/live：带上门的读数（界面那一行）', () => {
 test('路由 POST /api/config：`gateBase` 与 `baseUrl` **互不影响**（只改传了的那个）', () => {
   const store = memStore();
   store.ensureSchema();
-  const d = { store, transport: (() => ({ status: 200, headers: {}, body: '' })) as Transport, now: () => NOW, log: () => {} };
+  const d = testDeps(store, { now: NOW });
 
   callRoute(d, 'POST', '/plugins/mcloud/api/config', { baseUrl: 'http://127.0.0.1:19000' });
   callRoute(d, 'POST', '/plugins/mcloud/api/config', { gateBase: 'http://127.0.0.1:19001' });

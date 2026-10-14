@@ -5,7 +5,7 @@
 //   mcloud-plugin 0.0.0 · 插件 `mcloud-live`
 
 // src/entries/live.ts
-import { log, register_cron, warn, worker_hint } from "host-api";
+import { log as log2, register_cron, warn as warn2, worker_hint } from "host-api";
 
 // src/crypto/bytes.ts
 function utf8(s) {
@@ -3238,6 +3238,9 @@ function loadGateBaseOf(store2) {
 // src/entries/shared.ts
 import {
   http_fetch,
+  log,
+  smtp_send,
+  warn,
   ws_close,
   ws_open,
   ws_recv,
@@ -3505,12 +3508,12 @@ register_cron(
       ok: r.ok,
       note: r.note
     });
-    if (r.ok) log(`直播：${r.note}`);
-    else warn(`直播：${r.note}`);
+    if (r.ok) log2(`直播：${r.note}`);
+    else warn2(`直播：${r.note}`);
     for (const line of r.detail) {
-      if (line.includes("失败") || line.includes("抛异常")) warn(`  · ${line}`);
+      if (line.includes("失败") || line.includes("抛异常")) warn2(`  · ${line}`);
     }
   },
   { budget_ms: BUDGET_MS }
 );
-log(`mcloud-live：任务「直播」（预算 ${BUDGET_MS / 1e3}s，独占线程）`);
+log2(`mcloud-live：任务「直播」（预算 ${BUDGET_MS / 1e3}s，独占线程）`);

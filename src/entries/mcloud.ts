@@ -21,7 +21,7 @@ import {
 } from 'host-api';
 import { mcloudRoutes } from '../mcloud/routes.ts';
 import type { RouteEntry } from '../mcloud/routes.ts';
-import { makeHost, makeStore, makeTransport } from './shared.ts';
+import { makeHost, makePushDeps, makeStore, makeTransport } from './shared.ts';
 import { selftest } from '../selftest.ts';
 
 const store = makeStore();
@@ -45,6 +45,7 @@ try {
     now: () => new Date().toISOString(),
     log: (msg) => log(msg),
     ws: host,
+    pushDeps: makePushDeps(transport),
   })) {
     register_route(r.path, r.method, r.handler);
     registered++;

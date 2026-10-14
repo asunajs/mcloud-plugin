@@ -279,7 +279,119 @@ def main() -> int:
             code, body = plugin_post(base, "/login/pwd", {"phone": "", "password": ""})
             check("账密：缺字段要挡住", code == 400, f"http {code}")
 
-            # ---- ⑨ 线程分配 ----
+            # ---- ⑨ 推送（⑤-1）：10 个渠道 + 试发 ----
+            print("\n推送（脚本断言）")
+            code, body = http(f"{base}/plugins/mcloud/api/readings")
+            d = json.loads(body) if code == 200 else {}
+            push = d.get("push") or {}
+            chans = push.get("channels") or []
+            check("读数里有推送块", code == 200 and "channels" in push, f"http {code}")
+            check(
+                "⚠ 10 个渠道都在",
+                len(chans) == 10,
+                f"实际 {len(chans)} 个：{[c.get('id') for c in chans]}",
+            )
+            ids = [c.get("id") for c in chans]
+            for want in [
+                "pushplus", "serverChan", "workWeixin", "workWeixinBot", "tgBot",
+                "bark", "twoIm", "dingTalk", "email", "customPost",
+            ]:
+                check(f"渠道 {want} 在", want in ids, "")
+            check(
+                "一开始一个都没配",
+                push.get("configured") == [],
+                str(push.get("configured")),
+            )
+
+            # 存一个渠道（`{set, remove}` 增量形状）
+            code, body = http(
+                f"{base}/plugins/mcloud/api/push/config",
+                method="POST",
+                body=json.dumps({"set": {"bark": {"key": "THIS_IS_A_SECRET_KEY_12345"}}}).encode(),
+                headers={"content-type": "application/json", "x-panel": "1"},
+            )
+            d2 = json.loads(body) if code == 200 else {}
+            check("能存一个渠道", code == 200 and d2.get("configured") == ["bark"], f"http {code} {body[:120]}")
+
+            code, body = http(f"{base}/plugins/mcloud/api/readings")
+            d3 = json.loads(body) if code == 200 else {}
+            p3 = d3.get("push") or {}
+            check("存完之后读数里配了 1 个", p3.get("configured") == ["bark"], str(p3.get("configured")))
+            check(
+                "⚠⚠ 秘密**不上屏**：读数的字段里只有掩码，没有原值",
+                "THIS_IS_A_SECRET_KEY_12345" not in body,
+                "原值出现在读数里了",
+            )
+            check(
+                "⚠ 掩码要带长度（短值全遮，长值留头尾）",
+                "掩码" in body or "（已配）" in body or "…" in body,
+                str((p3.get("fields") or {}).get("bark")),
+            )
+
+            # 增量：加第二个渠道，第一个**不能被清掉**
+            code, body = http(
+                f"{base}/plugins/mcloud/api/push/config",
+                method="POST",
+                body=json.dumps({"set": {"bark": {"key": "K2_abcdefghij"}}}).encode(),
+                headers={"content-type": "application/json", "x-panel": "1"},
+            )
+            code, body = http(f"{base}/plugins/mcloud/api/readings")
+            p4 = (json.loads(body) if code == 200 else {}).get("push") or {}
+            check("增量保存不会清掉别的渠道", p4.get("configured") == ["bark"], str(p4.get("configured")))
+
+            # 显式删除
+            code, body = http(
+                f"{base}/plugins/mcloud/api/push/config",
+                method="POST",
+                body=json.dumps({"remove": ["bark"]}).encode(),
+                headers={"content-type": "application/json", "x-panel": "1"},
+            )
+            code, body = http(f"{base}/plugins/mcloud/api/readings")
+            p5 = (json.loads(body) if code == 200 else {}).get("push") or {}
+            check("⚠ `remove` 真的能删（纯合并做不到这件事）", p5.get("configured") == [], str(p5.get("configured")))
+
+            # 试发：一个都没配 ⇒ 如实说
+            code, body = http(
+                f"{base}/plugins/mcloud/api/push/test",
+                method="POST",
+                body=b"{}",
+                headers={"content-type": "application/json", "x-panel": "1"},
+            )
+            d6 = json.loads(body) if code == 200 else {}
+            check(
+                "试发：没配渠道时如实说「一个渠道都没配」",
+                code == 200 and d6.get("ok") is False and "没配" in str(d6.get("line")),
+                f"http {code} {body[:120]}",
+            )
+
+            # 规则与绑定
+            code, body = http(
+                f"{base}/plugins/mcloud/api/push/rules",
+                method="POST",
+                body=json.dumps([{"id": "r1", "name": "全部渠道", "channels": [], "minLevel": "always"}]).encode(),
+                headers={"content-type": "application/json", "x-panel": "1"},
+            )
+            check("能存规则", code == 200, f"http {code} {body[:80]}")
+            code, body = http(
+                f"{base}/plugins/mcloud/api/push/bindings",
+                method="POST",
+                body=json.dumps({"daily": "r1", "exchange": "", "live": ""}).encode(),
+                headers={"content-type": "application/json", "x-panel": "1"},
+            )
+            d7 = json.loads(body) if code == 200 else {}
+            check("能存绑定", code == 200 and d7.get("bindings", {}).get("daily") == "r1", f"http {code}")
+            code, body = http(f"{base}/plugins/mcloud/api/readings")
+            p8 = (json.loads(body) if code == 200 else {}).get("push") or {}
+            check(
+                "读数里三个任务的绑定都在",
+                (p8.get("bindings") or {}).get("daily") == "r1"
+                and "exchange" in (p8.get("bindings") or {})
+                and "live" in (p8.get("bindings") or {}),
+                str(p8.get("bindings")),
+            )
+            check("规则也回到读数里了", len(p8.get("rules") or []) == 1, str(p8.get("rules")))
+
+            # ---- ⑩ 线程分配 ----
             print("\n线程（脚本断言）")
             logf.flush()
             text = logpath.read_text(errors="replace")

@@ -206,6 +206,23 @@
       <section class="block" id="block-push">
         <p class="hero" id="push-hero">…</p>
         <p class="sub" id="push-sub"></p>
+
+        <!-- 渠道列表：**一行一个**。配了的显示"已配"，没配的显示「填」。
+             点「填」才展开那一行要填的字段 —— 十个渠道的表单全铺出来
+             就是"文字一大堆"（这正是这一版要解决的问题）。 -->
+        <div class="rows" id="push-channels"></div>
+
+        <h3 class="h3">试一下</h3>
+        <p class="hint">配好之后点这里发一条。收到就说明配置对了 ——
+          这一步把「配置错了」和「任务没跑到发送那一步」分开。</p>
+        <button id="push-test" type="button" class="btn">发一条试试</button>
+
+        <h3 class="h3">哪个任务用哪条</h3>
+        <p class="hint">默认「全部渠道」就够了。想让某个任务只在有失败时才推，
+          就再建一条规则，在这里选上。</p>
+        <div class="rows" id="push-bindings"></div>
+        <button id="push-add-rule" type="button" class="btn btn-ghost">加一条规则</button>
+        <div class="rows" id="push-rules"></div>
       </section>
 
       <!-- ══════════════ 设置 ══════════════ -->
