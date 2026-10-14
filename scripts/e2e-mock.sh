@@ -545,3 +545,85 @@ assert status['exchange']['step'] == 'done', status['exchange']
 assert status['exchange']['ok'] is True, status['exchange']
 print('   ✅ H5 换票：四步顺序固定（含 smid）、签名自洽、x-timestamp 用服务端的、凭据不回显')
 H5PY
+
+# ── ⑦ 直播日程（门）：只读地取「今天开播了吗 / 下一场几点」──────────────────
+#
+# ⚠ 为什么放在**最后**：这一族的第一步也是 `/user/querySpecTokenV2`
+#   （`toSourceId` 不同 —— 直播侧是 `017027`）。放在 ⑥ 之前的话，
+#   ⑥ 那段"四步顺序固定"的断言会多出两发、以"顺序不对"的面目失败。
+echo "⑦ 直播日程（门）：三步、只读、结果落池"
+curl -fsS -o /dev/null "${W[@]}" -X POST -H 'content-type: application/json' \
+  -d "{\"gateBase\":\"http://127.0.0.1:$MOCK_PORT\"}" "$B/plugins/mcloud/api/config"
+
+# 一步一发（handshake 步内部两发：SSO 只活几分钟 ⇒ ①② 不能拆开 —— 见 liveGateTask.ts）
+for i in 1 2 3 4; do
+  curl -fsS "${W[@]}" -X POST "$B/plugins/mcloud/api/live/gate/step" -o "$TMP/gate.json"
+  if python3 -c "import json,sys; sys.exit(0 if json.load(open('$TMP/gate.json'))['done'] else 1)"; then
+    printf '   探完（第 %s 步）\n' "$i"
+    break
+  fi
+  if [ "$i" = 4 ]; then echo "❌ 4 步还没探完" >&2; cat "$TMP/gate.json" >&2; exit 1; fi
+done
+
+curl -fsS "${H[@]}" "$B/plugins/mcloud/api/live" -o "$TMP/live-gate.json"
+curl -fsS "http://127.0.0.1:$MOCK_PORT/_debug/requests" -o "$TMP/mock.json"
+python3 - "$TMP/live-gate.json" "$TMP/mock.json" <<'GATEPY'
+import json, sys
+
+live = json.load(open(sys.argv[1]))
+reqs = json.load(open(sys.argv[2]))
+
+# ── ① 请求形状：三步、顺序固定、鉴权头各就各位 ──
+gate = [r for r in reqs if 'querySpecTokenV2' in r['path'] or 'cmpassLoginByCmToken' in r['path']
+        or 'tabContentList' in r['path']]
+# 前面 ⑥ 也打过一发 querySpecTokenV2（签到的 toSourceId）⇒ 按 body 挑出**门**那一发
+specs = [r for r in gate if 'querySpecTokenV2' in r['path']]
+mine = [r for r in specs if json.loads(r.get('body') or '{}').get('toSourceId') == '017027']
+assert len(mine) == 1, f'门该换一发直播侧的 SSO（toSourceId=017027），实际 {len(mine)}'
+sso_req = mine[0]
+assert sso_req['method'] == 'POST', sso_req
+# ⚠ 这一步要的是**原生凭据**（与签到那一步同一个端点、同一个头）
+assert sso_req['headers'].get('authorization', '').startswith('Basic '), sso_req['headers']
+
+# 门的四发（按时间顺序）：①② 一次调用、③③ 一次调用
+tail = [r for r in reqs if r['path'].startswith('/api/') or 'querySpecTokenV2' in r['path']]
+tail = [r for r in tail if json.loads(r.get('body') or '{}').get('toSourceId') in (None, '017027')]
+seq = [r['path'].split('?')[0] for r in tail[-4:]]
+assert seq == ['/user/querySpecTokenV2', '/api/user/auth/cmpassLoginByCmToken',
+               '/api/channel/channel/tabContentList', '/api/channel/channel/tabContentList'], seq
+assert len(tail) == 4, f'门一轮正好四发（两步 × 两发），实际 {len(tail)}：{seq}'
+
+cmpass, tab1, tab2 = tail[-3], tail[-2], tail[-1]
+# ② 用的是 ① 换回来的那个 SSO，而且这一步**还没有票**（不带 Authorization）
+assert json.loads(cmpass['body']) == {'cmpassToken': 'SSO-MOCK'}, cmpass['body']
+assert 'authorization' not in {k.lower() for k in cmpass['headers']}, cmpass['headers']
+# ③ 两个页签都查（127 福利 + 129 回放），带**直播侧** JWT（Authorization，不是 jwttoken）
+assert 'tabId=127' in tab1['path'] and 'tabId=129' in tab2['path'], (tab1['path'], tab2['path'])
+for t in (tab1, tab2):
+    assert t['method'] == 'GET', t
+    assert t['headers'].get('authorization', '').startswith('MOCK-LIVE-JWT'), t['headers']
+    assert 'jwttoken' not in {k.lower() for k in t['headers']}, '直播族用 Authorization，不是 jwttoken'
+
+# ── ② 读数：去重、两个坑都在 ──
+g = live['gate']
+assert g['active'] is True, g
+# 在播两间：147490「福建移动」（**不是**那个主播）+ 147606「中国移动云盘」
+assert g['liveCount'] == 2, g
+# 合并去重后四间（147606 在 127 与 129 里各出现一次）
+ids = [r['roomId'] for r in g['rooms']]
+assert ids == [147490, 147606, 147608, 147609], ids
+preview = [r for r in g['rooms'] if r['status'] == 0]
+assert len(preview) == 1 and preview[0]['expectStartTime'], preview
+
+# ── ③ 落池：日程 + 门 + 场次；「下一场」就是那间预告场 ──
+pool = live['pool']
+# ⚠ `pool` 是**摘要**（`poolSummary`）：日程那一整张表在门的读数里（上面已断言 4 间），
+#   摘要只带"什么时候探的 / 下一场是几点 / 见过几场"这几格。
+assert pool.get('scheduleAtMs'), pool
+assert pool['nextStart'] == preview[0]['expectStartTime'], (pool.get('nextStart'), preview)
+assert len(pool['sessions']) >= 1, pool.get('sessions')
+
+# ── ④ 凭据不回显（JWT 是凭据：它落盘是为了跨调用，但**不进任何响应**）──
+assert 'MOCK-LIVE-JWT' not in json.dumps(live), '直播侧 JWT 不该出现在响应里'
+print('   ✅ 直播日程：三步四发、只查 127/129、去重、日程与「下一场」落池、凭据不回显')
+GATEPY
