@@ -257,6 +257,25 @@ async function loadLive() {
   // ── 门（直播日程，只读）──
   $('live-gate-rooms').innerHTML = renderGate(d.gate);
 
+  // ── 听弹幕（第二十三轮）：窗口里的过程事实 ──
+  //
+  // ⚠ 这一块必须把"到哪一步了"写出来：那条链有 6 步（门/凭据/聊天室/进房间/连/听），
+  //   卡在"准备中（apply）"与"听着（帧 0）"是**完全不同的两件事**
+  //   （前者进不去房间，后者进去了但没人说话）。
+  const lis = d.listen || {};
+  const lr = lis.reading;
+  // ⚠ `line` 已经是人话（"听着（帧 3、弹幕 0、口令 1）"/"准备中（apply）"），
+  //   后面再补的只有"本轮口令"与收尾原因 —— 那两样 `line` 里放不下。
+  $('live-listen-hint').textContent = lr
+    ? [lis.line || '', lr.codes && lr.codes.length ? `本轮口令：${lr.codes.join('、')}` : '', lr.closedReason ? `收尾：${lr.closedReason}` : '']
+        .filter((x) => x !== '')
+        .join(' · ')
+    : lis.line || '还没听过';
+
+  // ── 自动定时（第二十四轮）：下一次几点醒 ──
+  const au = d.auto || {};
+  $('live-auto-hint').textContent = au.line || '还没算过';
+
   // ── 写那半（领小红花）──
   const claim = d.claim || {};
   $('live-claim').checked = !!claim.enabled;
@@ -343,6 +362,52 @@ async function toggleClaim() {  const on = $('live-claim').checked;
   }
   showError('');
   await loadLive();
+}
+
+/** 听弹幕：**浏览器循环调「推进一步」**，推到"开始听"就停。
+ *
+ *  ⚠ 与领小红花那条一样的纪律：面板一次调用只有 2 秒预算，而这条链有 6 步
+ *  （门 → 凭据 → 聊天室 → 进房间 → 连 WS → 听）。
+ *  推到 `listen` 就够了 —— 之后的每一拍由 cron（`@every 10s`）接着读。 */
+async function listenNow() {
+  const btn = $('live-listen');
+  btn.disabled = true;
+  const hint = $('live-listen-hint');
+  let steps = 0;
+  try {
+    for (;;) {
+      const d = await req('/plugins/mcloud/api/live/listen/step', { method: 'POST' });
+      if (d.error) {
+        showError('听弹幕失败：' + d.error);
+        break;
+      }
+      hint.textContent = d.note || '';
+      showError(d.ok ? '' : d.note || '这一步失败了');
+      steps += 1;
+      if (d.step === 'listen' || d.done) break;
+      if (steps > 12) {
+        hint.textContent = `推了 ${steps} 步还停在「${d.step}」—— 停下（${d.note || ''}）`;
+        break;
+      }
+    }
+  } finally {
+    btn.disabled = false;
+    await loadLive();
+  }
+}
+
+/** 自动定时：算一次「下一次几点醒」（**零上游请求**，点一下没有代价）。 */
+async function autoNow() {
+  const btn = $('live-auto');
+  btn.disabled = true;
+  try {
+    const d = await req('/api/tasks/mcloud/live-auto/run', { method: 'POST' });
+    if (!d.ok) showError('算定时失败：' + (d.error || ''));
+    else showError('');
+    await loadLive();
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 /** 现在领一次：**浏览器循环调「推进一步」**，直到跑完。
@@ -644,6 +709,8 @@ $('live-save').addEventListener('click', saveLiveCodes);
 $('live-clear').addEventListener('click', clearLiveCodes);
 $('live-claim').addEventListener('change', toggleClaim);
 $('live-draw').addEventListener('click', drawNow);
+$('live-listen').addEventListener('click', listenNow);
+$('live-auto').addEventListener('click', autoNow);
 
 loadGroups();
 loadSession();
