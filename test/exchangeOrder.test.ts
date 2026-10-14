@@ -117,19 +117,21 @@ test('**主线**：一步一枪，顺序与枪序一致', () => {
   void steps;
 });
 
-test('⚠ 清单说不能兑 ⇒ 后面**一枪都不发**（余额、预热、下单全免）', () => {
+test('⚠ **总方针**：清单判据说"不能兑" ⇒ **照样发**（判据只记不挡）', () => {
   const store = mkStore();
   const { transport, sent } = upstream({
     exchangeList: { code: 0, result: { g1: [{ prizeId: 42, prizeName: '季卡', limit: 2, pOrder: 880 }] } },
+    infoV3: { code: 0, result: { total: 5000 } },
   });
   startOrder(deps(store, transport), '季卡');
   const out = runOrderStep(deps(store, transport));
-  assert.equal(out.ok, false);
-  assert.equal(sent.length, 1, `只该有那一次只读清单，实际 ${sent.length}`);
-  assert.match(out.note, /不能兑|不发下一枪/);
+  assert.equal(out.ok, true, `该继续走下去：${out.note}`);
+  assert.match(out.note, /本件本月已兑/, '判据要写进 note（让人看得见），只是不挡路');
+  assert.match(out.note, /照样发/);
+  assert.equal(sent.length, 1);
 });
 
-test('⚠ 余额不够 ⇒ 也不往下走（第 2 枪之后就停）', () => {
+test('⚠ **总方针**：余额看着不够 ⇒ **照样发**（那是估算，失败也不扣豆）', () => {
   const store = mkStore();
   const { transport, sent } = upstream({
     exchangeList: LIST_HIT,
@@ -138,12 +140,15 @@ test('⚠ 余额不够 ⇒ 也不往下走（第 2 枪之后就停）', () => {
   startOrder(deps(store, transport), '钻石会员季卡');
   runOrderStep(deps(store, transport)); // ① 清单
   const out = runOrderStep(deps(store, transport)); // ② 余额
-  assert.equal(out.ok, false);
-  assert.match(out.note, /余额 100 < 价格 880|不做/);
-  assert.equal(sent.length, 2, '不该有第 3 枪');
+  assert.equal(out.ok, true, out.note);
+  assert.match(out.note, /照样发/);
+  assert.equal(sent.length, 2);
+  // 下一步也能继续（没有被"停在这里"）
+  const st = JSON.parse(store.getState(STATE_STEP)!) as { step: string };
+  assert.equal(st.step, 'warm-1');
 });
 
-test('⚠ 滑块解不出来 ⇒ **不发下单那一枪**，而且如实说是"没发"', () => {
+test('⚠ **总方针**：滑块解不出来 ⇒ 用 `puzzleOffset: null` **照样发**', () => {
   const store = mkStore();
   const { transport, sent } = upstream({
     exchangeList: LIST_HIT,
@@ -153,12 +158,15 @@ test('⚠ 滑块解不出来 ⇒ **不发下单那一枪**，而且如实说是"
     getSlide: { code: 0, result: { puzzleImg: 'bm90YXBuZw==', pictureImg: 'bm90YXBuZw==' } },
   });
   startOrder(deps(store, transport), '钻石会员季卡');
-  for (let i = 0; i < 3; i += 1) runOrderStep(deps(store, transport)); // 清单/余额/预热1
-  runOrderStep(deps(store, transport)); // 预热2
+  for (let i = 0; i < 4; i += 1) runOrderStep(deps(store, transport)); // 清单/余额/预热1/预热2
   const out = runOrderStep(deps(store, transport)); // 取题 → 解不出
-  assert.equal(out.ok, false);
-  assert.match(out.note, /不发下单那一枪/);
-  assert.equal(sent.filter((r) => r.url.includes('exchangeV3')).length, 0, '一个字都不许发给 exchangeV3');
+  assert.equal(out.ok, true, out.note);
+  assert.match(out.note, /puzzleOffset: null/);
+  // 下一步**真的发**，且带的是 null（"我不知道"），不是编出来的数字
+  const o = runOrderStep(deps(store, transport));
+  assert.equal(o.ok, true, o.note);
+  const body = JSON.parse(sent.filter((r) => r.url.includes('exchangeV3'))[0]!.body!) as Record<string, unknown>;
+  assert.equal(body.puzzleOffset, null, '解不出来时发的是 null，不是 0 —— 0 是编出来的数');
 });
 
 test('⚠ 没有 deviceId ⇒ 停在下单前（不回 615 让上游说"活动太火爆"）', () => {
@@ -310,28 +318,22 @@ test('⚠ 余额字段是 `total`（真机实测；写成 `point` 的现象是"�
 });
 
 
-test('⚠ 判不了（缺 `limit`）⇒ **也不发** —— 放宽等于把"不确定"当成"可以花豆"', () => {
-  const store = mkStore();
-  const { transport, sent } = upstream({
-    exchangeList: { code: 0, result: { g1: [{ prizeId: 42, prizeName: '季卡', pOrder: 880 }] } },
-  });
-  startOrder(deps(store, transport), '季卡');
-  const out = runOrderStep(deps(store, transport));
-  assert.equal(out.ok, false);
-  assert.match(out.note, /判不了/);
-  assert.equal(sent.length, 1, '只该有那次只读清单');
-});
-
-test('判据回到"**只有 ok 才走**"：四档否定各拦一次', () => {
-  for (const [limit, word] of [[1, '明日'], [2, '已兑'], [4, '已兑'], [9, '判不了']] as const) {
+test('**总方针**下的判据：**每一档否定都照样发**，但话要说清楚', () => {
+  // 用户定的方向：不发的代价是"少一次机会"，发了被拒只是失败响应（不扣豆）
+  for (const [limit, word] of [[1, '明日'], [2, '已兑'], [4, '已兑'], [9, '判不了'], [undefined, '判不了']] as const) {
     const store = mkStore();
     const { transport, sent } = upstream({
-      exchangeList: { code: 0, result: { g1: [{ prizeId: 42, prizeName: '季卡', limit, pOrder: 880 }] } },
+      exchangeList: {
+        code: 0,
+        result: { g1: [{ prizeId: 42, prizeName: '季卡', limit, pOrder: 880 }] },
+      },
+      infoV3: { code: 0, result: { total: 5000 } },
     });
     startOrder(deps(store, transport), '季卡');
     const out = runOrderStep(deps(store, transport));
-    assert.equal(out.ok, false, `limit=${limit} 该被拦住`);
-    assert.match(out.note, new RegExp(word), `limit=${limit}：${out.note}`);
-    assert.equal(sent.length, 1, `limit=${limit} 不该有第二枪`);
+    assert.equal(out.ok, true, `limit=${String(limit)} 该继续走：${out.note}`);
+    assert.match(out.note, new RegExp(word), `limit=${String(limit)}：${out.note}`);
+    assert.match(out.note, /照样发/, `limit=${String(limit)}：得写明是"照样发"`);
+    assert.equal(sent.length, 1);
   }
 });

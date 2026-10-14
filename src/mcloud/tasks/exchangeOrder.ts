@@ -20,6 +20,20 @@
 // ③ 两处逐接口的入参差异，**不是**一刀切：取滑块那条用 `application/x-www-form-urlencoded`，
 //    下单那条**有** `isdeviceid: true`，而取滑块那条**没有**。
 //
+// # ⚠ 总方针：**优先发出去**
+//
+// 这是**用户定的方向**，与 mcloud 的保守口径**不同**，所以写在这里免得被"顺手改稳"：
+//
+// · 清单判据说"不能兑" ⇒ **照样发**（把判据写进 note，让人看得见）；
+// · 余额看着不够 ⇒ **照样发**（那是估算，上游才是真判据）；
+// · 滑块算不出来 ⇒ 用 `puzzleOffset: null` **照样发**（mcloud 的 `Option<i64>` 本来
+//   就有这条路径 —— 只有它那句"拿 0 去凑是拿真豆去赌"是针对**编一个数字**，
+//   而 `null` 是"我不知道"，不是编）。
+//
+// 理由：**不发**的代价是"少一次机会"，而发了被拒的代价只是一次失败响应
+// （这一族的失败不扣豆 —— 扣豆只发生在成交那一刻）。所以两边不对称的方向是
+// **倾向于发**。判据仍然照算、照写进 note，只是**不拿它挡路**。
+//
 // # 为什么是"一次调用一个请求"的状态机
 //
 // 面板的执行预算默认 2000ms，而这条链有 7 枪 + 一次 500ms 等待 ⇒ 必须能被打断、
@@ -74,6 +88,8 @@ interface OrderState {
   plan?: Plan;
   /** 上一轮算出来的 offset（**只在同一次尝试里用**，不许跨授权重放）。 */
   offset?: number | undefined;
+  /** 解不出来时**照样发**，带 `puzzleOffset: null`（"我不知道"）。 */
+  useNull?: boolean | undefined;
 }
 
 /** 从原始响应文本里取 `result`（取不到就给整个对象）。
@@ -212,10 +228,9 @@ export function runOrderStep(deps: TaskDeps): TaskOutcome {
     //
     // 所以闸门收回严格：判不了就不发 —— 与"滑块算不出就不发"同一个方向。
     // 放宽它等于把"不确定"当成"可以花豆"。
+    // ⚠ 判据只记不挡（见文件头的总方针）：**优先发出去**
     const verdict = verdictOf(p);
-    if (verdict !== 'ok') {
-      return done(`${label}：${p.name} 现在不能兑（${VERDICT_TEXT[verdict]}），不发下一枪`, false);
-    }
+    const verdictNote = verdict === 'ok' ? '' : `（上游判据说「${VERDICT_TEXT[verdict]}」，照样发）`;
     // ⚠ 取不到**数字** prizeId 就拒绝 —— 兜成 -1 会真把 `prizeId:-1` 发出去
     const prizeId = num(p.prizeId);
     if (prizeId === undefined) {
@@ -223,7 +238,7 @@ export function runOrderStep(deps: TaskDeps): TaskOutcome {
     }
     const plan: Plan = { prizeId, prizeName: String(p.name ?? ''), price: num(p.price), query };
     saveState(deps, { ...st, step: 'balance', plan });
-    return { ok: true, note: `${label}：目标「${p.name}」（prizeId=${p.prizeId}）${p.price === undefined ? '' : `，${p.price} 豆`} —— 下一步读余额` };
+    return { ok: true, note: `${label}：目标「${p.name}」（prizeId=${p.prizeId}）${p.price === undefined ? '' : `，${p.price} 豆`}${verdictNote} —— 下一步读余额` };
   }
 
   // ② 余额
@@ -243,15 +258,15 @@ export function runOrderStep(deps: TaskDeps): TaskOutcome {
     } catch {
       /* 余额读不出来不算致命：后面靠成交后的差值判，这里只做"够不够"的前置 */
     }
+    let shortNote = '';
     if (balance !== undefined) {
       const price = st.plan?.price;
-      if (price !== undefined && balance < price) {
-        return done(`${label}：余额 ${balance} < 价格 ${price} ⇒ 这一单不做`, false);
-      }
+      // ⚠ 余额只记不挡（总方针）：它是**估算**，而且这一族失败不扣豆
+      if (price !== undefined && balance < price) shortNote = `（余额 ${balance} < 价格 ${price}，照样发）`;
       deps.store.setState(STATE_BASE, String(balance), deps.nowIso);
     }
     saveState(deps, { ...st, step: 'warm-1' });
-    return { ok: true, note: `${label}：${balance ?? '没读到'}${balance === undefined ? '（照样往下走，成交判据靠余额差）' : ''} —— 下一步预热` };
+    return { ok: true, note: `${label}：${balance ?? '没读到'}${balance === undefined ? '（照样往下走，成交判据靠余额差）' : ''}${shortNote} —— 下一步预热` };
   }
 
   // ③ 预热两枪（中间夹 500ms，顺序是契约）
@@ -303,17 +318,25 @@ export function runOrderStep(deps: TaskDeps): TaskOutcome {
     if (!puzzle || !picture) {
       return { ok: false, note: `${label}：题面上没有两张图（回 ${res.text.slice(0, 120)}）` };
     }
-    let solution;
+    // ⚠ 解不出**照样发**（总方针），用 `puzzleOffset: null` —— 即"我不知道"。
+    //   只有"编一个数字"（比如拿 0 或上一题的答案）才是 mcloud 说的"拿真豆去赌"。
+    let offset: number | null = null;
+    let why = '';
     try {
-      solution = calcPuzzleOffset(puzzle, picture);
+      const solution = calcPuzzleOffset(puzzle, picture);
+      if (usable(solution)) offset = solution.offsetX;
+      else why = `（解出 ${solution.offsetX} 但置信度只有 ${solution.confidence.toFixed(2)}）`;
     } catch (e) {
-      return done(`${label}：图解码失败（${e instanceof Error ? e.message : String(e)}）⇒ **不发下单那一枪**`, false);
+      why = `（图解码失败：${e instanceof Error ? e.message : String(e)}）`;
     }
-    if (!usable(solution)) {
-      return done(`${label}：算不出 offset（${solution.offsetX}，置信度 ${solution.confidence.toFixed(2)}）⇒ **不发下单那一枪** —— 拿 0 去凑是拿真豆去赌`, false);
-    }
-    saveState(deps, { ...st, step: 'order', offset: solution.offsetX });
-    return { ok: true, note: `${label}：offset=${solution.offsetX}（置信度 ${solution.confidence.toFixed(2)}）—— 下一步下单` };
+    saveState(deps, { ...st, step: 'order', offset: offset ?? undefined, useNull: offset === null });
+    return {
+      ok: true,
+      note:
+        offset === null
+          ? `${label}：算不出可用的 offset${why} ⇒ 用 \`puzzleOffset: null\` 照样发（那是"我不知道"，不是编一个数）—— 下一步下单`
+          : `${label}：offset=${offset}（置信度已过线）—— 下一步下单`,
+    };
   }
 
   // ⑤ 下单
@@ -325,8 +348,9 @@ export function runOrderStep(deps: TaskDeps): TaskOutcome {
     if (deviceId === '') {
       return done('没有 deviceId（它要现换，见 smid 链）—— 不带它下单会回 615，文案却像"活动太火爆"', false);
     }
-    if (st.offset === undefined) return done('内部状态缺 offset，这一单作废', false);
-    const body = `{"prizeId":${plan.prizeId},"client":"app","clientVersion":"${EXCHANGE_CLIENT_VERSION}","puzzleOffset":${st.offset},"smsCode":"","deviceId":"${deviceId}"}`;
+    // ⚠ `puzzleOffset` 可以是 **null**（"我不知道"）—— mcloud 的 `Option<i64>` 就有这条路径
+    const offsetJson = st.useNull === true || st.offset === undefined ? 'null' : String(st.offset);
+    const body = `{"prizeId":${plan.prizeId},"client":"app","clientVersion":"${EXCHANGE_CLIENT_VERSION}","puzzleOffset":${offsetJson},"smsCode":"","deviceId":"${deviceId}"}`;
     const req = signedReq(deps, {
       url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/signin/page/exchangeV3`,
       method: 'POST',
