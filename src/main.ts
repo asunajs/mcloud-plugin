@@ -15,6 +15,7 @@
 // 改完不会跟插件代码打架，插件热更新也会把覆盖保留下来。
 
 import { error, every, http_fetch, log, register_cron, register_route, warn } from 'host-api';
+import { hostFetchOptions } from './mcloud/client.ts';
 import { md5Hex, sha256Hex, toBase64, fromBase64, fromUtf8, utf8 } from './crypto/index.ts';
 import { hostStore } from './store/host.ts';
 import type { Store } from './store/types.ts';
@@ -67,12 +68,10 @@ const transport: Transport = (req) => {
   const r = applyDefaultContentType(req);
   // 返回值可能是 {status,headers,body}，也可能是失败形状 {"error":…} ——
   // client.ts 的 callOnce 负责认形状（实测踩过，见 docs/findings.md F-006）
-  return http_fetch(r.url, {
-    method: r.method,
-    headers: r.headers,
-    body: r.body,
-    timeout_ms: REQUEST_TIMEOUT_MS,
-  });
+  //
+  // ⚠ 选项组装在 `hostFetchOptions` 里（**纯函数、Node 里可测**）：那里有一条
+  //   「`tls` 只对 `https:` 生效」的守卫 —— 它是本仓 e2e 能在**默认构建**的面板上跑的原因。
+  return http_fetch(r.url, hostFetchOptions(r, REQUEST_TIMEOUT_MS));
 };
 
 /** 在沙箱里自证：密码学 + 编码 + SQLite 三件事都对。

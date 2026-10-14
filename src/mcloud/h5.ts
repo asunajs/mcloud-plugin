@@ -74,6 +74,13 @@ export interface BuiltRequest {
   method: 'GET' | 'POST' | 'PUT';
   headers: Record<string, string>;
   body: string | undefined;
+  /** TLS 后端。**不写 = 宿主默认（rustls）**。
+   *
+   *  只有「直播侧那两个主机」需要填 `'native'` —— 2026-10-14 实测它们**只给 CBC 套件**，
+   *  而 rustls 不实现 CBC ⇒ 用默认一定握手失败（面板 `legacy-tls` feature + `tls:"native"`，
+   *  见 docs/findings.md F-030/F-031）。与这两台无关的请求**别填**：
+   *  填了会在没编那个 feature 的宿主上直接报错（那是刻意的，不静默退化）。 */
+  tls?: 'rustls' | 'native';
 }
 
 /** 构造一个 H5 请求（含签名头）。 */

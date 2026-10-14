@@ -36,6 +36,43 @@ import type { BuiltRequest } from './h5.ts';
 /** 发送一个请求。返回值与 `host.http_fetch` 一致，便于直接用宿主实现。 */
 export type Transport = (req: BuiltRequest) => HostFetchResult;
 
+/** 把 [`BuiltRequest`] 变成宿主的 `http_fetch` 选项。**纯函数，为了能测**。
+ *
+ *  # 为什么 `tls` 只对 `https:` 生效
+ *
+ *  `tls` 是**协商**用的：明文请求根本没有 TLS 可谈。而宿主对 `tls:"native"` 的处理是
+ *  「**先校验选项、再发请求**」（面板 `hostapi::parse_tls_choice`）—— 也就是说，
+ *  给一个 `http://` 请求填 `tls:"native"`，在没有 `legacy-tls` 的宿主上会**直接报错**，
+ *  连"反正用不上"的机会都没有。
+ *
+ *  而本仓的 e2e **全程只打 mock**，mock 是 `http://127.0.0.1` ⇒ 这条守卫正是
+ *  「e2e 可以在默认构建的面板上跑」的原因（否则每次 e2e 都要 `--features legacy-tls`）。 */
+export function hostFetchOptions(
+  req: BuiltRequest,
+  timeoutMs: number,
+): {
+  method: string;
+  headers: Record<string, string>;
+  body: string | undefined;
+  timeout_ms: number;
+  tls?: 'rustls' | 'native';
+} {
+  const opts: {
+    method: string;
+    headers: Record<string, string>;
+    body: string | undefined;
+    timeout_ms: number;
+    tls?: 'rustls' | 'native';
+  } = {
+    method: req.method,
+    headers: req.headers,
+    body: req.body,
+    timeout_ms: timeoutMs,
+  };
+  if (req.tls !== undefined && req.url.startsWith('https:')) opts.tls = req.tls;
+  return opts;
+}
+
 export interface CallResult {
   /** HTTP 状态码；网络层直接失败时为 0 */
   status: number;

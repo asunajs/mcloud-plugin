@@ -182,7 +182,10 @@ export function gateSpecTokenRequest(
   authorization: string,
   base?: string | undefined,
 ): BuiltRequest {
-  return specTokenRequest({ toSourceId: LIVE_SOURCE_ID }, authorization, base ?? BASE_USER_YUN);
+  const req = specTokenRequest({ toSourceId: LIVE_SOURCE_ID }, authorization, base ?? BASE_USER_YUN);
+  // ① 这一枪是 `user-njs`（现代套件），本来不需要 `tls` —— **不给**，
+  //    让"哪一枪真的需要平台 TLS"这件事在代码里看得见（只有 cmlive 那几个要）。
+  return req;
 }
 
 /** ② 用 SSO 换**直播侧 JWT**。 */
@@ -192,6 +195,9 @@ export function cmpassLoginRequest(ssoToken: string, base?: string | undefined):
     method: 'POST',
     headers: { ...cmliveHeaders(), 'content-type': 'application/json' },
     body: JSON.stringify({ cmpassToken: ssoToken }),
+    // ⚠ `v.cmcc-cs.cn` **只给 CBC 套件**（2026-10-14 实测：`ECDHE-RSA-AES128-SHA`）——
+    //    rustls 不实现 CBC ⇒ 必须走平台 TLS。见 [`BuiltRequest::tls`] 与 F-030/F-031。
+    tls: 'native',
   };
 }
 
@@ -230,6 +236,8 @@ export function tabContentListRequest(
     method: 'GET',
     headers: cmliveHeaders(jwt),
     body: undefined,
+    // 同一个主机（`v.cmcc-cs.cn`）⇒ 同一条理由：只给 CBC，必须平台 TLS。
+    tls: 'native',
   };
 }
 
