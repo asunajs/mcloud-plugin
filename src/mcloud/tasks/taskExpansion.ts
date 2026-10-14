@@ -71,6 +71,8 @@ export type ExpandStep = 'read' | 'upload' | 'recheck' | 'claim' | 'done';
 
 interface ExpandState {
   step: ExpandStep;
+  /** ① 读到的 `acceptDate`（领那一枪要用它；读不到就发空值 —— 见下面那条 ⚠）。 */
+  acceptDate?: string | undefined;
   /** ① 读到的四样（用于文案与"下月可领"）。 */
   curMonthBackup?: boolean | undefined;
   curMonthTaskRecordCount?: number | undefined;
@@ -174,6 +176,7 @@ export function runExpansionStep(deps: TaskDeps): TaskOutcome {
     }
     const next: ExpandState = {
       step: 'claim',
+      acceptDate: read.acceptDate,
       curMonthBackup: read.curMonthBackup,
       curMonthTaskRecordCount: read.curMonthTaskRecordCount,
       nextMonthTaskRecordCount: read.nextMonthTaskRecordCount,
@@ -194,8 +197,19 @@ export function runExpansionStep(deps: TaskDeps): TaskOutcome {
     };
   }
 
-  // ③ 领 —— **裸 GET**（抓包 §3.6.6：不许写 `?acceptDate=`，那是另一个请求）
-  const res = callRawText(deps.transport, signedGet(deps, '/ycloud/signin/page/receiveTaskExpansion'));
+  // ③ 领 —— ⚠ **必须带 `acceptDate` 这个参数**，哪怕值是空的。
+  //
+  // 抓包 §3.6.6 说"真实客户端发的是裸 GET、别写成 `?acceptDate=`"，
+  // 而**真机实测把它推翻了**（2026-10-14）：
+  //   裸 GET        ⇒ HTTP 404（网关路由不到，回的是 nginx 的 404 页）
+  //   `?acceptDate=` ⇒ HTTP 200（`{"code":500,"msg":"云朵已过领取有效期～"}`）
+  // 抓包记的是"客户端实际发出了什么"—— 当时那个值是 `undefined`、axios 丢了键，
+  // 而那个请求**本身就是失败的**。抓包把"客户端发了什么"当成了"正确的形状"。
+  // ⇒ 参数的存在是路由条件；值从 ① 读里取，取不到就发空值（空值也能路由）。
+  const res = callRawText(
+    deps.transport,
+    signedGet(deps, `/ycloud/signin/page/receiveTaskExpansion?acceptDate=${st.acceptDate ?? ''}`),
+  );
   save(deps, { ...st, step: 'done' });
   if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? '未知失败'}` };
   let out: Record<string, unknown> | undefined;
