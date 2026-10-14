@@ -32,7 +32,10 @@ import {
   ws_recv,
   ws_send,
 } from 'host-api';
-import type { HostWs, TaskDeps, TaskOutcome } from '../mcloud/tasks/base.ts';
+import type { HostWs, TaskDeps } from '../mcloud/tasks/base.ts';
+import { drain } from '../drain.ts';
+export { drain } from '../drain.ts';
+export type { DrainResult } from '../drain.ts';
 import type { Transport } from '../mcloud/client.ts';
 import { applyDefaultContentType, hostFetchOptions } from '../mcloud/client.ts';
 import type { Store } from '../store/types.ts';
@@ -120,81 +123,3 @@ export interface TaskPayload {
   params?: unknown;
 }
 
-/** 把一条「一次一步」的状态机在**一次触发里**跑到走完。
- *
- *  # 这是整个重写的核心原语
- *
- *  老的 25 条任务里有一半是状态机（任务拓展、App 任务、领小红花、换票），
- *  每次触发只推进一步 —— 因为全局执行预算是 2 秒，一次触发发不了几个请求。
- *  于是「任务拓展」在面板上表现为一条**永远在跑**的任务，用户看不出它到底做完没有。
- *
- *  现在任务可以声明长预算（`{ budget_ms }`），就可以在一次触发里连跑多步，
- *  直到状态机自己说「没得做了」（`idle`）或者碰到上限。面板上就变成
- *  「一次运行 = 一条任务 = 一个结果」。
- *
- *  # 两道上限都要有
- *
- *  - `maxSteps`：状态机可能因为上游一直给新待办而**永不** idle
- *    （App 任务是真实例子：做完一条，读数刷新后又冒一条）。
- *  - `deadlineMs`：比任务的 `budget_ms` 略小 —— 到点主动收手，
- *    留下「还差多少」的信息，而不是被看门狗当成死循环掐断。
- *    **主动收手和被掐断在日志里长得完全不一样**，前者能继续，后者只会留下
- *    「疑似死循环」这句误导人的话。
- */
-export function drain(
-  step: (d: TaskDeps) => TaskOutcome,
-  deps: TaskDeps,
-  opts: { label: string; maxSteps: number; deadlineMs: number; startedAt?: number },
-): DrainResult {
-  const startedAt = opts.startedAt ?? Date.now();
-  const notes: string[] = [];
-  let steps = 0;
-
-  for (let i = 0; i < opts.maxSteps; i++) {
-    if (Date.now() - startedAt > opts.deadlineMs) {
-      return {
-        ok: true,
-        idle: false,
-        steps,
-        note: `${opts.label}：走到时间上限（${opts.deadlineMs}ms / ${steps} 步），下一次接着走`,
-        notes,
-      };
-    }
-    let r: TaskOutcome;
-    try {
-      r = step(deps);
-    } catch (e) {
-      // 状态机设计上不抛；真抛了就是插件自己的 bug，要说出来而不是吞掉
-      notes.push(`抛异常：${e instanceof Error ? e.message : String(e)}`);
-      return { ok: false, idle: false, steps, note: `${opts.label}：第 ${steps + 1} 步抛异常`, notes };
-    }
-    steps++;
-    notes.push(r.note);
-    if (!r.ok) {
-      return { ok: false, idle: false, steps, note: `${opts.label}：第 ${steps} 步失败 —— ${r.note}`, notes };
-    }
-    if (r.idle) {
-      // `idle` 有两种意思（「没得做」和「已经走完」），但对 drain 来说都是「停下」
-      return { ok: true, idle: true, steps, note: `${opts.label}：${steps} 步走完 —— ${r.note}`, notes };
-    }
-  }
-
-  return {
-    ok: true,
-    idle: false,
-    steps,
-    note: `${opts.label}：走到步数上限（${opts.maxSteps} 步），下一次接着走`,
-    notes,
-  };
-}
-
-export interface DrainResult {
-  ok: boolean;
-  /** 状态机说「没得做了 / 已经走完」 */
-  idle: boolean;
-  steps: number;
-  /** 一行摘要（进 runs 表的 note） */
-  note: string;
-  /** 每一步的原话（进日志，方便出问题时看清走到哪一步） */
-  notes: string[];
-}
