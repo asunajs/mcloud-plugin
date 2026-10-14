@@ -11,19 +11,20 @@
    「怎么测的、什么数、改了什么」
 
 > **状态（2026-10-14）**：签到族 8 条 + 通知 / 任务拓展 / 上传链 / 消息推送 /
-> app-task（矩阵只读 + 动作写）/ **直播口令（读 + 写 + 共享池）** 都已落地，
-> 对着 mock 在**真面板**里端到端跑通（`scripts/e2e-mock.sh`），真 ARM64 CI 全绿。
-> 27 条任务里 23 条 `implemented: true`（剩下 4 条各自那行注释写了为什么）。
+> app-task（矩阵只读 + 动作写）/ **直播一族（口令只读 + 领小红花写 + 共享口令池 +
+> 直播日程「门」）** 都已落地，对着 mock 在**真面板**里端到端跑通
+> （`scripts/e2e-mock.sh`），真 ARM64 CI 全绿。
+> 28 条任务里 24 条 `implemented: true`（剩下 4 条各自那行注释写了为什么）。
 >
 > **还剩**：
 >
-> - **直播侧的「门的三步」**（`querySpecTokenV2(017027)` → `cmpassLoginByCmToken` →
->   `tabContentList`）：直播日程与「下一场几点」靠它。池里的判据**已经就位**
->   （`noteProbe` / `nextRoomAt`），只差生产者 —— 见 `docs/findings.md` F-027 末尾那张表。
+> - **直播自动定时**（mcloud 的 `live_auto`）：现在 `live-draw` 是每 5 分钟轮询，
+>   而日程已经有了（门的读数）⇒ 可以改成"下一场几点就在那时醒"。这是**业务档**的
+>   下一块，施工图见 `docs/findings.md` F-028 末尾。
 > - **WS / 弹幕**：面板的插件宿主没有 WebSocket ⇒ **结构性不可及**（不是"还没做"）。
 > - WebUI 的细节收尾（插件配置页没有共享组件库、测试运行没有历史）。
 >
-> 决策见下，压出来的问题见 [`docs/findings.md`](docs/findings.md)（F-001 ~ F-027）。
+> 决策见下，压出来的问题见 [`docs/findings.md`](docs/findings.md)（F-001 ~ F-028）。
 
 ## 先跑起来（不用真账号）
 
@@ -38,7 +39,8 @@ npm ci && npm run all
 `e2e-mock.sh` 会起 mock 上游 + 一个面板实例，把上游指向 mock、导入一份假会话，
 然后逐条跑任务，断言：query 逐字节、备份好礼两步、签到三段式（含回查）、
 翻倍门槛、逐条领取、只领一次、**口令池的三条口径**（抓到进池 / 30 分钟窗口内不再抓 /
-够 2 条有效就停止抓取）—— 以及 **mock 侧的状态真的变了**
+够 2 条有效就停止抓取）、**门的三步**（正好四发、顺序固定、两个页签都查、去重、
+日程与「下一场」落池、凭据不回显）—— 以及 **mock 侧的状态真的变了**
 （todaySigned / curMonthBackupSignAccept / receiveList / backupCanReceive）。
 它和你跑的是**同一份脚本**，CI 里跑的也是这一份。
 
