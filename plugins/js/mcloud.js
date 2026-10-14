@@ -889,6 +889,9 @@ function rootOrDefault(base, fallback) {
 }
 
 // src/mcloud/tasks/base.ts
+function depsNowMs(deps) {
+  return (deps.nowMs ?? Date.now)();
+}
 var ERR_PREFIX = "mcloud.last_error.";
 function recordError(store2, task, note2, nowIso) {
   store2.setState(`${ERR_PREFIX}${task}`, `${note2} @ ${nowIso}`, nowIso);
@@ -3473,6 +3476,51 @@ function runAuthRefresh(deps, force = false, leadDays = DEFAULT_LEAD_DAYS) {
   };
 }
 
+// src/mcloud/exchangeTiming.ts
+var WINDOW_SECOND = 40;
+var WINDOW_TAIL_MS = 15e3;
+var FIRE_LEAD_MS = 10;
+var WINDOW_LEAD_MS = 6e4 - WINDOW_SECOND * 1e3;
+var HOUR_MS = 36e5;
+function mod(a, n) {
+  return (a % n + n) % n;
+}
+function hourStartMs(nowMs) {
+  return nowMs - mod(nowMs, HOUR_MS);
+}
+function hourKey(nowMs) {
+  return String(hourStartMs(nowMs));
+}
+var NO_WAIT = { needed: false, untilMs: 0, ms: 0 };
+function planWindowWait(nowMs) {
+  const into = mod(nowMs, HOUR_MS);
+  const startMs = (59 * 60 + WINDOW_SECOND) * 1e3;
+  if (into >= startMs || into < WINDOW_TAIL_MS) return NO_WAIT;
+  const untilMs = hourStartMs(nowMs) + startMs;
+  return { needed: true, untilMs, ms: untilMs - nowMs };
+}
+function planFireWait(nowMs, leadMs = FIRE_LEAD_MS) {
+  const into = mod(nowMs, HOUR_MS);
+  if (into < WINDOW_LEAD_MS) return NO_WAIT;
+  const untilMs = hourStartMs(nowMs) + HOUR_MS - leadMs;
+  if (untilMs <= nowMs) return NO_WAIT;
+  return { needed: true, untilMs, ms: untilMs - nowMs };
+}
+function timingReading(nowMs, leadMs = FIRE_LEAD_MS) {
+  const w = planWindowWait(nowMs);
+  const f = planFireWait(nowMs, leadMs);
+  const hourAt = hourStartMs(nowMs) + HOUR_MS;
+  return {
+    hourAt: new Date(hourAt).toISOString(),
+    msToHour: hourAt - nowMs,
+    inWindow: !w.needed,
+    msToWindow: w.ms,
+    msToFire: f.ms,
+    windowSecond: WINDOW_SECOND,
+    leadMs
+  };
+}
+
 // node_modules/fflate/esm/browser.js
 var u8 = Uint8Array;
 var u16 = Uint16Array;
@@ -4175,6 +4223,7 @@ var VISIT_LOG_KEYWORD_EXCHANGE = "newsignin_index_to_exchange";
 var VISIT_LOG_KEYWORD_EXCHANGE_TIMES = "newsignin_index_exchange_times";
 var VISIT_LOG_MARKET_NAME = "sign_in_3";
 var CODE_SLIDER_WRONG = 514;
+var PREHEAT_DELAY_MS = 500;
 function num(v) {
   if (typeof v === "number" && Number.isFinite(v)) return v;
   if (typeof v === "string" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
@@ -4218,6 +4267,34 @@ function loadState(deps) {
 function saveState(deps, st) {
   deps.store.setState(STATE_STEP, JSON.stringify(st), deps.nowIso);
 }
+var STATE_LAST_WAIT = "mcloud.exchange.order.last_wait";
+var STATE_LEAD_MS = "mcloud.exchange.order.lead_ms";
+var STATE_ORDERED_HOUR = "mcloud.exchange.order.ordered_hour";
+function exchangeLeadMs(store2) {
+  const raw = store2.getState(STATE_LEAD_MS);
+  const n = raw === void 0 || raw === null || raw === "" ? Number.NaN : Number(raw);
+  return Number.isFinite(n) ? Math.min(2e3, Math.max(0, n)) : FIRE_LEAD_MS;
+}
+function spinUntil(targetMs, deps) {
+  const nowFn = () => depsNowMs(deps);
+  const spin = deps.spin ?? (() => {
+    const t0 = Date.now();
+    while (Date.now() - t0 < 2) {
+    }
+  });
+  const started = nowFn();
+  const hardDeadline = started + MAX_WAIT_MS;
+  while (true) {
+    const now = nowFn();
+    if (now >= targetMs) return Math.max(0, now - started);
+    if (now - started > MAX_WAIT_MS || now >= hardDeadline) {
+      return Math.max(0, now - started);
+    }
+    spin();
+  }
+}
+var MAX_WAIT_MS = 61 * 6e4;
+var MAX_SPIN_MS = 3e4;
 function clearOrder(deps) {
   deps.store.setState(STATE_STEP, "", deps.nowIso);
   deps.store.setState(STATE_PLAN, "", deps.nowIso);
@@ -4297,6 +4374,21 @@ function runOrderStep(deps) {
     return { ok: true, note: `${label}：${balance ?? "没读到"}${balance === void 0 ? "（照样往下走 —— 它只是基准，不是判据）" : "，作为成交复查的基准"} —— 下一步预热` };
   }
   if (step === "warm-1" || step === "warm-2") {
+    if (step === "warm-1") {
+      const w = planWindowWait(depsNowMs(deps));
+      if (w.needed) {
+        if (w.ms > MAX_SPIN_MS) {
+          return {
+            ok: true,
+            idle: true,
+            note: `${label}：还没到窗口（还差 ${Math.round(w.ms / 1e3)}s）—— 交给下一次触发，本次零请求`
+          };
+        }
+        const waited = spinUntil(w.untilMs, deps);
+        deps.store.setState(STATE_LAST_WAIT, String(Math.round(waited)), deps.nowIso);
+      }
+    }
+    if (step === "warm-2") spinUntil(depsNowMs(deps) + PREHEAT_DELAY_MS, deps);
     const keyword = step === "warm-1" ? VISIT_LOG_KEYWORD_EXCHANGE : VISIT_LOG_KEYWORD_EXCHANGE_TIMES;
     const res = callRawText(
       deps.transport,
@@ -4360,6 +4452,17 @@ function runOrderStep(deps) {
     return { ok: true, note: `${label}：offset=${solution.offsetX}（置信度 ${solution.confidence.toFixed(2)}）—— 下一步下单` };
   }
   if (step === "order") {
+    const f = planFireWait(depsNowMs(deps), exchangeLeadMs(deps.store));
+    if (f.needed) {
+      if (f.ms > MAX_SPIN_MS) {
+        return done(
+          `${label}：离整点还有 ${Math.round(f.ms / 1e3)}s —— 这一单的计划过期了（预热与取题该在窗口内做完），不发`,
+          false
+        );
+      }
+      const waited = spinUntil(f.untilMs, deps);
+      deps.store.setState(STATE_LAST_WAIT, String(Math.round(waited)), deps.nowIso);
+    }
     const plan = st.plan;
     if (!plan) return done("内部状态缺计划，这一单作废", false);
     const sess = loadSession(deps.store);
@@ -4394,6 +4497,7 @@ function runOrderStep(deps) {
       saveState(deps, { ...st, step: "slide", round, offset: void 0 });
       return { ok: true, note: `${label}：514（滑块算错）⇒ 重取一题再来一枪（第 ${round}/${SLIDER_ROUNDS} 轮），**没有重复下单**` };
     }
+    deps.store.setState(STATE_ORDERED_HOUR, hourKey(depsNowMs(deps)), deps.nowIso);
     saveState(deps, { ...st, step: "verify" });
     return { ok: true, note: `${label}：上游回 ${JSON.stringify(env0(res.text)).slice(0, 140)} —— 下一步查余额差（**那句话不算数**）` };
   }
@@ -8207,6 +8311,12 @@ function buildReadings(deps) {
     },
     exchange: {
       recent: recentRuns(deps.store, "exchange"),
+      // 时间读数：链上一大半时间在**等**（等到窗口、压到整点）。
+      // 用户点了"现在试一次"然后看界面十几秒不动，第一反应是"卡住了" ——
+      // 这个读数就是回答那个问题的。
+      timing: timingReading(nowMs, exchangeLeadMs(deps.store)),
+      // 这一小时已经发过单了吗（那道防重复花豆的闸）
+      orderedThisHour: deps.store.getState(STATE_ORDERED_HOUR) === hourKey(nowMs),
       plan: deps.store.getState("mcloud.exchange.plan") ?? "",
       reading: readExchangeList(deps.store),
       verdictText: VERDICT_TEXT

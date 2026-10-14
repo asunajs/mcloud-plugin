@@ -450,7 +450,45 @@ def main() -> int:
                 code, body = http(f"{base}/plugins/mcloud/api/runs")
                 check("不给 id ⇒ 400", code == 400, f"http {code}")
 
-            # ---- ⑪ 线程分配 ----
+            # ---- ⑪ 兑换的时间（③-1）----
+            print("\n兑换时间（脚本断言）")
+            code, body = http(f"{base}/plugins/mcloud/api/readings")
+            d = json.loads(body) if code == 200 else {}
+            ex = d.get("exchange") or {}
+            t = ex.get("timing") or {}
+            check("兑换读数里有时间信息", isinstance(t, dict) and "msToWindow" in t, f"http {code}")
+            check("窗口开在 59:40", t.get("windowSecond") == 40, str(t.get("windowSecond")))
+            check(
+                "压整点前 10ms 发（传输耗时补偿）",
+                t.get("leadMs") == 10,
+                str(t.get("leadMs")),
+            )
+            check(
+                "三个时间量都是数字（离整点 / 离窗口 / 离发单）",
+                all(isinstance(t.get(k), (int, float)) for k in ("msToHour", "msToWindow", "msToFire")),
+                str(t),
+            )
+            check(
+                "在不在窗口里是个布尔",
+                isinstance(t.get("inWindow"), bool),
+                str(t.get("inWindow")),
+            )
+            check(
+                "小时闸的读数在（这一小时发过没有）",
+                isinstance(ex.get("orderedThisHour"), bool),
+                str(ex.get("orderedThisHour")),
+            )
+            # 任务挂的是 10 秒节拍（不是 1 小时一枪）
+            code, body = http(f"{base}/api/state")
+            state = json.loads(body) if code == 200 else {}
+            row = next((j for j in (state.get("jobs") or []) if j.get("name") == "兑换"), None)
+            check(
+                "⚠ 兑换挂的是 10 秒节拍（粗粒度等待交给调度器，细粒度才自旋）",
+                row is not None and row.get("schedule") == "@every 10s",
+                str(row.get("schedule") if row else "没找到「兑换」这条任务"),
+            )
+
+            # ---- ⑫ 线程分配 ----
             print("\n线程（脚本断言）")
             logf.flush()
             text = logpath.read_text(errors="replace")

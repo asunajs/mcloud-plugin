@@ -149,6 +149,14 @@ function el(tag, cls) {
 /** 调插件的**写**路由（要带 `x-panel: 1`，`call` 里已经处理了）。 */
 const post = (path, body) => api(`/${path}`, { method: 'POST', body, write: true });
 
+/** 把一段毫秒说成人话（「1 分 20 秒」而不是「80000」）。 */
+function fmtMs(ms) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s} 秒`;
+  const m = Math.floor(s / 60);
+  return `${m} 分 ${s % 60} 秒`;
+}
+
 const setText = (id, v) => {
   const el = $(id);
   if (el) el.textContent = v === undefined || v === null ? '' : String(v);
@@ -279,7 +287,15 @@ function renderDaily(d) {
 function renderExchange(e) {
   renderRecent('ex-recent', 'ex-steps', e.recent);
   setText('ex-hero', e.plan ? `要换：${e.plan}` : '还没设兑换目标');
-  setText('ex-sub', e.plan ? '' : '设一个之后它才会去下单。');
+  // 第二行回答"现在是什么状态" —— 抢兑这条链大部分时间在**等**，
+  // 而"界面不动"和"卡住了"看起来一模一样，所以要说出来。
+  const t = e.timing || {};
+  const bits = [];
+  if (e.orderedThisHour) bits.push('这一小时已经试过了');
+  else if (t.inWindow) bits.push('正在抢兑窗口里');
+  else if (t.msToWindow > 0) bits.push(`离窗口还有 ${fmtMs(t.msToWindow)}`);
+  if (t.leadMs) bits.push(`压整点前 ${t.leadMs}ms 发`);
+  setText('ex-sub', e.plan ? bits.join(' · ') : '设一个之后它才会去下单。');
 
   const plan = $('ex-plan');
   if (plan && document.activeElement !== plan) plan.value = e.plan || '';
