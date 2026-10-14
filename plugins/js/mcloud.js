@@ -4668,8 +4668,12 @@ var GROUPS = [
   },
   {
     id: "cloud-write",
-    title: "网盘写入",
-    why: "会往你的网盘里写文件 / 建删外链 / 发邮件 —— 想清楚再点",
+    title: "要用网盘",
+    // ⚠ 措辞改过（2026-10-14）：原先写的是"会往你的网盘里写文件……想清楚再点"，
+    //    把**任务的目的**说成了风险。可任务的定义就是改上游状态 ——
+    //    "上传任务不上传文件"根本不是完成任务，"做任务"不落到上游那也不叫做过。
+    //    写文件不是副作用，**它就是这一组任务本身**。要提醒的只是"它会占用你的网盘"。
+    why: "这一组任务**本身就是往网盘写**（上传文件 / 建外链 / 发邮件）—— 不是副作用，是它的内容。会在你的网盘里留下东西",
     order: 5
   },
   {
@@ -4742,10 +4746,12 @@ var TASK_META = [
   // 它虽然记账，但**基本幂等**：同一条口令再领一次回 `200112`（已兑换过），不会重复发奖。
   // 所以 risk 是 `ledger` 而不是 `irreversible`。
   { name: "live-draw", title: "领小红花（写）", group: "activity", kind: "Action", risk: "ledger", missed: "skip", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "partial", note: "六步链 9+N 个请求，一次调用一步；**默认关**。同口令重领回 200112 ⇒ 基本幂等。⚠ 请求头形状未在真账号上验过" },
-  // ── 网盘写入（未实现）──
-  { name: "app-task", title: "App 任务（做任务）", group: "cloud-write", kind: "Action", risk: "write-cloud", missed: "skip", deps: ["jwt"], batch: false, hidden: false, implemented: false, note: "会上传 / 建删外链 / 发邮件" },
-  { name: "task-expansion", title: "任务拓展", group: "cloud-write", kind: "Action", risk: "write-cloud", missed: "skip", deps: ["jwt"], batch: false, hidden: false, implemented: false, note: "会往网盘写文件（延期领取那一口已经接了，这是它的另一部分）" },
-  { name: "ai-avatar", title: "AI 头像生成与抽奖", group: "cloud-write", kind: "Action", risk: "write-cloud", missed: "skip", deps: ["basic+jwt"], batch: false, hidden: false, implemented: false, note: "往网盘写图 —— 原实现里默认就是**关**的" },
+  // ── 要用网盘（未实现；原因见各条的 note，**不是**"它会写网盘"）──
+  // ⚠ 未实现 —— 而理由**不是**"它会写网盘"（那是它的内容，不是风险）。
+  //    真理由：App 原生族（上传 / 分享 / 固定入口）的报文形状还没抓全。
+  { name: "app-task", title: "App 任务（做任务）", group: "cloud-write", kind: "Action", risk: "write-cloud", missed: "skip", deps: ["jwt"], batch: false, hidden: false, implemented: false, note: '未实现的原因**不是**"它会写网盘"（上传/建外链/发邮件正是这个任务的内容），而是 App 原生族的报文形状没抓全' },
+  { name: "task-expansion", title: "任务拓展", group: "cloud-write", kind: "Action", risk: "write-cloud", missed: "skip", deps: ["jwt"], batch: false, hidden: false, implemented: false, note: "延期领取那一口已经接了；剩下的是写网盘那半边（写文件是它的内容，不是副作用）" },
+  { name: "ai-avatar", title: "AI 头像生成与抽奖", group: "cloud-write", kind: "Action", risk: "write-cloud", missed: "skip", deps: ["basic+jwt"], batch: false, hidden: false, implemented: false, note: '生成的头像要落到网盘才能抽奖 —— 那是它的流程，不是副作用。原实现里默认关的是**开关**，不是"要不要写"' },
   // ── 高风险（未实现）──
   // ✅ 2026-10-14 实现并**真机跑通**（50 豆换到「移动云盘100G云空间月卡」，上游回 oid，
   //    余额 9238 → 9188 正好少 50）。
