@@ -21,6 +21,10 @@
   --accent: #0969da;
   --ok: #1a7f37;
   --bad: #cf222e;
+  /* 浅底：给「这一行有状态」用。⚠ 要**很浅** —— 它是背景，
+     正文还得在上面读得清；十行都刷成饱和色等于没标重点。 */
+  --ok-soft: #eaf6ec;
+  --bad-soft: #fdeeef;
   --radius: 8px;
 }
 
@@ -34,6 +38,10 @@
     --accent: #4493f8;
     --ok: #3fb950;
     --bad: #f85149;
+    /* 深色下的浅底是**更暗**而不是更亮 —— 直接用上面那两个浅色会在
+       深色主题里糊成一片白，正文看不见。 */
+    --ok-soft: #0f2417;
+    --bad-soft: #2a1416;
   }
 }
 
@@ -197,6 +205,105 @@ body {
   flex-wrap: wrap;
   align-items: center;
   margin: 8px 0;
+}
+
+/* 一行的三个位置：名字（左边、可伸展）、状态（中间）、说明（右边）。
+   固定成这三段之后，一列行看上去是**对齐的表格**，而不是一堆散字。 */
+/* ⚠ `flex-basis: 0`（不是 `auto`）是关键：用 `auto` 时名字会**先占满一整行**，
+   于是状态、耗时、按钮全被挤到下面几行 —— 第一版就是这样，"看"按钮单独
+   掉到第三行。`basis: 0` 让三个元素在同一行里按比例分宽度。 */
+.row-name {
+  flex: 1 1 0;
+  min-width: 0;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row-state {
+  flex: 0 0 auto;
+  color: var(--dim);
+  font-size: 0.9em;
+  white-space: nowrap;
+}
+
+/* 耗时单独一档：等宽数字，这样一列行的秒数是对齐的 */
+.row-dur {
+  flex: 0 0 auto;
+  color: var(--dim);
+  font-size: 0.85em;
+  font-variant-numeric: tabular-nums;
+  min-width: 3.5em;
+  text-align: right;
+}
+
+/* 一整行宽度的补充说明（摘要那一句） */
+.row-note {
+  flex: 1 1 100%;
+  color: var(--dim);
+  font-size: 0.88em;
+  line-height: 1.5;
+  padding-left: 2px;
+}
+
+/* 「已配」「成了」这一类：左边一道色条 + 浅底。**不刷满整块** ——
+   十行都刷成绿的等于没标重点。 */
+.row.is-on {
+  border-left: 3px solid var(--ok);
+  background: var(--ok-soft);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  padding-left: 9px;
+}
+
+/* ── 步骤列表（一次运行的细节） ── */
+
+.steps {
+  list-style: none;
+  margin: 8px 0;
+  padding: 0;
+}
+
+.steps li {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 5px 9px;
+  border-left: 3px solid var(--line);
+  margin: 3px 0;
+  font-size: 0.92em;
+  line-height: 1.5;
+}
+
+/* ⚠ 固定宽度（不是 `auto` + `min-width`）：名字长短不一时，`auto` 会让
+   每行的说明从**不同位置**开始 —— 一列看下来是锯齿状的。
+   固定之后名字那一列是对齐的，长的名字在这一列里换行。 */
+.steps .step-name {
+  flex: 0 0 9.5em;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.steps .step-note {
+  flex: 1 1 auto;
+  color: var(--dim);
+}
+
+/* 三态：成功 / 失败 / **没做事**。
+   ⚠ 「没做事」（条件不成立，比如今天已经签过了）必须与"失败"分开显示 ——
+   混在一起的话，一个正常跳过会被看成出错，用户就会去查一个不存在的问题。 */
+.steps li.is-ok {
+  border-left-color: var(--ok);
+}
+
+.steps li.is-bad {
+  border-left-color: var(--bad);
+  background: var(--bad-soft);
+}
+
+.steps li.is-idle {
+  border-left-color: var(--line);
+  opacity: 0.75;
 }
 
 .btn {

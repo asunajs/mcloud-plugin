@@ -119,7 +119,23 @@ export function http_fetch(url: string, options?: FetchOptions): FetchResult | F
 export interface RouteRequest {
   method: string;
   path: string;
-  query: Record<string, string>;
+  /** ⚠⚠ **原始查询串**，不是解析好的对象。
+   *
+   *  实测（2026-10-15，面板 `src/web.rs:1519`）：
+   *
+   *      GET /plugins/qprobe/api/echo?id=abc&x=1
+   *      → { "type": "string", "value": "id=abc&x=1" }
+   *
+   *  面板那一行是 `req.uri().query().unwrap_or("")` —— 拿的是**整段字符串**。
+   *
+   *  这一条踩过：这份声明原来写的是 `Record<string, string>`（面板不发 d.ts，
+   *  这份是插件自己写的），于是 `req.query['id']` **类型检查通过、
+   *  运行时永远是 `undefined`** —— 表现是"路由收到了请求但读不到参数"。
+   *  更坏的是 `Object.keys('id=abc')` 在 JS 里**不报错**，给的是字符下标
+   *  `["0","1","2",…]`，所以连"读错了"都看不出来。
+   *
+   *  要按名取值就用 `parseQuery()`（见 `src/mcloud/query.ts`）。 */
+  query: string;
   headers: Record<string, string>;
   body: string;
 }
