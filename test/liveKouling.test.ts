@@ -19,6 +19,7 @@ import {
   isKoulingHead,
   isQuestion,
   parseCodeInput,
+  trimKoulingTail,
 } from '../src/mcloud/liveKouling.ts';
 
 interface KoulingVector {
@@ -84,8 +85,11 @@ test('契约：`口令1:A口令2:B`（无空白）**不切分**，整段算一�
   assert.deepEqual(extractKouling('口令1:A口令2:B'), ['A口令2:B']);
 });
 
-test('契约：`小红花口令：AAA 无随机` 同时命中格式 1 与格式 2 ⇒ 两条候选', () => {
-  assert.deepEqual(extractKouling('小红花口令：AAA 无随机'), ['AAA 无随机', 'AAA']);
+test('契约：`小红花口令：AAA 无随机` ⇒ **去尾巴后两条分支给同一条，去重后一条**', () => {
+  // ⭐ 提取逻辑的**优化**（2026-10-14 实机 + 用户口径）：末尾的收批标记要去掉。
+  //   原来的逻辑会解出 `AAA 无随机` 那条，拿去领白跑一枪（200108）—— 那不是"另一种实现"，
+  //   是**多了一条错的口令**。
+  assert.deepEqual(extractKouling('小红花口令：AAA 无随机'), ['AAA']);
 });
 
 test('契约：观众的提问要被滤掉（否则每次都白跑一枪 200108）', () => {
@@ -166,4 +170,36 @@ test('输入口：空、超长、超条数都要挡住并说清原因', () => {
   const many = parseCodeInput(Array.from({ length: 11 }, (_, i) => `口令${i}`).join('\n'));
   assert.equal(many.ok, false);
   assert.match(many.error ?? '', /最多/);
+});
+
+
+test('末尾的收批标记要去掉：` 无` / ` 无随机` / `无随机口令`', () => {
+  // ⚠ 2026-10-14 实机：真收到过 `秋游影集轻松做 无`，当时被当成口令去领 ⇒ 上游回 200108。
+  //   三种形态都在一个出口处理（`extractKouling` 收尾那一步），分支再多也不会漏。
+  const cases: Array<[string, string]> = [
+    ['小红花口令：秋游影集轻松做 无', '秋游影集轻松做'],
+    ['小红花口令：秋游影集轻松做 无随机', '秋游影集轻松做'],
+    ['小红花口令：秋游影集轻松做无随机口令', '秋游影集轻松做'],
+    // 叠写（收尾标记被转述两次）也要去干净
+    ['口令是秋游美好存云盘 无随机 无', '秋游美好存云盘'],
+  ];
+  for (const [input, want] of cases) {
+    assert.deepEqual(extractKouling(input), [want], `输入「${input}」`);
+  }
+  assert.equal(trimKoulingTail('秋游影集轻松做 无'), '秋游影集轻松做');
+  assert.equal(trimKoulingTail('秋游影集轻松做无随机口令'), '秋游影集轻松做');
+  // 只余标记 ⇒ 空串（会被滤掉，不当口令）
+  assert.equal(trimKoulingTail('无随机'), '');
+  assert.equal(trimKoulingTail(' 无'), '');
+});
+
+test('⚠ 不误伤"尾字本身是无"的真口令（`无` 那条**要求前面有空白**）', () => {
+  // 这种错不会报错，只会安静地换回 200108 —— 所以判据宁可窄一点。
+  assert.equal(trimKoulingTail('相伴到永远无'), '相伴到永远无');
+  assert.deepEqual(extractKouling('口令是相伴到永远无'), ['相伴到永远无']);
+});
+
+test('人贴进来的那一路（逐行原文）也要去尾巴', () => {
+  const r = parseCodeInput('秋游影集轻松做 无\n秋游美好存云盘');
+  assert.deepEqual(r.codes, ['秋游影集轻松做', '秋游美好存云盘'], JSON.stringify(r));
 });
