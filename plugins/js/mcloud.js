@@ -4558,6 +4558,18 @@ function hasKouling(text) {
 function isKoulingMarker(text) {
   return /无随机/.test(text);
 }
+function trimKoulingTail(code) {
+  let out = code.trim();
+  for (; ; ) {
+    const before = out;
+    out = out.replace(/\s*无随机口令$/, "");
+    out = out.replace(/(?:^|\s+)无随机$/, "");
+    out = out.replace(/(?:^|\s+)无$/, "");
+    out = out.trim();
+    if (out === before) break;
+  }
+  return out;
+}
 var TRAILING_PARTICLE = /[呀啊吧呢嘛哦]+$/;
 var QUESTION_WORDS = ["什么", "啥", "多少", "几", "哪个", "哪些"];
 function isQuestion(code) {
@@ -4581,16 +4593,16 @@ function extractKouling(msg) {
     if (isKoulingHead(line)) {
       const next = lines[i + 1];
       if (next !== void 0) {
-        const content = next.trim();
-        if (content && !/^(?:复制)?口令/.test(content) && !/无随机/.test(content)) {
+        const content = trimKoulingTail(next.trim());
+        if (content && !/^(?:复制)?口令/.test(content)) {
           result.push(content);
         }
       }
       continue;
     }
     for (const match of line.matchAll(SAME_LINE_PATTERN)) {
-      const code = (match[1] ?? "").trim();
-      if (code && !/无随机/.test(code)) result.push(code);
+      const code = trimKoulingTail((match[1] ?? "").trim());
+      if (code) result.push(code);
     }
   }
   const m1 = msg.match(/口令是(.+)/);
@@ -4605,7 +4617,7 @@ function extractKouling(msg) {
       }
     }
   }
-  return [...new Set(result)].filter((code) => !isQuestion(code));
+  return [...new Set(result.map(trimKoulingTail))].filter((code) => code !== "" && !isQuestion(code));
 }
 var NAMED_ENTITIES = {
   amp: "&",
@@ -4684,7 +4696,7 @@ function parseCodeInput(raw) {
   if (extracted.length > 0) {
     return finish(extracted, `按弹幕格式解出 ${extracted.length} 条`, true);
   }
-  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter((l) => l !== "");
+  const lines = text.split(/\r?\n/).map((l) => trimKoulingTail(l)).filter((l) => l !== "");
   if (lines.length === 0) {
     return { ok: false, codes: [], how: "", matchedFormat: false, error: "先贴一条口令" };
   }
@@ -5176,8 +5188,8 @@ function loadLiveCodes(store2) {
 function saveLiveCodes(store2, raw, nowIso) {
   const parsed = parseCodeInput(raw);
   if (!parsed.ok) return { ok: false, codes: [], how: "", error: parsed.error ?? "解不出口令" };
-  const cut = parsed.codes.flatMap((c) => splitKouling(c));
-  const kept = cut.filter((c) => !isQuestion(c) && !isKoulingMarker(c));
+  const cut = parsed.codes.flatMap((c) => splitKouling(c)).map(trimKoulingTail);
+  const kept = cut.filter((c) => c !== "" && !isQuestion(c) && !isKoulingMarker(c));
   const limited = checkCodeLimits(kept);
   if (!limited.ok) return { ok: false, codes: [], how: "", error: limited.error ?? "解不出口令" };
   const codes = limited.codes;
