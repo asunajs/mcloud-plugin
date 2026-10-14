@@ -92,7 +92,57 @@ import {
   setClaimEnabled,
 } from './tasks/liveDraw.ts';
 import { loadWakePlan, planTrusted } from './tasks/liveAutoTask.ts';
+import { qrSvg } from '../crypto/qr.ts';
+import { callOnce } from './client.ts';
+import { uuidV4 } from './rand.ts';
+import {
+  CODES,
+  PC_AUTH_PREFIX,
+  QR_TTL_SECONDS,
+  applyPoll,
+  authFromUserInfo,
+  classifyPoll,
+  classifySendSms,
+  decryptUserInfo,
+  isSuccessCode,
+  parseLoginEnvelope,
+  parseSliderPuzzle,
+  pcClient,
+  qrExpired,
+  qrPayload,
+  qrThirdloginBody,
+  sendSmsCodeBody,
+  sendSmsCodeBodyWithSlider,
+  sendSmsCodeRequest,
+  sliderAnswer,
+  sliderPuzzleBody,
+  sliderPuzzleRequest,
+  smsThirdloginBody,
+  passwordThirdloginBody,
+  maskPhone,
+  userDomainIdFrom,
+  thirdloginRequest,
+  type LoginEnvelope,
+  type PcPlatform,
+} from './login.ts';
+import {
+  STATE_LOGIN_BASE,
+  STATE_LOGIN_DOMAIN,
+  STATE_LOGIN_PREF,
+  clearLogin,
+  loadDeviceId,
+  loadQrSession,
+  loadSmsSession,
+  loginReading,
+  resetDeviceId,
+  saveQrSession,
+  saveSmsSession,
+  setSmsSlider,
+  startQrSession,
+  startSmsSession,
+} from './loginSession.ts';
 import type { Store } from '../store/types.ts';
+import type { BuiltRequest } from './h5.ts';
 import type { Transport } from './client.ts';
 import type { HostWs } from './tasks/base.ts';
 
@@ -209,6 +259,19 @@ function buildReadings(deps: RouteDeps): Record<string, unknown> {
       accounts: view.accounts,
       session: sessionStatus(deps.store, nowIso),
     },
+    // 登录会话（三种方式的进行中状态）。挂在 `account` 块里 ——
+    // 界面上的「登录」那一节就是它。
+    //
+    // ⚠ `svg` 要在这里也带上：界面**只调 `/readings`**（见 app.js 的文件头），
+    //   所以码必须由这个接口给出来。只在 `/login/qr/start` 上给的话，
+    //   `act()` 之后的 `load()` 会用"没有 svg 的读数"把码**擦掉** ——
+    //   表现是"点了扫码登录，二维码框是空的"。
+    login: (() => {
+      const r = loginReading(deps.store, nowMs, (sid, did) =>
+        qrPayload(pcClient(loginPlatform(deps.store), did), sid),
+      );
+      return { ...r, qr: r.qr === null ? null : { ...r.qr, svg: qrSvg(r.qr.payload) } };
+    })(),
     daily: {
       // 「今天跑完了吗」看标记；「上次跑成什么样」看读数。两个都要，
       // 因为它们回答的是不同的问题（用户真正会问的是后面那个）。
@@ -260,8 +323,102 @@ function buildReadings(deps: RouteDeps): Record<string, unknown> {
       listenRoom: loadListenRoom(deps.store) ?? 0,
       imBase: loadImBase(deps.store),
       listenSeconds: loadListenSeconds(deps.store),
+      // 登录主机是**另一个口子**：登录那一族接口在 `user-njs.yun.139.com`，
+      // 与云盘业务主机不是同一台。混用的话指到 mock 之后登录仍然打真上游。
+      loginBase: loadLoginBase(deps.store),
+      loginPlatform: loginPlatform(deps.store),
+      loginDomain: deps.store.getState(STATE_LOGIN_DOMAIN) ?? '',
     },
   };
+}
+
+
+// ══════════════════════════════ 登录（②-3） ══════════════════════════════
+//
+// # 为什么登录是**一步一步**的，而任务不是
+//
+// 用户的要求是「任务不要一次一步」。但登录恰恰必须一步一步 —— 因为
+// **状态机是用户本人**：出码 → 用户掏出手机扫 → 用户在手机上点确认 → 才拿得到凭据。
+// 中间那几步的时间由用户决定，硬塞进一个"从头跑到尾"的函数只能变成
+// "函数停在等用户输入"。所以推进的触发者是**用户点按钮**，不是定时器。
+//
+// 账密是例外：没有用户交互，所以它**一个路由就完成**（`/login/pwd`）。
+//
+// # 落盘
+//
+// 会话与设备指纹都在 `loginSession.ts` 落库。设备指纹**必须**落盘：
+// 服务端按它定位"这次扫码是哪台设备"，每次重新生成的表现是轮询永远停在
+// `200059541` —— 看起来像"码过期了"。
+
+/** 登录那一族接口的主机。**与云盘业务主机不是同一台**，所以它有自己的口子。
+ *
+ *  混用业务基址的话，指到 mock 之后登录仍然打真上游 —— 而登录打真上游的
+ *  表现是"账号密码不对"。 */
+function loadLoginBase(store: Pick<Store, 'getState'>): string {
+  return store.getState(STATE_LOGIN_BASE) ?? '';
+}
+
+/** 一次登录请求：发出去 → 解析信封。**不抛**（把失败当读数带回来）。 */
+function loginCall(
+  deps: RouteDeps,
+  req: BuiltRequest,
+): { ok: boolean; env: LoginEnvelope | null; error: string; tookMs: number } {
+  const res = callOnce(deps.transport, req);
+  if (!res.ok) return { ok: false, env: null, error: res.error ?? `http ${res.status}`, tookMs: res.tookMs };
+  try {
+    return { ok: true, env: parseLoginEnvelope(res.raw), error: '', tookMs: res.tookMs };
+  } catch (e) {
+    return { ok: false, env: null, error: e instanceof Error ? e.message : String(e), tookMs: res.tookMs };
+  }
+}
+
+/** 一次链路追踪 id（`x-yun-tid`）。每次请求新生成一个。 */
+function newTid(): string {
+  return uuidV4();
+}
+
+/** 平台：跟着当前账号的记忆走，没有就用 windows（版本号更"主流"）。 */
+function loginPlatform(store: Pick<Store, 'getState'>): PcPlatform {
+  const pref = store.getState(STATE_LOGIN_PREF);
+  return pref === 'macos' ? 'macos' : 'windows';
+}
+
+/** 登录成功之后：解 `userInfo` → 拼凭据 → 落账号。
+ *
+ *  ⚠ 手机号**显式当标签传进去**：`upsertAccount` 会用 `phoneOf` 从凭据里抠，
+ *  而 PC 凭据是 `Basic base64(...)` —— 那个函数现在能解 base64 了，
+ *  但这里已经有权威值（`userInfo.account`），没必要让它再猜一次。
+ *
+ *  ⚠ `userDomainId` **只有登录响应里才有**，别的地方拿不到 ⇒ 这里不存就永远丢了。 */
+function adoptLoginResult(
+  deps: RouteDeps,
+  encrypted: string,
+  note: string,
+): { ok: boolean; note: string; account?: { id: string; label: string } } {
+  let info: Record<string, unknown>;
+  try {
+    info = decryptUserInfo(encrypted);
+  } catch (e) {
+    return { ok: false, note: `登录成功了，但结果解不开：${e instanceof Error ? e.message : String(e)}` };
+  }
+  let auth: string;
+  try {
+    auth = authFromUserInfo(info, PC_AUTH_PREFIX);
+  } catch (e) {
+    return { ok: false, note: `登录结果缺字段：${e instanceof Error ? e.message : String(e)}` };
+  }
+
+  const phone = typeof info['account'] === 'string' ? info['account'] : '';
+  const up = upsertAccount(deps.store, auth, deps.now(), phone === '' ? undefined : maskPhone(phone));
+  // 新登录的账号一律**启用**，并且**切成当前账号** —— 用户刚扫码进来，
+  // 想的就是"用这个号"，还要他再去列表里点一次是把动作做两遍。
+  selectAccount(deps.store, up.account.id, deps.now());
+  const domain = userDomainIdFrom(info);
+  if (domain !== '') deps.store.setState(STATE_LOGIN_DOMAIN, domain, deps.now());
+
+  clearLogin(deps.store);
+  deps.log(`登录成功：${up.account.label}${up.created ? '（新账号）' : '（已有账号，凭据已更新）'}`);
+  return { ok: true, note: `${note} · ${up.account.label}`, account: { id: up.account.id, label: up.account.label } };
 }
 
 /** 路由表。四个入口遍历它去调用真的 `register_route`。 */
@@ -284,6 +441,261 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
       method: 'GET',
       handler: () => json(200, { caps: sandboxCaps(), hasBigInt: hasBigInt() }),
     },
+
+    // ── 登录：读数 ──────────────────────────────────────────────────
+    {
+      // 登录页的读数（一次给全）。凭据**不进这里** —— 只给掩码过的形状。
+      path: `${base}/login/state`,
+      method: 'GET',
+      handler: () =>
+        json(200, {
+          ...(() => {
+            const r = loginReading(deps.store, Date.parse(deps.now()), (sid, did) =>
+              qrPayload(pcClient(loginPlatform(deps.store), did), sid),
+            );
+            // 二维码由**插件这一侧**渲染成 SVG（浏览器里没有二维码库）
+            return { ...r, qr: r.qr === null ? null : { ...r.qr, svg: qrSvg(r.qr.payload) } };
+          })(),
+          platform: loginPlatform(deps.store),
+        }),
+    },
+
+    // ── 登录：扫码 ──────────────────────────────────────────────────
+    {
+      // 出码。**不发任何上游请求** —— 客户端源码里就是字符串拼接，
+      // 实测 1622 个 body 文件里也没有对应的取码接口。
+      path: `${base}/login/qr/start`,
+      method: 'POST',
+      handler: () => {
+        const nowMs = Date.parse(deps.now());
+        const s = startQrSession(deps.store, nowMs, deps.now());
+        const c = pcClient(loginPlatform(deps.store), s.deviceId);
+        const payload = qrPayload(c, s.sessionId);
+        deps.log('扫码登录：已出码，等手机扫');
+        return json(200, {
+          sessionId: s.sessionId,
+          payload,
+          // **在插件这一侧编码**、界面只画格子：浏览器里没有二维码库，
+          // 在那里现写一个等于把"码对不对"交给前端（见 crypto/qr.ts 的文件头）。
+          svg: qrSvg(payload),
+          expiresInMs: QR_TTL_SECONDS * 1000,
+          note: '用手机上的移动云盘 App 扫这个码',
+        });
+      },
+    },
+    {
+      // 轮一次。**"还没扫"不是错误** —— 轮询期间绝大多数响应都是它。
+      path: `${base}/login/qr/poll`,
+      method: 'POST',
+      handler: () => {
+        const s = loadQrSession(deps.store);
+        if (s === null) return json(400, { error: '没有正在进行的扫码登录（先点「扫码登录」）' });
+        const nowMs = Date.parse(deps.now());
+        if (qrExpired(s, nowMs)) {
+          return json(200, { stop: true, ok: false, note: '二维码过期了，点「扫码登录」重新出码' });
+        }
+        const c = pcClient(loginPlatform(deps.store), s.deviceId);
+        const r = loginCall(
+          deps,
+          thirdloginRequest(c, newTid(), qrThirdloginBody(c, s.sessionId), loadLoginBase(deps.store)),
+        );
+        if (!r.ok || r.env === null) {
+          // ⚠ 网络失败**不当作登录失败**：会话还在，用户再点一次就好。
+          return json(200, { stop: false, ok: true, note: `还没问到上游（${r.error}），再点一次`, retry: true });
+        }
+        const out = classifyPoll(r.env);
+        const applied = applyPoll(s, out, nowMs);
+        saveQrSession(deps.store, applied.session, deps.now());
+        if (applied.encrypted !== undefined) {
+          const adopted = adoptLoginResult(deps, applied.encrypted, '扫码登录成功');
+          return json(200, { ...applied, ...adopted, stop: true });
+        }
+        if (applied.stop) deps.log(`扫码登录：${applied.note}`);
+        return json(200, { stop: applied.stop, ok: applied.ok, note: applied.note, scanned: applied.session.scanned });
+      },
+    },
+
+    // ── 登录：短信 ──────────────────────────────────────────────────
+    {
+      path: `${base}/login/sms/start`,
+      method: 'POST',
+      handler: (req) => {
+        const b = readBody(req) as { phone?: unknown };
+        const phone = typeof b.phone === 'string' ? b.phone.trim() : '';
+        if (!/^1\d{10}$/.test(phone)) return json(400, { error: '手机号要 11 位、以 1 开头' });
+        const s = startSmsSession(deps.store, phone, Date.parse(deps.now()), deps.now());
+        return json(200, { phone: s.phone, note: '点「发验证码」' });
+      },
+    },
+    {
+      // 发码。**可能被风控拦下** ⇒ 回 `need-slider`，那时界面要去取图。
+      path: `${base}/login/sms/send`,
+      method: 'POST',
+      handler: () => {
+        const s = loadSmsSession(deps.store);
+        if (s === null) return json(400, { error: '没有正在进行的短信登录（先填手机号）' });
+        const c = pcClient(loginPlatform(deps.store), loadDeviceId(deps.store, deps.now()));
+        // 已经有滑块挑战 ⇒ 带上去（这是**异常路径**，首次发码被拦下才走）
+        let body: Record<string, unknown>;
+        if (s.slider !== null) {
+          let answer: string;
+          try {
+            answer = sliderAnswer(s.slider);
+          } catch (e) {
+            return json(400, { error: `滑块图解不开：${e instanceof Error ? e.message : String(e)}` });
+          }
+          body = sendSmsCodeBodyWithSlider(c, s.phone, s.random, answer);
+        } else {
+          body = sendSmsCodeBody(c, s.phone, s.random);
+        }
+        const r = loginCall(deps, sendSmsCodeRequest(c, newTid(), body, loadLoginBase(deps.store)));
+        if (!r.ok || r.env === null) return json(502, { error: `发码请求没成功：${r.error}` });
+        const out = classifySendSms(r.env);
+        if (out.kind === 'sent') {
+          const next = { ...s, sent: true, lastNote: '验证码已发出' };
+          saveSmsSession(deps.store, next, deps.now());
+          deps.log('短信登录：验证码已发出');
+          return json(200, { sent: true, remainGetTimes: out.remainGetTimes, note: '看手机短信，把 6 位验证码填进来' });
+        }
+        if (out.kind === 'need-slider' || out.kind === 'slider-exhausted') {
+          // ⚠ 两种都要**重新取图**：`slider-exhausted` 是"同一张图校验失败次数超限"，
+          //   旧挑战已经作废，复用它只会一直失败到把配额烧光。
+          const next = setSmsSlider(deps.store, s, null, deps.now());
+          saveSmsSession(deps.store, next, deps.now());
+          deps.log(`短信登录：要过滑块（${out.kind === 'slider-exhausted' ? '旧图已作废，' : ''}去取新图）`);
+          return json(200, {
+            needSlider: true,
+            exhausted: out.kind === 'slider-exhausted',
+            note: out.kind === 'slider-exhausted' ? '这张滑块图作废了，重新取一张' : '要先过滑块，去取图',
+          });
+        }
+        return json(200, { ok: false, note: `发码没成：${out.message || `code=${out.code}`}`, code: out.code });
+      },
+    },
+    {
+      // 取滑块拼图。**缺口坐标是解出来的**，不需要图像识别。
+      path: `${base}/login/sms/slider`,
+      method: 'POST',
+      handler: () => {
+        const s = loadSmsSession(deps.store);
+        if (s === null) return json(400, { error: '没有正在进行的短信登录（先填手机号）' });
+        const c = pcClient(loginPlatform(deps.store), loadDeviceId(deps.store, deps.now()));
+        const r = loginCall(
+          deps,
+          sliderPuzzleRequest(c, newTid(), sliderPuzzleBody(s.phone), loadLoginBase(deps.store)),
+        );
+        if (!r.ok || r.env === null) return json(502, { error: `取滑块失败：${r.error}` });
+        if (!isSuccessCode(r.env.code)) {
+          return json(200, { ok: false, note: `取滑块被拒：${r.env.message || `code=${r.env.code}`}` });
+        }
+        let puzzle;
+        try {
+          puzzle = parseSliderPuzzle(r.env);
+        } catch (e) {
+          return json(502, { error: `滑块响应看不懂：${e instanceof Error ? e.message : String(e)}` });
+        }
+        // 先自检一遍能不能解出坐标 —— 解不开就别把图发给用户白拖
+        let answer: string;
+        try {
+          answer = sliderAnswer(puzzle);
+        } catch (e) {
+          return json(502, { error: `滑块缺口解不开（上游换字段了？）：${e instanceof Error ? e.message : String(e)}` });
+        }
+        setSmsSlider(deps.store, s, puzzle, deps.now());
+        return json(200, {
+          ok: true,
+          background: puzzle.backgroundB64,
+          piece: puzzle.puzzleB64,
+          picWidth: puzzle.picWidth,
+          puzzleWidth: puzzle.puzzleWidth,
+          answer,
+          note: '答案已经解出来了，点「带滑块发码」',
+        });
+      },
+    },
+    {
+      // 提交验证码。
+      path: `${base}/login/sms/submit`,
+      method: 'POST',
+      handler: (req) => {
+        const b = readBody(req) as { code?: unknown };
+        const code = typeof b.code === 'string' ? b.code.trim() : '';
+        if (!/^\d{4,8}$/.test(code)) return json(400, { error: '验证码要 4–8 位数字' });
+        const s = loadSmsSession(deps.store);
+        if (s === null) return json(400, { error: '没有正在进行的短信登录（先填手机号）' });
+        const c = pcClient(loginPlatform(deps.store), loadDeviceId(deps.store, deps.now()));
+        const r = loginCall(
+          deps,
+          thirdloginRequest(c, newTid(), smsThirdloginBody(c, s.phone, code), loadLoginBase(deps.store)),
+        );
+        if (!r.ok || r.env === null) return json(502, { error: `提交请求没成功：${r.error}` });
+        const out = classifyPoll(r.env);
+        if (out.kind === 'success') {
+          const adopted = adoptLoginResult(deps, out.encrypted, '短信登录成功');
+          return json(200, { ...adopted, stop: true });
+        }
+        const note =
+          r.env.code === CODES.SMS_CODE_WRONG
+            ? '验证码不对（或者过期了），再看一眼短信'
+            : `登录没成：${out.kind === 'other' ? out.message || `code=${out.code}` : out.kind}`;
+        return json(200, { ok: false, stop: false, note });
+      },
+    },
+
+    // ── 登录：账密 ──────────────────────────────────────────────────
+    {
+      // 账密登录**一个路由就完成** —— 它没有用户交互，所以不是状态机。
+      path: `${base}/login/pwd`,
+      method: 'POST',
+      handler: (req) => {
+        const b = readBody(req) as { phone?: unknown; password?: unknown };
+        const phone = typeof b.phone === 'string' ? b.phone.trim() : '';
+        const password = typeof b.password === 'string' ? b.password : '';
+        if (phone === '') return json(400, { error: '要填手机号' });
+        if (password === '') return json(400, { error: '要填口令' });
+        const c = pcClient(loginPlatform(deps.store), loadDeviceId(deps.store, deps.now()));
+        const r = loginCall(
+          deps,
+          thirdloginRequest(c, newTid(), passwordThirdloginBody(c, phone, password), loadLoginBase(deps.store)),
+        );
+        if (!r.ok || r.env === null) return json(502, { error: `登录请求没成功：${r.error}` });
+        const out = classifyPoll(r.env);
+        if (out.kind === 'success') {
+          const adopted = adoptLoginResult(deps, out.encrypted, '账密登录成功');
+          return json(200, { ...adopted, stop: true });
+        }
+        // ⚠ 错误信息里**不许回显口令**（日志与响应都不行）
+        const note =
+          r.env.code === CODES.LOGIN_FAILED
+            ? '上游说登录失败 —— 手机号或口令不对（也可能是设备头被拒）'
+            : `登录没成：${out.kind === 'other' ? out.message || `code=${out.code}` : out.kind}`;
+        return json(200, { ok: false, stop: true, note });
+      },
+    },
+
+    // ── 登录：取消 / 换设备 ─────────────────────────────────────────
+    {
+      path: `${base}/login/cancel`,
+      method: 'POST',
+      handler: () => {
+        clearLogin(deps.store);
+        deps.log('登录：已取消');
+        return json(200, { ok: true, note: '已取消' });
+      },
+    },
+    {
+      // 「我的码一直扫不出来」的救命按钮。
+      // ⚠ 换设备指纹**必须同时清会话** —— 旧会话的 dID 是旧指纹，继续轮只会
+      //   一直 200059541（而这看起来像"码过期了"）。
+      path: `${base}/login/device/reset`,
+      method: 'POST',
+      handler: () => {
+        const fresh = resetDeviceId(deps.store, deps.now());
+        deps.log('登录：换了设备指纹（旧会话已清）');
+        return json(200, { deviceId: fresh, note: '设备指纹已换新，旧会话已清 —— 重新出码' });
+      },
+    },
+
     {
       // **七个区块的读数一次给全** —— 界面只调这一个
       path: `${base}/readings`,
@@ -392,6 +804,22 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
           saveLiveUrl(deps.store, v, deps.now());
           deps.log(v ? `口令主页已改为 ${v}` : '口令主页已恢复为默认（发布方的小红书主页）');
           out.liveUrl = v || XIAOHONGSHU_KOULING_PROFILE_URL;
+        }
+
+        if ('loginBase' in body) {
+          const v = typeof body.loginBase === 'string' ? body.loginBase.trim() : '';
+          if (v && !/^https?:\/\//.test(v)) {
+            return json(400, { error: 'loginBase 要以 http:// 或 https:// 开头（清空 = 用真主机）' });
+          }
+          deps.store.setState(STATE_LOGIN_BASE, v.replace(/\/+$/, ''), deps.now());
+          deps.log(v ? `登录主机已改为 ${v}` : '登录主机已恢复为真主机');
+          out.loginBase = v || '(真主机)';
+        }
+
+        if ('loginPlatform' in body) {
+          const v = body.loginPlatform === 'macos' ? 'macos' : 'windows';
+          deps.store.setState(STATE_LOGIN_PREF, v, deps.now());
+          out.loginPlatform = v;
         }
 
         if ('gateBase' in body) {
