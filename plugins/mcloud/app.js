@@ -205,6 +205,56 @@ async function loadExchange() {
   $('exchange-tiers').textContent = tiers ? '各档计数：' + tiers : '';
 }
 
+// ──────────────────────────── 账号（多账号：列表 + 当前）
+
+async function loadAccounts() {
+  const d = await req('/plugins/mcloud/api/accounts');
+  const card = $('accounts-card');
+  if (!d.ok) {
+    card.hidden = true;
+    return;
+  }
+  card.hidden = false;
+  const list = d.accounts || [];
+  $('accounts-sub').textContent = list.length
+    ? `${list.length} 个 · 当前 ${d.current || '（没选，用单独那格凭据）'}`
+    : '还没有账号（用上面那一格单独凭据）';
+  $('accounts-hint').textContent = list.length
+    ? '点一行就是"选它当当前"。删除只删本地这一份，不影响上游。'
+    : '还没有账号 —— 贴一串原生凭据点「添加」。';
+  $('accounts-list').innerHTML = list.length
+    ? '<ul class="ok-list">' +
+      list
+        .map(
+          (a) =>
+            `<li>${a.current ? '<b>当前</b> · ' : ''}<code>${esc(a.label)}</code>` +
+            ` <span class="hint">${esc(a.masked)}</span>` +
+            ` <button class="btn acc-pick" data-id="${esc(a.id)}">选它</button>` +
+            ` <button class="btn acc-del" data-id="${esc(a.id)}">删</button></li>`,
+        )
+        .join('') +
+      '</ul>'
+    : '';
+}
+
+async function accountsOp(body) {
+  const d = await req('/plugins/mcloud/api/accounts', { method: 'POST', body });
+  if (!d.ok) {
+    showError('账号操作失败：' + d.error);
+    return;
+  }
+  showError('');
+  await loadAccounts();
+  await loadLive();
+}
+
+async function addAccount() {
+  const v = $('acc-input').value.trim();
+  if (v === '') return;
+  await accountsOp({ op: 'add', auth: v });
+  $('acc-input').value = '';
+}
+
 // ──────────────────────────── 直播口令（只读那半 + 人给的口令）
 
 async function loadLive() {
@@ -691,6 +741,7 @@ async function saveBase() {
 
 $('refresh').addEventListener('click', () => {
   loadGroups();
+  loadAccounts();
   loadSession();
   loadMatrix();
   loadExchange();
@@ -710,9 +761,20 @@ $('live-clear').addEventListener('click', clearLiveCodes);
 $('live-claim').addEventListener('change', toggleClaim);
 $('live-draw').addEventListener('click', drawNow);
 $('live-listen').addEventListener('click', listenNow);
+$('acc-add').addEventListener('click', addAccount);
+// ⚠ 列表里的按钮是**渲染出来的**，只能用事件委托（挂上去的时候它们还不存在）
+$('accounts-list').addEventListener('click', (e) => {
+  const t = e.target;
+  if (!(t instanceof HTMLElement)) return;
+  const id = t.dataset.id;
+  if (id === undefined) return;
+  if (t.classList.contains('acc-pick')) accountsOp({ op: 'select', id });
+  else if (t.classList.contains('acc-del')) accountsOp({ op: 'remove', id });
+});
 $('live-auto').addEventListener('click', autoNow);
 
 loadGroups();
+loadAccounts();
 loadSession();
 loadMatrix();
 loadExchange();
