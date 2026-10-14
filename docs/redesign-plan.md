@@ -111,10 +111,14 @@
   顺带记下两个实测结论（`README.md` §16.26）：cron 比 `@every` 晚 3-9ms（根因未定位，
   不影响 mcloud）；A/B 对照的两个任务**时间网格必须对齐**，否则测的是运气。
 
-- [ ] **①-2 任务带参数**
-  `jobs` 加 `params`（JSON）列；`register_cron(name, expr, fn, { params })`；
-  payload 里带 `params`；面板建的任务也能带。
-  验收：同一个 handler 用两组不同 `params` 各建一条任务，互不串味；跨重启保留。
+- [x] **①-2 任务带参数**　✅ `rust-plugin-panel` `b94a111`（第二十三轮）
+  做法：`register_cron(name, expr, fn, { params })`（Python 是第四个位置参数）；
+  `jobs.params` 列存 JSON 文本；payload 里给**解析好的值**；面板 `POST /api/jobs` 也能带。
+  `sync_jobs` 收敛 params（账号列表只有插件知道）；加载期校验可序列化。
+  验收：`python3 scripts/params_check.py` —— 三条同处理函数的任务各拿各的、不串味、
+  **重启不丢**、面板路径通。
+  踩坑：改 pyhost 引导脚本的参数个数时漏改 `argc != 2` 的判据，所有 `.py` 插件一起
+  加载失败，冒烟 6 项红。**教训：pyhost 只有冒烟能跑，改完必须立刻冒烟。**
 
 - [ ] **①-3 插件侧载侧边栏入口**
   SPA 侧边栏（`web/index.html` 的 `<nav id="nav">`）支持插件注入一项。
@@ -190,3 +194,4 @@
 |---|---|---|
 | 2026-10-14 | 与用户逐条定稿规格，写出本计划 | `a301856` |
 | 2026-10-14 | ①-1 插件声明式 worker 归属（`worker_hint`） | `rust-plugin-panel` `7d6e41a` |
+| 2026-10-14 | ①-2 任务带参数（`opts.params`） | `rust-plugin-panel` `b94a111` |
