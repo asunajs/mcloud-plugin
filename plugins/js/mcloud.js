@@ -191,6 +191,24 @@ function extractSetCookies(headers) {
   }
   return out;
 }
+function mergeCookieJar(existing, incoming) {
+  const jar = /* @__PURE__ */ new Map();
+  const eat = (s) => {
+    for (const part of s.split(";")) {
+      const p = part.trim();
+      if (!p) continue;
+      const eq = p.indexOf("=");
+      if (eq <= 0) continue;
+      const k = p.slice(0, eq).trim();
+      const v = p.slice(eq + 1).trim();
+      if (v === "" || /^(deleted|expired)$/i.test(v)) jar.delete(k);
+      else jar.set(k, v);
+    }
+  };
+  eat(existing);
+  for (const c of incoming) eat(c);
+  return [...jar.entries()].map(([k, v]) => `${k}=${v}`).join("; ");
+}
 
 // src/crypto/bytes.ts
 function utf8(s) {
@@ -901,6 +919,68 @@ function clearError(store2, task, nowIso) {
 }
 function sessionHeaders(s) {
   return { jwt: s.jwt, deviceId: s.deviceId, userAgent: s.userAgent, cookie: s.cookie };
+}
+function runTask(deps, spec, judge2) {
+  const late = deps.lateMs ?? 0;
+  if (spec.skipIfLaterThanMs !== void 0 && late > spec.skipIfLaterThanMs) {
+    const mins = Math.round(late / 6e4);
+    const note2 = `错过太久（晚了 ${mins} 分钟，阈值 ${Math.round(spec.skipIfLaterThanMs / 6e4)} 分钟）→ 主动跳过`;
+    recordError(deps.store, spec.task, note2, deps.nowIso);
+    return { ok: true, skipped: true, note: note2 };
+  }
+  const session = loadSession(deps.store);
+  if (!session) {
+    const note2 = "未登录：state 里没有会话（见 docs/howto-session.md）";
+    recordError(deps.store, spec.task, note2, deps.nowIso);
+    return { ok: false, note: note2 };
+  }
+  const method = spec.method ?? EP_METHOD[spec.endpoint] ?? "GET";
+  const url = resolveUrl(spec.endpoint, deps.baseUrl) + (spec.query ? `?${spec.query}` : "");
+  const req = buildH5Request({
+    url,
+    method,
+    body: spec.body,
+    contentType: spec.contentType,
+    referer: REFERER_SIGN_IN,
+    showLoading: SHOW_LOADING,
+    isDeviceId: spec.isDeviceId ?? method === "POST",
+    saltKey: 1,
+    marketName: spec.marketName,
+    session: sessionHeaders(session)
+  });
+  const res = callOnce(deps.transport, req);
+  if (res.setCookies.length > 0) {
+    saveSession(
+      deps.store,
+      { ...session, cookie: mergeCookieJar(session.cookie, res.setCookies) },
+      deps.nowIso
+    );
+  }
+  if (!res.ok) {
+    const explained = spec.explainFail?.(res.env, res.error ?? "");
+    if (explained !== void 0) {
+      recordError(deps.store, spec.task, explained, deps.nowIso);
+      return { ok: false, note: explained };
+    }
+    const note2 = res.error ?? "未知失败";
+    if (spec.okWhenError?.(note2)) {
+      clearError(deps.store, spec.task, deps.nowIso);
+      return { ok: true, note: `上游说「${note2}」—— 按"已经完成"处理（见 okWhenError）` };
+    }
+    recordError(deps.store, spec.task, note2, deps.nowIso);
+    return { ok: false, note: note2 };
+  }
+  const verdict = judge2(res.env, res);
+  if (verdict.snapshot !== void 0 && spec.stateKey) {
+    deps.store.setState(
+      spec.stateKey,
+      JSON.stringify({ at: deps.nowIso, lateMs: late, value: verdict.snapshot }),
+      deps.nowIso
+    );
+  }
+  if (verdict.ok) clearError(deps.store, spec.task, deps.nowIso);
+  else recordError(deps.store, spec.task, verdict.note, deps.nowIso);
+  return { ok: verdict.ok, note: verdict.note };
 }
 
 // src/mcloud/session.ts
@@ -3520,6 +3600,37 @@ function timingReading(nowMs, leadMs = FIRE_LEAD_MS) {
     leadMs
   };
 }
+var DEFAULT_TARGET_HOUR = 10;
+var STATE_TARGET_HOUR = "mcloud.exchange.target_hour";
+function targetHourOf(store2) {
+  const raw = store2.getState(STATE_TARGET_HOUR);
+  if (raw === void 0 || raw === null) return DEFAULT_TARGET_HOUR;
+  const t = raw.trim();
+  if (t === "") return null;
+  const n = Number(t);
+  return Number.isInteger(n) && n >= 0 && n <= 23 ? n : DEFAULT_TARGET_HOUR;
+}
+function planTargetWait(nowMs, targetHour, tailMs = WINDOW_TAIL_MS) {
+  if (targetHour === null) return planWindowWait(nowMs);
+  const d = new Date(nowMs);
+  const localHour = d.getHours();
+  const minutesIntoHour = d.getMinutes() * 6e4 + d.getSeconds() * 1e3 + d.getMilliseconds();
+  if (localHour === targetHour && minutesIntoHour < tailMs) return NO_WAIT;
+  if (localHour === mod(targetHour - 1, 24) && minutesIntoHour >= (59 * 60 + WINDOW_SECOND) * 1e3) {
+    return NO_WAIT;
+  }
+  const openAt = (base) => {
+    const t = new Date(base.getTime());
+    t.setHours(mod(targetHour - 1, 24), 59, WINDOW_SECOND, 0);
+    return t.getTime();
+  };
+  let target = openAt(d);
+  if (target <= nowMs) {
+    const t = new Date(nowMs + 24 * 36e5);
+    target = openAt(t);
+  }
+  return { needed: true, untilMs: target, ms: target - nowMs };
+}
 
 // node_modules/fflate/esm/browser.js
 var u8 = Uint8Array;
@@ -4127,6 +4238,30 @@ function usable(r) {
 
 // src/mcloud/tasks/exchangeList.ts
 var STATE_LIST = "mcloud.exchangelist.last";
+var STATE_RAW = "mcloud.exchangelist.raw";
+var LIMIT_AVAILABLE = 0;
+var LIMIT_TOMORROW = 1;
+var LIMIT_EXCHANGED = 2;
+var LIMIT_GROUP_EXCHANGED = 4;
+function verdictOf(p) {
+  if (p.onLine !== void 0 && p.onLine !== 1) return "offline";
+  if (p.monthLimit !== void 0 && p.received !== void 0 && p.received >= p.monthLimit) {
+    return "month-limit";
+  }
+  if (p.limit === void 0) return "unknown";
+  switch (p.limit) {
+    case LIMIT_AVAILABLE:
+      return "ok";
+    case LIMIT_TOMORROW:
+      return "tomorrow";
+    case LIMIT_EXCHANGED:
+      return "exchanged";
+    case LIMIT_GROUP_EXCHANGED:
+      return "group-exchanged";
+    default:
+      return "unknown";
+  }
+}
 var VERDICT_TEXT = {
   ok: "可兑",
   tomorrow: "明日再来",
@@ -4200,6 +4335,45 @@ function parseExchangeList(result) {
   groups.sort((a, b) => (Number(a.group) || 0) - (Number(b.group) || 0));
   all.sort((a, b) => (a.groupId ?? 0) - (b.groupId ?? 0) || (a.prizeId ?? 0) - (b.prizeId ?? 0));
   return { groups, prizes: all };
+}
+function summarizeList(prizes) {
+  const byVerdict = {};
+  const ok = [];
+  for (const p of prizes) {
+    const v = verdictOf(p);
+    byVerdict[v] = (byVerdict[v] ?? 0) + 1;
+    if (v === "ok" && ok.length < 20) {
+      ok.push({ prizeId: p.prizeId, name: p.name, price: p.price, groupId: p.groupId });
+    }
+  }
+  return { total: prizes.length, okCount: byVerdict.ok ?? 0, byVerdict, ok };
+}
+function runExchangeList(deps) {
+  return runTask(
+    deps,
+    {
+      task: "exchange-list",
+      endpoint: "exchangeList",
+      method: "GET",
+      marketName: "sign_in_3",
+      isDeviceId: false,
+      stateKey: STATE_RAW
+    },
+    (env) => {
+      const { groups, prizes } = parseExchangeList(env.result);
+      const s = summarizeList(prizes);
+      const reading = { at: deps.nowIso, groups: groups.length, ...s };
+      deps.store.setState(STATE_LIST, JSON.stringify(reading), deps.nowIso);
+      const names = s.ok.slice(0, 3).map(
+        (x) => x.price === void 0 ? x.name ?? "#" + x.prizeId : `${x.name ?? "#" + x.prizeId}(${x.price}豆)`
+      );
+      return {
+        ok: true,
+        note: `兑换清单：${groups.length} 组 / ${s.total} 件，可兑 ${s.okCount} 件` + (names.length ? `（${names.join("、")}）` : "") + (s.byVerdict.unknown ? `；判不了 ${s.byVerdict.unknown} 件` : ""),
+        snapshot: reading
+      };
+    }
+  );
 }
 function readExchangeList(store2) {
   const raw = store2.getState(STATE_LIST);
@@ -4295,6 +4469,28 @@ function spinUntil(targetMs, deps) {
 }
 var MAX_WAIT_MS = 61 * 6e4;
 var MAX_SPIN_MS = 3e4;
+function snapshotOrder(store2) {
+  return {
+    step: store2.getState(STATE_STEP),
+    base: store2.getState(STATE_BASE)
+  };
+}
+function restoreOrder(store2, snap, nowIso) {
+  if (snap.step === null) store2.setState(STATE_STEP, "", nowIso);
+  else store2.setState(STATE_STEP, snap.step, nowIso);
+  if (snap.base === null) store2.setState(STATE_BASE, "", nowIso);
+  else store2.setState(STATE_BASE, snap.base, nowIso);
+}
+function currentStep(store2) {
+  const raw = store2.getState(STATE_STEP);
+  if (raw === void 0 || raw === null || raw === "") return null;
+  try {
+    const v = JSON.parse(raw);
+    return typeof v.step === "string" ? v.step : null;
+  } catch {
+    return null;
+  }
+}
 function clearOrder(deps) {
   deps.store.setState(STATE_STEP, "", deps.nowIso);
   deps.store.setState(STATE_PLAN, "", deps.nowIso);
@@ -5006,6 +5202,178 @@ function recentRuns(store2, task, limit = 5) {
   return readRunsOf(store2, task).slice(0, limit).map(summarize);
 }
 
+// src/drain.ts
+function drain(step, deps, opts) {
+  const startedAt = opts.startedAt ?? Date.now();
+  const notes = [];
+  let steps = 0;
+  let lastNote = "";
+  for (let i = 0; i < opts.maxSteps; i++) {
+    if (i > 0 && opts.more && !opts.more()) {
+      return {
+        ok: true,
+        idle: true,
+        steps,
+        note: `${opts.label}：${steps} 步走完${lastNote ? ` —— ${lastNote}` : ""}`,
+        notes
+      };
+    }
+    if (Date.now() - startedAt > opts.deadlineMs) {
+      return {
+        ok: true,
+        idle: false,
+        steps,
+        note: `${opts.label}：走到时间上限（${opts.deadlineMs}ms / ${steps} 步），下一次接着走`,
+        notes
+      };
+    }
+    let r;
+    try {
+      r = step(deps);
+    } catch (e) {
+      notes.push(`抛异常：${e instanceof Error ? e.message : String(e)}`);
+      return { ok: false, idle: false, steps, note: `${opts.label}：第 ${steps + 1} 步抛异常`, notes };
+    }
+    steps++;
+    lastNote = r.note;
+    notes.push(r.note);
+    if (!r.ok) {
+      return { ok: false, idle: false, steps, note: `${opts.label}：第 ${steps} 步失败 —— ${r.note}`, notes };
+    }
+    if (r.idle || r.skipped) {
+      return { ok: true, idle: true, steps, note: `${opts.label}：${steps} 步走完 —— ${r.note}`, notes };
+    }
+  }
+  return {
+    ok: true,
+    idle: false,
+    steps,
+    note: `${opts.label}：走到步数上限（${opts.maxSteps} 步），下一次接着走`,
+    notes
+  };
+}
+
+// src/mcloud/tasks/exchangeRun.ts
+var BUDGET_MS = 9e4;
+var DEADLINE_MS = BUDGET_MS - 1e4;
+var PLAN_KEY = "mcloud.exchange.plan";
+function runExchange(deps, opts = {}) {
+  const started = Date.now();
+  const steps = [];
+  const add = (name, ok, note2, idle = false) => {
+    steps.push({ name, ok, note: note2, idle });
+  };
+  const finish3 = (ok, note2) => {
+    if (opts.dryRun) {
+      add("干跑", true, "只看了能不能兑，**一枪都没发**（真下单走定时那一场）", true);
+    }
+    return {
+      ok,
+      note: note2,
+      detail: steps.map((x) => `${x.name}：${x.ok ? "" : "失败 "}${x.note}`),
+      steps
+    };
+  };
+  const targetHour = targetHourOf(deps.store);
+  const gate = planTargetWait(depsNowMs(deps), targetHour);
+  if (!opts.dryRun && gate.needed && gate.ms > MAX_SPIN_MS) {
+    add(
+      "时间闸",
+      true,
+      targetHour === null ? `还没到窗口（还差 ${Math.round(gate.ms / 1e3)}s）—— 本次零请求` : `不是 ${targetHour} 点那一场（还差 ${Math.round(gate.ms / 1e3)}s）—— 本次零请求`,
+      true
+    );
+    return finish3(true, `还没到抢兑时间（还差 ${Math.round(gate.ms / 1e3)}s），本次零请求`);
+  }
+  try {
+    const l = runExchangeList(deps);
+    add("清单", l.ok, l.note);
+  } catch (e) {
+    add("清单", false, `抛异常 ${e instanceof Error ? e.message : String(e)}`);
+  }
+  const plan = deps.store.getState(PLAN_KEY) ?? "";
+  if (plan === "") {
+    add("下单", true, "没有设兑换目标（设置里填「兑换目标」之后才会下单）", true);
+    return finish3(true, "没有设兑换目标（设置里填「兑换目标」之后才会下单）");
+  }
+  if (!deps.store.getState("mcloud.exchange.order.step")) {
+    const s = startOrder(deps, plan);
+    add("起单", s.ok, s.note);
+    if (!s.ok) {
+      return finish3(false, s.note);
+    }
+  }
+  const accounts = loadAccounts(deps.store);
+  const multi = accounts.length > 1;
+  const snaps = /* @__PURE__ */ new Map();
+  const offsets = [];
+  let r;
+  if (multi) {
+    for (const acc of accounts) {
+      selectAccount(deps.store, acc.id, deps.nowIso);
+      clearOrder(deps);
+      startOrder(deps, plan);
+      const a = drain(runOrderStep, deps, {
+        label: "兑换",
+        maxSteps: 8,
+        deadlineMs: Math.min(DEADLINE_MS, started + 3e4),
+        startedAt: started,
+        // 停在 `order` 之前 —— 下单那一枪留给阶段 B（那时才压整点）
+        more: () => currentStep(deps.store) !== "order" && currentStep(deps.store) !== null
+      });
+      snaps.set(acc.id, snapshotOrder(deps.store));
+      add(
+        `准备 ${maskAuth(loadAuthRaw(deps.store) ?? "")}`,
+        a.ok,
+        `${a.note}（已推到只差下单）`
+      );
+    }
+  }
+  const fireStart = Date.now();
+  for (const acc of accounts) {
+    if (multi) {
+      const snap = snaps.get(acc.id);
+      if (snap === void 0) continue;
+      selectAccount(deps.store, acc.id, deps.nowIso);
+      restoreOrder(deps.store, snap, deps.nowIso);
+    }
+    const one = drain(runOrderStep, deps, {
+      label: "兑换",
+      maxSteps: 10,
+      deadlineMs: DEADLINE_MS,
+      startedAt: started,
+      // ⚠ 干跑：停在 `order` **之前** —— 一枪都不发
+      ...opts.dryRun ? { more: () => currentStep(deps.store) !== "order" && currentStep(deps.store) !== null } : {}
+    });
+    if (multi) {
+      offsets.push(`${maskAuth(loadAuthRaw(deps.store) ?? "")} +${Date.now() - fireStart}ms`);
+      add(
+        `下单 ${maskAuth(loadAuthRaw(deps.store) ?? "")}`,
+        one.ok,
+        `${one.note} · 离第一枪 ${Date.now() - fireStart}ms`
+      );
+    }
+    if (!multi) {
+      r = one;
+      break;
+    }
+  }
+  r ?? (r = { ok: true, idle: true, steps: 0, note: "没有账号（先登录一个）", notes: [] });
+  if (multi) {
+    add(
+      "整点这一批",
+      offsets.length > 0,
+      offsets.length > 0 ? `串行发出，各账号离第一枪：${offsets.join("、")}` : "没有账号可发"
+    );
+  }
+  for (const line of r.notes) {
+    const i = line.indexOf("：");
+    if (i < 0) add("兑换", true, line);
+    else add(line.slice(0, i), true, line.slice(i + 1));
+  }
+  return finish3(r.ok, `${r.note}（用时 ${((Date.now() - started) / 1e3).toFixed(1)}s）`);
+}
+
 // src/mcloud/liveFlower.ts
 var LIVE_ROOM_ORIGIN = "https://m.mcloud.139.com";
 var USER_INFO_PATH = "/ycloud/liveRoomFeedback/user/info";
@@ -5516,7 +5884,7 @@ function codeList(v) {
 function sourceOf(v) {
   return v === "danmaku" || v === "xiaohongshu" || v === "manual" || v === "auto" ? v : "auto";
 }
-function verdictOf(v) {
+function verdictOf2(v) {
   return v === "claimed" || v === "alreadyClaimed" || v === "invalid" || v === "expired" || v === "other" ? v : void 0;
 }
 function claimsOf(v) {
@@ -5526,7 +5894,7 @@ function claimsOf(v) {
     if (codes === null || typeof codes !== "object" || Array.isArray(codes)) continue;
     const mine = {};
     for (const [code, verdict] of Object.entries(codes)) {
-      const v2 = verdictOf(verdict);
+      const v2 = verdictOf2(verdict);
       if (v2 !== void 0) mine[code] = v2;
     }
     out[account] = mine;
@@ -8315,8 +8683,13 @@ function buildReadings(deps) {
       // 用户点了"现在试一次"然后看界面十几秒不动，第一反应是"卡住了" ——
       // 这个读数就是回答那个问题的。
       timing: timingReading(nowMs, exchangeLeadMs(deps.store)),
+      // 到目标时刻那一场还有多久（界面第一行用）
+      toTargetMs: planTargetWait(nowMs, targetHourOf(deps.store)).ms,
       // 这一小时已经发过单了吗（那道防重复花豆的闸）
       orderedThisHour: deps.store.getState(STATE_ORDERED_HOUR) === hourKey(nowMs),
+      // 目标时刻（几点抢）。`null` = 每小时都试。
+      targetHour: targetHourOf(deps.store),
+      leadMs: exchangeLeadMs(deps.store),
       plan: deps.store.getState("mcloud.exchange.plan") ?? "",
       reading: readExchangeList(deps.store),
       verdictText: VERDICT_TEXT
@@ -8888,6 +9261,29 @@ function mcloudRoutes(deps) {
           deps.log(v ? `上游基址已改为 ${v}` : "上游基址已恢复为真上游");
           out.baseUrl = v || "(真上游)";
         }
+        if ("targetHour" in body) {
+          const raw = body.targetHour;
+          const v = typeof raw === "number" ? String(raw) : typeof raw === "string" ? raw.trim() : "";
+          if (v !== "") {
+            const n = Number(v);
+            if (!Number.isInteger(n) || n < 0 || n > 23) {
+              return json(400, { error: "兑换时刻要是 0~23 的整点（清空 = 每小时都试）" });
+            }
+          }
+          deps.store.setState(STATE_TARGET_HOUR, v, deps.now());
+          deps.log(v === "" ? "兑换时刻：每小时都试" : `兑换时刻：每天 ${v} 点`);
+          out.targetHour = v;
+        }
+        if ("leadMs" in body) {
+          const raw = body.leadMs;
+          const n = typeof raw === "number" ? raw : Number(String(raw ?? "").trim());
+          if (!Number.isFinite(n) || n < 0 || n > 2e3) {
+            return json(400, { error: "提前量要是 0~2000 毫秒（网络慢就调大）" });
+          }
+          deps.store.setState(STATE_LEAD_MS, String(Math.round(n)), deps.now());
+          deps.log(`兑换提前量：${Math.round(n)}ms`);
+          out.leadMs = String(Math.round(n));
+        }
         if ("liveUrl" in body) {
           const v = typeof body.liveUrl === "string" ? body.liveUrl.trim() : "";
           if (v && !/^https?:\/\//.test(v)) {
@@ -9113,6 +9509,29 @@ function mcloudRoutes(deps) {
         });
         deps.log(`换票：${r.note}`);
         return json(200, { ...r, exchange: loadExchange(deps.store) });
+      }
+    },
+    {
+      // 「现在试一次」—— **干跑**：清单 / 余额 / 预热 / 取题解滑块都做完，
+      // 到"只差下单"就停，**一枪都不发**。
+      //
+      // ⚠ 为什么不做成"现在就发一枪"：下单**不可逆**（没有幂等键，发出去就扣真豆）。
+      //   用户点这个按钮想知道的是「**现在能不能兑**」—— 判据过不过、余额够不够、
+      //   滑块算不算得出来。这些**不需要发那一枪**就能答。
+      //   真下单只走定时那一场（`@every 10s` + 时间闸 + 压整点）。
+      path: `${base}/exchange/try`,
+      method: "POST",
+      handler: () => {
+        const d = {
+          store: deps.store,
+          transport: deps.transport,
+          nowIso: deps.now(),
+          baseUrl: loadBaseUrl(deps.store)
+        };
+        clearOrder(d);
+        const r = runExchange(d, { dryRun: true });
+        deps.log(`兑换试一次：${r.note}`);
+        return json(200, r);
       }
     },
     {
