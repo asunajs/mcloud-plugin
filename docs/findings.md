@@ -2233,3 +2233,47 @@ test/liveListen.test.ts：
 这一场直播在 17:34 之前就结束了 ⇒ **「听到就领」的端到端（无人值守那一段）没跑到**。
 已验的是：节拍（e2e 钉住）、空闲零请求（真机读数）、门关着之后的睡眠（真机日志）。
 **没验的**是"弹幕来 → 口令进池 → 30 秒内自动领到"这一整条 —— 要等下一场开播。
+
+---
+
+## F-042 · 多账号（第 1 片）：把"读凭据"收成一个口子，旧的单凭据照原样工作（2026-10-14）
+
+mcloud 是**账号列表**（一条定时带着它要跑的账号），而这个插件到现在都是**单账号**
+（一份凭据放在 `mcloud.h5.auth`，十几处任务直接读它）。多账号要动几乎所有任务的状态键，
+所以**分片**做。这是第 1 片：**只立"列表 + 当前账号"这一层**，不碰任何任务的行为。
+
+### 做法：一个间接层
+
+```text
+新：src/mcloud/accounts.ts
+   账号列表（`mcloud.accounts`，JSON）+ 当前账号（`mcloud.account.current`）
+   id 用手机号（人能对上），认不出就用凭据的短哈希；`maskAuth` 只给界面看掩码
+
+改：src/mcloud/sessionExchange.ts 导出 `loadAuthRaw(store)`
+   优先取列表里的**当前账号**；列表为空 / 没设当前 ⇒ 回落 `STATE_AUTH` 那一格
+   ⇒ 全仓库十几处读凭据的地方都改走它 ⇒ **任何调用点都不用知道现在是几账号**
+```
+
+⭐ 这一步的价值全在"**零行为改变**"上：改完 485 项测试全绿 ⇒ 说明间接层没有偷偷
+改变任何现有行为，多账号的开关只是"列表里有没有东西"。
+
+### ⚠ 踩到的坑（记下来，因为它差点变成最难查的那类 bug）
+
+我用批量替换把十几处 `getState(STATE_AUTH) ?? ''` 换成 `loadAuthRaw(store)` ——
+**把 `loadAuthRaw` 自己内部那行回落也换掉了**：
+
+```text
+export function loadAuthRaw(store) {
+  const cur = currentAccount(store);
+  if (cur !== undefined) return cur.auth;
+  return loadAuthRaw(store);      ← 自己调自己 ⇒ RangeError: Maximum call stack size exceeded
+}
+```
+
+⇒ 14 条测试当场红。**这就是"批量替换不能扫到它自己要装的那个函数"** 的实例；
+那一行现在是整个函数的地板，注释里写死了"不许再写成 `loadAuthRaw(store)`"。
+
+### 这一片**没做**的（下一片）
+
+- 路由 `/api/accounts`（增删选）+ 界面那一段 —— 现在只能用状态格直接操作；
+- 逐账号跑（听弹幕/领取按列表逐个跑）—— mcloud 的"一条定时带账号"那套还没接。

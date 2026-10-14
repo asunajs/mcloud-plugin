@@ -55,7 +55,7 @@ import {
 import { applyRoomRequest, parseApplyRoom } from '../liveIm.ts';
 import { wakeSleepMs } from './liveAutoTask.ts';
 import { parseSsoToken } from '../h5session.ts';
-import { STATE_AUTH } from '../sessionExchange.ts';
+import { STATE_AUTH, loadAuthRaw } from '../sessionExchange.ts';
 import { parseAuthorization } from '../authRefresh.ts';
 import { extractKouling, hasKouling } from '../liveKouling.ts';
 import { loadPoolFrom, note, savePoolTo } from '../koulingPool.ts';
@@ -429,7 +429,7 @@ function stepFail(deps: ListenDeps, st: ListenState, note: string): TaskOutcome 
 /** ①+②：换 SSO 再换直播侧 JWT。**必须同一次调用**（SSO 只活几分钟 —— 门那边实测过）。 */
 function handshakeStep(deps: ListenDeps, st: ListenState): TaskOutcome {
   const base = loadGateBaseOf(deps.store);
-  const auth = deps.store.getState(STATE_AUTH) ?? '';
+  const auth = loadAuthRaw(deps.store);
   if (auth === '') {
     return stepFail(deps, st, '听弹幕要**原生凭据**（`Authorization`）：先去界面贴一份');
   }
@@ -590,7 +590,7 @@ function roomBeatStep(deps: ListenDeps, st: ListenState, nowMs: number): TaskOut
  *  ⚠ 两个签名头**服务端不校验**（抓包 §8.6 反证实验：打全 0 照样 `code:0`），
  *  但仍然按实拍算式算出来 —— 报文与原客户端一致，别的地方才不会在某天突然露出来。 */
 function applyStep(deps: ListenDeps, st: ListenState, nowMs: number): TaskOutcome {
-  const auth = deps.store.getState(STATE_AUTH) ?? '';
+  const auth = loadAuthRaw(deps.store);
   const parsed = parseAuthorization(auth);
   if (parsed === null) return stepFail(deps, st, '⑤ 进房间要手机号（`userName` 用 `cmlive_c_<手机>`）');
   if (st.chatRoomId === undefined || st.accessToken === undefined) {
@@ -618,7 +618,7 @@ function applyStep(deps: ListenDeps, st: ListenState, nowMs: number): TaskOutcom
 /** 开 WS + 等 `o` + 发 PROVISION。**这三件事必须同一次调用**：
  *  `o` 是立刻到的（握手响应），而 PROVISION 只能**在收到 `o` 之后**发。 */
 function openStep(deps: ListenDeps, st: ListenState, nowMs: number): TaskOutcome {
-  const auth = deps.store.getState(STATE_AUTH) ?? '';
+  const auth = loadAuthRaw(deps.store);
   const parsed = parseAuthorization(auth);
   if (parsed === null) {
     return stepFail(deps, st, 'WS 那一步要手机号（PROVISION 的 `guid.name` 用它）—— 凭据解不出来');
@@ -707,7 +707,7 @@ function listenStep(deps: ListenDeps, st: ListenState, nowMs: number, windowMs: 
     persist(deps, st);
     return { ok: true, note: 'WS 句柄不在了（面板重启过？）⇒ 重新走一遍门' };
   }
-  const auth = deps.store.getState(STATE_AUTH) ?? '';
+  const auth = loadAuthRaw(deps.store);
   const parsed = parseAuthorization(auth);
   if (parsed === null || st.jwt === undefined || st.chatRoomId === undefined) {
     return stepFail(deps, st, '听的那一步缺凭据/票/聊天室号');

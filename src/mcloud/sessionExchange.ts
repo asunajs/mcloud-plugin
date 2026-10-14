@@ -28,6 +28,7 @@
 import { callRawText } from './client.ts';
 import type { TaskDeps } from './tasks/base.ts';
 import { loadSession, saveSession } from '../store/types.ts';
+import { currentAccount } from './accounts.ts';
 import type { Store } from '../store/types.ts';
 import { sha256Hex } from '../crypto/index.ts';
 import {
@@ -51,6 +52,23 @@ import {
 
 /** 原生凭据（`Authorization` 的值）。⚠ 别与 `mcloud.session` 合成一份。 */
 export const STATE_AUTH = 'mcloud.h5.auth';
+
+/** **所有任务读凭据都走这里**（多账号那一层的唯一入口）。
+ *
+ *  优先取账号列表里的**当前账号**；列表为空 / 没设当前 ⇒ 回落到 `STATE_AUTH` 那一格
+ *  （也就是单账号那套照原样工作）。见 `accounts.ts` 模块头。
+ *
+ *  ⚠ 为什么要有这个间接层：全仓库有十几处 `getState(STATE_AUTH)`，直接改会造成
+ *  "有的地方多账号、有的地方单账号"这种最难查的状态。收成一个函数之后，
+ *  "现在是几账号"这件事只有这一个地方知道。 */
+export function loadAuthRaw(store: Pick<Store, 'getState'>): string {
+  const cur = currentAccount(store);
+  if (cur !== undefined) return cur.auth;
+  // ⚠ 这一行**不许**写成 `loadAuthRaw(store)`（我的批量替换就把这里递归了：
+  //   `RangeError: Maximum call stack size exceeded`，14 条测试当场红）。
+  //   它是整个函数的地板：单账号那套就靠它。
+  return store.getState(STATE_AUTH) ?? '';
+}
 /** 换票进度。 */
 export const STATE_EXCHANGE = 'mcloud.h5.exchange';
 /** 换到的票。 */
@@ -158,7 +176,8 @@ export function clearAuth(store: Store, nowIso: string): void {
  *  返回 `done=true` 表示这一轮结束（成功或失败都算结束，好让界面的循环停下来）。 */
 export function runExchangeStep(deps: TaskDeps): { ok: boolean; note: string; done: boolean } {
   const st = loadExchange(deps.store);
-  const auth = deps.store.getState(STATE_AUTH);
+  // ⚠ 走 `loadAuthRaw`：多账号下"当前账号"才是这一轮要换票的那个
+  const auth = loadAuthRaw(deps.store) || null;
 
   if (!st || st.step === 'done' || !auth) {
     return { ok: true, note: '没有待换票的任务（先去界面上贴一份原生凭据）', done: true };
@@ -349,7 +368,7 @@ export const RETRY_AFTER_MS = 30 * 60 * 1000;
 
 /** 该不该起一轮换票（给续票 cron 用）。**纯判据，不发请求。** */
 export function needExchange(store: Pick<Store, 'getState'>, nowMs: number): boolean {
-  if (!store.getState(STATE_AUTH)) return false; // 没凭据 —— 换不了，也别报错
+  if (loadAuthRaw(store) === '') return false; // 没凭据 —— 换不了，也别报错（多账号下也照这条）
   if (jwtFresh(store, nowMs)) return false; // 票还新
   const st = loadExchange(store);
   if (!st) return true; // 从来没换过
