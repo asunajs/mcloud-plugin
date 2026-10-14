@@ -22,18 +22,54 @@ export interface JobPayload {
   firedAt: string;
   /** 实际比原定晚多少毫秒 —— 观察调度精度就看它 */
   lateMs: number;
+  /** `register_cron(…, { params })` 给的那份参数（没给就是 `undefined`）。
+   *  形状由插件自己定，面板只原样存、原样交回（第二十三轮新增）。 */
+  params?: unknown;
 }
 
 export type JobHandler = (payload: JobPayload) => void;
+
+/** `register_cron` / `every` 的可选项（第二十三轮新增）。
+ *
+ *  ⚠ `budget_ms` 要**和 `worker_hint('exclusive')` 一起用**：全局执行预算原本
+ *  是为了「一个跑飞的插件把同一条线程上的别的任务拖住」。独占线程之后那个理由
+ *  不成立了，长预算才安全。共享线程上声明长预算，加载期会打一条警告。 */
+export interface TaskOpts {
+  /** 交给 handler 的 `payload.params`。形状由插件定，面板不解释。 */
+  params?: unknown;
+  /** 这条任务需要多久的执行预算（毫秒）。范围 100 ~ 600000，越界**报错**。
+   *  不给就用全局 `EXEC_BUDGET_MS`（默认 2000）。 */
+  budget_ms?: number;
+}
+
+/** 侧边栏入口。`label` 面板自己推不出来（插件名不是人话），所以由插件给。 */
+export interface NavOpts {
+  /** 菜单上显示的名字，≤ 12 个字符 */
+  label: string;
+  /** 一个字符的图标（emoji 也行），≤ 2 个字符 */
+  icon?: string;
+  /** 页面路径，默认 `/plugins/<插件名>/index.html` */
+  path?: string;
+}
 
 export function log(msg: unknown): void;
 export function warn(msg: unknown): void;
 export function error(msg: unknown): void;
 
 /** 5 段或 6 段 cron；表达式非法会在**注册阶段**就报错（加载插件时失败） */
-export function register_cron(name: string, expr: string, handler: JobHandler): void;
+export function register_cron(
+  name: string,
+  expr: string,
+  handler: JobHandler,
+  opts?: TaskOpts,
+): void;
 /** `500ms` / `2s` / `1m` / `1h`，毫秒级精度 */
-export function every(name: string, interval: string, handler: JobHandler): void;
+export function every(
+  name: string,
+  interval: string,
+  handler: JobHandler,
+  opts?: TaskOpts,
+): void;
 /** 只登记处理函数、不声明调度 —— 任务由面板创建 */
 export function register_handler(name: string, handler: JobHandler): void;
 
@@ -97,7 +133,32 @@ export function register_route(
   path: string,
   method: string,
   handler: (req: RouteRequest) => RouteResponse | void,
+  opts?: Pick<TaskOpts, 'budget_ms'>,
 ): void;
+
+/** 声明侧边栏入口。一个插件最多一个（后注册的覆盖前面的）。
+ *
+ *  为什么由插件给而不是面板推：面板只有插件名（`mcloud`），推不出人话。 */
+export function register_nav(opts: NavOpts): void;
+
+/** 声明这个插件要**独占一条执行线程**（第二十三轮新增）。
+ *
+ *  # 为什么需要它
+ *
+ *  面板的执行线程数是固定的（`ENGINE_WORKERS`，默认 2），插件被分到哪条线程上
+ *  由面板按代价自动分。默认策略会把多个插件塞进同一条 —— 对「每 10 秒拍一下」
+ *  的轻任务是合适的，对「一次跑几十秒」的长链不是：后者会把同线程的邻居全拖住。
+ *
+ *  # 什么时候该声明
+ *
+ *  - 有任务会**长时间占住**线程（几十秒级）
+ *  - 任务之间有**毫秒级**的时序要求（抢兑那种）
+ *
+ *  声明之后面板会给它单开一条线程（`ENGINE_WORKERS` 会自动抬）。
+ *  代价是线程数变多，所以**别给每个插件都加**。
+ *
+ *  ⚠ 它必须在插件**顶层**调用（加载期就要能看见）。 */
+export function worker_hint(hint: 'exclusive' | 'precision' | 'none'): void;
 
 // ══════════════════════════ WebSocket（面板第二十一轮加的）══════════════════════════
 //
