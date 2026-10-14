@@ -220,14 +220,21 @@ export function runExpansionStep(deps: TaskDeps): TaskOutcome {
   }
   // ⚠ `result` 是**裸数字**（实拍 `result: 100`），不是对象 —— 所以两种都认，
   //   认不出来就如实回显原文，**不编一个"领到 N 个"**
+  // ⚠ 判据：这一族**没有统一的成功码**（`app_signin.rs:531`），但 `code` 在场且不是
+  //   那几个成功值时，那就是**失败** —— 别把 `code:500` 报成 `ok: true`
+  //   （文案是真的、`ok` 也得是真的，否则面板会把失败画成成功）。
+  const code = out?.code;
+  const codeOk = code === undefined || code === 0 || code === '0' || code === '0000';
   const raw = out?.result;
-  if (typeof raw === 'number') {
-    return { ok: true, note: `${label}：上游回 ${raw}（这一族的 result 是裸数字）` };
+  const detail =
+    typeof raw === 'number'
+      ? `${raw}（这一族的 result 是裸数字）`
+      : `${res.text.slice(0, 120)}（⚠ 这一枪**缺成功样本**，形状没被实拍验过）`;
+  if (!codeOk) {
+    const msg = typeof out?.msg === 'string' ? out.msg : '';
+    return { ok: false, note: `${label}：上游拒绝 —— code=${String(code)}${msg === '' ? '' : ` ${msg}`}` };
   }
-  return {
-    ok: true,
-    note: `${label}：上游回 ${res.text.slice(0, 120)}（⚠ 这一枪**缺成功样本**，形状没被实拍验过）`,
-  };
+  return { ok: true, note: `${label}：上游回 ${detail}` };
 }
 
 /** 触发备份用的那个文件：**确定**内容（夹具与摘要都可复现）。 */

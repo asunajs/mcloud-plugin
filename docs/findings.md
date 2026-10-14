@@ -918,3 +918,64 @@ CI(UTC):        actual: '20261014010000'   ✖
 因为夹具是照我自己的理解造的。
 
 ⇒ 所以目标里"每一族都要真机验一次"这条不是形式。
+
+---
+
+## F-022 · `rabactive/*` 这一族今天**打不通**，而且**不是签名或 marketName 的问题**
+
+`ai-avatar`（界面那句「AI 新头像」）八口，全部在 `/market/rabactive/*`。
+真机读数（2026-10-14，**我的实现**）：
+
+```
+GET  /market/rabactive/image/getHashLeft        404
+GET  /market/rabactive/image/draw               404
+POST /market/rabactive/ai/image/merge           405
+POST /market/rabactive/ai/image/getStatus       405
+GET  /market/rabactive/image/getWorkList        404
+GET  /market/rabactive/image/catalogFullPath    404
+```
+
+与 mcloud 2026-09-25 的读数**逐条一致**（两个账号、两套独立实现、相隔半个多月）。
+
+## 排除了两个"看着像原因"的假设
+
+| 假设 | 试法 | 结果 |
+|---|---|---|
+| 签名里 `marketName` 不对 | `rabbityearpic`（mcloud 给这一族的常量）与 `sign_in_3` 各试一遍 | **读数一字不差**，都 404 |
+| 网关按签名路由 | **完全不带签名**裸探 | 还是 404 / 405 |
+
+⇒ 这不是"少一环签名"或"参数拼错"，**路径本身在网关上就是这个结果**。
+
+## 一个**新的**精确读数（mcloud 没记过）
+
+同一个路径，**方法不同结果不同**：
+
+```
+POST /market/rabactive/ai/image/merge     405 Not Allowed
+GET  /market/rabactive/ai/image/merge     404
+POST /market/rabactive/ai/image/getStatus 405
+GET  /market/rabactive/ai/image/getStatus 404
+```
+
+⇒ 网关**认得** `/market/rabactive/ai/image/` 这个 location（否则 POST 也该是 404），
+只是不服务这个"路径 + 方法"的组合。而 `image/*`（不带 `ai/`）那一支连 location 都没有。
+
+**这仍然不足以判定**是"活动下线"还是"方法/子路径不对" —— 405 说明 location 在，
+但 405 也可能是"下线后留下的空壳"。分辨要靠人工在活动站 H5 里打开那一页抓一次加载链
+（mcloud 的判断，我同意）。
+
+## 处置：**不据此改路径**，也不假装它能用
+
+mcloud 的纪律（我照办）：那些字面量来自**能跑的那份旧 TS**，
+拿一个尚未分辨的现象去覆盖一条有出处的读数，是**把证据换成猜测**。
+
+所以插件这一族的处置是：
+· 元数据标 `evidence: 'dead'`、`implemented: false`，note 里写明**两条读数与排除过的假设**
+· **默认不开** —— 一跑就 404 的任务开着，只会每次烧掉一堆请求并让人以为"跑过了"
+· 什么时候活动回来（或找到正确形状），照着这份读数对比一次就能确认
+
+## 教训
+
+这一族最像"我该做点什么"的地方是那个 405 —— 它明摆着在说"方法不对"。
+但**试一个方法不是证据**：真要改，得先有"这个路径在活动页里被怎么调"的实拍。
+否则我改的只是"让读数看起来更顺眼"，而不是"让它能跑"。

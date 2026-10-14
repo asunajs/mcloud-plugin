@@ -3737,14 +3737,15 @@ function runExpansionStep(deps) {
   } catch {
     out = void 0;
   }
+  const code = out?.code;
+  const codeOk = code === void 0 || code === 0 || code === "0" || code === "0000";
   const raw = out?.result;
-  if (typeof raw === "number") {
-    return { ok: true, note: `${label}：上游回 ${raw}（这一族的 result 是裸数字）` };
+  const detail = typeof raw === "number" ? `${raw}（这一族的 result 是裸数字）` : `${res.text.slice(0, 120)}（⚠ 这一枪**缺成功样本**，形状没被实拍验过）`;
+  if (!codeOk) {
+    const msg = typeof out?.msg === "string" ? out.msg : "";
+    return { ok: false, note: `${label}：上游拒绝 —— code=${String(code)}${msg === "" ? "" : ` ${msg}`}` };
   }
-  return {
-    ok: true,
-    note: `${label}：上游回 ${res.text.slice(0, 120)}（⚠ 这一枪**缺成功样本**，形状没被实拍验过）`
-  };
+  return { ok: true, note: `${label}：上游回 ${detail}` };
 }
 var EXPAND_FILE_NAME = "panel-backup-marker.txt";
 var EXPAND_FILE_SEED = "mcloud-panel-backup-marker-v1";
@@ -5174,7 +5175,13 @@ var TASK_META = [
   //      抓包 §3.6.6 说"要裸 GET"那条被真机推翻了，见 F-021（抓包记的是"客户端发了什么"，
   //      而那个请求本身是失败的）。
   { name: "task-expansion", title: "任务拓展", group: "activity", kind: "Action", risk: "write-cloud", missed: "skip", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "partial", note: "三件：读状态 → 传一个文件触发本月备份 → 领云朵（**裸 GET**）。传上去的文件**不留 id、不删**（删了就是删用户的东西）" },
-  { name: "ai-avatar", title: "AI 头像生成与抽奖", group: "cloud-write", kind: "Action", risk: "write-cloud", missed: "skip", deps: ["basic+jwt"], batch: false, hidden: false, implemented: false, note: '生成的头像要落到网盘才能抽奖 —— 那是它的流程，不是副作用。原实现里默认关的是**开关**，不是"要不要写"' },
+  // ❌ 2026-10-14 真机探过：**整族 404/405**，且**不是**签名或 marketName 的问题
+  //    （带签名/不带签名、两个 marketName 各试一遍，读数一字不差；与 mcloud 2026-09-25
+  //    的读数逐条一致）。405 说明网关**认得** `/market/rabactive/ai/image/` 这个 location
+  //    但不服务该组合；`image/*` 那一支连 location 都没有。仍不足以判定"活动下线"
+  //    还是"方法不对" ⇒ **不据此改路径**（那些字面量来自能跑的那份旧 TS）。
+  //    所以**默认不开**：一跑就 404 的任务开着只会烧请求并让人以为"跑过了"。见 F-022。
+  { name: "ai-avatar", title: "AI 头像生成与抽奖", group: "activity", kind: "Action", risk: "write-cloud", missed: "skip", deps: ["basic+jwt"], batch: false, hidden: true, implemented: false, evidence: "dead", note: "八口全在 `/market/rabactive/*`，今天真机 404/405（已排除签名与 marketName）⇒ 默认关。恢复条件与读数见 F-022" },
   // ── 高风险（未实现）──
   // ✅ 2026-10-14 实现并**真机跑通**（50 豆换到「移动云盘100G云空间月卡」，上游回 oid，
   //    余额 9238 → 9188 正好少 50）。

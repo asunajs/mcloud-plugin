@@ -94,7 +94,15 @@ export interface TaskMeta {
  *
  *  `none` / `no-ticket` 两条是**拦路石**：不是难度问题，是没证据就没法照实写。
  */
-export type Evidence = 'captured' | 'partial' | 'none' | 'no-ticket';
+export type Evidence =
+  | 'captured' // 有实拍样本
+  | 'partial' // 部分有样本
+  | 'none' // 还没有样本
+  | 'no-ticket' // 缺"换票"那一步的配方
+  /** ⚠ 与 `none` **不同**：`none` 是"还没试过"，`dead` 是"**试过了，今天打不通**"
+   *  （有明确读数）。标 `dead` 的族**默认关** —— 一跑就 404 的任务开着，
+   *  只会每次烧掉一堆请求并让人以为"跑过了"。 */
+  | 'dead';
 
 export type GroupId =
   | 'signin'
@@ -242,7 +250,13 @@ export const TASK_META: TaskMeta[] = [
   //      抓包 §3.6.6 说"要裸 GET"那条被真机推翻了，见 F-021（抓包记的是"客户端发了什么"，
   //      而那个请求本身是失败的）。
   { name: 'task-expansion', title: '任务拓展', group: 'activity', kind: 'Action', risk: 'write-cloud', missed: 'skip', deps: ['jwt'], batch: false, hidden: false, implemented: true, evidence: 'partial', note: '三件：读状态 → 传一个文件触发本月备份 → 领云朵（**裸 GET**）。传上去的文件**不留 id、不删**（删了就是删用户的东西）' },
-  { name: 'ai-avatar', title: 'AI 头像生成与抽奖', group: 'cloud-write', kind: 'Action', risk: 'write-cloud', missed: 'skip', deps: ['basic+jwt'], batch: false, hidden: false, implemented: false, note: '生成的头像要落到网盘才能抽奖 —— 那是它的流程，不是副作用。原实现里默认关的是**开关**，不是"要不要写"' },
+    // ❌ 2026-10-14 真机探过：**整族 404/405**，且**不是**签名或 marketName 的问题
+  //    （带签名/不带签名、两个 marketName 各试一遍，读数一字不差；与 mcloud 2026-09-25
+  //    的读数逐条一致）。405 说明网关**认得** `/market/rabactive/ai/image/` 这个 location
+  //    但不服务该组合；`image/*` 那一支连 location 都没有。仍不足以判定"活动下线"
+  //    还是"方法不对" ⇒ **不据此改路径**（那些字面量来自能跑的那份旧 TS）。
+  //    所以**默认不开**：一跑就 404 的任务开着只会烧请求并让人以为"跑过了"。见 F-022。
+  { name: 'ai-avatar', title: 'AI 头像生成与抽奖', group: 'activity', kind: 'Action', risk: 'write-cloud', missed: 'skip', deps: ['basic+jwt'], batch: false, hidden: true, implemented: false, evidence: 'dead', note: '八口全在 `/market/rabactive/*`，今天真机 404/405（已排除签名与 marketName）⇒ 默认关。恢复条件与读数见 F-022' },
 
   // ── 高风险（未实现）──
   // ✅ 2026-10-14 实现并**真机跑通**（50 豆换到「移动云盘100G云空间月卡」，上游回 oid，
