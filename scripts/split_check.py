@@ -488,7 +488,62 @@ def main() -> int:
                 str(row.get("schedule") if row else "没找到「兑换」这条任务"),
             )
 
-            # ---- ⑫ 线程分配 ----
+            # ---- ⑫ 兑换的时间可配（③-3）----
+            print("\n兑换时间可配（脚本断言）")
+            code, body = http(f"{base}/plugins/mcloud/api/readings")
+            ex = (json.loads(body) if code == 200 else {}).get("exchange") or {}
+            check("读数里有目标时刻（默认 10 点）", ex.get("targetHour") == 10, str(ex.get("targetHour")))
+            check("读数里有提前量（默认 10ms）", ex.get("leadMs") == 10, str(ex.get("leadMs")))
+            check(
+                "读数里有「离这一场还有多久」",
+                isinstance(ex.get("toTargetMs"), (int, float)),
+                str(ex.get("toTargetMs")),
+            )
+
+            def cfg(payload):
+                return http(
+                    f"{base}/plugins/mcloud/api/config",
+                    method="POST",
+                    body=json.dumps(payload).encode(),
+                    headers={"content-type": "application/json", "x-panel": "1"},
+                )
+
+            check("越界的时刻被挡住（24 点）", cfg({"targetHour": "24"})[0] == 400, "")
+            check("非整数时刻被挡住", cfg({"targetHour": "10.5"})[0] == 400, "")
+            check("负的提前量被挡住", cfg({"leadMs": -1})[0] == 400, "")
+            check("过大的提前量被挡住（>2s 就不是传输补偿了）", cfg({"leadMs": 5000})[0] == 400, "")
+
+            code, body = cfg({"targetHour": "9"})
+            check("能存目标时刻", code == 200, f"http {code} {body[:80]}")
+            code, body = cfg({"leadMs": 50})
+            check("能存提前量", code == 200, f"http {code} {body[:80]}")
+            code, body = http(f"{base}/plugins/mcloud/api/readings")
+            ex2 = (json.loads(body) if code == 200 else {}).get("exchange") or {}
+            check("存完读得回来（9 点）", ex2.get("targetHour") == 9, str(ex2.get("targetHour")))
+            check("存完读得回来（50ms）", ex2.get("leadMs") == 50, str(ex2.get("leadMs")))
+            code, body = cfg({"targetHour": ""})
+            code, body = http(f"{base}/plugins/mcloud/api/readings")
+            ex3 = (json.loads(body) if code == 200 else {}).get("exchange") or {}
+            check("清空 ⇒ 每小时都试（null，不是回落默认）", ex3.get("targetHour") is None, str(ex3.get("targetHour")))
+
+            # ---- ⑬ 干跑（「现在试一次」）----
+            print("\n干跑（脚本断言）")
+            code, body = plugin_post(base, "/exchange/try", {})
+            d = json.loads(body) if code == 200 else {}
+            check("干跑路由在（「现在试一次」走的这条）", code == 200, f"http {code} {body[:120]}")
+            detail = " ".join(d.get("detail") or [])
+            check(
+                "⚠ 干跑**一枪都没发**（明确说出来）",
+                "一枪都没发" in detail or "一枪都没发" in str(d.get("note")),
+                detail[:200],
+            )
+            check(
+                "⚠ 干跑不碰下单端点（不可逆）",
+                "exchangeV3" not in detail,
+                detail[:200],
+            )
+
+            # ---- ⑭ 线程分配 ----
             print("\n线程（脚本断言）")
             logf.flush()
             text = logpath.read_text(errors="replace")
