@@ -129,6 +129,29 @@
       <p class="hint" id="live-codes-hint"></p>
 
       <div class="row">
+        <label class="label">听弹幕（只读）</label>
+        <button id="live-listen" class="btn">推进一步</button>
+      </div>
+      <p class="hint">
+        走的是 mcloud 那条链：门 → 取 WS 凭据（<code>userToken</code>）→ 问聊天室 →
+        <b>进房间</b>（<code>member/apply</code>）→ SockJS + PROVISION → 收弹幕。
+        <b>一次调用只推进一步</b>（面板给的预算是 2 秒），所以这个按钮会连点几次。
+        窗口默认 10 分钟，到点会主动断开、下一拍重走一遍。
+      </p>
+      <p class="hint" id="live-listen-hint"></p>
+
+      <div class="row">
+        <label class="label">自动定时</label>
+        <button id="live-auto" class="btn">算一次</button>
+      </div>
+      <p class="hint">
+        照 mcloud 的 <code>live_auto</code>：醒来的时刻 = <b>最早的「下一场」+ 1 小时</b>
+        （那一小时是留给主播把口令发出来的）。它<b>一个上游请求都不发</b> ——
+        只是让「听弹幕」那条链在被判"门关着"时<br>睡到那一刻，而不是每 5 分钟白问一次门。
+      </p>
+      <p class="hint" id="live-auto-hint"></p>
+
+      <div class="row">
         <label class="label">领小红花（写）</label>
         <label><input id="live-claim" type="checkbox"> 开启（开启后 cron 才会自动推）</label>
         <button id="live-draw" class="btn btn-primary">现在领一次</button>
