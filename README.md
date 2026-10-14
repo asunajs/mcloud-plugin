@@ -21,7 +21,11 @@
 > - **直播自动定时**（mcloud 的 `live_auto`）：现在 `live-draw` 是每 5 分钟轮询，
 >   而日程已经有了（门的读数）⇒ 可以改成"下一场几点就在那时醒"。这是**业务档**的
 >   下一块，施工图见 `docs/findings.md` F-028 末尾。
-> - **WS / 弹幕**：面板的插件宿主没有 WebSocket ⇒ **结构性不可及**（不是"还没做"）。
+> - **弹幕（WebSocket）**：宿主能力**已经有了**（面板第二十一轮加了
+>   `ws_open`/`ws_send`/`ws_recv`/`ws_close`，见 F-029），但插件这边**还没接** ——
+>   缺的是那条链本身：`roomBeat` → `chatRoomId` → SockJS 端点 → 帧状态机 → 口令进池
+>   （来源 `danmaku`）。⚠ 如实标注：这条链在 mcloud 那边**从未真机连过**（推测档，
+>   与门的"实证"不是一回事），施工图见 `docs/findings.md` F-029 末尾。
 > - WebUI 的细节收尾（插件配置页没有共享组件库、测试运行没有历史）。
 >
 > 决策见下，压出来的问题见 [`docs/findings.md`](docs/findings.md)（F-001 ~ F-028）。
