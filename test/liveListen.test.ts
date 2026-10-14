@@ -25,6 +25,7 @@ import {
   RECV_SLICE_MS,
   STATE_LISTEN,
   liveWsUrl,
+  listenReadingLine,
   loadListenState,
   loadWsBase,
   runLiveListen,
@@ -582,4 +583,21 @@ test('收到 SockJS 心跳 `h` ⇒ **继续听**（不当收尾理由），并�
   );
   assert.equal(st?.sockjsHb, 1, 'h 要记进读数（否则"没复现"与"复现了但没事"分不开）');
   assert.ok((st?.danmakuFrames ?? 0) >= 1, 'h 之后的弹幕照收');
+});
+
+test('门关着那条读数要带上"上次真探"的时刻（空闲日志去重之后，那一行必须能自证真探过）', () => {
+  // ⚠ 2026-10-14 实机 soak：`live-listen` 每 10 秒醒一次，空闲时读数**一模一样**，
+  //   日志去重后一个 5 分钟窗口只剩一行 —— 如果那一行不带"真探时刻"，
+  //   "真探过"与"只是把旧读数重复一遍"在日志里**分不开**（我当时是靠数 ①/② 才分清的）。
+  const store = memStore();
+  store.setState(STATE_AUTH, AUTH, NOW);
+  const up = fakeUpstream({ live: false }); // 主播没在播 ⇒ 门关着那条分支
+  const f = fakeHost(['o']);
+  const notes = advanceToListen(store, up.transport, f.host);
+  const st = loadListenState(store);
+  assert.equal(st?.step, 'done');
+  assert.ok(st?.probedAt, '要记下这次真探的时刻');
+  const line = listenReadingLine(st!);
+  assert.match(line, /上次真探 \d\d:\d\d:\d\d/, `读数里要写出来：${line}`);
+  void notes;
 });

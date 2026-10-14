@@ -6439,12 +6439,14 @@ function roomsStep2(deps, st, nowMs) {
     st.nextCheckAtMs = Date.parse(deps.nowIso) + coolMs;
     st.closedReason = "那个主播没在播";
     st.finishedAt = deps.nowIso;
-    st.note = forced !== void 0 ? `指定的房间 ${forced} 不在这次探到的 ${merged.length} 间房里（诊断口子）` : coolMs > IDLE_RECHECK_MS ? `门关着（合并后 ${merged.length} 间房）—— 按日程睡到下一场之后（${Math.round(coolMs / 6e4)} 分钟）` : `门关着（合并后 ${merged.length} 间房）—— 隔 ${Math.round(coolMs / 6e4)} 分钟再看`;
+    st.probedAt = deps.nowIso;
+    st.note = forced !== void 0 ? `指定的房间 ${forced} 不在这次探到的 ${merged.length} 间房里（诊断口子）` : coolMs > IDLE_RECHECK_MS ? `门关着（合并后 ${merged.length} 间房）—— 按日程睡到下一场之后（${Math.round(coolMs / 6e4)} 分钟）` : `门关着（合并后 ${merged.length} 间房）—— 隔 ${Math.round(coolMs / 6e4)} 分钟再看（上次真探 ${deps.nowIso.slice(11, 19)}）`;
     persist(deps, st);
     return { ok: true, note: st.note };
   }
   st.roomId = chosen;
   st.step = "userToken";
+  st.probedAt = deps.nowIso;
   persist(deps, st);
   return {
     ok: true,
@@ -9144,6 +9146,7 @@ register_cron("task-list", "0 8 * * *", (p) => {
     error(`任务清单抛异常（这是插件 bug）：${e instanceof Error ? e.message : String(e)}`);
   }
 });
+var lastLogged = /* @__PURE__ */ new Map();
 function makeRunner(name, run) {
   return (p) => {
     try {
@@ -9171,8 +9174,13 @@ function makeRunner(name, run) {
         ok: out.ok,
         note: out.note
       });
-      if (out.ok) log(`${name}：${out.note}`);
-      else warn(`${name} 失败：${out.note}`);
+      const last = lastLogged.get(name);
+      const now = `${out.ok ? "" : "失败："}${out.note}`;
+      if (last !== now) {
+        lastLogged.set(name, now);
+        if (out.ok) log(`${name}：${out.note}`);
+        else warn(`${name} 失败：${out.note}`);
+      }
     } catch (e) {
       error(`${name} 抛异常（这是插件 bug）：${e instanceof Error ? e.message : String(e)}`);
     }
@@ -9222,7 +9230,7 @@ register_cron("live-auto", "@every 5m", (p) => {
     return { ok: false, note: `直播自动定时抛异常：${e instanceof Error ? e.message : String(e)}` };
   }
 });
-register_cron("live-draw", "*/5 7-23 * * *", (p) => {
+register_cron("live-draw", "@every 30s", (p) => {
   try {
     const out = runLiveDraw({
       store,
