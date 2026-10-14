@@ -54,7 +54,7 @@ import { KOULING_ANCHOR, accountClaimed, accountKey, codeState, pickFor } from '
 import type { ClaimVerdict, KoulingPool } from '../koulingPool.ts';
 import type { DrawKind } from '../liveFlower.ts';
 import { parseAuthorization } from '../authRefresh.ts';
-import { STATE_AUTH } from '../sessionExchange.ts';
+import { STATE_AUTH, loadAuthRaw } from '../sessionExchange.ts';
 import type { Store } from '../../store/types.ts';
 
 export { KOULING_ANCHOR };
@@ -78,7 +78,7 @@ export { KOULING_ANCHOR };
  *  ⚠ 拿不到手机号时退化成 `'default'`：**不是**保守，是如实 ——
  *  一份会话的面板里"账号"这个概念本来就不存在。 */
 export function accountOf(store: Pick<Store, 'getState'>): string {
-  const raw = store.getState(STATE_AUTH) ?? '';
+  const raw = loadAuthRaw(store);
   if (raw === '') return accountKey('');
   const seg = parseAuthorization(raw);
   return accountKey(seg?.phone ?? '');
