@@ -143,8 +143,12 @@ export const GROUPS: GroupMeta[] = [
   },
   {
     id: 'risky',
-    title: '高风险',
-    why: '真扣 AI豆、不可回滚 —— 默认关闭，要开必须自己想清楚',
+    title: '要花豆',
+    // ⚠ 措辞改过（2026-10-14）：原先写的是"真扣 AI豆、不可回滚"，把**扣豆讲成了损失**。
+    //    扣豆是**成交的标志** —— 扣了就是拿到奖品了，那正是用户要的结果。
+    //    真正不可回滚的是**选择**（花掉豆换到的是不是你想要的那一件）；
+    //    而"花了豆什么也没拿到"这一族里不会发生：不成交就不扣豆。
+    why: '会花掉 AI豆去换东西。扣豆即成交（拿到了才算），不可回滚的是**选择**本身 —— 花之前先看清是哪一件',
     order: 6,
   },
 ];
@@ -219,7 +223,14 @@ export const TASK_META: TaskMeta[] = [
   { name: 'ai-avatar', title: 'AI 头像生成与抽奖', group: 'cloud-write', kind: 'Action', risk: 'write-cloud', missed: 'skip', deps: ['basic+jwt'], batch: false, hidden: false, implemented: false, note: '往网盘写图 —— 原实现里默认就是**关**的' },
 
   // ── 高风险（未实现）──
-  { name: 'exchange', title: '兑换奖品', group: 'risky', kind: 'Action', risk: 'spend', missed: 'skip', deps: ['jwt', 'slider'], batch: false, hidden: true, implemented: false, note: '**真扣 AI豆、不可回滚**，还要过滑块 —— 上游没有幂等，本插件里必须默认关 + 二次确认' },
+  // ✅ 2026-10-14 实现并**真机跑通**（50 豆换到「移动云盘100G云空间月卡」，上游回 oid，
+  //    余额 9238 → 9188 正好少 50）。
+  //
+  // 口径（用户定的）：**优先发出去** —— 清单判据说不能兑、余额看着不够，都**照样发**
+  // （那两处是本地估算，上游仍可能放行；失败不扣豆）。
+  // ⚠ 但**滑块**不属这一类：offset 算错那一枪**不可能成功**（回 514、不成交也不扣豆），
+  //    所以算不出就不发 —— 那不是"少一次机会"，是"多一次白打"。
+  { name: 'exchange', title: '兑换奖品', group: 'risky', kind: 'Action', risk: 'spend', missed: 'skip', deps: ['jwt', 'slider'], batch: false, hidden: false, implemented: true, evidence: 'captured', note: '枪序：清单 → 余额 → 预热×2 → 取滑块本地解 → 下单 → 查余额差。**成交判据是余额差**（上游没有幂等，那句话不算数）；滑块算不出就不发' },
   // ⚠️ 2026-10-14 更正一处**我口头说过的错话**：我曾讲这条"会换掉现有授权"——
   //    那句话**没有出处**。`auth_refresh.rs` 的叙述是「**续期**」：刷新返回一个自带
   //    30 天有效期的新 token，并被编进后续请求的 `Authorization`；而**旧凭据会不会被
@@ -230,7 +241,10 @@ export const TASK_META: TaskMeta[] = [
   //    但这一档的**依据同样缺样本** —— 真要落地前先把"旧 token 是否仍可用"测出来。
     // ✅ 2026-10-14 实现。**一个字段都不用用户给**：手机号/端别在 `Authorization` 里解出来，
   //    `userDomainId` 在 jwttoken 的 `payload.sub` 里。判据照 mcloud 的 `decide`（默认提前 10 天）。
-  { name: 'auth-refresh', title: '凭据续期', group: 'daily', kind: 'Action', risk: 'spend', missed: 'skip', deps: ['basic+jwt'], batch: false, hidden: false, implemented: true, evidence: 'captured', note: '离过期还远时**一个请求都不发**；续出的是一枚**全新的** token（30 天），不是把旧的延长' },
+  // ⚠ `risk` 从 `spend` 改成 `none`：**续期不花任何豆**，原先那一档没有依据
+  //    （我早先说它"会换掉现有授权"，那句没有出处）。真机实测过：
+  //    续期后**旧凭据仍然可用**（两枚都 200），所以它也不是 `irreversible`。
+  { name: 'auth-refresh', title: '凭据续期', group: 'daily', kind: 'Action', risk: 'none', missed: 'skip', deps: ['basic+jwt'], batch: false, hidden: false, implemented: true, evidence: 'captured', note: '离过期还远时**一个请求都不发**；续出的是一枚**全新的** token（30 天），不是把旧的延长。真机验过：旧凭据不会因此失效' },
 ];
 
 /** 一条任务在界面上的完整一行：静态元信息 + **运行时的实际状态**。 */
