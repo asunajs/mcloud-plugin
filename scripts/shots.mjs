@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// ⚠ 输出目录里除了 PNG 还有 `README.md`（截图说明表）。脚本**只写不删** ——
+//   别为了"清干净"去 `rm -rf` 那个目录，会把 README 一起删掉，
+//   而 `test/docs.test.ts` 会因为 README 里那条链接变成死链而红。
 // 给插件界面截图 —— 用来**真的看一眼**菜单栏七个区块长什么样。
 //
 // # 为什么值得单独一个脚本
@@ -223,9 +226,51 @@ async function main() {
   await shot('08-daily-recent');
 
   ws.close();
-  chrome.kill();
-  fs.rmSync(profile, { recursive: true, force: true });
+  // ⚠ 先等浏览器**真的退出**再删 profile 目录。
+  //   原来 `kill()` 之后立刻 `rmSync` —— 而 `kill` 只是发信号，进程还在写
+  //   profile（Chrome 退出时会落盘一堆状态文件）⇒ 实测报
+  //   `ENOTEMPTY, Directory not empty`。截图本身是成功的，但退出码非 0，
+  //   而"截图脚本报错"会让人以为截图坏了。
+  await stopChrome(chrome);
+  rmProfile(profile);
   console.log('✅ 截完');
+}
+
+/** 发 SIGTERM 并等它真的退出（有上限，别把脚本挂住）。 */
+function stopChrome(chrome) {
+  return new Promise((resolve) => {
+    if (chrome.exitCode !== null || chrome.signalCode !== null) return resolve();
+    const t = setTimeout(() => {
+      chrome.kill('SIGKILL');
+      resolve();
+    }, 5000);
+    chrome.once('exit', () => {
+      clearTimeout(t);
+      resolve();
+    });
+    chrome.kill();
+  });
+}
+
+/** 删 profile 目录。**带重试** —— 退出瞬间还可能有一两个文件在收尾。 */
+function rmProfile(dir) {
+  for (let i = 0; i < 5; i++) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+      return;
+    } catch (e) {
+      if (i === 4) {
+        // 删不掉就**别让脚本失败**：它只是临时目录，系统会清。
+        console.warn(`（临时目录没删干净，不影响截图：${e.code ?? e.message}）`);
+        return;
+      }
+      // 忙等一小会儿再试（同步上下文里没有 await）
+      const until = Date.now() + 200;
+      while (Date.now() < until) {
+        /* 等目录句柄释放 */
+      }
+    }
+  }
 }
 
 main().catch((e) => {
