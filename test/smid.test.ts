@@ -35,7 +35,11 @@ import { fromBase64, fromHex, fromUtf8, toHex } from '../src/crypto/bytes.ts';
 import { md5Hex } from '../src/crypto/index.ts';
 import { memStore } from '../src/store/memory.ts';
 
-const NOW = new Date('2026-10-14T09:00:00+08:00');
+// ⚠ 用**本地时间**构造（`new Date(y, m, d, h, ...)`），不要写带时区偏移的 ISO 串：
+// `buildSmid` 取的是本地年月日时分秒（原实现如此），而带上 `+08:00` 之后
+// "本地时间"取决于运行机器 —— CI 跑在 UTC，于是同一条断言在那儿会
+// 得到 01:00 而不是 09:00。**这条错误是 CI 抓出来的**，本地永远绿。
+const NOW = new Date(2026, 9, 14, 9, 0, 0, 0);
 const NOW_ISO = '2026-10-14T01:00:00.000Z';
 
 /** 可复现的伪随机（不用 Math.random —— 测试要能重复）。 */
