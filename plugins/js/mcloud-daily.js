@@ -714,6 +714,11 @@ var SBOX = (() => {
   }
   return s;
 })();
+var INV_SBOX = (() => {
+  const inv = new Uint8Array(256);
+  for (let a = 0; a < 256; a += 1) inv[SBOX[a]] = a;
+  return inv;
+})();
 function fitKey16(key) {
   const out = new Uint8Array(16);
   const src = utf8(key);
