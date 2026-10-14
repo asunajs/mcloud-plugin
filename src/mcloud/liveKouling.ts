@@ -1,8 +1,21 @@
-// 直播口令提取 —— **从原项目的 TS 源码逐字移植**。
+// 直播口令提取 —— **算法档**：从原项目的 TS 源码逐字移植。
 //
 // 权威源：`mcloud-sign/packages/core/src/live-room/kouling.ts` 与 `xiaohongshu.ts`。
 // （Rust 侧是同一份行为的第二次移植：`mcloud-upstream/src/live_kouling.rs`，
 // 那里把两处"照抄会出错"的地方记成了文档 —— 本文件把它们也抄下来了。）
+//
+// # 为什么这一档可以用 mcloud-sign（四层权威，用户口径 2026-10-14 / F-026）
+//
+// ```text
+//   ① 业务逻辑  → 照 mcloud        ② 内容 → 抓包核对
+//   ③ ts 算法   → 参考 mcloud-sign ④ 效果 → 实测确认
+// ```
+//
+// **本文件整个属于 ③**：它一条业务判据都没有 —— 输入是"一段文本"、输出是
+// "里面有哪些像口令的东西"，与"该不该领、领哪条、什么时候停"无关。
+// 那些判据在 `koulingPool.ts`（池）与 `tasks/liveRoomRules.ts`（编排层），
+// 两份都照 mcloud。⚠ 改本文件前先问一句：**这是算法还是业务？**
+// 若是业务（例如"提问要不要滤掉"这种产品决定），它的落点不在本文件。
 //
 // # 为什么是「逐字」而不是「照着重写一遍」
 //
@@ -76,6 +89,16 @@ export function isKoulingHead(text: string): boolean {
  *  所以它比 `extractKouling` 宽松得多 —— 宽了只是多算几次，**窄了会漏**。 */
 export function hasKouling(text: string): boolean {
   return /口令|小红花/.test(text);
+}
+
+/** 弹幕格式的**收尾标记**（`无随机`）—— 它不是口令，是"这批口令到此为止"的记号。
+ *
+ *  ⚠ 为什么单独一个函数：**业务层**（人贴进来的那一栏要按分隔符切）需要这条判据，
+ *  而"哪些字是收尾标记"是**算法层**的知识（[`extractKouling`] 的四个分支里
+ *  有两处专门处理它）。让业务层自己写一个 `/无随机/` 就是把判据抄了两份 ——
+ *  上游哪天真改成别的标记，漏改一处就静默多投一条假口令。 */
+export function isKoulingMarker(text: string): boolean {
+  return /无随机/.test(text);
 }
 
 /** 疑问句末尾的语气词。 */
@@ -348,6 +371,13 @@ export interface CodeInput {
   codes: string[];
   /** 这次**是怎么解出来的** —— 界面/日志要能说清"你贴的东西我当成了什么" */
   how: string;
+  /** 走的是**哪条路**：`true` = 按弹幕格式解出来的（①），`false` = 按逐行原文收下的（②）。
+   *
+   *  ⚠ 这一格是给**业务层**用的：两条路的"再加工"不同 —— 格式解出来的口令
+   *  **不能**再按空白切（它就是一条整口令），而"逐行原文"那条要过一遍
+   *  `splitKouling`（分隔符含空白/逗号/顿号，见 `liveRoomRules.ts` 的理由）。
+   *  让业务层去猜 `how` 那句话的意思，就是把判据建在文案上。 */
+  matchedFormat: boolean;
   error?: string;
 }
 
@@ -367,12 +397,12 @@ export const MAX_CODES = 10;
  *  这一条用 `isQuestion` 判，与原提取器同一个判据。 */
 export function parseCodeInput(raw: string): CodeInput {
   const text = raw.trim();
-  if (!text) return { ok: false, codes: [], how: '', error: '先贴一条口令' };
+  if (!text) return { ok: false, codes: [], how: '', matchedFormat: false, error: '先贴一条口令' };
 
   // ① 按弹幕格式解
   const extracted = extractKouling(text);
   if (extracted.length > 0) {
-    return finish(extracted, `按弹幕格式解出 ${extracted.length} 条`);
+    return finish(extracted, `按弹幕格式解出 ${extracted.length} 条`, true);
   }
 
   // ② 逐行原文
@@ -380,7 +410,9 @@ export function parseCodeInput(raw: string): CodeInput {
     .split(/\r?\n/)
     .map((l) => l.trim())
     .filter((l) => l !== '');
-  if (lines.length === 0) return { ok: false, codes: [], how: '', error: '先贴一条口令' };
+  if (lines.length === 0) {
+    return { ok: false, codes: [], how: '', matchedFormat: false, error: '先贴一条口令' };
+  }
 
   const bad = lines.find((l) => looksLikeQuestionAboutKouling(l));
   if (bad !== undefined) {
@@ -388,13 +420,24 @@ export function parseCodeInput(raw: string): CodeInput {
       ok: false,
       codes: [],
       how: '',
+      matchedFormat: false,
       error: `「${bad.slice(0, 20)}」看着是观众的提问，不是口令 —— 拿去领只会白跑一枪（上游回 200108）`,
     };
   }
-  return finish(lines, `按原文收下 ${lines.length} 条（没匹配到任何弹幕格式）`);
+  return finish(lines, `按原文收下 ${lines.length} 条（没匹配到任何弹幕格式）`, false);
 }
 
-function finish(codes: string[], how: string): CodeInput {
+/** 口令条数的护栏：**与提取逻辑无关**，所以单独一个函数。
+ *
+ *  ⚠ 为什么要把这一小段抽出来：业务层（`saveLiveCodes`）在"逐行原文"那条路上
+ *  会**先按分隔符再切一次**（`splitKouling`），切完的条数可能比这里看到的多
+ *  ⇒ 护栏必须能**在切完之后再判一次**。不抽出来的话，要么业务层自己抄一遍
+ *  （判据分叉），要么切开之后的超限没人管。 */
+export function checkCodeLimits(codes: readonly string[]): CodeInput {
+  return finish(codes.slice(), '（只做护栏检查）', false);
+}
+
+function finish(codes: string[], how: string, matchedFormat: boolean): CodeInput {
   const uniq = [...new Set(codes.map((c) => c.trim()).filter((c) => c !== ''))];
   const tooLong = uniq.find((c) => c.length > MAX_CODE_CHARS);
   if (tooLong !== undefined) {
@@ -402,11 +445,18 @@ function finish(codes: string[], how: string): CodeInput {
       ok: false,
       codes: [],
       how: '',
+      matchedFormat: false,
       error: `有一条 ${tooLong.length} 个字符，超过 ${MAX_CODE_CHARS} 的上限 —— 这不像口令`,
     };
   }
   if (uniq.length > MAX_CODES) {
-    return { ok: false, codes: [], how: '', error: `一次最多 ${MAX_CODES} 条（收到 ${uniq.length} 条）` };
+    return {
+      ok: false,
+      codes: [],
+      how: '',
+      matchedFormat: false,
+      error: `一次最多 ${MAX_CODES} 条（收到 ${uniq.length} 条）`,
+    };
   }
-  return { ok: true, codes: uniq, how };
+  return { ok: true, codes: uniq, how, matchedFormat };
 }

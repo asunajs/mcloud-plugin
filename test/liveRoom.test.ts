@@ -22,6 +22,14 @@ import {
   saveLiveUrl,
 } from '../src/mcloud/tasks/liveRoom.ts';
 import { XIAOHONGSHU_KOULING_PROFILE_URL, xiaohongshuProfileHeaders } from '../src/mcloud/liveKouling.ts';
+import {
+  codeState,
+  loadPoolFrom,
+  note,
+  noteClaim,
+  savePoolTo,
+  validCount,
+} from '../src/mcloud/koulingPool.ts';
 import { mcloudRoutes } from '../src/mcloud/routes.ts';
 import { memStore } from '../src/store/memory.ts';
 import { startMock } from '../mock/upstream.mjs';
@@ -265,6 +273,94 @@ test('路由 GET /api/live：主页地址取的是**当前配置**，不是写�
   saveLiveUrl(store, 'http://127.0.0.1:19040/xhs/profile', NOW);
   const d = JSON.parse(callRoute(deps, 'GET', '/plugins/mcloud/api/live').body) as { url: string };
   assert.equal(d.url, 'http://127.0.0.1:19040/xhs/profile');
+});
+
+// ── 口令池（业务档）：两条口径 + 一处真 bug 的修复
+
+test('⚠ 两次抓主页之间至少隔 30 分钟（抓太勤会被风控挡成空壳，而那与"没发"长得一样）', () => {
+  const store = memStore();
+  store.ensureSchema();
+  const { transport, sent } = transportReturning(bigPage('小红花口令：云盘AI高效复盘'));
+
+  const first = runLiveRoom({ store, transport, nowIso: NOW });
+  assert.equal(first.ok, true);
+  assert.equal(sent.length, 1, '第一次照抓');
+
+  const second = runLiveRoom({ store, transport, nowIso: NOW });
+  assert.equal(second.idle, true, '同一分钟内第二次 ⇒ **不是失败**，是按口径不抓');
+  assert.equal(sent.length, 1, '一个请求都不发');
+  assert.match(second.note, /30 分钟/);
+  assert.match(second.note, /风控/, '要说清为什么慢：抓太勤的代价是"空壳与没发分不开"');
+
+  // 30 分钟之后照抓（用同一份读数覆盖：这里只验"窗口过了就放行"）
+  const later = new Date(Date.parse(NOW) + 31 * 60 * 1000).toISOString();
+  const third = runLiveRoom({ store, transport, nowIso: later });
+  assert.equal(third.ok, true);
+  assert.equal(sent.length, 2, '窗口过了就放行');
+});
+
+test('⚠ 够 2 条**有效** ⇒ 停止抓取（这一场只发那么几条，继续抓只会重复撞同一批）', () => {
+  const store = memStore();
+  store.ensureSchema();
+  const { pool } = loadPoolFrom(store);
+  note(pool, ['甲', '乙'], 'xiaohongshu', Date.parse(NOW));
+  noteClaim(pool, 'acc', '甲', 'claimed', Date.parse(NOW));
+  noteClaim(pool, 'acc', '乙', 'alreadyClaimed', Date.parse(NOW));
+  savePoolTo(store, pool, NOW);
+
+  const { transport, sent } = transportReturning(bigPage('小红花口令：丙'));
+  const out = runLiveRoom({ store, transport, nowIso: NOW });
+  assert.equal(out.idle, true);
+  assert.equal(sent.length, 0, '够了两条就不再抓');
+  assert.match(out.note, /停止抓取/);
+});
+
+test('抓到的口令**进池**（状态是"未知"：抓到了 ≠ 验过了）', () => {
+  const store = memStore();
+  store.ensureSchema();
+  const { transport } = transportReturning(bigPage('小红花口令：云盘AI高效复盘'));
+  runLiveRoom({ store, transport, nowIso: NOW });
+
+  const { pool } = loadPoolFrom(store);
+  assert.equal(codeState(pool, '云盘AI高效复盘'), 'unknown');
+  assert.equal(validCount(pool), 0, '没验过不算有效');
+  assert.equal(pool.codes[0]?.source, 'xiaohongshu', '来源如实标');
+});
+
+test('⚠ 人贴进来的一栏文本：**空白也算分隔符**（原先会被当成一条口令发上去）', () => {
+  const store = memStore();
+  store.ensureSchema();
+
+  // 这条是 mcloud 吃过的亏：「我明明填了两条，怎么只领了一条还说口令错」
+  const r = saveLiveCodes(store, '短漫上新免费看 云盘AI高效复盘', NOW);
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.codes, ['短漫上新免费看', '云盘AI高效复盘'], '空白分隔');
+
+  const full = saveLiveCodes(store, '甲\u3000乙', NOW);
+  assert.deepEqual(full.codes, ['甲', '乙'], '全角空格（手机输入法默认就是这个）');
+
+  const mixed = saveLiveCodes(store, '口令是什么 云盘AI高效复盘', NOW);
+  assert.deepEqual(mixed.codes, ['云盘AI高效复盘'], '切完之后**还要滤一次提问**（整行不是提问，切出来那段是）');
+
+  // ⚠ 算法层的契约**没动**（`extractKouling` 仍然回 `['AAA 无随机','AAA']` 两条候选，
+  //   那是它刻意的"更全"）；这里是**另一个问题**：到底拿哪几条去发。
+  //   按 mcloud 的分隔符口径，`AAA 无随机` 切开就是 `AAA` + 标记 ⇒ 只发一条。
+  const marker = saveLiveCodes(store, '小红花口令：AAA 无随机', NOW);
+  assert.deepEqual(marker.codes, ['AAA'], '收尾标记不是口令，别拿它去白跑一枪');
+});
+
+test('路由 GET /api/live：带上池快照（界面要能看见"够没够两条""还要等多久"）', () => {
+  const store = memStore();
+  store.ensureSchema();
+  const deps = { store, transport: (() => ({ status: 200, headers: {}, body: '' })) as Transport, now: () => NOW, log: () => {} };
+
+  const d = JSON.parse(callRoute(deps, 'GET', '/plugins/mcloud/api/live').body) as {
+    pool: { validCount: number; stopScraping: boolean; xhsWaitMs: number; codes: unknown[] };
+  };
+  assert.equal(d.pool.validCount, 0);
+  assert.equal(d.pool.stopScraping, false);
+  assert.equal(d.pool.xhsWaitMs, 0, '没抓过 ⇒ 现在就能抓');
+  assert.deepEqual(d.pool.codes, []);
 });
 
 // ── 线上层：起 mock 当真站点，把**真实响应**喂给任务
