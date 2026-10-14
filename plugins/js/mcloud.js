@@ -7,6 +7,183 @@
 // src/main.ts
 import { error, every, http_fetch, log, register_cron, register_route, warn } from "host-api";
 
+// src/mcloud/envelope.ts
+var isRecord = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+function parseSignInEnvelope(body) {
+  let v;
+  try {
+    v = JSON.parse(body);
+  } catch (e) {
+    throw new Error(`签到响应不是 JSON：${e instanceof Error ? e.message : String(e)}`);
+  }
+  if (!isRecord(v)) {
+    throw new Error(`签到响应不是对象：${body.slice(0, 120)}`);
+  }
+  const raw = v.code;
+  let code = -1;
+  if (typeof raw === "number") code = Number.isFinite(raw) ? raw : -1;
+  else if (typeof raw === "string" && raw.trim() !== "" && !Number.isNaN(Number(raw))) {
+    code = Number(raw);
+  }
+  const msg = v.msg ?? v.message;
+  const message = typeof msg === "string" ? msg : "";
+  return {
+    code,
+    message,
+    result: v.result,
+    ok: code === 0
+  };
+}
+function resultArray(env) {
+  return Array.isArray(env.result) ? env.result : [];
+}
+function resultObject(env) {
+  return isRecord(env.result) ? env.result : {};
+}
+
+// src/mcloud/client.ts
+var isFetchError = (v) => typeof v === "object" && v !== null && typeof v.error === "string";
+function pickError(msg) {
+  return msg.replace(/^\s*请求失败[:：]\s*/, "").trim() || msg;
+}
+function hostFetchOptions(req, timeoutMs) {
+  const opts = {
+    method: req.method,
+    headers: req.headers,
+    body: req.body,
+    timeout_ms: timeoutMs
+  };
+  if (req.tls !== void 0 && req.url.startsWith("https:")) opts.tls = req.tls;
+  return opts;
+}
+var SLOW_CALL_MS = 1500;
+function callOnce(transport2, req) {
+  const t0 = Date.now();
+  const fail = (error3) => ({
+    status: 0,
+    tookMs: Date.now() - t0,
+    env: void 0,
+    ok: false,
+    error: error3,
+    raw: "",
+    setCookies: []
+  });
+  let res;
+  try {
+    res = transport2(req);
+  } catch (e) {
+    return fail(`请求失败：${e instanceof Error ? e.message : String(e)}`);
+  }
+  if (isFetchError(res)) return fail(pickError(res.error));
+  if (typeof res !== "object" || res === null || typeof res.body !== "string") {
+    return fail(`请求返回的形状不认识：${JSON.stringify(res)?.slice(0, 200) ?? String(res)}`);
+  }
+  const tookMs = Date.now() - t0;
+  const raw = res.body.length > 500 ? `${res.body.slice(0, 500)}…` : res.body;
+  let env;
+  let error2;
+  if (res.status !== 200) {
+    error2 = `HTTP ${res.status}`;
+  } else {
+    try {
+      env = parseSignInEnvelope(res.body);
+      if (!env.ok) error2 = `code=${env.code}${env.message ? ` msg=${env.message}` : ""}`;
+    } catch (e) {
+      error2 = e instanceof Error ? e.message : String(e);
+    }
+  }
+  return {
+    status: res.status,
+    tookMs,
+    env,
+    ok: res.status === 200 && !!env?.ok,
+    error: error2,
+    raw,
+    setCookies: extractSetCookies(res.headers)
+  };
+}
+var CONTENT_TYPE_JSON = "application/json;charset=UTF-8";
+function applyDefaultContentType(req) {
+  if (req.body === void 0) return req;
+  const declared = Object.keys(req.headers).some((k) => k.toLowerCase() === "content-type");
+  if (declared) return req;
+  return { ...req, headers: { ...req.headers, "content-type": CONTENT_TYPE_JSON } };
+}
+function callRawText(transport2, req) {
+  const t0 = Date.now();
+  const fail = (error2) => ({
+    ok: false,
+    status: 0,
+    text: "",
+    chars: 0,
+    tookMs: Date.now() - t0,
+    error: error2
+  });
+  let res;
+  try {
+    res = transport2(req);
+  } catch (e) {
+    return fail(`请求失败：${e instanceof Error ? e.message : String(e)}`);
+  }
+  const tookMs = Date.now() - t0;
+  if (isFetchError(res)) return { ...fail(pickError(res.error)), tookMs };
+  if (typeof res !== "object" || res === null || typeof res.body !== "string") {
+    return {
+      ...fail(`请求返回的形状不认识：${JSON.stringify(res)?.slice(0, 200) ?? String(res)}`),
+      tookMs
+    };
+  }
+  const chars = res.body.length;
+  if (res.status !== 200) {
+    return { ok: false, status: res.status, text: res.body, chars, tookMs, error: `HTTP ${res.status}` };
+  }
+  return { ok: true, status: 200, text: res.body, chars, tookMs, error: void 0 };
+}
+function extractSetCookies(headers) {
+  const raw = [];
+  for (const [k, v] of Object.entries(headers)) {
+    if (k.toLowerCase() === "set-cookie") raw.push(v);
+  }
+  const out = [];
+  for (const line of raw) {
+    let cur = line;
+    const parts = [];
+    let idx = 0;
+    for (; ; ) {
+      const m = /,\s*([A-Za-z0-9_.-]+)=/.exec(cur.slice(idx));
+      if (!m || m.index === void 0) break;
+      parts.push(cur.slice(idx, idx + m.index));
+      idx += m.index + 1;
+    }
+    parts.push(cur.slice(idx));
+    for (const p of parts) {
+      cur = p.trim();
+      if (!cur) continue;
+      const pair = cur.split(";")[0]?.trim() ?? "";
+      if (pair.includes("=")) out.push(pair);
+    }
+  }
+  return out;
+}
+function mergeCookieJar(existing, incoming) {
+  const jar = /* @__PURE__ */ new Map();
+  const eat = (s) => {
+    for (const part of s.split(";")) {
+      const p = part.trim();
+      if (!p) continue;
+      const eq = p.indexOf("=");
+      if (eq <= 0) continue;
+      const k = p.slice(0, eq).trim();
+      const v = p.slice(eq + 1).trim();
+      if (v === "" || /^(deleted|expired)$/i.test(v)) jar.delete(k);
+      else jar.set(k, v);
+    }
+  };
+  eat(existing);
+  for (const c of incoming) eat(c);
+  return [...jar.entries()].map(([k, v]) => `${k}=${v}`).join("; ");
+}
+
 // src/crypto/bytes.ts
 function utf8(s) {
   const out = [];
@@ -536,173 +713,6 @@ function hostStore() {
       [Math.min(limit, 1e3)]
     )
   };
-}
-
-// src/mcloud/envelope.ts
-var isRecord = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
-function parseSignInEnvelope(body) {
-  let v;
-  try {
-    v = JSON.parse(body);
-  } catch (e) {
-    throw new Error(`签到响应不是 JSON：${e instanceof Error ? e.message : String(e)}`);
-  }
-  if (!isRecord(v)) {
-    throw new Error(`签到响应不是对象：${body.slice(0, 120)}`);
-  }
-  const raw = v.code;
-  let code = -1;
-  if (typeof raw === "number") code = Number.isFinite(raw) ? raw : -1;
-  else if (typeof raw === "string" && raw.trim() !== "" && !Number.isNaN(Number(raw))) {
-    code = Number(raw);
-  }
-  const msg = v.msg ?? v.message;
-  const message = typeof msg === "string" ? msg : "";
-  return {
-    code,
-    message,
-    result: v.result,
-    ok: code === 0
-  };
-}
-function resultArray(env) {
-  return Array.isArray(env.result) ? env.result : [];
-}
-function resultObject(env) {
-  return isRecord(env.result) ? env.result : {};
-}
-
-// src/mcloud/client.ts
-var isFetchError = (v) => typeof v === "object" && v !== null && typeof v.error === "string";
-function pickError(msg) {
-  return msg.replace(/^\s*请求失败[:：]\s*/, "").trim() || msg;
-}
-var SLOW_CALL_MS = 1500;
-function callOnce(transport2, req) {
-  const t0 = Date.now();
-  const fail = (error3) => ({
-    status: 0,
-    tookMs: Date.now() - t0,
-    env: void 0,
-    ok: false,
-    error: error3,
-    raw: "",
-    setCookies: []
-  });
-  let res;
-  try {
-    res = transport2(req);
-  } catch (e) {
-    return fail(`请求失败：${e instanceof Error ? e.message : String(e)}`);
-  }
-  if (isFetchError(res)) return fail(pickError(res.error));
-  if (typeof res !== "object" || res === null || typeof res.body !== "string") {
-    return fail(`请求返回的形状不认识：${JSON.stringify(res)?.slice(0, 200) ?? String(res)}`);
-  }
-  const tookMs = Date.now() - t0;
-  const raw = res.body.length > 500 ? `${res.body.slice(0, 500)}…` : res.body;
-  let env;
-  let error2;
-  if (res.status !== 200) {
-    error2 = `HTTP ${res.status}`;
-  } else {
-    try {
-      env = parseSignInEnvelope(res.body);
-      if (!env.ok) error2 = `code=${env.code}${env.message ? ` msg=${env.message}` : ""}`;
-    } catch (e) {
-      error2 = e instanceof Error ? e.message : String(e);
-    }
-  }
-  return {
-    status: res.status,
-    tookMs,
-    env,
-    ok: res.status === 200 && !!env?.ok,
-    error: error2,
-    raw,
-    setCookies: extractSetCookies(res.headers)
-  };
-}
-var CONTENT_TYPE_JSON = "application/json;charset=UTF-8";
-function applyDefaultContentType(req) {
-  if (req.body === void 0) return req;
-  const declared = Object.keys(req.headers).some((k) => k.toLowerCase() === "content-type");
-  if (declared) return req;
-  return { ...req, headers: { ...req.headers, "content-type": CONTENT_TYPE_JSON } };
-}
-function callRawText(transport2, req) {
-  const t0 = Date.now();
-  const fail = (error2) => ({
-    ok: false,
-    status: 0,
-    text: "",
-    chars: 0,
-    tookMs: Date.now() - t0,
-    error: error2
-  });
-  let res;
-  try {
-    res = transport2(req);
-  } catch (e) {
-    return fail(`请求失败：${e instanceof Error ? e.message : String(e)}`);
-  }
-  const tookMs = Date.now() - t0;
-  if (isFetchError(res)) return { ...fail(pickError(res.error)), tookMs };
-  if (typeof res !== "object" || res === null || typeof res.body !== "string") {
-    return {
-      ...fail(`请求返回的形状不认识：${JSON.stringify(res)?.slice(0, 200) ?? String(res)}`),
-      tookMs
-    };
-  }
-  const chars = res.body.length;
-  if (res.status !== 200) {
-    return { ok: false, status: res.status, text: res.body, chars, tookMs, error: `HTTP ${res.status}` };
-  }
-  return { ok: true, status: 200, text: res.body, chars, tookMs, error: void 0 };
-}
-function extractSetCookies(headers) {
-  const raw = [];
-  for (const [k, v] of Object.entries(headers)) {
-    if (k.toLowerCase() === "set-cookie") raw.push(v);
-  }
-  const out = [];
-  for (const line of raw) {
-    let cur = line;
-    const parts = [];
-    let idx = 0;
-    for (; ; ) {
-      const m = /,\s*([A-Za-z0-9_.-]+)=/.exec(cur.slice(idx));
-      if (!m || m.index === void 0) break;
-      parts.push(cur.slice(idx, idx + m.index));
-      idx += m.index + 1;
-    }
-    parts.push(cur.slice(idx));
-    for (const p of parts) {
-      cur = p.trim();
-      if (!cur) continue;
-      const pair = cur.split(";")[0]?.trim() ?? "";
-      if (pair.includes("=")) out.push(pair);
-    }
-  }
-  return out;
-}
-function mergeCookieJar(existing, incoming) {
-  const jar = /* @__PURE__ */ new Map();
-  const eat = (s) => {
-    for (const part of s.split(";")) {
-      const p = part.trim();
-      if (!p) continue;
-      const eq = p.indexOf("=");
-      if (eq <= 0) continue;
-      const k = p.slice(0, eq).trim();
-      const v = p.slice(eq + 1).trim();
-      if (v === "" || /^(deleted|expired)$/i.test(v)) jar.delete(k);
-      else jar.set(k, v);
-    }
-  };
-  eat(existing);
-  for (const c of incoming) eat(c);
-  return [...jar.entries()].map(([k, v]) => `${k}=${v}`).join("; ");
 }
 
 // src/mcloud/caps.ts
@@ -5224,14 +5234,18 @@ function cmliveHeaders(jwt) {
   return h;
 }
 function gateSpecTokenRequest(authorization, base) {
-  return specTokenRequest({ toSourceId: LIVE_SOURCE_ID }, authorization, base ?? BASE_USER_YUN);
+  const req = specTokenRequest({ toSourceId: LIVE_SOURCE_ID }, authorization, base ?? BASE_USER_YUN);
+  return req;
 }
 function cmpassLoginRequest(ssoToken, base) {
   return {
     url: `${(base ?? BASE_CMLIVE).replace(/\/+$/, "")}/api/user/auth/cmpassLoginByCmToken`,
     method: "POST",
     headers: { ...cmliveHeaders(), "content-type": "application/json" },
-    body: JSON.stringify({ cmpassToken: ssoToken })
+    body: JSON.stringify({ cmpassToken: ssoToken }),
+    // ⚠ `v.cmcc-cs.cn` **只给 CBC 套件**（2026-10-14 实测：`ECDHE-RSA-AES128-SHA`）——
+    //    rustls 不实现 CBC ⇒ 必须走平台 TLS。见 [`BuiltRequest::tls`] 与 F-030/F-031。
+    tls: "native"
   };
 }
 function parseCmpassLogin(env) {
@@ -5250,7 +5264,9 @@ function tabContentListRequest(tabId, jwt, base) {
     url: `${(base ?? BASE_CMLIVE).replace(/\/+$/, "")}/api/channel/channel/tabContentList?tabId=${tabId}&contentType=0&pageNo=1&channelId=${LIVE_CHANNEL_ID}`,
     method: "GET",
     headers: cmliveHeaders(jwt),
-    body: void 0
+    body: void 0,
+    // 同一个主机（`v.cmcc-cs.cn`）⇒ 同一条理由：只给 CBC，必须平台 TLS。
+    tls: "native"
   };
 }
 function parseTabContentList(env) {
@@ -7629,12 +7645,7 @@ store.ensureSchema();
 var REQUEST_TIMEOUT_MS = 1500;
 var transport = (req) => {
   const r = applyDefaultContentType(req);
-  return http_fetch(r.url, {
-    method: r.method,
-    headers: r.headers,
-    body: r.body,
-    timeout_ms: REQUEST_TIMEOUT_MS
-  });
+  return http_fetch(r.url, hostFetchOptions(r, REQUEST_TIMEOUT_MS));
 };
 function selftest() {
   const checks = [];
