@@ -31,6 +31,7 @@ import { runAuthRefresh } from './mcloud/authRefresh.ts';
 import { runExpansionStep, startExpansion } from './mcloud/tasks/taskExpansion.ts';
 import { runNotice } from './mcloud/tasks/notice.ts';
 import { runAppTaskMatrix } from './mcloud/tasks/appTaskMatrix.ts';
+import { runAppTaskStep, startAppTask } from './mcloud/tasks/appTask.ts';
 import { runExchangeList } from './mcloud/tasks/exchangeList.ts';
 import { runLiveRoom } from './mcloud/tasks/liveRoom.ts';
 import { runLiveDraw } from './mcloud/tasks/liveDraw.ts';
@@ -273,6 +274,19 @@ register_cron('msg-push-obtain', SIGNIN_CRON, makeRunner('消息推送奖励（�
 register_cron('notice', SIGNIN_CRON, makeRunner('开启通知领AI豆', runNotice));
 // App 任务矩阵：**只读那一半**（`app-task` 写的那半会传文件且不可回滚）
 register_cron('app-task-matrix', SIGNIN_CRON, makeRunner('App 任务矩阵（只看）', runAppTaskMatrix));
+// ⚠ 写的那一半 —— 与只读那半**不是同一个 code**（拿一个 code 做两件事会让它
+//   在两处指不同的东西）。它消费矩阵的读数（所以矩阵得先跑过）。
+//
+// 一枪一步：传文件（需要时，三枪）→ `task/click`（**不可回滚**）→ 收尾（移回收站）。
+// 传上去的文件**必须收尾** —— 不收，用户网盘里就会慢慢堆垃圾。
+register_cron('app-task', SIGNIN_CRON, makeRunner('App 任务（做任务）', (deps) => {
+  // 没有在跑的就起一趟（起单只写字、不发请求）
+  if (!deps.store.getState('mcloud.apptask.state')) {
+    const started = startAppTask(deps);
+    if (started.idle) return started; // 没有待办 ⇒ 如实回 idle（不刷噪声）
+  }
+  return runAppTaskStep(deps);
+}));
 // 兑换清单：**只读那一半**（下单要过滑块，且真扣豆不可回滚）
 register_cron('exchange-list', SIGNIN_CRON, makeRunner('兑换清单（只看）', runExchangeList));
 // 直播口令：**只读那一半**（抓主页 + 列出口令；领小红花那一步是写，还没做）

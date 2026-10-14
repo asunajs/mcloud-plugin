@@ -232,7 +232,11 @@ export const TASK_META: TaskMeta[] = [
   // ── 要用网盘（未实现；原因见各条的 note，**不是**"它会写网盘"）──
   // ⚠ 未实现 —— 而理由**不是**"它会写网盘"（那是它的内容，不是风险）。
   //    真理由：App 原生族（上传 / 分享 / 固定入口）的报文形状还没抓全。
-  { name: 'app-task', title: 'App 任务（做任务）', group: 'cloud-write', kind: 'Action', risk: 'write-cloud', missed: 'skip', deps: ['jwt'], batch: false, hidden: false, implemented: false, note: '未实现的原因**不是**"它会写网盘"（上传/建外链/发邮件正是这个任务的内容），而是 App 原生族的报文形状没抓全' },
+    // ✅ 2026-10-14 实现（判据层纯函数 + 动作层一枪一步）。
+  //    ⚠ 与 `app-task-matrix` **不是同一个 code**：只读那半填读数，这半消费读数去行动。
+  //    ⚠ 传上去的文件**必须收尾**（移回收站）—— 不收，用户网盘里就会慢慢堆垃圾。
+  //    ⚠ `task/click` **不可回滚** ⇒ 同一轮不重发；`batchTrash` **不许发空 fileIds**。
+  { name: 'app-task', title: 'App 任务（做任务）', group: 'activity', kind: 'Action', risk: 'write-cloud', missed: 'skip', deps: ['jwt'], batch: false, hidden: false, implemented: true, evidence: 'partial', note: '一枪一步：传文件（需要时）→ `task/click`（不可回滚，同一轮不重发）→ 收尾移回收站。判据是纯函数（106/113/522 与 beiyong1 两道门）；矩阵得先跑过' },
     // ⚠ 实现时两处**照抓包、别照 TS**：
   //   ① `receiveTaskExpansion` 发的是**裸 GET**，不许写 `?acceptDate=`。
   //      抓包 §3.6.6 实测：H5 传的是 `{acceptDate: t.acceptDate}`，而两个真实账号的
@@ -249,7 +253,7 @@ export const TASK_META: TaskMeta[] = [
   //    ⚠ 领那一枪**必须带 `?acceptDate=`**（值可空，键必须在）—— 真机实测：裸 GET 回 404。
   //      抓包 §3.6.6 说"要裸 GET"那条被真机推翻了，见 F-021（抓包记的是"客户端发了什么"，
   //      而那个请求本身是失败的）。
-  { name: 'task-expansion', title: '任务拓展', group: 'activity', kind: 'Action', risk: 'write-cloud', missed: 'skip', deps: ['jwt'], batch: false, hidden: false, implemented: true, evidence: 'partial', note: '三件：读状态 → 传一个文件触发本月备份 → 领云朵（**裸 GET**）。传上去的文件**不留 id、不删**（删了就是删用户的东西）' },
+  { name: 'task-expansion', title: '任务拓展', group: 'cloud-write', kind: 'Action', risk: 'write-cloud', missed: 'skip', deps: ['jwt'], batch: false, hidden: false, implemented: true, evidence: 'partial', note: '三件：读状态 → 传一个文件触发本月备份 → 领云朵（**裸 GET**）。传上去的文件**不留 id、不删**（删了就是删用户的东西）' },
     // ❌ 2026-10-14 真机探过：**整族 404/405**，且**不是**签名或 marketName 的问题
   //    （带签名/不带签名、两个 marketName 各试一遍，读数一字不差；与 mcloud 2026-09-25
   //    的读数逐条一致）。405 说明网关**认得** `/market/rabactive/ai/image/` 这个 location
