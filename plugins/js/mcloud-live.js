@@ -7,6 +7,68 @@
 // src/entries/live.ts
 import { log as log2, register_cron, warn as warn2, worker_hint } from "host-api";
 
+// src/mcloud/runLog.ts
+var RUN_LOG_KEY = "mcloud.run.log";
+var RUNS_PER_TASK = 20;
+var MAX_STEPS = 40;
+var MAX_NOTE = 300;
+function clip(s, max = MAX_NOTE) {
+  const t = typeof s === "string" ? s : String(s ?? "");
+  return t.length <= max ? t : `…${t.slice(t.length - max + 1)}`;
+}
+function cleanStep(s) {
+  return {
+    name: clip(s.name, 60),
+    ok: s.ok === true,
+    note: clip(s.note),
+    idle: s.idle === true
+  };
+}
+function readRuns(store2) {
+  const raw = store2.getState(RUN_LOG_KEY);
+  if (raw === void 0 || raw === null || raw === "") return [];
+  try {
+    const v = JSON.parse(raw);
+    if (!Array.isArray(v)) return [];
+    return v.filter(
+      (r) => typeof r === "object" && r !== null && typeof r.id === "string"
+    );
+  } catch {
+    return [];
+  }
+}
+function appendRun(store2, rec) {
+  const steps = rec.steps.slice(0, MAX_STEPS).map(cleanStep);
+  const id = `${rec.task}-${Date.parse(rec.at) || 0}`;
+  const all = readRuns(store2);
+  const next = {
+    id,
+    task: rec.task,
+    at: rec.at,
+    ms: Math.max(0, Math.round(rec.ms)),
+    ok: rec.ok === true,
+    note: clip(rec.note),
+    steps,
+    truncated: rec.steps.length > MAX_STEPS
+  };
+  const kept = all.filter((r) => r.id !== id);
+  kept.push(next);
+  const byTask = /* @__PURE__ */ new Map();
+  for (const r of kept) {
+    const list = byTask.get(r.task) ?? [];
+    list.push(r);
+    byTask.set(r.task, list);
+  }
+  const trimmed = [];
+  for (const list of byTask.values()) {
+    list.sort((a, b) => a.at < b.at ? 1 : a.at > b.at ? -1 : 0);
+    trimmed.push(...list.slice(0, RUNS_PER_TASK));
+  }
+  trimmed.sort((a, b) => a.at < b.at ? 1 : a.at > b.at ? -1 : 0);
+  store2.setState(RUN_LOG_KEY, JSON.stringify(trimmed), rec.at);
+  return id;
+}
+
 // src/crypto/bytes.ts
 function utf8(s) {
   const out = [];
@@ -3448,15 +3510,15 @@ function listenDeps(deps) {
 }
 function runLive(deps) {
   const started = Date.now();
-  const detail = [];
+  const steps = [];
   const step = (name, fn) => {
     try {
       const r2 = fn();
-      detail.push(`${name}：${r2.ok ? "" : "失败 "}${r2.note}`);
+      steps.push({ name, ok: r2.ok, note: r2.note, idle: r2.idle === true });
       return r2;
     } catch (e) {
       const note2 = `抛异常 ${e instanceof Error ? e.message : String(e)}`;
-      detail.push(`${name}：${note2}`);
+      steps.push({ name, ok: false, note: note2, idle: false });
       return { ok: false, note: note2 };
     }
   };
@@ -3476,20 +3538,33 @@ function runLive(deps) {
     frames++;
     if (frames > 60) break;
   }
-  if (frames > 0) detail.push(`听弹幕：共读 ${frames} 轮`);
+  if (frames > 0) {
+    steps.push({ name: "听弹幕", ok: true, note: `共读 ${frames} 轮`, idle: false });
+  }
   const r = drain(runLiveDraw, deps, {
     label: "领小红花",
     maxSteps: 12,
     deadlineMs: BUDGET_MS - (Date.now() - started) - 3e3,
     startedAt: started
   });
-  detail.push(`领小红花：${r.note}`);
-  const failed = detail.filter((l) => l.includes("失败") || l.includes("抛异常"));
+  steps.push({ name: "领小红花", ok: r.ok, note: r.note, idle: false });
+  const detail = steps.map((s) => `${s.name}：${s.ok ? "" : "失败 "}${s.note}`);
+  const failed = steps.filter((s) => !s.ok);
   const elapsed = ((Date.now() - started) / 1e3).toFixed(1);
   if (failed.length > 0) {
-    return { ok: false, note: `${failed.length} 步有问题：${failed[0]}`, detail };
+    return {
+      ok: false,
+      note: `${failed.length} 步有问题：${failed[0].name}：${failed[0].note}`,
+      detail,
+      steps
+    };
   }
-  return { ok: true, note: `${listenNote || "未进入听窗口"}（用时 ${elapsed}s）`, detail };
+  return {
+    ok: true,
+    note: `${listenNote || "未进入听窗口"}（用时 ${elapsed}s）`,
+    detail,
+    steps
+  };
 }
 register_cron(
   "直播",
@@ -3497,8 +3572,18 @@ register_cron(
   // 门关着时第一次调用就进冷却、零请求秒返回。
   "@every 1m",
   (p) => {
+    const startedMs = Date.now();
+    const at = new Date(startedMs).toISOString();
     const deps = taskDeps(store, transport, p);
     const r = runLive(deps);
+    appendRun(store, {
+      task: "live",
+      at,
+      ms: Date.now() - startedMs,
+      ok: r.ok,
+      note: r.note,
+      steps: r.steps
+    });
     store.recordRun({
       task: p.name,
       runs: p.runs,

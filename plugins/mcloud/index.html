@@ -152,8 +152,11 @@
         <div class="row">
           <button class="btn btn-primary" id="daily-run">现在跑一次</button>
         </div>
-        <h3 class="h3">最近一次运行</h3>
+        <h3 class="h3">最近几次</h3>
         <p class="hint" id="daily-when"></p>
+        <!-- 一次运行 = 一行。点开才拉那一次的步骤（列表只有摘要 ——
+             20 次 × 40 步全塞进读数就是几百 KB 的首屏）。 -->
+        <div class="rows" id="daily-recent"></div>
         <ul class="steps" id="daily-steps"></ul>
       </section>
 
@@ -170,6 +173,10 @@
         <div class="row">
           <button class="btn btn-primary" id="ex-run">现在试一次</button>
         </div>
+        <h3 class="h3">最近几次</h3>
+        <div class="rows" id="ex-recent"></div>
+        <ul class="steps" id="ex-steps"></ul>
+
         <h3 class="h3">奖品清单</h3>
         <p class="hint" id="ex-note"></p>
         <table class="tbl" id="ex-tbl"></table>
@@ -189,6 +196,10 @@
         <h3 class="h3">口令池</h3>
         <p class="hint" id="live-pool-line"></p>
         <ul class="list" id="live-codes"></ul>
+
+        <h3 class="h3">最近几次</h3>
+        <div class="rows" id="live-recent"></div>
+        <ul class="steps" id="live-steps"></ul>
       </section>
 
       <!-- ══════════════ 数据 ══════════════ -->

@@ -42,6 +42,7 @@
 
 import { log, register_cron, warn, worker_hint } from 'host-api';
 import { runAuthRefresh } from '../mcloud/authRefresh.ts';
+import { appendRun } from '../mcloud/runLog.ts';
 import { needExchange, runExchangeStep } from '../mcloud/sessionExchange.ts';
 import { MATRIX_MARKETS, runAppTaskMatrix } from '../mcloud/tasks/appTaskMatrix.ts';
 import { runAppTaskStep, startAppTask } from '../mcloud/tasks/appTask.ts';
@@ -299,6 +300,7 @@ register_cron(
   '*/30 7-22 * * *',
   (p: TaskPayload) => {
     const nowIso = new Date().toISOString();
+    const startedMs = Date.parse(nowIso);
     const today = nowIso.slice(0, 10);
 
     // 今天已经整趟成功过 ⇒ 零请求秒返回。
@@ -333,6 +335,18 @@ register_cron(
       }),
       nowIso,
     );
+
+    // 同时进**运行记录**（留最近 N 次）。`LAST_KEY` 只有最后一次，
+    // 覆盖掉之后"上次明明好的"这类问题就查不了了。
+    const runId = appendRun(store, {
+      task: 'daily',
+      at: nowIso,
+      ms: Date.now() - startedMs,
+      ok: r.ok,
+      note: r.note,
+      steps: r.steps,
+    });
+    log(`日常：本次运行 id=${runId}`);
 
     if (r.ok) {
       store.setState(DONE_KEY, today, nowIso);

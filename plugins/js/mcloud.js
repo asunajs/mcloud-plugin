@@ -4840,6 +4840,68 @@ function pushReading(store2) {
   };
 }
 
+// src/mcloud/query.ts
+function parseQuery(raw) {
+  const out = {};
+  if (typeof raw !== "string" || raw === "") return out;
+  const s = raw.startsWith("?") ? raw.slice(1) : raw;
+  for (const pair of s.split("&")) {
+    if (pair === "") continue;
+    const i = pair.indexOf("=");
+    const k = i < 0 ? pair : pair.slice(0, i);
+    const v = i < 0 ? "" : pair.slice(i + 1);
+    const key = safeDecode(k.replace(/\+/g, " "));
+    if (key in out) continue;
+    out[key] = safeDecode(v.replace(/\+/g, " "));
+  }
+  return out;
+}
+function safeDecode(s) {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
+}
+
+// src/mcloud/runLog.ts
+var RUN_LOG_KEY = "mcloud.run.log";
+function readRuns(store2) {
+  const raw = store2.getState(RUN_LOG_KEY);
+  if (raw === void 0 || raw === null || raw === "") return [];
+  try {
+    const v = JSON.parse(raw);
+    if (!Array.isArray(v)) return [];
+    return v.filter(
+      (r) => typeof r === "object" && r !== null && typeof r.id === "string"
+    );
+  } catch {
+    return [];
+  }
+}
+function readRunsOf(store2, task) {
+  return readRuns(store2).filter((r) => r.task === task).sort((a, b) => a.at < b.at ? 1 : a.at > b.at ? -1 : 0);
+}
+function readRun(store2, id) {
+  return readRuns(store2).find((r) => r.id === id) ?? null;
+}
+function summarize(r) {
+  return {
+    id: r.id,
+    at: r.at,
+    ms: r.ms,
+    ok: r.ok,
+    note: r.note,
+    okCount: r.steps.filter((s) => s.ok && !s.idle).length,
+    badCount: r.steps.filter((s) => !s.ok).length,
+    idleCount: r.steps.filter((s) => s.idle).length,
+    truncated: r.truncated
+  };
+}
+function recentRuns(store2, task, limit = 5) {
+  return readRunsOf(store2, task).slice(0, limit).map(summarize);
+}
+
 // src/mcloud/liveFlower.ts
 var LIVE_ROOM_ORIGIN = "https://m.mcloud.139.com";
 var USER_INFO_PATH = "/ycloud/liveRoomFeedback/user/info";
@@ -8138,9 +8200,13 @@ function buildReadings(deps) {
       // 「今天跑完了吗」看标记；「上次跑成什么样」看读数。两个都要，
       // 因为它们回答的是不同的问题（用户真正会问的是后面那个）。
       doneToday: (deps.store.getState("mcloud.daily.done_date") ?? "") === nowIso.slice(0, 10),
-      last: readDailyRun(deps.store)
+      last: readDailyRun(deps.store),
+      // 最近几次的**摘要**（只有一行一句）。步骤要按需再取 ——
+      // 20 条 × 40 步全塞进来，首屏就是几百 KB 的 JSON。
+      recent: recentRuns(deps.store, "daily")
     },
     exchange: {
+      recent: recentRuns(deps.store, "exchange"),
       plan: deps.store.getState("mcloud.exchange.plan") ?? "",
       reading: readExchangeList(deps.store),
       verdictText: VERDICT_TEXT
@@ -8155,6 +8221,7 @@ function buildReadings(deps) {
         reading: loadListenState(deps.store),
         line: listenReadingLine(loadListenState(deps.store))
       },
+      recent: recentRuns(deps.store, "live"),
       auto: (() => {
         const plan = loadWakePlan(deps.store);
         return {
@@ -8268,6 +8335,22 @@ function mcloudRoutes(deps) {
       path: `${base}/caps`,
       method: "GET",
       handler: () => json(200, { caps: sandboxCaps(), hasBigInt: hasBigInt() })
+    },
+    // ── 运行记录 ────────────────────────────────────────────────────
+    {
+      // 某一次运行的**步骤**。列表只给摘要，点开才取这个 ——
+      // 理由见 `runLog.ts` 的 `RunSummary`。
+      // ⚠ 走**查询串**而不是 `/runs/:id`：宿主给的是 `req.query`，
+      //   没有路径参数（见 `host-api.d.ts` 的 `RouteRequest`）。
+      path: `${base}/runs`,
+      method: "GET",
+      handler: (req) => {
+        const id = parseQuery(req.query)["id"] ?? "";
+        if (id === "") return json(400, { error: "要带一个 id" });
+        const r = readRun(deps.store, id);
+        if (r === null) return json(404, { error: `没有这次运行（可能已经被新记录挤掉了）：${id}` });
+        return json(200, r);
+      }
     },
     // ── 推送 ────────────────────────────────────────────────────────
     {
