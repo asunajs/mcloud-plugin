@@ -2364,15 +2364,15 @@ function parseSpkiRsaPublicKey(b64) {
   if (der[bits2.start] !== 0) throw new Error("RSA: BIT STRING 有未用位");
   const inner = derRead(der, bits2.start + 1);
   if (inner.tag !== 48) throw new Error("RSA: 公钥不是 SEQUENCE");
-  const intAt2 = (p) => {
+  const intAt3 = (p) => {
     const it = derRead(der, p);
     if (it.tag !== 2) throw new Error("RSA: 期望 INTEGER");
     let v = 0n;
     for (let i = it.start; i < it.end; i += 1) v = v << 8n | BigInt(der[i]);
     return { v, next: it.end };
   };
-  const nn = intAt2(inner.start);
-  const ee = intAt2(nn.next);
+  const nn = intAt3(inner.start);
+  const ee = intAt3(nn.next);
   if (nn.v <= 0n || ee.v <= 0n) throw new Error("RSA: 公钥分量非正数");
   return { n: nn.v, e: ee.v };
 }
@@ -4697,6 +4697,7 @@ function finish(codes, how, matchedFormat) {
 var CYCLE_TTL_MS = 5 * 60 * 60 * 1e3;
 var GATE_CLOSE_GRACE_MS = 10 * 60 * 1e3;
 var VALID_ENOUGH = 2;
+var MAX_SESSIONS = 12;
 var SCRAPE_MIN_INTERVAL_MS = 180 * 1e3;
 var XHS_MIN_INTERVAL_MS = 30 * 60 * 1e3;
 var MAX_POOL_CODES = 200;
@@ -4743,6 +4744,27 @@ function normalize(pool, nowMs) {
     startCycle(pool, nowMs);
   }
   if (pool.cycleAtMs === 0) pool.cycleAtMs = nowMs;
+}
+function noteProbe(pool, rooms, active, nowMs) {
+  pool.schedule = rooms.slice();
+  pool.scheduleAtMs = nowMs;
+  noteGate(pool, active, nowMs);
+  if (active) {
+    const last = pool.sessions[pool.sessions.length - 1];
+    const open = last !== void 0 && last.endedAtMs === void 0;
+    if (!open) {
+      pool.sessions.push({ startedAtMs: nowMs });
+      while (pool.sessions.length > MAX_SESSIONS) pool.sessions.shift();
+    }
+  }
+}
+function noteGate(pool, live, nowMs) {
+  if (live) {
+    pool.lastLiveAtMs = nowMs;
+    pool.gateClosedAtMs = null;
+  } else if (pool.gateClosedAtMs === null) {
+    pool.gateClosedAtMs = nowMs;
+  }
 }
 function note(pool, values, source, nowMs) {
   normalize(pool, nowMs);
@@ -5145,6 +5167,286 @@ function parseJson(raw) {
   }
 }
 
+// src/mcloud/liveGate.ts
+var BASE_CMLIVE = "https://v.cmcc-cs.cn/cmlive";
+var LIVE_ORIGIN = "https://v.cmcc-cs.cn";
+var LIVE_USER_AGENT = "Mozilla/5.0 (iPad; CPU OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) MCloudApp/12.6.0 iPad AppLanguage/zh-CN";
+var LIVE_CHANNEL_ID = "134";
+var LIVE_SOURCE_ID = "017027";
+var LIVE_TAB_ID_BENEFITS = 127;
+var LIVE_TAB_ID_REPLAY = 129;
+var STATUS_LIVE = 1;
+var GATE_TAB_IDS = [LIVE_TAB_ID_BENEFITS, LIVE_TAB_ID_REPLAY];
+function parseCmlive(body) {
+  let v;
+  try {
+    v = JSON.parse(body);
+  } catch (e) {
+    return { ok: false, error: `直播侧响应不是 JSON：${e instanceof Error ? e.message : String(e)}` };
+  }
+  const code = v["rtnCode"];
+  if (typeof code !== "string") {
+    return {
+      ok: false,
+      error: `直播侧的 rtnCode 应当是**字符串**，实际是 ${code === void 0 ? "缺字段" : typeof code}（这一族用字符串码；上游若真改成了数字码，这里必须报出来而不是兼容掉）`
+    };
+  }
+  const msg = typeof v["rtnMsg"] === "string" ? v["rtnMsg"] : void 0;
+  const env = { rtnCode: code, object: v["object"] };
+  if (msg !== void 0) env.rtnMsg = msg;
+  return { ok: true, value: env };
+}
+function cmliveOk(env) {
+  return env.rtnCode === "0";
+}
+function cmliveLine(env) {
+  return `rtnCode=${env.rtnCode}${env.rtnMsg ? `（${env.rtnMsg}）` : ""}`;
+}
+function objectOf(env, what) {
+  if (!cmliveOk(env)) {
+    return { ok: false, error: `${what}失败：${cmliveLine(env)}` };
+  }
+  const o = env.object;
+  if (o === null || typeof o !== "object" || Array.isArray(o)) {
+    return { ok: false, error: `${what}：object 不是对象（实际 ${o === null ? "null" : typeof o}）` };
+  }
+  return { ok: true, value: o };
+}
+function cmliveHeaders(jwt) {
+  const h = {
+    accept: "application/json, text/plain, */*",
+    "x-requested-with": "XMLHttpRequest",
+    "accept-language": "zh-CN,zh-Hans;q=0.9",
+    origin: LIVE_ORIGIN,
+    "user-agent": LIVE_USER_AGENT
+  };
+  if (jwt !== void 0 && jwt !== "") h["authorization"] = jwt;
+  return h;
+}
+function gateSpecTokenRequest(authorization, base) {
+  return specTokenRequest({ toSourceId: LIVE_SOURCE_ID }, authorization, base ?? BASE_USER_YUN);
+}
+function cmpassLoginRequest(ssoToken, base) {
+  return {
+    url: `${(base ?? BASE_CMLIVE).replace(/\/+$/, "")}/api/user/auth/cmpassLoginByCmToken`,
+    method: "POST",
+    headers: { ...cmliveHeaders(), "content-type": "application/json" },
+    body: JSON.stringify({ cmpassToken: ssoToken })
+  };
+}
+function parseCmpassLogin(env) {
+  if (!cmliveOk(env)) return { ok: false, error: `直播侧登录失败：${cmliveLine(env)}` };
+  const raw = env.object;
+  if (typeof raw !== "string" || raw === "") {
+    return {
+      ok: false,
+      error: `cmpassLoginByCmToken 的 object 不是非空字符串（应当就是那串 JWT 本身），实际 ${typeof raw}`
+    };
+  }
+  return { ok: true, value: raw };
+}
+function tabContentListRequest(tabId, jwt, base) {
+  return {
+    url: `${(base ?? BASE_CMLIVE).replace(/\/+$/, "")}/api/channel/channel/tabContentList?tabId=${tabId}&contentType=0&pageNo=1&channelId=${LIVE_CHANNEL_ID}`,
+    method: "GET",
+    headers: cmliveHeaders(jwt),
+    body: void 0
+  };
+}
+function parseTabContentList(env) {
+  const o = objectOf(env, "查房间列表");
+  if (!o.ok || o.value === void 0) return { ok: false, error: o.error ?? "查房间列表失败" };
+  const list = o.value["dataList"];
+  if (list === null || list === void 0) return { ok: true, value: [] };
+  if (!Array.isArray(list)) {
+    return { ok: false, error: `dataList 不是数组（实际 ${typeof list}）` };
+  }
+  const rooms = [];
+  for (const entry of list) {
+    if (entry === null || typeof entry !== "object") continue;
+    const room = entry["room"];
+    if (room === null || typeof room !== "object" || Array.isArray(room)) continue;
+    const r = room;
+    rooms.push({
+      id: intAt(r, "id") ?? 0,
+      title: strAt(r, "title"),
+      status: intAt(r, "status") ?? -1,
+      channelId: intAt(r, "channelId") ?? 0,
+      expectStartTime: strAt(r, "expectStartTime"),
+      anchorNickname: r["anchor"] !== null && typeof r["anchor"] === "object" ? strAt(r["anchor"], "nickname") : ""
+    });
+  }
+  return { ok: true, value: rooms };
+}
+function mergeRooms(groups) {
+  const seen = /* @__PURE__ */ new Set();
+  const out = [];
+  for (const group of groups) {
+    for (const room of group) {
+      if (seen.has(room.id)) continue;
+      seen.add(room.id);
+      out.push(room);
+    }
+  }
+  return out;
+}
+function koulingRooms(rooms) {
+  return rooms.filter((r) => r.status === STATUS_LIVE && r.anchorNickname === KOULING_ANCHOR);
+}
+function toProbeRooms(rooms) {
+  return rooms.map((r) => ({
+    roomId: r.id,
+    title: r.title,
+    status: r.status,
+    expectStartTime: r.expectStartTime,
+    anchorNickname: r.anchorNickname
+  }));
+}
+function gateReadingLine(rooms) {
+  const live = rooms.filter((r) => r.status === STATUS_LIVE);
+  const hit = koulingRooms(rooms);
+  if (hit.length > 0) {
+    return `门开着：${hit.length} 间在播（${KOULING_ANCHOR}）—— ${hit.map((r) => r.title || `#${r.id}`).join("、")}`;
+  }
+  if (live.length === 0) return `门关着：谁都没在播（这一趟看到 ${rooms.length} 间房，全是预告/回放）`;
+  return `门关着：有 ${live.length} 间在播，但都不是「${KOULING_ANCHOR}」（${live.map((r) => r.anchorNickname || "无名").join("、")}）`;
+}
+function intAt(o, k) {
+  const v = o[k];
+  if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
+  if (typeof v === "string" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
+  return void 0;
+}
+function strAt(o, k) {
+  const v = o[k];
+  return typeof v === "string" ? v : "";
+}
+
+// src/mcloud/tasks/liveGateTask.ts
+var STATE_GATE = "mcloud.live.gate";
+var STATE_READING2 = "mcloud.live.gate.reading";
+var STATE_GATE_BASE = "mcloud.live.gate_base";
+function loadGateBase(store2) {
+  const v = store2.getState(STATE_GATE_BASE);
+  return v && v.trim() ? v.trim().replace(/\/+$/, "") : void 0;
+}
+function saveGateBase(store2, base, nowIso) {
+  store2.setState(STATE_GATE_BASE, base.trim().replace(/\/+$/, ""), nowIso);
+}
+function loadGateState(store2) {
+  return parseJson2(store2.getState(STATE_GATE));
+}
+function readGateReading(store2) {
+  return parseJson2(store2.getState(STATE_READING2));
+}
+function runLiveGate(deps) {
+  const base = loadGateBase(deps.store);
+  const nowMs = Date.parse(deps.nowIso);
+  const prev = loadGateState(deps.store);
+  const st = prev && prev.step !== "done" ? prev : { step: "handshake", startedAt: deps.nowIso };
+  if (st.step === "handshake") return handshake(deps, st, base);
+  return roomsStep(deps, st, base, nowMs);
+}
+function handshake(deps, st, base) {
+  const TASK = "live-gate";
+  const auth = deps.store.getState(STATE_AUTH) ?? "";
+  if (auth === "") {
+    const note2 = "门要**原生凭据**（`Authorization`）：先去界面贴一份（见 docs/howto-session.md）";
+    recordError(deps.store, TASK, note2, deps.nowIso);
+    return { ok: false, note: note2 };
+  }
+  const r1 = callRawText(deps.transport, gateSpecTokenRequest(auth, base));
+  if (!r1.ok) return stepFail(deps, TASK, `① 换 SSO token 失败：${r1.error ?? "未知失败"}`);
+  const sso = parseSsoToken(r1.text);
+  if (!sso.ok || sso.value === void 0) {
+    return stepFail(deps, TASK, `① 换 SSO token 失败：${sso.error ?? "响应里没有 data.token"}`);
+  }
+  const r2 = callRawText(deps.transport, cmpassLoginRequest(sso.value, base));
+  if (!r2.ok) return stepFail(deps, TASK, `② 换直播侧 JWT 失败：${r2.error ?? "未知失败"}`);
+  const env = parseCmlive(r2.text);
+  if (!env.ok || env.value === void 0) {
+    return stepFail(deps, TASK, `② 换直播侧 JWT 失败：${env.error ?? "响应解不出来"}`);
+  }
+  const jwt = parseCmpassLogin(env.value);
+  if (!jwt.ok || jwt.value === void 0) {
+    return stepFail(deps, TASK, `② 换直播侧 JWT 失败：${jwt.error ?? "object 不是 JWT"}`);
+  }
+  st.jwt = jwt.value;
+  st.step = "rooms";
+  deps.store.setState(STATE_GATE, JSON.stringify(st), deps.nowIso);
+  clearError(deps.store, TASK, deps.nowIso);
+  return {
+    ok: true,
+    note: "① 换到 SSO token（**不落盘**，这一步就用掉了）+ ② 换到直播侧 JWT（≈30 天，这一轮用完就抹）"
+  };
+}
+function roomsStep(deps, st, base, nowMs) {
+  const TASK = "live-gate";
+  const jwt = st.jwt;
+  if (jwt === void 0 || jwt === "") {
+    st.step = "handshake";
+    deps.store.setState(STATE_GATE, JSON.stringify(st), deps.nowIso);
+    return { ok: true, idle: true, note: "这一轮没有 JWT ⇒ 退回第一步（下一趟重新握手）" };
+  }
+  const groups = [];
+  for (const tabId of GATE_TAB_IDS) {
+    const res = callRawText(deps.transport, tabContentListRequest(tabId, jwt, base));
+    if (!res.ok) {
+      return dropJwtAndFail(deps, st, `③ 页签 ${tabId} 失败：${res.error ?? "未知失败"}`);
+    }
+    const env = parseCmlive(res.text);
+    if (!env.ok || env.value === void 0) {
+      return dropJwtAndFail(deps, st, `③ 页签 ${tabId} 失败：${env.error ?? "响应解不出来"}`);
+    }
+    const parsed = parseTabContentList(env.value);
+    if (!parsed.ok || parsed.value === void 0) {
+      return dropJwtAndFail(deps, st, `③ 页签 ${tabId} 失败：${parsed.error ?? "房间列表解不出来"}`);
+    }
+    groups.push(parsed.value);
+  }
+  const rooms = mergeRooms(groups);
+  const hit = koulingRooms(rooms);
+  const note2 = gateReadingLine(rooms);
+  const { pool } = loadPoolFrom(deps.store);
+  normalize(pool, nowMs);
+  noteProbe(pool, toProbeRooms(rooms), hit.length > 0, nowMs);
+  savePoolTo(deps.store, pool, deps.nowIso);
+  const reading = {
+    at: deps.nowIso,
+    active: hit.length > 0,
+    liveCount: rooms.filter((r) => r.status === 1).length,
+    rooms: toProbeRooms(rooms),
+    note: note2
+  };
+  deps.store.setState(STATE_READING2, JSON.stringify(reading), deps.nowIso);
+  delete st.jwt;
+  st.rooms = rooms;
+  st.step = "done";
+  st.finishedAt = deps.nowIso;
+  st.note = note2;
+  deps.store.setState(STATE_GATE, JSON.stringify(st), deps.nowIso);
+  clearError(deps.store, TASK, deps.nowIso);
+  return { ok: true, note: `${note2}（页签 ${GATE_TAB_IDS.join("/")}，共 ${rooms.length} 间房）` };
+}
+function dropJwtAndFail(deps, st, note2) {
+  st.step = "handshake";
+  delete st.jwt;
+  deps.store.setState(STATE_GATE, JSON.stringify(st), deps.nowIso);
+  return stepFail(deps, "live-gate", `${note2}（已丢弃 JWT，下一趟重新握手）`);
+}
+function stepFail(deps, task, note2) {
+  recordError(deps.store, task, note2, deps.nowIso);
+  return { ok: false, note: note2 };
+}
+function parseJson2(raw) {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
 // src/mcloud/liveFlower.ts
 var LIVE_ROOM_ORIGIN = "https://m.mcloud.139.com";
 var USER_INFO_PATH = "/ycloud/liveRoomFeedback/user/info";
@@ -5229,13 +5531,13 @@ function queryRevivalFlowersRequest(base) {
     body: void 0
   };
 }
-function intAt(o, k) {
+function intAt2(o, k) {
   const v = o[k];
   if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
   if (typeof v === "string" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
   return void 0;
 }
-function strAt(o, k) {
+function strAt2(o, k) {
   const v = o[k];
   return typeof v === "string" && v !== "" ? v : void 0;
 }
@@ -5255,10 +5557,10 @@ function classifyDraw(env) {
         ...base,
         kind: "succeeded",
         result: {
-          prizeId: intAt(o, "prizeId") ?? 0,
-          flowerNum: intAt(o, "flowerNum") ?? 0,
-          prizeName: strAt(o, "prizeName"),
-          prizeType: intAt(o, "prizeType") ?? 0
+          prizeId: intAt2(o, "prizeId") ?? 0,
+          flowerNum: intAt2(o, "flowerNum") ?? 0,
+          prizeName: strAt2(o, "prizeName"),
+          prizeType: intAt2(o, "prizeType") ?? 0
         }
       };
     }
@@ -5291,7 +5593,7 @@ function drawLine(code, out) {
 function parseBalance(env) {
   const r = env?.result;
   if (r === null || typeof r !== "object" || Array.isArray(r)) return void 0;
-  return intAt(r, "flowerCnt");
+  return intAt2(r, "flowerCnt");
 }
 
 // src/mcloud/tasks/liveDraw.ts
@@ -5933,6 +6235,12 @@ var TASK_META = [
   // 抓主页走的是原项目 `xiaohongshu.ts` 的公开 GET + 逐字移植的提取器（41 条黄金向量守着）。
   // 领小红花那一步（写、会入群足迹）**仍然没做** —— 所以 risk 维持 `ledger` 不变。
   { name: "live-room", title: "直播口令（只看）", group: "activity", kind: "Query", risk: "none", missed: "catch-up", deps: [], batch: false, hidden: false, implemented: true, evidence: "partial", note: "抓口令发布方的**公开**主页 + 列出口令（**不需要凭据**）；口令要人给（那边无法鉴权）" },
+  // 门（直播日程）：只读地问上游「今天开播了吗 / 下一场几点」。
+  // ⚠ 它**不需要**会话（云盘那套），要的是**原生凭据**（换直播侧 JWT 用）——
+  //   所以 deps 是 ['auth'] 而不是 ['jwt']。缺凭据时它如实失败并说清缺什么。
+  // 证据等级 `captured`：mcloud 那边这一段是**实证**的（只读探针主动走过一遍，
+  //   出处 `docs/capture/app-live-redflower-samples.txt` §5.3），与 WS 那半段分开标。
+  { name: "live-gate", title: "直播日程（门）", group: "activity", kind: "Query", risk: "none", missed: "catch-up", deps: ["basic"], batch: false, hidden: false, implemented: true, evidence: "captured", note: "只读：①②换直播侧 JWT（SSO 只活几分钟 ⇒ 两发同一次调用）+ ③两个页签各一发。结果落**口令池**（日程/门/场次）与界面读数" },
   // 写那半。**默认关**（`mcloud.live.claim_enabled`），开关与二次确认都在插件界面上。
   // 它虽然记账，但**基本幂等**：同一条口令再领一次回 `200112`（已兑换过），不会重复发奖。
   // 所以 risk 是 `ledger` 而不是 `irreversible`。
@@ -6980,7 +7288,9 @@ function mcloudRoutes(deps) {
       handler: () => json(200, {
         baseUrl: loadBaseUrl(deps.store) || "(真上游)",
         liveUrl: loadLiveUrl(deps.store),
-        liveUrlDefault: XIAOHONGSHU_KOULING_PROFILE_URL
+        liveUrlDefault: XIAOHONGSHU_KOULING_PROFILE_URL,
+        // 门的两个主机（user-njs / v.cmcc-cs.cn）—— 一个口子，见 liveGateTask.loadGateBase
+        gateBase: loadGateBase(deps.store) || "(真主机)"
       })
     },
     {
@@ -7009,8 +7319,17 @@ function mcloudRoutes(deps) {
           deps.log(v ? `口令主页已改为 ${v}` : "口令主页已恢复为默认（发布方的小红书主页）");
           out.liveUrl = v || XIAOHONGSHU_KOULING_PROFILE_URL;
         }
+        if ("gateBase" in body) {
+          const v = typeof body.gateBase === "string" ? body.gateBase.trim() : "";
+          if (v && !/^https?:\/\//.test(v)) {
+            return json(400, { error: "gateBase 要以 http:// 或 https:// 开头（清空 = 用真主机）" });
+          }
+          saveGateBase(deps.store, v, deps.now());
+          deps.log(v ? `直播日程的上游已改为 ${v}` : "直播日程的上游已恢复为真主机");
+          out.gateBase = v || "(真主机)";
+        }
         if (Object.keys(out).length === 0) {
-          return json(400, { error: "要传 baseUrl 或 liveUrl（清空就传空串）" });
+          return json(400, { error: "要传 baseUrl / liveUrl / gateBase（清空就传空串）" });
         }
         return json(200, out);
       }
@@ -7056,6 +7375,8 @@ function mcloudRoutes(deps) {
         // 口令池（业务档，照 mcloud）：**口令的权威来源**（读数只是最近一次抓取的快照）。
         // 界面要能看见「够没够 2 条有效」「还要等多久才能再抓」「哪些判过无效」。
         pool: readPoolSummary(deps.store, localStamp(Date.parse(deps.now())), Date.parse(deps.now())),
+        // 直播日程（门）：只读探针的读数 —— 门开没开、看到几间房、「下一场」在 pool 里
+        gate: readGateReading(deps.store),
         note: "口令本身**没法自动化**（主播在弹幕/小红书发，那边无法鉴权）⇒ 要人给；能自动的只有「抓主页 + 列出看到的口令」。",
         // 写那半（领小红花）：默认关，开关在这里
         claim: {
@@ -7219,6 +7540,28 @@ function mcloudRoutes(deps) {
           note: out.note,
           done: state?.step === "done" || out.idle === true,
           state
+        });
+      }
+    },
+    {
+      // 直播日程（门）：**推进一步**（handshake 步两发 / rooms 步两发，见 liveGateTask.ts）。
+      // 与 `live/draw/step` 同一个形状：界面上的按钮是浏览器循环调这里直到 `done`。
+      path: `${base}/live/gate/step`,
+      method: "POST",
+      handler: () => {
+        const out = runLiveGate({
+          store: deps.store,
+          transport: deps.transport,
+          nowIso: deps.now()
+        });
+        const st = loadGateState(deps.store);
+        return json(200, {
+          ok: out.ok,
+          note: out.note,
+          done: st?.step === "done" || out.idle === true,
+          step: st?.step ?? "handshake",
+          reading: readGateReading(deps.store),
+          pool: readPoolSummary(deps.store, localStamp(Date.parse(deps.now())), Date.parse(deps.now()))
         });
       }
     },
@@ -7430,6 +7773,7 @@ register_cron("app-task", SIGNIN_CRON, makeRunner("App 任务（做任务）", (
 }));
 register_cron("exchange-list", SIGNIN_CRON, makeRunner("兑换清单（只看）", runExchangeList));
 register_cron("live-room", "*/30 7-23 * * *", makeRunner("直播口令（只看）", runLiveRoom));
+register_cron("live-gate", "*/10 7-23 * * *", makeRunner("直播日程（门）", runLiveGate));
 register_cron("live-draw", "*/5 7-23 * * *", (p) => {
   try {
     const out = runLiveDraw({

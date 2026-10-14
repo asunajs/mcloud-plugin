@@ -18,6 +18,42 @@ import { createServer } from 'node:http';
 /** 固定的会话凭据：mock 不校验，但插件要带，测试就能断言「确实带了」。 */
 export const MOCK_JWT = 'mock-jwttoken';
 export const MOCK_COOKIE = 'mockcookie=1';
+/** 直播侧（`/cmlive`）的 JWT —— 与签到族的 `jwttoken` **不是同一份**（这一族用 `Authorization` 头）。 */
+export const MOCK_LIVE_JWT = 'MOCK-LIVE-JWT-180-CHARS-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx';
+
+/** 上游的本地时刻串（`YYYY-MM-DD HH:MM:SS`）—— 与真上游同一个格式（**没有时区**）。 */
+function localStamp(ms) {
+  const d = new Date(ms);
+  const p = (n) => String(n).padStart(2, '0');
+  return (
+    `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ` +
+    `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+  );
+}
+
+/** 会发口令的那个主播（与插件 `koulingPool.KOULING_ANCHOR` 同一个值 —— 两处都得是它）。 */
+const KOULING_ANCHOR_MOCK = '中国移动云盘';
+
+/** 门看到的房间（按页签）。形状照实拍：房间嵌在 `dataList[].room` 里。 */
+const LIVE_ROOMS = {
+  // 127 = 盘盘福利
+  '127': [
+    // ⚠ 坑一：**在播但不是那个主播**（实拍房间号就是 147490）
+    { id: 147490, title: '福建移动福利场', status: 1, channelId: 29, expectStartTime: '', anchor: { nickname: '福建移动' } },
+    // 那个主播，正在播 —— 门开着靠它
+    { id: 147606, title: '云盘直播福利场', status: 1, channelId: 134, expectStartTime: '', anchor: { nickname: KOULING_ANCHOR_MOCK } },
+  ],
+  // 129 = 精彩回放
+  '129': [
+    // ⚠ 坑二：**同一间房在两个页签里都出现** ⇒ 必须按 id 去重
+    { id: 147606, title: '云盘直播福利场', status: 1, channelId: 134, expectStartTime: '', anchor: { nickname: KOULING_ANCHOR_MOCK } },
+    // 预告场 ⇒ 「下一场」读的就是它（时间**相对现在**算，见上面那条注释）
+    { id: 147608, title: '云盘直播·下一场', status: 0, channelId: 134, expectStartTime: localStamp(Date.now() + 24 * 3600 * 1000), anchor: { nickname: KOULING_ANCHOR_MOCK } },
+    // 回放（`status: 6`，**不是 2**）—— 日程要留着它，门不算它
+    { id: 147609, title: '云盘直播·上一场回放', status: 6, channelId: 134, expectStartTime: '', anchor: { nickname: KOULING_ANCHOR_MOCK } },
+  ],
+};
+
 
 const json = (res, status, obj) => {
   const body = typeof obj === 'string' ? obj : JSON.stringify(obj);
@@ -128,6 +164,29 @@ export async function startMock(options = {}) {
           '</body></html>';
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
         return res.end(html);
+      }
+
+      // ── 直播侧（`/cmlive`）：**门的三步**（日程 / 门开没开）──────────────────
+      //
+      // 这一族用的是**第三套信封**：`{rtnCode: "0", rtnMsg, object}` —— 码是**字符串**、
+      // 数据键叫 `object`。夹具必须真是这个形状：喂 `{code:0,result:…}` 的话，
+      // 插件那个"只认字符串码"的报警灯就永远测不到（而它正是刻意留出来的）。
+      //
+      // ⚠ 房间夹具里刻意摆了两个"坑"（都是 mcloud 实拍里真出现过的形状）：
+      //   · `147490`「福建移动」也是 `status: 1` —— 只看状态会把门判成开着
+      //   · `147606` 在**两个页签里都出现** —— 不去重就会对同一间房做两次动作
+      // ⚠ 预告场的时间是**相对 now 算的**（不是写死的日期）：写死的话，
+      //   过了那天这条断言就会翻 —— 那是 F-019 那一类错（测试依赖运行机器的时间）。
+      if (url.pathname === '/api/user/auth/cmpassLoginByCmToken') {
+        return json(res, 200, { rtnCode: '0', rtnMsg: null, object: MOCK_LIVE_JWT });
+      }
+      if (url.pathname === '/api/channel/channel/tabContentList') {
+        const tabId = url.searchParams.get('tabId');
+        if (tabId !== '127' && tabId !== '129') {
+          return json(res, 200, { rtnCode: '404', rtnMsg: '页签不存在', object: null });
+        }
+        const dataList = (LIVE_ROOMS[tabId] || []).map((room) => ({ type: 1, room }));
+        return json(res, 200, { rtnCode: '0', rtnMsg: null, object: { dataList } });
       }
 
       // ── 小红花（`liveRoomFeedback`）：领小红花那条链 ────────────────────────
