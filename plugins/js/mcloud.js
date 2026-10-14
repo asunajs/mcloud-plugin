@@ -3907,11 +3907,12 @@ function parseMatrixItem(raw) {
   const any = it.taskId !== void 0 || it.name !== void 0 || it.state !== void 0 || it.enable !== void 0;
   return any ? it : void 0;
 }
-function parseMatrix(result) {
+function parseMatrix(result, group) {
   let list = result;
   if (list !== null && typeof list === "object" && !Array.isArray(list)) {
     const o = list;
-    list = o.list ?? o.tasks ?? o.taskList ?? o.items ?? [];
+    if (group !== void 0 && Array.isArray(o[group])) list = o[group];
+    else list = o.list ?? o.tasks ?? o.taskList ?? o.items ?? [];
   }
   if (!Array.isArray(list)) return [];
   return list.map(parseMatrixItem).filter((x) => !!x);
@@ -3970,7 +3971,7 @@ function runAppTaskMatrix(deps) {
       body: JSON.stringify({ clientVersion: TASK_CLIENT_VERSION, group, marketname: MARKET_NAME })
     },
     (env) => {
-      const items = parseMatrix(env.result);
+      const items = parseMatrix(env.result, group);
       const s = summarize(items);
       deps.store.setState(STATE_GROUP_INDEX, String((idx + 1) % MATRIX_GROUPS.length), deps.nowIso);
       const reading = {
@@ -4109,6 +4110,30 @@ function load2(deps) {
   }
 }
 var save3 = (deps, st) => deps.store.setState(STATE_TASK, JSON.stringify(st), deps.nowIso);
+function today(deps) {
+  return deps.nowIso.slice(0, 10);
+}
+function freshClicked(st, deps) {
+  return st.day === today(deps) ? st.clicked : [];
+}
+function advance(deps, st) {
+  const clicked = freshClicked(st, deps);
+  const next = pendingItems(deps).find((p) => !clicked.includes(p.itemId));
+  if (!next) {
+    save3(deps, { ...st, phase: "done", fileId: void 0, clicked, day: today(deps) });
+    return { ok: true, note: `待办都走完了（这一趟点了 ${clicked.length} 条）` };
+  }
+  if (next.needUpload) beginUpload(deps, next.itemId, next.name);
+  save3(deps, {
+    gi: next.gi,
+    ii: next.ii,
+    phase: next.needUpload ? "upload" : "click",
+    itemId: next.itemId,
+    clicked,
+    day: today(deps)
+  });
+  return { ok: true, note: `下一条 #${next.itemId}（「${next.name}」）` };
+}
 function pendingItems(deps) {
   const out = [];
   const readings = readMatrix(deps.store);
@@ -4140,78 +4165,82 @@ function beginUpload(deps, itemId, name) {
   });
 }
 function startAppTask(deps) {
-  const pend = pendingItems(deps);
-  if (pend.length === 0) {
+  const prev = load2(deps);
+  const clicked = prev ? freshClicked(prev, deps) : [];
+  const all = pendingItems(deps);
+  if (all.length === 0) {
     return { ok: true, idle: true, note: "矩阵里没有待办（先跑一次 `app-task-matrix` 把读数填上）" };
   }
-  const first = pend[0];
+  const todo = all.filter((p) => !clicked.includes(p.itemId));
+  if (todo.length === 0) {
+    return {
+      ok: true,
+      idle: true,
+      note: `读数里 ${all.length} 条待办**今天都点过了** —— 不重发（读数刷新后会自然变 FINISH）`
+    };
+  }
+  const first = todo[0];
   if (first.needUpload) beginUpload(deps, first.itemId, first.name);
   save3(deps, {
     gi: first.gi,
     ii: first.ii,
     phase: first.needUpload ? "upload" : "click",
     itemId: first.itemId,
-    clicked: []
+    clicked,
+    day: today(deps)
   });
-  return { ok: true, note: `已排队 ${pend.length} 条待办，从 #${first.itemId} 开始` };
+  return { ok: true, note: `已排队 ${todo.length} 条待办（今天已点过 ${clicked.length} 条），从 #${first.itemId} 开始` };
 }
 function runAppTaskStep(deps) {
   const st = load2(deps);
   if (!st) return { ok: true, idle: true, note: "没有在跑的 app-task" };
+  if (st.phase === "done") {
+    return { ok: true, idle: true, note: "这一趟已经走完（读数刷新后新出现的待办要重新起一趟）" };
+  }
   const pend = pendingItems(deps);
   const cur = pend.find((p) => p.gi === st.gi && p.ii === st.ii);
   if (!cur) {
-    const next = pend[0];
-    if (!next) {
-      save3(deps, { ...st, phase: "click" });
-      deps.store.setState(STATE_TASK, "", deps.nowIso);
-      return { ok: true, note: "待办都走完了" };
-    }
-    if (next.needUpload) beginUpload(deps, next.itemId, next.name);
-    save3(deps, {
-      gi: next.gi,
-      ii: next.ii,
-      phase: next.needUpload ? "upload" : "click",
-      itemId: next.itemId,
-      clicked: st.clicked
-    });
-    return { ok: true, note: `换到下一条 #${next.itemId}` };
+    return advance(deps, st);
   }
   if (st.phase === "upload") {
     if (uploadDone(deps)) {
       const up = JSON.parse(deps.store.getState("mcloud.upload.state") ?? "{}");
-      save3(deps, { ...st, phase: "click", fileId: up.fileId });
+      save3(deps, { ...st, phase: "click", fileId: up.fileId, day: today(deps) });
       return { ok: true, note: `文件已传完（收尾要用它的 id）—— 下一步打卡` };
     }
-    const out = runUploadStep(deps, deterministicFile(`app-task-${st.itemId}`, 256));
-    if (out.idle) {
+    const out2 = runUploadStep(deps, deterministicFile(`app-task-${st.itemId}`, 256));
+    if (out2.idle) {
       save3(deps, { ...st, phase: "click" });
       return { ok: true, note: "没有待传的 —— 下一步打卡" };
     }
     if (uploadDone(deps)) {
       const up = JSON.parse(deps.store.getState("mcloud.upload.state") ?? "{}");
-      save3(deps, { ...st, phase: "click", fileId: up.fileId });
+      save3(deps, { ...st, phase: "click", fileId: up.fileId, day: today(deps) });
     }
-    return out;
+    return out2;
   }
   if (st.phase === "click") {
-    if (st.clicked.includes(st.itemId)) {
-      save3(deps, { ...st, phase: st.fileId ? "trash" : "click" });
-      return { ok: true, note: `#${st.itemId} 这一轮已经点过了 —— 不重发` };
+    if (freshClicked(st, deps).includes(st.itemId)) {
+      if (st.fileId) {
+        save3(deps, { ...st, phase: "trash", day: today(deps) });
+        return { ok: true, note: `#${st.itemId} 今天已经点过了 —— 不重发，去收尾` };
+      }
+      const out3 = advance(deps, st);
+      return { ok: true, note: `#${st.itemId} 今天已经点过了 —— 不重发。${out3.note}` };
     }
     const res2 = callRawText(deps.transport, clickRequest(deps, st.itemId));
     if (!res2.ok) return { ok: false, note: `打卡 #${st.itemId} 失败：${res2.error ?? "未知失败"}` };
-    const clicked = [...st.clicked, st.itemId];
+    const clicked = [...freshClicked(st, deps), st.itemId];
     if (st.fileId) {
-      save3(deps, { ...st, phase: "trash", clicked });
+      save3(deps, { ...st, phase: "trash", clicked, day: today(deps) });
       return { ok: true, note: `打卡 #${st.itemId}（HTTP ${res2.status}）—— 下一步收尾` };
     }
-    save3(deps, { ...st, phase: "click", clicked });
-    return { ok: true, note: `打卡 #${st.itemId}（HTTP ${res2.status}）—— 这条没有要收尾的文件` };
+    const out2 = advance(deps, { ...st, clicked });
+    return { ok: true, note: `打卡 #${st.itemId}（HTTP ${res2.status}）—— 这条没有要收尾的文件。${out2.note}` };
   }
   if (!st.fileId) {
-    save3(deps, { ...st, phase: "click" });
-    return { ok: true, note: "这条没有要收尾的文件 —— 不发空数组那一枪" };
+    const out2 = advance(deps, st);
+    return { ok: true, note: `这条没有要收尾的文件 —— 不发空数组那一枪。${out2.note}` };
   }
   const res = callRawText(deps.transport, trashRequest(deps, [st.fileId]));
   if (!res.ok) return { ok: false, note: `收尾 #${st.itemId} 失败：${res.error ?? "未知失败"}` };
@@ -4226,8 +4255,8 @@ function runAppTaskStep(deps) {
     ok = false;
     why = "（响应不是 JSON）";
   }
-  save3(deps, { ...st, phase: "click", fileId: void 0 });
-  return ok ? { ok: true, note: `收尾 #${st.itemId}：文件已移进回收站 —— 下一步下一条` } : { ok: false, note: `收尾 #${st.itemId} 被拒 ${why}` };
+  const out = advance(deps, { ...st, fileId: void 0 });
+  return ok ? { ok: true, note: `收尾 #${st.itemId}：文件已移进回收站。${out.note}` } : { ok: false, note: `收尾 #${st.itemId} 被拒 ${why}` };
 }
 
 // src/mcloud/tasks/exchangeList.ts
@@ -4881,14 +4910,14 @@ function runLiveDraw(deps, opts = {}) {
     return { ok: true, note: "步骤下标越界，已跳到收尾" };
   }
   const res = callOnce(deps.transport, withSession(step.request, session.jwt));
-  const advance = judge(s, step.label, res, deps.nowIso);
-  deps.store.setState(STATE_DRAW, JSON.stringify(advance.state), deps.nowIso);
-  if (!advance.ok) {
-    recordError(deps.store, TASK, advance.note, deps.nowIso);
-    return { ok: false, note: advance.note };
+  const advance2 = judge(s, step.label, res, deps.nowIso);
+  deps.store.setState(STATE_DRAW, JSON.stringify(advance2.state), deps.nowIso);
+  if (!advance2.ok) {
+    recordError(deps.store, TASK, advance2.note, deps.nowIso);
+    return { ok: false, note: advance2.note };
   }
   clearError(deps.store, TASK, deps.nowIso);
-  return { ok: true, note: advance.note };
+  return { ok: true, note: advance2.note };
 }
 function withSession(req, jwt) {
   return {

@@ -100,12 +100,17 @@ export function parseMatrixItem(raw: unknown): MatrixItem | undefined {
 }
 
 /** 解 `result`。**`result` 可能是空对象**（见文件头 ①）—— 认不出就当空。 */
-export function parseMatrix(result: unknown): MatrixItem[] {
+export function parseMatrix(result: unknown, group?: string): MatrixItem[] {
   // `result` 自己可能是数组，也可能包着一层（`result.list` / `result.tasks`）
   let list: unknown = result;
   if (list !== null && typeof list === 'object' && !Array.isArray(list)) {
     const o = list as Record<string, unknown>;
-    list = o.list ?? o.tasks ?? o.taskList ?? o.items ?? [];
+    // ⚠ **真机形状**（2026-10-14 实测）：`result` 是**按组名分键**的对象 ——
+    //   `result.day` / `result.month` / …（`group=new` 那条回 `result:{}` 是真的空，
+    //   不是解析失败）。原来这里只找 `list/tasks/taskList/items`，一个都对不上
+    //   ⇒ **8 个组全读成 0 条**，而每条 note 都写着"成功"。
+    if (group !== undefined && Array.isArray(o[group])) list = o[group];
+    else list = o.list ?? o.tasks ?? o.taskList ?? o.items ?? [];
   }
   if (!Array.isArray(list)) return [];
   return list.map(parseMatrixItem).filter((x): x is MatrixItem => !!x);
@@ -196,7 +201,7 @@ export function runAppTaskMatrix(deps: TaskDeps): TaskOutcome {
       body: JSON.stringify({ clientVersion: TASK_CLIENT_VERSION, group, marketname: MARKET_NAME }),
     },
     (env) => {
-      const items = parseMatrix(env.result);
+      const items = parseMatrix(env.result, group);
       const s = summarize(items);
       deps.store.setState(STATE_GROUP_INDEX, String((idx + 1) % MATRIX_GROUPS.length), deps.nowIso);
       // 按 group 落一条读数（界面直接吃这个）
