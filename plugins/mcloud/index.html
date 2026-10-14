@@ -1,213 +1,202 @@
 <!doctype html>
 <html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>mcloud 插件 · 分组与操作</title>
-  <!-- 复用主面板的主题变量与组件样式；再叠一层插件自己的 style.css -->
-  <link rel="stylesheet" href="/css/reset.css">
-  <link rel="stylesheet" href="/css/theme.css">
-  <link rel="stylesheet" href="/css/components.css">
-  <link rel="stylesheet" href="style.css">
-</head>
-<body>
-  <main class="wrap">
-    <header class="page-head">
-      <div>
-        <h1 class="plugin-title">mcloud 插件</h1>
-        <p class="plugin-sub">
-          按<b>风险与依赖</b>分组，不按功能名 —— 操作一条任务前，真正要知道的是
-          「它安不安全、要哪种凭据」。
-        </p>
-      </div>
-      <div class="head-actions">
-        <button id="adv-toggle" class="btn" title="排查用的东西（平时不用管）">高级</button>
-      <button id="refresh" class="btn">刷新</button>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>云盘</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <!--
+      界面骨架：**菜单栏 + 七个区块**。
+
+      为什么是这个形状（这一版全部推翻重做，理由值得写下来）：
+
+      旧版是「七张卡片平铺 + 一个「高级」开关 + 二十几个按钮」。用户的原话是
+      「界面完全搞不懂，文字一大堆，按钮点哪个都不知道」。具体是哪几件事造成的：
+
+        ① **卡片平铺** ⇒ 没有主次。用户打开页面看到七张卡，不知道先看哪张。
+        ② **按钮名字是内部术语** ⇒「只验证」「换票」「推进一步」「算一次」「现在探一次」。
+           这些都是**实现动作**，不是**用户想做的事**。用户想的是「我登录一下」
+           「今天跑了吗」「帮我领一下」。
+        ③ **「高级」开关** ⇒ 把东西藏起来，反而让人怀疑「是不是有更重要的没显示」。
+        ④ **状态机按钮** ⇒「推进一步」这种按钮是给**面板**用的，不是给人用的 ——
+           一次点击只推一步，用户要自己点十几次才知道做完了没有。
+        ⑤ **文字一大堆** ⇒ 每个接口的返回值原样铺在页面上（JSON 片段、错误码、
+           判据文案），因为「不敢删，删了怕用户看不到」。
+
+      这一版的对策：
+
+        ① **菜单栏 + 一次只显示一块**。七个词，一次一块，宽度够，不滚动。
+        ② **按钮是用户的事**：「现在跑一次」「贴进去领取」「扫码登录」。
+           实现细节（走哪个接口、几步、什么签名）收进读数里的细节区。
+        ③ **没有「高级」**。所有口子都在「设置」里，平铺，不藏。
+        ④ **没有「推进一步」**。任务是一次跑完的（见 docs/redesign-plan.md 阶段 ②），
+           界面上只有「跑一次」。
+        ⑤ **读数按「用户会问的问题」组织**，不是按接口。每个区块第一行回答
+           那个区块的核心问题（「登录了吗」「今天跑了吗」「下一场几点」），
+           细节折叠在下面。
+
+      ⚠ 读数全部来自**一个**接口：`/plugins/mcloud/api/readings`（见 routes.ts）。
+        旧版是一个区块一个接口，于是每块各有各的加载/错误状态，用户看到
+        「有的块有数、有的块空着、有的块报错」—— 没人知道该看哪个。
+    -->
+    <header class="top">
+      <h1 class="title">云盘</h1>
+      <div class="top-right">
+        <span id="acct-chip" class="chip chip-idle">还没登录</span>
+        <button id="refresh" class="btn btn-sm">刷新</button>
       </div>
     </header>
 
-    <p id="summary" class="summary">加载中…</p>
-    <p id="error" class="error" hidden></p>
+    <nav class="menu" id="menu" aria-label="区块">
+      <button class="menu-item is-on" data-block="account">账号</button>
+      <button class="menu-item" data-block="daily">日常</button>
+      <button class="menu-item" data-block="exchange">兑换</button>
+      <button class="menu-item" data-block="live">直播</button>
+      <button class="menu-item" data-block="data">数据</button>
+      <button class="menu-item" data-block="push">推送</button>
+      <button class="menu-item" data-block="settings">设置</button>
+    </nav>
 
-    <!-- 会话：插件自己才知道的东西（主面板不管这个） -->
-    <section class="card" id="session-card">
-      <div class="card-head">
-        <h2>会话</h2>
-        <span class="card-sub" id="session-status">查状态中…</span>
-      </div>
-      <div class="row">
-        <input id="session-input" class="input" type="password" autocomplete="off"
-               placeholder="粘 cookie 串（导法见插件仓库 docs/howto-session.md）">
-        <button id="session-save" class="btn btn-primary">导入并验证</button>
-        <button id="session-check" class="btn">只验证</button>
-      </div>
-      <p class="hint">
-        凭据只进 SQLite 的 <code>state</code> 表，**任何接口都不回显**；
-        页面上的输入框不会被回填。
-      </p>
-      <div class="row">
-        <label class="label">原生凭据</label>
-        <input id="h5-auth" class="input" type="password" autocomplete="off"
-               placeholder="Basic base64(mobile:号:token) —— 就是 mcloud 的 auth.raw">
-        <button id="h5-save" class="btn btn-primary">换票</button>
-        <button id="h5-clear" class="btn">清除</button>
-      </div>
-      <p class="hint" id="h5-hint"></p>
-      <div class="row">
-        <label class="label">移动云盘地址</label>
-        <input id="base-url" class="input" placeholder="留空 = 用默认上游">
-        <button id="base-save" class="btn">保存</button>
-      </div>
-      <p class="hint" id="base-hint"></p>
-      <div class="row">
-        <label class="label">口令主页</label>
-        <input id="live-url" class="input" placeholder="留空 = 用发布方的小红书主页">
-        <button id="live-url-save" class="btn">保存</button>
-      </div>
-      <p class="hint" id="live-url-hint"></p>
-      <div class="row">
-        <label class="label">直播主机</label>
-        <input id="gate-base" class="input" placeholder="留空 = 用真主机（user-njs / v.cmcc-cs.cn）">
-        <button id="gate-base-save" class="btn">保存</button>
-      </div>
-      <p class="hint" id="gate-base-hint"></p>
-    </section>
+    <main class="main">
+      <!-- ══════════════ 账号 ══════════════ -->
+      <section class="block is-on" id="block-account">
+        <p class="hero" id="acct-hero">…</p>
+        <p class="sub" id="acct-sub"></p>
 
-    <!-- 只读任务采集来的读数：界面要能看见，否则"只读"就只是日志里的一行数 -->
-    <section class="card" id="matrix-card" hidden>
-      <div class="card-head">
-        <h2>App 任务矩阵</h2>
-        <span class="card-sub" id="matrix-sub"></span>
-      </div>
-      <p class="why">
-        <b>只看，不写</b>：一个字节都不发。一次触发读一个 group（8 个一轮），
-        所以下面的格子会一个个填满 —— 想立刻看下一组，去任务列表点
-        <code>app-task-matrix</code> 的「立即执行」。
-      </p>
-      <table class="tasks" id="matrix-table">
-        <thead><tr><th>group</th><th>已完成</th><th>可做</th><th>不参与</th><th>可做的</th><th>读到时间</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </section>
+        <h3 class="h3">登录</h3>
+        <p class="hint" id="login-note"></p>
+        <div class="row">
+          <button class="btn" id="login-qr">扫码登录</button>
+          <button class="btn" id="login-sms">短信登录</button>
+          <button class="btn" id="login-pwd">账密登录</button>
+        </div>
+        <div class="row">
+          <button class="btn" id="paste-open">贴会话串导入</button>
+          <button class="btn" id="h5-open">H5 换票</button>
+        </div>
 
-    <section class="card" id="exchange-card" hidden>
-      <div class="card-head">
-        <h2>兑换</h2>
-        <span class="card-sub" id="exchange-sub"></span>
-      </div>
-      <p class="why" id="exchange-note"></p>
-      <div id="exchange-ok"></div>
-      <p class="hint" id="exchange-tiers"></p>
-    </section>
+        <div class="pane" id="pane-paste" hidden>
+          <p class="hint">
+            从浏览器里复制的那一长串 Cookie（或者一段带 cookie / jwt 的 JSON）整段贴进来。
+          </p>
+          <textarea id="paste-body" rows="3" placeholder="SESSIONID=…; UID=…"></textarea>
+          <button class="btn btn-primary" id="paste-submit">导入并验证</button>
+        </div>
 
-    <section class="card" id="accounts-card" hidden>
-      <div class="card-head">
-        <h2>账号</h2>
-        <span class="card-sub" id="accounts-sub"></span>
-      </div>
-      <p class="why">
-        可以放多个账号，选一个当「当前」—— 听弹幕、领小红花都用它。
-        列表为空时会回落到上面那一格单独的原生凭据（旧的那套照原样工作）。
-        <b>凭据只存本地</b>，界面上只显示掩码。
-      </p>
-      <div class="row">
-        <label class="label">加一个</label>
-        <input id="acc-input" class="input" autocomplete="off"
-               placeholder="粘贴原生凭据（Authorization 那一串）">
-        <button id="acc-add" class="btn btn-primary">添加</button>
-      </div>
-      <p class="hint" id="accounts-hint"></p>
-      <div id="accounts-list"></div>
-    </section>
+        <div class="pane" id="pane-h5" hidden>
+          <p class="hint">
+            从移动云盘 App 的 WebView 里抓到的那段 <code>Authorization</code>（Basic …）贴进来。
+            它会走三步换成 H5 的票 —— 之后听弹幕、领小红花才用得上。
+          </p>
+          <textarea id="h5-body" rows="2" placeholder="Basic …"></textarea>
+          <button class="btn btn-primary" id="h5-submit">存下并换票</button>
+        </div>
 
-    <section class="card" id="action-card">
-      <div class="card-head">
-        <h2>日常任务</h2>
-        <span class="card-sub" id="action-sub"></span>
-      </div>
-      <p class="why">
-        签到、领AI豆、领口令小红花、查余额与奖品 —— <b>一次做完</b>，不用一条条点。
-      </p>
-      <div class="row">
-        <button id="run-all" class="btn btn-primary" title="签到 · 领豆 · 领口令 · 查余额">一键日常任务</button>
-      </div>
-      <p class="hint" id="action-hint"></p>
-    </section>
+        <h3 class="h3">已登录的账号</h3>
+        <ul class="list" id="acct-list"></ul>
 
-    <section class="card" id="board-card" hidden>
-      <div class="card-head">
-        <h2>看板</h2>
-        <span class="card-sub" id="board-sub"></span>
-      </div>
-      <p class="why">余额、奖品、快照这些**数字**画成条 —— 一眼看得出多少，不用读一行行字。</p>
-      <div id="board"></div>
-    </section>
+        <h3 class="h3">这个设备</h3>
+        <p class="hint">设备号让上游把「这台机器」当成同一个设备。留空就按账号自己生成一个。</p>
+        <div class="row">
+          <input id="device-id" class="grow" type="text" placeholder="（留空 = 自动）" />
+          <button class="btn" id="device-save">保存</button>
+        </div>
+      </section>
 
+      <!-- ══════════════ 日常 ══════════════ -->
+      <section class="block" id="block-daily">
+        <p class="hero" id="daily-hero">…</p>
+        <p class="sub" id="daily-sub"></p>
+        <div class="row">
+          <button class="btn btn-primary" id="daily-run">现在跑一次</button>
+        </div>
+        <h3 class="h3">最近一次运行</h3>
+        <p class="hint" id="daily-when"></p>
+        <ul class="steps" id="daily-steps"></ul>
+      </section>
 
-    <section class="card" id="live-card" hidden>
-      <div class="card-head">
-        <h2>直播小红花</h2>
-        <span class="card-sub" id="live-sub"></span>
-      </div>
-      <p class="why" id="live-note"></p>
+      <!-- ══════════════ 兑换 ══════════════ -->
+      <section class="block" id="block-exchange">
+        <p class="hero" id="ex-hero">…</p>
+        <p class="sub" id="ex-sub"></p>
+        <h3 class="h3">要换什么</h3>
+        <p class="hint">填奖品的名字，或者它的编号。名字要写完整（「月卡」不会命中「季卡」）。</p>
+        <div class="row">
+          <input id="ex-plan" class="grow" type="text" placeholder="比如：1 元话费" />
+          <button class="btn" id="ex-plan-save">保存</button>
+        </div>
+        <div class="row">
+          <button class="btn btn-primary" id="ex-run">现在试一次</button>
+        </div>
+        <h3 class="h3">奖品清单</h3>
+        <p class="hint" id="ex-note"></p>
+        <table class="tbl" id="ex-tbl"></table>
+      </section>
 
-      <div class="row">
-        <label class="label">直播日程（门）</label>
-        <button id="live-gate" class="btn">现在探一次</button>
-      </div>
-      <p class="hint" id="live-gate-hint"></p>
-      <div id="live-gate-rooms"></div>
+      <!-- ══════════════ 直播 ══════════════ -->
+      <section class="block" id="block-live">
+        <p class="hero" id="live-hero">…</p>
+        <p class="sub" id="live-sub"></p>
+        <h3 class="h3">贴一条口令去领</h3>
+        <p class="hint">从直播弹幕里抄来的口令贴这里。会替你领小红花。</p>
+        <textarea id="live-paste" rows="2" placeholder="口令"></textarea>
+        <div class="row">
+          <button class="btn btn-primary" id="live-claim">贴进去领取</button>
+          <button class="btn" id="live-run">现在听一次</button>
+        </div>
+        <h3 class="h3">口令池</h3>
+        <p class="hint" id="live-pool-line"></p>
+        <ul class="list" id="live-codes"></ul>
+      </section>
 
-      <div class="row">
-        <label class="label">抓到的口令</label>
-      </div>
-      <div id="live-found"></div>
-      <p class="hint" id="live-pool"></p>
+      <!-- ══════════════ 数据 ══════════════ -->
+      <section class="block" id="block-data">
+        <p class="hero" id="data-hero">…</p>
+        <p class="sub" id="data-sub"></p>
+        <h3 class="h3">App 任务</h3>
+        <p class="hint" id="matrix-line"></p>
+        <ul class="list" id="matrix-list"></ul>
+        <h3 class="h3">沙箱能力</h3>
+        <p class="hint" id="caps-line"></p>
+      </section>
 
-      <div class="row">
-        <label class="label">口令（人给）</label>
-        <input id="live-input" class="input" autocomplete="off"
-               placeholder="贴口令，或直接贴整条弹幕（复制口令1：XXX）；多条用空格/逗号/顿号分开">
-        <button id="live-save" class="btn btn-primary">保存</button>
-        <button id="live-clear" class="btn">清空</button>
-      </div>
-      <p class="hint" id="live-codes-hint"></p>
+      <!-- ══════════════ 推送 ══════════════ -->
+      <section class="block" id="block-push">
+        <p class="hero" id="push-hero">…</p>
+        <p class="sub" id="push-sub"></p>
+      </section>
 
-      <div class="row">
-        <label class="label">听弹幕（只读）</label>
-        <button id="live-listen" class="btn">推进一步</button>
-      </div>
-      <p class="hint">
-        走的是 mcloud 那条链：门 → 取 WS 凭据（<code>userToken</code>）→ 问聊天室 →
-        <b>进房间</b>（<code>member/apply</code>）→ SockJS + PROVISION → 收弹幕。
-        <b>一次调用只推进一步</b>（面板给的预算是 2 秒），所以这个按钮会连点几次。
-        窗口默认 10 分钟，到点会主动断开、下一拍重走一遍。
-      </p>
-      <p class="hint" id="live-listen-hint"></p>
+      <!-- ══════════════ 设置 ══════════════ -->
+      <section class="block" id="block-settings">
+        <p class="hero">设置</p>
+        <p class="sub">所有口子都平铺在这里 —— 没有藏在「高级」里的东西。</p>
 
-      <div class="row">
-        <label class="label">自动定时</label>
-        <button id="live-auto" class="btn">算一次</button>
-      </div>
-      <p class="hint">
-        照 mcloud 的 <code>live_auto</code>：醒来的时刻 = <b>最早的「下一场」+ 1 小时</b>
-        （那一小时是留给主播把口令发出来的）。它<b>一个上游请求都不发</b> ——
-        只是让「听弹幕」那条链在被判"门关着"时<br>睡到那一刻，而不是每 5 分钟白问一次门。
-      </p>
-      <p class="hint" id="live-auto-hint"></p>
+        <h3 class="h3">上游地址</h3>
+        <p class="hint">留空 = 用真正的上游。填了就打这里（测试用）。</p>
+        <label class="field"><span>云盘上游</span><input id="cfg-baseUrl" type="url" placeholder="（真上游）" /></label>
+        <label class="field"><span>口令主页</span><input id="cfg-liveUrl" type="url" placeholder="（默认主页）" /></label>
+        <label class="field"><span>直播日程主机</span><input id="cfg-gateBase" type="url" placeholder="（真主机）" /></label>
+        <label class="field"><span>弹幕 WebSocket</span><input id="cfg-wsBase" type="url" placeholder="（真主机）" /></label>
+        <label class="field"><span>进房间主机</span><input id="cfg-imBase" type="url" placeholder="（真主机）" /></label>
+        <button class="btn btn-primary" id="cfg-save">保存</button>
 
-      <div class="row">
-        <label class="label">领小红花（写）</label>
-        <label><input id="live-claim" type="checkbox"> 开启（开启后 cron 才会自动推）</label>
-        <button id="live-draw" class="btn btn-primary">现在领一次</button>
-      </div>
-      <p class="hint" id="live-draw-hint"></p>
-      <div id="live-draw-result"></div>
-    </section>
+        <h3 class="h3">听窗口</h3>
+        <label class="field"><span>窗口长度（秒）</span><input id="cfg-listenSeconds" type="number" min="10" max="3600" /></label>
+        <label class="field"><span>心跳回帧</span><input id="cfg-wsHeartbeat" type="text" placeholder="h" /></label>
+        <label class="field"><span>只听这间房（0 = 自动）</span><input id="cfg-listenRoom" type="number" min="0" /></label>
 
-    <div id="groups"></div>
-  </main>
+        <h3 class="h3">自检</h3>
+        <p class="hint">验一下沙箱这一层（密码学、编码、数据库）是不是好的。装上去先点一次。</p>
+        <div class="row">
+          <button class="btn" id="selftest-run">跑自检</button>
+        </div>
+        <ul class="list" id="selftest-list"></ul>
+      </section>
+    </main>
 
-  <script src="app.js"></script>
-</body>
+    <div class="toast" id="toast" hidden></div>
+    <script src="app.js"></script>
+  </body>
 </html>

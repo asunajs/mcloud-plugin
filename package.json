@@ -12,7 +12,8 @@
     "all": "npm run gen && npm run typecheck && npm test && npm run check-build && npm run check-split",
     "gen": "node scripts/gen-constants.mjs",
     "check-split": "python3 scripts/split_check.py",
-    "e2e": "./scripts/e2e-mock.sh \"${PANEL_BIN:-../rust-plugin-panel/target/release/plugin-panel}\""
+    "e2e": "./scripts/e2e-mock.sh \"${PANEL_BIN:-../rust-plugin-panel/target/release/plugin-panel}\"",
+    "shots": "node scripts/shots.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
