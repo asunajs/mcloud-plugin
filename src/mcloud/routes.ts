@@ -34,10 +34,12 @@ import {
   loadLiveCodes,
   loadLiveUrl,
   readLiveReading,
+  readPoolSummary,
   saveLiveCodes,
   saveLiveUrl,
 } from './tasks/liveRoom.ts';
 import { XIAOHONGSHU_KOULING_PROFILE_URL } from './liveKouling.ts';
+import { localStamp } from './koulingPool.ts';
 import {
   JWT_TTL_MS,
   authStatus,
@@ -267,6 +269,9 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
           codes: loadLiveCodes(deps.store),
           url: loadLiveUrl(deps.store),
           emptyShellHintChars: EMPTY_SHELL_HINT_CHARS,
+          // 口令池（业务档，照 mcloud）：**口令的权威来源**（读数只是最近一次抓取的快照）。
+          // 界面要能看见「够没够 2 条有效」「还要等多久才能再抓」「哪些判过无效」。
+          pool: readPoolSummary(deps.store, localStamp(Date.parse(deps.now())), Date.parse(deps.now())),
           note:
             '口令本身**没法自动化**（主播在弹幕/小红书发，那边无法鉴权）⇒ 要人给；' +
             '能自动的只有「抓主页 + 列出看到的口令」。',

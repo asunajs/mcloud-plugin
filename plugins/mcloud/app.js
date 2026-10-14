@@ -246,6 +246,14 @@ async function loadLive() {
     ? `已存 ${c.codes.length} 条（${c.how}）· ${(c.at || '').slice(0, 16).replace('T', ' ')}：${c.codes.join('、')}`
     : '还没存过口令。口令不是账号凭据 —— 它是**共享资源**（谁拿到都能拿去领小红花），所以这里如实显示。';
 
+  // ── 口令池（业务档，照 mcloud）──
+  //
+  // 界面上必须看得见三件事，否则池就成了一个"隐形的节流器"：
+  //   · 够没够 2 条**有效**（够了就不再抓主页）
+  //   · 还要等多久才能再抓（30 分钟窗口）
+  //   · 每一条口令现在是什么状态（未知 / 有效 / 无效，无效的带原因）
+  $('live-pool').innerHTML = renderPool(d.pool);
+
   // ── 写那半（领小红花）──
   const claim = d.claim || {};
   $('live-claim').checked = !!claim.enabled;
@@ -263,8 +271,38 @@ async function loadLive() {
     : '';
 }
 
-async function toggleClaim() {
-  const on = $('live-claim').checked;
+/** 池那一行：状态计数 + 两条口径的可见化 + 逐条状态。
+ *
+ *  ⚠ 措辞**不许**下结论：`未知` 不等于"能用"（那只是"抓到了、还没验过"）。
+ *  判一条口令能不能用**只有**一个途径 —— 拿去领（上游当场校验）。 */
+function renderPool(pool) {
+  if (!pool) return '';
+  const stateText = { unknown: '未知', valid: '有效', invalid: '无效' };
+  const bits = [`池：${pool.validCount} 条有效`];
+  if (pool.stopScraping) bits.push('够 2 条 ⇒ 已停止抓主页');
+  if (pool.xhsWaitMs > 0) bits.push(`距下次可抓主页约 ${Math.ceil(pool.xhsWaitMs / 60000)} 分钟`);
+  if (pool.nextStart) bits.push(`下一场 ${pool.nextStart}${pool.nextTitle ? ' · ' + pool.nextTitle : ''}`);
+  else if (pool.scheduleAtMs) bits.push('这一场没有预告场');
+  else bits.push('还没探测过直播日程');
+
+  const codes = pool.codes || [];
+  const list = codes.length
+    ? '<ul class="ok-list">' +
+      codes
+        .map((c) => {
+          const st = stateText[c.state] || c.state;
+          const why = c.reason ? `（${esc(c.reason)}）` : '';
+          return `<li><code>${esc(c.value)}</code> <span class="dim">${esc(st)}${why}</span></li>`;
+        })
+        .join('') +
+      '</ul>'
+    : '';
+
+  const sessions = (pool.sessions || []).length;
+  return esc(bits.join(' · ')) + (sessions ? ` · 见过 ${sessions} 场` : '') + list;
+}
+
+async function toggleClaim() {  const on = $('live-claim').checked;
   if (on && !confirm('开启后 cron 会**自动**去领小红花（往账号里写）。确定开启？')) {
     $('live-claim').checked = false;
     return;

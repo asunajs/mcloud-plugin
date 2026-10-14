@@ -62,8 +62,10 @@ import {
   classifyDraw,
   type DrawOutcome,
 } from '../liveFlower.ts';
-import { loadLiveCodes, readLiveReading } from './liveRoom.ts';
-import { MAX_CODES } from '../liveKouling.ts';
+import { loadLiveCodes } from './liveRoom.ts';
+import { accountOf, claimVerdictOf, planDrawCodes } from './liveRoomRules.ts';
+import { accountClaimed, loadPoolFrom, noteClaim, savePoolTo } from '../koulingPool.ts';
+import type { DrawKind } from '../liveFlower.ts';
 
 /** 步骤机状态。 */
 export const STATE_DRAW = 'mcloud.live.draw';
@@ -81,7 +83,10 @@ export type DrawStep =
 
 export interface DrawRow {
   code: string;
-  kind: string;
+  /** 协议层的判定（`DrawKind`）。⚠ 是**联合类型**不是 string：
+   *  它要被映射进池（`claimVerdictOf`），而拼错的字符串在那里会静默落进 `other`
+   *  ⇒ 池就永远不会知道这条口令是坏的。 */
+  kind: DrawKind;
   note: string;
   flowerNum: number;
 }
@@ -105,20 +110,30 @@ export interface DrawState {
 
 /** 一轮要试哪些口令。
  *
- *  顺序是**人给的在前、自动抓的在后**，去重、上限 [`MAX_CODES`]。
- *  为什么合并：两个来源拿到的是**同一种东西**（口令），而人的意图本来就是
- *  "把我手上有的都试一遍"。界面上会把这一列**先显示出来**，所以不是暗箱。
- *  ⚠ 人给的在前面是有意的：那一份是**他确认过的**。 */
+ *  # ⚠ 2026-10-14：来源从"读数"换成**池**，并加了两道筛
+ *
+ *  ```text
+ *    人给的（他确认过的，排前面）+ 池里该投的（pickFor）
+ *      再滤掉：池里已判**无效**的、这个账号**领过**的
+ *  ```
+ *
+ *  为什么权威来源是池而不是"最近一次读数"：
+ *
+ *  ```text
+ *    读数 = 最近一次抓主页**解出来什么**（界面快照，解错也会原样进）
+ *    池   = 这一场攒下来的口令 + **每一条的状态**（验过没 / 有效没 / 谁领过）
+ *  ```
+ *
+ *  拿读数当来源，就等于每轮把"已判无效的口令"再投一遍（每轮白跑一枪 `200108`）、
+ *  把"这个账号领过的"再投一遍（回 `200112`：不是新结果，却会污染归因，
+ *  看起来像"口令坏了"）。判据与 mcloud 的 `pick_for` 同一份 —— 见 `liveRoomRules.planDrawCodes`。
+ *
+ *  ⚠ 顺序是**人给的在前**（界面上会把这一列先显示出来，所以不是暗箱）：
+ *  那一份是**他确认过的**。 */
 export function collectCodes(store: Pick<Store, 'getState'>): string[] {
   const human = loadLiveCodes(store)?.codes ?? [];
-  const auto = readLiveReading(store)?.codes ?? [];
-  const out: string[] = [];
-  for (const c of [...human, ...auto]) {
-    const v = c.trim();
-    if (v && !out.includes(v)) out.push(v);
-    if (out.length >= MAX_CODES) break;
-  }
-  return out;
+  const { pool } = loadPoolFrom(store);
+  return planDrawCodes(pool, accountOf(store), human);
 }
 
 export function loadDrawState(store: Pick<Store, 'getState'>): DrawState | null {
@@ -224,7 +239,21 @@ export function runLiveDraw(deps: TaskDeps, opts: { force?: boolean } = {}): Tas
     // 跑完了、或还没开始 ⇒ 看要不要起一轮新的。
     // 口令列表变了就自动起新一轮（新一期直播发了新口令），否则什么都不做。
     const done = s?.codes ?? [];
-    if (codes.length === 0) return { ok: true, idle: true, note: '没有口令可领（先抓主页或把口令填进输入框）' };
+    // ⚠ 2026-10-14：`codes` 现在来自**池**，而池会滤掉"这个账号领过的"
+    // ⇒ 一轮跑完之后 `codes` 通常是**空的**（都领过了），而那不是"没有口令可领"。
+    // 判据要按"上一轮那批口令是不是都已经被这个账号领过"来分，不能按长度分 ——
+    // 否则界面上会写着"没有口令可领（先抓主页…）"，而人明明刚领完一轮。
+    const { pool } = loadPoolFrom(deps.store);
+    const account = accountOf(deps.store);
+    const allClaimed = done.length > 0 && done.every((c) => accountClaimed(pool, account, c));
+    if (codes.length === 0) {
+      // 池会把"领过的/判过无效的"滤掉 ⇒ 长度为 0 有**两种**意思，必须分开说：
+      //   ① 上一轮那批都已经被这个账号领过 ⇒ **已跑完**（别写成"没有口令可领"）
+      //   ② 手上确实什么都没有          ⇒ 让他去抓主页或填口令
+      return allClaimed
+        ? { ok: true, idle: true, note: `这一轮已跑完（${s?.summary ?? ''}）；口令没变，不重复领` }
+        : { ok: true, idle: true, note: '没有口令可领（先抓主页或把口令填进输入框）' };
+    }
     if (s?.step === 'done' && sameList(done, codes)) {
       return { ok: true, idle: true, note: `这一轮已跑完（${s.summary ?? ''}）；口令没变，不重复领` };
     }
@@ -258,8 +287,31 @@ export function runLiveDraw(deps: TaskDeps, opts: { force?: boolean } = {}): Tas
   }
 
   const res = callOnce(deps.transport, withSession(step.request, session.jwt));
+  const before = s.results.length;
   const advance = judge(s, step.label, res, deps.nowIso);
   deps.store.setState(STATE_DRAW, JSON.stringify(advance.state), deps.nowIso);
+
+  // ── 把这一枪的结论**写回口令池**（状态跃迁的唯一入口）
+  //
+  // 为什么必须写回：`draw` 是整条链上唯一会**验**口令的一枪 —— 在它之前，
+  // 池里那条口令的状态是"未知"（抓到了、没验过）。不写回的话：
+  //
+  // ```text
+  //   判过无效的 ⇒ 下一轮还会再投一次（白跑一枪 200108）
+  //   已经领过的 ⇒ 下一轮还会再投一次（回 200112，把归因搅浑）
+  //   有效但没记 ⇒ "够 2 条有效就停止抓取"这条口径永远不成立 ⇒ 一直抓
+  // ```
+  //
+  // ⚠ 只在**这一步真的发过 draw 请求、并且拿到了信封**时才写：
+  // 判据是"结果行数变多了"（失败时 `judge` 不推进行、不追加结果行）。
+  if (s.step === 'draw' && advance.state.results.length > before) {
+    const row = advance.state.results[advance.state.results.length - 1];
+    if (row !== undefined) {
+      const loaded = loadPoolFrom(deps.store);
+      noteClaim(loaded.pool, accountOf(deps.store), row.code, claimVerdictOf(row.kind), Date.parse(deps.nowIso));
+      savePoolTo(deps.store, loaded.pool, deps.nowIso);
+    }
+  }
 
   if (!advance.ok) {
     recordError(deps.store, TASK, advance.note, deps.nowIso);

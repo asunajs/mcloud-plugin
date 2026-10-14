@@ -1,7 +1,25 @@
 // 任务：直播口令（`live-room`）—— **只读那一半**。
 //
-// 写的那半是「拿口令去领小红花」（写、会入群足迹、不可回滚），还没做。
+// 写的那半是「拿口令去领小红花」（写、会入群足迹、不可回滚），在 `liveDraw.ts`。
 // 这一半做的是：**抓口令发布方的小红书公开主页 → 解出最新一条口令 → 列出来**。
+//
+// # ⚠ 2026-10-14：口令不再"抓完就扔"，而是**进共享池**（业务档，照 mcloud）
+//
+// 池在 `../koulingPool.ts`（判据照 mcloud 的 `mcloud-core/src/kouling.rs`），
+// 本文件是它的**生产者**之一（另一个是人工粘贴，经 `liveDraw` 验证后进池）。
+// 由此多出两条**口径**，两条都是 mcloud 已有的、不是我发明的：
+//
+// ```text
+//   ① 够 2 条**有效**口令 ⇒ 停止抓取（VALID_ENOUGH / stopScraping）
+//   ② 两次抓主页之间至少隔 30 分钟（XHS_MIN_INTERVAL_MS）
+// ```
+//
+// ① 的理由：一场直播只发那么几条，验出两条有效之后继续抓**只会重复撞同一批**，
+// 而每一次抓取都在给对方风控送样本。② 的理由更硬：**风控挡下的表现是"页面里没有口令"**，
+// 与"这一期还没发笔记"在解析层**长得一模一样** —— 抓太勤会把"没发"和"被挡"
+// 混成同一个现象，连排查都没有下手处。
+//
+// 两条都标成 `idle`（不是失败）：它们说的是"按口径不该抓"，不是"抓失败"。
 //
 // # 为什么这条任务"只读"却值得单独做
 //
@@ -29,17 +47,35 @@
 //    —— 源码里明说了这一点。所以 note 里两种可能都要提，并且**如实报出页面大小**
 //    （小于一个阈值时给一条**标注为猜测**的提示，不当作判据）。
 // ② 抓到了也**不代表能用**：口令由服务端当场校验，且只在直播那一小时有效。
-//    这里只负责"我看到了什么"，不替上游下结论。
+//    这里只负责"我看到了什么"，不替上游下结论 —— 判它有效/无效的唯一途径是
+//    拿去领（见 `liveDraw`），而结论由它写回池。
 
 import { callRawText } from '../client.ts';
 import { clearError, recordError } from './base.ts';
 import type { TaskDeps, TaskOutcome } from './base.ts';
 import {
   XIAOHONGSHU_KOULING_PROFILE_URL,
+  checkCodeLimits,
   extractKoulingFromXiaohongshuHtml,
+  isKoulingMarker,
+  isQuestion,
   parseCodeInput,
   xiaohongshuProfileHeaders,
 } from '../liveKouling.ts';
+import {
+  loadPoolFrom,
+  normalize,
+  note as notePoolCodes,
+  noteXhs,
+  poolSummary,
+  savePoolTo,
+  stopScraping,
+  validCount,
+  xhsReady,
+  xhsWaitMs,
+} from '../koulingPool.ts';
+import type { PoolSummary } from '../koulingPool.ts';
+import { mergeKouling, splitKouling } from './liveRoomRules.ts';
 import type { Store } from '../../store/types.ts';
 
 /** 最近一次抓主页的读数。 */
@@ -98,6 +134,38 @@ export interface LiveCodes {
 /** 抓一次主页并解出口令（**只读**：一个字节都不往上游写）。 */
 export function runLiveRoom(deps: TaskDeps): TaskOutcome {
   const url = loadLiveUrl(deps.store);
+  const nowMs = Date.parse(deps.nowIso);
+  const loaded = loadPoolFrom(deps.store);
+  const pool = loaded.pool;
+  normalize(pool, nowMs);
+
+  // ① 够 2 条**有效** ⇒ 按口径**停止抓取**（见文件头；判据在 koulingPool.stopScraping）。
+  if (stopScraping(pool)) {
+    return {
+      ok: true,
+      idle: true,
+      note:
+        `口令池已有 ${validCount(pool)} 条**有效**口令 ⇒ 按口径停止抓取` +
+        '（这一场只发那么几条，继续抓只会重复撞同一批）',
+    };
+  }
+
+  // ② 小红书主页限速：两次之间至少 30 分钟（见 XHS_MIN_INTERVAL_MS 的理由）。
+  if (!xhsReady(pool, nowMs)) {
+    const mins = Math.ceil(xhsWaitMs(pool, nowMs) / 60000);
+    return {
+      ok: true,
+      idle: true,
+      note:
+        `距上次抓主页还不到 30 分钟（还要 ${mins} 分钟）—— ` +
+        '频繁抓会被风控挡成空壳，而空壳与"这期没发"在解析层长得一样，混起来没法排查',
+    };
+  }
+
+  // ⚠ 在**动手之前**记（成功失败都记）：抓完再记等于整个窗口都敞着。
+  noteXhs(pool, nowMs);
+  savePoolTo(deps.store, pool, deps.nowIso);
+
   const res = callRawText(deps.transport, {
     url,
     method: 'GET',
@@ -112,13 +180,20 @@ export function runLiveRoom(deps: TaskDeps): TaskOutcome {
   }
 
   const codes = extractKoulingFromXiaohongshuHtml(res.text);
+  // 进池（**来源如实标 xiaohongshu**）。已判无效的不会再进池（见 koulingPool.note）。
+  const added = notePoolCodes(pool, codes, 'xiaohongshu', nowMs);
+  savePoolTo(deps.store, pool, deps.nowIso);
+
   const guess = res.chars < EMPTY_SHELL_HINT_CHARS;
+  const reset = loaded.reset ? '（⚠ 盘上那份池解不出来，已按空池重开 —— 这一场的领取记录丢了）' : '';
+  const poolLine = `池：新增 ${added} 条，有效 ${validCount(pool)} 条${stopScraping(pool) ? '（已够 2 条 ⇒ 停止抓取）' : ''}`;
   const note = codes.length
-    ? `小红书主页：${codes.length} 条口令（${codes.join('、')}）`
-    : `小红书主页：没读到口令（页面 ${res.chars} 字符）` +
+    ? `小红书主页：${codes.length} 条口令（${codes.join('、')}）· ${poolLine}`
+    : `小红书主页：没读到口令（页面 ${res.chars} 字符）· ${poolLine}` +
       (guess
         ? ` —— 页面小得可疑，**猜**是被挡成了空壳（不是判据）`
-        : ` —— 也可能是这期没发：空壳页与"没发"在解析层长得一样`);
+        : ` —— 也可能是这期没发：空壳页与"没发"在解析层长得一样`) +
+      reset;
 
   const reading: LiveReading = {
     at: deps.nowIso,
@@ -136,6 +211,19 @@ export function runLiveRoom(deps: TaskDeps): TaskOutcome {
   return { ok: true, note };
 }
 
+/** 界面读这个：池的快照（**不含任何凭据**，只有口令与状态）。
+ *
+ *  `nowLocal` = 与上游同格式的本地时刻（「下一场」的判据要用它；
+ *  现在还没有生产者 —— 门的三步还没接，见 koulingPool 文件尾）。 */
+export function readPoolSummary(
+  store: Pick<Store, 'getState'>,
+  nowLocal: string,
+  nowMs: number,
+): PoolSummary {
+  const { pool } = loadPoolFrom(store);
+  return poolSummary(pool, nowLocal, nowMs);
+}
+
 /** 界面读这个（最近一次读数）。 */
 export function readLiveReading(store: Pick<Store, 'getState'>): LiveReading | null {
   return parseJson<LiveReading>(store.getState(STATE_READING));
@@ -146,7 +234,30 @@ export function loadLiveCodes(store: Pick<Store, 'getState'>): LiveCodes | null 
   return parseJson<LiveCodes>(store.getState(STATE_CODES));
 }
 
-/** 存人给的口令。解析失败时**什么都不写**（半截数据比没有更难查）。 */
+/** 存人给的口令。解析失败时**什么都不写**（半截数据比没有更难查）。
+ *
+ *  # ⚠ 2026-10-14：解析出来的候选还要过一遍**分隔符**（这是补的一处真 bug）
+ *
+ *  原先"没匹配到弹幕格式"那条路只按**换行**切，于是 `"口令甲 口令乙"`（空格分隔）
+ *  会被当成**一条**口令发上去 —— 上游必然回 `200108 口令无效`，而用户看到的是
+ *  "我明明填了两条，怎么只领了一条还说口令错"。
+ *
+ *  这条判据的权威源是 mcloud 的 `split_kouling`（`live_room.rs`，编排层）。
+ *  它把**空白（含全角空格）/ 逗号 / 顿号 / 换行**都算分隔符，理由写在那边：
+ *  口令是从**手机**里复制粘贴出来的，而手机输入法默认就是全角空格
+ *  ⇒ 全角空格在这里是**常见**输入，不是边角情况。
+ *
+ *  它**为什么会漏**（mcloud 的注释原话）：那边的 WebUI 自己在 `api.ts` 里先按空格
+ *  拆过一遍（作为"超集"），于是界面上看着是对的，而 CLI 与 HTTP API 两条路都直接
+ *  走那个函数、没有那层补偿 ⇒ 修在**判据这一处**，不是在各调用方各补一次。
+ *
+ *  ⚠ 切的是**解析出来的候选**（不是原始文本）：弹幕原文里的 `复制口令1：` / `无随机口令`
+ *  这些格式记号已经被算法层处理过了，拿原文去切会把记号本身切成口令。
+ *  切完再滤掉两类碎片：**看着像提问的**（`什么`）与**收尾标记**（`无随机`）。
+ *
+ *  ⚠ 算法层的契约**没动**：`extractKouling('小红花口令：AAA 无随机')` 仍然回
+ *  两条候选（那是它**刻意**的"更全"）。这里做的是**另一个问题** ——
+ *  "到底拿哪几条去发" —— 而按 mcloud 的口径，`AAA 无随机` 切开就是 `AAA` + 标记。 */
 export function saveLiveCodes(
   store: Store,
   raw: string,
@@ -154,9 +265,23 @@ export function saveLiveCodes(
 ): { ok: boolean; codes: string[]; how: string; error?: string } {
   const parsed = parseCodeInput(raw);
   if (!parsed.ok) return { ok: false, codes: [], how: '', error: parsed.error ?? '解不出口令' };
-  const v: LiveCodes = { at: nowIso, codes: parsed.codes, raw: raw.trim(), how: parsed.how };
+
+  const cut = parsed.codes.flatMap((c) => splitKouling(c));
+  const kept = cut.filter((c) => !isQuestion(c) && !isKoulingMarker(c));
+  const limited = checkCodeLimits(kept);
+  if (!limited.ok) return { ok: false, codes: [], how: '', error: limited.error ?? '解不出口令' };
+  const codes = limited.codes;
+  if (codes.length === 0) {
+    return { ok: false, codes: [], how: '', error: '拆完之后一条口令都不剩（剩下的看着都像提问或格式标记）' };
+  }
+  const how =
+    cut.length === codes.length
+      ? parsed.how
+      : `${parsed.how}；按分隔符切开 ${cut.length} 段，滤掉提问/标记、去重后剩 ${codes.length} 条`;
+
+  const v: LiveCodes = { at: nowIso, codes, raw: raw.trim(), how };
   store.setState(STATE_CODES, JSON.stringify(v), nowIso);
-  return { ok: true, codes: parsed.codes, how: parsed.how };
+  return { ok: true, codes, how };
 }
 
 export function clearLiveCodes(store: Store, nowIso: string): void {
