@@ -29,6 +29,7 @@ import { SESSION_KEY } from '../src/store/types.ts';
 import { memStore } from '../src/store/memory.ts';
 import type { BuiltRequest } from '../src/mcloud/h5.ts';
 import type { TaskDeps } from '../src/mcloud/tasks/base.ts';
+import { STATE_ORDERED_HOUR } from '../src/mcloud/tasks/exchangeOrder.ts';
 
 const NOW = '2026-10-14T01:00:00.000Z';
 const EXCHANGE_V3 = 'exchangeV3';
@@ -44,8 +45,34 @@ function mkStore(withDevice = true) {
   return store;
 }
 
+// ⚠ **必须注入时钟**：链上的"等窗口 / 压整点"读的是 `deps.nowMs()`，
+//   不注入就落到真 `Date.now()` —— 而测试跑的任意时刻离窗口多半超过 30 秒，
+//   链会如实返回"还没到窗口"。更要紧的是：第一版没有注入时，
+//   一个在 59:00 附近跑的测试会**自旋 40 分钟**（`npm test` 直接挂住）。
+//
+//   `NOW` 取**正好整点**：此时窗口判定与整点判定都落在"上一场尾巴"那一档
+//   （整点后 15/20 秒内 ⇒ 都不等），所以链一路往下跑，一次都不自旋。
+/** 假时钟：自旋时**往前推**，模拟"时间过去了"。
+ *
+ *  ⚠ 不推的话自旋会真的转下去 —— 而链上**确实有一处必须自旋**：
+ *  预热两枪之间那 500ms（契约的一部分，`task_preheat` 的顺序与间隔）。
+ *  第一版这里写的是"自旋就抛错"，于是它立刻抓到了那 500ms
+ *  —— 护栏起作用了，但用法错了：测试要的是"时间会走"，不是"不许等"。
+ *
+ *  每次推 500ms：正好一步跨过预热间隔，同时不会让窗口/整点判定漂移
+ *  （`NOW` 取的是整点，那些判定本来就不触发）。 */
+function fakeClock(): { nowMs: () => number; spin: () => void } {
+  let now = Date.parse(NOW);
+  return {
+    nowMs: () => now,
+    spin: () => {
+      now += 500;
+    },
+  };
+}
+
 const deps = (store: ReturnType<typeof mkStore>, transport: never): TaskDeps =>
-  ({ store, transport, nowIso: NOW, baseUrl: undefined }) as TaskDeps;
+  ({ store, transport, nowIso: NOW, baseUrl: undefined, ...fakeClock() }) as TaskDeps;
 
 function upstream(routes: Record<string, unknown>) {
   const sent: BuiltRequest[] = [];
@@ -329,6 +356,80 @@ test('走完之后再触发 ⇒ idle（不重复走）', () => {
   const out = runOrderStep(deps(store, transport));
   assert.equal(out.idle, true);
   assert.match(out.note, /已经走完/);
+});
+
+test('⚠ 离窗口还远 ⇒ **不自旋**，如实返回 idle（粗粒度等待是调度器的活）', () => {
+  // 没有这一条的话，`@every 5s` 的任务在 59:00 被触发时会自旋 40 分钟：
+  // 占住一条线程、面板上看是"卡住了"，而且中间那 8 次触发全排在后面。
+  const store = mkStore();
+  const { transport } = upstream({
+    exchangeList: LIST_HIT,
+    infoV3: { code: 0, result: { total: 5000 } },
+    journaling: { code: 0 },
+  });
+  startOrder(deps(store, transport), '钻石会员季卡');
+  // 先把链推到 `warm-1`（前两步要发请求，用正常时钟）
+  runOrderStep(deps(store, transport));
+  runOrderStep(deps(store, transport));
+
+  // 现在把时钟拨到"整点后 5 分钟"—— 离 59:40 还有 55 分钟
+  let now = Date.parse(NOW) + 5 * 60_000;
+  let spins = 0;
+  const before = now;
+  const d = {
+    store,
+    transport,
+    nowIso: NOW,
+    nowMs: () => now,
+    spin: () => {
+      spins++;
+      now += 1000;
+    },
+  } as unknown as TaskDeps;
+
+  const out = runOrderStep(d);
+  assert.equal(out.idle, true, `该如实返回 idle，实际：${out.note}`);
+  assert.equal(spins, 0, '一次都不该自旋');
+  assert.equal(now, before, '时钟不该被推动');
+  assert.ok(out.note.includes('还没到窗口'), out.note);
+  assert.ok(out.note.includes('零请求'), `要说清本次没发请求：${out.note}`);
+});
+
+test('⚠ 发过单之后记下"这一小时发过了"（它是防重复花豆的闸）', () => {
+  // 链里那段自旋会让排在后面的触发**积压**，跑完之后它们立刻依次执行 ——
+  // 而那时已经过了整点，`planFireWait` 会判"现在就发" ⇒ 每一枪都真花豆。
+  // 所以发单之后必须留一个"这一小时发过了"的标记，让下一次触发零请求返回。
+  const store = mkStore();
+  const { transport, sent } = upstream({ exchangeV3: { code: 0, result: {} } });
+  const d = deps(store, transport);
+  assert.equal(store.getState(STATE_ORDERED_HOUR), null, '一开始没有这个标记');
+
+  // 直接跳到下单那一步（走完整条链要一张能解码的滑块图，那不是这一条要测的）
+  goto(store, { step: 'order', round: 0, plan: PLAN, offset: 137 });
+  runOrderStep(d);
+  assert.ok(
+    sent.some((r) => r.url.includes('exchangeV3')),
+    '应该已经发过下单那一枪',
+  );
+  assert.equal(
+    store.getState(STATE_ORDERED_HOUR),
+    String(Date.parse(NOW) - (Date.parse(NOW) % 3_600_000)),
+    '发单之后要记下这一小时',
+  );
+});
+
+test('⚠ `514`（滑块算错）**不**记那个标记 —— 那一枪没被受理，重取一题再来是安全的', () => {
+  const store = mkStore();
+  const { transport, sent } = upstream({ exchangeV3: { code: 514, msg: '滑块错误' } });
+  const d = deps(store, transport);
+  goto(store, { step: 'order', round: 0, plan: PLAN, offset: 137 });
+  runOrderStep(d);
+  assert.ok(sent.some((r) => r.url.includes('exchangeV3')));
+  assert.equal(
+    store.getState(STATE_ORDERED_HOUR),
+    null,
+    '514 是"这一单没成立"，不该上闸（否则滑块那一轮白算）',
+  );
 });
 
 test('步骤文案齐全（面板要靠它显示走到哪了）', () => {
