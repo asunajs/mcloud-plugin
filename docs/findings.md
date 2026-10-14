@@ -1036,3 +1036,70 @@ app-task：4 条待办依次点完 —— #548 → #549「开启备份领好礼�
 
 ⇒ 判据不是"单测绿了"，而是"**真机读数对上了**"。夹具只能守住"逻辑没退化"，
 守不住"字段名对不对"。
+
+---
+
+## F-024 · 上传三枪**真机跑通** —— 路上吃了 4 个坑，全是单测发现不了的
+
+```
+✓ ① create    → fileId（33 字符）+ 预签名地址（**585 字符**）
+✓ ② PUT       → 256 字节（HTTP 200）
+✓ ③ complete  → 已确认
+✓ 收尾        → HTTP 200 / success:true / code:"0000"
+```
+
+### 坑 ① 缺**头画像** ⇒ HTTP 404
+
+这一族（`/hcy/file/*`）要一组自己的头：
+
+```
+x-yun-api-version: v1        x-yun-app-channel: 10000023
+x-yun-op-type: <op>          x-huawei-channelSrc: 10000023
+x-yun-client-info: <设备串>   x-yun-sub-op-type: <op*100>
+```
+
+少了就 **404** —— 而 404 **看着像"路径不存在"**（F-015 那个坑的第三次）。
+出处：mcloud 的 `cloud_file_op_headers`。
+
+### 坑 ② content-type 要 `application/json`，**不是** `oct-stream`
+
+写 `oct-stream`/`octet-stream` 回 `04000018 请求体媒体格式不支持`。
+⚠ mcloud 里那两个常量**是给别处用的**，我照抄错了地方。
+
+### 坑 ③ `uploadUrl` 在 **`data.partInfos[0].uploadUrl`** 里
+
+顶层**没有** `uploadUrl` 这个键。照顶层读的后果不是报错，而是
+"看着像成功了却没有地址可用"。实拍：
+
+```json
+{"success":true,"code":"0000","data":{"fileId":…,"rapidUpload":false,"uploadId":…,
+  "partInfos":[{"partNumber":1,"partSize":null,"uploadUrl":"https://hcyykj-eos-….cmecloud.cn/…"}]}}
+```
+
+✅ 交叉验证：真机量到的预签名地址**585 字符** —— 与抓包记的
+"`uploadUrl` 583/585，**585 是照片那一发**"**逐字吻合**。
+
+### 坑 ④ 收尾那一枪**不走 H5 签名**
+
+`batchTrash` 在**云盘主机** `personal-kd-njs.yun.139.com` 上，要的是**云盘族的头** +
+传输层注入的 `Authorization`。照 H5 签名（`m.mcloud.139.com` 那一族）发会回
+**404 / `04000005 认证失败`**。
+
+### ⚠ ⑤ 我自己的脚手架吃了一个 403，而它暴露了**真问题**
+
+第一次 PUT 回 **403**。原因：`deterministicFile` 会产生 **NUL 字节**，
+而我的验证脚本用 `execFileSync` 的 **argv** 传体 —— argv 里不能有 NUL ⇒ 被截断
+⇒ `content-length` 与预签名覆盖的那个长度不符 ⇒ 403。
+
+⚠ 但这条**不只是脚手架的事**：这一族把体当**字符串**交给宿主，
+而"字符串里的 NUL 能不能原样过到线上"**没验过**。
+⇒ `deterministicFile` 改成**只产出可打印字节**（0x21–0x7E），并加测试钉住"不许有 NUL"。
+内容对"触发备份/过名字门"没有意义，所以这个改动不损失任何东西。
+
+## 方法论：一次**只改一样**
+
+坑 ① 与 ② 我一度**认错了因果**：第一次 404 时我同时改了两样（加头画像 + 改 content-type），
+于是把 404 归因成 content-type，写下"要 `oct-stream`、写 json 会 404"——
+**反了**。后来分开试才发现：404 是**缺头**，`oct-stream` 是**媒体格式不支持**。
+
+⇒ 两个变量一起动，就会得到一个"能自圆其说但错"的结论。
