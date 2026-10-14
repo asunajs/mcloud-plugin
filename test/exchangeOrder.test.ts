@@ -59,9 +59,14 @@ function upstream(routes: Record<string, unknown>, defaults: Record<string, unkn
 const deps = (store: ReturnType<typeof mkStore>, transport: never): TaskDeps =>
   ({ store, transport, nowIso: NOW, baseUrl: undefined }) as TaskDeps;
 
+// ⚠ 夹具按**真机形状**摆（两个我踩过的点）：
+//   ① 分组是「键 → **数组**」（不是 `{prizeList: [...]}`）；
+//   ② 字段是 `prizeName` 与 `pOrder`（**不是** `name`/`price`）——
+//      真机上 `price` 这个键根本不存在，而 `POrder`/`pOrder` 两种拼法并存。
+//   夹具写错的表现很误导：不是"解析崩了"，而是"清单里没有这件奖品"。
 const LIST_HIT = {
   code: 0,
-  result: { g1: { prizeList: [{ prizeId: 42, name: '钻石会员季卡', limit: 0, price: 880 }] } },
+  result: { g1: [{ prizeId: 42, prizeName: '钻石会员季卡', limit: 0, pOrder: 880 }] },
 };
 
 test('清单里挑奖品：名字**精确**匹配，不做子串', () => {
@@ -115,7 +120,7 @@ test('**主线**：一步一枪，顺序与枪序一致', () => {
 test('⚠ 清单说不能兑 ⇒ 后面**一枪都不发**（余额、预热、下单全免）', () => {
   const store = mkStore();
   const { transport, sent } = upstream({
-    exchangeList: { code: 0, result: { g1: { prizeList: [{ prizeId: 42, name: '季卡', limit: 2 }] } } },
+    exchangeList: { code: 0, result: { g1: [{ prizeId: 42, prizeName: '季卡', limit: 2, pOrder: 880 }] } },
   });
   startOrder(deps(store, transport), '季卡');
   const out = runOrderStep(deps(store, transport));

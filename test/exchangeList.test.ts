@@ -130,3 +130,15 @@ test('上游报错时如实失败，且不写读数', () => {
   assert.equal(out.ok, false);
   assert.equal(readExchangeList(store), null, '失败了不该留一份读数');
 });
+
+
+test('⚠ 价格字段是 `pOrder`/`POrder`，**不是** `price`（真机实测，bug 防回归）', () => {
+  // 真机上同一份响应里两种拼法并存 —— 只读一个键会把一部分商品的价格判成"没给"，
+  // 于是"余额够不够"那道判断对那几件**恒假**（看着像没配价格，其实是不检查就下单）
+  assert.equal(parsePrize({ prizeId: 1, prizeName: 'a', pOrder: 50 })!.price, 50);
+  assert.equal(parsePrize({ prizeId: 2, prizeName: 'b', POrder: 400 })!.price, 400);
+  assert.equal(parsePrize({ prizeId: 3, prizeName: 'c', pOrder: '50' })!.price, 50, '字符串也认');
+  assert.equal(parsePrize({ prizeId: 4, prizeName: 'd' })!.price, undefined, '没给就是没给，**不编**');
+  // `price` 这个键真机上不存在 —— 拿它当字段名会一直读到 undefined
+  assert.equal(parsePrize({ prizeId: 5, prizeName: 'e', price: 999 })!.price, undefined);
+});
