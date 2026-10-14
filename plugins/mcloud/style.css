@@ -75,3 +75,9 @@
 
 .ok-list { margin: 6px 0 0; padding-left: 20px; color: var(--text); font-size: 12.5px; }
 .ok-list code { font-family: var(--font-mono); color: var(--text-dim); }
+
+
+/* 「高级 / 诊断」：默认全部藏起来。
+   ⚠ 用户不该看见"上游地址/口令主页/直播主机/听弹幕/自动定时/自检"这些东西
+   （见 docs/ui-wording.md）。收在这里，而不是删掉 —— 排查时还要用。 */
+body:not(.show-adv) .adv { display: none !important; }
