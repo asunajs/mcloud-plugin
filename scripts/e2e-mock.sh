@@ -155,6 +155,29 @@ curl -fsS -o /dev/null "${W[@]}" -X POST "$B/api/tasks/mcloud/live-room/run"
 printf '   live-room（只读，主页指到 mock）✓\n'
 sleep 0.3
 
+# ── 口令池（业务档，照 mcloud）：**再抓一次必须一个请求都不发** ──────────────
+#
+# 这一条是"30 分钟窗口"的端到端证据，判据是 **mock 侧没有新请求** ——
+# 比"接口返回了 idle"有力得多（返回 idle 也可能只是文案对了）。
+curl -fsS -o /dev/null "${W[@]}" -X POST "$B/api/tasks/mcloud/live-room/run"
+curl -fsS "${H[@]}" "$B/plugins/mcloud/api/live" -o "$TMP/live-pool.json"
+curl -fsS "http://127.0.0.1:$MOCK_PORT/_debug/requests" -o "$TMP/mock.json"
+python3 - "$TMP/live-pool.json" "$TMP/mock.json" <<'PY'
+import json, sys
+
+pool = (json.load(open(sys.argv[1])) or {}).get('pool') or {}
+hits = [r for r in json.load(open(sys.argv[2])) if r.get('path', '').startswith('/xhs/profile')]
+assert len(hits) == 1, f'30 分钟窗口内不该再抓主页，实际抓了 {len(hits)} 次'
+assert pool.get('validCount') == 0, pool
+assert pool.get('stopScraping') is False, pool
+assert pool.get('xhsWaitMs', 0) > 0, f'该报"还要等多久"：{pool}'
+codes = {c['value']: c for c in pool.get('codes') or []}
+# ⚠ 抓到了 ≠ 验过了：进池的状态必须是 **unknown**（唯一的验证途径是拿去领）
+assert codes.get('云盘AI高效复盘', {}).get('state') == 'unknown', codes
+assert codes['云盘AI高效复盘']['source'] == 'xiaohongshu', codes
+print('   ✅ 口令池：抓到进池（未知）、30 分钟窗口内再抓一个请求都没发')
+PY
+
 curl -fsS "${H[@]}" "$B/plugins/mcloud/api/tasks" -o "$TMP/plugin.json"
 curl -fsS "${H[@]}" "$B/plugins/mcloud/api/live" -o "$TMP/live.json"
 curl -fsS "http://127.0.0.1:$MOCK_PORT/_debug/requests" -o "$TMP/mock.json"
@@ -248,24 +271,32 @@ assert st.get('noticeClaimable') is False, f'mock 侧状态没变：{st.get("not
 print('   ✅ 通知任务：查过状态、只领一次、mock 侧真的变成已领')
 PY
 
-# App 任务矩阵：游标真的在推进（三次读到三个不同的 group），且只碰只读端点
+# App 任务矩阵：游标真的在推进（三次读到两个市场）、**只走 V3**，且只碰只读端点
+#
+# ⚠ 这条断言原先数的是 `taskListV2` —— 那是**陈旧视图**（F-025：真机 App 那一趟
+#   只调 V3；548/550/1078 就是从 V2 的列表里来的）。插件改成只走 V3 之后，
+#   这条断言就一直在数一个**根本不该出现的路径** ⇒ 恒为 0 ⇒ e2e 红。
+#   现在它同时钉住"改了 V3"与"没再回到 V2"两件事。
 python3 - "$TMP/mock.json" <<'PY'
 import json, sys
 reqs = json.load(open(sys.argv[1]))
-hits = [r for r in reqs if 'taskListV2' in r.get('path', '')]
+hits = [r for r in reqs if 'taskListV3' in r.get('path', '')]
 assert len(hits) >= 3, f'矩阵该读至少三次，实际 {len(hits)}'
+assert not [r for r in reqs if 'taskListV2' in r.get('path', '')], '列表**只走 V3**（V2 是陈旧视图，548/550/1078 出自它）'
 # ⚠ 逐条读 body，别用 json.dumps 之后的整串去 find —— 那样引号是转义的，
 #   我自己第一版就栽在这儿（断言写错，代码是对的）。
-groups = []
+bodies = []
 for r in hits:
     try:
-        groups.append(json.loads(r.get('body') or '{}').get('group'))
+        bodies.append(json.loads(r.get('body') or '{}'))
     except Exception:
-        groups.append(None)
-assert all(g for g in groups[:3]), f'前三次都该带 group，实际 {groups[:3]}'
-assert len(set(groups[:3])) == 3, f'游标没推进（三次同一个 group）：{groups[:3]}'
+        bodies.append({})
+assert all(b.get('group') == '' for b in bodies), f'V3 的 group 必须是**空串**：{[b.get("group") for b in bodies]}'
+markets = [b.get('marketname') for b in bodies]
+assert all(markets[:3]), f'前三次都该带 marketname，实际 {markets[:3]}'
+assert len(set(markets[:3])) == 2, f'游标该在两个市场之间轮转：{markets[:3]}'
 assert all(r.get('method') == 'POST' for r in hits), '这一口是 POST'
-print('   ✅ App 任务矩阵：只读、一次一个 group、游标推进正常')
+print('   ✅ App 任务矩阵：只读、只走 V3（group 空串）、两个市场轮转')
 PY
 
 # 兑换清单：只读 —— 只有 GET，且不带 deviceId（实拍就是这样）
@@ -310,15 +341,21 @@ curl -fsS -o /dev/null "${W[@]}" -X POST -H 'content-type: application/json' \
 curl -fsS -o /dev/null "${W[@]}" -X POST "$B/plugins/mcloud/api/live/claim" \
   -H 'content-type: application/json' -d '{"enabled":true}'
 
+# 扮演浏览器：循环调 `/api/live/draw/step` 直到 done。抽成函数是因为下面
+# 还要再跑一轮（验"够 2 条有效就停止抓取"），**判据只写一份**。
 DRAW_JSON="$TMP/draw.json"
-for i in $(seq 1 20); do
-  curl -fsS "${W[@]}" -X POST "$B/plugins/mcloud/api/live/draw/step" -o "$DRAW_JSON"
-  if python3 -c "import json,sys; sys.exit(0 if json.load(open('$DRAW_JSON'))['done'] else 1)"; then
-    printf '   推完（第 %s 步）\n' "$i"
-    break
-  fi
-  if [ "$i" = 20 ]; then echo "❌ 20 步还没推完" >&2; cat "$DRAW_JSON" >&2; exit 1; fi
-done
+draw_until_done() {
+  local i
+  for i in $(seq 1 20); do
+    curl -fsS "${W[@]}" -X POST "$B/plugins/mcloud/api/live/draw/step" -o "$DRAW_JSON"
+    if python3 -c "import json,sys; sys.exit(0 if json.load(open('$DRAW_JSON'))['done'] else 1)"; then
+      printf '   推完（第 %s 步）\n' "$i"
+      return 0
+    fi
+  done
+  echo "❌ 20 步还没推完" >&2; cat "$DRAW_JSON" >&2; return 1
+}
+draw_until_done
 
 curl -fsS "http://127.0.0.1:$MOCK_PORT/_debug/requests" -o "$TMP/mock.json"
 python3 - "$TMP/draw.json" "$TMP/mock.json" <<'PY'
@@ -375,6 +412,44 @@ assert '18_7' in draws[0]['headers'].get('user-agent', ''), draws[0]['headers']
 assert 'x-signature' not in draws[0]['headers'], draws[0]['headers']
 print('   ✅ 领小红花：六步链 11 个请求、一次一个、200118 与 200108 分得清、进账按 ⑥−①')
 PY
+
+# ── 口令池（业务档）：draw 的结论**写回** + "够 2 条有效 ⇒ 停止抓取" ──────────
+#
+# 为什么要端到端再验一次：池是**跨任务**的判据（抓取侧看它决定"还抓不抓"、
+# 领取侧看它决定"投哪几条"），而单测只能证明各自那一半。
+echo "⑤.1 口令池：draw 的结论写回 + 够 2 条有效就停止抓取"
+curl -fsS "${H[@]}" "$B/plugins/mcloud/api/live" -o "$TMP/pool1.json"
+python3 - "$TMP/pool1.json" <<'POOLPY1'
+import json, sys
+
+pool = (json.load(open(sys.argv[1])) or {}).get('pool') or {}
+codes = {c['value']: c for c in pool.get('codes') or []}
+# 领到 ⇒ 有效；本场已结束（200118）⇒ **无效**，但原因留成"已过期"
+assert codes.get('云盘AI高效复盘', {}).get('state') == 'valid', codes
+assert codes.get('过期的口令', {}).get('state') == 'invalid', codes
+assert codes['过期的口令'].get('reason') == '口令已过期', codes
+assert pool.get('validCount') == 1, pool
+assert pool.get('stopScraping') is False, '才 1 条有效 ⇒ 还得继续抓'
+print('   ✅ 写回：领到=有效、200118=无效（原因"已过期"）')
+POOLPY1
+
+# 再存两条能领到的口令，跑完第二轮 ⇒ 池里 3 条有效 ⇒ 按口径**停止抓取**
+curl -fsS -o /dev/null "${W[@]}" -X POST -H 'content-type: application/json' \
+  -d '{"codes":"池甲 池乙"}' "$B/plugins/mcloud/api/live/codes"
+draw_until_done
+curl -fsS "${H[@]}" "$B/plugins/mcloud/api/live" -o "$TMP/pool2.json"
+curl -fsS "http://127.0.0.1:$MOCK_PORT/_debug/requests" -o "$TMP/mock.json"
+python3 - "$TMP/pool2.json" "$TMP/mock.json" <<'POOLPY2'
+import json, sys
+
+pool = (json.load(open(sys.argv[1])) or {}).get('pool') or {}
+assert pool.get('validCount') >= 2, pool
+assert pool.get('stopScraping') is True, pool
+# 停止抓取 = **抓取侧真的不发请求**（判据是 mock 侧没有新的 /xhs/profile）
+hits = [r for r in json.load(open(sys.argv[2])) if r.get('path', '').startswith('/xhs/profile')]
+assert len(hits) == 1, f'够 2 条有效之后就一个主页请求都不该发，实际 {len(hits)}'
+print('   ✅ 口径：够 2 条有效 ⇒ 停止抓取（主页请求数仍为 1）')
+POOLPY2
 
 # ── H5 换票（原生凭据 → jwttoken）：三步 ────────────────────────────────────
 #
