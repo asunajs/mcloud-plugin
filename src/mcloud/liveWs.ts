@@ -11,7 +11,9 @@
 //   ④ 效果     → 未实测：本插件从面板走这条链只到「连接已建立」（docs/findings.md F-030）
 // ```
 //
-// ⚠⚠ **本层与 mcloud 的 Rust 有 6 处有意差异**，每一处都在代码里就地标了依据。
+// ⚠⚠ **本层按实拍把 mcloud 的 Rust 那 6 处逻辑改对了** —— 每一处都在代码里就地标了依据。
+//   （口径：抓包是权威，Rust 是移植；Rust 与实拍不一致的地方，是 Rust 没做对，
+//    不是"另一种实现"。说成"差异"会把错的留在原地。）
 // 先读这 6 条，别把差异当抄漏：
 //
 // | # | 差异 | 依据 |
@@ -392,7 +394,7 @@ export function createListener(o: ListenerOptions): Listener {
           kind = 'provision_ack';
           // 「这条连接真的建立起来了」—— 它区分「直播结束（从未建起来）」与「被断开」。
           st.provisionAckSeen = true;
-          // ⚠ 与 Rust 的**有意差异**：Rust 在这里补发一条 `command=1` 并把它叫 UNREAD
+          // ⚠ Rust 在这里多做了一件事：补发一条 `command=1` 并把它叫 UNREAD
           // （"少了这一条服务端不推弹幕"）。抓包 §四**不支持**这个解释：那条 command=1
           // 只是**心跳序列的第一拍**（共 5 拍、间隔约 15 秒），全程既没有 UNREAD 这个概念、
           // 也没有任何"补发"的痕迹。所以这里按**心跳**实现：第一拍紧跟 ack
@@ -408,7 +410,7 @@ export function createListener(o: ListenerOptions): Listener {
           if (frameTexts.length > 0) {
             texts.push(...frameTexts);
           }
-          // ⚠⚠ 与 Rust 的**有意差异**：真实客户端**每收到一条 command=2 就回一条
+          // ⚠⚠ Rust 在这里**漏了**：真实客户端**每收到一条 command=2 就回一条
           // command=0**（带被确认的 msgId），服务端再回一条 command=0 作回执 ——
           // 抓包 §3.2 逐字段核过（客户端 464 B ×38、服务端 94 B ×39）。
           // Rust 的 `live_ws.rs` **不回 ack**（只对 cmd=3 特判），这是它自己记在
