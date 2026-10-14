@@ -101,19 +101,24 @@ test('打卡那一枪的形状：**GET**、主机**带端口**、`key=task&id=`'
 
 test('⚠ 同一轮**不重发**打卡（不可回滚的东西不能"当没发过"）', () => {
   const { deps, sent, store } = mkDeps({
-    [MATRIX_GROUPS[0]!]: [{ taskId: 115, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '点一下' }],
+    [MATRIX_GROUPS[0]!]: [
+      { taskId: 115, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '点一下' },
+      { taskId: 431, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '再点一下' },
+    ],
   });
   startAppTask(deps);
-  const r1 = runAppTaskStep(deps); // 打卡
+  const r1 = runAppTaskStep(deps); // 点第一条
   assert.equal(r1.ok, true, r1.note);
   assert.equal(sent.length, 1);
-  // 手工把游标退回 click（模拟"又轮到这条"）
+  assert.match(r1.note, /下一条 #431/, '⚠ 点完必须**换下一条**（原地打转是真机上的 bug）');
+  // 手工把游标退回第一条（模拟"读数没刷新，又轮到它"）
   const st = JSON.parse(store.getState(STATE_TASK)!) as Record<string, unknown>;
-  store.setState(STATE_TASK, JSON.stringify({ ...st, phase: 'click' }), NOW);
+  store.setState(STATE_TASK, JSON.stringify({ ...st, itemId: 115, phase: 'click' }), NOW);
   const r2 = runAppTaskStep(deps);
   assert.equal(r2.ok, true);
   assert.match(r2.note, /已经点过/);
   assert.equal(sent.length, 1, '⚠ 不许再发一枪');
+  assert.match(r2.note, /下一条 #431/, '换到下一条，不原地打转');
 });
 
 test('⚠ 收尾**不许发空 `fileIds`**', () => {
@@ -126,7 +131,7 @@ test('⚠ 收尾**不许发空 `fileIds`**', () => {
   });
   d2.store.setState(
     STATE_TASK,
-    JSON.stringify({ gi: 0, ii: 0, phase: 'trash', itemId: 106, clicked: [] }),
+    JSON.stringify({ gi: 0, ii: 0, phase: 'trash', itemId: 106, clicked: [], day: NOW.slice(0, 10) }),
     NOW,
   );
   const out = runAppTaskStep(d2);
@@ -134,6 +139,7 @@ test('⚠ 收尾**不许发空 `fileIds`**', () => {
   assert.match(out.note, /不发空数组/);
   assert.equal(s2.filter((r) => r.url.includes('batchTrash')).length, 0, '⚠ 一枪都不发');
   void sent;
+  void pendingItems;
 });
 
 test('收尾那一枪：体是 `{fileIds:[…]}`，信封是**字符串 code + success**', () => {
@@ -161,4 +167,28 @@ test('走完一条带收尾的（需要传文件的那条）：传 → 点 → �
   assert.match(r3.note, /回收站/);
   assert.equal(sent.filter((r) => r.url.includes('batchTrash')).length, 1);
   assert.deepEqual(JSON.parse(sent.at(-1)!.body!), { fileIds: ['F1'] }, '收尾带的就是刚传上去的那个 id');
+});
+
+test('⚠ 点过的名单**按天重置**（矩阵读数是慢的，同一份读数会被反复消费）', () => {
+  const { deps, store, sent } = mkDeps({
+    [MATRIX_GROUPS[0]!]: [{ taskId: 115, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '点一下' }],
+  });
+  startAppTask(deps);
+  runAppTaskStep(deps);
+  assert.equal(sent.length, 1);
+  // 读数没刷新（还是 todo）⇒ 再跑也不会重复点
+  startAppTask(deps); // ⚠ 起新一趟**不能**把今天的名单抹掉
+  const out2 = startAppTask(deps);
+  assert.equal(out2.idle, true, out2.note);
+  assert.match(out2.note, /今天都点过了/);
+  assert.equal(sent.length, 1, '同一天不许重复点');
+  // 换一天 ⇒ 名单清掉（但读数还是 todo ⇒ 会再点一次，这是**期望**的：
+  //   那天的新读数本来就该让它再做一遍）
+  const nextDay = { ...deps, nowIso: '2026-10-15T01:00:00.000Z' } as TaskDeps;
+  const st = JSON.parse(store.getState(STATE_TASK) ?? '{}') as Record<string, unknown>;
+  store.setState(STATE_TASK, JSON.stringify({ ...st, day: '2026-10-14' }), NOW);
+  const out3 = startAppTask(nextDay);
+  assert.equal(out3.idle, undefined, `换一天该能再做：${out3.note}`);
+  runAppTaskStep(nextDay);
+  assert.equal(sent.length, 2, '换一天就该能再做');
 });
