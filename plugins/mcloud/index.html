@@ -68,13 +68,53 @@
         <h3 class="h3">登录</h3>
         <p class="hint" id="login-note"></p>
         <div class="row">
-          <button class="btn" id="login-qr">扫码登录</button>
+          <button class="btn btn-primary" id="login-qr">扫码登录</button>
           <button class="btn" id="login-sms">短信登录</button>
           <button class="btn" id="login-pwd">账密登录</button>
         </div>
+
+        <!-- 扫码：出码 → 用户扫 → 用户确认。推进的触发者是用户点按钮。 -->
+        <div class="pane" id="pane-qr" hidden>
+          <p class="hint" id="qr-note"></p>
+          <div class="qr" id="qr-box"></div>
+          <div class="row">
+            <button class="btn btn-primary" id="qr-poll">我扫完了 / 继续</button>
+            <button class="btn" id="qr-cancel">取消</button>
+          </div>
+        </div>
+
+        <!-- 短信：发码 → 可能被风控拦下要滑块 → 提交验证码 -->
+        <div class="pane" id="pane-sms" hidden>
+          <div class="row">
+            <input id="sms-phone" class="grow" type="tel" placeholder="13800000000" autocomplete="tel" />
+            <button class="btn" id="sms-start">下一步</button>
+          </div>
+          <p class="hint" id="sms-note"></p>
+          <div class="row">
+            <button class="btn" id="sms-send">发验证码</button>
+            <input id="sms-code" class="grow" type="text" placeholder="6 位验证码" inputmode="numeric" />
+            <button class="btn btn-primary" id="sms-submit">登录</button>
+          </div>
+          <div class="slider" id="slider-box" hidden>
+            <p class="hint" id="slider-note"></p>
+            <img id="slider-bg" alt="滑块背景" />
+          </div>
+        </div>
+
+        <!-- 账密：**没有用户交互**，所以一个请求就完成，不是状态机 -->
+        <div class="pane" id="pane-pwd" hidden>
+          <div class="row">
+            <input id="pwd-phone" class="grow" type="tel" placeholder="手机号" autocomplete="tel" />
+            <input id="pwd-pass" class="grow" type="password" placeholder="口令" autocomplete="current-password" />
+            <button class="btn btn-primary" id="pwd-submit">登录</button>
+          </div>
+          <p class="hint">口令会先按协议哈希（SHA-1，固定前缀）再发出去，不会明文上传。</p>
+        </div>
+
         <div class="row">
-          <button class="btn" id="paste-open">贴会话串导入</button>
-          <button class="btn" id="h5-open">H5 换票</button>
+          <button class="btn btn-sm" id="paste-open">贴会话串导入</button>
+          <button class="btn btn-sm" id="h5-open">H5 换票</button>
+          <button class="btn btn-sm" id="device-reset">我的码一直扫不出来</button>
         </div>
 
         <div class="pane" id="pane-paste" hidden>
@@ -180,6 +220,10 @@
         <label class="field"><span>直播日程主机</span><input id="cfg-gateBase" type="url" placeholder="（真主机）" /></label>
         <label class="field"><span>弹幕 WebSocket</span><input id="cfg-wsBase" type="url" placeholder="（真主机）" /></label>
         <label class="field"><span>进房间主机</span><input id="cfg-imBase" type="url" placeholder="（真主机）" /></label>
+        <label class="field"><span>登录主机</span><input id="cfg-loginBase" type="url" placeholder="（真主机）" /></label>
+        <label class="field"><span>登录时冒充的客户端</span>
+          <select id="cfg-loginPlatform"><option value="windows">Windows</option><option value="macos">macOS</option></select>
+        </label>
         <button class="btn btn-primary" id="cfg-save">保存</button>
 
         <h3 class="h3">听窗口</h3>

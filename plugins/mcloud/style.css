@@ -284,6 +284,45 @@ textarea:focus {
   background: var(--soft);
 }
 
+/* ── 二维码与滑块图 ── */
+
+/* 二维码：**白底**是必须的 —— 深色主题下透明底等于把浅色模块变暗，
+   对比度没了，手机就扫不出来（编码器那边也画了白底，这里是第二道保险）。 */
+.qr {
+  display: flex;
+  justify-content: center;
+  padding: 10px;
+  margin: 8px 0;
+  background: #fff;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+}
+
+.qr svg {
+  display: block;
+  width: 100%;
+  max-width: 260px;
+  height: auto;
+  image-rendering: pixelated;
+}
+
+.qr:empty {
+  display: none;
+}
+
+.slider {
+  margin: 10px 0;
+}
+
+.slider img {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--soft);
+}
+
 /* ── 列表 ── */
 
 .list {

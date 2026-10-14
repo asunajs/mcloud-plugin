@@ -491,6 +491,76 @@ function md5(bytes) {
   return out;
 }
 
+// src/crypto/sha1.ts
+function padBE(bytes) {
+  const { hi, lo } = lengthBits(bytes.length);
+  const total = (bytes.length + 8 >> 6) + 1 << 6;
+  const out = new Uint8Array(total);
+  out.set(bytes);
+  out[bytes.length] = 128;
+  writeU32BE(out, total - 8, hi);
+  writeU32BE(out, total - 4, lo);
+  return out;
+}
+function rotl2(x, n) {
+  return (x << n | x >>> 32 - n) >>> 0;
+}
+function sha1(bytes) {
+  let h0 = 1732584193;
+  let h1 = 4023233417;
+  let h2 = 2562383102;
+  let h3 = 271733878;
+  let h4 = 3285377520;
+  const padded = padBE(bytes);
+  const w = new Uint32Array(80);
+  for (let off = 0; off < padded.length; off += 64) {
+    for (let i = 0; i < 16; i += 1) w[i] = readU32BE(padded, off + i * 4);
+    for (let i = 16; i < 80; i += 1) {
+      w[i] = rotl2(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
+    }
+    let a = h0;
+    let b = h1;
+    let c = h2;
+    let d = h3;
+    let e = h4;
+    for (let i = 0; i < 80; i += 1) {
+      let f;
+      let k;
+      if (i < 20) {
+        f = b & c | ~b & d;
+        k = 1518500249;
+      } else if (i < 40) {
+        f = b ^ c ^ d;
+        k = 1859775393;
+      } else if (i < 60) {
+        f = b & c | b & d | c & d;
+        k = 2400959708;
+      } else {
+        f = b ^ c ^ d;
+        k = 3395469782;
+      }
+      const t = rotl2(a, 5) + f + e + k + w[i] >>> 0;
+      e = d;
+      d = c;
+      c = rotl2(b, 30);
+      b = a;
+      a = t;
+    }
+    h0 = h0 + a >>> 0;
+    h1 = h1 + b >>> 0;
+    h2 = h2 + c >>> 0;
+    h3 = h3 + d >>> 0;
+    h4 = h4 + e >>> 0;
+  }
+  const out = new Uint8Array(20);
+  writeU32BE(out, 0, h0);
+  writeU32BE(out, 4, h1);
+  writeU32BE(out, 8, h2);
+  writeU32BE(out, 12, h3);
+  writeU32BE(out, 16, h4);
+  return out;
+}
+
 // src/crypto/tables.ts
 var SHA256_K = [
   1116352408,
@@ -1217,8 +1287,17 @@ function maskAuth(raw) {
   return `（认不出手机号）· ${len} 字符`;
 }
 function phoneOf(raw) {
-  const m = /1\d{10}/.exec(raw);
-  return m === null ? void 0 : m[0];
+  const plain = /1\d{10}/.exec(raw);
+  if (plain !== null) return plain[0];
+  const m = /^\s*basic\s+([A-Za-z0-9+/=]+)\s*$/i.exec(raw);
+  if (m === null) return void 0;
+  try {
+    const decoded = fromUtf8(fromBase64(m[1]));
+    const inB64 = /1\d{10}/.exec(decoded);
+    return inB64 === null ? void 0 : inB64[0];
+  } catch {
+    return void 0;
+  }
 }
 function idOf(raw) {
   const phone = phoneOf(raw);
@@ -1401,6 +1480,57 @@ function aes128EncryptBlock(rk, block) {
   addRoundKey(10);
   return s;
 }
+function aes128DecryptBlock(rk, block) {
+  if (block.length !== 16) throw new Error(`AES: 块必须是 16 字节（得到 ${block.length}）`);
+  const s = new Uint8Array(block);
+  const addRoundKey = (round) => {
+    for (let i = 0; i < 16; i += 1) s[i] = s[i] ^ rk[round * 16 + i];
+  };
+  const invSubBytes = () => {
+    for (let i = 0; i < 16; i += 1) s[i] = INV_SBOX[s[i]];
+  };
+  const invShiftRows = () => {
+    for (let r = 1; r < 4; r += 1) {
+      const row = [s[r], s[r + 4], s[r + 8], s[r + 12]];
+      for (let c = 0; c < 4; c += 1) s[r + 4 * c] = row[(c - r + 4) % 4];
+    }
+  };
+  const invMixColumns = () => {
+    for (let c = 0; c < 4; c += 1) {
+      const i = 4 * c;
+      const a0 = s[i];
+      const a1 = s[i + 1];
+      const a2 = s[i + 2];
+      const a3 = s[i + 3];
+      s[i] = gfMul(a0, 14) ^ gfMul(a1, 11) ^ gfMul(a2, 13) ^ gfMul(a3, 9);
+      s[i + 1] = gfMul(a0, 9) ^ gfMul(a1, 14) ^ gfMul(a2, 11) ^ gfMul(a3, 13);
+      s[i + 2] = gfMul(a0, 13) ^ gfMul(a1, 9) ^ gfMul(a2, 14) ^ gfMul(a3, 11);
+      s[i + 3] = gfMul(a0, 11) ^ gfMul(a1, 13) ^ gfMul(a2, 9) ^ gfMul(a3, 14);
+    }
+  };
+  addRoundKey(10);
+  for (let round = 9; round >= 1; round -= 1) {
+    invShiftRows();
+    invSubBytes();
+    addRoundKey(round);
+    invMixColumns();
+  }
+  invShiftRows();
+  invSubBytes();
+  addRoundKey(0);
+  return s;
+}
+function pkcs7Unpad(data) {
+  if (data.length === 0 || data.length % 16 !== 0) {
+    throw new Error(`AES: 密文长度不是 16 的整数倍（得到 ${data.length}）`);
+  }
+  const pad = data[data.length - 1];
+  if (pad < 1 || pad > 16) throw new Error(`AES: PKCS7 填充长度非法（${pad}）`);
+  for (let i = data.length - pad; i < data.length; i += 1) {
+    if (data[i] !== pad) throw new Error("AES: PKCS7 填充字节不一致（密钥或模式不对）");
+  }
+  return data.subarray(0, data.length - pad);
+}
 function pkcs7Pad(msg, blockSize) {
   const pad = blockSize - msg.length % blockSize;
   const out = new Uint8Array(msg.length + pad);
@@ -1421,6 +1551,51 @@ function aes128CbcEncrypt(key, iv, msg) {
     out.set(prev, off);
   }
   return out;
+}
+function aes128CbcDecrypt(key, iv, ct) {
+  if (iv.length !== 16) throw new Error("AES: IV 必须是 16 字节");
+  if (ct.length === 0 || ct.length % 16 !== 0) {
+    throw new Error(`AES: 密文必须是 16 的整数倍（得到 ${ct.length}）`);
+  }
+  const rk = aes128KeyExpansion(key);
+  const out = new Uint8Array(ct.length);
+  let prev = new Uint8Array(iv);
+  for (let off = 0; off < ct.length; off += 16) {
+    const blk = ct.subarray(off, off + 16);
+    const plain = aes128DecryptBlock(rk, blk);
+    for (let i = 0; i < 16; i += 1) out[off + i] = plain[i] ^ prev[i];
+    prev = new Uint8Array(blk);
+  }
+  return out;
+}
+function aes128EcbDecrypt(key, ct) {
+  if (ct.length === 0 || ct.length % 16 !== 0) {
+    throw new Error(`AES: 密文必须是 16 的整数倍（得到 ${ct.length}）`);
+  }
+  const rk = aes128KeyExpansion(key);
+  const out = new Uint8Array(ct.length);
+  for (let off = 0; off < ct.length; off += 16) {
+    out.set(aes128DecryptBlock(rk, ct.subarray(off, off + 16)), off);
+  }
+  return out;
+}
+function encryptWithDynamicIv(key, iv, plaintext) {
+  const ct = aes128CbcEncrypt(key, iv, pkcs7Pad(utf8(plaintext), 16));
+  const joined = new Uint8Array(16 + ct.length);
+  joined.set(iv);
+  joined.set(ct, 16);
+  return toBase64(joined);
+}
+function decryptWithDynamicIv(key, payloadB64) {
+  const raw = fromBase64(payloadB64);
+  if (raw.length < 32) throw new Error("AES: 动态 IV 载荷太短（至少 IV + 一个块）");
+  const iv = raw.subarray(0, 16);
+  const ct = raw.subarray(16);
+  return fromUtf8(pkcs7Unpad(aes128CbcDecrypt(key, iv, ct)));
+}
+function aesEcbPkcs7DecryptHex(key, ciphertextHex) {
+  const ct = fromHex(ciphertextHex.trim());
+  return fromUtf8(pkcs7Unpad(aes128EcbDecrypt(fitKey16(key), ct)));
 }
 var AES_FIXED_IV = (() => {
   const out = new Uint8Array(16);
@@ -6629,6 +6804,802 @@ function sameList(a, b) {
   return a.length === b.length && a.every((v, i) => v === b[i]);
 }
 
+// src/crypto/qr.ts
+function gfMul2(a, b) {
+  let r = 0;
+  let x = a & 255;
+  let y = b & 255;
+  while (y > 0) {
+    if (y & 1) r ^= x;
+    x <<= 1;
+    if (x & 256) x ^= 285;
+    y >>= 1;
+  }
+  return r & 255;
+}
+function rsGenerator(n) {
+  let poly = [1];
+  for (let i = 0; i < n; i += 1) {
+    const next = new Array(poly.length + 1).fill(0);
+    for (let j = 0; j < poly.length; j += 1) {
+      const coef = poly[j];
+      next[j] = next[j] ^ coef;
+      next[j + 1] = next[j + 1] ^ gfMul2(coef, Math.pow(2, i) & 255);
+    }
+    poly = next;
+  }
+  return poly;
+}
+function rsEncode(data, n) {
+  const gen = rsGenerator(n);
+  const out = new Array(n).fill(0);
+  for (const byte of data) {
+    const factor = byte ^ out[0];
+    out.shift();
+    out.push(0);
+    for (let i = 0; i < n; i += 1) out[i] = out[i] ^ gfMul2(gen[i + 1], factor);
+  }
+  return out;
+}
+var CAPACITY = {
+  1: { data: 19, ecc: 7, blocks: [[1, 19]], align: [] },
+  2: { data: 34, ecc: 10, blocks: [[1, 34]], align: [6, 18] },
+  3: { data: 55, ecc: 15, blocks: [[1, 55]], align: [6, 22] },
+  4: { data: 80, ecc: 20, blocks: [[1, 80]], align: [6, 26] },
+  5: { data: 108, ecc: 26, blocks: [[1, 108]], align: [6, 30] },
+  6: { data: 136, ecc: 18, blocks: [[2, 68]], align: [6, 34] },
+  7: { data: 156, ecc: 20, blocks: [[2, 78]], align: [6, 22, 38] },
+  8: { data: 194, ecc: 24, blocks: [[2, 97]], align: [6, 24, 42] },
+  9: { data: 232, ecc: 30, blocks: [[2, 116]], align: [6, 26, 46] },
+  10: { data: 274, ecc: 18, blocks: [[2, 68], [2, 69]], align: [6, 28, 50] }
+};
+var MAX_VERSION = 10;
+function byteCapacity(version) {
+  const cap = CAPACITY[version];
+  if (cap === void 0) throw new Error(`二维码：不支持版本 ${version}`);
+  const overhead = 4 + (version <= 9 ? 8 : 16);
+  return cap.data - Math.ceil(overhead / 8);
+}
+var BitBuffer = class {
+  constructor() {
+    this.bits = [];
+  }
+  push(value, len) {
+    for (let i = len - 1; i >= 0; i -= 1) this.bits.push(value >> i & 1);
+  }
+  get length() {
+    return this.bits.length;
+  }
+};
+function chooseVersion(byteLen) {
+  for (let v = 1; v <= MAX_VERSION; v += 1) {
+    if (byteLen <= byteCapacity(v)) return v;
+  }
+  throw new Error(`二维码：载荷 ${byteLen} 字节太长（最大支持 ${byteCapacity(MAX_VERSION)}）`);
+}
+function encodeData(bytes, version) {
+  const cap = CAPACITY[version];
+  const buf = new BitBuffer();
+  buf.push(4, 4);
+  buf.push(bytes.length, version <= 9 ? 8 : 16);
+  for (const b of bytes) buf.push(b, 8);
+  const totalBits = cap.data * 8;
+  buf.push(0, Math.min(4, totalBits - buf.length));
+  while (buf.length % 8 !== 0) buf.push(0, 1);
+  const dataCw = [];
+  for (let i = 0; i < buf.length; i += 8) {
+    let b = 0;
+    for (let j = 0; j < 8; j += 1) b = b << 1 | buf.bits[i + j];
+    dataCw.push(b);
+  }
+  for (let i = 0; dataCw.length < cap.data; i += 1) dataCw.push(i % 2 === 0 ? 236 : 17);
+  const blocks = [];
+  const eccs = [];
+  let off = 0;
+  for (const [count, size] of cap.blocks) {
+    for (let b = 0; b < count; b += 1) {
+      const chunk = dataCw.slice(off, off + size);
+      off += size;
+      blocks.push(chunk);
+      eccs.push(rsEncode(chunk, cap.ecc));
+    }
+  }
+  const out = [];
+  const maxData = Math.max(...blocks.map((b) => b.length));
+  for (let i = 0; i < maxData; i += 1) {
+    for (const b of blocks) if (i < b.length) out.push(b[i]);
+  }
+  for (let i = 0; i < cap.ecc; i += 1) {
+    for (const e of eccs) out.push(e[i]);
+  }
+  return out;
+}
+var VERSION_INFO = {
+  7: 31892,
+  8: 34236,
+  9: 39577,
+  10: 42195
+};
+var FORMAT_INFO = (() => {
+  const out = [];
+  for (let mask = 0; mask < 8; mask += 1) {
+    const data = 1 << 3 | mask;
+    let rem = data << 10;
+    for (let i = 14; i >= 10; i -= 1) {
+      if (rem >> i & 1) rem ^= 1335 << i - 10;
+    }
+    out.push((data << 10 | rem) ^ 21522);
+  }
+  return out;
+})();
+function placeFinder(m, size, r0, c0) {
+  for (let r = -1; r <= 7; r += 1) {
+    for (let c = -1; c <= 7; c += 1) {
+      const rr = r0 + r;
+      const cc = c0 + c;
+      if (rr < 0 || cc < 0 || rr >= size || cc >= size) continue;
+      const inRing = r >= 0 && r <= 6 && c >= 0 && c <= 6;
+      const dark = inRing && (r === 0 || r === 6 || c === 0 || c === 6 || r >= 2 && r <= 4 && c >= 2 && c <= 4);
+      m[rr * size + cc] = dark;
+    }
+  }
+}
+function placeAlign(m, size, r0, c0) {
+  for (let r = -2; r <= 2; r += 1) {
+    for (let c = -2; c <= 2; c += 1) {
+      const rr = r0 + r;
+      const cc = c0 + c;
+      if (rr < 0 || cc < 0 || rr >= size || cc >= size) continue;
+      m[rr * size + cc] = Math.max(Math.abs(r), Math.abs(c)) !== 1;
+    }
+  }
+}
+function buildMatrix(codewords, version) {
+  const size = version * 4 + 17;
+  const dark = new Array(size * size).fill(false);
+  const reserved = new Array(size * size).fill(false);
+  const mark = (r, c, v) => {
+    dark[r * size + c] = v;
+    reserved[r * size + c] = true;
+  };
+  for (const [r0, c0] of [
+    [0, 0],
+    [0, size - 7],
+    [size - 7, 0]
+  ]) {
+    placeFinder(dark, size, r0, c0);
+    for (let r = -1; r <= 7; r += 1) {
+      for (let c = -1; c <= 7; c += 1) {
+        const rr = r0 + r;
+        const cc = c0 + c;
+        if (rr < 0 || cc < 0 || rr >= size || cc >= size) continue;
+        reserved[rr * size + cc] = true;
+      }
+    }
+  }
+  const centers = CAPACITY[version].align;
+  for (const r of centers) {
+    for (const c of centers) {
+      const nearFinder = r <= 8 && c <= 8 || r <= 8 && c >= size - 9 || r >= size - 9 && c <= 8;
+      if (nearFinder) continue;
+      placeAlign(dark, size, r, c);
+      for (let dr = -2; dr <= 2; dr += 1) {
+        for (let dc = -2; dc <= 2; dc += 1) reserved[(r + dr) * size + (c + dc)] = true;
+      }
+    }
+  }
+  for (let i = 8; i < size - 8; i += 1) {
+    mark(6, i, i % 2 === 0);
+    mark(i, 6, i % 2 === 0);
+  }
+  mark(size - 8, 8, true);
+  for (let i = 0; i < 9; i += 1) {
+    if (!reserved[8 * size + i]) mark(8, i, false);
+    if (!reserved[i * size + 8]) mark(i, 8, false);
+  }
+  for (let i = 0; i < 8; i += 1) {
+    if (!reserved[8 * size + (size - 1 - i)]) mark(8, size - 1 - i, false);
+    if (!reserved[(size - 1 - i) * size + 8]) mark(size - 1 - i, 8, false);
+  }
+  if (version >= 7) {
+    const bits2 = VERSION_INFO[version];
+    for (let i = 0; i < 18; i += 1) {
+      const bit = (bits2 >> i & 1) === 1;
+      const r = Math.floor(i / 3);
+      const c = i % 3;
+      mark(r, size - 11 + c, bit);
+      mark(size - 11 + c, r, bit);
+    }
+  }
+  let bitIdx = 0;
+  const totalBits = codewords.length * 8;
+  const bitAt = (i) => {
+    if (i >= totalBits) return false;
+    return (codewords[i >> 3] >> 7 - (i & 7) & 1) === 1;
+  };
+  let upward = true;
+  for (let col = size - 1; col > 0; col -= 2) {
+    if (col === 6) col -= 1;
+    for (let k = 0; k < size; k += 1) {
+      const row = upward ? size - 1 - k : k;
+      for (const c of [col, col - 1]) {
+        if (reserved[row * size + c]) continue;
+        dark[row * size + c] = bitAt(bitIdx);
+        bitIdx += 1;
+      }
+    }
+    upward = !upward;
+  }
+  return { dark, reserved };
+}
+var MASKS = [
+  (r, c) => (r + c) % 2 === 0,
+  (r) => r % 2 === 0,
+  (_r, c) => c % 3 === 0,
+  (r, c) => (r + c) % 3 === 0,
+  (r, c) => (Math.floor(r / 2) + Math.floor(c / 3)) % 2 === 0,
+  (r, c) => r * c % 2 + r * c % 3 === 0,
+  (r, c) => (r * c % 2 + r * c % 3) % 2 === 0,
+  (r, c) => ((r + c) % 2 + r * c % 3) % 2 === 0
+];
+function penalty(m, size) {
+  let score = 0;
+  const at = (r, c) => m[r * size + c];
+  for (let r = 0; r < size; r += 1) {
+    let run = 1;
+    for (let c = 1; c < size; c += 1) {
+      if (at(r, c) === at(r, c - 1)) run += 1;
+      else {
+        if (run >= 5) score += run - 2;
+        run = 1;
+      }
+    }
+    if (run >= 5) score += run - 2;
+  }
+  for (let c = 0; c < size; c += 1) {
+    let run = 1;
+    for (let r = 1; r < size; r += 1) {
+      if (at(r, c) === at(r - 1, c)) run += 1;
+      else {
+        if (run >= 5) score += run - 2;
+        run = 1;
+      }
+    }
+    if (run >= 5) score += run - 2;
+  }
+  for (let r = 0; r < size - 1; r += 1) {
+    for (let c = 0; c < size - 1; c += 1) {
+      const v = at(r, c);
+      if (v === at(r, c + 1) && v === at(r + 1, c) && v === at(r + 1, c + 1)) score += 3;
+    }
+  }
+  const patA = [true, false, true, true, true, false, true, false, false, false, false];
+  const patB = [false, false, false, false, true, false, true, true, true, false, true];
+  const match = (get, start) => {
+    const at2 = (pat) => {
+      for (let i = 0; i < 11; i += 1) if (get(start + i) !== pat[i]) return false;
+      return true;
+    };
+    return at2(patA) || at2(patB);
+  };
+  for (let r = 0; r < size; r += 1) {
+    for (let c = 0; c + 11 <= size; c += 1) {
+      if (match((i) => at(r, i), c)) score += 40;
+    }
+  }
+  for (let c = 0; c < size; c += 1) {
+    for (let r = 0; r + 11 <= size; r += 1) {
+      if (match((i) => at(i, c), r)) score += 40;
+    }
+  }
+  let darkCount = 0;
+  for (const d of m) if (d) darkCount += 1;
+  const pct = darkCount * 100 / (size * size);
+  score += Math.floor(Math.abs(pct - 50) / 5) * 10;
+  return score;
+}
+function placeFormat(dark, size, mask) {
+  const bits2 = FORMAT_INFO[mask];
+  const bit = (i) => (bits2 >> i & 1) === 1;
+  for (let i = 0; i < 15; i += 1) {
+    const v = bit(i);
+    if (i < 6) dark[8 * size + i] = v;
+    else if (i === 6) dark[8 * size + 7] = v;
+    else if (i === 7) dark[8 * size + 8] = v;
+    else if (i === 8) dark[7 * size + 8] = v;
+    else dark[(14 - i) * size + 8] = v;
+    if (i < 8) dark[8 * size + (size - 1 - i)] = v;
+    else dark[(size - 15 + i) * size + 8] = v;
+  }
+  dark[(size - 8) * size + 8] = true;
+}
+function encodeQr(payload) {
+  const bytes = Array.from(utf8(payload));
+  const version = chooseVersion(bytes.length);
+  const codewords = encodeData(bytes, version);
+  const size = version * 4 + 17;
+  const base = buildMatrix(codewords, version);
+  let best = null;
+  for (let mask = 0; mask < 8; mask += 1) {
+    const m = base.dark.slice();
+    for (let r = 0; r < size; r += 1) {
+      for (let c = 0; c < size; c += 1) {
+        if (base.reserved[r * size + c]) continue;
+        if (MASKS[mask](r, c)) m[r * size + c] = !m[r * size + c];
+      }
+    }
+    placeFormat(m, size, mask);
+    const score = penalty(m, size);
+    if (best === null || score < best.score) best = { dark: m, score, mask };
+  }
+  return { version, size, dark: best.dark, reserved: base.reserved, mask: best.mask };
+}
+function qrSvg(payload, opts = {}) {
+  const quiet = opts.quiet ?? 4;
+  const scale = opts.scale ?? 6;
+  const { size, dark, version } = encodeQr(payload);
+  const side = size + quiet * 2;
+  const px = side * scale;
+  const rects = [];
+  for (let r = 0; r < size; r += 1) {
+    for (let c = 0; c < size; c += 1) {
+      if (!dark[r * size + c]) continue;
+      rects.push(`M${(c + quiet) * scale} ${(r + quiet) * scale}h${scale}v${scale}h-${scale}z`);
+    }
+  }
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${px}" height="${px}" viewBox="0 0 ${px} ${px}" shape-rendering="crispEdges" data-version="${version}"><rect width="${px}" height="${px}" fill="#fff"/><path d="${rects.join("")}" fill="#000"/></svg>`;
+}
+
+// src/mcloud/login.ts
+var LOGIN_HOST = "https://user-njs.yun.139.com";
+var THIRD_LOGIN_PATH = "/user/thirdlogin";
+var SEND_SMS_CODE_PATH = "/user/sms/getSmsCode";
+var SLIDER_PUZZLE_PATH = "/user/verfycode";
+function pcClient(platform, deviceId) {
+  return { platform, deviceId };
+}
+function clientType(c) {
+  return c.platform === "windows" ? "656" : "710";
+}
+function cpid(c) {
+  return c.platform === "windows" ? "277" : "332";
+}
+function appVersion(c) {
+  return c.platform === "windows" ? "8.8.6.20260829" : "4.2.1";
+}
+var HUAWEI_CHANNEL_SRC = "10200153";
+var MM_SOURCE = "000";
+function deviceInfo(c) {
+  return `||11|${appVersion(c)}|PC|QkYtMjAyMDAzMTAxNjQ3|${c.deviceId}|| Windows 10 (10.0)|1920X1040|Q2hpbmVzZSAoU2ltcGxpZmllZCk=|||`;
+}
+function pcHeaders(c) {
+  const info = deviceInfo(c);
+  return {
+    "x-yun-client-info": info,
+    "x-DeviceInfo": info,
+    "x-MM-Source": MM_SOURCE,
+    "x-huawei-channelSrc": HUAWEI_CHANNEL_SRC,
+    "x-UserAgent": "PC"
+  };
+}
+function randomBytes(n) {
+  const out = new Uint8Array(n);
+  for (let i = 0; i < n; i += 1) out[i] = Math.floor(Math.random() * 256) & 255;
+  return out;
+}
+function newPcDeviceId() {
+  return `${toHex(randomBytes(16)).toUpperCase()}-ENDIN`;
+}
+function newSessionId() {
+  return toHex(randomBytes(16)).toUpperCase();
+}
+function newSmsRandom() {
+  return toHex(randomBytes(12));
+}
+var QR_LOGIN_URL = "https://yun.139.com/w/#/qrcLogin";
+function qrPayload(c, sessionId) {
+  return `${QR_LOGIN_URL}?dID=${c.deviceId}&sID=${sessionId}&cType=11&ver=${appVersion(c)}`;
+}
+function pintype(kind) {
+  return kind === "qr" ? "21" : kind === "sms" ? "5" : "9";
+}
+function ifOpenAccount(kind) {
+  return kind === "sms" ? 1 : 0;
+}
+var CODES = {
+  OK_ZERO: 0,
+  OK_200: 200,
+  /** 未找到设备的二维码信息 —— 码还没被扫。 */
+  QR_NOT_SCANNED: 200059541,
+  /** 二维码信息未授权 —— **已扫码，等用户在手机上确认**。 */
+  QR_SCANNED: 200059548,
+  /** 二维码信息与登录二维码信息不一致 —— `sID` 不匹配。 */
+  QR_MISMATCH: 200059544,
+  /** 二维码已失效 —— 超时，必须重新出码。 */
+  QR_EXPIRED: 200059542,
+  /** 扫码登录过于频繁 —— 语义是**限流**：该退避，不该换张码立刻重试。 */
+  QR_TOO_FREQUENT: 200059545,
+  /** 请先获取滑块拼图验证码。 */
+  NEED_SLIDER: 200059554,
+  /** 同一滑块验证码校验失败次数超限 —— 挑战作废，**必须重新取图**。 */
+  SLIDER_EXHAUSTED: 200059553,
+  /** 用户 token 不能为空（退出登录的实测常态：客户端先清 token 再调 logout）。 */
+  TOKEN_EMPTY: 1000001,
+  /** 输入参数不合法 —— 服务端**解不开请求体**。 */
+  UNDECRYPTABLE_BODY: 9103,
+  /** 验证码不正确 —— 请求体已被正确解析，只是短信码不对/过期。 */
+  SMS_CODE_WRONG: 9441,
+  /** 登录失败！—— 设备头缺失/不完整时的表现。 */
+  LOGIN_FAILED: 9999
+};
+function isSuccessCode(code) {
+  return code === CODES.OK_ZERO || code === CODES.OK_200;
+}
+function thirdloginBody(c, kind, dycpwd, msisdn) {
+  return {
+    clientType: clientType(c),
+    cpid: cpid(c),
+    dycpwd,
+    extInfo: { ifOpenAccount: ifOpenAccount(kind) },
+    loginMode: "0",
+    msisdn,
+    pintype: pintype(kind),
+    verType: "2",
+    version: appVersion(c)
+  };
+}
+function qrThirdloginBody(c, sessionId) {
+  return thirdloginBody(c, "qr", sessionId, "");
+}
+function smsThirdloginBody(c, phone, smsCode) {
+  return thirdloginBody(c, "sms", smsCode, phone);
+}
+function passwordThirdloginBody(c, username, password) {
+  return thirdloginBody(c, "password", passwordHash(password), username);
+}
+function sendSmsCodeBody(c, phone, random) {
+  return {
+    phoneNumber: phone,
+    random,
+    mode: 0,
+    reqType: 3,
+    clientType: clientType(c)
+  };
+}
+function sliderPuzzleBody(phone) {
+  return { account: phone, type: 2 };
+}
+function sendSmsCodeBodyWithSlider(c, phone, random, sliderAnswer2) {
+  return {
+    ...sendSmsCodeBody(c, phone, random),
+    puzzleVerfycode: puzzleVerfycodeEncrypt(sliderAnswer2)
+  };
+}
+var PASSWORD_HASH_PREFIX = "fetion.com.cn:";
+function passwordHash(password) {
+  return toHex(sha1(utf8(`${PASSWORD_HASH_PREFIX}${password}`))).toUpperCase();
+}
+var PUZZLE_AES_KEY = "CREATPUZZLE03F9A";
+var PUZZLE_AES_IV = "E526E1F3F9765444";
+function puzzleVerfycodeEncrypt(sliderAnswer2) {
+  return encryptWithDynamicIv(utf8(PUZZLE_AES_KEY), utf8(PUZZLE_AES_IV), sliderAnswer2);
+}
+function sliderAnswer(p) {
+  const plain = decryptWithDynamicIv(utf8(PUZZLE_AES_KEY), p.leftEncrypted).trim();
+  if (plain === "" || !/^\d+$/.test(plain)) {
+    throw new Error(`滑块缺口坐标不是十进制数：${JSON.stringify(plain)}`);
+  }
+  const x = Number(plain);
+  if (p.picWidth !== null && (x < 0 || x > p.picWidth)) {
+    throw new Error(`滑块缺口坐标 ${x} 超出图宽 ${p.picWidth}`);
+  }
+  return plain;
+}
+function parseLoginEnvelope(body) {
+  let v;
+  try {
+    v = JSON.parse(body);
+  } catch (e) {
+    throw new Error(`登录响应不是 JSON：${e instanceof Error ? e.message : String(e)}`);
+  }
+  if (typeof v !== "object" || v === null) throw new Error("登录响应不是 JSON 对象");
+  const raw = v["code"];
+  const rawCode = typeof raw === "string" ? raw : typeof raw === "number" ? String(raw) : raw == null ? "" : JSON.stringify(raw);
+  const code = rawCode === "" ? null : /^-?\d+$/.test(rawCode) ? Number(rawCode) : null;
+  const msg = v["message"] ?? v["msg"];
+  return {
+    code,
+    rawCode,
+    message: typeof msg === "string" ? msg : "",
+    data: v["data"] ?? null
+  };
+}
+function classifyPoll(env) {
+  switch (env.code) {
+    case CODES.QR_NOT_SCANNED:
+      return { kind: "not-scanned" };
+    case CODES.QR_SCANNED:
+      return { kind: "scanned" };
+    case CODES.QR_MISMATCH:
+      return { kind: "session-mismatch" };
+    case CODES.QR_EXPIRED:
+      return { kind: "expired" };
+    case CODES.QR_TOO_FREQUENT:
+      return { kind: "too-frequent" };
+    default:
+      break;
+  }
+  if (isSuccessCode(env.code)) {
+    if (typeof env.data === "string") return { kind: "success", encrypted: env.data };
+    return { kind: "other", code: env.code, message: "登录成功但 data 不是密文字符串" };
+  }
+  return { kind: "other", code: env.code, message: env.message };
+}
+function classifySendSms(env) {
+  const payload = env.data && typeof env.data === "object" ? env.data : {};
+  const captchaType = typeof payload["captchaType"] === "number" ? payload["captchaType"] : null;
+  if (isSuccessCode(env.code)) {
+    const remain = payload["remainGetTimes"];
+    return { kind: "sent", remainGetTimes: typeof remain === "number" ? remain : null };
+  }
+  if (env.code === CODES.NEED_SLIDER) return { kind: "need-slider", captchaType };
+  if (env.code === CODES.SLIDER_EXHAUSTED) return { kind: "slider-exhausted", captchaType };
+  return { kind: "other", code: env.code, message: env.message };
+}
+var LOGIN_AES_KEY = "qPqDw263XgFgL3u8";
+function decryptUserInfo(ciphertext, key = LOGIN_AES_KEY) {
+  const plain = aesEcbPkcs7DecryptHex(key, ciphertext);
+  let v;
+  try {
+    v = JSON.parse(plain);
+  } catch (e) {
+    throw new Error(
+      `userInfo 不是合法 JSON（密钥不对或用错模式都会落到这里）：${e instanceof Error ? e.message : String(e)}`
+    );
+  }
+  if (typeof v !== "object" || v === null) throw new Error("userInfo 不是 JSON 对象");
+  return v;
+}
+var PC_AUTH_PREFIX = "pc";
+function formatAuth(prefix, account, authToken) {
+  if (account === "" || authToken === "") {
+    throw new Error("拼 auth 缺少账号或 authToken");
+  }
+  return `Basic ${toBase64(utf8(`${prefix}:${account}:${authToken}`))}`;
+}
+function maskPhone(phone) {
+  if (phone.length < 4) return phone;
+  return `${phone.slice(0, 2)}****${phone.slice(-2)}`;
+}
+function authFromUserInfo(userInfo, prefix = PC_AUTH_PREFIX) {
+  const field = (name) => {
+    const v = userInfo[name];
+    if (typeof v !== "string" || v === "") throw new Error(`登录结果缺少字段 ${name}`);
+    return v;
+  };
+  return formatAuth(prefix, field("account"), field("authToken"));
+}
+function userDomainIdFrom(userInfo) {
+  const v = userInfo["userDomainId"];
+  return typeof v === "string" ? v : "";
+}
+function withClientHeaders(req, c, tid) {
+  return { ...req, headers: { ...req.headers, ...pcHeaders(c), "x-yun-tid": tid } };
+}
+function postJson(path, body, base) {
+  return {
+    url: `${(base ?? LOGIN_HOST).replace(/\/+$/, "")}${path}`,
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body)
+  };
+}
+function thirdloginRequest(c, tid, body, base) {
+  return withClientHeaders(postJson(THIRD_LOGIN_PATH, body, base), c, tid);
+}
+function sendSmsCodeRequest(c, tid, body, base) {
+  return withClientHeaders(postJson(SEND_SMS_CODE_PATH, body, base), c, tid);
+}
+function sliderPuzzleRequest(c, tid, body, base) {
+  return withClientHeaders(postJson(SLIDER_PUZZLE_PATH, body, base), c, tid);
+}
+function parseSliderPuzzle(env) {
+  const payload = env.data;
+  if (!payload || typeof payload !== "object") throw new Error("取滑块响应里没有 data");
+  const p = payload;
+  const field = (name) => {
+    const v = p[name];
+    if (typeof v !== "string" || v === "") throw new Error(`取滑块响应里缺少 ${name}`);
+    return v;
+  };
+  const size = (name) => {
+    const v = p[name];
+    if (typeof v === "number") return v;
+    if (typeof v === "string" && /^\d+$/.test(v)) return Number(v);
+    return null;
+  };
+  return {
+    backgroundB64: field("picture"),
+    puzzleB64: field("puzzle"),
+    picWidth: size("picWidth"),
+    puzzleWidth: size("puzzleWidth"),
+    leftEncrypted: field("puzzleLeft")
+  };
+}
+var QR_TTL_SECONDS = 120;
+function newQrSession(deviceId, nowMs) {
+  return {
+    sessionId: newSessionId(),
+    deviceId,
+    startedAtMs: nowMs,
+    scanned: false,
+    done: false,
+    lastNote: "等手机扫码"
+  };
+}
+function qrExpiresAt(s) {
+  return s.startedAtMs + QR_TTL_SECONDS * 1e3;
+}
+function qrExpired(s, nowMs) {
+  return nowMs >= qrExpiresAt(s);
+}
+function applyPoll(s, out, nowMs) {
+  switch (out.kind) {
+    case "not-scanned":
+      return { session: { ...s, lastNote: "等手机扫码" }, stop: false, ok: true, note: "等手机扫码" };
+    case "scanned":
+      return {
+        session: { ...s, scanned: true, lastNote: "已扫码，去手机上点「确认登录」" },
+        stop: false,
+        ok: true,
+        note: "已扫码，去手机上点「确认登录」"
+      };
+    case "success":
+      return {
+        session: { ...s, done: true, lastNote: "登录成功" },
+        stop: true,
+        ok: true,
+        note: "登录成功",
+        encrypted: out.encrypted
+      };
+    case "expired":
+      return {
+        session: { ...s, lastNote: "二维码过期了，重新出码" },
+        stop: true,
+        ok: false,
+        note: "二维码过期了（超过 120 秒），点「扫码登录」重新出码"
+      };
+    case "too-frequent":
+      return {
+        session: { ...s, lastNote: "扫码太频繁，等一下" },
+        // ⚠ **停下来**，不是继续轮。注释与代码一度不一致（注释写"停在这里
+        //   让用户自己等"、代码写的 `stop: false`）—— 测试把这条抓出来了。
+        //   继续每秒轮的表现是把限流喂得更狠，然后上游给更长的封禁。
+        stop: true,
+        ok: true,
+        note: "扫码登录过于频繁，等一会儿再试（不要重新出码）"
+      };
+    case "session-mismatch":
+      return {
+        session: { ...s, lastNote: "会话对不上，重新出码" },
+        stop: true,
+        ok: false,
+        note: "会话对不上（`sID` 变了），点「扫码登录」重新出码"
+      };
+    default:
+      return {
+        session: { ...s, lastNote: `上游说：${out.message || `code=${out.code}`}` },
+        stop: true,
+        ok: false,
+        note: `登录没成：${out.message || `code=${out.code}`}`
+      };
+  }
+}
+function newSmsSession(phone, nowMs) {
+  return {
+    phone,
+    random: newSmsRandom(),
+    startedAtMs: nowMs,
+    sent: false,
+    slider: null,
+    lastNote: "还没发码"
+  };
+}
+
+// src/mcloud/loginSession.ts
+var STATE_DEVICE_ID2 = "mcloud.login.deviceId";
+var STATE_QR_SESSION = "mcloud.login.qr";
+var STATE_SMS_SESSION = "mcloud.login.sms";
+var STATE_LOGIN_PREF = "mcloud.login.pref";
+var STATE_LOGIN_BASE = "mcloud.login.base";
+var STATE_LOGIN_DOMAIN = "mcloud.login.userDomainId";
+function loadDeviceId(store2, nowIso) {
+  const cur = store2.getState(STATE_DEVICE_ID2);
+  if (cur !== void 0 && cur !== null && cur !== "") return cur;
+  const fresh = newPcDeviceId();
+  store2.setState(STATE_DEVICE_ID2, fresh, nowIso);
+  return fresh;
+}
+function resetDeviceId(store2, nowIso) {
+  const fresh = newPcDeviceId();
+  store2.setState(STATE_DEVICE_ID2, fresh, nowIso);
+  clearLogin(store2);
+  return fresh;
+}
+function parseJson4(raw) {
+  if (raw === void 0 || raw === null || raw === "") return null;
+  try {
+    const v = JSON.parse(raw);
+    return typeof v === "object" && v !== null ? v : null;
+  } catch {
+    return null;
+  }
+}
+function loadQrSession(store2) {
+  const s = parseJson4(store2.getState(STATE_QR_SESSION));
+  if (s === null) return null;
+  if (typeof s.sessionId !== "string" || typeof s.deviceId !== "string") return null;
+  return s;
+}
+function saveQrSession(store2, s, nowIso) {
+  store2.setState(STATE_QR_SESSION, JSON.stringify(s), nowIso);
+}
+function loadSmsSession(store2) {
+  const s = parseJson4(store2.getState(STATE_SMS_SESSION));
+  if (s === null) return null;
+  if (typeof s.phone !== "string" || typeof s.random !== "string") return null;
+  return s;
+}
+function saveSmsSession(store2, s, nowIso) {
+  store2.setState(STATE_SMS_SESSION, JSON.stringify(s), nowIso);
+}
+function clearLogin(store2) {
+  store2.setState(STATE_QR_SESSION, "", (/* @__PURE__ */ new Date()).toISOString());
+  store2.setState(STATE_SMS_SESSION, "", (/* @__PURE__ */ new Date()).toISOString());
+}
+function startQrSession(store2, nowMs, nowIso) {
+  const deviceId = loadDeviceId(store2, nowIso);
+  const s = newQrSession(deviceId, nowMs);
+  saveQrSession(store2, s, nowIso);
+  return s;
+}
+function startSmsSession(store2, phone, nowMs, nowIso) {
+  const s = newSmsSession(phone, nowMs);
+  saveSmsSession(store2, s, nowIso);
+  return s;
+}
+function setSmsSlider(store2, s, slider, nowIso) {
+  const next = { ...s, slider };
+  saveSmsSession(store2, next, nowIso);
+  return next;
+}
+function loginReading(store2, nowMs, qrPayloadOf) {
+  const qr = loadQrSession(store2);
+  const sms = loadSmsSession(store2);
+  return {
+    deviceId: store2.getState(STATE_DEVICE_ID2) ?? "",
+    qr: qr === null ? null : {
+      active: true,
+      sessionId: qr.sessionId,
+      payload: qrPayloadOf(qr.sessionId, qr.deviceId),
+      scanned: qr.scanned,
+      expiresInMs: Math.max(0, qr.startedAtMs + QR_TTL_SECONDS * 1e3 - nowMs),
+      expired: qrExpired(qr, nowMs),
+      note: qr.lastNote
+    },
+    sms: sms === null ? null : {
+      active: true,
+      phone: sms.phone,
+      sent: sms.sent,
+      hasSlider: sms.slider !== null,
+      slider: sms.slider,
+      // 验证码 5 分钟（上游实测），从**发码**那一刻算 —— 这里用会话开始时刻近似
+      expiresInMs: Math.max(0, sms.startedAtMs + 3e5 - nowMs),
+      note: sms.lastNote
+    }
+  };
+}
+
 // src/mcloud/routes.ts
 var PLUGIN = "mcloud";
 var JSON_HEADERS = { "content-type": "application/json; charset=utf-8" };
@@ -6672,6 +7643,21 @@ function buildReadings(deps) {
       accounts: view.accounts,
       session: sessionStatus(deps.store, nowIso)
     },
+    // 登录会话（三种方式的进行中状态）。挂在 `account` 块里 ——
+    // 界面上的「登录」那一节就是它。
+    //
+    // ⚠ `svg` 要在这里也带上：界面**只调 `/readings`**（见 app.js 的文件头），
+    //   所以码必须由这个接口给出来。只在 `/login/qr/start` 上给的话，
+    //   `act()` 之后的 `load()` 会用"没有 svg 的读数"把码**擦掉** ——
+    //   表现是"点了扫码登录，二维码框是空的"。
+    login: (() => {
+      const r = loginReading(
+        deps.store,
+        nowMs,
+        (sid, did) => qrPayload(pcClient(loginPlatform(deps.store), did), sid)
+      );
+      return { ...r, qr: r.qr === null ? null : { ...r.qr, svg: qrSvg(r.qr.payload) } };
+    })(),
     daily: {
       // 「今天跑完了吗」看标记；「上次跑成什么样」看读数。两个都要，
       // 因为它们回答的是不同的问题（用户真正会问的是后面那个）。
@@ -6722,9 +7708,55 @@ function buildReadings(deps) {
       wsHeartbeat: loadWsHeartbeat(deps.store),
       listenRoom: loadListenRoom(deps.store) ?? 0,
       imBase: loadImBase(deps.store),
-      listenSeconds: loadListenSeconds(deps.store)
+      listenSeconds: loadListenSeconds(deps.store),
+      // 登录主机是**另一个口子**：登录那一族接口在 `user-njs.yun.139.com`，
+      // 与云盘业务主机不是同一台。混用的话指到 mock 之后登录仍然打真上游。
+      loginBase: loadLoginBase(deps.store),
+      loginPlatform: loginPlatform(deps.store),
+      loginDomain: deps.store.getState(STATE_LOGIN_DOMAIN) ?? ""
     }
   };
+}
+function loadLoginBase(store2) {
+  return store2.getState(STATE_LOGIN_BASE) ?? "";
+}
+function loginCall(deps, req) {
+  const res = callOnce(deps.transport, req);
+  if (!res.ok) return { ok: false, env: null, error: res.error ?? `http ${res.status}`, tookMs: res.tookMs };
+  try {
+    return { ok: true, env: parseLoginEnvelope(res.raw), error: "", tookMs: res.tookMs };
+  } catch (e) {
+    return { ok: false, env: null, error: e instanceof Error ? e.message : String(e), tookMs: res.tookMs };
+  }
+}
+function newTid() {
+  return uuidV4();
+}
+function loginPlatform(store2) {
+  const pref = store2.getState(STATE_LOGIN_PREF);
+  return pref === "macos" ? "macos" : "windows";
+}
+function adoptLoginResult(deps, encrypted, note2) {
+  let info;
+  try {
+    info = decryptUserInfo(encrypted);
+  } catch (e) {
+    return { ok: false, note: `登录成功了，但结果解不开：${e instanceof Error ? e.message : String(e)}` };
+  }
+  let auth;
+  try {
+    auth = authFromUserInfo(info, PC_AUTH_PREFIX);
+  } catch (e) {
+    return { ok: false, note: `登录结果缺字段：${e instanceof Error ? e.message : String(e)}` };
+  }
+  const phone = typeof info["account"] === "string" ? info["account"] : "";
+  const up = upsertAccount(deps.store, auth, deps.now(), phone === "" ? void 0 : maskPhone(phone));
+  selectAccount(deps.store, up.account.id, deps.now());
+  const domain = userDomainIdFrom(info);
+  if (domain !== "") deps.store.setState(STATE_LOGIN_DOMAIN, domain, deps.now());
+  clearLogin(deps.store);
+  deps.log(`登录成功：${up.account.label}${up.created ? "（新账号）" : "（已有账号，凭据已更新）"}`);
+  return { ok: true, note: `${note2} · ${up.account.label}`, account: { id: up.account.id, label: up.account.label } };
 }
 function mcloudRoutes(deps) {
   const base = `/plugins/${PLUGIN}/api`;
@@ -6740,6 +7772,243 @@ function mcloudRoutes(deps) {
       path: `${base}/caps`,
       method: "GET",
       handler: () => json(200, { caps: sandboxCaps(), hasBigInt: hasBigInt() })
+    },
+    // ── 登录：读数 ──────────────────────────────────────────────────
+    {
+      // 登录页的读数（一次给全）。凭据**不进这里** —— 只给掩码过的形状。
+      path: `${base}/login/state`,
+      method: "GET",
+      handler: () => json(200, {
+        ...(() => {
+          const r = loginReading(
+            deps.store,
+            Date.parse(deps.now()),
+            (sid, did) => qrPayload(pcClient(loginPlatform(deps.store), did), sid)
+          );
+          return { ...r, qr: r.qr === null ? null : { ...r.qr, svg: qrSvg(r.qr.payload) } };
+        })(),
+        platform: loginPlatform(deps.store)
+      })
+    },
+    // ── 登录：扫码 ──────────────────────────────────────────────────
+    {
+      // 出码。**不发任何上游请求** —— 客户端源码里就是字符串拼接，
+      // 实测 1622 个 body 文件里也没有对应的取码接口。
+      path: `${base}/login/qr/start`,
+      method: "POST",
+      handler: () => {
+        const nowMs = Date.parse(deps.now());
+        const s = startQrSession(deps.store, nowMs, deps.now());
+        const c = pcClient(loginPlatform(deps.store), s.deviceId);
+        const payload = qrPayload(c, s.sessionId);
+        deps.log("扫码登录：已出码，等手机扫");
+        return json(200, {
+          sessionId: s.sessionId,
+          payload,
+          // **在插件这一侧编码**、界面只画格子：浏览器里没有二维码库，
+          // 在那里现写一个等于把"码对不对"交给前端（见 crypto/qr.ts 的文件头）。
+          svg: qrSvg(payload),
+          expiresInMs: QR_TTL_SECONDS * 1e3,
+          note: "用手机上的移动云盘 App 扫这个码"
+        });
+      }
+    },
+    {
+      // 轮一次。**"还没扫"不是错误** —— 轮询期间绝大多数响应都是它。
+      path: `${base}/login/qr/poll`,
+      method: "POST",
+      handler: () => {
+        const s = loadQrSession(deps.store);
+        if (s === null) return json(400, { error: "没有正在进行的扫码登录（先点「扫码登录」）" });
+        const nowMs = Date.parse(deps.now());
+        if (qrExpired(s, nowMs)) {
+          return json(200, { stop: true, ok: false, note: "二维码过期了，点「扫码登录」重新出码" });
+        }
+        const c = pcClient(loginPlatform(deps.store), s.deviceId);
+        const r = loginCall(
+          deps,
+          thirdloginRequest(c, newTid(), qrThirdloginBody(c, s.sessionId), loadLoginBase(deps.store))
+        );
+        if (!r.ok || r.env === null) {
+          return json(200, { stop: false, ok: true, note: `还没问到上游（${r.error}），再点一次`, retry: true });
+        }
+        const out = classifyPoll(r.env);
+        const applied = applyPoll(s, out, nowMs);
+        saveQrSession(deps.store, applied.session, deps.now());
+        if (applied.encrypted !== void 0) {
+          const adopted = adoptLoginResult(deps, applied.encrypted, "扫码登录成功");
+          return json(200, { ...applied, ...adopted, stop: true });
+        }
+        if (applied.stop) deps.log(`扫码登录：${applied.note}`);
+        return json(200, { stop: applied.stop, ok: applied.ok, note: applied.note, scanned: applied.session.scanned });
+      }
+    },
+    // ── 登录：短信 ──────────────────────────────────────────────────
+    {
+      path: `${base}/login/sms/start`,
+      method: "POST",
+      handler: (req) => {
+        const b = readBody(req);
+        const phone = typeof b.phone === "string" ? b.phone.trim() : "";
+        if (!/^1\d{10}$/.test(phone)) return json(400, { error: "手机号要 11 位、以 1 开头" });
+        const s = startSmsSession(deps.store, phone, Date.parse(deps.now()), deps.now());
+        return json(200, { phone: s.phone, note: "点「发验证码」" });
+      }
+    },
+    {
+      // 发码。**可能被风控拦下** ⇒ 回 `need-slider`，那时界面要去取图。
+      path: `${base}/login/sms/send`,
+      method: "POST",
+      handler: () => {
+        const s = loadSmsSession(deps.store);
+        if (s === null) return json(400, { error: "没有正在进行的短信登录（先填手机号）" });
+        const c = pcClient(loginPlatform(deps.store), loadDeviceId(deps.store, deps.now()));
+        let body;
+        if (s.slider !== null) {
+          let answer;
+          try {
+            answer = sliderAnswer(s.slider);
+          } catch (e) {
+            return json(400, { error: `滑块图解不开：${e instanceof Error ? e.message : String(e)}` });
+          }
+          body = sendSmsCodeBodyWithSlider(c, s.phone, s.random, answer);
+        } else {
+          body = sendSmsCodeBody(c, s.phone, s.random);
+        }
+        const r = loginCall(deps, sendSmsCodeRequest(c, newTid(), body, loadLoginBase(deps.store)));
+        if (!r.ok || r.env === null) return json(502, { error: `发码请求没成功：${r.error}` });
+        const out = classifySendSms(r.env);
+        if (out.kind === "sent") {
+          const next = { ...s, sent: true, lastNote: "验证码已发出" };
+          saveSmsSession(deps.store, next, deps.now());
+          deps.log("短信登录：验证码已发出");
+          return json(200, { sent: true, remainGetTimes: out.remainGetTimes, note: "看手机短信，把 6 位验证码填进来" });
+        }
+        if (out.kind === "need-slider" || out.kind === "slider-exhausted") {
+          const next = setSmsSlider(deps.store, s, null, deps.now());
+          saveSmsSession(deps.store, next, deps.now());
+          deps.log(`短信登录：要过滑块（${out.kind === "slider-exhausted" ? "旧图已作废，" : ""}去取新图）`);
+          return json(200, {
+            needSlider: true,
+            exhausted: out.kind === "slider-exhausted",
+            note: out.kind === "slider-exhausted" ? "这张滑块图作废了，重新取一张" : "要先过滑块，去取图"
+          });
+        }
+        return json(200, { ok: false, note: `发码没成：${out.message || `code=${out.code}`}`, code: out.code });
+      }
+    },
+    {
+      // 取滑块拼图。**缺口坐标是解出来的**，不需要图像识别。
+      path: `${base}/login/sms/slider`,
+      method: "POST",
+      handler: () => {
+        const s = loadSmsSession(deps.store);
+        if (s === null) return json(400, { error: "没有正在进行的短信登录（先填手机号）" });
+        const c = pcClient(loginPlatform(deps.store), loadDeviceId(deps.store, deps.now()));
+        const r = loginCall(
+          deps,
+          sliderPuzzleRequest(c, newTid(), sliderPuzzleBody(s.phone), loadLoginBase(deps.store))
+        );
+        if (!r.ok || r.env === null) return json(502, { error: `取滑块失败：${r.error}` });
+        if (!isSuccessCode(r.env.code)) {
+          return json(200, { ok: false, note: `取滑块被拒：${r.env.message || `code=${r.env.code}`}` });
+        }
+        let puzzle;
+        try {
+          puzzle = parseSliderPuzzle(r.env);
+        } catch (e) {
+          return json(502, { error: `滑块响应看不懂：${e instanceof Error ? e.message : String(e)}` });
+        }
+        let answer;
+        try {
+          answer = sliderAnswer(puzzle);
+        } catch (e) {
+          return json(502, { error: `滑块缺口解不开（上游换字段了？）：${e instanceof Error ? e.message : String(e)}` });
+        }
+        setSmsSlider(deps.store, s, puzzle, deps.now());
+        return json(200, {
+          ok: true,
+          background: puzzle.backgroundB64,
+          piece: puzzle.puzzleB64,
+          picWidth: puzzle.picWidth,
+          puzzleWidth: puzzle.puzzleWidth,
+          answer,
+          note: "答案已经解出来了，点「带滑块发码」"
+        });
+      }
+    },
+    {
+      // 提交验证码。
+      path: `${base}/login/sms/submit`,
+      method: "POST",
+      handler: (req) => {
+        const b = readBody(req);
+        const code = typeof b.code === "string" ? b.code.trim() : "";
+        if (!/^\d{4,8}$/.test(code)) return json(400, { error: "验证码要 4–8 位数字" });
+        const s = loadSmsSession(deps.store);
+        if (s === null) return json(400, { error: "没有正在进行的短信登录（先填手机号）" });
+        const c = pcClient(loginPlatform(deps.store), loadDeviceId(deps.store, deps.now()));
+        const r = loginCall(
+          deps,
+          thirdloginRequest(c, newTid(), smsThirdloginBody(c, s.phone, code), loadLoginBase(deps.store))
+        );
+        if (!r.ok || r.env === null) return json(502, { error: `提交请求没成功：${r.error}` });
+        const out = classifyPoll(r.env);
+        if (out.kind === "success") {
+          const adopted = adoptLoginResult(deps, out.encrypted, "短信登录成功");
+          return json(200, { ...adopted, stop: true });
+        }
+        const note2 = r.env.code === CODES.SMS_CODE_WRONG ? "验证码不对（或者过期了），再看一眼短信" : `登录没成：${out.kind === "other" ? out.message || `code=${out.code}` : out.kind}`;
+        return json(200, { ok: false, stop: false, note: note2 });
+      }
+    },
+    // ── 登录：账密 ──────────────────────────────────────────────────
+    {
+      // 账密登录**一个路由就完成** —— 它没有用户交互，所以不是状态机。
+      path: `${base}/login/pwd`,
+      method: "POST",
+      handler: (req) => {
+        const b = readBody(req);
+        const phone = typeof b.phone === "string" ? b.phone.trim() : "";
+        const password = typeof b.password === "string" ? b.password : "";
+        if (phone === "") return json(400, { error: "要填手机号" });
+        if (password === "") return json(400, { error: "要填口令" });
+        const c = pcClient(loginPlatform(deps.store), loadDeviceId(deps.store, deps.now()));
+        const r = loginCall(
+          deps,
+          thirdloginRequest(c, newTid(), passwordThirdloginBody(c, phone, password), loadLoginBase(deps.store))
+        );
+        if (!r.ok || r.env === null) return json(502, { error: `登录请求没成功：${r.error}` });
+        const out = classifyPoll(r.env);
+        if (out.kind === "success") {
+          const adopted = adoptLoginResult(deps, out.encrypted, "账密登录成功");
+          return json(200, { ...adopted, stop: true });
+        }
+        const note2 = r.env.code === CODES.LOGIN_FAILED ? "上游说登录失败 —— 手机号或口令不对（也可能是设备头被拒）" : `登录没成：${out.kind === "other" ? out.message || `code=${out.code}` : out.kind}`;
+        return json(200, { ok: false, stop: true, note: note2 });
+      }
+    },
+    // ── 登录：取消 / 换设备 ─────────────────────────────────────────
+    {
+      path: `${base}/login/cancel`,
+      method: "POST",
+      handler: () => {
+        clearLogin(deps.store);
+        deps.log("登录：已取消");
+        return json(200, { ok: true, note: "已取消" });
+      }
+    },
+    {
+      // 「我的码一直扫不出来」的救命按钮。
+      // ⚠ 换设备指纹**必须同时清会话** —— 旧会话的 dID 是旧指纹，继续轮只会
+      //   一直 200059541（而这看起来像"码过期了"）。
+      path: `${base}/login/device/reset`,
+      method: "POST",
+      handler: () => {
+        const fresh = resetDeviceId(deps.store, deps.now());
+        deps.log("登录：换了设备指纹（旧会话已清）");
+        return json(200, { deviceId: fresh, note: "设备指纹已换新，旧会话已清 —— 重新出码" });
+      }
     },
     {
       // **七个区块的读数一次给全** —— 界面只调这一个
@@ -6837,6 +8106,20 @@ function mcloudRoutes(deps) {
           saveLiveUrl(deps.store, v, deps.now());
           deps.log(v ? `口令主页已改为 ${v}` : "口令主页已恢复为默认（发布方的小红书主页）");
           out.liveUrl = v || XIAOHONGSHU_KOULING_PROFILE_URL;
+        }
+        if ("loginBase" in body) {
+          const v = typeof body.loginBase === "string" ? body.loginBase.trim() : "";
+          if (v && !/^https?:\/\//.test(v)) {
+            return json(400, { error: "loginBase 要以 http:// 或 https:// 开头（清空 = 用真主机）" });
+          }
+          deps.store.setState(STATE_LOGIN_BASE, v.replace(/\/+$/, ""), deps.now());
+          deps.log(v ? `登录主机已改为 ${v}` : "登录主机已恢复为真主机");
+          out.loginBase = v || "(真主机)";
+        }
+        if ("loginPlatform" in body) {
+          const v = body.loginPlatform === "macos" ? "macos" : "windows";
+          deps.store.setState(STATE_LOGIN_PREF, v, deps.now());
+          out.loginPlatform = v;
         }
         if ("gateBase" in body) {
           const v = typeof body.gateBase === "string" ? body.gateBase.trim() : "";

@@ -79,23 +79,32 @@ test('界面里挂的按钮都有对应的处理器（挂错 = 点了没反应�
   assert.deepEqual(unbound, [], `这些控件在 app.js 里从没被取用过：${unbound.join(', ')}`);
 });
 
-test('⚠ 每个按钮要么有处理器，要么有**说清楚为什么点了没做**的提示', () => {
+test('⚠ 每个按钮都**真的挂上了**处理器（不只是被 `$()` 取用过）', () => {
   // 旧版的问题不是"有按钮没绑"，而是"绑了但点了没反应"。
-  // 这一版允许"还没做的功能"存在，但**必须说出来**（toast 一句明确的话），
-  // 不许静默。
-  const notYet = [...js.matchAll(/notYet\('([^']+)'\)/g)].map((m) => m[1] as string);
-  assert.ok(notYet.length > 0, '还没有做的功能要用 `notYet(...)` 明说，而不是留个死按钮');
-  // 提示里要说清是哪个阶段 —— 否则用户不知道"什么时候会有"。
-  // ⚠ 阶段号在 `notYet` 的**定义**里（模板串中），不在每个调用点 ——
-  //   所以查定义而不是查调用点（第一版查错了地方）。
-  // 定义可能跨行，所以看定义那一行往后 3 行
-  const lines = js.split('\n');
-  const at = lines.findIndex((l) => l.includes('const notYet'));
-  const def = at >= 0 ? lines.slice(at, at + 4).join(' ') : '';
-  assert.ok(/②-3/.test(def), `notYet 的提示要说清阶段号：${def}`);
-  for (const m of js.matchAll(/notYet\('([^']+)'\)/g)) {
-    assert.ok(m[1], 'notYet 要有功能名');
-  }
+  // 所以判据要比"被取用过"更严：必须在 `addEventListener` 里出现过。
+  const buttons = [...stripComments(html).matchAll(/<button[^>]*id="([A-Za-z0-9_-]+)"/g)].map(
+    (m) => m[1] as string,
+  );
+  assert.ok(buttons.length >= 15, `按钮太少了（${buttons.length}）—— 是不是正则没跟上？`);
+  const unhandled = buttons.filter((id) => !js.includes(`$('${id}').addEventListener`));
+  assert.deepEqual(unhandled, [], `这些按钮没有 addEventListener：${unhandled.join(', ')}`);
+});
+
+test('⚠ 每个动作都走 `act(...)`（统一提示 + 失败可见 + 之后重画）', () => {
+  // 旧版每个按钮各写一遍 try/catch + 提示 + 刷新，于是有的忘了刷新
+  // （点了没反应）、有的错误只 console.log（用户看不见）。
+  // `act()` 是那个统一包装 —— 绕开它的按钮会重新长出那些毛病。
+  // ⚠ 要容忍换行：多数写法是 `(e) =>\n  act(...)`，用 `=> act(` 会只数到 1 个
+  const viaAct = (js.match(/=>\s*act\(/g) ?? []).length;
+  const listeners = (js.match(/\.addEventListener\('click'/g) ?? []).length;
+  assert.ok(viaAct >= 12, `只有 ${viaAct} 个按钮走了 act()（共 ${listeners} 个 click 监听）`);
+  // `act` 本身要保证"失败看得见"：catch 里必须 toast 且标红
+  const body = js.slice(js.indexOf('async function act('), js.indexOf('async function act(') + 700);
+  assert.ok(/catch \(e\)/.test(body), 'act 里没有 catch ⇒ 失败会静默');
+  // ⚠ 别用 `toast\([^)]*true\)`：`toast(String(...), true)` 里那个 `)`
+  //   会先把 `[^)]*` 截断，于是明明标红了也判成没标红。
+  assert.ok(/, true\)/.test(body), 'act 的 catch 没标红 ⇒ 用户以为成功了');
+  assert.ok(/await load\(\)/.test(body), 'act 之后没重画 ⇒ 用户看不到变化');
 });
 
 // ── ③ 样式没有孤儿 id ─────────────────────────────────────────────────

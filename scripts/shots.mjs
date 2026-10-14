@@ -189,6 +189,13 @@ async function main() {
 
   await shot('01-account');
 
+  // 点一下「扫码登录」再截一张 —— 二维码是这一版新做的，要看它真的画出来了
+  await send('Runtime.evaluate', {
+    expression: `document.getElementById('login-qr').click()`,
+  });
+  await sleep(1500);
+  await shot('01b-qr');
+
   // 逐块切过去截
   const blocks = [
     ['daily', '02-daily'],

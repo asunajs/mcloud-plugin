@@ -13,6 +13,7 @@
 // ⚠ 凭据是**秘密**：这个模块只负责存取，**不许**把它写进日志/读数/界面
 //   （要给界面看的一律走 `maskAuth`）。
 
+import { fromBase64, fromUtf8 } from '../crypto/bytes.ts';
 import type { Store } from '../store/types.ts';
 
 export const STATE_ACCOUNTS = 'mcloud.accounts';
@@ -37,10 +38,37 @@ export function maskAuth(raw: string): string {
   return `（认不出手机号）· ${len} 字符`;
 }
 
-/** 从凭据里抠手机号（认不出就 `undefined`）。 */
+/** 从凭据里抠手机号（认不出就 `undefined`）。
+ *
+ *  # 为什么要试两种形态
+ *
+ *  两种凭据里手机号的**位置不同**：
+ *
+ *  | 来源 | 形态 | 手机号在哪 |
+ *  |---|---|---|
+ *  | H5 换票 | 一段带着明文手机号的串 | **明文**，正则直接扫得到 |
+ *  | PC 登录（扫码/短信/账密） | `Basic base64("pc:<手机号>:<token>")` | 在 **base64 里面** |
+ *
+ *  只扫明文的话，PC 登录进来的账号会认不出手机号 ⇒ 标签变成「账号 1」，
+ *  而且更糟的是 **id 会变成 token 的哈希** —— token 每次登录都变，
+ *  于是**同一个号每登录一次就多出一条重复账号**。
+ *
+ *  所以这里再试一次"解 base64 之后扫"。解不开就当认不出（不抛）。 */
 export function phoneOf(raw: string): string | undefined {
-  const m = /1\d{10}/.exec(raw);
-  return m === null ? undefined : m[0];
+  const plain = /1\d{10}/.exec(raw);
+  if (plain !== null) return plain[0];
+
+  // `Basic <base64>`（大小写都认，中间空白容忍）
+  const m = /^\s*basic\s+([A-Za-z0-9+/=]+)\s*$/i.exec(raw);
+  if (m === null) return undefined;
+  try {
+    const decoded = fromUtf8(fromBase64(m[1]!));
+    const inB64 = /1\d{10}/.exec(decoded);
+    return inB64 === null ? undefined : inB64[0];
+  } catch {
+    // 不是合法 base64 ⇒ 认不出（不抛：这个函数只用来做标签与 id）
+    return undefined;
+  }
 }
 
 /** 稳定 id：手机号优先（人能对上），否则凭据的短哈希。 */

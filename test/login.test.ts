@@ -16,6 +16,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createCipheriv } from 'node:crypto';
 
+import { idOf, phoneOf } from '../src/mcloud/accounts.ts';
+
 import {
   APP_AUTH_PREFIX,
   CODES,
@@ -576,4 +578,28 @@ test('`userDomainIdFrom`：只有登录响应里有它，取不到就是空串',
   assert.equal(userDomainIdFrom({ userDomainId: 'D-1' }), 'D-1');
   assert.equal(userDomainIdFrom({ userDomainId: 1 }), '', '类型不对当没有，别猜');
   assert.equal(userDomainIdFrom({}), '');
+});
+
+// ══════════════════════════════ 账号标签与 id（跨模块） ══════════════════════════════
+
+test('⚠ `phoneOf` 要能读出 PC 凭据里的手机号（否则会多出重复账号）', () => {
+  // PC 登录的凭据是 `Basic base64("pc:<手机号>:<token>")` —— 手机号在 **base64 里面**，
+  // 只扫明文的话认不出。后果不只是"标签变成「账号 1」"：
+  // **id 会变成 token 的哈希，而 token 每次登录都变 ⇒ 同一个号每登录一次就多一条。**
+  const auth = formatAuth('pc', '13800000000', 'TOKEN-A');
+  assert.equal(phoneOf(auth), '13800000000');
+  assert.equal(idOf(auth), '13800000000');
+
+  // 关键：**换一个 token 仍然是同一个 id**（否则会重复）
+  const auth2 = formatAuth('pc', '13800000000', 'TOKEN-B');
+  assert.notEqual(auth2, auth);
+  assert.equal(idOf(auth2), idOf(auth), 'token 变了 id 也该一样 —— 否则重复账号');
+});
+
+test('`phoneOf` 对旧的 H5 凭据（明文手机号）照旧工作', () => {
+  assert.equal(phoneOf('SESSIONID=x; UID=13800000000'), '13800000000');
+  assert.equal(phoneOf('随便一段没有号码的串'), undefined);
+  // 畸形 base64 不许抛（这个函数只用来做标签与 id，不该把流程带崩）
+  assert.equal(phoneOf('Basic !!!not-base64!!!'), undefined);
+  assert.equal(phoneOf('Basic'), undefined);
 });

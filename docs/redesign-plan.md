@@ -190,7 +190,28 @@
       也全部原样，改的只是「谁来调它、一次调几次」。
       506 项测试（含黄金向量）全过。
       ✅ 端到端证据见 ②-8。
-- [ ] ②-3 登录三种（扫码/短信/账密）+ 多账号 + 设备号
+- [x] ②-3 登录三种（扫码/短信/账密）+ 多账号 + 设备号　✅ `1b11309` + 本条
+      **协议层**（`src/mcloud/login.ts`，照 `mcloud/crates/mcloud-upstream/src/login.rs`）：
+      平台档案（5 个设备头、`x-huawei-channelSrc` 是常量、设备信息串 14 段）、
+      三种 `thirdlogin` 请求体、`pinsType`/`ifOpenAccount`、口令哈希
+      （`SHA1("fetion.com.cn:"+口令)` 大写 hex）、滑块答案的 AES 加解密、
+      响应信封（`code` 数字/字符串两种都归一）、六个轮询分支、三个发码分支、
+      `userInfo` 的 **ECB** 解密、凭据拼装（`Basic base64("pc:号:token")`）。
+      **AES 解密**是新补的原语（原来只有加密）：滑块缺口坐标 + `userInfo`。
+      逆 S 盒是**求逆算出来的**，不抄第二张表。
+      **二维码编码器**（`src/crypto/qr.ts`）：字节模式、版本 1–10、纠错级 L，
+      **在插件这一侧编码、界面只画格子**（浏览器里没有二维码库）。
+      **路由**：`/login/state` · `/login/qr/start` · `/login/qr/poll` ·
+      `/login/sms/start|send|slider|submit` · `/login/pwd` · `/login/cancel` ·
+      `/login/device/reset`。会话与**设备指纹**落盘（`loginSession.ts`）。
+      **界面**：三个按钮接上，扫码出码 + 轮询、短信发码（含滑块降级）、
+      账密一次完成。
+      ⚠ **登录是「一步一步」的，而任务不是** —— 因为状态机是**用户本人**
+      （出码 → 用户扫 → 用户确认）。账密没有用户交互，所以它一个路由就完成。
+      顺带修 `phoneOf`：PC 凭据是 `Basic base64(...)`，手机号在 base64 里面，
+      只扫明文会让**同一个号每登录一次就多出一条重复账号**（id 是 token 的哈希）。
+      验收：`test/login.test.ts` 47 项 · `test/qr.test.ts` 14 项 ·
+      `test/aes.test.ts` 20 项 · `split_check.py` 45 项（+11）· 截图 `08-login-qr.png`。
 - [x] ②-4 日常：一个函数从头跑到尾　✅ 由 ②-1 完成（`mcloud-daily` 一条任务，
       15 步全在一次触发里），并由 ②-8 的 e2e 端到端验证
       （**签到三段式含回查**、备份好礼两步、通知只领一次、矩阵读满一轮…）。
@@ -289,3 +310,5 @@
 | 2026-10-15 | ②-8 e2e 改新模型（exit 0，18 个 ✅）；顺带修矩阵只读一个市场 | `mcloud-plugin` `adc1503` |
 | 2026-10-15 | ②-5 聚合读数接口 + 一次运行落盘；顺带修 /matrix 标签错 | `mcloud-plugin` `1a700b0` |
 | 2026-10-15 | ②-6 菜单栏七块界面（推翻重做）+ 截图脚本 | `mcloud-plugin` `d878467` |
+| 2026-10-15 | ②-3（上半）登录协议层 + AES 解密 + 凭据拼装 | `mcloud-plugin` `1b11309` |
+| 2026-10-15 | ②-3（下半）二维码编码器 + 登录路由 + 界面接上 | `mcloud-plugin` 本条 |
