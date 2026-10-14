@@ -60,6 +60,17 @@ function humanNote(s) {
   t = t.replace(/原生凭据\s*[（(]?`?Authorization`?[)）]?/g, '凭据');
   t = t.replace(/\*\*/g, '').replace(/`/g, '');
   t = t.replace(/\s{2,}/g, ' ').replace(/[：:、,，]\s*$/, '').trim();
+  // ── 直播那几句：全是我们内部的说法（SockJS/PROVISION/句柄/帧）──
+  t = t.replace(/WS 连上了（句柄 \d+），PROVISION 已发.*$/g, '已连上，开始听');
+  t = t.replace(/弹幕连接结束：.*$/g, '听完了');
+  t = t.replace(/句柄失效（[^）]*）/g, '连接断了，下一拍重来');
+  t = t.replace(/^准备中（\w+）$/g, '准备中…');
+  // `听着（帧 39、弹幕 1、口令 0、回执 10、h 帧 16）` ⇒ `正在听（本轮口令 0 条）`
+  const listen = /听着（[^）]*口令 (\d+)[^）]*）/.exec(t);
+  if (listen !== null) t = `正在听（本轮口令 ${listen[1]} 条）`;
+  // `门关着（合并后 16 间房）—— 隔 5 分钟再看（上次真探 …）` ⇒ 一句人话
+  if (/门关着/.test(t)) t = '主播没在播，等下一场';
+  if (/那个主播没在播/.test(t)) t = '主播没在播，等下一场';
   if (t.includes('还没登录')) return '还没登录，先贴一次凭据';
   return t;
 }
@@ -206,14 +217,20 @@ function renderBoard() {
   const d = lastMatrix;
   const box = $('board');
   const rows = [];
+  const groups = [];
   if (d && Array.isArray(d.groups)) {
     for (const g of d.groups) {
+      const inGroup = [];
       for (const t of g.tasks || []) {
-        const nums = numbersOf(t.reading);
-        if (nums.length === 0) continue;
-        const [k, v] = nums[0];
-        rows.push({ label: t.title || t.name, key: k, value: v });
+        // 每条最多取三个数字（多了看板就成了另一张任务表）
+        const nums = numbersOf(t.reading).slice(0, 3);
+        for (const [k, v] of nums) {
+          const row = { label: t.title || t.name, key: k, value: v };
+          rows.push(row);
+          inGroup.push(row);
+        }
       }
+      if (inGroup.length > 0) groups.push({ title: g.title || g.name || '', rows: inGroup });
     }
   }
   if (rows.length === 0) {
@@ -222,20 +239,22 @@ function renderBoard() {
     return;
   }
   const max = Math.max(...rows.map((r) => r.value), 1);
-  $('board-sub').textContent = `${rows.length} 项`;
-  box.innerHTML =
-    '<ul class="ok-list">' +
-    rows
-      .map((r) => {
-        const pct = Math.round((r.value / max) * 100);
-        return (
-          `<li><b>${esc(r.label)}</b> <span class="hint">${esc(r.key)}</span> = <b>${r.value}</b>` +
-          `<div style="height:8px;background:var(--c-line);border-radius:4px;margin-top:4px">` +
-          `<div style="height:8px;width:${pct}%;background:var(--c-accent);border-radius:4px"></div></div></li>`
-        );
-      })
-      .join('') +
-    '</ul>';
+  $('board-sub').textContent = `${groups.length} 组 · ${rows.length} 项`;
+  const bar = (r) => {
+    const pct = Math.round((r.value / max) * 100);
+    return (
+      `<li><b>${esc(r.label)}</b> <span class="hint">${esc(r.key)}</span> = <b>${r.value}</b>` +
+      `<div style="height:8px;background:var(--c-line);border-radius:4px;margin-top:4px">` +
+      `<div style="height:8px;width:${pct}%;background:var(--c-accent);border-radius:4px"></div></div></li>`
+    );
+  };
+  box.innerHTML = groups
+    .map(
+      (g) =>
+        `<p class="hint" style="margin:var(--sp-2) 0 0"><b>${esc(g.title)}</b></p>` +
+        `<ul class="ok-list">${g.rows.map(bar).join('')}</ul>`,
+    )
+    .join('');
 }
 
 async function loadMatrix() {
@@ -403,15 +422,17 @@ async function loadLive() {
   const lr = lis.reading;
   // ⚠ `line` 已经是人话（"听着（帧 3、弹幕 0、口令 1）"/"准备中（apply）"），
   //   后面再补的只有"本轮口令"与收尾原因 —— 那两样 `line` 里放不下。
-  $('live-listen-hint').textContent = lr
-    ? [lis.line || '', lr.codes && lr.codes.length ? `本轮口令：${lr.codes.join('、')}` : '', lr.closedReason ? `收尾：${lr.closedReason}` : '']
-        .filter((x) => x !== '')
-        .join(' · ')
-    : lis.line || '还没听过';
+  $('live-listen-hint').textContent = humanNote(
+    lr
+      ? [lis.line || '', lr.codes && lr.codes.length ? `本轮口令：${lr.codes.join('、')}` : '', lr.closedReason ? `收尾：${lr.closedReason}` : '']
+          .filter((x) => x !== '')
+          .join(' · ')
+      : lis.line || '还没听过',
+  );
 
   // ── 自动定时（第二十四轮）：下一次几点醒 ──
   const au = d.auto || {};
-  $('live-auto-hint').textContent = au.line || '还没算过';
+  $('live-auto-hint').textContent = humanNote(au.line) || '还没算过';
 
   // ── 写那半（领小红花）──
   const claim = d.claim || {};
