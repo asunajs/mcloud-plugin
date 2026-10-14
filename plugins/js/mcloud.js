@@ -1357,976 +1357,6 @@ function runMsgPushObtain(deps) {
   return out;
 }
 
-// src/mcloud/tasks/notice.ts
-var STATE_CAN3 = "mcloud.notice.can_claim";
-var STATE_INFO2 = "mcloud.notice.info";
-var NOTICE_CLOUD_STATUS_UNCLAIMED = 1;
-var NOTICE_TASK_STATUS_DONE = 3;
-function asInt2(v) {
-  if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
-  if (typeof v === "string" && v.trim() !== "" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
-  return void 0;
-}
-function parseNoticeSlot(raw) {
-  if (raw === null || raw === void 0 || typeof raw !== "object") return void 0;
-  const o = raw;
-  const slot = {
-    cloudStatus: asInt2(o.cloudStatus ?? o.cloud_status),
-    sum: asInt2(o.sum),
-    progress: asInt2(o.progress),
-    taskStatus: asInt2(o.taskStatus ?? o.task_status)
-  };
-  const any = slot.cloudStatus !== void 0 || slot.sum !== void 0 || slot.progress !== void 0 || slot.taskStatus !== void 0;
-  return any ? slot : void 0;
-}
-function parseNoticeInfo(result) {
-  const o = resultObject({ code: 0, message: "", result, ok: true });
-  return {
-    one: parseNoticeSlot(o.taskOneInfo ?? o.task_one_info),
-    two: parseNoticeSlot(o.taskTwoInfo ?? o.task_two_info)
-  };
-}
-function slotJudged(slot) {
-  return !!slot && slot.cloudStatus !== void 0 && slot.taskStatus !== void 0;
-}
-function slotClaimable(slot) {
-  if (!slotJudged(slot)) return false;
-  return slot.cloudStatus === NOTICE_CLOUD_STATUS_UNCLAIMED && slot.taskStatus === NOTICE_TASK_STATUS_DONE;
-}
-function noticePlan(info) {
-  const slots = [
-    ["槽一", info.one],
-    ["槽二", info.two]
-  ];
-  const claimable2 = slots.filter(([, s]) => slotClaimable(s)).map(([n]) => n);
-  const unjudged = slots.filter(([, s]) => s && !slotJudged(s)).map(([n]) => n);
-  const missing = slots.filter(([, s]) => !s).map(([n]) => n);
-  const parts = [];
-  if (claimable2.length) parts.push(`${claimable2.join("/")}可领`);
-  if (unjudged.length) parts.push(`${unjudged.join("/")}判据字段不全（不参与判断，避免静默漏领）`);
-  if (missing.length) parts.push(`${missing.join("/")}上游没给`);
-  if (!parts.length) parts.push("两槽都已入账或无可领");
-  return {
-    claimable: claimable2.length > 0,
-    unjudged: unjudged.length > 0,
-    detail: parts.join("；")
-  };
-}
-function runNoticeInfo(deps) {
-  return runTask(
-    deps,
-    {
-      task: "notice",
-      endpoint: "noticeInfo",
-      method: "GET",
-      marketName: "sign_in_3",
-      isDeviceId: false,
-      stateKey: STATE_INFO2
-    },
-    (env) => {
-      const info = parseNoticeInfo(env.result);
-      const plan = noticePlan(info);
-      deps.store.setState(STATE_CAN3, plan.claimable ? "yes" : `no:${plan.detail}`, deps.nowIso);
-      return {
-        ok: true,
-        note: plan.claimable ? `通知任务：${plan.detail}（下一次触发会去领）` : `通知任务：${plan.detail}`,
-        snapshot: { one: info.one ?? null, two: info.two ?? null }
-      };
-    }
-  );
-}
-function runNoticeReward(deps) {
-  const can = deps.store.getState(STATE_CAN3);
-  if (can !== "yes") {
-    return { ok: true, skipped: true, note: `上次问过状态是「${can ?? "没问过"}」，不发领取请求` };
-  }
-  const out = runTask(
-    deps,
-    {
-      task: "notice",
-      endpoint: "noticeReward",
-      method: "GET",
-      marketName: "sign_in_3",
-      isDeviceId: false
-    },
-    (env) => ({
-      ok: true,
-      // 上游不报到账数 —— 这句必须说，否则下一个人会以为这里能看到领了多少
-      note: `通知任务：已发领取请求（上游不报到账数，下一次触发回查 ${JSON.stringify(
-        env.message ?? "success"
-      ).slice(0, 40)}）`
-    })
-  );
-  if (out.ok) deps.store.setState(STATE_CAN3, "no:sent", deps.nowIso);
-  return out;
-}
-function runNotice(deps) {
-  const can = deps.store.getState(STATE_CAN3);
-  if (can === "yes") return runNoticeReward(deps);
-  return runNoticeInfo(deps);
-}
-
-// src/mcloud/tasks/appTaskMatrix.ts
-var STATE_GROUP_INDEX = "mcloud.apptaskmatrix.group_index";
-var STATE_LAST = "mcloud.apptaskmatrix.last";
-var MATRIX_GROUPS = [
-  "new",
-  "beiyong1",
-  "beiyong2",
-  "cloudEmail",
-  "time",
-  "day",
-  "month",
-  "hidden"
-];
-function asInt3(v) {
-  if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
-  if (typeof v === "string" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
-  return void 0;
-}
-function asStr(v) {
-  return typeof v === "string" && v !== "" ? v : void 0;
-}
-function parseMatrixItem(raw) {
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return void 0;
-  const o = raw;
-  const it = {
-    taskId: asInt3(o.id ?? o.taskId ?? o.task_id),
-    name: asStr(o.name),
-    description: asStr(o.description),
-    groupId: asStr(o.groupid ?? o.groupId),
-    state: asStr(o.state),
-    limitType: asStr(o.limitType ?? o.limit_type),
-    enable: asInt3(o.enable),
-    currStep: asInt3(o.currstep ?? o.currStep)
-  };
-  const any = it.taskId !== void 0 || it.name !== void 0 || it.state !== void 0 || it.enable !== void 0;
-  return any ? it : void 0;
-}
-function parseMatrix(result) {
-  let list = result;
-  if (list !== null && typeof list === "object" && !Array.isArray(list)) {
-    const o = list;
-    list = o.list ?? o.tasks ?? o.taskList ?? o.items ?? [];
-  }
-  if (!Array.isArray(list)) return [];
-  return list.map(parseMatrixItem).filter((x) => !!x);
-}
-function judgeItem(i) {
-  if (i.state === "FINISH") return "done";
-  if (i.enable === 1) return "todo";
-  return "skip";
-}
-function matrixKey(group) {
-  return `mcloud.apptaskmatrix.g.${group}`;
-}
-function readMatrix(store2) {
-  return MATRIX_GROUPS.map((g) => {
-    const raw = store2.getState(matrixKey(g));
-    if (!raw) return null;
-    try {
-      const v = JSON.parse(raw);
-      return typeof v === "object" && v ? { ...v, group: g } : null;
-    } catch {
-      return null;
-    }
-  });
-}
-function summarize(items) {
-  let done = 0;
-  let todo = 0;
-  let skip = 0;
-  const todoNames = [];
-  for (const i of items) {
-    const j = judgeItem(i);
-    if (j === "done") done += 1;
-    else if (j === "todo") {
-      todo += 1;
-      if (todoNames.length < 3) todoNames.push(i.name ?? i.description ?? `#${i.taskId ?? "?"}`);
-    } else skip += 1;
-  }
-  return { done, todo, skip, todoNames };
-}
-function runAppTaskMatrix(deps) {
-  const raw = deps.store.getState(STATE_GROUP_INDEX);
-  const parsed = raw === void 0 || raw === null ? 0 : Number(raw);
-  const idx = Number.isFinite(parsed) && parsed >= 0 && parsed < MATRIX_GROUPS.length ? parsed : 0;
-  const group = MATRIX_GROUPS[idx];
-  const out = runTask(
-    deps,
-    {
-      task: "app-task-matrix",
-      endpoint: "taskListV2",
-      method: "POST",
-      marketName: MARKET_NAME,
-      isDeviceId: false,
-      stateKey: STATE_LAST,
-      // 实拍体：{"clientVersion":"12.6.0","group":<group>,"marketname":"sign_in_3"}
-      // 体是**字符串**（与 receiveV3Body 同一约定）
-      body: JSON.stringify({ clientVersion: TASK_CLIENT_VERSION, group, marketname: MARKET_NAME })
-    },
-    (env) => {
-      const items = parseMatrix(env.result);
-      const s = summarize(items);
-      deps.store.setState(STATE_GROUP_INDEX, String((idx + 1) % MATRIX_GROUPS.length), deps.nowIso);
-      const reading = {
-        group,
-        at: deps.nowIso,
-        ...s,
-        groupState: env.groupState
-      };
-      deps.store.setState(matrixKey(group), JSON.stringify(reading), deps.nowIso);
-      const names = s.todoNames.length ? `（可做：${s.todoNames.join("、")}）` : "";
-      return {
-        ok: true,
-        note: `App 任务矩阵[${idx + 1}/${MATRIX_GROUPS.length} group=${group}]：已完成 ${s.done} 条、可做 ${s.todo} 条、不参与 ${s.skip} 条${names}`,
-        snapshot: { group, ...s, items: items.slice(0, 20) }
-      };
-    }
-  );
-  return out;
-}
-
-// src/mcloud/tasks/exchangeList.ts
-var STATE_LIST = "mcloud.exchangelist.last";
-var STATE_RAW = "mcloud.exchangelist.raw";
-var LIMIT_AVAILABLE = 0;
-var LIMIT_TOMORROW = 1;
-var LIMIT_EXCHANGED = 2;
-var LIMIT_GROUP_EXCHANGED = 4;
-function verdictOf(p) {
-  if (p.onLine !== void 0 && p.onLine !== 1) return "offline";
-  if (p.monthLimit !== void 0 && p.received !== void 0 && p.received >= p.monthLimit) {
-    return "month-limit";
-  }
-  if (p.limit === void 0) return "unknown";
-  switch (p.limit) {
-    case LIMIT_AVAILABLE:
-      return "ok";
-    case LIMIT_TOMORROW:
-      return "tomorrow";
-    case LIMIT_EXCHANGED:
-      return "exchanged";
-    case LIMIT_GROUP_EXCHANGED:
-      return "group-exchanged";
-    default:
-      return "unknown";
-  }
-}
-var VERDICT_TEXT = {
-  ok: "可兑",
-  tomorrow: "明日再来",
-  exchanged: "本件本月已兑",
-  "group-exchanged": "本组本月已兑",
-  offline: "已下架",
-  "month-limit": "本月额度可能已用完",
-  unknown: "判不了"
-};
-function asInt4(v) {
-  if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
-  if (typeof v === "string" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
-  return void 0;
-}
-function asStr2(v) {
-  return typeof v === "string" && v !== "" ? v : void 0;
-}
-function parseMonthLimit(v) {
-  let o = v;
-  if (typeof v === "string") {
-    try {
-      o = JSON.parse(v);
-    } catch {
-      return void 0;
-    }
-  }
-  if (o === null || typeof o !== "object" || Array.isArray(o)) return void 0;
-  const r = o;
-  return asInt4(r.limitMonthQuantity ?? r.limit_month_quantity);
-}
-function parsePrize(raw) {
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return void 0;
-  const o = raw;
-  const p = {
-    // ⚠ 实拍是**数字**，不是字符串（原项目特意标了这一点）
-    prizeId: asInt4(o.prizeId ?? o.prize_id),
-    // ⚠ 真机 51/51 是 `prizeName`；`name` 保留是为兼容 mock 与将来可能的另一种形状
-    name: asStr2(o.prizeName ?? o.name),
-    monthLimit: parseMonthLimit(o.probability2),
-    received: asInt4(o.receiveQuantity ?? o.receive_quantity),
-    groupId: asInt4(o.groupId ?? o.group_id),
-    price: asInt4(o.price),
-    limit: asInt4(o.limit),
-    count: asInt4(o.count),
-    totalCount: asInt4(o.totalCount ?? o.total_count),
-    dailyRemainderCount: asInt4(o.dailyRemainderCount ?? o.daily_remainder_count),
-    onLine: asInt4(o.onLine ?? o.on_line),
-    startTime: asStr2(o.startTime ?? o.start_time),
-    endTime: asStr2(o.endTime ?? o.end_time)
-  };
-  return p.prizeId !== void 0 || p.name !== void 0 ? p : void 0;
-}
-function parseExchangeList(result) {
-  const o = resultObject({ code: 0, message: "", result, ok: true });
-  const src = o.groups ?? o;
-  const groups = [];
-  const all = [];
-  if (src && typeof src === "object" && !Array.isArray(src)) {
-    for (const key of Object.keys(src)) {
-      const v = src[key];
-      if (!Array.isArray(v)) continue;
-      const prizes = v.map(parsePrize).filter((x) => !!x);
-      groups.push({ group: key, prizes });
-      all.push(...prizes);
-    }
-  }
-  groups.sort((a, b) => (Number(a.group) || 0) - (Number(b.group) || 0));
-  all.sort((a, b) => (a.groupId ?? 0) - (b.groupId ?? 0) || (a.prizeId ?? 0) - (b.prizeId ?? 0));
-  return { groups, prizes: all };
-}
-function summarizeList(prizes) {
-  const byVerdict = {};
-  const ok = [];
-  for (const p of prizes) {
-    const v = verdictOf(p);
-    byVerdict[v] = (byVerdict[v] ?? 0) + 1;
-    if (v === "ok" && ok.length < 20) {
-      ok.push({ prizeId: p.prizeId, name: p.name, price: p.price, groupId: p.groupId });
-    }
-  }
-  return { total: prizes.length, okCount: byVerdict.ok ?? 0, byVerdict, ok };
-}
-function runExchangeList(deps) {
-  return runTask(
-    deps,
-    {
-      task: "exchange-list",
-      endpoint: "exchangeList",
-      method: "GET",
-      marketName: "sign_in_3",
-      isDeviceId: false,
-      stateKey: STATE_RAW
-    },
-    (env) => {
-      const { groups, prizes } = parseExchangeList(env.result);
-      const s = summarizeList(prizes);
-      const reading = { at: deps.nowIso, groups: groups.length, ...s };
-      deps.store.setState(STATE_LIST, JSON.stringify(reading), deps.nowIso);
-      const names = s.ok.slice(0, 3).map(
-        (x) => x.price === void 0 ? x.name ?? "#" + x.prizeId : `${x.name ?? "#" + x.prizeId}(${x.price}豆)`
-      );
-      return {
-        ok: true,
-        note: `兑换清单：${groups.length} 组 / ${s.total} 件，可兑 ${s.okCount} 件` + (names.length ? `（${names.join("、")}）` : "") + (s.byVerdict.unknown ? `；判不了 ${s.byVerdict.unknown} 件` : ""),
-        snapshot: reading
-      };
-    }
-  );
-}
-function readExchangeList(store2) {
-  const raw = store2.getState(STATE_LIST);
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
-}
-
-// src/mcloud/liveKouling.ts
-var XIAOHONGSHU_KOULING_PROFILE_URL = "https://www.xiaohongshu.com/user/profile/568caf13aed7585949773b30";
-function xiaohongshuProfileHeaders() {
-  return {
-    accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "accept-language": "zh-CN,zh;q=0.9",
-    referer: "https://www.xiaohongshu.com/",
-    "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
-  };
-}
-function isKoulingHead(text) {
-  return /(?:复制)?口令\s*\d*\s*[：:]\s*$/.test(text.trim());
-}
-function hasKouling(text) {
-  return /口令|小红花/.test(text);
-}
-var TRAILING_PARTICLE = /[呀啊吧呢嘛哦]+$/;
-var QUESTION_WORDS = ["什么", "啥", "多少", "几", "哪个", "哪些"];
-function isQuestion(code) {
-  if (/[?？]/.test(code)) return true;
-  const t = code.replace(TRAILING_PARTICLE, "");
-  return QUESTION_WORDS.includes(t);
-}
-function looksLikeQuestionAboutKouling(line) {
-  if (/[?？]/.test(line)) return true;
-  const stripped = line.replace(/^第?\d*个?口令\s*[是为：:]?\s*/, "").trim();
-  return isQuestion(line) || isQuestion(stripped);
-}
-var SAME_LINE_PATTERN = /(?:复制)?口令\s*\d*\s*[：:]\s*(.*?)(?=\s+(?:复制)?口令\s*\d*\s*[：:]|无随机|$)/g;
-function extractKouling(msg) {
-  const result = [];
-  const m2 = msg.match(/小红花口令[：:]\s*(.+)/);
-  if (m2 && m2[1] !== void 0) result.push(m2[1].trim());
-  const lines = msg.split(/\r?\n/);
-  for (let i = 0; i < lines.length; i += 1) {
-    const line = (lines[i] ?? "").trim();
-    if (isKoulingHead(line)) {
-      const next = lines[i + 1];
-      if (next !== void 0) {
-        const content = next.trim();
-        if (content && !/^(?:复制)?口令/.test(content) && !/无随机/.test(content)) {
-          result.push(content);
-        }
-      }
-      continue;
-    }
-    for (const match of line.matchAll(SAME_LINE_PATTERN)) {
-      const code = (match[1] ?? "").trim();
-      if (code && !/无随机/.test(code)) result.push(code);
-    }
-  }
-  const m1 = msg.match(/口令是(.+)/);
-  if (m1 && m1[1] !== void 0) result.push(m1[1].trim());
-  if (result.length === 0 && /无随机/.test(msg)) {
-    const parts = msg.replace(/无随机.*/, "").trim().split(/\s+/);
-    for (const part of parts) {
-      const v = part.match(/^\d+\s*[：:]\s*(.+)/);
-      if (v && v[1] !== void 0) {
-        const code = v[1].trim();
-        if (code) result.push(code);
-      }
-    }
-  }
-  return [...new Set(result)].filter((code) => !isQuestion(code));
-}
-var NAMED_ENTITIES = {
-  amp: "&",
-  apos: "'",
-  gt: ">",
-  lt: "<",
-  nbsp: " ",
-  quot: '"'
-};
-function decodeHtmlEntities(text) {
-  return text.replace(/&(?:#(\d+)|#x([\da-f]+)|(\w+));/gi, (entity, decimal, hex, named) => {
-    if (typeof decimal === "string" && decimal !== "") {
-      const n = Number(decimal);
-      return safeFromCodePoint(n, entity);
-    }
-    if (typeof hex === "string" && hex !== "") {
-      return safeFromCodePoint(Number.parseInt(hex, 16), entity);
-    }
-    if (typeof named === "string") {
-      return NAMED_ENTITIES[named.toLowerCase()] ?? entity;
-    }
-    return entity;
-  });
-}
-function safeFromCodePoint(n, fallback) {
-  if (!Number.isFinite(n) || n < 0 || n > 1114111) return fallback;
-  try {
-    return String.fromCodePoint(n);
-  } catch {
-    return fallback;
-  }
-}
-function decodeJsonString(value) {
-  try {
-    return JSON.parse(`"${value}"`);
-  } catch {
-    return value.replace(/\\n/g, "\n").replace(/\\r/g, "\r").replace(/\\t/g, "	").replace(/\\"/g, '"').replace(/\\\\/g, "\\");
-  }
-}
-function htmlToText(html) {
-  return decodeHtmlEntities(
-    html.replace(/<br\s*\/?\s*>/gi, "\n").replace(/<\/(?:a|article|div|h\d|li|p|section)>/gi, "\n").replace(/<[^>]+>/g, " ")
-  ).replace(/[ \t]+/g, " ").replace(/\n\s+/g, "\n").trim();
-}
-function collectCandidateTexts(html) {
-  const candidates = [];
-  const seen = /* @__PURE__ */ new Set();
-  const add = (value) => {
-    const text = decodeHtmlEntities(value).replace(/\s+/g, " ").trim();
-    if (!text || !hasKouling(text) || seen.has(text)) return;
-    seen.add(text);
-    candidates.push(text);
-  };
-  const jsonFieldPattern = /"(?:displayTitle|title|desc)"\s*:\s*"((?:\\.|[^"\\])*)"/g;
-  for (const match of html.matchAll(jsonFieldPattern)) add(decodeJsonString(match[1] ?? ""));
-  const elementPattern = /<(?:a|article|div|h\d|p)[^>]*>([\s\S]*?)<\/(?:a|article|div|h\d|p)>/gi;
-  for (const match of html.matchAll(elementPattern)) add(htmlToText(match[1] ?? ""));
-  const metaPattern = /<meta\b[^>]*(?:content=["']([^"']+)["'])[^>]*>/gi;
-  for (const match of html.matchAll(metaPattern)) add(match[1] ?? "");
-  for (const line of htmlToText(html).split(/\r?\n/)) add(line);
-  return candidates;
-}
-function extractKoulingFromXiaohongshuHtml(html) {
-  for (const candidate of collectCandidateTexts(html)) {
-    const codes = extractKouling(candidate);
-    if (codes.length > 0) return codes;
-  }
-  return [];
-}
-var MAX_CODE_CHARS = 128;
-var MAX_CODES = 10;
-function parseCodeInput(raw) {
-  const text = raw.trim();
-  if (!text) return { ok: false, codes: [], how: "", error: "先贴一条口令" };
-  const extracted = extractKouling(text);
-  if (extracted.length > 0) {
-    return finish(extracted, `按弹幕格式解出 ${extracted.length} 条`);
-  }
-  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter((l) => l !== "");
-  if (lines.length === 0) return { ok: false, codes: [], how: "", error: "先贴一条口令" };
-  const bad = lines.find((l) => looksLikeQuestionAboutKouling(l));
-  if (bad !== void 0) {
-    return {
-      ok: false,
-      codes: [],
-      how: "",
-      error: `「${bad.slice(0, 20)}」看着是观众的提问，不是口令 —— 拿去领只会白跑一枪（上游回 200108）`
-    };
-  }
-  return finish(lines, `按原文收下 ${lines.length} 条（没匹配到任何弹幕格式）`);
-}
-function finish(codes, how) {
-  const uniq = [...new Set(codes.map((c) => c.trim()).filter((c) => c !== ""))];
-  const tooLong = uniq.find((c) => c.length > MAX_CODE_CHARS);
-  if (tooLong !== void 0) {
-    return {
-      ok: false,
-      codes: [],
-      how: "",
-      error: `有一条 ${tooLong.length} 个字符，超过 ${MAX_CODE_CHARS} 的上限 —— 这不像口令`
-    };
-  }
-  if (uniq.length > MAX_CODES) {
-    return { ok: false, codes: [], how: "", error: `一次最多 ${MAX_CODES} 条（收到 ${uniq.length} 条）` };
-  }
-  return { ok: true, codes: uniq, how };
-}
-
-// src/mcloud/tasks/liveRoom.ts
-var STATE_READING = "mcloud.live.reading";
-var STATE_CODES = "mcloud.live.codes";
-var STATE_LIVE_URL = "mcloud.live.url";
-function loadLiveUrl(store2) {
-  const v = store2.getState(STATE_LIVE_URL);
-  return v && v.trim() ? v.trim() : XIAOHONGSHU_KOULING_PROFILE_URL;
-}
-function saveLiveUrl(store2, url, nowIso) {
-  store2.setState(STATE_LIVE_URL, url.trim().replace(/\/+$/, ""), nowIso);
-}
-var EMPTY_SHELL_HINT_CHARS = 5e3;
-function runLiveRoom(deps) {
-  const url = loadLiveUrl(deps.store);
-  const res = callRawText(deps.transport, {
-    url,
-    method: "GET",
-    headers: xiaohongshuProfileHeaders(),
-    body: void 0
-  });
-  if (!res.ok) {
-    const note2 = `抓小红书主页失败：${res.error ?? "未知失败"}`;
-    recordError(deps.store, "live-room", note2, deps.nowIso);
-    return { ok: false, note: note2 };
-  }
-  const codes = extractKoulingFromXiaohongshuHtml(res.text);
-  const guess = res.chars < EMPTY_SHELL_HINT_CHARS;
-  const note = codes.length ? `小红书主页：${codes.length} 条口令（${codes.join("、")}）` : `小红书主页：没读到口令（页面 ${res.chars} 字符）` + (guess ? ` —— 页面小得可疑，**猜**是被挡成了空壳（不是判据）` : ` —— 也可能是这期没发：空壳页与"没发"在解析层长得一样`);
-  const reading = {
-    at: deps.nowIso,
-    url,
-    codes,
-    chars: res.chars,
-    tookMs: res.tookMs,
-    note
-  };
-  deps.store.setState(STATE_READING, JSON.stringify(reading), deps.nowIso);
-  clearError(deps.store, "live-room", deps.nowIso);
-  return { ok: true, note };
-}
-function readLiveReading(store2) {
-  return parseJson(store2.getState(STATE_READING));
-}
-function loadLiveCodes(store2) {
-  return parseJson(store2.getState(STATE_CODES));
-}
-function saveLiveCodes(store2, raw, nowIso) {
-  const parsed = parseCodeInput(raw);
-  if (!parsed.ok) return { ok: false, codes: [], how: "", error: parsed.error ?? "解不出口令" };
-  const v = { at: nowIso, codes: parsed.codes, raw: raw.trim(), how: parsed.how };
-  store2.setState(STATE_CODES, JSON.stringify(v), nowIso);
-  return { ok: true, codes: parsed.codes, how: parsed.how };
-}
-function clearLiveCodes(store2, nowIso) {
-  store2.setState(STATE_CODES, "", nowIso);
-}
-function parseJson(raw) {
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
-}
-
-// src/mcloud/liveFlower.ts
-var LIVE_ROOM_ORIGIN = "https://m.mcloud.139.com";
-var USER_INFO_PATH = "/ycloud/liveRoomFeedback/user/info";
-var JOURNALING_PATH = "/ycloud/visitlog/journaling";
-var FIRST_PARTICIPATE_GIVE_PATH = "/ycloud/liveRoomFeedback/firstParticipate/give";
-var DRAW_PATH = "/ycloud/liveRoomFeedback/redFlower/draw";
-var QUERY_REVIVAL_FLOWERS_PATH = "/ycloud/liveRoomFeedback/redFlower/queryRevivalFlowers";
-var LIVE_ROOM_MARKET_NAME = "National_LiveRoomFeedback";
-var LIVE_ROOM_JOURNALING_SOURCE_ID = "1007";
-var LIVE_ROOM_ACTIVITY_ID = "sign_in_3";
-var LIVE_ROOM_APP_VERSION = "12.6.0.0";
-var TO_SOURCE_ID = "001005";
-var LIVE_ROOM_USER_AGENT = "Mozilla/5.0 (iPad; CPU OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) MCloudApp/12.6.0 iPad AppLanguage/zh-CN";
-var CODE_KOULING_INVALID = 200108;
-var CODE_KOULING_ALREADY_DRAWN = 200112;
-var CODE_KOULING_EXPIRED = 200118;
-var JOURNALING_EVENTS = [
-  "National_LiveRoomFeedback_pv",
-  "National_LiveRoomFeedback_client",
-  "National_LiveRoomFeedback_client_isApp",
-  "National_LiveRoomFeedback_login",
-  "National_LiveRoomFeedback_flowerBtn"
-];
-function liveRoomPageReferer() {
-  return `${LIVE_ROOM_ORIGIN}/portal/yunClound/index.html?path=${LIVE_ROOM_MARKET_NAME}&sourceid=${LIVE_ROOM_JOURNALING_SOURCE_ID}&targetSourceId=${TO_SOURCE_ID}`;
-}
-function liveRoomHeaders() {
-  return {
-    Accept: "*/*",
-    activityid: LIVE_ROOM_ACTIVITY_ID,
-    appversion: LIVE_ROOM_APP_VERSION,
-    Origin: LIVE_ROOM_ORIGIN,
-    Referer: liveRoomPageReferer(),
-    "User-Agent": LIVE_ROOM_USER_AGENT
-  };
-}
-function liveRoomUrl(path, base) {
-  return `${(base ?? LIVE_ROOM_ORIGIN).replace(/\/+$/, "")}${path}`;
-}
-function userInfoRequest(base) {
-  return {
-    url: liveRoomUrl(USER_INFO_PATH, base),
-    method: "POST",
-    // ⚠ 不带 content-type：真实现（`live_flower::user_info_request`）就没设它。
-    // 模块文档那张表写着 application/json，但**代码才是实际发出去的**。
-    headers: liveRoomHeaders(),
-    body: "{}"
-  };
-}
-function journalingRequest(optkeyword, base) {
-  return {
-    url: liveRoomUrl(JOURNALING_PATH, base),
-    method: "POST",
-    headers: {
-      ...liveRoomHeaders(),
-      "content-type": "application/x-www-form-urlencoded;charset=UTF-8"
-    },
-    body: `module=uservisit&optkeyword=${encodeURIComponent(optkeyword)}&sourceid=${LIVE_ROOM_JOURNALING_SOURCE_ID}&marketName=${LIVE_ROOM_MARKET_NAME}`
-  };
-}
-function firstParticipateGiveRequest(base) {
-  return {
-    url: liveRoomUrl(FIRST_PARTICIPATE_GIVE_PATH, base),
-    method: "POST",
-    headers: liveRoomHeaders(),
-    body: void 0
-  };
-}
-function drawRequest(code, base) {
-  return {
-    url: `${liveRoomUrl(DRAW_PATH, base)}?code=${encodeURIComponent(code)}`,
-    method: "POST",
-    headers: liveRoomHeaders(),
-    body: void 0
-  };
-}
-function queryRevivalFlowersRequest(base) {
-  return {
-    url: liveRoomUrl(QUERY_REVIVAL_FLOWERS_PATH, base),
-    method: "GET",
-    headers: liveRoomHeaders(),
-    body: void 0
-  };
-}
-function intAt(o, k) {
-  const v = o[k];
-  if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
-  if (typeof v === "string" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
-  return void 0;
-}
-function strAt(o, k) {
-  const v = o[k];
-  return typeof v === "string" && v !== "" ? v : void 0;
-}
-function classifyDraw(env) {
-  if (!env || env.code === void 0) {
-    return { kind: "unparsable", code: env?.code, message: env?.message ?? "响应解不出来" };
-  }
-  const base = { code: env.code, message: env.message ?? "" };
-  switch (env.code) {
-    case 0: {
-      const r = env.result;
-      if (r === null || typeof r !== "object" || Array.isArray(r)) {
-        return { ...base, kind: "unparsable" };
-      }
-      const o = r;
-      return {
-        ...base,
-        kind: "succeeded",
-        result: {
-          prizeId: intAt(o, "prizeId") ?? 0,
-          flowerNum: intAt(o, "flowerNum") ?? 0,
-          prizeName: strAt(o, "prizeName"),
-          prizeType: intAt(o, "prizeType") ?? 0
-        }
-      };
-    }
-    case CODE_KOULING_ALREADY_DRAWN:
-      return { ...base, kind: "already-drawn" };
-    case CODE_KOULING_INVALID:
-      return { ...base, kind: "invalid-kouling" };
-    case CODE_KOULING_EXPIRED:
-      return { ...base, kind: "kouling-expired" };
-    default:
-      return { ...base, kind: "other" };
-  }
-}
-function drawLine(code, out) {
-  switch (out.kind) {
-    case "succeeded":
-      return `口令「${code}」领到 ${out.result?.flowerNum ?? 0} 朵`;
-    case "already-drawn":
-      return `口令「${code}」没领到：已兑换过`;
-    case "invalid-kouling":
-      return `口令「${code}」没领到：口令无效`;
-    case "kouling-expired":
-      return `口令「${code}」没领到：本场已结束（口令是对的）`;
-    case "other":
-      return `口令「${code}」没领到：上游回了未分类的码 ${out.code ?? "?"}${out.message ? `（${out.message}）` : ""}`;
-    default:
-      return `口令「${code}」没领到：响应解不出来`;
-  }
-}
-function parseBalance(env) {
-  const r = env?.result;
-  if (r === null || typeof r !== "object" || Array.isArray(r)) return void 0;
-  return intAt(r, "flowerCnt");
-}
-
-// src/mcloud/tasks/liveDraw.ts
-var STATE_DRAW = "mcloud.live.draw";
-var STATE_CLAIM_ENABLED = "mcloud.live.claim_enabled";
-function collectCodes(store2) {
-  const human = loadLiveCodes(store2)?.codes ?? [];
-  const auto = readLiveReading(store2)?.codes ?? [];
-  const out = [];
-  for (const c of [...human, ...auto]) {
-    const v = c.trim();
-    if (v && !out.includes(v)) out.push(v);
-    if (out.length >= MAX_CODES) break;
-  }
-  return out;
-}
-function loadDrawState(store2) {
-  const raw = store2.getState(STATE_DRAW);
-  if (!raw) return null;
-  try {
-    const v = JSON.parse(raw);
-    return typeof v?.step === "string" ? v : null;
-  } catch {
-    return null;
-  }
-}
-function claimEnabled(store2) {
-  return store2.getState(STATE_CLAIM_ENABLED) === "1";
-}
-function setClaimEnabled(store2, on, nowIso) {
-  store2.setState(STATE_CLAIM_ENABLED, on ? "1" : "0", nowIso);
-}
-function probeLiveRoom(deps) {
-  const session = loadSession(deps.store);
-  if (!session || !session.jwt) {
-    return { ok: false, note: "未登录：这一族要 jwttoken（见 docs/howto-session.md）" };
-  }
-  const res = callOnce(deps.transport, withSession(userInfoRequest(deps.baseUrl), session.jwt));
-  if (res.env === void 0) {
-    return { ok: false, note: `读余额失败：${res.error ?? "未知失败"}` };
-  }
-  const code = res.env.code;
-  if (code === 0) {
-    const v = parseBalance(res.env);
-    if (v === void 0) return { ok: false, note: "读到了 code=0，但响应里没有 result.flowerCnt" };
-    return { ok: true, balance: v, note: `这一族能通：小红花余额 ${v} 朵` };
-  }
-  if (code === 90001) {
-    return {
-      ok: false,
-      note: "上游回 90001（未登录）—— 凭据是有的，所以问题在**请求头形状**：先怀疑少了 `jwttoken` / `showloading`，或多了签到族那套头（见 liveDraw.ts 文件头）"
-    };
-  }
-  return { ok: false, note: `上游回 ${code}${res.env.message ? `（${res.env.message}）` : ""}` };
-}
-function stepRequest(s, base) {
-  switch (s.step) {
-    case "balance-before":
-      return { request: userInfoRequest(base), label: "① 读余额（领之前）" };
-    case "journaling": {
-      const ev = JOURNALING_EVENTS[s.journalingSent];
-      if (ev === void 0) return null;
-      return { request: journalingRequest(ev, base), label: `② 埋点 ${s.journalingSent + 1}/5` };
-    }
-    case "first-participate":
-      return { request: firstParticipateGiveRequest(base), label: "③ 首次参与惊喜奖" };
-    case "draw": {
-      const code = s.codes[s.drawIndex];
-      if (code === void 0) return null;
-      return {
-        request: drawRequest(code, base),
-        label: `④ 领口令「${code}」（${s.drawIndex + 1}/${s.codes.length}）`
-      };
-    }
-    case "revival":
-      return { request: queryRevivalFlowersRequest(base), label: "⑤ 复活花" };
-    case "balance-after":
-      return { request: userInfoRequest(base), label: "⑥ 再读余额（核对进账）" };
-    default:
-      return null;
-  }
-}
-function runLiveDraw(deps, opts = {}) {
-  const TASK = "live-room";
-  if (!opts.force && !claimEnabled(deps.store)) {
-    return { ok: true, idle: true, note: "领小红花未开启（界面上那个开关）" };
-  }
-  let s = loadDrawState(deps.store);
-  const codes = collectCodes(deps.store);
-  if (!s || s.step === "done") {
-    const done = s?.codes ?? [];
-    if (codes.length === 0) return { ok: true, idle: true, note: "没有口令可领（先抓主页或把口令填进输入框）" };
-    if (s?.step === "done" && sameList(done, codes)) {
-      return { ok: true, idle: true, note: `这一轮已跑完（${s.summary ?? ""}）；口令没变，不重复领` };
-    }
-    s = {
-      step: "balance-before",
-      journalingSent: 0,
-      drawIndex: 0,
-      codes,
-      results: [],
-      startedAt: deps.nowIso
-    };
-    deps.store.setState(STATE_DRAW, JSON.stringify(s), deps.nowIso);
-  }
-  const session = loadSession(deps.store);
-  if (!session || !session.jwt) {
-    const note = "未登录：领小红花要 jwttoken（见 docs/howto-session.md）";
-    recordError(deps.store, TASK, note, deps.nowIso);
-    return { ok: false, note };
-  }
-  const step = stepRequest(s, deps.baseUrl);
-  if (!step) {
-    s.step = "balance-after";
-    deps.store.setState(STATE_DRAW, JSON.stringify(s), deps.nowIso);
-    return { ok: true, note: "步骤下标越界，已跳到收尾" };
-  }
-  const res = callOnce(deps.transport, withSession(step.request, session.jwt));
-  const advance = judge(s, step.label, res, deps.nowIso);
-  deps.store.setState(STATE_DRAW, JSON.stringify(advance.state), deps.nowIso);
-  if (!advance.ok) {
-    recordError(deps.store, TASK, advance.note, deps.nowIso);
-    return { ok: false, note: advance.note };
-  }
-  clearError(deps.store, TASK, deps.nowIso);
-  return { ok: true, note: advance.note };
-}
-function withSession(req, jwt) {
-  return {
-    ...req,
-    headers: { ...req.headers, showloading: "true", jwttoken: jwt }
-  };
-}
-function judge(s, label, res, nowIso) {
-  const st = { ...s, results: [...s.results] };
-  if (res.env === void 0) {
-    const why = res.error ?? "未知失败";
-    return { state: st, ok: false, note: `${label} 失败：${why}` };
-  }
-  const biz = () => `${label}：上游回 ${res.env?.code ?? "?"}${res.env?.message ? `（${res.env.message}）` : ""}`;
-  switch (s.step) {
-    case "balance-before": {
-      if (res.env.code !== 0) return { state: st, ok: false, note: biz() };
-      const v = parseBalance(res.env);
-      if (v === void 0) {
-        return { state: st, ok: false, note: `${label}：响应里没有 result.flowerCnt（余额）` };
-      }
-      st.balanceBefore = v;
-      st.step = "journaling";
-      return { state: st, ok: true, note: `${label}：${v} 朵 → 开始领` };
-    }
-    case "journaling": {
-      st.journalingSent = s.journalingSent + 1;
-      if (st.journalingSent >= JOURNALING_EVENTS.length) st.step = "first-participate";
-      return {
-        state: st,
-        ok: true,
-        note: res.env.code === 0 ? `${label} 完成` : `${biz()}（埋点失败不拦领取）`
-      };
-    }
-    case "first-participate": {
-      const code = res.env.code;
-      st.firstParticipate = code === 0 ? "领到首次参与惊喜奖" : code === 200110 ? "已参与过（正常）" : `上游回 ${code ?? "?"}`;
-      st.step = "draw";
-      return { state: st, ok: true, note: `${label}：${st.firstParticipate}` };
-    }
-    case "draw": {
-      const code = s.codes[s.drawIndex] ?? "";
-      const out = classifyDraw(res.env);
-      st.results.push({
-        code,
-        kind: out.kind,
-        note: drawLine(code, out),
-        flowerNum: out.result?.flowerNum ?? 0
-      });
-      st.drawIndex = s.drawIndex + 1;
-      if (st.drawIndex >= st.codes.length) st.step = "revival";
-      return { state: st, ok: true, note: drawLine(code, out) };
-    }
-    case "revival": {
-      const r = res.env.result;
-      st.revival = typeof r === "number" ? r : void 0;
-      st.step = "balance-after";
-      return {
-        state: st,
-        ok: true,
-        note: res.env.code === 0 ? `${label}：${st.revival ?? "?"} 朵（**不是**小红花余额）` : biz()
-      };
-    }
-    case "balance-after": {
-      if (res.env.code !== 0) return { state: st, ok: false, note: biz() };
-      const v = parseBalance(res.env);
-      if (v === void 0) {
-        return { state: st, ok: false, note: `${label}：响应里没有 result.flowerCnt` };
-      }
-      st.balanceAfter = v;
-      st.step = "done";
-      st.finishedAt = nowIso;
-      const gained = (st.balanceAfter ?? 0) - (st.balanceBefore ?? 0);
-      const okCount = st.results.filter((r) => r.kind === "succeeded").length;
-      st.summary = `${st.results.length} 条口令领到 ${okCount} 条，进账 ${gained} 朵（${st.balanceBefore} → ${st.balanceAfter}）`;
-      return { state: st, ok: true, note: st.summary };
-    }
-    default:
-      return { state: st, ok: true, note: "没有可推进的步骤" };
-  }
-}
-function sameList(a, b) {
-  return a.length === b.length && a.every((v, i) => v === b[i]);
-}
-
 // src/crypto/aes.ts
 function gfMul(a, b) {
   let r = 0;
@@ -4112,6 +3142,1180 @@ function maskMobile(m) {
   return m.length >= 7 ? `${m.slice(0, 3)}****${m.slice(-4)}` : "***";
 }
 
+// src/mcloud/authRefresh.ts
+var REFRESH_BASE = "https://user-njs.yun.139.com";
+var REFRESH_PATH = "/user/auth/refreshToken";
+var APP_CLIENT_TYPE = "412";
+var PC_CLIENT_TYPE = "414";
+function parseAuthorization(raw) {
+  const b64 = raw.replace(/^Basic\s+/i, "").trim();
+  if (!b64) return null;
+  let plain;
+  try {
+    plain = fromUtf8(fromBase64(b64));
+  } catch {
+    return null;
+  }
+  const i = plain.indexOf(":");
+  if (i < 0) return null;
+  const j = plain.indexOf(":", i + 1);
+  if (j < 0) {
+    return { platform: plain.slice(0, i), phone: "", token: plain.slice(i + 1) };
+  }
+  return { platform: plain.slice(0, i), phone: plain.slice(i + 1, j), token: plain.slice(j + 1) };
+}
+function rebuildAuthorization(platform, phone, token) {
+  return `Basic ${toBase64(utf8(`${platform}:${phone}:${token}`))}`;
+}
+function jwtPayload(jwt) {
+  const parts = jwt.split(".");
+  if (parts.length !== 3) return null;
+  const seg = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+  const padded = seg + "=".repeat((4 - seg.length % 4) % 4);
+  try {
+    const v = JSON.parse(fromUtf8(fromBase64(padded)));
+    return v && typeof v === "object" ? v : null;
+  } catch {
+    return null;
+  }
+}
+function jwtUserDomainId(jwt) {
+  const p = jwtPayload(jwt);
+  if (!p) return null;
+  const top = p.userDomainId;
+  if (typeof top === "string" && top !== "") return top;
+  const sub = p.sub;
+  if (typeof sub === "string" && sub.trim().startsWith("{")) {
+    try {
+      const inner = JSON.parse(sub);
+      const v = inner.userDomainId;
+      if (typeof v === "string" && v !== "") return v;
+    } catch {
+    }
+  }
+  return null;
+}
+function clientTypeFor(platform) {
+  return platform === "pc" ? PC_CLIENT_TYPE : APP_CLIENT_TYPE;
+}
+function escapeJsonString(s) {
+  let out = "";
+  for (const ch of s) {
+    const c = ch.codePointAt(0);
+    if (ch === '"') out += '\\"';
+    else if (ch === "\\") out += "\\\\";
+    else if (ch === "\n") out += "\\n";
+    else if (ch === "\r") out += "\\r";
+    else if (ch === "	") out += "\\t";
+    else if (c < 32) out += `\\u${c.toString(16).padStart(4, "0")}`;
+    else out += ch;
+  }
+  return out;
+}
+function refreshRequest(raw, userDomainId, platform) {
+  const body = `{"userDomainId":"${escapeJsonString(userDomainId)}","clientType":"${escapeJsonString(clientTypeFor(platform))}"}`;
+  return {
+    url: `${REFRESH_BASE}${REFRESH_PATH}`,
+    method: "POST",
+    headers: {
+      Authorization: raw
+      // content-type 由传输层补（`application/json;charset=UTF-8`）—— 见 client.ts
+    },
+    body
+  };
+}
+function parseRefresh(body) {
+  let v;
+  try {
+    v = JSON.parse(body);
+  } catch (e) {
+    return { ok: false, error: `refreshToken 响应不是 JSON：${e instanceof Error ? e.message : String(e)}` };
+  }
+  const code = v.code;
+  const codeOk = typeof code === "string" && (code === "0000" || code === "0") || typeof code === "number" && code === 0;
+  const success = typeof v.success === "boolean" ? v.success : codeOk;
+  if (!success || !codeOk) {
+    const msg = String(v.message ?? v.msg ?? "(无消息)");
+    return { ok: false, error: `refreshToken 失败：code=${String(code ?? "?")} ${msg}` };
+  }
+  const data = v.data;
+  if (!data || typeof data !== "object") return { ok: false, error: "refreshToken 响应没有 data" };
+  const token = data.token;
+  if (typeof token !== "string" || token === "") {
+    return { ok: false, error: "refreshToken 响应没有 data.token" };
+  }
+  const exp = data.expireTime;
+  const expireSeconds = typeof exp === "number" ? Math.trunc(exp) : typeof exp === "string" && /^\d+$/.test(exp) ? Number(exp) : void 0;
+  return { ok: true, result: { token, expireSeconds } };
+}
+function applyRefreshResult(raw, res) {
+  const seg = parseAuthorization(raw);
+  if (!seg) return { ok: false, error: "当前凭据解不开（不是 `Basic base64(端别:手机号:token)`），无法重拼" };
+  if (seg.phone === "") return { ok: false, error: "当前凭据里没有手机号段，无法重拼" };
+  return { ok: true, raw: rebuildAuthorization(seg.platform, seg.phone, res.token) };
+}
+var DEFAULT_LEAD_DAYS = 10;
+function tokenExpireMs(token) {
+  const f = token.split("|")[3]?.trim() ?? "";
+  if (!/^[+-]?\d*\.?\d+(e[+-]?\d+)?$/i.test(f)) return 0;
+  const v = Number(f);
+  return Number.isFinite(v) && v !== 0 ? Math.trunc(v) : 0;
+}
+function credentialExpireMs(raw) {
+  const seg = parseAuthorization(raw);
+  if (!seg) return -1;
+  return tokenExpireMs(seg.token);
+}
+function decide(expireMs, nowMs, leadDays = DEFAULT_LEAD_DAYS) {
+  if (expireMs < 0) return "manual-only";
+  if (expireMs === 0) return "needed";
+  const leadMs = Math.trunc(leadDays * 864e5);
+  return expireMs - nowMs <= leadMs ? "needed" : "not-yet";
+}
+function daysLeft(expireMs, nowMs) {
+  if (expireMs <= 0) return void 0;
+  return Math.floor((expireMs - nowMs) / 864e5);
+}
+function assertUsable(raw) {
+  const seg = parseAuthorization(raw);
+  if (!seg) return { ok: false, error: "新凭据解不开（不是 `Basic base64(端别:手机号:token)`）" };
+  if (seg.platform === "" || seg.phone === "" || seg.token === "") {
+    return { ok: false, error: "新凭据有段是空的，拒绝落库" };
+  }
+  return { ok: true };
+}
+var STATE_LAST = "mcloud.auth.refresh.last";
+function runAuthRefresh(deps, force = false, leadDays = DEFAULT_LEAD_DAYS) {
+  const raw = deps.store.getState(STATE_AUTH) ?? "";
+  if (raw === "") {
+    return { ok: true, skipped: true, note: "没有原生凭据，谈不上续期（先贴一份）" };
+  }
+  const nowMs = Date.parse(deps.nowIso);
+  const expireMs = credentialExpireMs(raw);
+  const decision = force ? "needed" : decide(expireMs, nowMs, leadDays);
+  if (decision === "manual-only") {
+    return {
+      ok: true,
+      skipped: true,
+      note: "凭据解不开（过期段也没有）—— 这一档只能重新贴一份，续期接口帮不上"
+    };
+  }
+  if (decision === "not-yet") {
+    const d2 = daysLeft(expireMs, nowMs);
+    return {
+      ok: true,
+      skipped: true,
+      note: `凭据还有 ${d2 ?? "?"} 天，离提前量（${leadDays} 天）还远，不打上游`
+    };
+  }
+  const jwt = loadJwt(deps.store);
+  const domain = jwt ? jwtUserDomainId(jwt.jwt) : null;
+  if (!domain) {
+    return {
+      ok: false,
+      note: "该续期，但手里没有可用的 jwttoken ⇒ 取不到 userDomainId（它的唯一本地来源）。先跑一次换票"
+    };
+  }
+  const seg = parseAuthorization(raw);
+  const req = refreshRequest(raw, domain, seg.platform);
+  const res = callRawText(deps.transport, req);
+  if (!res.ok) return { ok: false, note: `续期失败：${res.error ?? "未知失败"}` };
+  const parsed = parseRefresh(res.text);
+  if (!parsed.ok || !parsed.result) return { ok: false, note: parsed.error ?? "续期失败" };
+  const applied = applyRefreshResult(raw, parsed.result);
+  if (!applied.ok) return { ok: false, note: applied.error };
+  const usable = assertUsable(applied.raw);
+  if (!usable.ok) return { ok: false, note: `拒绝落库：${usable.error}` };
+  deps.store.setState(STATE_AUTH, applied.raw, deps.nowIso);
+  deps.store.setState(
+    STATE_LAST,
+    JSON.stringify({
+      at: deps.nowIso,
+      expireSeconds: parsed.result.expireSeconds ?? null,
+      oldFingerprint: seg.token.slice(-6),
+      newFingerprint: parsed.result.token.slice(-6)
+    }),
+    deps.nowIso
+  );
+  startExchange(deps.store, applied.raw, deps.nowIso);
+  const newExpire = tokenExpireMs(parsed.result.token);
+  const d = daysLeft(newExpire, nowMs);
+  return {
+    ok: true,
+    note: `凭据已续期（旧尾 ${seg.token.slice(-6)} → 新尾 ${parsed.result.token.slice(-6)}；上游说还能用 ${parsed.result.expireSeconds ?? "?"} 秒` + (d === void 0 ? "" : `，新过期还剩 ${d} 天`) + "）—— 已重起一轮换票，让票也来自新凭据"
+  };
+}
+
+// src/mcloud/tasks/notice.ts
+var STATE_CAN3 = "mcloud.notice.can_claim";
+var STATE_INFO2 = "mcloud.notice.info";
+var NOTICE_CLOUD_STATUS_UNCLAIMED = 1;
+var NOTICE_TASK_STATUS_DONE = 3;
+function asInt2(v) {
+  if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
+  if (typeof v === "string" && v.trim() !== "" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
+  return void 0;
+}
+function parseNoticeSlot(raw) {
+  if (raw === null || raw === void 0 || typeof raw !== "object") return void 0;
+  const o = raw;
+  const slot = {
+    cloudStatus: asInt2(o.cloudStatus ?? o.cloud_status),
+    sum: asInt2(o.sum),
+    progress: asInt2(o.progress),
+    taskStatus: asInt2(o.taskStatus ?? o.task_status)
+  };
+  const any = slot.cloudStatus !== void 0 || slot.sum !== void 0 || slot.progress !== void 0 || slot.taskStatus !== void 0;
+  return any ? slot : void 0;
+}
+function parseNoticeInfo(result) {
+  const o = resultObject({ code: 0, message: "", result, ok: true });
+  return {
+    one: parseNoticeSlot(o.taskOneInfo ?? o.task_one_info),
+    two: parseNoticeSlot(o.taskTwoInfo ?? o.task_two_info)
+  };
+}
+function slotJudged(slot) {
+  return !!slot && slot.cloudStatus !== void 0 && slot.taskStatus !== void 0;
+}
+function slotClaimable(slot) {
+  if (!slotJudged(slot)) return false;
+  return slot.cloudStatus === NOTICE_CLOUD_STATUS_UNCLAIMED && slot.taskStatus === NOTICE_TASK_STATUS_DONE;
+}
+function noticePlan(info) {
+  const slots = [
+    ["槽一", info.one],
+    ["槽二", info.two]
+  ];
+  const claimable2 = slots.filter(([, s]) => slotClaimable(s)).map(([n]) => n);
+  const unjudged = slots.filter(([, s]) => s && !slotJudged(s)).map(([n]) => n);
+  const missing = slots.filter(([, s]) => !s).map(([n]) => n);
+  const parts = [];
+  if (claimable2.length) parts.push(`${claimable2.join("/")}可领`);
+  if (unjudged.length) parts.push(`${unjudged.join("/")}判据字段不全（不参与判断，避免静默漏领）`);
+  if (missing.length) parts.push(`${missing.join("/")}上游没给`);
+  if (!parts.length) parts.push("两槽都已入账或无可领");
+  return {
+    claimable: claimable2.length > 0,
+    unjudged: unjudged.length > 0,
+    detail: parts.join("；")
+  };
+}
+function runNoticeInfo(deps) {
+  return runTask(
+    deps,
+    {
+      task: "notice",
+      endpoint: "noticeInfo",
+      method: "GET",
+      marketName: "sign_in_3",
+      isDeviceId: false,
+      stateKey: STATE_INFO2
+    },
+    (env) => {
+      const info = parseNoticeInfo(env.result);
+      const plan = noticePlan(info);
+      deps.store.setState(STATE_CAN3, plan.claimable ? "yes" : `no:${plan.detail}`, deps.nowIso);
+      return {
+        ok: true,
+        note: plan.claimable ? `通知任务：${plan.detail}（下一次触发会去领）` : `通知任务：${plan.detail}`,
+        snapshot: { one: info.one ?? null, two: info.two ?? null }
+      };
+    }
+  );
+}
+function runNoticeReward(deps) {
+  const can = deps.store.getState(STATE_CAN3);
+  if (can !== "yes") {
+    return { ok: true, skipped: true, note: `上次问过状态是「${can ?? "没问过"}」，不发领取请求` };
+  }
+  const out = runTask(
+    deps,
+    {
+      task: "notice",
+      endpoint: "noticeReward",
+      method: "GET",
+      marketName: "sign_in_3",
+      isDeviceId: false
+    },
+    (env) => ({
+      ok: true,
+      // 上游不报到账数 —— 这句必须说，否则下一个人会以为这里能看到领了多少
+      note: `通知任务：已发领取请求（上游不报到账数，下一次触发回查 ${JSON.stringify(
+        env.message ?? "success"
+      ).slice(0, 40)}）`
+    })
+  );
+  if (out.ok) deps.store.setState(STATE_CAN3, "no:sent", deps.nowIso);
+  return out;
+}
+function runNotice(deps) {
+  const can = deps.store.getState(STATE_CAN3);
+  if (can === "yes") return runNoticeReward(deps);
+  return runNoticeInfo(deps);
+}
+
+// src/mcloud/tasks/appTaskMatrix.ts
+var STATE_GROUP_INDEX = "mcloud.apptaskmatrix.group_index";
+var STATE_LAST2 = "mcloud.apptaskmatrix.last";
+var MATRIX_GROUPS = [
+  "new",
+  "beiyong1",
+  "beiyong2",
+  "cloudEmail",
+  "time",
+  "day",
+  "month",
+  "hidden"
+];
+function asInt3(v) {
+  if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
+  if (typeof v === "string" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
+  return void 0;
+}
+function asStr(v) {
+  return typeof v === "string" && v !== "" ? v : void 0;
+}
+function parseMatrixItem(raw) {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return void 0;
+  const o = raw;
+  const it = {
+    taskId: asInt3(o.id ?? o.taskId ?? o.task_id),
+    name: asStr(o.name),
+    description: asStr(o.description),
+    groupId: asStr(o.groupid ?? o.groupId),
+    state: asStr(o.state),
+    limitType: asStr(o.limitType ?? o.limit_type),
+    enable: asInt3(o.enable),
+    currStep: asInt3(o.currstep ?? o.currStep)
+  };
+  const any = it.taskId !== void 0 || it.name !== void 0 || it.state !== void 0 || it.enable !== void 0;
+  return any ? it : void 0;
+}
+function parseMatrix(result) {
+  let list = result;
+  if (list !== null && typeof list === "object" && !Array.isArray(list)) {
+    const o = list;
+    list = o.list ?? o.tasks ?? o.taskList ?? o.items ?? [];
+  }
+  if (!Array.isArray(list)) return [];
+  return list.map(parseMatrixItem).filter((x) => !!x);
+}
+function judgeItem(i) {
+  if (i.state === "FINISH") return "done";
+  if (i.enable === 1) return "todo";
+  return "skip";
+}
+function matrixKey(group) {
+  return `mcloud.apptaskmatrix.g.${group}`;
+}
+function readMatrix(store2) {
+  return MATRIX_GROUPS.map((g) => {
+    const raw = store2.getState(matrixKey(g));
+    if (!raw) return null;
+    try {
+      const v = JSON.parse(raw);
+      return typeof v === "object" && v ? { ...v, group: g } : null;
+    } catch {
+      return null;
+    }
+  });
+}
+function summarize(items) {
+  let done = 0;
+  let todo = 0;
+  let skip = 0;
+  const todoNames = [];
+  for (const i of items) {
+    const j = judgeItem(i);
+    if (j === "done") done += 1;
+    else if (j === "todo") {
+      todo += 1;
+      if (todoNames.length < 3) todoNames.push(i.name ?? i.description ?? `#${i.taskId ?? "?"}`);
+    } else skip += 1;
+  }
+  return { done, todo, skip, todoNames };
+}
+function runAppTaskMatrix(deps) {
+  const raw = deps.store.getState(STATE_GROUP_INDEX);
+  const parsed = raw === void 0 || raw === null ? 0 : Number(raw);
+  const idx = Number.isFinite(parsed) && parsed >= 0 && parsed < MATRIX_GROUPS.length ? parsed : 0;
+  const group = MATRIX_GROUPS[idx];
+  const out = runTask(
+    deps,
+    {
+      task: "app-task-matrix",
+      endpoint: "taskListV2",
+      method: "POST",
+      marketName: MARKET_NAME,
+      isDeviceId: false,
+      stateKey: STATE_LAST2,
+      // 实拍体：{"clientVersion":"12.6.0","group":<group>,"marketname":"sign_in_3"}
+      // 体是**字符串**（与 receiveV3Body 同一约定）
+      body: JSON.stringify({ clientVersion: TASK_CLIENT_VERSION, group, marketname: MARKET_NAME })
+    },
+    (env) => {
+      const items = parseMatrix(env.result);
+      const s = summarize(items);
+      deps.store.setState(STATE_GROUP_INDEX, String((idx + 1) % MATRIX_GROUPS.length), deps.nowIso);
+      const reading = {
+        group,
+        at: deps.nowIso,
+        ...s,
+        groupState: env.groupState
+      };
+      deps.store.setState(matrixKey(group), JSON.stringify(reading), deps.nowIso);
+      const names = s.todoNames.length ? `（可做：${s.todoNames.join("、")}）` : "";
+      return {
+        ok: true,
+        note: `App 任务矩阵[${idx + 1}/${MATRIX_GROUPS.length} group=${group}]：已完成 ${s.done} 条、可做 ${s.todo} 条、不参与 ${s.skip} 条${names}`,
+        snapshot: { group, ...s, items: items.slice(0, 20) }
+      };
+    }
+  );
+  return out;
+}
+
+// src/mcloud/tasks/exchangeList.ts
+var STATE_LIST = "mcloud.exchangelist.last";
+var STATE_RAW = "mcloud.exchangelist.raw";
+var LIMIT_AVAILABLE = 0;
+var LIMIT_TOMORROW = 1;
+var LIMIT_EXCHANGED = 2;
+var LIMIT_GROUP_EXCHANGED = 4;
+function verdictOf(p) {
+  if (p.onLine !== void 0 && p.onLine !== 1) return "offline";
+  if (p.monthLimit !== void 0 && p.received !== void 0 && p.received >= p.monthLimit) {
+    return "month-limit";
+  }
+  if (p.limit === void 0) return "unknown";
+  switch (p.limit) {
+    case LIMIT_AVAILABLE:
+      return "ok";
+    case LIMIT_TOMORROW:
+      return "tomorrow";
+    case LIMIT_EXCHANGED:
+      return "exchanged";
+    case LIMIT_GROUP_EXCHANGED:
+      return "group-exchanged";
+    default:
+      return "unknown";
+  }
+}
+var VERDICT_TEXT = {
+  ok: "可兑",
+  tomorrow: "明日再来",
+  exchanged: "本件本月已兑",
+  "group-exchanged": "本组本月已兑",
+  offline: "已下架",
+  "month-limit": "本月额度可能已用完",
+  unknown: "判不了"
+};
+function asInt4(v) {
+  if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
+  if (typeof v === "string" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
+  return void 0;
+}
+function asStr2(v) {
+  return typeof v === "string" && v !== "" ? v : void 0;
+}
+function parseMonthLimit(v) {
+  let o = v;
+  if (typeof v === "string") {
+    try {
+      o = JSON.parse(v);
+    } catch {
+      return void 0;
+    }
+  }
+  if (o === null || typeof o !== "object" || Array.isArray(o)) return void 0;
+  const r = o;
+  return asInt4(r.limitMonthQuantity ?? r.limit_month_quantity);
+}
+function parsePrize(raw) {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return void 0;
+  const o = raw;
+  const p = {
+    // ⚠ 实拍是**数字**，不是字符串（原项目特意标了这一点）
+    prizeId: asInt4(o.prizeId ?? o.prize_id),
+    // ⚠ 真机 51/51 是 `prizeName`；`name` 保留是为兼容 mock 与将来可能的另一种形状
+    name: asStr2(o.prizeName ?? o.name),
+    monthLimit: parseMonthLimit(o.probability2),
+    received: asInt4(o.receiveQuantity ?? o.receive_quantity),
+    groupId: asInt4(o.groupId ?? o.group_id),
+    price: asInt4(o.price),
+    limit: asInt4(o.limit),
+    count: asInt4(o.count),
+    totalCount: asInt4(o.totalCount ?? o.total_count),
+    dailyRemainderCount: asInt4(o.dailyRemainderCount ?? o.daily_remainder_count),
+    onLine: asInt4(o.onLine ?? o.on_line),
+    startTime: asStr2(o.startTime ?? o.start_time),
+    endTime: asStr2(o.endTime ?? o.end_time)
+  };
+  return p.prizeId !== void 0 || p.name !== void 0 ? p : void 0;
+}
+function parseExchangeList(result) {
+  const o = resultObject({ code: 0, message: "", result, ok: true });
+  const src = o.groups ?? o;
+  const groups = [];
+  const all = [];
+  if (src && typeof src === "object" && !Array.isArray(src)) {
+    for (const key of Object.keys(src)) {
+      const v = src[key];
+      if (!Array.isArray(v)) continue;
+      const prizes = v.map(parsePrize).filter((x) => !!x);
+      groups.push({ group: key, prizes });
+      all.push(...prizes);
+    }
+  }
+  groups.sort((a, b) => (Number(a.group) || 0) - (Number(b.group) || 0));
+  all.sort((a, b) => (a.groupId ?? 0) - (b.groupId ?? 0) || (a.prizeId ?? 0) - (b.prizeId ?? 0));
+  return { groups, prizes: all };
+}
+function summarizeList(prizes) {
+  const byVerdict = {};
+  const ok = [];
+  for (const p of prizes) {
+    const v = verdictOf(p);
+    byVerdict[v] = (byVerdict[v] ?? 0) + 1;
+    if (v === "ok" && ok.length < 20) {
+      ok.push({ prizeId: p.prizeId, name: p.name, price: p.price, groupId: p.groupId });
+    }
+  }
+  return { total: prizes.length, okCount: byVerdict.ok ?? 0, byVerdict, ok };
+}
+function runExchangeList(deps) {
+  return runTask(
+    deps,
+    {
+      task: "exchange-list",
+      endpoint: "exchangeList",
+      method: "GET",
+      marketName: "sign_in_3",
+      isDeviceId: false,
+      stateKey: STATE_RAW
+    },
+    (env) => {
+      const { groups, prizes } = parseExchangeList(env.result);
+      const s = summarizeList(prizes);
+      const reading = { at: deps.nowIso, groups: groups.length, ...s };
+      deps.store.setState(STATE_LIST, JSON.stringify(reading), deps.nowIso);
+      const names = s.ok.slice(0, 3).map(
+        (x) => x.price === void 0 ? x.name ?? "#" + x.prizeId : `${x.name ?? "#" + x.prizeId}(${x.price}豆)`
+      );
+      return {
+        ok: true,
+        note: `兑换清单：${groups.length} 组 / ${s.total} 件，可兑 ${s.okCount} 件` + (names.length ? `（${names.join("、")}）` : "") + (s.byVerdict.unknown ? `；判不了 ${s.byVerdict.unknown} 件` : ""),
+        snapshot: reading
+      };
+    }
+  );
+}
+function readExchangeList(store2) {
+  const raw = store2.getState(STATE_LIST);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+// src/mcloud/liveKouling.ts
+var XIAOHONGSHU_KOULING_PROFILE_URL = "https://www.xiaohongshu.com/user/profile/568caf13aed7585949773b30";
+function xiaohongshuProfileHeaders() {
+  return {
+    accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "accept-language": "zh-CN,zh;q=0.9",
+    referer: "https://www.xiaohongshu.com/",
+    "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+  };
+}
+function isKoulingHead(text) {
+  return /(?:复制)?口令\s*\d*\s*[：:]\s*$/.test(text.trim());
+}
+function hasKouling(text) {
+  return /口令|小红花/.test(text);
+}
+var TRAILING_PARTICLE = /[呀啊吧呢嘛哦]+$/;
+var QUESTION_WORDS = ["什么", "啥", "多少", "几", "哪个", "哪些"];
+function isQuestion(code) {
+  if (/[?？]/.test(code)) return true;
+  const t = code.replace(TRAILING_PARTICLE, "");
+  return QUESTION_WORDS.includes(t);
+}
+function looksLikeQuestionAboutKouling(line) {
+  if (/[?？]/.test(line)) return true;
+  const stripped = line.replace(/^第?\d*个?口令\s*[是为：:]?\s*/, "").trim();
+  return isQuestion(line) || isQuestion(stripped);
+}
+var SAME_LINE_PATTERN = /(?:复制)?口令\s*\d*\s*[：:]\s*(.*?)(?=\s+(?:复制)?口令\s*\d*\s*[：:]|无随机|$)/g;
+function extractKouling(msg) {
+  const result = [];
+  const m2 = msg.match(/小红花口令[：:]\s*(.+)/);
+  if (m2 && m2[1] !== void 0) result.push(m2[1].trim());
+  const lines = msg.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = (lines[i] ?? "").trim();
+    if (isKoulingHead(line)) {
+      const next = lines[i + 1];
+      if (next !== void 0) {
+        const content = next.trim();
+        if (content && !/^(?:复制)?口令/.test(content) && !/无随机/.test(content)) {
+          result.push(content);
+        }
+      }
+      continue;
+    }
+    for (const match of line.matchAll(SAME_LINE_PATTERN)) {
+      const code = (match[1] ?? "").trim();
+      if (code && !/无随机/.test(code)) result.push(code);
+    }
+  }
+  const m1 = msg.match(/口令是(.+)/);
+  if (m1 && m1[1] !== void 0) result.push(m1[1].trim());
+  if (result.length === 0 && /无随机/.test(msg)) {
+    const parts = msg.replace(/无随机.*/, "").trim().split(/\s+/);
+    for (const part of parts) {
+      const v = part.match(/^\d+\s*[：:]\s*(.+)/);
+      if (v && v[1] !== void 0) {
+        const code = v[1].trim();
+        if (code) result.push(code);
+      }
+    }
+  }
+  return [...new Set(result)].filter((code) => !isQuestion(code));
+}
+var NAMED_ENTITIES = {
+  amp: "&",
+  apos: "'",
+  gt: ">",
+  lt: "<",
+  nbsp: " ",
+  quot: '"'
+};
+function decodeHtmlEntities(text) {
+  return text.replace(/&(?:#(\d+)|#x([\da-f]+)|(\w+));/gi, (entity, decimal, hex, named) => {
+    if (typeof decimal === "string" && decimal !== "") {
+      const n = Number(decimal);
+      return safeFromCodePoint(n, entity);
+    }
+    if (typeof hex === "string" && hex !== "") {
+      return safeFromCodePoint(Number.parseInt(hex, 16), entity);
+    }
+    if (typeof named === "string") {
+      return NAMED_ENTITIES[named.toLowerCase()] ?? entity;
+    }
+    return entity;
+  });
+}
+function safeFromCodePoint(n, fallback) {
+  if (!Number.isFinite(n) || n < 0 || n > 1114111) return fallback;
+  try {
+    return String.fromCodePoint(n);
+  } catch {
+    return fallback;
+  }
+}
+function decodeJsonString(value) {
+  try {
+    return JSON.parse(`"${value}"`);
+  } catch {
+    return value.replace(/\\n/g, "\n").replace(/\\r/g, "\r").replace(/\\t/g, "	").replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+  }
+}
+function htmlToText(html) {
+  return decodeHtmlEntities(
+    html.replace(/<br\s*\/?\s*>/gi, "\n").replace(/<\/(?:a|article|div|h\d|li|p|section)>/gi, "\n").replace(/<[^>]+>/g, " ")
+  ).replace(/[ \t]+/g, " ").replace(/\n\s+/g, "\n").trim();
+}
+function collectCandidateTexts(html) {
+  const candidates = [];
+  const seen = /* @__PURE__ */ new Set();
+  const add = (value) => {
+    const text = decodeHtmlEntities(value).replace(/\s+/g, " ").trim();
+    if (!text || !hasKouling(text) || seen.has(text)) return;
+    seen.add(text);
+    candidates.push(text);
+  };
+  const jsonFieldPattern = /"(?:displayTitle|title|desc)"\s*:\s*"((?:\\.|[^"\\])*)"/g;
+  for (const match of html.matchAll(jsonFieldPattern)) add(decodeJsonString(match[1] ?? ""));
+  const elementPattern = /<(?:a|article|div|h\d|p)[^>]*>([\s\S]*?)<\/(?:a|article|div|h\d|p)>/gi;
+  for (const match of html.matchAll(elementPattern)) add(htmlToText(match[1] ?? ""));
+  const metaPattern = /<meta\b[^>]*(?:content=["']([^"']+)["'])[^>]*>/gi;
+  for (const match of html.matchAll(metaPattern)) add(match[1] ?? "");
+  for (const line of htmlToText(html).split(/\r?\n/)) add(line);
+  return candidates;
+}
+function extractKoulingFromXiaohongshuHtml(html) {
+  for (const candidate of collectCandidateTexts(html)) {
+    const codes = extractKouling(candidate);
+    if (codes.length > 0) return codes;
+  }
+  return [];
+}
+var MAX_CODE_CHARS = 128;
+var MAX_CODES = 10;
+function parseCodeInput(raw) {
+  const text = raw.trim();
+  if (!text) return { ok: false, codes: [], how: "", error: "先贴一条口令" };
+  const extracted = extractKouling(text);
+  if (extracted.length > 0) {
+    return finish(extracted, `按弹幕格式解出 ${extracted.length} 条`);
+  }
+  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter((l) => l !== "");
+  if (lines.length === 0) return { ok: false, codes: [], how: "", error: "先贴一条口令" };
+  const bad = lines.find((l) => looksLikeQuestionAboutKouling(l));
+  if (bad !== void 0) {
+    return {
+      ok: false,
+      codes: [],
+      how: "",
+      error: `「${bad.slice(0, 20)}」看着是观众的提问，不是口令 —— 拿去领只会白跑一枪（上游回 200108）`
+    };
+  }
+  return finish(lines, `按原文收下 ${lines.length} 条（没匹配到任何弹幕格式）`);
+}
+function finish(codes, how) {
+  const uniq = [...new Set(codes.map((c) => c.trim()).filter((c) => c !== ""))];
+  const tooLong = uniq.find((c) => c.length > MAX_CODE_CHARS);
+  if (tooLong !== void 0) {
+    return {
+      ok: false,
+      codes: [],
+      how: "",
+      error: `有一条 ${tooLong.length} 个字符，超过 ${MAX_CODE_CHARS} 的上限 —— 这不像口令`
+    };
+  }
+  if (uniq.length > MAX_CODES) {
+    return { ok: false, codes: [], how: "", error: `一次最多 ${MAX_CODES} 条（收到 ${uniq.length} 条）` };
+  }
+  return { ok: true, codes: uniq, how };
+}
+
+// src/mcloud/tasks/liveRoom.ts
+var STATE_READING = "mcloud.live.reading";
+var STATE_CODES = "mcloud.live.codes";
+var STATE_LIVE_URL = "mcloud.live.url";
+function loadLiveUrl(store2) {
+  const v = store2.getState(STATE_LIVE_URL);
+  return v && v.trim() ? v.trim() : XIAOHONGSHU_KOULING_PROFILE_URL;
+}
+function saveLiveUrl(store2, url, nowIso) {
+  store2.setState(STATE_LIVE_URL, url.trim().replace(/\/+$/, ""), nowIso);
+}
+var EMPTY_SHELL_HINT_CHARS = 5e3;
+function runLiveRoom(deps) {
+  const url = loadLiveUrl(deps.store);
+  const res = callRawText(deps.transport, {
+    url,
+    method: "GET",
+    headers: xiaohongshuProfileHeaders(),
+    body: void 0
+  });
+  if (!res.ok) {
+    const note2 = `抓小红书主页失败：${res.error ?? "未知失败"}`;
+    recordError(deps.store, "live-room", note2, deps.nowIso);
+    return { ok: false, note: note2 };
+  }
+  const codes = extractKoulingFromXiaohongshuHtml(res.text);
+  const guess = res.chars < EMPTY_SHELL_HINT_CHARS;
+  const note = codes.length ? `小红书主页：${codes.length} 条口令（${codes.join("、")}）` : `小红书主页：没读到口令（页面 ${res.chars} 字符）` + (guess ? ` —— 页面小得可疑，**猜**是被挡成了空壳（不是判据）` : ` —— 也可能是这期没发：空壳页与"没发"在解析层长得一样`);
+  const reading = {
+    at: deps.nowIso,
+    url,
+    codes,
+    chars: res.chars,
+    tookMs: res.tookMs,
+    note
+  };
+  deps.store.setState(STATE_READING, JSON.stringify(reading), deps.nowIso);
+  clearError(deps.store, "live-room", deps.nowIso);
+  return { ok: true, note };
+}
+function readLiveReading(store2) {
+  return parseJson(store2.getState(STATE_READING));
+}
+function loadLiveCodes(store2) {
+  return parseJson(store2.getState(STATE_CODES));
+}
+function saveLiveCodes(store2, raw, nowIso) {
+  const parsed = parseCodeInput(raw);
+  if (!parsed.ok) return { ok: false, codes: [], how: "", error: parsed.error ?? "解不出口令" };
+  const v = { at: nowIso, codes: parsed.codes, raw: raw.trim(), how: parsed.how };
+  store2.setState(STATE_CODES, JSON.stringify(v), nowIso);
+  return { ok: true, codes: parsed.codes, how: parsed.how };
+}
+function clearLiveCodes(store2, nowIso) {
+  store2.setState(STATE_CODES, "", nowIso);
+}
+function parseJson(raw) {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+// src/mcloud/liveFlower.ts
+var LIVE_ROOM_ORIGIN = "https://m.mcloud.139.com";
+var USER_INFO_PATH = "/ycloud/liveRoomFeedback/user/info";
+var JOURNALING_PATH = "/ycloud/visitlog/journaling";
+var FIRST_PARTICIPATE_GIVE_PATH = "/ycloud/liveRoomFeedback/firstParticipate/give";
+var DRAW_PATH = "/ycloud/liveRoomFeedback/redFlower/draw";
+var QUERY_REVIVAL_FLOWERS_PATH = "/ycloud/liveRoomFeedback/redFlower/queryRevivalFlowers";
+var LIVE_ROOM_MARKET_NAME = "National_LiveRoomFeedback";
+var LIVE_ROOM_JOURNALING_SOURCE_ID = "1007";
+var LIVE_ROOM_ACTIVITY_ID = "sign_in_3";
+var LIVE_ROOM_APP_VERSION = "12.6.0.0";
+var TO_SOURCE_ID = "001005";
+var LIVE_ROOM_USER_AGENT = "Mozilla/5.0 (iPad; CPU OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) MCloudApp/12.6.0 iPad AppLanguage/zh-CN";
+var CODE_KOULING_INVALID = 200108;
+var CODE_KOULING_ALREADY_DRAWN = 200112;
+var CODE_KOULING_EXPIRED = 200118;
+var JOURNALING_EVENTS = [
+  "National_LiveRoomFeedback_pv",
+  "National_LiveRoomFeedback_client",
+  "National_LiveRoomFeedback_client_isApp",
+  "National_LiveRoomFeedback_login",
+  "National_LiveRoomFeedback_flowerBtn"
+];
+function liveRoomPageReferer() {
+  return `${LIVE_ROOM_ORIGIN}/portal/yunClound/index.html?path=${LIVE_ROOM_MARKET_NAME}&sourceid=${LIVE_ROOM_JOURNALING_SOURCE_ID}&targetSourceId=${TO_SOURCE_ID}`;
+}
+function liveRoomHeaders() {
+  return {
+    Accept: "*/*",
+    activityid: LIVE_ROOM_ACTIVITY_ID,
+    appversion: LIVE_ROOM_APP_VERSION,
+    Origin: LIVE_ROOM_ORIGIN,
+    Referer: liveRoomPageReferer(),
+    "User-Agent": LIVE_ROOM_USER_AGENT
+  };
+}
+function liveRoomUrl(path, base) {
+  return `${(base ?? LIVE_ROOM_ORIGIN).replace(/\/+$/, "")}${path}`;
+}
+function userInfoRequest(base) {
+  return {
+    url: liveRoomUrl(USER_INFO_PATH, base),
+    method: "POST",
+    // ⚠ 不带 content-type：真实现（`live_flower::user_info_request`）就没设它。
+    // 模块文档那张表写着 application/json，但**代码才是实际发出去的**。
+    headers: liveRoomHeaders(),
+    body: "{}"
+  };
+}
+function journalingRequest(optkeyword, base) {
+  return {
+    url: liveRoomUrl(JOURNALING_PATH, base),
+    method: "POST",
+    headers: {
+      ...liveRoomHeaders(),
+      "content-type": "application/x-www-form-urlencoded;charset=UTF-8"
+    },
+    body: `module=uservisit&optkeyword=${encodeURIComponent(optkeyword)}&sourceid=${LIVE_ROOM_JOURNALING_SOURCE_ID}&marketName=${LIVE_ROOM_MARKET_NAME}`
+  };
+}
+function firstParticipateGiveRequest(base) {
+  return {
+    url: liveRoomUrl(FIRST_PARTICIPATE_GIVE_PATH, base),
+    method: "POST",
+    headers: liveRoomHeaders(),
+    body: void 0
+  };
+}
+function drawRequest(code, base) {
+  return {
+    url: `${liveRoomUrl(DRAW_PATH, base)}?code=${encodeURIComponent(code)}`,
+    method: "POST",
+    headers: liveRoomHeaders(),
+    body: void 0
+  };
+}
+function queryRevivalFlowersRequest(base) {
+  return {
+    url: liveRoomUrl(QUERY_REVIVAL_FLOWERS_PATH, base),
+    method: "GET",
+    headers: liveRoomHeaders(),
+    body: void 0
+  };
+}
+function intAt(o, k) {
+  const v = o[k];
+  if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
+  if (typeof v === "string" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
+  return void 0;
+}
+function strAt(o, k) {
+  const v = o[k];
+  return typeof v === "string" && v !== "" ? v : void 0;
+}
+function classifyDraw(env) {
+  if (!env || env.code === void 0) {
+    return { kind: "unparsable", code: env?.code, message: env?.message ?? "响应解不出来" };
+  }
+  const base = { code: env.code, message: env.message ?? "" };
+  switch (env.code) {
+    case 0: {
+      const r = env.result;
+      if (r === null || typeof r !== "object" || Array.isArray(r)) {
+        return { ...base, kind: "unparsable" };
+      }
+      const o = r;
+      return {
+        ...base,
+        kind: "succeeded",
+        result: {
+          prizeId: intAt(o, "prizeId") ?? 0,
+          flowerNum: intAt(o, "flowerNum") ?? 0,
+          prizeName: strAt(o, "prizeName"),
+          prizeType: intAt(o, "prizeType") ?? 0
+        }
+      };
+    }
+    case CODE_KOULING_ALREADY_DRAWN:
+      return { ...base, kind: "already-drawn" };
+    case CODE_KOULING_INVALID:
+      return { ...base, kind: "invalid-kouling" };
+    case CODE_KOULING_EXPIRED:
+      return { ...base, kind: "kouling-expired" };
+    default:
+      return { ...base, kind: "other" };
+  }
+}
+function drawLine(code, out) {
+  switch (out.kind) {
+    case "succeeded":
+      return `口令「${code}」领到 ${out.result?.flowerNum ?? 0} 朵`;
+    case "already-drawn":
+      return `口令「${code}」没领到：已兑换过`;
+    case "invalid-kouling":
+      return `口令「${code}」没领到：口令无效`;
+    case "kouling-expired":
+      return `口令「${code}」没领到：本场已结束（口令是对的）`;
+    case "other":
+      return `口令「${code}」没领到：上游回了未分类的码 ${out.code ?? "?"}${out.message ? `（${out.message}）` : ""}`;
+    default:
+      return `口令「${code}」没领到：响应解不出来`;
+  }
+}
+function parseBalance(env) {
+  const r = env?.result;
+  if (r === null || typeof r !== "object" || Array.isArray(r)) return void 0;
+  return intAt(r, "flowerCnt");
+}
+
+// src/mcloud/tasks/liveDraw.ts
+var STATE_DRAW = "mcloud.live.draw";
+var STATE_CLAIM_ENABLED = "mcloud.live.claim_enabled";
+function collectCodes(store2) {
+  const human = loadLiveCodes(store2)?.codes ?? [];
+  const auto = readLiveReading(store2)?.codes ?? [];
+  const out = [];
+  for (const c of [...human, ...auto]) {
+    const v = c.trim();
+    if (v && !out.includes(v)) out.push(v);
+    if (out.length >= MAX_CODES) break;
+  }
+  return out;
+}
+function loadDrawState(store2) {
+  const raw = store2.getState(STATE_DRAW);
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw);
+    return typeof v?.step === "string" ? v : null;
+  } catch {
+    return null;
+  }
+}
+function claimEnabled(store2) {
+  return store2.getState(STATE_CLAIM_ENABLED) === "1";
+}
+function setClaimEnabled(store2, on, nowIso) {
+  store2.setState(STATE_CLAIM_ENABLED, on ? "1" : "0", nowIso);
+}
+function probeLiveRoom(deps) {
+  const session = loadSession(deps.store);
+  if (!session || !session.jwt) {
+    return { ok: false, note: "未登录：这一族要 jwttoken（见 docs/howto-session.md）" };
+  }
+  const res = callOnce(deps.transport, withSession(userInfoRequest(deps.baseUrl), session.jwt));
+  if (res.env === void 0) {
+    return { ok: false, note: `读余额失败：${res.error ?? "未知失败"}` };
+  }
+  const code = res.env.code;
+  if (code === 0) {
+    const v = parseBalance(res.env);
+    if (v === void 0) return { ok: false, note: "读到了 code=0，但响应里没有 result.flowerCnt" };
+    return { ok: true, balance: v, note: `这一族能通：小红花余额 ${v} 朵` };
+  }
+  if (code === 90001) {
+    return {
+      ok: false,
+      note: "上游回 90001（未登录）—— 凭据是有的，所以问题在**请求头形状**：先怀疑少了 `jwttoken` / `showloading`，或多了签到族那套头（见 liveDraw.ts 文件头）"
+    };
+  }
+  return { ok: false, note: `上游回 ${code}${res.env.message ? `（${res.env.message}）` : ""}` };
+}
+function stepRequest(s, base) {
+  switch (s.step) {
+    case "balance-before":
+      return { request: userInfoRequest(base), label: "① 读余额（领之前）" };
+    case "journaling": {
+      const ev = JOURNALING_EVENTS[s.journalingSent];
+      if (ev === void 0) return null;
+      return { request: journalingRequest(ev, base), label: `② 埋点 ${s.journalingSent + 1}/5` };
+    }
+    case "first-participate":
+      return { request: firstParticipateGiveRequest(base), label: "③ 首次参与惊喜奖" };
+    case "draw": {
+      const code = s.codes[s.drawIndex];
+      if (code === void 0) return null;
+      return {
+        request: drawRequest(code, base),
+        label: `④ 领口令「${code}」（${s.drawIndex + 1}/${s.codes.length}）`
+      };
+    }
+    case "revival":
+      return { request: queryRevivalFlowersRequest(base), label: "⑤ 复活花" };
+    case "balance-after":
+      return { request: userInfoRequest(base), label: "⑥ 再读余额（核对进账）" };
+    default:
+      return null;
+  }
+}
+function runLiveDraw(deps, opts = {}) {
+  const TASK = "live-room";
+  if (!opts.force && !claimEnabled(deps.store)) {
+    return { ok: true, idle: true, note: "领小红花未开启（界面上那个开关）" };
+  }
+  let s = loadDrawState(deps.store);
+  const codes = collectCodes(deps.store);
+  if (!s || s.step === "done") {
+    const done = s?.codes ?? [];
+    if (codes.length === 0) return { ok: true, idle: true, note: "没有口令可领（先抓主页或把口令填进输入框）" };
+    if (s?.step === "done" && sameList(done, codes)) {
+      return { ok: true, idle: true, note: `这一轮已跑完（${s.summary ?? ""}）；口令没变，不重复领` };
+    }
+    s = {
+      step: "balance-before",
+      journalingSent: 0,
+      drawIndex: 0,
+      codes,
+      results: [],
+      startedAt: deps.nowIso
+    };
+    deps.store.setState(STATE_DRAW, JSON.stringify(s), deps.nowIso);
+  }
+  const session = loadSession(deps.store);
+  if (!session || !session.jwt) {
+    const note = "未登录：领小红花要 jwttoken（见 docs/howto-session.md）";
+    recordError(deps.store, TASK, note, deps.nowIso);
+    return { ok: false, note };
+  }
+  const step = stepRequest(s, deps.baseUrl);
+  if (!step) {
+    s.step = "balance-after";
+    deps.store.setState(STATE_DRAW, JSON.stringify(s), deps.nowIso);
+    return { ok: true, note: "步骤下标越界，已跳到收尾" };
+  }
+  const res = callOnce(deps.transport, withSession(step.request, session.jwt));
+  const advance = judge(s, step.label, res, deps.nowIso);
+  deps.store.setState(STATE_DRAW, JSON.stringify(advance.state), deps.nowIso);
+  if (!advance.ok) {
+    recordError(deps.store, TASK, advance.note, deps.nowIso);
+    return { ok: false, note: advance.note };
+  }
+  clearError(deps.store, TASK, deps.nowIso);
+  return { ok: true, note: advance.note };
+}
+function withSession(req, jwt) {
+  return {
+    ...req,
+    headers: { ...req.headers, showloading: "true", jwttoken: jwt }
+  };
+}
+function judge(s, label, res, nowIso) {
+  const st = { ...s, results: [...s.results] };
+  if (res.env === void 0) {
+    const why = res.error ?? "未知失败";
+    return { state: st, ok: false, note: `${label} 失败：${why}` };
+  }
+  const biz = () => `${label}：上游回 ${res.env?.code ?? "?"}${res.env?.message ? `（${res.env.message}）` : ""}`;
+  switch (s.step) {
+    case "balance-before": {
+      if (res.env.code !== 0) return { state: st, ok: false, note: biz() };
+      const v = parseBalance(res.env);
+      if (v === void 0) {
+        return { state: st, ok: false, note: `${label}：响应里没有 result.flowerCnt（余额）` };
+      }
+      st.balanceBefore = v;
+      st.step = "journaling";
+      return { state: st, ok: true, note: `${label}：${v} 朵 → 开始领` };
+    }
+    case "journaling": {
+      st.journalingSent = s.journalingSent + 1;
+      if (st.journalingSent >= JOURNALING_EVENTS.length) st.step = "first-participate";
+      return {
+        state: st,
+        ok: true,
+        note: res.env.code === 0 ? `${label} 完成` : `${biz()}（埋点失败不拦领取）`
+      };
+    }
+    case "first-participate": {
+      const code = res.env.code;
+      st.firstParticipate = code === 0 ? "领到首次参与惊喜奖" : code === 200110 ? "已参与过（正常）" : `上游回 ${code ?? "?"}`;
+      st.step = "draw";
+      return { state: st, ok: true, note: `${label}：${st.firstParticipate}` };
+    }
+    case "draw": {
+      const code = s.codes[s.drawIndex] ?? "";
+      const out = classifyDraw(res.env);
+      st.results.push({
+        code,
+        kind: out.kind,
+        note: drawLine(code, out),
+        flowerNum: out.result?.flowerNum ?? 0
+      });
+      st.drawIndex = s.drawIndex + 1;
+      if (st.drawIndex >= st.codes.length) st.step = "revival";
+      return { state: st, ok: true, note: drawLine(code, out) };
+    }
+    case "revival": {
+      const r = res.env.result;
+      st.revival = typeof r === "number" ? r : void 0;
+      st.step = "balance-after";
+      return {
+        state: st,
+        ok: true,
+        note: res.env.code === 0 ? `${label}：${st.revival ?? "?"} 朵（**不是**小红花余额）` : biz()
+      };
+    }
+    case "balance-after": {
+      if (res.env.code !== 0) return { state: st, ok: false, note: biz() };
+      const v = parseBalance(res.env);
+      if (v === void 0) {
+        return { state: st, ok: false, note: `${label}：响应里没有 result.flowerCnt` };
+      }
+      st.balanceAfter = v;
+      st.step = "done";
+      st.finishedAt = nowIso;
+      const gained = (st.balanceAfter ?? 0) - (st.balanceBefore ?? 0);
+      const okCount = st.results.filter((r) => r.kind === "succeeded").length;
+      st.summary = `${st.results.length} 条口令领到 ${okCount} 条，进账 ${gained} 朵（${st.balanceBefore} → ${st.balanceAfter}）`;
+      return { state: st, ok: true, note: st.summary };
+    }
+    default:
+      return { state: st, ok: true, note: "没有可推进的步骤" };
+  }
+}
+function sameList(a, b) {
+  return a.length === b.length && a.every((v, i) => v === b[i]);
+}
+
 // src/mcloud/tasks/receive.ts
 var STATE_QUEUE = "mcloud.receive.queue";
 var STATE_RECEIVE = "mcloud.receive.last";
@@ -4544,7 +4748,9 @@ var TASK_META = [
   //    所以"我不替你动"这个说法本身就站不住（当时没有可动的东西）。
   //    ⚠ `risk` 暂时维持 `irreversible`（风险档保守取值的默认），
   //    但这一档的**依据同样缺样本** —— 真要落地前先把"旧 token 是否仍可用"测出来。
-  { name: "auth-refresh", title: "刷新 auth 凭据（**续期**，不是替换）", group: "risky", kind: "Action", risk: "irreversible", missed: "catch-up", deps: ["basic+jwt"], batch: false, hidden: true, implemented: false, note: "续期：返回一个自带 30 天有效期的新 token —— 唯一不需要 jwt 的写操作。⚠ 未实装" }
+  // ✅ 2026-10-14 实现。**一个字段都不用用户给**：手机号/端别在 `Authorization` 里解出来，
+  //    `userDomainId` 在 jwttoken 的 `payload.sub` 里。判据照 mcloud 的 `decide`（默认提前 10 天）。
+  { name: "auth-refresh", title: "凭据续期", group: "daily", kind: "Action", risk: "spend", missed: "skip", deps: ["basic+jwt"], batch: false, hidden: false, implemented: true, evidence: "captured", note: "离过期还远时**一个请求都不发**；续出的是一枚**全新的** token（30 天），不是把旧的延长" }
 ];
 function groupView(store2) {
   const recent = store2.recentRuns(200);
@@ -4809,6 +5015,24 @@ function mcloudRoutes(deps) {
       }
     },
     {
+      // 凭据续期。默认**按判据**（离过期还远就一个请求都不发）；
+      // `{"force":true}` 对应 mcloud CLI 的 `--force`，用来"我现在就想试一下"。
+      path: `${base}/auth/refresh`,
+      method: "POST",
+      handler: (req) => {
+        const b = readBody(req);
+        const force = b.force === true;
+        const leadDays = typeof b.leadDays === "number" ? b.leadDays : void 0;
+        const r = runAuthRefresh(
+          { store: deps.store, transport: deps.transport, nowIso: deps.now(), baseUrl: loadBaseUrl(deps.store) },
+          force,
+          leadDays
+        );
+        deps.log(`凭据续期：${r.note}`);
+        return json(200, { ...r, auth: authStatus(deps.store) });
+      }
+    },
+    {
       // **只读探针**：一枪 `user/info`，回答"这一族能不能通"（不记账、不写状态）。
       // 没有它，"验请求头"得先有真口令，而口令只在直播那一小时有效。
       path: `${base}/live/draw/probe`,
@@ -5055,6 +5279,7 @@ register_cron("receive", SIGNIN_CRON, makeRunner("领取AI豆", runReceive));
 register_cron("multiple", SIGNIN_CRON, makeRunner("签到翻倍", runMultiple));
 register_cron("revival", SIGNIN_CRON, makeRunner("复活卡", runRevival));
 register_cron("backup-gift", SIGNIN_CRON, makeRunner("备份好礼", runBackupGift));
+register_cron("auth-refresh", "0 6 * * *", makeRunner("凭据续期", (deps) => runAuthRefresh(deps)));
 register_cron("msg-push", SIGNIN_CRON, makeRunner("消息推送奖励（问状态）", runMsgPushStatus));
 register_cron("msg-push-obtain", SIGNIN_CRON, makeRunner("消息推送奖励（领）", runMsgPushObtain));
 register_cron("notice", SIGNIN_CRON, makeRunner("开启通知领AI豆", runNotice));
