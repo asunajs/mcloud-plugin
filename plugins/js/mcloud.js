@@ -4405,36 +4405,153 @@ function env0(text) {
   return Object.keys(r).length > 0 ? r : text.slice(0, 140);
 }
 
-// src/mcloud/tasks/appTaskMatrix.ts
-var MATRIX_MARKETS = ["sign_in_3", "newsign_139mail"];
-function matrixKey(group) {
-  return `mcloud.apptaskmatrix.g.${group}`;
+// src/mcloud/liveFlower.ts
+var LIVE_ROOM_ORIGIN = "https://m.mcloud.139.com";
+var USER_INFO_PATH = "/ycloud/liveRoomFeedback/user/info";
+var JOURNALING_PATH = "/ycloud/visitlog/journaling";
+var FIRST_PARTICIPATE_GIVE_PATH = "/ycloud/liveRoomFeedback/firstParticipate/give";
+var DRAW_PATH = "/ycloud/liveRoomFeedback/redFlower/draw";
+var QUERY_REVIVAL_FLOWERS_PATH = "/ycloud/liveRoomFeedback/redFlower/queryRevivalFlowers";
+var LIVE_ROOM_MARKET_NAME = "National_LiveRoomFeedback";
+var LIVE_ROOM_JOURNALING_SOURCE_ID = "1007";
+var LIVE_ROOM_ACTIVITY_ID = "sign_in_3";
+var LIVE_ROOM_APP_VERSION = "12.6.0.0";
+var TO_SOURCE_ID = "001005";
+var LIVE_ROOM_USER_AGENT = "Mozilla/5.0 (iPad; CPU OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) MCloudApp/12.6.0 iPad AppLanguage/zh-CN";
+var CODE_KOULING_INVALID = 200108;
+var CODE_KOULING_ALREADY_DRAWN = 200112;
+var CODE_KOULING_EXPIRED = 200118;
+var JOURNALING_EVENTS = [
+  "National_LiveRoomFeedback_pv",
+  "National_LiveRoomFeedback_client",
+  "National_LiveRoomFeedback_client_isApp",
+  "National_LiveRoomFeedback_login",
+  "National_LiveRoomFeedback_flowerBtn"
+];
+function liveRoomPageReferer() {
+  return `${LIVE_ROOM_ORIGIN}/portal/yunClound/index.html?path=${LIVE_ROOM_MARKET_NAME}&sourceid=${LIVE_ROOM_JOURNALING_SOURCE_ID}&targetSourceId=${TO_SOURCE_ID}`;
 }
-function readMatrix(store2) {
-  return MATRIX_MARKETS.map((g) => {
-    const raw = store2.getState(matrixKey(g));
-    if (!raw) return null;
-    try {
-      const v = JSON.parse(raw);
-      return typeof v === "object" && v ? { ...v, group: g } : null;
-    } catch {
-      return null;
-    }
-  });
+function liveRoomHeaders() {
+  return {
+    Accept: "*/*",
+    activityid: LIVE_ROOM_ACTIVITY_ID,
+    appversion: LIVE_ROOM_APP_VERSION,
+    Origin: LIVE_ROOM_ORIGIN,
+    Referer: liveRoomPageReferer(),
+    "User-Agent": LIVE_ROOM_USER_AGENT
+  };
 }
-
-// src/mcloud/dailyState.ts
-var DAILY_LAST_KEY = "mcloud.daily.last_run";
-function readDailyRun(store2) {
-  const raw = store2.getState(DAILY_LAST_KEY);
-  if (raw === void 0 || raw === null || raw === "") return null;
-  try {
-    const v = JSON.parse(raw);
-    if (typeof v !== "object" || v === null || !Array.isArray(v.steps)) return null;
-    return v;
-  } catch {
-    return null;
+function liveRoomUrl(path, base) {
+  return `${rootOrDefault(base, LIVE_ROOM_ORIGIN)}${path}`;
+}
+function userInfoRequest(base) {
+  return {
+    url: liveRoomUrl(USER_INFO_PATH, base),
+    method: "POST",
+    // ⚠ 不带 content-type：真实现（`live_flower::user_info_request`）就没设它。
+    // 模块文档那张表写着 application/json，但**代码才是实际发出去的**。
+    headers: liveRoomHeaders(),
+    body: "{}"
+  };
+}
+function journalingRequest(optkeyword, base) {
+  return {
+    url: liveRoomUrl(JOURNALING_PATH, base),
+    method: "POST",
+    headers: {
+      ...liveRoomHeaders(),
+      "content-type": "application/x-www-form-urlencoded;charset=UTF-8"
+    },
+    body: `module=uservisit&optkeyword=${encodeURIComponent(optkeyword)}&sourceid=${LIVE_ROOM_JOURNALING_SOURCE_ID}&marketName=${LIVE_ROOM_MARKET_NAME}`
+  };
+}
+function firstParticipateGiveRequest(base) {
+  return {
+    url: liveRoomUrl(FIRST_PARTICIPATE_GIVE_PATH, base),
+    method: "POST",
+    headers: liveRoomHeaders(),
+    body: void 0
+  };
+}
+function drawRequest(code, base) {
+  return {
+    url: `${liveRoomUrl(DRAW_PATH, base)}?code=${encodeURIComponent(code)}`,
+    method: "POST",
+    headers: liveRoomHeaders(),
+    body: void 0
+  };
+}
+function queryRevivalFlowersRequest(base) {
+  return {
+    url: liveRoomUrl(QUERY_REVIVAL_FLOWERS_PATH, base),
+    method: "GET",
+    headers: liveRoomHeaders(),
+    body: void 0
+  };
+}
+function intAt(o, k) {
+  const v = o[k];
+  if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
+  if (typeof v === "string" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
+  return void 0;
+}
+function strAt(o, k) {
+  const v = o[k];
+  return typeof v === "string" && v !== "" ? v : void 0;
+}
+function classifyDraw(env) {
+  if (!env || env.code === void 0) {
+    return { kind: "unparsable", code: env?.code, message: env?.message ?? "响应解不出来" };
   }
+  const base = { code: env.code, message: env.message ?? "" };
+  switch (env.code) {
+    case 0: {
+      const r = env.result;
+      if (r === null || typeof r !== "object" || Array.isArray(r)) {
+        return { ...base, kind: "unparsable" };
+      }
+      const o = r;
+      return {
+        ...base,
+        kind: "succeeded",
+        result: {
+          prizeId: intAt(o, "prizeId") ?? 0,
+          flowerNum: intAt(o, "flowerNum") ?? 0,
+          prizeName: strAt(o, "prizeName"),
+          prizeType: intAt(o, "prizeType") ?? 0
+        }
+      };
+    }
+    case CODE_KOULING_ALREADY_DRAWN:
+      return { ...base, kind: "already-drawn" };
+    case CODE_KOULING_INVALID:
+      return { ...base, kind: "invalid-kouling" };
+    case CODE_KOULING_EXPIRED:
+      return { ...base, kind: "kouling-expired" };
+    default:
+      return { ...base, kind: "other" };
+  }
+}
+function drawLine(code, out) {
+  switch (out.kind) {
+    case "succeeded":
+      return `口令「${code}」领到 ${out.result?.flowerNum ?? 0} 朵`;
+    case "already-drawn":
+      return `口令「${code}」没领到：已兑换过`;
+    case "invalid-kouling":
+      return `口令「${code}」没领到：口令无效`;
+    case "kouling-expired":
+      return `口令「${code}」没领到：本场已结束（口令是对的）`;
+    case "other":
+      return `口令「${code}」没领到：上游回了未分类的码 ${out.code ?? "?"}${out.message ? `（${out.message}）` : ""}`;
+    default:
+      return `口令「${code}」没领到：响应解不出来`;
+  }
+}
+function parseBalance(env) {
+  const r = env?.result;
+  if (r === null || typeof r !== "object" || Array.isArray(r)) return void 0;
+  return intAt(r, "flowerCnt");
 }
 
 // src/mcloud/liveKouling.ts
@@ -4978,6 +5095,289 @@ function parseJson(raw) {
   }
 }
 
+// src/mcloud/tasks/liveDraw.ts
+var STATE_DRAW = "mcloud.live.draw";
+var STATE_CLAIM_ENABLED = "mcloud.live.claim_enabled";
+function collectCodes(store2) {
+  const human = loadLiveCodes(store2)?.codes ?? [];
+  const { pool } = loadPoolFrom(store2);
+  return planDrawCodes(pool, accountOf(store2), human);
+}
+function loadDrawState(store2) {
+  const raw = store2.getState(STATE_DRAW);
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw);
+    return typeof v?.step === "string" ? v : null;
+  } catch {
+    return null;
+  }
+}
+function claimEnabled(store2) {
+  return store2.getState(STATE_CLAIM_ENABLED) === "1";
+}
+function setClaimEnabled(store2, on, nowIso) {
+  store2.setState(STATE_CLAIM_ENABLED, on ? "1" : "0", nowIso);
+}
+function probeLiveRoom(deps) {
+  const session = loadSession(deps.store);
+  if (!session || !session.jwt) {
+    return { ok: false, note: "未登录：这一族要 jwttoken（见 docs/howto-session.md）" };
+  }
+  const res = callOnce(deps.transport, withSession(userInfoRequest(deps.baseUrl), session.jwt));
+  if (res.env === void 0) {
+    return { ok: false, note: `读余额失败：${res.error ?? "未知失败"}` };
+  }
+  const code = res.env.code;
+  if (code === 0) {
+    const v = parseBalance(res.env);
+    if (v === void 0) return { ok: false, note: "读到了 code=0，但响应里没有 result.flowerCnt" };
+    return { ok: true, balance: v, note: `这一族能通：小红花余额 ${v} 朵` };
+  }
+  if (code === 90001) {
+    return {
+      ok: false,
+      note: "上游回 90001（未登录）—— 凭据是有的，所以问题在**请求头形状**：先怀疑少了 `jwttoken` / `showloading`，或多了签到族那套头（见 liveDraw.ts 文件头）"
+    };
+  }
+  return { ok: false, note: `上游回 ${code}${res.env.message ? `（${res.env.message}）` : ""}` };
+}
+function stepRequest(s, base) {
+  switch (s.step) {
+    case "balance-before":
+      return { request: userInfoRequest(base), label: "① 读余额（领之前）" };
+    case "journaling": {
+      const ev = JOURNALING_EVENTS[s.journalingSent];
+      if (ev === void 0) return null;
+      return { request: journalingRequest(ev, base), label: `② 埋点 ${s.journalingSent + 1}/5` };
+    }
+    case "first-participate":
+      return { request: firstParticipateGiveRequest(base), label: "③ 首次参与惊喜奖" };
+    case "draw": {
+      const code = s.codes[s.drawIndex];
+      if (code === void 0) return null;
+      return {
+        request: drawRequest(code, base),
+        label: `④ 领口令「${code}」（${s.drawIndex + 1}/${s.codes.length}）`
+      };
+    }
+    case "revival":
+      return { request: queryRevivalFlowersRequest(base), label: "⑤ 复活花" };
+    case "balance-after":
+      return { request: userInfoRequest(base), label: "⑥ 再读余额（核对进账）" };
+    default:
+      return null;
+  }
+}
+function runLiveDraw(deps, opts = {}) {
+  const TASK = "live-room";
+  if (!opts.force && !claimEnabled(deps.store)) {
+    return { ok: true, idle: true, note: "领小红花未开启（界面上那个开关）" };
+  }
+  let s = loadDrawState(deps.store);
+  const codes = collectCodes(deps.store);
+  if (!s || s.step === "done") {
+    const done = s?.codes ?? [];
+    const { pool } = loadPoolFrom(deps.store);
+    const account = accountOf(deps.store);
+    const allClaimed = done.length > 0 && done.every((c) => accountClaimed(pool, account, c));
+    if (codes.length === 0) {
+      return allClaimed ? { ok: true, idle: true, note: `这一轮已跑完（${s?.summary ?? ""}）；口令没变，不重复领` } : { ok: true, idle: true, note: "没有口令可领（先抓主页或把口令填进输入框）" };
+    }
+    if (s?.step === "done" && sameList(done, codes) && s.account === account) {
+      return { ok: true, idle: true, note: `这一轮已跑完（${s.summary ?? ""}）；口令没变，不重复领` };
+    }
+    s = {
+      step: "balance-before",
+      journalingSent: 0,
+      drawIndex: 0,
+      codes,
+      account,
+      results: [],
+      startedAt: deps.nowIso
+    };
+    deps.store.setState(STATE_DRAW, JSON.stringify(s), deps.nowIso);
+  }
+  const session = loadSession(deps.store);
+  if (!session || !session.jwt) {
+    const note2 = "未登录：领小红花要 jwttoken（见 docs/howto-session.md）";
+    recordError(deps.store, TASK, note2, deps.nowIso);
+    return { ok: false, note: note2 };
+  }
+  const step = stepRequest(s, deps.baseUrl);
+  if (!step) {
+    s.step = "balance-after";
+    deps.store.setState(STATE_DRAW, JSON.stringify(s), deps.nowIso);
+    return { ok: true, note: "步骤下标越界，已跳到收尾" };
+  }
+  const res = callOnce(deps.transport, withSession(step.request, session.jwt));
+  const before = s.results.length;
+  const advance = judge(s, step.label, res, deps.nowIso);
+  deps.store.setState(STATE_DRAW, JSON.stringify(advance.state), deps.nowIso);
+  if (s.step === "draw" && advance.state.results.length > before) {
+    const row = advance.state.results[advance.state.results.length - 1];
+    if (row !== void 0) {
+      const loaded = loadPoolFrom(deps.store);
+      noteClaim(loaded.pool, accountOf(deps.store), row.code, claimVerdictOf(row.kind), Date.parse(deps.nowIso));
+      savePoolTo(deps.store, loaded.pool, deps.nowIso);
+    }
+  }
+  if (!advance.ok) {
+    recordError(deps.store, TASK, advance.note, deps.nowIso);
+    return { ok: false, note: advance.note };
+  }
+  clearError(deps.store, TASK, deps.nowIso);
+  return { ok: true, note: advance.note };
+}
+function withSession(req, jwt) {
+  return {
+    ...req,
+    headers: { ...req.headers, showloading: "true", jwttoken: jwt }
+  };
+}
+function judge(s, label, res, nowIso) {
+  const st = { ...s, results: [...s.results] };
+  if (res.env === void 0) {
+    const why = res.error ?? "未知失败";
+    return { state: st, ok: false, note: `${label} 失败：${why}` };
+  }
+  const biz = () => `${label}：上游回 ${res.env?.code ?? "?"}${res.env?.message ? `（${res.env.message}）` : ""}`;
+  switch (s.step) {
+    case "balance-before": {
+      if (res.env.code !== 0) return { state: st, ok: false, note: biz() };
+      const v = parseBalance(res.env);
+      if (v === void 0) {
+        return { state: st, ok: false, note: `${label}：响应里没有 result.flowerCnt（余额）` };
+      }
+      st.balanceBefore = v;
+      st.step = "journaling";
+      return { state: st, ok: true, note: `${label}：${v} 朵 → 开始领` };
+    }
+    case "journaling": {
+      st.journalingSent = s.journalingSent + 1;
+      if (st.journalingSent >= JOURNALING_EVENTS.length) st.step = "first-participate";
+      return {
+        state: st,
+        ok: true,
+        note: res.env.code === 0 ? `${label} 完成` : `${biz()}（埋点失败不拦领取）`
+      };
+    }
+    case "first-participate": {
+      const code = res.env.code;
+      st.firstParticipate = code === 0 ? "领到首次参与惊喜奖" : code === 200110 ? "已参与过（正常）" : `上游回 ${code ?? "?"}`;
+      st.step = "draw";
+      return { state: st, ok: true, note: `${label}：${st.firstParticipate}` };
+    }
+    case "draw": {
+      const code = s.codes[s.drawIndex] ?? "";
+      const out = classifyDraw(res.env);
+      st.results.push({
+        code,
+        kind: out.kind,
+        note: drawLine(code, out),
+        flowerNum: out.result?.flowerNum ?? 0
+      });
+      st.drawIndex = s.drawIndex + 1;
+      if (st.drawIndex >= st.codes.length) st.step = "revival";
+      return { state: st, ok: true, note: drawLine(code, out) };
+    }
+    case "revival": {
+      const r = res.env.result;
+      st.revival = typeof r === "number" ? r : void 0;
+      st.step = "balance-after";
+      return {
+        state: st,
+        ok: true,
+        note: res.env.code === 0 ? `${label}：${st.revival ?? "?"} 朵（**不是**小红花余额）` : biz()
+      };
+    }
+    case "balance-after": {
+      if (res.env.code !== 0) return { state: st, ok: false, note: biz() };
+      const v = parseBalance(res.env);
+      if (v === void 0) {
+        return { state: st, ok: false, note: `${label}：响应里没有 result.flowerCnt` };
+      }
+      st.balanceAfter = v;
+      st.step = "done";
+      st.finishedAt = nowIso;
+      const gained = (st.balanceAfter ?? 0) - (st.balanceBefore ?? 0);
+      const okCount = st.results.filter((r) => r.kind === "succeeded").length;
+      st.summary = `${st.results.length} 条口令领到 ${okCount} 条，进账 ${gained} 朵（${st.balanceBefore} → ${st.balanceAfter}）`;
+      return { state: st, ok: true, note: st.summary };
+    }
+    default:
+      return { state: st, ok: true, note: "没有可推进的步骤" };
+  }
+}
+function sameList(a, b) {
+  return a.length === b.length && a.every((v, i) => v === b[i]);
+}
+function drawReport(st) {
+  if (st === null) return null;
+  const of = (k) => st.results.filter((r) => r.kind === k).map((r) => r.code);
+  const succeeded = st.results.filter((r) => r.kind === "succeeded").length;
+  const gained = st.balanceBefore === void 0 || st.balanceAfter === void 0 ? 0 : st.balanceAfter - st.balanceBefore;
+  const parts = [];
+  if (st.results.length === 0) parts.push("还没发出口令");
+  else parts.push(`${st.results.length} 条口令领到 ${succeeded} 条`);
+  if (st.balanceBefore !== void 0 && st.balanceAfter !== void 0) {
+    parts.push(`进账 ${gained} 朵（${st.balanceBefore} → ${st.balanceAfter}）`);
+  }
+  const expired = of("kouling-expired");
+  if (expired.length > 0) {
+    parts.push(`${expired.length} 条口令认识但本场已经结束了（不是口令抄错）`);
+  }
+  const invalid = of("invalid-kouling");
+  if (invalid.length > 0) parts.push(`${invalid.length} 条口令无效`);
+  const other = [...of("other"), ...of("unparsable")];
+  if (other.length > 0) parts.push(`${other.length} 条回了没见过的结果`);
+  return {
+    attempted: st.results.length,
+    succeeded,
+    gained,
+    balanceBefore: st.balanceBefore,
+    balanceAfter: st.balanceAfter,
+    alreadyDrawn: of("already-drawn"),
+    invalid,
+    expired,
+    other: of("other"),
+    unparsable: of("unparsable"),
+    line: parts.join(" · ")
+  };
+}
+
+// src/mcloud/tasks/appTaskMatrix.ts
+var MATRIX_MARKETS = ["sign_in_3", "newsign_139mail"];
+function matrixKey(group) {
+  return `mcloud.apptaskmatrix.g.${group}`;
+}
+function readMatrix(store2) {
+  return MATRIX_MARKETS.map((g) => {
+    const raw = store2.getState(matrixKey(g));
+    if (!raw) return null;
+    try {
+      const v = JSON.parse(raw);
+      return typeof v === "object" && v ? { ...v, group: g } : null;
+    } catch {
+      return null;
+    }
+  });
+}
+
+// src/mcloud/dailyState.ts
+var DAILY_LAST_KEY = "mcloud.daily.last_run";
+function readDailyRun(store2) {
+  const raw = store2.getState(DAILY_LAST_KEY);
+  if (raw === void 0 || raw === null || raw === "") return null;
+  try {
+    const v = JSON.parse(raw);
+    if (typeof v !== "object" || v === null || !Array.isArray(v.steps)) return null;
+    return v;
+  } catch {
+    return null;
+  }
+}
+
 // src/mcloud/liveGate.ts
 var BASE_CMLIVE = "https://v.cmcc-cs.cn/cmlive";
 var LIVE_ORIGIN = "https://v.cmcc-cs.cn";
@@ -5149,12 +5549,12 @@ function parseTabContentList(env) {
     if (room === null || typeof room !== "object" || Array.isArray(room)) continue;
     const r = room;
     rooms.push({
-      id: intAt(r, "id") ?? 0,
-      title: strAt(r, "title"),
-      status: intAt(r, "status") ?? -1,
-      channelId: intAt(r, "channelId") ?? 0,
-      expectStartTime: strAt(r, "expectStartTime"),
-      anchorNickname: r["anchor"] !== null && typeof r["anchor"] === "object" ? strAt(r["anchor"], "nickname") : ""
+      id: intAt2(r, "id") ?? 0,
+      title: strAt2(r, "title"),
+      status: intAt2(r, "status") ?? -1,
+      channelId: intAt2(r, "channelId") ?? 0,
+      expectStartTime: strAt2(r, "expectStartTime"),
+      anchorNickname: r["anchor"] !== null && typeof r["anchor"] === "object" ? strAt2(r["anchor"], "nickname") : ""
     });
   }
   return { ok: true, value: rooms };
@@ -5192,13 +5592,13 @@ function gateReadingLine(rooms) {
   if (live.length === 0) return `门关着：谁都没在播（这一趟看到 ${rooms.length} 间房，全是预告/回放）`;
   return `门关着：有 ${live.length} 间在播，但都不是「${KOULING_ANCHOR}」（${live.map((r) => r.anchorNickname || "无名").join("、")}）`;
 }
-function intAt(o, k) {
+function intAt2(o, k) {
   const v = o[k];
   if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
   if (typeof v === "string" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
   return void 0;
 }
-function strAt(o, k) {
+function strAt2(o, k) {
   const v = o[k];
   return typeof v === "string" ? v : "";
 }
@@ -6437,373 +6837,6 @@ function listenReadingLine(st) {
   return `准备中（${st.step}）`;
 }
 
-// src/mcloud/liveFlower.ts
-var LIVE_ROOM_ORIGIN = "https://m.mcloud.139.com";
-var USER_INFO_PATH = "/ycloud/liveRoomFeedback/user/info";
-var JOURNALING_PATH = "/ycloud/visitlog/journaling";
-var FIRST_PARTICIPATE_GIVE_PATH = "/ycloud/liveRoomFeedback/firstParticipate/give";
-var DRAW_PATH = "/ycloud/liveRoomFeedback/redFlower/draw";
-var QUERY_REVIVAL_FLOWERS_PATH = "/ycloud/liveRoomFeedback/redFlower/queryRevivalFlowers";
-var LIVE_ROOM_MARKET_NAME = "National_LiveRoomFeedback";
-var LIVE_ROOM_JOURNALING_SOURCE_ID = "1007";
-var LIVE_ROOM_ACTIVITY_ID = "sign_in_3";
-var LIVE_ROOM_APP_VERSION = "12.6.0.0";
-var TO_SOURCE_ID = "001005";
-var LIVE_ROOM_USER_AGENT = "Mozilla/5.0 (iPad; CPU OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) MCloudApp/12.6.0 iPad AppLanguage/zh-CN";
-var CODE_KOULING_INVALID = 200108;
-var CODE_KOULING_ALREADY_DRAWN = 200112;
-var CODE_KOULING_EXPIRED = 200118;
-var JOURNALING_EVENTS = [
-  "National_LiveRoomFeedback_pv",
-  "National_LiveRoomFeedback_client",
-  "National_LiveRoomFeedback_client_isApp",
-  "National_LiveRoomFeedback_login",
-  "National_LiveRoomFeedback_flowerBtn"
-];
-function liveRoomPageReferer() {
-  return `${LIVE_ROOM_ORIGIN}/portal/yunClound/index.html?path=${LIVE_ROOM_MARKET_NAME}&sourceid=${LIVE_ROOM_JOURNALING_SOURCE_ID}&targetSourceId=${TO_SOURCE_ID}`;
-}
-function liveRoomHeaders() {
-  return {
-    Accept: "*/*",
-    activityid: LIVE_ROOM_ACTIVITY_ID,
-    appversion: LIVE_ROOM_APP_VERSION,
-    Origin: LIVE_ROOM_ORIGIN,
-    Referer: liveRoomPageReferer(),
-    "User-Agent": LIVE_ROOM_USER_AGENT
-  };
-}
-function liveRoomUrl(path, base) {
-  return `${rootOrDefault(base, LIVE_ROOM_ORIGIN)}${path}`;
-}
-function userInfoRequest(base) {
-  return {
-    url: liveRoomUrl(USER_INFO_PATH, base),
-    method: "POST",
-    // ⚠ 不带 content-type：真实现（`live_flower::user_info_request`）就没设它。
-    // 模块文档那张表写着 application/json，但**代码才是实际发出去的**。
-    headers: liveRoomHeaders(),
-    body: "{}"
-  };
-}
-function journalingRequest(optkeyword, base) {
-  return {
-    url: liveRoomUrl(JOURNALING_PATH, base),
-    method: "POST",
-    headers: {
-      ...liveRoomHeaders(),
-      "content-type": "application/x-www-form-urlencoded;charset=UTF-8"
-    },
-    body: `module=uservisit&optkeyword=${encodeURIComponent(optkeyword)}&sourceid=${LIVE_ROOM_JOURNALING_SOURCE_ID}&marketName=${LIVE_ROOM_MARKET_NAME}`
-  };
-}
-function firstParticipateGiveRequest(base) {
-  return {
-    url: liveRoomUrl(FIRST_PARTICIPATE_GIVE_PATH, base),
-    method: "POST",
-    headers: liveRoomHeaders(),
-    body: void 0
-  };
-}
-function drawRequest(code, base) {
-  return {
-    url: `${liveRoomUrl(DRAW_PATH, base)}?code=${encodeURIComponent(code)}`,
-    method: "POST",
-    headers: liveRoomHeaders(),
-    body: void 0
-  };
-}
-function queryRevivalFlowersRequest(base) {
-  return {
-    url: liveRoomUrl(QUERY_REVIVAL_FLOWERS_PATH, base),
-    method: "GET",
-    headers: liveRoomHeaders(),
-    body: void 0
-  };
-}
-function intAt2(o, k) {
-  const v = o[k];
-  if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
-  if (typeof v === "string" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
-  return void 0;
-}
-function strAt2(o, k) {
-  const v = o[k];
-  return typeof v === "string" && v !== "" ? v : void 0;
-}
-function classifyDraw(env) {
-  if (!env || env.code === void 0) {
-    return { kind: "unparsable", code: env?.code, message: env?.message ?? "响应解不出来" };
-  }
-  const base = { code: env.code, message: env.message ?? "" };
-  switch (env.code) {
-    case 0: {
-      const r = env.result;
-      if (r === null || typeof r !== "object" || Array.isArray(r)) {
-        return { ...base, kind: "unparsable" };
-      }
-      const o = r;
-      return {
-        ...base,
-        kind: "succeeded",
-        result: {
-          prizeId: intAt2(o, "prizeId") ?? 0,
-          flowerNum: intAt2(o, "flowerNum") ?? 0,
-          prizeName: strAt2(o, "prizeName"),
-          prizeType: intAt2(o, "prizeType") ?? 0
-        }
-      };
-    }
-    case CODE_KOULING_ALREADY_DRAWN:
-      return { ...base, kind: "already-drawn" };
-    case CODE_KOULING_INVALID:
-      return { ...base, kind: "invalid-kouling" };
-    case CODE_KOULING_EXPIRED:
-      return { ...base, kind: "kouling-expired" };
-    default:
-      return { ...base, kind: "other" };
-  }
-}
-function drawLine(code, out) {
-  switch (out.kind) {
-    case "succeeded":
-      return `口令「${code}」领到 ${out.result?.flowerNum ?? 0} 朵`;
-    case "already-drawn":
-      return `口令「${code}」没领到：已兑换过`;
-    case "invalid-kouling":
-      return `口令「${code}」没领到：口令无效`;
-    case "kouling-expired":
-      return `口令「${code}」没领到：本场已结束（口令是对的）`;
-    case "other":
-      return `口令「${code}」没领到：上游回了未分类的码 ${out.code ?? "?"}${out.message ? `（${out.message}）` : ""}`;
-    default:
-      return `口令「${code}」没领到：响应解不出来`;
-  }
-}
-function parseBalance(env) {
-  const r = env?.result;
-  if (r === null || typeof r !== "object" || Array.isArray(r)) return void 0;
-  return intAt2(r, "flowerCnt");
-}
-
-// src/mcloud/tasks/liveDraw.ts
-var STATE_DRAW = "mcloud.live.draw";
-var STATE_CLAIM_ENABLED = "mcloud.live.claim_enabled";
-function collectCodes(store2) {
-  const human = loadLiveCodes(store2)?.codes ?? [];
-  const { pool } = loadPoolFrom(store2);
-  return planDrawCodes(pool, accountOf(store2), human);
-}
-function loadDrawState(store2) {
-  const raw = store2.getState(STATE_DRAW);
-  if (!raw) return null;
-  try {
-    const v = JSON.parse(raw);
-    return typeof v?.step === "string" ? v : null;
-  } catch {
-    return null;
-  }
-}
-function claimEnabled(store2) {
-  return store2.getState(STATE_CLAIM_ENABLED) === "1";
-}
-function setClaimEnabled(store2, on, nowIso) {
-  store2.setState(STATE_CLAIM_ENABLED, on ? "1" : "0", nowIso);
-}
-function probeLiveRoom(deps) {
-  const session = loadSession(deps.store);
-  if (!session || !session.jwt) {
-    return { ok: false, note: "未登录：这一族要 jwttoken（见 docs/howto-session.md）" };
-  }
-  const res = callOnce(deps.transport, withSession(userInfoRequest(deps.baseUrl), session.jwt));
-  if (res.env === void 0) {
-    return { ok: false, note: `读余额失败：${res.error ?? "未知失败"}` };
-  }
-  const code = res.env.code;
-  if (code === 0) {
-    const v = parseBalance(res.env);
-    if (v === void 0) return { ok: false, note: "读到了 code=0，但响应里没有 result.flowerCnt" };
-    return { ok: true, balance: v, note: `这一族能通：小红花余额 ${v} 朵` };
-  }
-  if (code === 90001) {
-    return {
-      ok: false,
-      note: "上游回 90001（未登录）—— 凭据是有的，所以问题在**请求头形状**：先怀疑少了 `jwttoken` / `showloading`，或多了签到族那套头（见 liveDraw.ts 文件头）"
-    };
-  }
-  return { ok: false, note: `上游回 ${code}${res.env.message ? `（${res.env.message}）` : ""}` };
-}
-function stepRequest(s, base) {
-  switch (s.step) {
-    case "balance-before":
-      return { request: userInfoRequest(base), label: "① 读余额（领之前）" };
-    case "journaling": {
-      const ev = JOURNALING_EVENTS[s.journalingSent];
-      if (ev === void 0) return null;
-      return { request: journalingRequest(ev, base), label: `② 埋点 ${s.journalingSent + 1}/5` };
-    }
-    case "first-participate":
-      return { request: firstParticipateGiveRequest(base), label: "③ 首次参与惊喜奖" };
-    case "draw": {
-      const code = s.codes[s.drawIndex];
-      if (code === void 0) return null;
-      return {
-        request: drawRequest(code, base),
-        label: `④ 领口令「${code}」（${s.drawIndex + 1}/${s.codes.length}）`
-      };
-    }
-    case "revival":
-      return { request: queryRevivalFlowersRequest(base), label: "⑤ 复活花" };
-    case "balance-after":
-      return { request: userInfoRequest(base), label: "⑥ 再读余额（核对进账）" };
-    default:
-      return null;
-  }
-}
-function runLiveDraw(deps, opts = {}) {
-  const TASK = "live-room";
-  if (!opts.force && !claimEnabled(deps.store)) {
-    return { ok: true, idle: true, note: "领小红花未开启（界面上那个开关）" };
-  }
-  let s = loadDrawState(deps.store);
-  const codes = collectCodes(deps.store);
-  if (!s || s.step === "done") {
-    const done = s?.codes ?? [];
-    const { pool } = loadPoolFrom(deps.store);
-    const account = accountOf(deps.store);
-    const allClaimed = done.length > 0 && done.every((c) => accountClaimed(pool, account, c));
-    if (codes.length === 0) {
-      return allClaimed ? { ok: true, idle: true, note: `这一轮已跑完（${s?.summary ?? ""}）；口令没变，不重复领` } : { ok: true, idle: true, note: "没有口令可领（先抓主页或把口令填进输入框）" };
-    }
-    if (s?.step === "done" && sameList(done, codes) && s.account === account) {
-      return { ok: true, idle: true, note: `这一轮已跑完（${s.summary ?? ""}）；口令没变，不重复领` };
-    }
-    s = {
-      step: "balance-before",
-      journalingSent: 0,
-      drawIndex: 0,
-      codes,
-      account,
-      results: [],
-      startedAt: deps.nowIso
-    };
-    deps.store.setState(STATE_DRAW, JSON.stringify(s), deps.nowIso);
-  }
-  const session = loadSession(deps.store);
-  if (!session || !session.jwt) {
-    const note2 = "未登录：领小红花要 jwttoken（见 docs/howto-session.md）";
-    recordError(deps.store, TASK, note2, deps.nowIso);
-    return { ok: false, note: note2 };
-  }
-  const step = stepRequest(s, deps.baseUrl);
-  if (!step) {
-    s.step = "balance-after";
-    deps.store.setState(STATE_DRAW, JSON.stringify(s), deps.nowIso);
-    return { ok: true, note: "步骤下标越界，已跳到收尾" };
-  }
-  const res = callOnce(deps.transport, withSession(step.request, session.jwt));
-  const before = s.results.length;
-  const advance = judge(s, step.label, res, deps.nowIso);
-  deps.store.setState(STATE_DRAW, JSON.stringify(advance.state), deps.nowIso);
-  if (s.step === "draw" && advance.state.results.length > before) {
-    const row = advance.state.results[advance.state.results.length - 1];
-    if (row !== void 0) {
-      const loaded = loadPoolFrom(deps.store);
-      noteClaim(loaded.pool, accountOf(deps.store), row.code, claimVerdictOf(row.kind), Date.parse(deps.nowIso));
-      savePoolTo(deps.store, loaded.pool, deps.nowIso);
-    }
-  }
-  if (!advance.ok) {
-    recordError(deps.store, TASK, advance.note, deps.nowIso);
-    return { ok: false, note: advance.note };
-  }
-  clearError(deps.store, TASK, deps.nowIso);
-  return { ok: true, note: advance.note };
-}
-function withSession(req, jwt) {
-  return {
-    ...req,
-    headers: { ...req.headers, showloading: "true", jwttoken: jwt }
-  };
-}
-function judge(s, label, res, nowIso) {
-  const st = { ...s, results: [...s.results] };
-  if (res.env === void 0) {
-    const why = res.error ?? "未知失败";
-    return { state: st, ok: false, note: `${label} 失败：${why}` };
-  }
-  const biz = () => `${label}：上游回 ${res.env?.code ?? "?"}${res.env?.message ? `（${res.env.message}）` : ""}`;
-  switch (s.step) {
-    case "balance-before": {
-      if (res.env.code !== 0) return { state: st, ok: false, note: biz() };
-      const v = parseBalance(res.env);
-      if (v === void 0) {
-        return { state: st, ok: false, note: `${label}：响应里没有 result.flowerCnt（余额）` };
-      }
-      st.balanceBefore = v;
-      st.step = "journaling";
-      return { state: st, ok: true, note: `${label}：${v} 朵 → 开始领` };
-    }
-    case "journaling": {
-      st.journalingSent = s.journalingSent + 1;
-      if (st.journalingSent >= JOURNALING_EVENTS.length) st.step = "first-participate";
-      return {
-        state: st,
-        ok: true,
-        note: res.env.code === 0 ? `${label} 完成` : `${biz()}（埋点失败不拦领取）`
-      };
-    }
-    case "first-participate": {
-      const code = res.env.code;
-      st.firstParticipate = code === 0 ? "领到首次参与惊喜奖" : code === 200110 ? "已参与过（正常）" : `上游回 ${code ?? "?"}`;
-      st.step = "draw";
-      return { state: st, ok: true, note: `${label}：${st.firstParticipate}` };
-    }
-    case "draw": {
-      const code = s.codes[s.drawIndex] ?? "";
-      const out = classifyDraw(res.env);
-      st.results.push({
-        code,
-        kind: out.kind,
-        note: drawLine(code, out),
-        flowerNum: out.result?.flowerNum ?? 0
-      });
-      st.drawIndex = s.drawIndex + 1;
-      if (st.drawIndex >= st.codes.length) st.step = "revival";
-      return { state: st, ok: true, note: drawLine(code, out) };
-    }
-    case "revival": {
-      const r = res.env.result;
-      st.revival = typeof r === "number" ? r : void 0;
-      st.step = "balance-after";
-      return {
-        state: st,
-        ok: true,
-        note: res.env.code === 0 ? `${label}：${st.revival ?? "?"} 朵（**不是**小红花余额）` : biz()
-      };
-    }
-    case "balance-after": {
-      if (res.env.code !== 0) return { state: st, ok: false, note: biz() };
-      const v = parseBalance(res.env);
-      if (v === void 0) {
-        return { state: st, ok: false, note: `${label}：响应里没有 result.flowerCnt` };
-      }
-      st.balanceAfter = v;
-      st.step = "done";
-      st.finishedAt = nowIso;
-      const gained = (st.balanceAfter ?? 0) - (st.balanceBefore ?? 0);
-      const okCount = st.results.filter((r) => r.kind === "succeeded").length;
-      st.summary = `${st.results.length} 条口令领到 ${okCount} 条，进账 ${gained} 朵（${st.balanceBefore} → ${st.balanceAfter}）`;
-      return { state: st, ok: true, note: st.summary };
-    }
-    default:
-      return { state: st, ok: true, note: "没有可推进的步骤" };
-  }
-}
-function sameList(a, b) {
-  return a.length === b.length && a.every((v, i) => v === b[i]);
-}
-
 // src/crypto/qr.ts
 function gfMul2(a, b) {
   let r = 0;
@@ -7684,6 +7717,19 @@ function buildReadings(deps) {
         return {
           wakeAt: plan?.wakeAt ?? "",
           wakeInMs: plan === null ? 0 : Math.max(0, plan.wakeAtMs - nowMs)
+        };
+      })(),
+      // 领小红花的**结论**（四栏 + 进账）。界面第一行显示的就是 `line`。
+      // ⚠ 「本场已结束」与「口令无效」分栏的理由见 liveDraw.drawReport 的注释 ——
+      //   分错的后果是用户去重抄一条本来就对的口令。
+      draw: (() => {
+        const st = loadDrawState(deps.store);
+        const r = drawReport(st);
+        return {
+          enabled: claimEnabled(deps.store),
+          step: st?.step ?? "",
+          report: r,
+          line: r === null ? claimEnabled(deps.store) ? "还没领过" : "领小红花没开启" : r.line
         };
       })()
     },
