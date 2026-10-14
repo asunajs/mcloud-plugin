@@ -57,6 +57,9 @@ export interface MatrixItem {
   /** 旧实现的门是 `enable != 1` ⇒ 跳过 */
   enable?: number;
   currStep?: number;
+  /** 按钮链接。⚠ 写的那半的**按钮门**要它（`beiyong1ButtonGate` 找 `uploadView`）。
+   *  实拍里它在 `button.app.link` 这一层，另外两种拼法也认（旧 TS 用过）。 */
+  buttonAppLink?: string;
 }
 
 function asInt(v: unknown): number | undefined {
@@ -67,6 +70,13 @@ function asInt(v: unknown): number | undefined {
 
 function asStr(v: unknown): string | undefined {
   return typeof v === 'string' && v !== '' ? v : undefined;
+}
+/** 实拍形状是 `button: { app: { link } }` —— 缺一层就返回 `undefined`（不猜）。 */
+function nestedLink(button: unknown): string | undefined {
+  if (button === null || typeof button !== 'object') return undefined;
+  const app = (button as Record<string, unknown>).app;
+  if (app === null || typeof app !== 'object') return undefined;
+  return asStr((app as Record<string, unknown>).link);
 }
 
 /** 解一条。字段名两个都认（`groupid` 小写 / `groupId` 驼峰 —— 见文件头 ②）。 */
@@ -82,6 +92,7 @@ export function parseMatrixItem(raw: unknown): MatrixItem | undefined {
     limitType: asStr(o.limitType ?? o.limit_type),
     enable: asInt(o.enable),
     currStep: asInt(o.currstep ?? o.currStep),
+    buttonAppLink: asStr(o.buttonAppLink ?? o.button_app_link) ?? nestedLink(o.button),
   };
   const any =
     it.taskId !== undefined || it.name !== undefined || it.state !== undefined || it.enable !== undefined;
@@ -114,6 +125,9 @@ export function judgeItem(i: MatrixItem): 'done' | 'todo' | 'skip' {
 export interface MatrixReading extends MatrixSummary {
   group: string;
   at: string;
+  /** ⚠ **条目本身也留一份**：写的那半（`app-task`）要靠它逐条行动 ——
+   *  只留计数的话，那一半就没东西可做了（这是读写两半之间最容易漏的一环）。 */
+  items?: MatrixItem[];
   /** 实拍里的 groupState（原样留一份，排障时看） */
   groupState?: unknown;
 }
@@ -190,6 +204,7 @@ export function runAppTaskMatrix(deps: TaskDeps): TaskOutcome {
         group,
         at: deps.nowIso,
         ...s,
+        items,
         groupState: (env as { groupState?: unknown }).groupState,
       };
       deps.store.setState(matrixKey(group), JSON.stringify(reading), deps.nowIso);

@@ -3884,6 +3884,12 @@ function asInt4(v) {
 function asStr(v) {
   return typeof v === "string" && v !== "" ? v : void 0;
 }
+function nestedLink(button) {
+  if (button === null || typeof button !== "object") return void 0;
+  const app = button.app;
+  if (app === null || typeof app !== "object") return void 0;
+  return asStr(app.link);
+}
 function parseMatrixItem(raw) {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return void 0;
   const o = raw;
@@ -3895,7 +3901,8 @@ function parseMatrixItem(raw) {
     state: asStr(o.state),
     limitType: asStr(o.limitType ?? o.limit_type),
     enable: asInt4(o.enable),
-    currStep: asInt4(o.currstep ?? o.currStep)
+    currStep: asInt4(o.currstep ?? o.currStep),
+    buttonAppLink: asStr(o.buttonAppLink ?? o.button_app_link) ?? nestedLink(o.button)
   };
   const any = it.taskId !== void 0 || it.name !== void 0 || it.state !== void 0 || it.enable !== void 0;
   return any ? it : void 0;
@@ -3970,6 +3977,7 @@ function runAppTaskMatrix(deps) {
         group,
         at: deps.nowIso,
         ...s,
+        items,
         groupState: env.groupState
       };
       deps.store.setState(matrixKey(group), JSON.stringify(reading), deps.nowIso);
@@ -3982,6 +3990,244 @@ function runAppTaskMatrix(deps) {
     }
   );
   return out;
+}
+
+// src/mcloud/appTaskRules.ts
+var UPLOAD_ONE = {
+  rounds: 1,
+  stopAtProcess: 0,
+  topUpFromProcess: false,
+  perRoundMs: 0,
+  fileExt: ".bin",
+  channel: "android"
+};
+var UPLOAD_TEN = {
+  rounds: 10,
+  stopAtProcess: 10,
+  topUpFromProcess: true,
+  perRoundMs: 300,
+  fileExt: ".jpg",
+  channel: "android"
+};
+var UPLOAD_ONE_PC = {
+  rounds: 1,
+  stopAtProcess: 0,
+  topUpFromProcess: false,
+  perRoundMs: 0,
+  fileExt: ".bin",
+  channel: "pc"
+};
+var ROUNDS_PER_RUN = 5;
+var STOP_AT_PROCESS = 100;
+var PC_UPLOAD_TASK_ID = 113;
+var UPLOAD_TASK_ID = 106;
+var GATE_UPLOAD_TASK_ID = 522;
+var SKIP_TASK_LIST = [
+  117,
+  437,
+  991,
+  406,
+  385,
+  480,
+  1022,
+  1018,
+  603,
+  1021,
+  120
+];
+function beiyong1NameGate(name) {
+  return name.includes("上传") && (name.includes("图") || name.includes("照"));
+}
+function beiyong1ButtonGate(link) {
+  return typeof link === "string" && link.includes("uploadView");
+}
+function uploadShapeFor(item) {
+  if (item.taskId === PC_UPLOAD_TASK_ID) return UPLOAD_ONE_PC;
+  if (item.taskId === UPLOAD_TASK_ID) return UPLOAD_ONE;
+  if (item.taskId === GATE_UPLOAD_TASK_ID) {
+    return {
+      rounds: ROUNDS_PER_RUN,
+      stopAtProcess: STOP_AT_PROCESS,
+      // ⚠ 522 是"闸"不是"剩余量"：那个 `process` 在循环里不会变
+      topUpFromProcess: false,
+      perRoundMs: 500,
+      fileExt: ".bin",
+      channel: "android"
+    };
+  }
+  if (item.groupId === "beiyong1") {
+    if (typeof item.name === "string" && beiyong1NameGate(item.name)) return UPLOAD_ONE;
+    if (beiyong1ButtonGate(item.buttonAppLink)) return UPLOAD_TEN;
+  }
+  return void 0;
+}
+function shouldSkip(taskId) {
+  return taskId !== void 0 && SKIP_TASK_LIST.includes(taskId);
+}
+
+// src/mcloud/tasks/appTask.ts
+var STATE_TASK = "mcloud.apptask.state";
+var CLICK_HOST = "https://caiyun.feixin.10086.cn:7071";
+var CLICK_PATH = "/ycloud/signin/task/click";
+var BATCH_TRASH_URL = "https://personal-kd-njs.yun.139.com/hcy/recyclebin/batchTrash";
+function clickRequest(deps, id) {
+  const session = loadSession(deps.store);
+  return buildH5Request({
+    url: `${CLICK_HOST}${CLICK_PATH}?key=task&id=${id}`,
+    method: "GET",
+    body: void 0,
+    referer: REFERER_SIGN_IN,
+    showLoading: SHOW_LOADING,
+    isDeviceId: false,
+    saltKey: 1,
+    marketName: "sign_in_3",
+    session: session ? sessionHeaders(session) : {}
+  });
+}
+function trashRequest(deps, fileIds) {
+  const session = loadSession(deps.store);
+  return buildH5Request({
+    url: BATCH_TRASH_URL,
+    method: "POST",
+    body: JSON.stringify({ fileIds }),
+    referer: REFERER_SIGN_IN,
+    showLoading: SHOW_LOADING,
+    isDeviceId: false,
+    saltKey: 1,
+    marketName: "sign_in_3",
+    session: session ? sessionHeaders(session) : {}
+  });
+}
+function load2(deps) {
+  const raw = deps.store.getState(STATE_TASK);
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw);
+    return typeof v.phase === "string" ? v : null;
+  } catch {
+    return null;
+  }
+}
+var save3 = (deps, st) => deps.store.setState(STATE_TASK, JSON.stringify(st), deps.nowIso);
+function pendingItems(deps) {
+  const out = [];
+  const readings = readMatrix(deps.store);
+  readings.forEach((reading, gi) => {
+    if (!reading) return;
+    for (const [ii, item] of (reading.items ?? []).entries()) {
+      if (judgeItem(item) !== "todo") return;
+      if (shouldSkip(item.taskId)) return;
+      out.push({
+        gi,
+        ii,
+        itemId: item.taskId ?? 0,
+        name: item.name ?? `task-${item.taskId ?? 0}`,
+        needUpload: uploadShapeFor({
+          taskId: item.taskId,
+          groupId: item.groupId,
+          name: item.name,
+          buttonAppLink: item.buttonAppLink
+        }) !== void 0
+      });
+    }
+  });
+  return out;
+}
+function beginUpload(deps, itemId, name) {
+  startUpload(deps, {
+    name: `${name}.bin`,
+    bytes: deterministicFile(`app-task-${itemId}`, 256)
+  });
+}
+function startAppTask(deps) {
+  const pend = pendingItems(deps);
+  if (pend.length === 0) {
+    return { ok: true, idle: true, note: "矩阵里没有待办（先跑一次 `app-task-matrix` 把读数填上）" };
+  }
+  const first = pend[0];
+  if (first.needUpload) beginUpload(deps, first.itemId, first.name);
+  save3(deps, {
+    gi: first.gi,
+    ii: first.ii,
+    phase: first.needUpload ? "upload" : "click",
+    itemId: first.itemId,
+    clicked: []
+  });
+  return { ok: true, note: `已排队 ${pend.length} 条待办，从 #${first.itemId} 开始` };
+}
+function runAppTaskStep(deps) {
+  const st = load2(deps);
+  if (!st) return { ok: true, idle: true, note: "没有在跑的 app-task" };
+  const pend = pendingItems(deps);
+  const cur = pend.find((p) => p.gi === st.gi && p.ii === st.ii);
+  if (!cur) {
+    const next = pend[0];
+    if (!next) {
+      save3(deps, { ...st, phase: "click" });
+      deps.store.setState(STATE_TASK, "", deps.nowIso);
+      return { ok: true, note: "待办都走完了" };
+    }
+    if (next.needUpload) beginUpload(deps, next.itemId, next.name);
+    save3(deps, {
+      gi: next.gi,
+      ii: next.ii,
+      phase: next.needUpload ? "upload" : "click",
+      itemId: next.itemId,
+      clicked: st.clicked
+    });
+    return { ok: true, note: `换到下一条 #${next.itemId}` };
+  }
+  if (st.phase === "upload") {
+    if (uploadDone(deps)) {
+      const up = JSON.parse(deps.store.getState("mcloud.upload.state") ?? "{}");
+      save3(deps, { ...st, phase: "click", fileId: up.fileId });
+      return { ok: true, note: `文件已传完（收尾要用它的 id）—— 下一步打卡` };
+    }
+    const out = runUploadStep(deps, deterministicFile(`app-task-${st.itemId}`, 256));
+    if (out.idle) {
+      save3(deps, { ...st, phase: "click" });
+      return { ok: true, note: "没有待传的 —— 下一步打卡" };
+    }
+    if (uploadDone(deps)) {
+      const up = JSON.parse(deps.store.getState("mcloud.upload.state") ?? "{}");
+      save3(deps, { ...st, phase: "click", fileId: up.fileId });
+    }
+    return out;
+  }
+  if (st.phase === "click") {
+    if (st.clicked.includes(st.itemId)) {
+      save3(deps, { ...st, phase: st.fileId ? "trash" : "click" });
+      return { ok: true, note: `#${st.itemId} 这一轮已经点过了 —— 不重发` };
+    }
+    const res2 = callRawText(deps.transport, clickRequest(deps, st.itemId));
+    if (!res2.ok) return { ok: false, note: `打卡 #${st.itemId} 失败：${res2.error ?? "未知失败"}` };
+    const clicked = [...st.clicked, st.itemId];
+    if (st.fileId) {
+      save3(deps, { ...st, phase: "trash", clicked });
+      return { ok: true, note: `打卡 #${st.itemId}（HTTP ${res2.status}）—— 下一步收尾` };
+    }
+    save3(deps, { ...st, phase: "click", clicked });
+    return { ok: true, note: `打卡 #${st.itemId}（HTTP ${res2.status}）—— 这条没有要收尾的文件` };
+  }
+  if (!st.fileId) {
+    save3(deps, { ...st, phase: "click" });
+    return { ok: true, note: "这条没有要收尾的文件 —— 不发空数组那一枪" };
+  }
+  const res = callRawText(deps.transport, trashRequest(deps, [st.fileId]));
+  if (!res.ok) return { ok: false, note: `收尾 #${st.itemId} 失败：${res.error ?? "未知失败"}` };
+  let ok = true;
+  let why = "";
+  try {
+    const v = JSON.parse(res.text);
+    const code = typeof v.code === "string" ? v.code : String(v.code ?? "");
+    ok = v.success === true || code === "0000" || code === "0";
+    if (!ok) why = `（code=${code}${typeof v.msg === "string" ? ` ${v.msg}` : ""}）`;
+  } catch {
+    ok = false;
+    why = "（响应不是 JSON）";
+  }
+  save3(deps, { ...st, phase: "click", fileId: void 0 });
+  return ok ? { ok: true, note: `收尾 #${st.itemId}：文件已移进回收站 —— 下一步下一条` } : { ok: false, note: `收尾 #${st.itemId} 被拒 ${why}` };
 }
 
 // src/mcloud/tasks/exchangeList.ts
@@ -5157,7 +5403,11 @@ var TASK_META = [
   // ── 要用网盘（未实现；原因见各条的 note，**不是**"它会写网盘"）──
   // ⚠ 未实现 —— 而理由**不是**"它会写网盘"（那是它的内容，不是风险）。
   //    真理由：App 原生族（上传 / 分享 / 固定入口）的报文形状还没抓全。
-  { name: "app-task", title: "App 任务（做任务）", group: "cloud-write", kind: "Action", risk: "write-cloud", missed: "skip", deps: ["jwt"], batch: false, hidden: false, implemented: false, note: '未实现的原因**不是**"它会写网盘"（上传/建外链/发邮件正是这个任务的内容），而是 App 原生族的报文形状没抓全' },
+  // ✅ 2026-10-14 实现（判据层纯函数 + 动作层一枪一步）。
+  //    ⚠ 与 `app-task-matrix` **不是同一个 code**：只读那半填读数，这半消费读数去行动。
+  //    ⚠ 传上去的文件**必须收尾**（移回收站）—— 不收，用户网盘里就会慢慢堆垃圾。
+  //    ⚠ `task/click` **不可回滚** ⇒ 同一轮不重发；`batchTrash` **不许发空 fileIds**。
+  { name: "app-task", title: "App 任务（做任务）", group: "activity", kind: "Action", risk: "write-cloud", missed: "skip", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "partial", note: "一枪一步：传文件（需要时）→ `task/click`（不可回滚，同一轮不重发）→ 收尾移回收站。判据是纯函数（106/113/522 与 beiyong1 两道门）；矩阵得先跑过" },
   // ⚠ 实现时两处**照抓包、别照 TS**：
   //   ① `receiveTaskExpansion` 发的是**裸 GET**，不许写 `?acceptDate=`。
   //      抓包 §3.6.6 实测：H5 传的是 `{acceptDate: t.acceptDate}`，而两个真实账号的
@@ -5174,7 +5424,7 @@ var TASK_META = [
   //    ⚠ 领那一枪**必须带 `?acceptDate=`**（值可空，键必须在）—— 真机实测：裸 GET 回 404。
   //      抓包 §3.6.6 说"要裸 GET"那条被真机推翻了，见 F-021（抓包记的是"客户端发了什么"，
   //      而那个请求本身是失败的）。
-  { name: "task-expansion", title: "任务拓展", group: "activity", kind: "Action", risk: "write-cloud", missed: "skip", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "partial", note: "三件：读状态 → 传一个文件触发本月备份 → 领云朵（**裸 GET**）。传上去的文件**不留 id、不删**（删了就是删用户的东西）" },
+  { name: "task-expansion", title: "任务拓展", group: "cloud-write", kind: "Action", risk: "write-cloud", missed: "skip", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "partial", note: "三件：读状态 → 传一个文件触发本月备份 → 领云朵（**裸 GET**）。传上去的文件**不留 id、不删**（删了就是删用户的东西）" },
   // ❌ 2026-10-14 真机探过：**整族 404/405**，且**不是**签名或 marketName 的问题
   //    （带签名/不带签名、两个 marketName 各试一遍，读数一字不差；与 mcloud 2026-09-25
   //    的读数逐条一致）。405 说明网关**认得** `/market/rabactive/ai/image/` 这个 location
@@ -6631,6 +6881,13 @@ register_cron("msg-push", SIGNIN_CRON, makeRunner("消息推送奖励（问状�
 register_cron("msg-push-obtain", SIGNIN_CRON, makeRunner("消息推送奖励（领）", runMsgPushObtain));
 register_cron("notice", SIGNIN_CRON, makeRunner("开启通知领AI豆", runNotice));
 register_cron("app-task-matrix", SIGNIN_CRON, makeRunner("App 任务矩阵（只看）", runAppTaskMatrix));
+register_cron("app-task", SIGNIN_CRON, makeRunner("App 任务（做任务）", (deps) => {
+  if (!deps.store.getState("mcloud.apptask.state")) {
+    const started = startAppTask(deps);
+    if (started.idle) return started;
+  }
+  return runAppTaskStep(deps);
+}));
 register_cron("exchange-list", SIGNIN_CRON, makeRunner("兑换清单（只看）", runExchangeList));
 register_cron("live-room", "*/30 7-23 * * *", makeRunner("直播口令（只看）", runLiveRoom));
 register_cron("live-draw", "*/5 7-23 * * *", (p) => {
