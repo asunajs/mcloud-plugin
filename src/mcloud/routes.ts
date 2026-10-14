@@ -53,11 +53,13 @@ import {
   listenReadingLine,
   loadImBase,
   loadListenSeconds,
+  loadWsHeartbeat,
   loadListenState,
   loadWsBase,
   runLiveListen,
   saveImBase,
   saveWsBase,
+  saveWsHeartbeat,
 } from './tasks/liveListen.ts';
 import {
   JWT_TTL_MS,
@@ -219,6 +221,8 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
           // 它是 `wss://` 且带端口，与上面那两台 http 主机不是同一族（混成一个会写出
           // "指到 mock 之后协议的 scheme/端口丢了"这种错）。
           wsBase: loadWsBase(deps.store),
+          // 收到 SockJS 心跳帧 `h` 回什么（空=不回）。默认 `h`（2026-10-14 真机验过）。
+          wsHeartbeat: loadWsHeartbeat(deps.store) || '(不回)',
           // 进房间那一台（videoim.cmcc-cs.cn:20103，HTTPS）—— **第三个口子**：
           // 与上面两台 http 主机、以及带端口的 wss 主机都不是同一个。
           imBase: loadImBase(deps.store) || '(真主机)',
@@ -290,6 +294,22 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
           out.imBase = v || '(真主机)';
         }
 
+        if ('wsHeartbeat' in body) {
+          // ⚠ 先把人话别名归一（`none` ⇒ 空串），再校验 —— 否则"校验里放行 none、
+          //   下面又比较 none"会被 TS 判成不可达分支（那一支真的是死的）。
+          const given = typeof body.wsHeartbeat === 'string' ? body.wsHeartbeat.trim() : '';
+          const raw = given === 'none' ? '' : given;
+          // ⚠ 只认这两档：`h`（默认，实测有效）与空（不回）。别让它变成"回任意字符串"——
+          //   那是往一条协议连接里写自由文本，出错时的现象是"服务端把我们踢了"，
+          //   而原因在日志里根本看不出来。
+          if (raw !== '' && raw !== 'h') {
+            return json(400, { error: "wsHeartbeat 只能是 \"h\"（默认）或 \"none\"（不回）" });
+          }
+          saveWsHeartbeat(deps.store, raw, deps.now());
+          deps.log(raw === '' ? '读到 SockJS 心跳帧 h 时**不回**' : '读到 h 时回一帧 h');
+          out.wsHeartbeat = raw === '' ? '(不回)' : 'h';
+        }
+
         if ('listenSeconds' in body) {
           const n = Number.parseInt(String(body.listenSeconds), 10);
           if (!Number.isFinite(n) || n <= 0 || n > 3600) {
@@ -302,7 +322,7 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
 
         if (Object.keys(out).length === 0) {
           return json(400, {
-            error: '要传 baseUrl / liveUrl / gateBase / wsBase / imBase / listenSeconds（清空就传空串）',
+            error: '要传 baseUrl / liveUrl / gateBase / wsBase / imBase / wsHeartbeat / listenSeconds（清空就传空串）',
           });
         }
         return json(200, out);
