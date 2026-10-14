@@ -202,13 +202,18 @@ export function runOrderStep(deps: TaskDeps): TaskOutcome {
     const { prizes } = parseExchangeList(digResult(res.text));
     const p = pickPrize(prizes, query);
     if (!p) return done(`${label}：清单里没有「${query}」—— 这一单不做（名字要**精确**匹配）`, false);
-    // ⚠ 只在判据是**明确否定**时才拦（`limit` 有值且不是"可兑"）。
-    //   真机上 `limit` 那一族的形态与我按文档假设的不一样：同一份数据在汇总那里
-    //   被判成 51/51 可兑，单独判这一件却是"判不了"。把"判不了"当成"不能兑"，
-    //   现象是**永远不下单**而理由是"判不了"—— 一个查不出所以然的死结。
-    //   所以：判不了就往下走，让**余额**与**上游**去判（它们才是真扣豆的地方）。
+    // 严格判据：**只有 `ok` 才往下走**。
+    //
+    // ⚠ 我一度把这里放宽成"只在明确否定时才拦"，理由是当时看到
+    // "同一份数据在汇总里是 51/51 可兑，单独判这一件却是判不了"这个矛盾。
+    // **那个矛盾是我的 bug，不是数据的问题**：我第 ① 步当时从**原始对象**上读
+    // `limit`（没有走 `parsePrize`）⇒ `limit === undefined` ⇒ `unknown`。
+    // 换成 `parseExchangeList` 之后真机实测：51/51 全是 `limit: 0` ⇒ 全部 `ok`。
+    //
+    // 所以闸门收回严格：判不了就不发 —— 与"滑块算不出就不发"同一个方向。
+    // 放宽它等于把"不确定"当成"可以花豆"。
     const verdict = verdictOf(p);
-    if (p.limit !== undefined && p.limit !== LIMIT_AVAILABLE) {
+    if (verdict !== 'ok') {
       return done(`${label}：${p.name} 现在不能兑（${VERDICT_TEXT[verdict]}），不发下一枪`, false);
     }
     // ⚠ 取不到**数字** prizeId 就拒绝 —— 兜成 -1 会真把 `prizeId:-1` 发出去
