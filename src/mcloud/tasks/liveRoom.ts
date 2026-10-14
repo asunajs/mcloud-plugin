@@ -60,6 +60,7 @@ import {
   isKoulingMarker,
   isQuestion,
   parseCodeInput,
+  trimKoulingTail,
   xiaohongshuProfileHeaders,
 } from '../liveKouling.ts';
 import {
@@ -266,8 +267,10 @@ export function saveLiveCodes(
   const parsed = parseCodeInput(raw);
   if (!parsed.ok) return { ok: false, codes: [], how: '', error: parsed.error ?? '解不出口令' };
 
-  const cut = parsed.codes.flatMap((c) => splitKouling(c));
-  const kept = cut.filter((c) => !isQuestion(c) && !isKoulingMarker(c));
+  // ⚠ `splitKouling` 是**按分隔符切**（人贴的可能是"口令1：A 口令2：B"），
+  //   切出来的每一段仍可能带收批尾巴（`A 无` / `A 无随机`）⇒ 这里再去一次。
+  const cut = parsed.codes.flatMap((c) => splitKouling(c)).map(trimKoulingTail);
+  const kept = cut.filter((c) => c !== '' && !isQuestion(c) && !isKoulingMarker(c));
   const limited = checkCodeLimits(kept);
   if (!limited.ok) return { ok: false, codes: [], how: '', error: limited.error ?? '解不出口令' };
   const codes = limited.codes;

@@ -101,6 +101,40 @@ export function isKoulingMarker(text: string): boolean {
   return /无随机/.test(text);
 }
 
+/** 去掉口令**末尾的收批标记**。
+ *
+ *  上游在"这批口令到此为止"时会在尾部带上它，三种形态（2026-10-14 用户给的口径 + 实机样本）：
+ *
+ *  ```text
+ *  秋游影集轻松做 无          ← 实机真收到过（当时被当成口令去领，回 200108 口令无效）
+ *  秋游影集轻松做 无随机
+ *  秋游影集轻松做无随机口令
+ *  ```
+ *
+ *  ⚠⚠ `无` 那一条**必须**要求前面有空白。不然 `相伴到永远无` 这种"尾字本身是无"的
+ *  真口令会被啃掉一个字 —— 而这种错**不会报错**，只会安静地换回一个 `200108`，
+ *  所以判据宁可窄一点。
+ *
+ *  ⚠ 要**循环**去掉：`XX 无随机 无` 这种叠写真的会出现（收尾标记被转述了两次）。 */
+export function trimKoulingTail(code: string): string {
+  let out = code.trim();
+  for (;;) {
+    const before = out;
+    // ⚠ 三条都要"**前面有空白**"或"**整串就是它**"：
+    //   `XX 无` ⇒ 去；`无`（整串）⇒ 去；而 `相伴无`（尾字本身是无）**不能**动。
+    // ⚠ `无随机口令` 这一条**不要求**前面的空白：它是五个字、语义明确
+    //   （用户给的口径里就是"末尾是 …、无随机口令"），实拍形态是**连着**写的
+    //   （`秋游影集轻松做无随机口令`）。另两条才必须靠空白兜住
+    //   —— `无` 一个字，误伤的代价是"安静地少一个字、白跑一枪 200108"。
+    out = out.replace(/\s*无随机口令$/, '');
+    out = out.replace(/(?:^|\s+)无随机$/, '');
+    out = out.replace(/(?:^|\s+)无$/, '');
+    out = out.trim();
+    if (out === before) break;
+  }
+  return out;
+}
+
 /** 疑问句末尾的语气词。 */
 const TRAILING_PARTICLE = /[呀啊吧呢嘛哦]+$/;
 
@@ -186,9 +220,11 @@ export function extractKouling(msg: string): string[] {
     if (isKoulingHead(line)) {
       const next = lines[i + 1];
       if (next !== undefined) {
-        const content = next.trim();
-        // 两道排除：下一行自己也是个口令头、或含 `无随机`（那是收尾标记）
-        if (content && !/^(?:复制)?口令/.test(content) && !/无随机/.test(content)) {
+        // ⚠ 以前这里是"含 `无随机` 就整条丢掉"——那会把 `秋游影集轻松做 无随机`
+        //   这种**带尾巴的真口令**一起丢掉。改成**去尾巴后照样收下**
+        //   （只余标记的那一行会在末尾清空，自然被滤掉）。
+        const content = trimKoulingTail(next.trim());
+        if (content && !/^(?:复制)?口令/.test(content)) {
           result.push(content);
         }
       }
@@ -196,8 +232,8 @@ export function extractKouling(msg: string): string[] {
     }
     // 同行多个口令
     for (const match of line.matchAll(SAME_LINE_PATTERN)) {
-      const code = (match[1] ?? '').trim();
-      if (code && !/无随机/.test(code)) result.push(code);
+      const code = trimKoulingTail((match[1] ?? '').trim());
+      if (code) result.push(code);
     }
   }
 
@@ -222,7 +258,10 @@ export function extractKouling(msg: string): string[] {
     }
   }
 
-  return [...new Set(result)].filter((code) => !isQuestion(code));
+  // ⚠ 去尾巴放在**这里**（四条分支唯一的汇合点）：分支多、以后还会加，
+  //   只在一个出口做，就不会出现"某条分支忘了去尾巴"这种漏。
+  //   去完可能不再是空串（于是又出现重复），所以**先去尾巴再去重**。
+  return [...new Set(result.map(trimKoulingTail))].filter((code) => code !== '' && !isQuestion(code));
 }
 
 // ══════════════════════════ 小红书主页侧 ══════════════════════════
@@ -408,7 +447,7 @@ export function parseCodeInput(raw: string): CodeInput {
   // ② 逐行原文
   const lines = text
     .split(/\r?\n/)
-    .map((l) => l.trim())
+    .map((l) => trimKoulingTail(l))
     .filter((l) => l !== '');
   if (lines.length === 0) {
     return { ok: false, codes: [], how: '', matchedFormat: false, error: '先贴一条口令' };
