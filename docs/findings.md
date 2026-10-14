@@ -2366,3 +2366,69 @@ test/webui.test.ts：
 这仍然是**通用条**（按最大值画长度），不是 mcloud 那种按指标定制的看板。
 理由：读数只有文字，没有结构化数字 ⇒ 定制图表会变成"猜读数格式"，
 而猜错了比画个粗条更坏。等读数有了稳定结构，再按 mcloud 那样分指标画。
+
+---
+
+## F-045 · 宿主给的 `req.query` 是**原始字符串**，而插件自己的 `.d.ts` 写成了对象（2026-10-15）
+
+**压出来的一侧**：面板（文档）· **症状**：路由收到了请求，但**读不到参数**
+
+### 怎么发现的
+
+做「运行记录」时加了一条 `GET /plugins/mcloud/api/runs?id=xxx`，
+`split_check.py` 里那条断言红了：
+
+```
+✗ 能按 id 取到那一次的步骤 — http 400 {"error":"要带一个 id"}
+```
+
+请求确实带 `?id=…`，路由也确实被调到了 —— 但 `req.query['id']` 是 `undefined`。
+
+### 实测（不是推测）
+
+起一个只回显 `query` 的探针插件：
+
+```js
+register_route('/plugins/qprobe/api/echo', 'GET', (req) => ({
+  body: JSON.stringify({ type: typeof req.query, value: req.query }),
+}));
+```
+
+```
+GET /plugins/qprobe/api/echo?id=abc&x=1
+→ { "type": "string", "value": "id=abc&x=1" }
+```
+
+面板那一行是 `req.uri().query().unwrap_or("")`（`src/web.rs:1519`）——
+拿的是**整段字符串**。
+
+### 为什么这个错**一点症状都没有**
+
+三层都没有报错：
+
+| 层 | 为什么没报 |
+|---|---|
+| 类型 | 面板**不发** `.d.ts`，插件各自写；本仓那份写的是 `Record<string, string>` —— 于是 `req.query['id']` 类型检查通过 |
+| 运行时 | `Object.keys('id=abc')` 在 JS 里**不报错**，给的是字符下标 `["0","1","2",…]` |
+| 表现 | 只有"参数永远是 `undefined`"，也就是"路由收到了请求但读不到参数" |
+
+第二层尤其坏：`Object.keys` 给了个看着像东西的数组，所以连"我把字符串当对象用了"
+都看不出来 —— 只会以为"宿主没传参数"。
+
+### 改了什么
+
+**面板侧**（`e8c3bf4`）：`docs/host-api.md` 的 `register_route` 那节写清 `query` 的形状，
+并带上实测输出与三个容易错的解析点（`+` 是空格、值里允许有 `=`、坏编码不该抛）。
+
+**插件侧**：
+- `host-api.d.ts` 的 `RouteRequest.query` 改成 `string`，把上面这段实测记在注释里
+- 新增 `src/mcloud/query.ts` 的 `parseQuery()` —— 逐条钉住那三个解析点，
+  并**坏编码不抛**（手敲的 `?x=%zz` 不该让整个路由 500）
+- `test/query.test.ts` 10 项
+
+### 这一条的方法论
+
+> **面板不发 `.d.ts` ⇒ 每一份插件自己写的声明都是"猜的"，而猜错了不会有人告诉你。**
+
+这类错误只能在**文档**里钉住（面板侧），在**解析函数**里兜住（插件侧）。
+两份都做了。

@@ -31,6 +31,7 @@
 // 听窗口的冷却会睡到那一刻。
 
 import { log, register_cron, warn, worker_hint } from 'host-api';
+import { appendRun, type RunStep } from '../mcloud/runLog.ts';
 import { runLiveAuto } from '../mcloud/tasks/liveAutoTask.ts';
 import { runLiveDraw } from '../mcloud/tasks/liveDraw.ts';
 import { runLiveGate } from '../mcloud/tasks/liveGateTask.ts';
@@ -67,18 +68,23 @@ function listenDeps(deps: TaskDeps): ListenDeps {
 }
 
 /** 一趟直播。 */
-function runLive(deps: TaskDeps): { ok: boolean; note: string; detail: string[] } {
+function runLive(deps: TaskDeps): {
+  ok: boolean;
+  note: string;
+  detail: string[];
+  steps: RunStep[];
+} {
   const started = Date.now();
-  const detail: string[] = [];
+  const steps: RunStep[] = [];
 
   const step = (name: string, fn: () => TaskOutcome): TaskOutcome => {
     try {
       const r = fn();
-      detail.push(`${name}：${r.ok ? '' : '失败 '}${r.note}`);
+      steps.push({ name, ok: r.ok, note: r.note, idle: r.idle === true });
       return r;
     } catch (e) {
       const note = `抛异常 ${e instanceof Error ? e.message : String(e)}`;
-      detail.push(`${name}：${note}`);
+      steps.push({ name, ok: false, note, idle: false });
       return { ok: false, note };
     }
   };
@@ -115,7 +121,9 @@ function runLive(deps: TaskDeps): { ok: boolean; note: string; detail: string[] 
     // 这里不再 sleep —— 沙箱里没有 timers（见 docs/host-api.md）。
     if (frames > 60) break; // 兜底：调用方每轮只读一次，60 轮足够覆盖 55 秒
   }
-  if (frames > 0) detail.push(`听弹幕：共读 ${frames} 轮`);
+  if (frames > 0) {
+    steps.push({ name: '听弹幕', ok: true, note: `共读 ${frames} 轮`, idle: false });
+  }
 
   // ⑤ 领小红花（有口令才动；六步链，drain 到走完）
   const r = drain(runLiveDraw, deps, {
@@ -124,14 +132,28 @@ function runLive(deps: TaskDeps): { ok: boolean; note: string; detail: string[] 
     deadlineMs: BUDGET_MS - (Date.now() - started) - 3_000,
     startedAt: started,
   });
-  detail.push(`领小红花：${r.note}`);
+  steps.push({ name: '领小红花', ok: r.ok, note: r.note, idle: false });
 
-  const failed = detail.filter((l) => l.includes('失败') || l.includes('抛异常'));
+  // `detail` 从 `steps` **推出来**（不是另写一份）—— 两份就会走岔，
+  // 而走岔的表现是"日志说成功、界面说失败"，最难查的一类不一致。
+  const detail = steps.map((s) => `${s.name}：${s.ok ? '' : '失败 '}${s.note}`);
+
+  const failed = steps.filter((s) => !s.ok);
   const elapsed = ((Date.now() - started) / 1000).toFixed(1);
   if (failed.length > 0) {
-    return { ok: false, note: `${failed.length} 步有问题：${failed[0]}`, detail };
+    return {
+      ok: false,
+      note: `${failed.length} 步有问题：${failed[0]!.name}：${failed[0]!.note}`,
+      detail,
+      steps,
+    };
   }
-  return { ok: true, note: `${listenNote || '未进入听窗口'}（用时 ${elapsed}s）`, detail };
+  return {
+    ok: true,
+    note: `${listenNote || '未进入听窗口'}（用时 ${elapsed}s）`,
+    detail,
+    steps,
+  };
 }
 
 register_cron(
@@ -140,8 +162,21 @@ register_cron(
   // 门关着时第一次调用就进冷却、零请求秒返回。
   '@every 1m',
   (p: TaskPayload) => {
+    const startedMs = Date.now();
+    const at = new Date(startedMs).toISOString();
     const deps = taskDeps(store, transport, p);
     const r = runLive(deps);
+
+    // 运行记录（留最近 N 次）—— 面板的环形日志混着所有插件，
+    // 回答不了"上一场为什么没领到"
+    appendRun(store, {
+      task: 'live',
+      at,
+      ms: Date.now() - startedMs,
+      ok: r.ok,
+      note: r.note,
+      steps: r.steps,
+    });
 
     store.recordRun({
       task: p.name,

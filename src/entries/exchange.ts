@@ -23,6 +23,7 @@
 // 「按用户设的时刻起窗」+ 每个账号一条带 `params` 的任务。
 
 import { log, register_cron, warn, worker_hint } from 'host-api';
+import { appendRun, type RunStep } from '../mcloud/runLog.ts';
 import { runExchangeList } from '../mcloud/tasks/exchangeList.ts';
 import {
   runOrderStep,
@@ -51,16 +52,26 @@ const DEADLINE_MS = BUDGET_MS - 10_000;
 const PLAN_KEY = 'mcloud.exchange.plan';
 
 /** 一趟兑换。 */
-function runExchange(deps: TaskDeps): { ok: boolean; note: string; detail: string[] } {
+function runExchange(deps: TaskDeps): {
+  ok: boolean;
+  note: string;
+  detail: string[];
+  steps: RunStep[];
+} {
   const started = Date.now();
-  const detail: string[] = [];
+  const steps: RunStep[] = [];
+
+  // 记一步（`detail` 最后从 `steps` 推出来 —— 两份会走岔）
+  const add = (name: string, ok: boolean, note: string, idle = false): void => {
+    steps.push({ name, ok, note, idle });
+  };
 
   // ① 清单（只读）：顺带让用户在「数据」页看得到价格与余量
   try {
     const l = runExchangeList(deps);
-    detail.push(`清单：${l.ok ? '' : '失败 '}${l.note}`);
+    add('清单', l.ok, l.note);
   } catch (e) {
-    detail.push(`清单：抛异常 ${e instanceof Error ? e.message : String(e)}`);
+    add('清单', false, `抛异常 ${e instanceof Error ? e.message : String(e)}`);
   }
 
   // ② 没有在排队的就起一单（起单只写字、不发请求）。
@@ -68,16 +79,25 @@ function runExchange(deps: TaskDeps): { ok: boolean; note: string; detail: strin
   // ⚠ `getState` 返回字符串本身（不是 `{value}`）—— 见 store/types.ts
   const plan = store.getState(PLAN_KEY) ?? '';
   if (plan === '') {
+    add('下单', true, '没有设兑换目标（设置里填「兑换目标」之后才会下单）', true);
     return {
       ok: true,
       note: '没有设兑换目标（设置里填「兑换目标」之后才会下单）',
-      detail,
+      detail: steps.map((x) => `${x.name}：${x.ok ? '' : '失败 '}${x.note}`),
+      steps,
     };
   }
   if (!store.getState('mcloud.exchange.order.step')) {
     const s = startOrder(deps, plan);
-    detail.push(`起单：${s.note}`);
-    if (!s.ok) return { ok: false, note: s.note, detail };
+    add('起单', s.ok, s.note);
+    if (!s.ok) {
+      return {
+        ok: false,
+        note: s.note,
+        detail: steps.map((x) => `${x.name}：${x.ok ? '' : '失败 '}${x.note}`),
+        steps,
+      };
+    }
   }
 
   // ③ 把六步链在**一次触发**里跑到走完
@@ -87,12 +107,19 @@ function runExchange(deps: TaskDeps): { ok: boolean; note: string; detail: strin
     deadlineMs: DEADLINE_MS,
     startedAt: started,
   });
-  detail.push(...r.notes);
+  // `drain` 给的是 `name：note` 字符串（它要给日志用）。这里拆成步骤 ——
+  // 名字里不会出现全角冒号，所以按**第一个**冒号切是确定的。
+  for (const line of r.notes) {
+    const i = line.indexOf('：');
+    if (i < 0) add('兑换', true, line);
+    else add(line.slice(0, i), true, line.slice(i + 1));
+  }
 
   return {
     ok: r.ok,
     note: `${r.note}（用时 ${((Date.now() - started) / 1000).toFixed(1)}s）`,
-    detail,
+    detail: steps.map((x) => `${x.name}：${x.ok ? '' : '失败 '}${x.note}`),
+    steps,
   };
 }
 
@@ -102,8 +129,19 @@ register_cron(
   //    现在的语义是「每小时看一眼有没有要兑换的」，不会真的去抢。
   '@every 1h',
   (p: TaskPayload) => {
+    const startedMs = Date.now();
+    const at = new Date(startedMs).toISOString();
     const deps = taskDeps(store, transport, p);
     const r = runExchange(deps);
+
+    appendRun(store, {
+      task: 'exchange',
+      at,
+      ms: Date.now() - startedMs,
+      ok: r.ok,
+      note: r.note,
+      steps: r.steps,
+    });
 
     store.recordRun({
       task: p.name,
