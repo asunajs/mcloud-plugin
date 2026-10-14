@@ -361,6 +361,26 @@ export async function startMock(options = {}) {
         return json(res, 200, { rtnCode: '0', rtnMsg: null, object: { dataList } });
       }
 
+      // ③ 取 WS 凭据（`userToken`）—— ⚠ 与门的 JWT 不是同一枚：PROVISION 的 auth 用它
+      if (url.pathname === '/api/user/customer/userToken') {
+        return json(res, 200, {
+          rtnCode: '0',
+          rtnMsg: null,
+          object: { access_token: 'MOCK-WS-ACCESS-TOKEN', expires_in: 7200 },
+        });
+      }
+      // ⑤ 进聊天室（`member/apply`）—— **第三套信封**：数字码 + `data`
+      //    ⚠ 两个签名头服务端**不校验**（抓包 §8.6），这里也不校验 ——
+      //    但 mock 会把它们记下来，让 e2e 能断言"算出来的形状对"。
+      if (url.pathname === '/v3/room/member/apply') {
+        return json(res, 200, {
+          code: 0,
+          msg: '接口调用成功',
+          data: { appId: 'cmosim', appKey: 'mock-app-key', roomId: '1500000000000000000000000000001' },
+          timestamp: Date.now(),
+        });
+      }
+
       // 进直播间（`roomBeat`）—— **POST**，房间号在 body 里（不是 GET + query）。
       //
       // ⚠ 它是「这间房**有没有聊天室**」的唯一判据：未开播时 `chatRoomId` 是 null，

@@ -51,10 +51,12 @@ import {
   BASE_VIDEO_IM_WS,
   STATE_LISTEN_SECONDS,
   listenReadingLine,
+  loadImBase,
   loadListenSeconds,
   loadListenState,
   loadWsBase,
   runLiveListen,
+  saveImBase,
   saveWsBase,
 } from './tasks/liveListen.ts';
 import {
@@ -216,6 +218,9 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
           // 它是 `wss://` 且带端口，与上面那两台 http 主机不是同一族（混成一个会写出
           // "指到 mock 之后协议的 scheme/端口丢了"这种错）。
           wsBase: loadWsBase(deps.store),
+          // 进房间那一台（videoim.cmcc-cs.cn:20103，HTTPS）—— **第三个口子**：
+          // 与上面两台 http 主机、以及带端口的 wss 主机都不是同一个。
+          imBase: loadImBase(deps.store) || '(真主机)',
           listenSeconds: loadListenSeconds(deps.store),
         }),
     },
@@ -274,6 +279,16 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
           out.wsBase = v || BASE_VIDEO_IM_WS;
         }
 
+        if ('imBase' in body) {
+          const v = typeof body.imBase === 'string' ? body.imBase.trim() : '';
+          if (v && !/^https?:\/\//.test(v)) {
+            return json(400, { error: 'imBase 要以 http:// 或 https:// 开头（清空 = 用真主机）' });
+          }
+          saveImBase(deps.store, v, deps.now());
+          deps.log(v ? `进房间的主机已改为 ${v}` : '进房间的主机已恢复为真主机');
+          out.imBase = v || '(真主机)';
+        }
+
         if ('listenSeconds' in body) {
           const n = Number.parseInt(String(body.listenSeconds), 10);
           if (!Number.isFinite(n) || n <= 0 || n > 3600) {
@@ -286,7 +301,7 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
 
         if (Object.keys(out).length === 0) {
           return json(400, {
-            error: '要传 baseUrl / liveUrl / gateBase / wsBase / listenSeconds（清空就传空串）',
+            error: '要传 baseUrl / liveUrl / gateBase / wsBase / imBase / listenSeconds（清空就传空串）',
           });
         }
         return json(200, out);
