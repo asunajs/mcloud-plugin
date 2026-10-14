@@ -56,6 +56,14 @@
 // 面板的执行预算默认 2000ms，而这条链有 7 枪 + 一次 500ms 等待 ⇒ 必须能被打断、
 // 下次接着走。状态落在 SQLite 里，`step` 就是游标。
 
+import {
+  FIRE_LEAD_MS,
+  hourKey,
+  planFireWait,
+  planWindowWait,
+} from '../exchangeTiming.ts';
+import type { Store } from '../../store/types.ts';
+import { depsNowMs } from './base.ts';
 import { callRawText } from '../client.ts';
 import { REFERER_SIGN_IN, SHOW_LOADING, buildH5Request, MCLOUD_HOST } from '../h5.ts';
 import { sessionHeaders } from './base.ts';
@@ -164,6 +172,93 @@ function loadState(deps: TaskDeps): OrderState | null {
 function saveState(deps: TaskDeps, st: OrderState): void {
   deps.store.setState(STATE_STEP, JSON.stringify(st), deps.nowIso);
 }
+
+/** 发单前那一次等待等了多久（毫秒）—— 给界面看"它真的压到整点了吗"。 */
+export const STATE_LAST_WAIT = 'mcloud.exchange.order.last_wait';
+
+/** 提前量（毫秒）。设置里可调 —— 网络慢的人该调大。 */
+export const STATE_LEAD_MS = 'mcloud.exchange.order.lead_ms';
+
+/** **已经在这一小时发过单了**（值是那一小时的 `hourKey`）。
+ *
+ *  # 这道闸为什么必须有
+ *
+ *  链上有一段自旋等待（预热 500ms、压整点十几秒）。自旋期间**排在后面的
+ *  触发会积压**，等这一趟跑完之后立刻依次执行 —— 而那时它们看到的
+ *  时间已经过了整点，`planFireWait` 会判定"不用等，现在就发"
+ *  ⇒ **每一枪都真的发出去**。
+ *
+ *  下单是**不可逆消耗**：这一族没有幂等键，发出去就扣真 AI豆。
+ *  所以"多发的每一枪"都是真金白银 —— 这道闸不是优化，是必需品。
+ *
+ *  ⚠ 它记的是"**发过**"，不是"成功过"：第一次因为网络抖动失败了，
+ *  这一小时也不再来第二枪。代价是"少一次机会"，而另一边是"多花一次钱"
+ *  —— 这个不对称是刻意的。 */
+export const STATE_ORDERED_HOUR = 'mcloud.exchange.order.ordered_hour';
+
+/** 提前量（毫秒），从设置里读。**导出**是为了让界面显示同一个值 ——
+ *  界面显示 10 而链上用 50 是那种最难查的不一致。 */
+export function exchangeLeadMs(store: Pick<Store, 'getState'>): number {
+  const raw = store.getState(STATE_LEAD_MS);
+  const n = raw === undefined || raw === null || raw === '' ? Number.NaN : Number(raw);
+  // 夹在 0 ~ 2000ms：负数是"整点后发"（那是另一个意思），
+  // 而超过 2 秒就不是"传输补偿"了，是"提前跑"
+  return Number.isFinite(n) ? Math.min(2000, Math.max(0, n)) : FIRE_LEAD_MS;
+}
+
+/** 自旋等到某个时刻，返回**实际等了多久**（毫秒）。
+ *
+ *  ⚠ 必须有上限：沙箱里没有计时器，而"时钟不动"（宿主给的时刻卡住、
+ *  或者目标算错了）会让这条线程永远回不来。上限用**墙钟**算 ——
+ *  自旋本身不改时间，所以数自旋次数是没用的。 */
+function spinUntil(targetMs: number, deps: TaskDeps): number {
+  const nowFn = () => depsNowMs(deps);
+  const spin =
+    deps.spin ??
+    (() => {
+      // 真实现：忙等一小会儿。**不是** `setTimeout`（沙箱里没有）。
+      const t0 = Date.now();
+      while (Date.now() - t0 < 2) {
+        /* 忙等 2ms */
+      }
+    });
+  const started = nowFn();
+  const hardDeadline = started + MAX_WAIT_MS;
+  while (true) {
+    const now = nowFn();
+    if (now >= targetMs) return Math.max(0, now - started);
+    // 兜底：等过头了（目标算错 / 时钟卡住）就放弃，不把线程占死
+    if (now - started > MAX_WAIT_MS || now >= hardDeadline) {
+      return Math.max(0, now - started);
+    }
+    spin();
+  }
+}
+
+/** 一次自旋等待的**上限**：一小时零一分钟。
+ *
+ *  比"等下一个整点"最长的情形（59:40 之前进来要等约 59 分钟）再宽一点。
+ *  它存在的意义是兜底，不是常态。 */
+export const MAX_WAIT_MS = 61 * 60_000;
+
+/** 超过这么久就不自旋，**交给下一次触发**。
+ *
+ *  # 这一条是设计，不只是护栏
+ *
+ *  粗粒度等待是**调度器**的活（任务挂 `@every 5s`），细粒度才是自旋的活 ——
+ *  自旋是为了把最后一枪压到 10ms，不是为了坐等 59 分钟。
+ *
+ *  30 秒覆盖了整条链需要的全部等待：窗口是 20 秒宽（59:40 → 整点），
+ *  加上预热与取题，最多也就二十几秒。
+ *
+ *  ⚠ 没有它的话，`@every 5s` 的任务在 59:00 被触发时会**自旋 40 分钟**：
+ *  占住一条线程、面板上看是"卡住了"，而且中间那 8 次触发全排在后面
+ *  （然后它们都会看到"已经过了窗口"而各发一枪 —— 见 `hourKey` 那道闸）。
+ *
+ *  ⚠ 顺带它也让测试**不会挂**：在任意时刻跑的测试离窗口多半超过 30 秒，
+ *  于是链立刻返回而不是自旋到下一个整点。（第一版没有这条，
+ *  `npm test` 直接挂住 —— 因为 `Date.now()` 是真时钟。） */
+export const MAX_SPIN_MS = 30_000;
 
 export function clearOrder(deps: TaskDeps): void {
   deps.store.setState(STATE_STEP, '', deps.nowIso);
@@ -282,6 +377,29 @@ export function runOrderStep(deps: TaskDeps): TaskOutcome {
 
   // ③ 预热两枪（中间夹 500ms，顺序是契约）
   if (step === 'warm-1' || step === 'warm-2') {
+    // ── 预热之前：**先等到窗口打开**（hh:59:40）──────────────────────
+    // 顺序是契约：`等到 59:40 → 预热 → 取题解算 → 等到整点−10ms → 下单`。
+    // 提前预热的话服务端那边还没到活动时间，两枪都白打。
+    if (step === 'warm-1') {
+      const w = planWindowWait(depsNowMs(deps));
+      if (w.needed) {
+        // 还远 ⇒ **不自旋**，交给下一次触发（粗粒度等待是调度器的活）
+        if (w.ms > MAX_SPIN_MS) {
+          return {
+            ok: true,
+            idle: true,
+            note: `${label}：还没到窗口（还差 ${Math.round(w.ms / 1000)}s）—— 交给下一次触发，本次零请求`,
+          };
+        }
+        const waited = spinUntil(w.untilMs, deps);
+        deps.store.setState(STATE_LAST_WAIT, String(Math.round(waited)), deps.nowIso);
+      }
+    }
+    // ── 两枪之间**真等 500ms** ────────────────────────────────────
+    // 老版本这一步靠"面板的下一次触发"来承担那 500ms，也就是把节拍交给了
+    // 调度器（秒级）。现在链在一次触发里跑完，这 500ms 得自己等 ——
+    // 它是契约的一部分（`task.ts:86-88`：两枪的顺序与间隔）。
+    if (step === 'warm-2') spinUntil(depsNowMs(deps) + PREHEAT_DELAY_MS, deps);
     const keyword = step === 'warm-1' ? VISIT_LOG_KEYWORD_EXCHANGE : VISIT_LOG_KEYWORD_EXCHANGE_TIMES;
     const res = callRawText(
       deps.transport,
@@ -355,6 +473,22 @@ export function runOrderStep(deps: TaskDeps): TaskOutcome {
 
   // ⑤ 下单
   if (step === 'order') {
+    // ── 压着整点：等到 `整点 − 提前量`（默认 10ms）─────────────────────
+    // 那 10ms 是**本地到云端的传输耗时补偿** —— 提前 10ms 发出，
+    // 让请求**正好在整点抵达云端**。它不是"抢跑"。
+    const f = planFireWait(depsNowMs(deps), exchangeLeadMs(deps.store));
+    if (f.needed) {
+      // 到这一步还远 ⇒ 状态不对（前面的预热/取题该在窗口内完成）。
+      // **不自旋到下一个整点**：那会白占一条线程，而且这一单的计划已经过期了。
+      if (f.ms > MAX_SPIN_MS) {
+        return done(
+          `${label}：离整点还有 ${Math.round(f.ms / 1000)}s —— 这一单的计划过期了（预热与取题该在窗口内做完），不发`,
+          false,
+        );
+      }
+      const waited = spinUntil(f.untilMs, deps);
+      deps.store.setState(STATE_LAST_WAIT, String(Math.round(waited)), deps.nowIso);
+    }
     const plan = st.plan;
     if (!plan) return done('内部状态缺计划，这一单作废', false);
     const sess = loadSession(deps.store);
@@ -387,9 +521,14 @@ export function runOrderStep(deps: TaskDeps): TaskOutcome {
       if (round > SLIDER_ROUNDS) {
         return done(`${label}：滑块连续 ${SLIDER_ROUNDS} 轮被判错 ⇒ 停手（上限 SLIDER_ROUNDS 轮）`, false);
       }
+      // 514 是"滑块算错、**这一单没成立**" ⇒ 重取一题再来一枪是安全的
+      // （参考实现里 `SLIDER_ROUNDS = 2` 就是这个意思）。
+      // 所以这一支**不**动 `STATE_ORDERED_HOUR`：那一枪没被受理。
       saveState(deps, { ...st, step: 'slide', round, offset: undefined });
       return { ok: true, note: `${label}：514（滑块算错）⇒ 重取一题再来一枪（第 ${round}/${SLIDER_ROUNDS} 轮），**没有重复下单**` };
     }
+    // ⚠ 不管成没成，**这一小时记下"发过了"** —— 见 `STATE_ORDERED_HOUR`
+    deps.store.setState(STATE_ORDERED_HOUR, hourKey(depsNowMs(deps)), deps.nowIso);
     saveState(deps, { ...st, step: 'verify' });
     return { ok: true, note: `${label}：上游回 ${JSON.stringify(env0(res.text)).slice(0, 140)} —— 下一步查余额差（**那句话不算数**）` };
   }

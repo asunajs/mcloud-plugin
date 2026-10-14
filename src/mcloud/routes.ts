@@ -42,8 +42,10 @@ import {
   savePushRules,
   type PushRule,
 } from './pushConfig.ts';
+import { hourKey, timingReading } from './exchangeTiming.ts';
 import { parseQuery } from './query.ts';
 import { readRun, recentRuns } from './runLog.ts';
+import { STATE_ORDERED_HOUR, exchangeLeadMs } from './tasks/exchangeOrder.ts';
 import { drawReport } from './tasks/liveDraw.ts';
 import { MATRIX_MARKETS, readMatrix } from './tasks/appTaskMatrix.ts';
 import { readDailyRun } from './dailyState.ts';
@@ -319,6 +321,12 @@ function buildReadings(deps: RouteDeps): Record<string, unknown> {
     },
     exchange: {
       recent: recentRuns(deps.store, 'exchange'),
+      // 时间读数：链上一大半时间在**等**（等到窗口、压到整点）。
+      // 用户点了"现在试一次"然后看界面十几秒不动，第一反应是"卡住了" ——
+      // 这个读数就是回答那个问题的。
+      timing: timingReading(nowMs, exchangeLeadMs(deps.store)),
+      // 这一小时已经发过单了吗（那道防重复花豆的闸）
+      orderedThisHour: deps.store.getState(STATE_ORDERED_HOUR) === hourKey(nowMs),
       plan: deps.store.getState('mcloud.exchange.plan') ?? '',
       reading: readExchangeList(deps.store),
       verdictText: VERDICT_TEXT,

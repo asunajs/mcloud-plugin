@@ -23,7 +23,9 @@
 // 「按用户设的时刻起窗」+ 每个账号一条带 `params` 的任务。
 
 import { log, register_cron, warn, worker_hint } from 'host-api';
+import { hourKey } from '../mcloud/exchangeTiming.ts';
 import { appendRun, type RunStep } from '../mcloud/runLog.ts';
+import { STATE_ORDERED_HOUR } from '../mcloud/tasks/exchangeOrder.ts';
 import { runExchangeList } from '../mcloud/tasks/exchangeList.ts';
 import {
   runOrderStep,
@@ -125,13 +127,32 @@ function runExchange(deps: TaskDeps): {
 
 register_cron(
   '兑换',
-  // ⚠ 占位表达式 —— 阶段 ③ 换成「按用户设的时刻起窗」。
-  //    现在的语义是「每小时看一眼有没有要兑换的」，不会真的去抢。
-  '@every 1h',
+  // # 为什么是 `@every 10s` 而不是"整点前 20 秒起一次"
+  //
+  // 抢兑要压到**整点前 10ms**，而 cron 的粒度是秒、调度器还有抖动。
+  // 所以分工是：**粗粒度等待交给调度器，细粒度交给链自己**。
+  //
+  //   · `@every 10s` 的每一次触发几乎都是**零请求秒返回**
+  //     （离窗口还远 ⇒ 如实返回 idle，见 `MAX_SPIN_MS`）
+  //   · 一旦落进"离窗口 30 秒内"，这一趟就自己自旋到 59:40、
+  //     预热、取题解滑块、再自旋到整点−10ms 发单
+  //
+  // 20 秒宽的窗口配 10 秒的节拍 ⇒ 窗口里至少有一次触发，通常两次。
+  '@every 10s',
   (p: TaskPayload) => {
     const startedMs = Date.now();
     const at = new Date(startedMs).toISOString();
     const deps = taskDeps(store, transport, p);
+
+    // ⚠ **小时闸**：这一小时已经发过单了 ⇒ 零请求秒返回。
+    //   链里那段自旋会让排在后面的触发积压，跑完之后它们立刻依次执行 ——
+    //   而那时已经过了整点，链会判"现在就发" ⇒ **每一枪都真花豆**。
+    //   下单不可逆、无幂等键，所以这道闸是必需品（见 STATE_ORDERED_HOUR）。
+    const thisHour = hourKey(startedMs);
+    if (store.getState(STATE_ORDERED_HOUR) === thisHour) {
+      return;
+    }
+
     const r = runExchange(deps);
 
     appendRun(store, {
@@ -161,4 +182,4 @@ register_cron(
   { budget_ms: BUDGET_MS },
 );
 
-log(`mcloud-exchange：任务「兑换」（预算 ${BUDGET_MS / 1000}s，独占线程）—— 毫秒窗口与多账号并行在阶段 ③`);
+log(`mcloud-exchange：任务「兑换」（预算 ${BUDGET_MS / 1000}s，独占线程）—— 每 10 秒看一眼，窗口内自己压到整点`);

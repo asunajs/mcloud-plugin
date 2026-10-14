@@ -50,6 +50,17 @@ export interface TaskDeps {
   baseUrl?: string | undefined;
   /** payload 里的 `lateMs`：本次触发比计划晚了多久（负数 = 手动触发，见 F-001） */
   lateMs?: number | undefined;
+  /** 取当前毫秒时刻。**注入**是为了让"等待"能在测试里用假时钟跑 ——
+   *  真等 20 秒的测试没人会跑。不注入就用 `Date.now()`。 */
+  nowMs?: (() => number) | undefined;
+  /** 自旋一小会儿（毫秒级等待用，沙箱里没有计时器）。
+   *  注入的理由同上：测试里换成"把假时钟往前推"。 */
+  spin?: (() => void) | undefined;
+}
+
+/** 取当前毫秒时刻（没注入就用真时钟）。 */
+export function depsNowMs(deps: TaskDeps): number {
+  return (deps.nowMs ?? Date.now)();
 }
 
 export interface TaskOutcome {
