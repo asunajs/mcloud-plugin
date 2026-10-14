@@ -188,3 +188,71 @@ export function waitUntil(
     spin();
   }
 }
+
+// ══════════════════ 目标时刻可配（③-3）══════════════════
+
+/** 默认在**几点**抢（本地时区）。参考实现是 `0 10 * * *`（一天一次，10 点）。 */
+export const DEFAULT_TARGET_HOUR = 10;
+
+/** 目标时刻的取值：`'10'` = 只在本地 10 点抢；`''` = **每小时**都抢（测试用）。 */
+export const STATE_TARGET_HOUR = 'mcloud.exchange.target_hour';
+
+/** 读目标时刻。**坏的/越界的值回落默认**，而不是让链跑到一个不存在的时刻上。 */
+export function targetHourOf(store: { getState(k: string): string | null | undefined }): number | null {
+  const raw = store.getState(STATE_TARGET_HOUR);
+  if (raw === undefined || raw === null) return DEFAULT_TARGET_HOUR;
+  const t = raw.trim();
+  // 空串 = 每小时（显式的选择，不是"没配"）
+  if (t === '') return null;
+  const n = Number(t);
+  return Number.isInteger(n) && n >= 0 && n <= 23 ? n : DEFAULT_TARGET_HOUR;
+}
+
+/** 目标时刻**那一小时的窗口**：`[H-1]:59:40 → H:00:15`（本地时区）。
+ *
+ *  @returns `needed` = 现在不在这个窗口里（且要等到什么时候）。
+ *
+ *  # 为什么需要它
+ *
+ *  任务挂的是 `@every 10s`（粗粒度等待交给调度器）。没有这道闸的话，
+ *  **每一次触发都会先发一个清单请求** —— 一天 8,640 次白打。
+ *  有了它，不在窗口里的触发**零请求**秒返回。
+ *
+ *  ⚠ 用**本地**时区算目标小时（`Date.getHours()`）—— 用户说"10 点"指的是他的 10 点。
+ *  而窗口那一小段（59:40 → 00:15）跨了整点，所以判据不能只看小时数：
+ *  09:59:40 的本地小时是 9，但它已经在 10 点那一场的窗口里了。
+ */
+export function planTargetWait(
+  nowMs: number,
+  targetHour: number | null,
+  tailMs: number = WINDOW_TAIL_MS,
+): Wait {
+  // 没设目标（空串）⇒ 每小时都抢，退化成原来那条逻辑
+  if (targetHour === null) return planWindowWait(nowMs);
+
+  const d = new Date(nowMs);
+  const localHour = d.getHours();
+  const minutesIntoHour = d.getMinutes() * 60_000 + d.getSeconds() * 1000 + d.getMilliseconds();
+
+  // ① 已经在**目标小时**里（H:00:00 ～ H:00:15）⇒ 上一场的尾巴，立刻跑
+  if (localHour === targetHour && minutesIntoHour < tailMs) return NO_WAIT;
+  // ② 已经在**目标小时前一个小时**的尾巴上（(H-1):59:40 ～ H-1:59:59）⇒ 窗口刚开
+  if (localHour === mod(targetHour - 1, 24) && minutesIntoHour >= (59 * 60 + WINDOW_SECOND) * 1000) {
+    return NO_WAIT;
+  }
+
+  // ③ 不在 ⇒ 算到窗口打开还有多久
+  //    窗口打开的时刻 = 今天/明天的 (H-1):59:40
+  const openAt = (base: Date): number => {
+    const t = new Date(base.getTime());
+    t.setHours(mod(targetHour - 1, 24), 59, WINDOW_SECOND, 0);
+    return t.getTime();
+  };
+  let target = openAt(d);
+  if (target <= nowMs) {
+    // 已经过了今天的窗口 ⇒ 明天
+    const t = new Date(nowMs + 24 * 3_600_000);
+    target = openAt(t);
+  }
+  return { needed: true, untilMs: target, ms: target - nowMs };
+}

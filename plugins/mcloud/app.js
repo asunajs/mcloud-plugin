@@ -291,11 +291,19 @@ function renderExchange(e) {
   // 而"界面不动"和"卡住了"看起来一模一样，所以要说出来。
   const t = e.timing || {};
   const bits = [];
-  if (e.orderedThisHour) bits.push('这一小时已经试过了');
+  if (e.orderedThisHour) bits.push('这一场已经试过了');
   else if (t.inWindow) bits.push('正在抢兑窗口里');
-  else if (t.msToWindow > 0) bits.push(`离窗口还有 ${fmtMs(t.msToWindow)}`);
-  if (t.leadMs) bits.push(`压整点前 ${t.leadMs}ms 发`);
+  else if (e.toTargetMs > 0) bits.push(`离这一场还有 ${fmtMs(e.toTargetMs)}`);
+  bits.push(e.targetHour === null ? '每小时都试' : `每天 ${e.targetHour} 点`);
+  bits.push(`压整点前 ${e.leadMs ?? 10}ms 发`);
   setText('ex-sub', e.plan ? bits.join(' · ') : '设一个之后它才会去下单。');
+  // 两个输入框回填当前值（**它们不是秘密**，可以回填）
+  const hourEl = $('ex-hour');
+  if (hourEl && document.activeElement !== hourEl) {
+    hourEl.value = e.targetHour === null ? '' : String(e.targetHour);
+  }
+  const leadEl = $('ex-lead');
+  if (leadEl && document.activeElement !== leadEl) leadEl.value = String(e.leadMs ?? 10);
 
   const plan = $('ex-plan');
   if (plan && document.activeElement !== plan) plan.value = e.plan || '';
@@ -1044,8 +1052,16 @@ $('ex-plan-save').addEventListener('click', (e) =>
     '兑换目标已保存',
   ),
 );
+// 「现在试一次」走**干跑**路由，不是"真跑一次任务"：
+//   干跑做完清单/余额/预热/取题，到"只差下单"就停 —— **一枪都不发**。
+//   按钮的标签是"试一次"，用户想知道的是「现在能不能兑」，而那一枪发出去
+//   是真扣豆且不可逆的。真下单只走定时那一场。
 $('ex-run').addEventListener('click', (e) =>
-  act(e.currentTarget, () => runTask('exchange'), '试完了 —— 看清单'),
+  act(
+    e.currentTarget,
+    () => post('exchange/try', {}),
+    '试完了 —— 一枪都没发，看下面这次的结果',
+  ),
 );
 
 // 直播
@@ -1107,6 +1123,22 @@ $('selftest-run').addEventListener('click', (e) =>
       return r;
     },
     (r) => r.detail,
+  ),
+);
+
+// ── 兑换的两个时间参数 ──
+$('ex-hour-save').addEventListener('click', (ev) =>
+  act(
+    ev.currentTarget,
+    () => post('config', { targetHour: $('ex-hour').value.trim() }),
+    '兑换时刻已保存',
+  ),
+);
+$('ex-lead-save').addEventListener('click', (ev) =>
+  act(
+    ev.currentTarget,
+    () => post('config', { leadMs: $('ex-lead').value.trim() }),
+    '提前量已保存',
   ),
 );
 

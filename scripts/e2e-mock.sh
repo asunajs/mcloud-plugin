@@ -125,8 +125,16 @@ assert d.get('ok') is True, '日常跑失败了：' + json.dumps(d, ensure_ascii
 PY
 
 # —— 兑换：清单 + （有目标时才下单）——
-# ⚠ 毫秒级窗口与多账号并行在阶段 ③，这里只验「链路能跑、不发不该发的请求」。
-curl -fsS "${W[@]}" -X POST "$B/api/tasks/mcloud-exchange/%E5%85%91%E6%8D%A2/run" -o "$TMP/exchange.json"
+#
+# ⚠ ③-3 之后链上多了一道**时间闸**：不在"目标时刻那一场"的窗口里就**零请求**
+#   秒返回（任务挂 `@every 10s`，没有这道闸一天要白打 8,640 次清单请求）。
+#   所以 e2e 必须先把目标设成**每小时都试**（空串），否则链根本走不到清单那一步。
+#
+# ⚠ 走**干跑**路由（`/plugins/mcloud/api/exchange/try`）而不是"真跑任务"：
+#   干跑做完清单/余额/预热/取题就停，**一枪都不发** —— 这既是按钮的语义，
+#   也是 e2e 想要的（它只验"清单请求的形状"，不该真下单）。
+curl -fsS "${W[@]}" -X POST "$B/plugins/mcloud/api/exchange/try" \
+  -H 'content-type: application/json' -H 'x-panel: 1' -d '{}' -o "$TMP/exchange.json"
 printf '   兑换 ✓\n'
 python3 - "$TMP/exchange.json" <<'PY'
 import json, sys
