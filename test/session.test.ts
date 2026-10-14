@@ -17,6 +17,7 @@ import {
   verifySession,
 } from '../src/mcloud/session.ts';
 import { mcloudRoutes } from '../src/mcloud/routes.ts';
+import { testDeps } from './helpers.ts';
 import { STATE_LAST_TASKLIST } from '../src/mcloud/tasks/taskList.ts';
 import { SHOW_LOADING } from '../src/mcloud/h5.ts';
 import { memStore } from '../src/store/memory.ts';
@@ -179,12 +180,9 @@ test('体检：发出去的请求形状正确，成功与失败都记录在案',
 test('路由：状态不回显凭据、导入后立刻真验、坏输入 400、能清空', () => {
   const store = memStore();
   store.ensureSchema();
-  const routes = mcloudRoutes({
-    store,
-    transport: okTransport,
-    now: () => NOW,
-    log: logNothing,
-  });
+  const routes = mcloudRoutes(
+    testDeps(store, { transport: okTransport, now: NOW, log: logNothing }),
+  );
   const call = (method: string, path: string, body?: string) => {
     const r = routes.find((x) => x.method === method && x.path === path);
     assert.ok(r, `没有这条路由：${method} ${path}`);
@@ -236,15 +234,14 @@ test('路由：状态不回显凭据、导入后立刻真验、坏输入 400、�
   // 设了基址之后，导入会话的体检必须打到那个地址（而不是真上游）
   try {
     let url = '';
-    const routes2 = mcloudRoutes({
-      store,
+    const routes2 = mcloudRoutes(testDeps(store, {
       transport: (req) => {
         url = req.url;
         return { status: 200, headers: {}, body: '{"code":0,"msg":"ok"}' };
       },
-      now: () => NOW,
+      now: NOW,
       log: logNothing,
-    });
+    }));
     const h = routes2.find((x) => x.method === 'POST' && x.path.endsWith('/session'))!;
     h.handler({ method: 'POST', body: JSON.stringify({ session: COOKIE }) });
     assert.equal(url, 'http://127.0.0.1:9/ycloud/signin/page/infoV3?client=app');

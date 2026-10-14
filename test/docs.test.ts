@@ -191,7 +191,12 @@ test('⚠ 文档里不许让人去找**已经删掉的任务**（比死链更隐
   const docs = ['docs/howto-session.md', 'README.md', 'docs/redesign-plan.md'];
   const gone = ['session-check', 'live-draw', 'live-listen', 'app-task-matrix', 'exchange-list'];
   for (const f of docs) {
-    const text = readFileSync(resolve(root, f), 'utf8');
+    // ⚠ 先去掉**行内代码**与**路径样式**的 token：`test/live-draw-report.test.ts`
+    //   这种文件名里当然含 `live-draw`，但它不是在让人去找那条任务
+    //   （第一版就是这样误报的）。
+    const text = readFileSync(resolve(root, f), 'utf8')
+      .replace(/`[^`]*`/g, ' ')
+      .replace(/[\w./-]*\/[\w./-]+/g, ' ');
     for (const name of gone) {
       let at = text.indexOf(name);
       while (at >= 0) {

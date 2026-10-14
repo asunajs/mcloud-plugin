@@ -7,7 +7,7 @@
 // src/entries/mcloud.ts
 import {
   error,
-  log,
+  log as log2,
   register_nav,
   register_route
 } from "host-api";
@@ -701,6 +701,26 @@ function sha256(bytes) {
 }
 
 // src/crypto/hmac.ts
+function hmac(hash, blockSize, key, msg) {
+  let k = key;
+  if (k.length > blockSize) k = hash(k);
+  const ipad = new Uint8Array(blockSize + msg.length);
+  for (let i = 0; i < blockSize; i += 1) {
+    ipad[i] = (i < k.length ? k[i] : 0) ^ 54;
+  }
+  ipad.set(msg, blockSize);
+  const inner = hash(ipad);
+  const opad = new Uint8Array(blockSize + inner.length);
+  for (let i = 0; i < blockSize; i += 1) {
+    opad[i] = (i < k.length ? k[i] : 0) ^ 92;
+  }
+  opad.set(inner, blockSize);
+  return hash(opad);
+}
+var BLOCK = 64;
+function hmacSha256(key, msg) {
+  return hmac(sha256, BLOCK, key, msg);
+}
 var md5Hex = (d) => toHex(md5(anyBytes(d)));
 var sha256Hex = (d) => toHex(sha256(anyBytes(d)));
 function anyBytes(d) {
@@ -4286,13 +4306,13 @@ function runOrderStep(deps) {
         body: ""
       })
     );
-    const warn = res.ok ? "" : `（埋点失败但不挡路：${res.error ?? "未知"}）`;
+    const warn2 = res.ok ? "" : `（埋点失败但不挡路：${res.error ?? "未知"}）`;
     if (step === "warm-1") {
       saveState(deps, { ...st, step: "warm-2" });
-      return { ok: true, note: `${label}：${keyword}${warn} —— 下一步第二枪（中间那 500ms 由面板的下一次触发承担）` };
+      return { ok: true, note: `${label}：${keyword}${warn2} —— 下一步第二枪（中间那 500ms 由面板的下一次触发承担）` };
     }
     saveState(deps, { ...st, step: "slide" });
-    return { ok: true, note: `${label}：${keyword}${warn} —— 下一步取滑块题面` };
+    return { ok: true, note: `${label}：${keyword}${warn2} —— 下一步取滑块题面` };
   }
   if (step === "slide") {
     const res = callRawText(
@@ -4403,6 +4423,421 @@ function runOrderStep(deps) {
 function env0(text) {
   const r = digResult(text);
   return Object.keys(r).length > 0 ? r : text.slice(0, 140);
+}
+
+// src/mcloud/push.ts
+var CHANNELS = [
+  "pushplus",
+  "serverChan",
+  "workWeixin",
+  "workWeixinBot",
+  "tgBot",
+  "bark",
+  "twoIm",
+  "dingTalk",
+  "email",
+  "customPost"
+];
+var CHANNEL_LABELS = {
+  pushplus: "pushplus",
+  serverChan: "Server酱",
+  workWeixin: "企业微信推送",
+  workWeixinBot: "企业微信Bot推送",
+  tgBot: "Telegram Bot 推送",
+  bark: "Bark ios 推送",
+  twoIm: "回逍推送",
+  dingTalk: "钉钉推送",
+  email: "邮件消息",
+  customPost: "自定义消息"
+};
+function encodeUriComponent(s) {
+  return encodeURIComponent(s);
+}
+function formUrlencode(pairs) {
+  return pairs.map(([k, v]) => `${encodeUriComponent(k)}=${encodeUriComponent(v)}`).join("&");
+}
+function jsTruthy(v) {
+  if (v === null || v === void 0 || v === false) return false;
+  if (typeof v === "string") return v !== "";
+  if (typeof v === "number") return v !== 0 && !Number.isNaN(v);
+  return true;
+}
+function hmacSha256Base64(key, message) {
+  return toBase64(hmacSha256(utf8(key), utf8(message)));
+}
+function postJson(url, body) {
+  return {
+    url,
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body)
+  };
+}
+function buildPushplus(c, title, text) {
+  return {
+    ok: true,
+    request: postJson("http://www.pushplus.plus/send", {
+      token: c.token,
+      title,
+      content: text,
+      ...c.extra ?? {}
+    })
+  };
+}
+function buildServerChan(c, title, text) {
+  return {
+    ok: true,
+    request: postJson(`https://sctapi.ftqq.com/${c.token}.send`, {
+      text: title,
+      title,
+      desp: text.replace(/\n/g, "\n\n"),
+      ...c.extra ?? {}
+    })
+  };
+}
+function buildWorkWeixinToken(c) {
+  const body = {};
+  if (c.corpid !== void 0) body["corpid"] = c.corpid;
+  if (c.corpsecret !== void 0) body["corpsecret"] = c.corpsecret;
+  return postJson("https://qyapi.weixin.qq.com/cgi-bin/gettoken", body);
+}
+function buildWorkWeixinMessage(c, accessToken, title, text) {
+  const msgtype = c.msgtype ?? "text";
+  const body = {
+    touser: c.touser ?? "@all",
+    msgtype
+  };
+  if (c.agentid !== void 0) body["agentid"] = c.agentid;
+  body[msgtype] = { content: `${title}
+
+${text}` };
+  return postJson(
+    `https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${accessToken}`,
+    { ...body, ...c.extra ?? {} }
+  );
+}
+function buildWorkWeixinBot(c, title, text) {
+  const msgtype = c.msgtype ?? "text";
+  const body = { msgtype };
+  body[msgtype] = { content: `${title}
+
+${text}` };
+  return { ok: true, request: postJson(c.url, { ...body, ...c.extra ?? {} }) };
+}
+function buildTgBot(c, title, text) {
+  if (c.token === "" || !jsTruthy(c.chat_id)) {
+    return { ok: false, skip: "缺少 token 或 chat_id" };
+  }
+  const host2 = c.apiHost ?? "api.telegram.org";
+  const body = {
+    disable_web_page_preview: c.disable_web_page_preview ?? true
+  };
+  if (c.chat_id !== void 0) body["chat_id"] = c.chat_id;
+  if (c.proxy !== void 0) body["proxy"] = c.proxy;
+  Object.assign(body, c.extra ?? {});
+  body["text"] = `${title}
+
+${text}`;
+  return { ok: true, request: postJson(`https://${host2}/bot${c.token}/sendMessage`, body) };
+}
+function buildBark(c, title, text) {
+  if (c.key === "") return { ok: false, skip: "缺少 key" };
+  return {
+    ok: true,
+    request: postJson(`https://api.day.app/${c.key}`, {
+      body: text,
+      title,
+      level: c.level ?? "passive",
+      ...c.extra ?? {}
+    })
+  };
+}
+function buildTwoIm(c, title, text) {
+  const pairs = [
+    ["key", c.key],
+    ["sid", c.sid]
+  ];
+  const q = c.query;
+  if (q) {
+    if (q.plat !== void 0) pairs.push(["plat", q.plat]);
+    if (q.group !== void 0) pairs.push(["group", q.group]);
+    if (q.icon !== void 0) pairs.push(["icon", String(q.icon)]);
+    for (const [k, v] of Object.entries(q.extra ?? {})) pairs.push([k, String(v)]);
+  }
+  return {
+    ok: true,
+    request: postJson(`https://api.2im.cn/push?${formUrlencode(pairs)}`, {
+      msgtype: c.msgtype ?? "text",
+      content: text,
+      title,
+      ...c.extra ?? {}
+    })
+  };
+}
+function buildDingTalk(c, title, text, timestampMs) {
+  let query = "";
+  if (c.secret !== void 0 && c.secret !== "") {
+    const sign = hmacSha256Base64(c.secret, `${timestampMs}
+${c.secret}`);
+    query = `&timestamp=${timestampMs}&sign=${encodeUriComponent(sign)}`;
+  }
+  return {
+    ok: true,
+    request: postJson(
+      `https://oapi.dingtalk.com/robot/send?access_token=${c.token}${query}`,
+      {
+        msgtype: "text",
+        // ⚠ 正文前面那个**前导空格**是 TS 原文，别顺手删掉
+        text: { content: ` ${title}
+
+${text}` },
+        ...c.extra ?? {}
+      }
+    )
+  };
+}
+function buildCustomPost(item, title, text) {
+  if (item.url === "") return { ok: false, skip: "这个模板没有 URL" };
+  const method = (item.method ?? "POST").toUpperCase();
+  const url = item.url.replace("{title}", encodeUriComponent(title)).replace("{text}", encodeUriComponent(text));
+  const fields = item.data ?? item.body;
+  let body;
+  if (fields !== void 0 && Object.keys(fields).length > 0) {
+    const raw = JSON.stringify(fields);
+    const patched = raw.replace(/\{title\}/g, title).replace(/\{text\}/g, text).replace(/\n/g, "\\n").replace(/\r/g, "\\r");
+    try {
+      JSON.parse(patched);
+      body = patched;
+    } catch (e) {
+      return { ok: false, error: `模板体替换后不是合法 JSON：${e instanceof Error ? e.message : String(e)}` };
+    }
+  }
+  return {
+    ok: true,
+    request: {
+      url,
+      method,
+      headers: { ...item.headers ?? {} },
+      body
+    }
+  };
+}
+function sendPush(deps, config, title, text) {
+  const results = [];
+  const add = (channel, outcome, note2) => {
+    results.push({ channel, label: CHANNEL_LABELS[channel], outcome, note: note2 });
+  };
+  const deliver = (channel, built) => {
+    if (!built.ok) {
+      add(channel, "skipped", built.skip);
+      return;
+    }
+    const res = deps.http(built.request);
+    if (!res.ok) {
+      add(channel, "failed", res.error ?? `HTTP ${res.status}`);
+      return;
+    }
+    if (res.status < 200 || res.status >= 300) {
+      add(channel, "failed", `HTTP ${res.status}`);
+      return;
+    }
+    add(channel, "sent", `HTTP ${res.status}`);
+  };
+  if (config.pushplus) deliver("pushplus", buildPushplus(config.pushplus, title, text));
+  if (config.serverChan) deliver("serverChan", buildServerChan(config.serverChan, title, text));
+  if (config.workWeixin) {
+    const c = config.workWeixin;
+    const tok = deps.http(buildWorkWeixinToken(c));
+    let accessToken;
+    if (tok.ok && tok.status >= 200 && tok.status < 300) {
+      try {
+        const j = JSON.parse(tok.body);
+        if (typeof j["access_token"] === "string") accessToken = j["access_token"];
+      } catch {
+      }
+    }
+    if (accessToken === void 0) {
+      add("workWeixin", "failed", tok.ok ? "换 access_token 失败（响应里没有）" : `换 access_token 失败：${tok.error ?? `HTTP ${tok.status}`}`);
+    } else {
+      deliver("workWeixin", {
+        ok: true,
+        request: buildWorkWeixinMessage(c, accessToken, title, text)
+      });
+    }
+  }
+  if (config.workWeixinBot) deliver("workWeixinBot", buildWorkWeixinBot(config.workWeixinBot, title, text));
+  if (config.tgBot) deliver("tgBot", buildTgBot(config.tgBot, title, text));
+  if (config.bark) deliver("bark", buildBark(config.bark, title, text));
+  if (config.twoIm) deliver("twoIm", buildTwoIm(config.twoIm, title, text));
+  if (config.dingTalk) deliver("dingTalk", buildDingTalk(config.dingTalk, title, text, deps.nowMs()));
+  if (config.email) {
+    const e = config.email;
+    if (e.host === "" || e.from === "") {
+      add("email", "skipped", "缺少 host 或 from");
+    } else {
+      try {
+        const r = deps.smtp({
+          host: e.host,
+          ...e.port !== void 0 ? { port: e.port } : {},
+          ...e.tls !== void 0 ? { tls: e.tls } : {},
+          ...e.user !== void 0 ? { user: e.user } : {},
+          pass: e.pass,
+          from: e.from,
+          to: e.to ?? "",
+          subject: title,
+          text
+        });
+        if (r.ok) add("email", "sent", r.response.slice(0, 80));
+        else add("email", "failed", r.response.slice(0, 120));
+      } catch (err2) {
+        add("email", "failed", err2 instanceof Error ? err2.message : String(err2));
+      }
+    }
+  }
+  if (config.customPost && config.customPost.length > 0) {
+    let anySent = false;
+    let anyFailed = false;
+    for (const item of config.customPost) {
+      const built = buildCustomPost(item, title, text);
+      if (!built.ok) {
+        if ("skip" in built) add("customPost", "skipped", built.skip);
+        else {
+          anyFailed = true;
+          add("customPost", "failed", built.error);
+        }
+        continue;
+      }
+      const res = deps.http(built.request);
+      if (!res.ok) {
+        anyFailed = true;
+        add("customPost", "failed", res.error ?? `HTTP ${res.status}`);
+      } else if (res.status < 200 || res.status >= 300) {
+        anyFailed = true;
+        add("customPost", "failed", `HTTP ${res.status}`);
+      } else {
+        anySent = true;
+        add("customPost", "sent", `HTTP ${res.status}`);
+      }
+    }
+    void anySent;
+    void anyFailed;
+  }
+  const sent = results.filter((r) => r.outcome === "sent").length;
+  const skipped = results.filter((r) => r.outcome === "skipped").length;
+  const failed = results.filter((r) => r.outcome === "failed").length;
+  let line;
+  if (results.length === 0) line = "没有配置推送渠道";
+  else if (failed > 0) line = `${sent} 个渠道发到了，${failed} 个失败${skipped > 0 ? `，${skipped} 个跳过` : ""}`;
+  else if (sent > 0) line = `${sent} 个渠道发到了${skipped > 0 ? `，${skipped} 个跳过` : ""}`;
+  else line = `${skipped} 个渠道都跳过了（没配全）`;
+  return { attempted: sent + failed, sent, skipped, failed, results, line };
+}
+function configuredChannels(config) {
+  return CHANNELS.filter((c) => {
+    if (c === "customPost") return (config.customPost ?? []).length > 0;
+    return config[c] !== void 0 && config[c] !== null;
+  });
+}
+
+// src/mcloud/pushConfig.ts
+var STATE_PUSH_CONFIG = "mcloud.push.config";
+var STATE_PUSH_RULES = "mcloud.push.rules";
+var STATE_PUSH_BINDINGS = "mcloud.push.bindings";
+function parse2(raw, fallback) {
+  if (raw === void 0 || raw === null || raw === "") return fallback;
+  try {
+    const v = JSON.parse(raw);
+    return typeof v === "object" && v !== null ? v : fallback;
+  } catch {
+    return fallback;
+  }
+}
+function loadPushConfig(store2) {
+  return parse2(store2.getState(STATE_PUSH_CONFIG), {});
+}
+function savePushConfig(store2, cfg, nowIso) {
+  store2.setState(STATE_PUSH_CONFIG, JSON.stringify(cfg), nowIso);
+}
+function loadPushRules(store2) {
+  const raw = parse2(store2.getState(STATE_PUSH_RULES), []);
+  return Array.isArray(raw) ? raw.filter((r) => typeof r?.id === "string") : [];
+}
+function savePushRules(store2, rules, nowIso) {
+  store2.setState(STATE_PUSH_RULES, JSON.stringify(rules), nowIso);
+}
+function loadPushBindings(store2) {
+  const raw = parse2(store2.getState(STATE_PUSH_BINDINGS), {});
+  return {
+    daily: typeof raw.daily === "string" ? raw.daily : "",
+    exchange: typeof raw.exchange === "string" ? raw.exchange : "",
+    live: typeof raw.live === "string" ? raw.live : ""
+  };
+}
+function savePushBindings(store2, b, nowIso) {
+  store2.setState(STATE_PUSH_BINDINGS, JSON.stringify(b), nowIso);
+}
+function maskSecret(v) {
+  if (typeof v !== "string" || v === "") return "";
+  if (v.length <= 8) return "（已配）";
+  return `${v.slice(0, 3)}…${v.slice(-2)}（共 ${v.length} 字符）`;
+}
+function pushFields(cfg) {
+  const out = {};
+  const take = (ch, obj) => {
+    if (obj === void 0) return;
+    const fields = {};
+    for (const [k, v] of Object.entries(obj)) {
+      if (k === "extra") continue;
+      if (v === void 0 || v === null || v === "") continue;
+      const secretish = /token|secret|pass|key|sid|corpsecret/i.test(k);
+      fields[k] = secretish ? maskSecret(v) : String(v);
+    }
+    out[ch] = fields;
+  };
+  take("pushplus", cfg.pushplus);
+  take("serverChan", cfg.serverChan);
+  take("workWeixin", cfg.workWeixin);
+  take("workWeixinBot", cfg.workWeixinBot);
+  take("tgBot", cfg.tgBot);
+  take("bark", cfg.bark);
+  take("twoIm", cfg.twoIm);
+  take("dingTalk", cfg.dingTalk);
+  take("email", cfg.email);
+  if (cfg.customPost && cfg.customPost.length > 0) {
+    out["customPost"] = { 模板数: String(cfg.customPost.length) };
+  }
+  return out;
+}
+var CHANNEL_HINTS = {
+  pushplus: "要一个 token（pushplus 网站上拿）",
+  serverChan: "要一个 SendKey",
+  workWeixin: "要 corpid + corpsecret + agentid（**两步**：先换 access_token）",
+  workWeixinBot: "要一个群机器人 webhook 地址",
+  tgBot: "要 bot token + chat_id（群 ID 是负数）",
+  bark: "要一个 key（Bark App 里拿）",
+  twoIm: "要 key + sid",
+  dingTalk: "要 access_token（有加签密钥就一起填）",
+  email: "要 SMTP 主机 + 发件人 + 密码（走面板的 smtp_send）",
+  customPost: "自己写请求模板（URL + 请求体）"
+};
+function pushReading(store2) {
+  const cfg = loadPushConfig(store2);
+  const configured = CHANNELS.filter((c) => {
+    if (c === "customPost") return (cfg.customPost ?? []).length > 0;
+    return cfg[c] !== void 0 && cfg[c] !== null;
+  });
+  return {
+    configured,
+    channels: CHANNELS.map((id) => ({
+      id,
+      label: id,
+      configured: configured.includes(id),
+      hint: CHANNEL_HINTS[id]
+    })),
+    rules: loadPushRules(store2),
+    bindings: loadPushBindings(store2),
+    fields: pushFields(cfg)
+  };
 }
 
 // src/mcloud/liveFlower.ts
@@ -7419,7 +7854,7 @@ function userDomainIdFrom(userInfo) {
 function withClientHeaders(req, c, tid) {
   return { ...req, headers: { ...req.headers, ...pcHeaders(c), "x-yun-tid": tid } };
 }
-function postJson(path, body, base) {
+function postJson2(path, body, base) {
   return {
     url: `${(base ?? LOGIN_HOST).replace(/\/+$/, "")}${path}`,
     method: "POST",
@@ -7428,13 +7863,13 @@ function postJson(path, body, base) {
   };
 }
 function thirdloginRequest(c, tid, body, base) {
-  return withClientHeaders(postJson(THIRD_LOGIN_PATH, body, base), c, tid);
+  return withClientHeaders(postJson2(THIRD_LOGIN_PATH, body, base), c, tid);
 }
 function sendSmsCodeRequest(c, tid, body, base) {
-  return withClientHeaders(postJson(SEND_SMS_CODE_PATH, body, base), c, tid);
+  return withClientHeaders(postJson2(SEND_SMS_CODE_PATH, body, base), c, tid);
 }
 function sliderPuzzleRequest(c, tid, body, base) {
-  return withClientHeaders(postJson(SLIDER_PUZZLE_PATH, body, base), c, tid);
+  return withClientHeaders(postJson2(SLIDER_PUZZLE_PATH, body, base), c, tid);
 }
 function parseSliderPuzzle(env) {
   const payload = env.data;
@@ -7635,6 +8070,14 @@ function loginReading(store2, nowMs, qrPayloadOf) {
 
 // src/mcloud/routes.ts
 var PLUGIN = "mcloud";
+function parseJson5(body) {
+  if (typeof body !== "string") return body ?? null;
+  try {
+    return JSON.parse(body);
+  } catch {
+    return null;
+  }
+}
 var JSON_HEADERS = { "content-type": "application/json; charset=utf-8" };
 function accountsView(store2) {
   const cur = currentAccount(store2);
@@ -7744,7 +8187,14 @@ function buildReadings(deps) {
     },
     // ⚠ 推送（10 渠道）在**阶段 ⑤**。这里给一个诚实的空壳而不是编一个假读数 ——
     //    界面据此显示「还没做」，而不是显示一个看着像好的空表。
-    push: { implemented: false, channels: [], rules: {} },
+    // 推送：配了哪几个渠道、有几条规则、三个任务各绑了哪条。
+    //
+    // ⚠ 是**顶层**块，不是挂在 `live` 里 —— 推送是「一次运行结束」的出口，
+    //   三条任务都用它，与直播没有从属关系。（第一版插错了位置，
+    //   表现是读数里 `live.push.channels` 为空而顶层根本没有 `push`。）
+    // **秘密只给掩码**（见 pushConfig.maskSecret）—— token / pass / secret
+    // 一个字符都不进这里。
+    push: pushReading(deps.store),
     settings: {
       baseUrl: loadBaseUrl(deps.store),
       liveUrl: loadLiveUrl(deps.store),
@@ -7818,6 +8268,109 @@ function mcloudRoutes(deps) {
       path: `${base}/caps`,
       method: "GET",
       handler: () => json(200, { caps: sandboxCaps(), hasBigInt: hasBigInt() })
+    },
+    // ── 推送 ────────────────────────────────────────────────────────
+    {
+      // 存推送配置。
+      //
+      // # 为什么是**合并**而不是整份覆盖
+      //
+      // 界面上**拿不到已经存着的值**（读数里只有掩码 —— token 不上屏是硬规则）。
+      // 所以界面没法"把整份发回来"，它只知道用户这次改了什么。
+      //
+      // 但纯合并又做不到"删掉一个渠道"（删了下次会被旧值补回来）——
+      // 所以请求体里带一个**显式的 `remove` 列表**：
+      //
+      //     { "set": { "bark": { "key": "…" } }, "remove": ["pushplus"] }
+      //
+      // 两种形状都收：给一个裸的配置对象就是"合并这几项"（写脚本时更顺手），
+      // 给 `{set, remove}` 就是完整语义。
+      path: `${base}/push/config`,
+      method: "POST",
+      handler: (req) => {
+        const body = parseJson5(req.body);
+        if (body === null || typeof body !== "object" || Array.isArray(body)) {
+          return json(400, { error: "请求体要是 JSON 对象" });
+        }
+        const raw = body;
+        const isPatch = raw["set"] !== void 0 || raw["remove"] !== void 0;
+        const setObj = isPatch ? raw["set"] : raw;
+        const remove = Array.isArray(raw["remove"]) ? raw["remove"] : [];
+        const cur = loadPushConfig(deps.store);
+        if (setObj !== void 0 && setObj !== null) {
+          for (const [k, v] of Object.entries(setObj)) {
+            if (k === "title") {
+              cur.title = typeof v === "string" ? v : void 0;
+              continue;
+            }
+            if (!CHANNELS.includes(k)) continue;
+            if (v === null) delete cur[k];
+            else if (k === "customPost") cur.customPost = v;
+            else cur[k] = v;
+          }
+        }
+        for (const k of remove) {
+          if (typeof k === "string" && CHANNELS.includes(k)) {
+            delete cur[k];
+          }
+        }
+        savePushConfig(deps.store, cur, deps.now());
+        const n = configuredChannels(cur);
+        deps.log(`推送配置已保存（配了 ${n.length} 个渠道）`);
+        return json(200, { ok: true, configured: n });
+      }
+    },
+    {
+      // 存推送规则（整份覆盖，同上的理由）。
+      path: `${base}/push/rules`,
+      method: "POST",
+      handler: (req) => {
+        const body = parseJson5(req.body);
+        if (!Array.isArray(body)) return json(400, { error: "请求体要是数组" });
+        const rules = body.filter(
+          (r) => r !== null && typeof r === "object" && typeof r.id === "string" && r.id !== ""
+        );
+        savePushRules(deps.store, rules, deps.now());
+        deps.log(`推送规则已保存（${rules.length} 条）`);
+        return json(200, { ok: true, count: rules.length });
+      }
+    },
+    {
+      // 存「哪个任务用哪条规则」。
+      path: `${base}/push/bindings`,
+      method: "POST",
+      handler: (req) => {
+        const body = parseJson5(req.body);
+        if (body === null || typeof body !== "object") {
+          return json(400, { error: "请求体要是 JSON 对象" });
+        }
+        const src = body;
+        const b = {
+          daily: typeof src["daily"] === "string" ? src["daily"] : "",
+          exchange: typeof src["exchange"] === "string" ? src["exchange"] : "",
+          live: typeof src["live"] === "string" ? src["live"] : ""
+        };
+        savePushBindings(deps.store, b, deps.now());
+        deps.log("推送绑定已保存");
+        return json(200, { ok: true, bindings: b });
+      }
+    },
+    {
+      // **试发一条**。存在的理由：推送最难受的失败方式是"配好了、但收不到"，
+      // 而那时用户不知道是配置错了、还是任务没跑、还是根本没到发送那一步。
+      // 这个按钮把这三件事分开：它直接发一条，成不成当场告诉你。
+      path: `${base}/push/test`,
+      method: "POST",
+      handler: () => {
+        const cfg = loadPushConfig(deps.store);
+        const chans = configuredChannels(cfg);
+        if (chans.length === 0) {
+          return json(200, { ok: false, line: "一个渠道都没配", results: [] });
+        }
+        const r = sendPush(deps.pushDeps, cfg, "云盘 · 试发", "这是一条试发的推送。\n收到就说明配置对了。");
+        deps.log(`试发推送：${r.line}`);
+        return json(200, { ok: r.failed === 0 && r.sent > 0, line: r.line, results: r.results });
+      }
     },
     // ── 登录：读数 ──────────────────────────────────────────────────
     {
@@ -8619,6 +9172,9 @@ function mcloudRoutes(deps) {
 // src/entries/shared.ts
 import {
   http_fetch,
+  log,
+  smtp_send,
+  warn,
   ws_close,
   ws_open,
   ws_recv,
@@ -8740,6 +9296,23 @@ function makeHost() {
     wsClose: (id) => ws_close(id)
   };
 }
+function makePushDeps(transport2) {
+  return {
+    http: (r) => {
+      const res = transport2(r);
+      if (isFetchError(res)) {
+        return { ok: false, status: 0, body: "", error: res.error };
+      }
+      return { ok: true, status: res.status, body: res.body ?? "", error: void 0 };
+    },
+    smtp: (opts) => {
+      const res = smtp_send(opts);
+      return { ok: res.ok === true, response: String(res.response ?? "") };
+    },
+    nowMs: () => Date.now(),
+    log: (msg) => log(msg)
+  };
+}
 
 // src/selftest.ts
 function selftest(store2) {
@@ -8796,8 +9369,9 @@ try {
     store,
     transport,
     now: () => (/* @__PURE__ */ new Date()).toISOString(),
-    log: (msg) => log(msg),
-    ws: host
+    log: (msg) => log2(msg),
+    ws: host,
+    pushDeps: makePushDeps(transport)
   })) {
     register_route(r.path, r.method, r.handler);
     registered++;
@@ -8820,4 +9394,4 @@ var selftestRoute = {
 };
 register_route(selftestRoute.path, selftestRoute.method, selftestRoute.handler);
 store.setState("plugin.loaded_at", (/* @__PURE__ */ new Date()).toISOString(), (/* @__PURE__ */ new Date()).toISOString());
-log(`mcloud（服务型）：${registered + 1} 条路由 + 侧边栏入口，**没有 cron 任务**`);
+log2(`mcloud（服务型）：${registered + 1} 条路由 + 侧边栏入口，**没有 cron 任务**`);
