@@ -18,18 +18,21 @@ import {
   SLIDE_FORM_CONTENT_TYPE,
   SLIDER_ROUNDS,
   STATE_BASE,
+  STATE_ORDERED_HOUR,
   STATE_STEP,
   STEP_TEXT,
   clearOrder,
+  currentStep,
   pickPrize,
+  restoreOrder,
   runOrderStep,
+  snapshotOrder,
   startOrder,
 } from '../src/mcloud/tasks/exchangeOrder.ts';
 import { SESSION_KEY } from '../src/store/types.ts';
 import { memStore } from '../src/store/memory.ts';
 import type { BuiltRequest } from '../src/mcloud/h5.ts';
 import type { TaskDeps } from '../src/mcloud/tasks/base.ts';
-import { STATE_ORDERED_HOUR } from '../src/mcloud/tasks/exchangeOrder.ts';
 
 const NOW = '2026-10-14T01:00:00.000Z';
 const EXCHANGE_V3 = 'exchangeV3';
@@ -430,6 +433,59 @@ test('⚠ `514`（滑块算错）**不**记那个标记 —— 那一枪没被�
     null,
     '514 是"这一单没成立"，不该上闸（否则滑块那一轮白算）',
   );
+});
+
+// ───────────────────────── 多账号：状态快照 / 恢复 ─────────────────────────
+
+test('⚠ 快照/恢复：两个账号各自的进度**不能互相覆盖**', () => {
+  // 多账号是**两阶段**跑的：先把每个账号都推到"只差下单"，再等到整点依次发单。
+  // 而链的状态是**一整块** blob（`STATE_STEP` 里那个 JSON）—— 不分别存下来的话，
+  // 第二个账号的 `startOrder` 会把第一个账号的进度**覆盖掉**，
+  // 表现是"第一个账号的滑块白算了，整点那一刻从头再取一次题"。
+  const store = mkStore();
+  const { transport } = upstream({ exchangeList: LIST_HIT, infoV3: { code: 0, result: { total: 5000 } } });
+  const d = deps(store, transport);
+
+  // 账号 A：推到只差下单
+  startOrder(d, '钻石会员季卡');
+  runOrderStep(d);
+  runOrderStep(d);
+  const snapA = snapshotOrder(store);
+  assert.equal(currentStep(store), 'warm-1', `A 应该停在 warm-1，实际 ${currentStep(store)}`);
+
+  // 账号 B：清掉再推
+  clearOrder(d);
+  startOrder(d, '钻石会员季卡');
+  runOrderStep(d);
+  const snapB = snapshotOrder(store);
+  assert.equal(currentStep(store), 'balance', 'B 的进度是它自己的');
+
+  // 恢复 A ⇒ A 的进度必须回来（不是 B 的）
+  restoreOrder(store, snapA, NOW);
+  assert.equal(currentStep(store), 'warm-1', 'A 的进度被 B 覆盖了');
+  assert.notEqual(snapA.step, snapB.step);
+
+  // 恢复 B ⇒ 换回 B
+  restoreOrder(store, snapB, NOW);
+  assert.equal(currentStep(store), 'balance');
+});
+
+test('快照/恢复：空状态也能恢复（没跑过的账号）', () => {
+  const store = mkStore();
+  const empty = snapshotOrder(store);
+  assert.equal(empty.step, null);
+  assert.equal(currentStep(store), null);
+  // 恢复一个空快照不该炸
+  restoreOrder(store, empty, NOW);
+  assert.equal(currentStep(store), null);
+});
+
+test('⚠ `currentStep`：坏数据 ⇒ null（不让多账号驱动卡住）', () => {
+  const store = mkStore();
+  store.setState(STATE_STEP, '这不是 JSON', NOW);
+  assert.equal(currentStep(store), null);
+  store.setState(STATE_STEP, '{"step":123}', NOW);
+  assert.equal(currentStep(store), null, 'step 不是字符串就当没在跑');
 });
 
 test('步骤文案齐全（面板要靠它显示走到哪了）', () => {

@@ -38,66 +38,201 @@ function planFireWait(nowMs, leadMs = FIRE_LEAD_MS) {
   return { needed: true, untilMs, ms: untilMs - nowMs };
 }
 
-// src/mcloud/runLog.ts
-var RUN_LOG_KEY = "mcloud.run.log";
-var RUNS_PER_TASK = 20;
-var MAX_STEPS = 40;
-var MAX_NOTE = 300;
-function clip(s, max2 = MAX_NOTE) {
-  const t = typeof s === "string" ? s : String(s ?? "");
-  return t.length <= max2 ? t : `…${t.slice(t.length - max2 + 1)}`;
+// src/crypto/bytes.ts
+function utf8(s) {
+  const out = [];
+  for (let i = 0; i < s.length; i += 1) {
+    let cp = s.charCodeAt(i);
+    if (cp >= 55296 && cp <= 56319 && i + 1 < s.length) {
+      const low = s.charCodeAt(i + 1);
+      if (low >= 56320 && low <= 57343) {
+        cp = 65536 + (cp - 55296 << 10) + (low - 56320);
+        i += 1;
+      } else {
+        cp = 65533;
+      }
+    } else if (cp >= 55296 && cp <= 57343) {
+      cp = 65533;
+    }
+    if (cp < 128) {
+      out.push(cp);
+    } else if (cp < 2048) {
+      out.push(192 | cp >> 6, 128 | cp & 63);
+    } else if (cp < 65536) {
+      out.push(224 | cp >> 12, 128 | cp >> 6 & 63, 128 | cp & 63);
+    } else {
+      out.push(
+        240 | cp >> 18,
+        128 | cp >> 12 & 63,
+        128 | cp >> 6 & 63,
+        128 | cp & 63
+      );
+    }
+  }
+  return new Uint8Array(out);
 }
-function cleanStep(s) {
-  return {
-    name: clip(s.name, 60),
-    ok: s.ok === true,
-    note: clip(s.note),
-    idle: s.idle === true
+function fromUtf8(b) {
+  let s = "";
+  let codePoint = 0;
+  let bytesSeen = 0;
+  let bytesNeeded = 0;
+  let lower = 128;
+  let upper = 191;
+  const emit = (cp) => {
+    if (cp < 65536) {
+      s += String.fromCharCode(cp);
+    } else {
+      const v = cp - 65536;
+      s += String.fromCharCode(55296 + (v >> 10), 56320 + (v & 1023));
+    }
   };
+  const reset = () => {
+    codePoint = 0;
+    bytesSeen = 0;
+    bytesNeeded = 0;
+    lower = 128;
+    upper = 191;
+  };
+  let i = 0;
+  while (i < b.length) {
+    const byte = b[i];
+    let reprocess = false;
+    if (bytesNeeded === 0) {
+      if (byte <= 127) {
+        s += String.fromCharCode(byte);
+      } else if (byte >= 194 && byte <= 223) {
+        bytesNeeded = 1;
+        codePoint = byte & 31;
+      } else if (byte >= 224 && byte <= 239) {
+        if (byte === 224) lower = 160;
+        if (byte === 237) upper = 159;
+        bytesNeeded = 2;
+        codePoint = byte & 15;
+      } else if (byte >= 240 && byte <= 244) {
+        if (byte === 240) lower = 144;
+        if (byte === 244) upper = 143;
+        bytesNeeded = 3;
+        codePoint = byte & 7;
+      } else {
+        s += "�";
+      }
+    } else if (byte < lower || byte > upper) {
+      reset();
+      s += "�";
+      reprocess = true;
+    } else {
+      lower = 128;
+      upper = 191;
+      codePoint = codePoint << 6 | byte & 63;
+      bytesSeen += 1;
+      if (bytesSeen === bytesNeeded) {
+        emit(codePoint);
+        reset();
+      }
+    }
+    if (!reprocess) i += 1;
+  }
+  if (bytesNeeded !== 0) s += "�";
+  return s;
 }
-function readRuns(store2) {
-  const raw = store2.getState(RUN_LOG_KEY);
-  if (raw === void 0 || raw === null || raw === "") return [];
+var HEX = "0123456789abcdef";
+function toHex(b) {
+  let s = "";
+  for (let i = 0; i < b.length; i += 1) {
+    const v = b[i];
+    s += HEX[v >> 4] + HEX[v & 15];
+  }
+  return s;
+}
+var B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+function fromBase64(s) {
+  const clean = s.replace(/[^A-Za-z0-9+/]/g, "");
+  const out = new Uint8Array(Math.floor(clean.length * 6 / 8));
+  let bits2 = 0;
+  let acc = 0;
+  let o = 0;
+  for (let i = 0; i < clean.length; i += 1) {
+    const v = B64.indexOf(clean[i]);
+    if (v < 0) continue;
+    acc = acc << 6 | v;
+    bits2 += 6;
+    if (bits2 >= 8) {
+      bits2 -= 8;
+      out[o] = acc >> bits2 & 255;
+      o += 1;
+    }
+  }
+  return out.subarray(0, o);
+}
+function writeU32LE(out, off, v) {
+  out[off] = v & 255;
+  out[off + 1] = v >>> 8 & 255;
+  out[off + 2] = v >>> 16 & 255;
+  out[off + 3] = v >>> 24 & 255;
+}
+function readU32LE(b, off) {
+  return (b[off + 3] << 24 | b[off + 2] << 16 | b[off + 1] << 8 | b[off]) >>> 0;
+}
+function lengthBits(bytes) {
+  const bits2 = bytes * 8;
+  return { hi: Math.floor(bits2 / 4294967296) >>> 0, lo: bits2 >>> 0 };
+}
+
+// src/mcloud/accounts.ts
+var STATE_ACCOUNTS = "mcloud.accounts";
+var STATE_CURRENT_ACCOUNT = "mcloud.account.current";
+function maskAuth(raw) {
+  const phone = phoneOf(raw);
+  const len = raw.length;
+  if (phone !== void 0) return `${phone.slice(0, 1)}****${phone.slice(-4)} · ${len} 字符`;
+  return `（认不出手机号）· ${len} 字符`;
+}
+function phoneOf(raw) {
+  const plain = /1\d{10}/.exec(raw);
+  if (plain !== null) return plain[0];
+  const m = /^\s*basic\s+([A-Za-z0-9+/=]+)\s*$/i.exec(raw);
+  if (m === null) return void 0;
   try {
-    const v = JSON.parse(raw);
-    if (!Array.isArray(v)) return [];
-    return v.filter(
-      (r) => typeof r === "object" && r !== null && typeof r.id === "string"
-    );
+    const decoded = fromUtf8(fromBase64(m[1]));
+    const inB64 = /1\d{10}/.exec(decoded);
+    return inB64 === null ? void 0 : inB64[0];
+  } catch {
+    return void 0;
+  }
+}
+function loadAccounts(store2) {
+  const raw = store2.getState(STATE_ACCOUNTS);
+  if (raw === null || raw === void 0 || raw.trim() === "") return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
   } catch {
     return [];
   }
+  if (!Array.isArray(parsed)) return [];
+  const out = [];
+  for (const it of parsed) {
+    if (it === null || typeof it !== "object") continue;
+    const o = it;
+    if (typeof o.id !== "string" || typeof o.auth !== "string" || o.auth === "") continue;
+    out.push({
+      id: o.id,
+      label: typeof o.label === "string" && o.label !== "" ? o.label : o.id,
+      auth: o.auth,
+      addedAt: typeof o.addedAt === "string" ? o.addedAt : ""
+    });
+  }
+  return out;
 }
-function appendRun(store2, rec) {
-  const steps = rec.steps.slice(0, MAX_STEPS).map(cleanStep);
-  const id = `${rec.task}-${Date.parse(rec.at) || 0}`;
-  const all = readRuns(store2);
-  const next = {
-    id,
-    task: rec.task,
-    at: rec.at,
-    ms: Math.max(0, Math.round(rec.ms)),
-    ok: rec.ok === true,
-    note: clip(rec.note),
-    steps,
-    truncated: rec.steps.length > MAX_STEPS
-  };
-  const kept = all.filter((r) => r.id !== id);
-  kept.push(next);
-  const byTask = /* @__PURE__ */ new Map();
-  for (const r of kept) {
-    const list = byTask.get(r.task) ?? [];
-    list.push(r);
-    byTask.set(r.task, list);
-  }
-  const trimmed = [];
-  for (const list of byTask.values()) {
-    list.sort((a, b) => a.at < b.at ? 1 : a.at > b.at ? -1 : 0);
-    trimmed.push(...list.slice(0, RUNS_PER_TASK));
-  }
-  trimmed.sort((a, b) => a.at < b.at ? 1 : a.at > b.at ? -1 : 0);
-  store2.setState(RUN_LOG_KEY, JSON.stringify(trimmed), rec.at);
-  return id;
+function selectAccount(store2, id, nowIso) {
+  if (id !== "" && !loadAccounts(store2).some((a) => a.id === id)) return false;
+  store2.setState(STATE_CURRENT_ACCOUNT, id, nowIso);
+  return true;
+}
+function currentAccount(store2) {
+  const id = (store2.getState(STATE_CURRENT_ACCOUNT) ?? "").trim();
+  if (id === "") return void 0;
+  return loadAccounts(store2).find((a) => a.id === id);
 }
 
 // src/mcloud/envelope.ts
@@ -273,80 +408,29 @@ function mergeCookieJar(existing, incoming) {
   return [...jar.entries()].map(([k, v]) => `${k}=${v}`).join("; ");
 }
 
-// src/crypto/bytes.ts
-function utf8(s) {
-  const out = [];
-  for (let i = 0; i < s.length; i += 1) {
-    let cp = s.charCodeAt(i);
-    if (cp >= 55296 && cp <= 56319 && i + 1 < s.length) {
-      const low = s.charCodeAt(i + 1);
-      if (low >= 56320 && low <= 57343) {
-        cp = 65536 + (cp - 55296 << 10) + (low - 56320);
-        i += 1;
-      } else {
-        cp = 65533;
-      }
-    } else if (cp >= 55296 && cp <= 57343) {
-      cp = 65533;
-    }
-    if (cp < 128) {
-      out.push(cp);
-    } else if (cp < 2048) {
-      out.push(192 | cp >> 6, 128 | cp & 63);
-    } else if (cp < 65536) {
-      out.push(224 | cp >> 12, 128 | cp >> 6 & 63, 128 | cp & 63);
-    } else {
-      out.push(
-        240 | cp >> 18,
-        128 | cp >> 12 & 63,
-        128 | cp >> 6 & 63,
-        128 | cp & 63
-      );
-    }
+// src/store/types.ts
+var SESSION_KEY = "mcloud.session";
+function loadSession(store2) {
+  const raw = store2.getState(SESSION_KEY);
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw);
+    const cookie = typeof v.cookie === "string" ? v.cookie : "";
+    const jwt = typeof v.jwt === "string" ? v.jwt : "";
+    if (cookie === "" && jwt === "") return null;
+    return {
+      cookie,
+      jwt: jwt === "" ? void 0 : jwt,
+      deviceId: typeof v.deviceId === "string" ? v.deviceId : void 0,
+      userAgent: typeof v.userAgent === "string" ? v.userAgent : void 0,
+      savedAt: typeof v.savedAt === "string" ? v.savedAt : ""
+    };
+  } catch {
+    return null;
   }
-  return new Uint8Array(out);
 }
-var HEX = "0123456789abcdef";
-function toHex(b) {
-  let s = "";
-  for (let i = 0; i < b.length; i += 1) {
-    const v = b[i];
-    s += HEX[v >> 4] + HEX[v & 15];
-  }
-  return s;
-}
-var B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-function fromBase64(s) {
-  const clean = s.replace(/[^A-Za-z0-9+/]/g, "");
-  const out = new Uint8Array(Math.floor(clean.length * 6 / 8));
-  let bits2 = 0;
-  let acc = 0;
-  let o = 0;
-  for (let i = 0; i < clean.length; i += 1) {
-    const v = B64.indexOf(clean[i]);
-    if (v < 0) continue;
-    acc = acc << 6 | v;
-    bits2 += 6;
-    if (bits2 >= 8) {
-      bits2 -= 8;
-      out[o] = acc >> bits2 & 255;
-      o += 1;
-    }
-  }
-  return out.subarray(0, o);
-}
-function writeU32LE(out, off, v) {
-  out[off] = v & 255;
-  out[off + 1] = v >>> 8 & 255;
-  out[off + 2] = v >>> 16 & 255;
-  out[off + 3] = v >>> 24 & 255;
-}
-function readU32LE(b, off) {
-  return (b[off + 3] << 24 | b[off + 2] << 16 | b[off + 1] << 8 | b[off]) >>> 0;
-}
-function lengthBits(bytes) {
-  const bits2 = bytes * 8;
-  return { hi: Math.floor(bits2 / 4294967296) >>> 0, lo: bits2 >>> 0 };
+function saveSession(store2, s, nowIso) {
+  store2.setState(SESSION_KEY, JSON.stringify({ ...s, savedAt: nowIso }), nowIso);
 }
 
 // src/crypto/md5.ts
@@ -486,6 +570,64 @@ var md5Hex = (d) => toHex(md5(anyBytes(d)));
 function anyBytes(d) {
   return typeof d === "string" ? utf8(d) : d;
 }
+
+// src/crypto/aes.ts
+function gfMul(a, b) {
+  let r = 0;
+  let x = a & 255;
+  let y = b & 255;
+  while (y > 0) {
+    if (y & 1) r ^= x;
+    const hi = x & 128;
+    x = x << 1 & 255;
+    if (hi) x ^= 27;
+    y >>= 1;
+  }
+  return r & 255;
+}
+function rotl8(x, n) {
+  return (x << n | x >> 8 - n) & 255;
+}
+var SBOX = (() => {
+  const s = new Uint8Array(256);
+  for (let a = 0; a < 256; a += 1) {
+    let inv = 0;
+    if (a !== 0) {
+      let r = 1;
+      let b = a;
+      let e = 254;
+      while (e > 0) {
+        if (e & 1) r = gfMul(r, b);
+        b = gfMul(b, b);
+        e >>= 1;
+      }
+      inv = r;
+    }
+    s[a] = (inv ^ rotl8(inv, 1) ^ rotl8(inv, 2) ^ rotl8(inv, 3) ^ rotl8(inv, 4) ^ 99) & 255;
+  }
+  return s;
+})();
+var INV_SBOX = (() => {
+  const inv = new Uint8Array(256);
+  for (let a = 0; a < 256; a += 1) inv[SBOX[a]] = a;
+  return inv;
+})();
+var AES_FIXED_IV = (() => {
+  const out = new Uint8Array(16);
+  for (let i = 0; i < 16; i += 1) out[i] = "0102030405060708".charCodeAt(i);
+  return out;
+})();
+
+// src/crypto/gzip.ts
+var CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n += 1) {
+    let c = n;
+    for (let k = 0; k < 8; k += 1) c = c & 1 ? 3988292384 ^ c >>> 1 : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
 
 // src/mcloud/sign.ts
 var SALT_MAP = [
@@ -643,29 +785,90 @@ var EP_METHOD = {
   // 这一族用 POST，body `{"type":2}`
 };
 
-// src/store/types.ts
-var SESSION_KEY = "mcloud.session";
-function loadSession(store2) {
-  const raw = store2.getState(SESSION_KEY);
-  if (!raw) return null;
+// src/mcloud/smidRules.ts
+var SKLAND_SM_CONFIG = {
+  organization: "FXlyfmWg2AzwbrxDKSv5",
+  appId: "default",
+  publicKey: "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQC8KHAcHbkCn5rxGgGJE+07tY+pt86D/oZ7sA51FaEBv2jgno2TI9zHJVYKJynmiKpixgwUcv93EfWIrU/p/UCs5Vu+odS3I4UBp3R7IZ1A0W01FkumAHYW2PQpMm8ueQKPLUq/idkpG/9b2JDv/qU+Ks36nbUPwlW4CjdfrV+V9QIDAQAB",
+  protocol: "https",
+  apiHost: "slw.h5cmpassport.com:9090",
+  apiPath: "/deviceprofile/v4"
+};
+
+// src/mcloud/smid.ts
+var SMID_HOST = `${SKLAND_SM_CONFIG.protocol}://${SKLAND_SM_CONFIG.apiHost}`;
+var SMID_PATH = SKLAND_SM_CONFIG.apiPath;
+
+// src/mcloud/sessionExchange.ts
+var STATE_AUTH = "mcloud.h5.auth";
+function loadAuthRaw(store2) {
+  const cur = currentAccount(store2);
+  if (cur !== void 0) return cur.auth;
+  return store2.getState(STATE_AUTH) ?? "";
+}
+var JWT_TTL_MS = 100 * 60 * 1e3;
+var RETRY_AFTER_MS = 30 * 60 * 1e3;
+
+// src/mcloud/runLog.ts
+var RUN_LOG_KEY = "mcloud.run.log";
+var RUNS_PER_TASK = 20;
+var MAX_STEPS = 40;
+var MAX_NOTE = 300;
+function clip(s, max2 = MAX_NOTE) {
+  const t = typeof s === "string" ? s : String(s ?? "");
+  return t.length <= max2 ? t : `…${t.slice(t.length - max2 + 1)}`;
+}
+function cleanStep(s) {
+  return {
+    name: clip(s.name, 60),
+    ok: s.ok === true,
+    note: clip(s.note),
+    idle: s.idle === true
+  };
+}
+function readRuns(store2) {
+  const raw = store2.getState(RUN_LOG_KEY);
+  if (raw === void 0 || raw === null || raw === "") return [];
   try {
     const v = JSON.parse(raw);
-    const cookie = typeof v.cookie === "string" ? v.cookie : "";
-    const jwt = typeof v.jwt === "string" ? v.jwt : "";
-    if (cookie === "" && jwt === "") return null;
-    return {
-      cookie,
-      jwt: jwt === "" ? void 0 : jwt,
-      deviceId: typeof v.deviceId === "string" ? v.deviceId : void 0,
-      userAgent: typeof v.userAgent === "string" ? v.userAgent : void 0,
-      savedAt: typeof v.savedAt === "string" ? v.savedAt : ""
-    };
+    if (!Array.isArray(v)) return [];
+    return v.filter(
+      (r) => typeof r === "object" && r !== null && typeof r.id === "string"
+    );
   } catch {
-    return null;
+    return [];
   }
 }
-function saveSession(store2, s, nowIso) {
-  store2.setState(SESSION_KEY, JSON.stringify({ ...s, savedAt: nowIso }), nowIso);
+function appendRun(store2, rec) {
+  const steps = rec.steps.slice(0, MAX_STEPS).map(cleanStep);
+  const id = `${rec.task}-${Date.parse(rec.at) || 0}`;
+  const all = readRuns(store2);
+  const next = {
+    id,
+    task: rec.task,
+    at: rec.at,
+    ms: Math.max(0, Math.round(rec.ms)),
+    ok: rec.ok === true,
+    note: clip(rec.note),
+    steps,
+    truncated: rec.steps.length > MAX_STEPS
+  };
+  const kept = all.filter((r) => r.id !== id);
+  kept.push(next);
+  const byTask = /* @__PURE__ */ new Map();
+  for (const r of kept) {
+    const list = byTask.get(r.task) ?? [];
+    list.push(r);
+    byTask.set(r.task, list);
+  }
+  const trimmed = [];
+  for (const list of byTask.values()) {
+    list.sort((a, b) => a.at < b.at ? 1 : a.at > b.at ? -1 : 0);
+    trimmed.push(...list.slice(0, RUNS_PER_TASK));
+  }
+  trimmed.sort((a, b) => a.at < b.at ? 1 : a.at > b.at ? -1 : 0);
+  store2.setState(RUN_LOG_KEY, JSON.stringify(trimmed), rec.at);
+  return id;
 }
 
 // src/mcloud/tasks/base.ts
@@ -1484,6 +1687,7 @@ function runExchangeList(deps) {
 var STATE_STEP = "mcloud.exchange.order.step";
 var STATE_PLAN = "mcloud.exchange.order.plan";
 var STATE_BASE = "mcloud.exchange.order.baseline";
+var STATE_ROUND = "mcloud.exchange.order.round";
 var SLIDER_ROUNDS = 2;
 var EXCHANGE_CLIENT_VERSION = "12.6.0";
 var SLIDE_FORM_CONTENT_TYPE = "application/x-www-form-urlencoded;charset=UTF-8";
@@ -1563,6 +1767,34 @@ function spinUntil(targetMs, deps) {
 }
 var MAX_WAIT_MS = 61 * 6e4;
 var MAX_SPIN_MS = 3e4;
+function snapshotOrder(store2) {
+  return {
+    step: store2.getState(STATE_STEP),
+    base: store2.getState(STATE_BASE)
+  };
+}
+function restoreOrder(store2, snap, nowIso) {
+  if (snap.step === null) store2.setState(STATE_STEP, "", nowIso);
+  else store2.setState(STATE_STEP, snap.step, nowIso);
+  if (snap.base === null) store2.setState(STATE_BASE, "", nowIso);
+  else store2.setState(STATE_BASE, snap.base, nowIso);
+}
+function currentStep(store2) {
+  const raw = store2.getState(STATE_STEP);
+  if (raw === void 0 || raw === null || raw === "") return null;
+  try {
+    const v = JSON.parse(raw);
+    return typeof v.step === "string" ? v.step : null;
+  } catch {
+    return null;
+  }
+}
+function clearOrder(deps) {
+  deps.store.setState(STATE_STEP, "", deps.nowIso);
+  deps.store.setState(STATE_PLAN, "", deps.nowIso);
+  deps.store.setState(STATE_BASE, "", deps.nowIso);
+  deps.store.setState(STATE_ROUND, "", deps.nowIso);
+}
 function startOrder(deps, query) {
   if (query.trim() === "") {
     return { ok: false, note: "兑换要指定奖品（名字或 prizeId）—— 没有它无从下手" };
@@ -2025,12 +2257,67 @@ function runExchange(deps) {
       };
     }
   }
-  const r = drain(runOrderStep, deps, {
-    label: "兑换",
-    maxSteps: 10,
-    deadlineMs: DEADLINE_MS,
-    startedAt: started
-  });
+  const accounts = loadAccounts(store);
+  const multi = accounts.length > 1;
+  const snaps = /* @__PURE__ */ new Map();
+  const offsets = [];
+  let r;
+  if (multi) {
+    for (const acc of accounts) {
+      selectAccount(store, acc.id, deps.nowIso);
+      clearOrder(deps);
+      startOrder(deps, plan);
+      const a = drain(runOrderStep, deps, {
+        label: "兑换",
+        maxSteps: 8,
+        deadlineMs: Math.min(DEADLINE_MS, started + 3e4),
+        startedAt: started,
+        // 停在 `order` 之前 —— 下单那一枪留给阶段 B（那时才压整点）
+        more: () => currentStep(store) !== "order" && currentStep(store) !== null
+      });
+      snaps.set(acc.id, snapshotOrder(store));
+      add(
+        `准备 ${maskAuth(loadAuthRaw(store) ?? "")}`,
+        a.ok,
+        `${a.note}（已推到只差下单）`
+      );
+    }
+  }
+  const fireStart = Date.now();
+  for (const acc of accounts) {
+    if (multi) {
+      const snap = snaps.get(acc.id);
+      if (snap === void 0) continue;
+      selectAccount(store, acc.id, deps.nowIso);
+      restoreOrder(store, snap, deps.nowIso);
+    }
+    const one = drain(runOrderStep, deps, {
+      label: "兑换",
+      maxSteps: 10,
+      deadlineMs: DEADLINE_MS,
+      startedAt: started
+    });
+    if (multi) {
+      offsets.push(`${maskAuth(loadAuthRaw(store) ?? "")} +${Date.now() - fireStart}ms`);
+      add(
+        `下单 ${maskAuth(loadAuthRaw(store) ?? "")}`,
+        one.ok,
+        `${one.note} · 离第一枪 ${Date.now() - fireStart}ms`
+      );
+    }
+    if (!multi) {
+      r = one;
+      break;
+    }
+  }
+  r ?? (r = { ok: true, idle: true, steps: 0, note: "没有账号（先登录一个）", notes: [] });
+  if (multi) {
+    add(
+      "整点这一批",
+      offsets.length > 0,
+      offsets.length > 0 ? `串行发出，各账号离第一枪：${offsets.join("、")}` : "没有账号可发"
+    );
+  }
   for (const line of r.notes) {
     const i = line.indexOf("：");
     if (i < 0) add("兑换", true, line);
