@@ -106,6 +106,13 @@ export interface DrawState {
   finishedAt?: string | undefined;
   /** 这一轮最终那句话（跑完才有） */
   summary?: string | undefined;
+  /** 这一轮是**哪个账号**跑的。
+   *
+   *  ⚠⚠ 2026-10-14 踩出来的：口令是**共享资源**（谁拿到都能用），而余额是**每个账号
+   *  自己的**。所以"同一批口令 + 已跑完"这个判据**必须**把账号算进去 ——
+   *  否则换个账号再跑，会被那句"口令没变，不重复领"直接跳过（第二、第三个账号
+   *  一条都领不到，而界面看起来一切正常）。 */
+  account?: string | undefined;
 }
 
 /** 一轮要试哪些口令。
@@ -254,14 +261,17 @@ export function runLiveDraw(deps: TaskDeps, opts: { force?: boolean } = {}): Tas
         ? { ok: true, idle: true, note: `这一轮已跑完（${s?.summary ?? ''}）；口令没变，不重复领` }
         : { ok: true, idle: true, note: '没有口令可领（先抓主页或把口令填进输入框）' };
     }
-    if (s?.step === 'done' && sameList(done, codes)) {
+    if (s?.step === 'done' && sameList(done, codes) && s.account === account) {
       return { ok: true, idle: true, note: `这一轮已跑完（${s.summary ?? ''}）；口令没变，不重复领` };
     }
+    // ⚠ 走到这里有两种情况，都要起新一轮：口令变了，**或者账号换了**
+    //   （后者是人最容易忽略的：口令一样，但余额是另一个账号的）。
     s = {
       step: 'balance-before',
       journalingSent: 0,
       drawIndex: 0,
       codes,
+      account,
       results: [],
       startedAt: deps.nowIso,
     };
