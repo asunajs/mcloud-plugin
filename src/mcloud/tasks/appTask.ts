@@ -29,8 +29,9 @@ import { REFERER_SIGN_IN, SHOW_LOADING, buildH5Request } from '../h5.ts';
 import { loadSession } from '../../store/types.ts';
 import { judgeItem, readMatrix } from './appTaskMatrix.ts';
 import { runUploadStep, startUpload, uploadDone } from './upload.ts';
-import { deterministicFile } from '../cloudUpload.ts';
+import { cloudFileOpHeaders, deterministicFile } from '../cloudUpload.ts';
 import { shouldSkip, uploadShapeFor } from '../appTaskRules.ts';
+import type { BuiltRequest } from '../h5.ts';
 import type { TaskDeps, TaskOutcome } from './base.ts';
 
 export const STATE_TASK = 'mcloud.apptask.state';
@@ -82,20 +83,20 @@ export function clickRequest(deps: TaskDeps, id: number): ReturnType<typeof buil
   });
 }
 
-/** 收尾那一枪。⚠ **空数组不发**（见文件头 ②）。 */
-export function trashRequest(deps: TaskDeps, fileIds: string[]): ReturnType<typeof buildH5Request> {
-  const session = loadSession(deps.store);
-  return buildH5Request({
+/** 收尾那一枪。⚠ **空数组不发**（见文件头 ②）。
+ *
+ *  ⚠ 它**不走 H5 签名**（那是 `m.mcloud.139.com` 那一族的做法）：这一口在**云盘主机**
+ *  `personal-kd-njs.yun.139.com` 上，要的是**云盘族的头** + 传输层注入的 `Authorization`。
+ *  真机教训：照 H5 签名发会回 **404 / `04000005 认证失败`**。
+ *  ⚠ 凭据**不在这里设**（由传输层按主机判 —— 见 `sendsAuthorizationTo`）。 */
+export function trashRequest(deps: TaskDeps, fileIds: string[]): BuiltRequest {
+  void deps;
+  return {
     url: BATCH_TRASH_URL,
     method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...cloudFileOpHeaders('upload') },
     body: JSON.stringify({ fileIds }),
-    referer: REFERER_SIGN_IN,
-    showLoading: SHOW_LOADING,
-    isDeviceId: false,
-    saltKey: 1,
-    marketName: 'sign_in_3',
-    session: session ? sessionHeaders(session) : {},
-  });
+  };
 }
 
 function load(deps: TaskDeps): TaskState | null {

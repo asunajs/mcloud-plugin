@@ -64,6 +64,36 @@ export const SUB_OP_TYPE_UPLOAD = '200';
 export const OP_TYPE_BACKUP = '0';
 export const SUB_OP_TYPE_BACKUP = '0';
 
+/** Android 档的设备信息串（实拍逐字 —— 别"修"里面的 `127.0.0.1`）。 */
+export const CLIENT_INFO_ANDROID =
+  '1|127.0.0.1|1|12.6.0|Xiaomi|22041216C||02-00-00-00-00-00|android 14|1080X2360|zh||||032|0|';
+
+/** 这一族三种动作的 op 码（`android_op_codes`）。 */
+export type CloudOp = 'upload' | 'backup' | 'snapshot';
+export function androidOpCodes(op: CloudOp): { opType: string; subOpType: string } {
+  const code = op === 'backup' ? 2 : op === 'upload' ? 1 : 0;
+  return { opType: String(code), subOpType: String(code * 100) };
+}
+
+/** ⚠ 这一族的**头画像**（与别的族都不同）。
+ *
+ *  真机教训：少了这几枚，`/hcy/file/create` 回 **HTTP 404** ——
+ *  网关按这些头路由，缺了**看着就像"路径不存在"**（F-015 那个坑的第三次）。
+ *  出处：mcloud 的 `cloud_file_op_headers`。 */
+export function cloudFileOpHeaders(op: CloudOp, channel: string = CHANNEL_ANDROID): Record<string, string> {
+  const { opType, subOpType } = androidOpCodes(op);
+  return {
+    // base 三枚（三档都有）
+    'x-yun-api-version': 'v1',
+    'x-yun-app-channel': channel,
+    'x-yun-op-type': opType,
+    // Android 档那三枚
+    'x-huawei-channelSrc': channel,
+    'x-yun-client-info': CLIENT_INFO_ANDROID,
+    'x-yun-sub-op-type': subOpType,
+  };
+}
+
 /** 应带凭据的主机后缀。⚠ 照抄 mcloud 的 `AUTH_DOMAINS`（`endpoints.rs:6`）。 */
 export const AUTH_DOMAINS: readonly string[] = [
   'yun.139.com',
@@ -112,6 +142,8 @@ export interface CreateInput {
   renameMode?: string | undefined;
   parallelUpload?: boolean | undefined;
   localCreatedAt?: string | undefined;
+  /** 这一族三种动作之一（默认 `backup` —— 与 PUT 那一枪的 `2/200` 一致）。 */
+  op?: CloudOp | undefined;
 }
 
 /** 由内容算出 `contentHash`（第 ③ 枪要用**同一份**，所以先算好、落库）。 */
@@ -147,7 +179,11 @@ export function buildCreateRequest(input: CreateInput): BuiltRequest {
   return {
     url: `${PERSONAL_KD}${FILE_CREATE_PATH}`,
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    // ⚠ 真机实测（2026-10-14）：这一口**要 `application/json`**。
+    //   写成 `application/oct-stream` / `octet-stream` 会回 `04000018 请求体媒体格式不支持`。
+    //   ⚠ 我一开始把 404 归因成 content-type —— **认错了**：那次同时改了两样（头画像 +
+    //   content-type），而真因是**缺头画像**。一次只改一样才分得清。
+    headers: { 'Content-Type': 'application/json', ...cloudFileOpHeaders(input.op ?? 'backup') },
     body: createBody(input),
   };
 }
@@ -176,7 +212,18 @@ export function parseCreate(body: string): { ok: boolean; created?: Created; err
   if (!data || typeof data !== 'object') return { ok: false, error: 'create 响应没有 data/result' };
   const fileId = data.fileId;
   const uploadId = data.uploadId;
-  const uploadUrl = data.uploadUrl;
+  // ⚠ **真机形状**（2026-10-14）：`uploadUrl` 在 **`data.partInfos[0].uploadUrl`** 里，
+  //   **不在** `data.uploadUrl`。实拍：
+  //   `{success:true,code:"0000",data:{fileId,type,fileName,rapidUpload:false,uploadId,
+  //     partInfos:[{partNumber:1,partSize:null,uploadUrl:"https://hcyykj-eos-….cmecloud.cn/…"}]}}`
+  //   顶层那个键**根本不存在** —— 照顶层读的后果是"看着像成功了却没有地址可用"。
+  const parts = Array.isArray(data.partInfos) ? (data.partInfos as unknown[]) : [];
+  const first = parts[0];
+  const nested =
+    first !== null && typeof first === 'object'
+      ? ((first as Record<string, unknown>).uploadUrl as string | undefined)
+      : undefined;
+  const uploadUrl = nested ?? (data.uploadUrl as string | undefined);
   const rapid = data.rapidUpload === true;
   if (typeof fileId !== 'string' || fileId === '') return { ok: false, error: 'create 响应缺 fileId' };
   if (!rapid) {
@@ -258,11 +305,12 @@ export function buildCompleteRequest(
   fileId: string,
   uploadId: string,
   contentHash: string,
+  op: CloudOp = 'backup',
 ): BuiltRequest {
   return {
     url: `${PERSONAL_KD}${FILE_COMPLETE_PATH}`,
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...cloudFileOpHeaders(op) },
     body: completeBody(fileId, uploadId, contentHash),
   };
 }
@@ -287,6 +335,13 @@ export function parseComplete(body: string): { ok: boolean; error?: string } {
 export function deterministicFile(seed: string, bytes = 1024): Uint8Array {
   const out = new Uint8Array(bytes);
   const base = utf8(seed);
-  for (let i = 0; i < bytes; i += 1) out[i] = base[i % base.length]! ^ (i & 0xff);
+  for (let i = 0; i < bytes; i += 1) {
+    // ⚠ **不许出现 NUL（0x00）**：这一族把体当**字符串**交给宿主，
+    //   而"字符串里的 NUL 能不能原样过到线上"**没验过** —— 真机验的时候
+    //   就是因为体里有 NUL 才吃了一个 **403**（预签名覆盖了 `content-length`，
+    //   而 NUL 在传输路径上被截断 ⇒ 长度与签名不符）。
+    //   内容对"触发备份"这件事没有意义，所以取**可打印范围**（0x21–0x7E）。
+    out[i] = 0x21 + (((base[i % base.length]! ^ (i & 0x7f)) - 0x21 + 94) % 94);
+  }
   return out;
 }

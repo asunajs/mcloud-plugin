@@ -3358,11 +3358,30 @@ var PUT_UPLOAD_COMPLETE = "?1";
 var PUT_UPLOAD_DRAFT_INTEROP_VERSION = "6";
 var HASH_ALGORITHM = "SHA256";
 var FILE_TYPE_FILE = "file";
+var CHANNEL_ANDROID = "10000023";
 var RENAME_FORCE = "force_rename";
 var OP_TYPE_UPLOAD = "2";
 var SUB_OP_TYPE_UPLOAD = "200";
 var OP_TYPE_BACKUP = "0";
 var SUB_OP_TYPE_BACKUP = "0";
+var CLIENT_INFO_ANDROID = "1|127.0.0.1|1|12.6.0|Xiaomi|22041216C||02-00-00-00-00-00|android 14|1080X2360|zh||||032|0|";
+function androidOpCodes(op) {
+  const code = op === "backup" ? 2 : op === "upload" ? 1 : 0;
+  return { opType: String(code), subOpType: String(code * 100) };
+}
+function cloudFileOpHeaders(op, channel = CHANNEL_ANDROID) {
+  const { opType, subOpType } = androidOpCodes(op);
+  return {
+    // base 三枚（三档都有）
+    "x-yun-api-version": "v1",
+    "x-yun-app-channel": channel,
+    "x-yun-op-type": opType,
+    // Android 档那三枚
+    "x-huawei-channelSrc": channel,
+    "x-yun-client-info": CLIENT_INFO_ANDROID,
+    "x-yun-sub-op-type": subOpType
+  };
+}
 var AUTH_DOMAINS = [
   "yun.139.com",
   "mcloud.139.com",
@@ -3409,7 +3428,11 @@ function buildCreateRequest(input) {
   return {
     url: `${PERSONAL_KD}${FILE_CREATE_PATH}`,
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    // ⚠ 真机实测（2026-10-14）：这一口**要 `application/json`**。
+    //   写成 `application/oct-stream` / `octet-stream` 会回 `04000018 请求体媒体格式不支持`。
+    //   ⚠ 我一开始把 404 归因成 content-type —— **认错了**：那次同时改了两样（头画像 +
+    //   content-type），而真因是**缺头画像**。一次只改一样才分得清。
+    headers: { "Content-Type": "application/json", ...cloudFileOpHeaders(input.op ?? "backup") },
     body: createBody(input)
   };
 }
@@ -3427,7 +3450,10 @@ function parseCreate(body) {
   if (!data || typeof data !== "object") return { ok: false, error: "create 响应没有 data/result" };
   const fileId = data.fileId;
   const uploadId = data.uploadId;
-  const uploadUrl = data.uploadUrl;
+  const parts = Array.isArray(data.partInfos) ? data.partInfos : [];
+  const first = parts[0];
+  const nested = first !== null && typeof first === "object" ? first.uploadUrl : void 0;
+  const uploadUrl = nested ?? data.uploadUrl;
   const rapid = data.rapidUpload === true;
   if (typeof fileId !== "string" || fileId === "") return { ok: false, error: "create 响应缺 fileId" };
   if (!rapid) {
@@ -3486,11 +3512,11 @@ function completeBody(fileId, uploadId, contentHash) {
     contentHashAlgorithm: HASH_ALGORITHM
   });
 }
-function buildCompleteRequest(fileId, uploadId, contentHash) {
+function buildCompleteRequest(fileId, uploadId, contentHash, op = "backup") {
   return {
     url: `${PERSONAL_KD}${FILE_COMPLETE_PATH}`,
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...cloudFileOpHeaders(op) },
     body: completeBody(fileId, uploadId, contentHash)
   };
 }
@@ -3507,7 +3533,9 @@ function parseComplete(body) {
 function deterministicFile(seed, bytes = 1024) {
   const out = new Uint8Array(bytes);
   const base = utf8(seed);
-  for (let i = 0; i < bytes; i += 1) out[i] = base[i % base.length] ^ i & 255;
+  for (let i = 0; i < bytes; i += 1) {
+    out[i] = 33 + ((base[i % base.length] ^ i & 127) - 33 + 94) % 94;
+  }
   return out;
 }
 
@@ -4086,18 +4114,13 @@ function clickRequest(deps, id) {
   });
 }
 function trashRequest(deps, fileIds) {
-  const session = loadSession(deps.store);
-  return buildH5Request({
+  void deps;
+  return {
     url: BATCH_TRASH_URL,
     method: "POST",
-    body: JSON.stringify({ fileIds }),
-    referer: REFERER_SIGN_IN,
-    showLoading: SHOW_LOADING,
-    isDeviceId: false,
-    saltKey: 1,
-    marketName: "sign_in_3",
-    session: session ? sessionHeaders(session) : {}
-  });
+    headers: { "Content-Type": "application/json", ...cloudFileOpHeaders("upload") },
+    body: JSON.stringify({ fileIds })
+  };
 }
 function load2(deps) {
   const raw = deps.store.getState(STATE_TASK);
