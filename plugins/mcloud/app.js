@@ -745,6 +745,9 @@ async function saveBase() {
 //   听弹幕那条链、自动定时的重算、以及插件自身的自检族。
 //   见 docs/ui-wording.md —— 主界面只说"你要做什么、成了没有"。
 const ADV_IDS = [
+  // ⚠ 会话卡整张：它与"账号"卡**在问同一件事**（同一串凭据）—— 用户不该看到两个框
+  //   问同一个东西。贴凭据的地方只留"账号"卡那一处；会话/换票的机制进高级。
+  'session-card',
   'base-url', 'base-hint', 'base-save', 'gate-base', 'gate-base-hint', 'gate-base-save',
   'live-url', 'live-url-hint', 'live-url-save',
   'live-listen', 'live-listen-hint', 'live-auto', 'live-auto-hint',
