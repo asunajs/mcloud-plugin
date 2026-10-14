@@ -178,6 +178,13 @@ export interface ListenState {
   kinds?: Record<string, number>;
   /** 连"是不是 SockJS 数据帧"都没认出来的文本帧条数（探针自己的失败计数）。 */
   decodeFail?: number;
+  /** **上次真的去探门**是什么时候（ISO）。
+   *
+   *  ⚠ 它存在的理由：空闲时这条任务每 10 秒醒一次、每次都返回同一句"门关着"，
+   *  而"在探门"与"只是把旧读数重复说一遍"在**日志**里长得一样
+   *  （2026-10-14 soak 里我就是靠数 ①/② 那两行才分清的）。把时刻摆进读数，
+   *  一眼就能看出最后一次真探是什么时候。 */
+  probedAt?: string;
   /** 收到过几帧 SockJS 心跳 `h`。
    *
    *  ⭐ 这一格是"实验有没有真的走到那个分支"的判据 —— 没有它，
@@ -492,18 +499,24 @@ function roomsStep(deps: ListenDeps, st: ListenState, nowMs: number): TaskOutcom
     st.nextCheckAtMs = Date.parse(deps.nowIso) + coolMs;
     st.closedReason = '那个主播没在播';
     st.finishedAt = deps.nowIso;
+    st.probedAt = deps.nowIso;
     st.note =
       forced !== undefined
         ? `指定的房间 ${forced} 不在这次探到的 ${merged.length} 间房里（诊断口子）`
         : coolMs > IDLE_RECHECK_MS
           ? `门关着（合并后 ${merged.length} 间房）—— 按日程睡到下一场之后（${Math.round(coolMs / 60000)} 分钟）`
-          : `门关着（合并后 ${merged.length} 间房）—— 隔 ${Math.round(coolMs / 60000)} 分钟再看`;
+          : `门关着（合并后 ${merged.length} 间房）—— 隔 ${Math.round(coolMs / 60000)} 分钟再看` +
+            // ⚠ 带上"上次真探"的时刻：空闲时这条任务每 10 秒醒一次、读数**一模一样**，
+            //   日志去重之后一个窗口只会留一行 —— 那一行必须能回答"这次是真探过，还是
+            //   只是把旧读数重复了一遍"（2026-10-14 soak 里我就是靠数 ①/② 那两行才分清的）。
+            `（上次真探 ${deps.nowIso.slice(11, 19)}）`;
     persist(deps, st);
     return { ok: true, note: st.note };
   }
   st.roomId = chosen;
   // ⚠ 顺序照 mcloud 的 `listen_danmaku_with`：先取 **WS 凭据**，再问聊天室号，再进房间。
   st.step = 'userToken';
+  st.probedAt = deps.nowIso;
   persist(deps, st);
   return {
     ok: true,

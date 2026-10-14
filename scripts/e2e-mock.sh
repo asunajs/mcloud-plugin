@@ -722,3 +722,20 @@ assert auto['wakeAt'] == want, (auto['wakeAt'], want)
 assert auto['expr'].endswith(' *'), auto['expr']
 print(f"   ✅ 自动定时：下一场 {auto['nextStart']} ⇒ {auto['wakeAt']} 醒（等价 cron {auto['expr']}）")
 AUTOPY
+
+# ── ⑩ 「听到就领」的节拍：`live-draw` 必须比"每 5 分钟"快 ─────────────────────
+# ⚠ 这条链是"听到 → 进池 → 领"的**衔接器**。5 分钟那一版意味着听到之后最多 5 分钟才动手，
+#   而口令是当场有效的东西（mcloud 的 `live-room` 就是听到即领）。
+#   便宜的理由：它没事时**一个请求都不发**就返回 idle —— 所以变快不花钱。
+curl -fsS "${H[@]}" "$B/api/state" -o "$TMP/state2.json"
+python3 - "$TMP/state2.json" <<'CADPY'
+import json, sys
+s = json.load(open(sys.argv[1]))
+jobs = {j['name']: j for j in s.get('jobs', []) if j.get('plugin') == 'mcloud'}
+d = jobs.get('live-draw')
+assert d is not None, '没有 live-draw 这条任务'
+expr = d.get('expr') or d.get('schedule') or ''
+assert expr == '@every 30s', f'live-draw 的调度是 {expr!r}，应当是 @every 30s（听到就领的衔接节拍）'
+assert jobs.get('live-listen') is not None and jobs.get('live-auto') is not None, jobs.keys()
+print('   ✅ 衔接节拍：live-draw 是 @every 30s（听到→进池→领，不用等人点）')
+CADPY
