@@ -4558,10 +4558,12 @@ function hasKouling(text) {
 function isKoulingMarker(text) {
   return /无随机/.test(text);
 }
+var TRAILING_PUNCT = /[。．.！!？?~～、,，;；:：'"]+$/;
 function trimKoulingTail(code) {
   let out = code.trim();
   for (; ; ) {
     const before = out;
+    out = out.replace(TRAILING_PUNCT, "").trim();
     out = out.replace(/\s*无随机口令$/, "");
     out = out.replace(/(?:^|\s+)无随机$/, "");
     out = out.replace(/(?:^|\s+)无$/, "");
