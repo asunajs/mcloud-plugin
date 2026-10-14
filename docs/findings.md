@@ -1299,8 +1299,9 @@ mcloud 那边的证据等级分得很细。这一段属于**实证**那一档：
              只解释了 **WS / 弹幕**那一支（未开播时 `chatRoomId: null`，零样本）
 ```
 
-⚠ 那份抓包文档**不在本 checkout 里**（`mcloud/docs/capture/` 在这份工作副本里是空的），
-所以要看原文得去 mcloud 仓库 —— 这里引用它只是把"判据从哪来"标清楚，不是"本地有据可查"。
+⚠ 那份抓包文档在**兄弟仓库** `../mcloud-capture/docs/capture/`（mcloud 在 `9c53bd7`
+把抓包面迁出去了：`mcloud/docs/capture/` 现在确实是空的）—— 更正于 2026-10-14：
+我先前写成"本地没有这份文档"，那是**看错了地方**，不是文档不存在。
 
 ### 三步与两个"坑"（都照实拍钉）
 
@@ -1409,22 +1410,43 @@ TLS 与 `http_fetch` 同一个信任库（⇒「目标机不需要装 CA」仍�
 所以本插件的 Node 测试（`node --test`）**不受影响**，前提是把 WS 调用收敛到一个
 **可注入的端口**上（与 `transport` 同一个套路）—— 下一轮接弹幕时必须照这个写。
 
-### ⚠ 如实标出证据等级：**弹幕这条链在 mcloud 那边从未真机连过**
+### ⚠⚠ 更正（2026-10-14，用户指出）：弹幕这条链**是有实拍的**，我先前标错了档
 
-这一点必须写在动手之前。mcloud 的 `live_ws_client.rs` 自己的模块头就写着
-「这条链**从未真机连过**」，而 F-028 的门是**实证**那一档（只读探针走过一遍）。
-所以两者不是一回事：
+我先前写「弹幕这条链在 mcloud 那边从未真机连过 ⇒ 推测档」。**这是错的**，两处错：
 
 ```text
-门（F-028）   实证 —— 抓包文档 §5.3 + 只读探针实跑
-弹幕（这一支） 推测 —— 协议形状取自原项目，**零真机样本**；
-              连"未开播时 chatRoomId 为空"这条都只是解释"为什么抓不到"，
-              不是"抓到了之后长什么样"
+错在哪
+  ① 抓包文档在**兄弟仓库** `../mcloud-capture/docs/capture/`（mcloud 把抓包面迁出去了），
+     我却在 `mcloud/docs/capture/` 里找不到就下了"零真机样本"的结论 —— 看错了地方
+  ② mcloud 那句「这条链从未真机连过」（`live_ws_client.rs:297`）说的是 **Rust 移植那一份**，
+     而且它指向的"模块头的诚实边界"**在模块头里根本不存在**（陈旧指针）——
+     我把它当成了"整条链没有实拍"
 ```
 
-⇒ 接它的时候，**每一个判据都要能说出"这是推测还是实测"**，而且失败路径要如实上抛
-（`WsEnd` 那五档就是 mcloud 为此设计的：`ListenedEnough` / `ServerClosed` /
-`Disconnected` / `PeerGone` / `Aborted` —— 后两档长得都像"直播结束了"，而它**刻意不下这个结论**）。
+**实拍是真的、而且很细**：`app-live-ws-samples.txt`（2026-09-23，真直播间）：
+
+```text
+两条 WS 连接   wss://videoim.cmcc-cs.cn:20102/ws/711/5lniabk4/websocket（**133 帧 / 73.6 s**）
+              与 …/ws/227/c23o3q3s/websocket（139 帧 / 66.5 s）
+口令          收到 **2 条**（`一键9图出圈` / `中秋美好存云盘`）⇒「每场两条固定」的第一次实拍确认
+三条判据      · WS 升级请求**不带** systemmd5/tokenmd5（身份只在 PROVISION 的 `auth` = `$t$<JWT>`）
+              · UA 是 **iPad** UA（与 HTTP 侧那份逐字相同）——**推翻了**原项目照抄的 Android UA
+              · 服务端**没接受** permessage-deflate ⇒ 帧是未压缩原文
+弹幕文本路径  MSync.9 → .2 → .6 → .4（repeated）→ .2 = "小红花口令：一键9图出圈"（逐字节核过）
+旁证          §8.6 反证实验（签名头打全 0 照样回 code:0）+ §9.5 **纯 Go 也拿全了那两条**（三个证据面同答）
+```
+
+⇒ **准确的档位**是（接它的时候照这个写）：
+
+| 面 | 档位 |
+|---|---|
+| 协议形状（帧、SockJS、PROVISION、弹幕文本路径） | **实证** —— 2026-09-23 实拍 + Go 对拍 |
+| mcloud 的 **Rust** 移植（`live_ws_client.rs`） | **未连过真机**（它自己那句注释说的是这个） |
+| 本插件的 **TS** 移植 | **还没有**（这一轮只补了宿主能力） |
+| 从**面板**走这条链 | ⚠ **今天被 TLS 挡住**（见 F-030：那两个主机只给 CBC 套件，面板用的 rustls 不实现 CBC） |
+
+失败路径仍要如实上抛（`WsEnd` 五档：`ListenedEnough` / `ServerClosed` / `Disconnected` /
+`PeerGone` / `Aborted` —— 后两档长得都像"直播结束了"，而它**刻意不下这个结论**）。
 
 ### 下一轮的施工图（照 mcloud 那三个模块，行数是真的）
 
@@ -1440,3 +1462,91 @@ TLS 与 `http_fetch` 同一个信任库（⇒「目标机不需要装 CA」仍�
 而 mock 现在不会讲 WebSocket。下一轮要么给 mock 加一个最小 SockJS 端点，
 要么明确把"弹幕"这一支排除在 e2e 之外（并在文档里写清"它只有单测覆盖"）——
 **两条路都行，但不许含糊过去**。
+
+---
+
+## F-030 · 实机（2026-10-14 15:0x，直播**正在进行中**）：门三步的判据全对上了；而**面板根本连不上那两个主机**（rustls vs CBC）
+
+用户说「已经实机过了，现在也可以实机，直播正在进行中」。于是这一轮做真机验证，
+结果一半是好消息、一半是**面板侧的硬边界**——两半都得如实记。
+
+### 做法（纪律先写清）
+
+```text
+① 起一个面板实例（本仓的插件 + 面板的 WS 能力），**第一件事是把 mcloud 的 23 条任务全暂停**
+   —— 否则 cron 会在真账号上写（`app-task` 每 15 分钟一跑，而 15:00 那一跑已经在导入凭据前发生过）
+② 导入真凭据（从 mcloud 的 accounts.json 读，**不打印**）
+③ 只跑**只读**的：live-gate（门）
+④ 另开一个 Node 探针（Node 用 OpenSSL ⇒ 能谈 CBC 套件）把门的① ② ③ 逐字复核一遍
+```
+
+### 好消息：门的三个判据在**今天的真上游**上全部对上
+
+| 步 | 实机结果 |
+|---|---|
+| ① SSO | ✅ `user-njs.yun.139.com/user/querySpecTokenV2`（TLS 1.3）→ 42 字符 token |
+| ② 直播侧 JWT | ✅ `v.cmcc-cs.cn/cmlive/api/user/auth/cmpassLoginByCmToken` → `rtnCode:"0"`、`object` = **180 字符 JWT**（与移植一致） |
+| ③ 两个页签 | ✅ 各 8 间房；`channelId=134`、`tabId=127/129` 都对 |
+
+而**房间里的事实**逐条对上了 F-028 的判据（这是今天最有价值的一段）：
+
+```text
+页签 127  #147868 status=1 主播="中国移动云盘" 预告=2026-10-14 14:30  ← **那个主播，正在播**（门开着）
+          #147698 status=1 主播="福建移动"       预告=2026-10-14 15:00  ← ⭐ **陷阱房，也正在播**
+页签 129  #147868 同一间（重复 ⇒ 必须去重）+ 7 间 status=6 的回放
+门       合并后 15 间；那个主播 8 间；**在播 1 间 ⇒ 门开着**
+```
+
+⇒ 「**按主播昵称精确匹配**」这条判据是**必要的**：那一刻有两间房在播，而只有一间是
+「中国移动云盘」（`福建移动` 那间是**权益直播**，不是口令那场）。只看 `status==1`
+会去错房间 —— 这正是 F-028 里写的那条。
+⇒ `status=6` 是**回放**（页签 129 里 7 间全是 6）✓ 与 F-028 更正的 `2 → 6` 一致。
+
+### 坏消息（**面板侧的硬边界**）：那两个主机**只给 CBC 套件**，而面板用的是 rustls
+
+面板里跑 `live-gate` 的真实结果：
+
+```text
+① 换 SSO ✅ 通过
+② 换直播侧 JWT ❌ io: received fatal alert: HandshakeFailure
+```
+
+原因不是我们的代码，是 **TLS 能力不匹配**（用 openssl 逐条量出来的）：
+
+```text
+$ openssl s_client -connect v.cmcc-cs.cn:443 -tls1_2
+  New, TLSv1.0, Cipher is ECDHE-RSA-AES128-SHA          ← 只有 CBC + SHA1 这一档
+$ openssl s_client -connect videoim.cmcc-cs.cn:20102 -tls1_2   （**WS 那个主机也是**）
+  New, TLSv1.0, Cipher is ECDHE-RSA-AES128-SHA
+$ … -cipher "ECDHE-RSA-AES128-GCM-SHA256"               ← 只给现代套件
+  alert number 40 (handshake failure)
+```
+
+面板的 HTTP 用 `ureq + rustls`、WS 用 `tokio-tungstenite + rustls`，而 **rustls 不实现
+任何 CBC 套件**（设计选择，不是配置问题）⇒ **两个主机一个都连不上**。
+也就是说：**直播这一族（门 + 弹幕）在面板里今天根本走不通**，卡在传输层，
+与协议实现无关。mcloud 那边能跑，是因为它用的是 **native-tls（OpenSSL）**。
+
+⚠ 这条同时解释了为什么"实机过"与"面板里实机过"是两件事 —— 前者是 mcloud（OpenSSL），
+后者是面板（rustls），**同一份协议、两种 TLS 能力**。
+
+### 下一步（明确的、不是"以后再说"）
+
+给面板补一条**能谈 CBC 的路**，而且要**不破坏现有性质**（默认仍是 rustls、
+musl 静态二进制不需要 OpenSSL）：
+
+```text
+选项 A（推荐）  cargo feature `legacy-tls`（默认关）：
+                ureq 开 `native-tls`、tokio-tungstenite 开 `native-tls`，
+                再给 http_fetch / ws_open 各加一个 `tls: "rustls"|"native"` 选项（默认 rustls）。
+                · macOS 上 native-tls 走 **Security.framework**（不拉 OpenSSL）——
+                  本机 cargo 缓存里 native-tls-0.2.18 / tokio-native-tls-0.3.1 /
+                  security-framework-3.7.0 **都在**，能离线编
+                · Linux/musl 要 OpenSSL ⇒ 所以必须**默认关**，只在需要直播那一族的构建里开
+选项 B（mcloud 的选择）  「按主机分客户端」：把这两个主机名写进一张表，命中就走 native-tls。
+                与 A 是同一件事，只是判据从"插件显式要"换成"宿主按主机名认"
+```
+
+在补上之前，**弹幕那一支在面板里连"连不上时如实报错"都算不上** —— 现在会报
+`HandshakeFailure`，而那个措辞会让人以为是我们写错了协议（真因是 TLS 套件不重叠）。
+所以补 TLS 的同时，错误信息也要能区分这两件事。
