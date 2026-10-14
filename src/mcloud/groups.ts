@@ -233,7 +233,12 @@ export const TASK_META: TaskMeta[] = [
   //      多一个空参数就是**另一个请求**。（`receive` 那条同坑，那边已经照做了。）
   //   ② 云朵与「云盘专属 AI豆」是**同一个东西的两个名字**（2026-07-31 按 1:1 改名），
   //      不是两种货币 —— 别把它们当两笔账记。
-  { name: 'task-expansion', title: '任务拓展', group: 'cloud-write', kind: 'Action', risk: 'write-cloud', missed: 'skip', deps: ['jwt'], batch: false, hidden: false, implemented: false, note: '三件：读状态 → **上传一个文件**把本月备份做出来 → 领云朵（**裸 GET**，见注释①）。上传是它的内容不是副作用；缺的是共用上传流程（建/取址/传/确认）' },
+    // ✅ 2026-10-14 实现：读状态 → （**严格**读到 curMonthBackup===false 才）传文件触发备份
+  //    → 裸 GET 领云朵。⚠ 领那枪缺成功样本（两个测试号本月都已领过，见 app_signin.rs:28），
+  //    所以成功形状没被实拍验过 —— 实现照源码逐字，不假装验过。
+  //    ⚠ 与 mcloud 一处刻意分歧：它只在 `curMonthTaskRecordCount > 0` 才发领那一枪；
+  //    本插件**不判**（用户定的口径）：那枪只读、成了有云朵、败了什么也不花 ⇒ 直接发。
+  { name: 'task-expansion', title: '任务拓展', group: 'activity', kind: 'Action', risk: 'write-cloud', missed: 'skip', deps: ['jwt'], batch: false, hidden: false, implemented: true, evidence: 'partial', note: '三件：读状态 → 传一个文件触发本月备份 → 领云朵（**裸 GET**）。传上去的文件**不留 id、不删**（删了就是删用户的东西）' },
   { name: 'ai-avatar', title: 'AI 头像生成与抽奖', group: 'cloud-write', kind: 'Action', risk: 'write-cloud', missed: 'skip', deps: ['basic+jwt'], batch: false, hidden: false, implemented: false, note: '生成的头像要落到网盘才能抽奖 —— 那是它的流程，不是副作用。原实现里默认关的是**开关**，不是"要不要写"' },
 
   // ── 高风险（未实现）──
