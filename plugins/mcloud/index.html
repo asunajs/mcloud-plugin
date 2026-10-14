@@ -21,8 +21,7 @@
         </p>
       </div>
       <div class="head-actions">
-        <button id="run-all" class="btn btn-primary" title="签到 · 领豆 · 领口令 · 查余额">一键领取</button>
-      <button id="adv-toggle" class="btn" title="排查用的东西（平时不用管）">高级</button>
+        <button id="adv-toggle" class="btn" title="排查用的东西（平时不用管）">高级</button>
       <button id="refresh" class="btn">刷新</button>
       </div>
     </header>
@@ -99,6 +98,21 @@
       <p class="why" id="exchange-note"></p>
       <div id="exchange-ok"></div>
       <p class="hint" id="exchange-tiers"></p>
+    </section>
+
+    <section class="card" id="action-card">
+      <div class="card-head">
+        <h2>今天要做的事</h2>
+        <span class="card-sub" id="action-sub"></span>
+      </div>
+      <p class="why">
+        签到、领AI豆、领口令小红花、查余额与奖品 —— <b>一次做完</b>，不用一条条点。
+        其中领取会<b>写进你的账号</b>（同一天重复领只会回「已领过」，不会重复发）。
+      </p>
+      <div class="row">
+        <button id="run-all" class="btn btn-primary">一键领取</button>
+      </div>
+      <p class="hint" id="action-hint"></p>
     </section>
 
     <section class="card" id="board-card" hidden>
