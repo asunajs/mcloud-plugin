@@ -5417,6 +5417,22 @@ function num(v) {
   if (typeof v === "string" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
   return void 0;
 }
+function signedReq(deps, spec) {
+  const session = loadSession(deps.store);
+  return buildH5Request({
+    url: spec.url,
+    method: spec.method,
+    body: spec.body,
+    contentType: spec.contentType,
+    referer: REFERER_SIGN_IN,
+    showLoading: SHOW_LOADING,
+    // ⚠ `isDeviceId` 是**逐接口**的：下单那条要，取滑块那条**不要**（照实拍）
+    isDeviceId: spec.isDeviceId ?? false,
+    saltKey: 1,
+    marketName: "sign_in_3",
+    session: session ? sessionHeaders(session) : {}
+  });
+}
 function digResult(text) {
   try {
     const v = JSON.parse(text);
@@ -5480,12 +5496,13 @@ function runOrderStep(deps) {
   };
   if (step === "done") return { ok: true, idle: true, note: "这一单已经走完了（要再来一单得重新起）" };
   if (step === "list") {
-    const res = callRawText(deps.transport, {
-      url: `${deps.baseUrl ?? "https://m.mcloud.139.com"}/ycloud/signin/page/exchangeList?client=app&clientVersion=${encodeURIComponent(EXCHANGE_CLIENT_VERSION)}`,
-      method: "GET",
-      headers: {},
-      body: void 0
-    });
+    const res = callRawText(
+      deps.transport,
+      signedReq(deps, {
+        url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/signin/page/exchangeList?client=app&clientVersion=${encodeURIComponent(EXCHANGE_CLIENT_VERSION)}`,
+        method: "GET"
+      })
+    );
     if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? "未知失败"}` };
     const { prizes } = parseExchangeList(digResult(res.text));
     const p = pickPrize(prizes, query);
@@ -5503,17 +5520,15 @@ function runOrderStep(deps) {
     return { ok: true, note: `${label}：目标「${p.name}」（prizeId=${p.prizeId}）${p.price === void 0 ? "" : `，${p.price} 豆`} —— 下一步读余额` };
   }
   if (step === "balance") {
-    const res = callRawText(deps.transport, {
-      url: `${deps.baseUrl ?? "https://m.mcloud.139.com"}/ycloud/signin/page/infoV3?client=app`,
-      method: "GET",
-      headers: {},
-      body: void 0
-    });
+    const res = callRawText(
+      deps.transport,
+      signedReq(deps, { url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/signin/page/infoV3?client=app`, method: "GET" })
+    );
     if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? "未知失败"}` };
     let balance;
     try {
       const env = digResult(res.text);
-      const v = env.point ?? env.totalPoint ?? env.balance;
+      const v = env.total ?? env.point ?? env.balance;
       if (typeof v === "number") balance = v;
       else if (typeof v === "string" && /^\d+$/.test(v)) balance = Number(v);
     } catch {
@@ -5530,12 +5545,14 @@ function runOrderStep(deps) {
   }
   if (step === "warm-1" || step === "warm-2") {
     const keyword = step === "warm-1" ? VISIT_LOG_KEYWORD_EXCHANGE : VISIT_LOG_KEYWORD_EXCHANGE_TIMES;
-    const res = callRawText(deps.transport, {
-      url: `${deps.baseUrl ?? "https://m.mcloud.139.com"}/ycloud/visitlog/journaling?module=uservisit&optkeyword=${encodeURIComponent(keyword)}&sourceid=1002&marketName=${encodeURIComponent(VISIT_LOG_MARKET_NAME)}`,
-      method: "POST",
-      headers: {},
-      body: ""
-    });
+    const res = callRawText(
+      deps.transport,
+      signedReq(deps, {
+        url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/visitlog/journaling?module=uservisit&optkeyword=${encodeURIComponent(keyword)}&sourceid=1002&marketName=${encodeURIComponent(VISIT_LOG_MARKET_NAME)}`,
+        method: "POST",
+        body: ""
+      })
+    );
     const warn2 = res.ok ? "" : `（埋点失败但不挡路：${res.error ?? "未知"}）`;
     if (step === "warm-1") {
       saveState(deps, { ...st, step: "warm-2" });
@@ -5545,12 +5562,17 @@ function runOrderStep(deps) {
     return { ok: true, note: `${label}：${keyword}${warn2} —— 下一步取滑块题面` };
   }
   if (step === "slide") {
-    const res = callRawText(deps.transport, {
-      url: `${deps.baseUrl ?? "https://m.mcloud.139.com"}/ycloud/auth-service/slide/getSlide`,
-      method: "POST",
-      headers: { "Content-Type": SLIDE_FORM_CONTENT_TYPE },
-      body: "{}"
-    });
+    const res = callRawText(
+      deps.transport,
+      signedReq(deps, {
+        url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/auth-service/slide/getSlide`,
+        method: "POST",
+        // ⚠ 这一条用 **form** content-type（不是 JSON）—— 逐接口的，不是一刀切
+        contentType: SLIDE_FORM_CONTENT_TYPE,
+        body: "{}",
+        isDeviceId: false
+      })
+    );
     if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? "未知失败"}` };
     let puzzle;
     let picture;
@@ -5588,12 +5610,15 @@ function runOrderStep(deps) {
     }
     if (st.offset === void 0) return done("内部状态缺 offset，这一单作废", false);
     const body = `{"prizeId":${plan.prizeId},"client":"app","clientVersion":"${EXCHANGE_CLIENT_VERSION}","puzzleOffset":${st.offset},"smsCode":"","deviceId":"${deviceId}"}`;
-    const res = callRawText(deps.transport, {
-      url: `${deps.baseUrl ?? "https://m.mcloud.139.com"}/ycloud/signin/page/exchangeV3`,
+    const req = signedReq(deps, {
+      url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/signin/page/exchangeV3`,
       method: "POST",
-      headers: { isdeviceid: "true", origin: "https://m.mcloud.139.com" },
-      body
+      body,
+      isDeviceId: true
+      // 这条**要** isdeviceid，而取滑块那条不要
     });
+    req.headers.origin = MCLOUD_HOST;
+    const res = callRawText(deps.transport, req);
     if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? "未知失败"}` };
     let code;
     try {
@@ -5615,17 +5640,15 @@ function runOrderStep(deps) {
   }
   if (step === "verify") {
     const before = deps.store.getState(STATE_BASE);
-    const res = callRawText(deps.transport, {
-      url: `${deps.baseUrl ?? "https://m.mcloud.139.com"}/ycloud/signin/page/infoV3?client=app`,
-      method: "GET",
-      headers: {},
-      body: void 0
-    });
+    const res = callRawText(
+      deps.transport,
+      signedReq(deps, { url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/signin/page/infoV3?client=app`, method: "GET" })
+    );
     if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? "未知失败"}` };
     let after;
     try {
       const env = digResult(res.text);
-      const v = env.point ?? env.totalPoint ?? env.balance;
+      const v = env.total ?? env.point ?? env.balance;
       if (typeof v === "number") after = v;
     } catch {
     }

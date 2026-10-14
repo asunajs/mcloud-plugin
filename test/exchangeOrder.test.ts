@@ -95,7 +95,7 @@ test('**主线**：一步一枪，顺序与枪序一致', () => {
   const store = mkStore();
   const { transport, sent } = upstream({
     exchangeList: LIST_HIT,
-    infoV3: { code: 0, result: { point: 5000 } },
+    infoV3: { code: 0, result: { total: 5000 } },
     journaling: { code: 0 },
     // 造一张"解得出"的题面：用底图上挖洞的那套（与 slide.test.ts 同构）
     getSlide: { code: 0, result: {} },
@@ -133,7 +133,7 @@ test('⚠ 余额不够 ⇒ 也不往下走（第 2 枪之后就停）', () => {
   const store = mkStore();
   const { transport, sent } = upstream({
     exchangeList: LIST_HIT,
-    infoV3: { code: 0, result: { point: 100 } },
+    infoV3: { code: 0, result: { total: 100 } },
   });
   startOrder(deps(store, transport), '钻石会员季卡');
   runOrderStep(deps(store, transport)); // ① 清单
@@ -147,7 +147,7 @@ test('⚠ 滑块解不出来 ⇒ **不发下单那一枪**，而且如实说是"
   const store = mkStore();
   const { transport, sent } = upstream({
     exchangeList: LIST_HIT,
-    infoV3: { code: 0, result: { point: 5000 } },
+    infoV3: { code: 0, result: { total: 5000 } },
     journaling: { code: 0 },
     // 题面给两张**不是 PNG** 的垃圾 ⇒ 解码失败 ⇒ 必须不发
     getSlide: { code: 0, result: { puzzleImg: 'bm90YXBuZw==', pictureImg: 'bm90YXBuZw==' } },
@@ -167,7 +167,7 @@ test('⚠ 没有 deviceId ⇒ 停在下单前（不回 615 让上游说"活动�
   store.setState(SESSION_KEY, JSON.stringify({ cookie: '', jwt: 'J', savedAt: NOW }), NOW);
   const { transport, sent } = upstream({
     exchangeList: LIST_HIT,
-    infoV3: { code: 0, result: { point: 5000 } },
+    infoV3: { code: 0, result: { total: 5000 } },
     journaling: { code: 0 },
   });
   startOrder(deps(store, transport), '钻石会员季卡');
@@ -217,7 +217,7 @@ test('⚠ 成交判据是**余额差**，不是响应里那句话', () => {
   const store = mkStore();
   // ⚠ 这里状态直接从 `verify` 起步（基准是手工塞的），所以**只有一枪** `infoV3`
   //   —— 它回的就是"成交之后"的那个数
-  const after = { code: 0, result: { point: 4120 } };
+  const after = { code: 0, result: { total: 4120 } };
   const sent: BuiltRequest[] = [];
   const transport = ((req: BuiltRequest) => {
     sent.push(req);
@@ -239,7 +239,7 @@ test('没扣豆 ⇒ 如实报"没成交"（哪怕上游回了个成功码）', (
   const store = mkStore();
   const transport = ((req: BuiltRequest) => {
     if (req.url.includes('infoV3')) {
-      return { status: 200, headers: {}, body: JSON.stringify({ code: 0, result: { point: 5000 } }) };
+      return { status: 200, headers: {}, body: JSON.stringify({ code: 0, result: { total: 5000 } }) };
     }
     return { status: 200, headers: {}, body: JSON.stringify({ code: 0, result: { msg: '兑换成功' } }) };
   }) as never;
@@ -289,4 +289,22 @@ test('步骤文案齐全（面板要靠它显示走到哪了）', () => {
   for (const k of ['list', 'balance', 'warm-1', 'warm-2', 'slide', 'order', 'verify', 'done'] as const) {
     assert.ok(STEP_TEXT[k], `缺 ${k}`);
   }
+});
+
+
+test('⚠ 余额字段是 `total`（真机实测；写成 `point` 的现象是"没读到"）', () => {
+  // 真机 infoV3 的 result 键：beforeTotal / signInPoints / total / time / … —— **没有** `point`
+  const store = mkStore();
+  const transport = ((req: BuiltRequest) =>
+    ({ status: 200, headers: {}, body: JSON.stringify({ code: 0, result: { total: 9188, beforeTotal: 5392 } }) })) as never;
+  startOrder(deps(store, transport), '季卡');
+  // 推到 ② 读余额
+  store.setState(
+    STATE_STEP,
+    JSON.stringify({ step: 'balance', round: 0, plan: { prizeId: 42, prizeName: 'x', price: 50, query: 'x' } }),
+    NOW,
+  );
+  const out = runOrderStep(deps(store, transport));
+  assert.match(out.note, /9188/, `该读到 total=9188：${out.note}`);
+  assert.equal(store.getState('mcloud.exchange.order.baseline'), '9188', '基准要落库（⑥ 靠它算差值）');
 });

@@ -26,6 +26,8 @@
 // 下次接着走。状态落在 SQLite 里，`step` 就是游标。
 
 import { callRawText } from '../client.ts';
+import { REFERER_SIGN_IN, SHOW_LOADING, buildH5Request, MCLOUD_HOST } from '../h5.ts';
+import { sessionHeaders } from './base.ts';
 import { calcPuzzleOffset, usable } from '../slide.ts';
 import { loadSession, SESSION_KEY } from '../../store/types.ts';
 import { LIMIT_AVAILABLE, VERDICT_TEXT, parseExchangeList, verdictOf } from './exchangeList.ts';
@@ -78,6 +80,35 @@ interface OrderState {
  *
  *  ⚠ 不用 `envelope.ts` 的 `resultObject`：那个要的是已经解析好的 `SignInEnvelope`，
  *  而这一族要边解边看（解析失败也要能报出原文）。 */
+/** 构造一枪**带签名**的请求。
+ *
+ *  ⚠⚠ 这一层不能省，也不能手搓：真机上不给签名时 `getSlide` 回
+ *  `{"code":501,"msg":"参数校验异常"}` —— 而那句话**不提示是签名的问题**，
+ *  看起来像"参数传错了"，很容易往错的方向查（我第一版就是这样，绕过了
+ *  `buildH5Request` 自己拼 URL 与头）。
+ *
+ *  `saltKey = 1`、`marketName = sign_in_3`：与已经跑通的 `exchangeList` 同一族
+ *  （mcloud 那边这两枪也都是 `h5(...)`）。 */
+function signedReq(
+  deps: TaskDeps,
+  spec: { url: string; method: 'GET' | 'POST'; body?: string | undefined; contentType?: string | undefined; isDeviceId?: boolean | undefined },
+): ReturnType<typeof buildH5Request> {
+  const session = loadSession(deps.store);
+  return buildH5Request({
+    url: spec.url,
+    method: spec.method,
+    body: spec.body,
+    contentType: spec.contentType,
+    referer: REFERER_SIGN_IN,
+    showLoading: SHOW_LOADING,
+    // ⚠ `isDeviceId` 是**逐接口**的：下单那条要，取滑块那条**不要**（照实拍）
+    isDeviceId: spec.isDeviceId ?? false,
+    saltKey: 1,
+    marketName: 'sign_in_3',
+    session: session ? sessionHeaders(session) : {},
+  });
+}
+
 function digResult(text: string): Record<string, unknown> {
   try {
     const v = JSON.parse(text) as Record<string, unknown>;
@@ -156,12 +187,13 @@ export function runOrderStep(deps: TaskDeps): TaskOutcome {
 
   // ① 清单：读 + 判"该不该发"
   if (step === 'list') {
-    const res = callRawText(deps.transport, {
-      url: `${deps.baseUrl ?? 'https://m.mcloud.139.com'}/ycloud/signin/page/exchangeList?client=app&clientVersion=${encodeURIComponent(EXCHANGE_CLIENT_VERSION)}`,
-      method: 'GET',
-      headers: {},
-      body: undefined,
-    });
+    const res = callRawText(
+      deps.transport,
+      signedReq(deps, {
+        url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/signin/page/exchangeList?client=app&clientVersion=${encodeURIComponent(EXCHANGE_CLIENT_VERSION)}`,
+        method: 'GET',
+      }),
+    );
     if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? '未知失败'}` };
     // ⚠ 复用 `exchangeList.ts` 的 `parseExchangeList` —— **不要**在这里自己walk一遍：
     //   我第一版就是自己走的分组，结果对着真机清单说"清单里没有这件奖品"，
@@ -191,17 +223,16 @@ export function runOrderStep(deps: TaskDeps): TaskOutcome {
 
   // ② 余额
   if (step === 'balance') {
-    const res = callRawText(deps.transport, {
-      url: `${deps.baseUrl ?? 'https://m.mcloud.139.com'}/ycloud/signin/page/infoV3?client=app`,
-      method: 'GET',
-      headers: {},
-      body: undefined,
-    });
+    const res = callRawText(
+      deps.transport,
+      signedReq(deps, { url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/signin/page/infoV3?client=app`, method: 'GET' }),
+    );
     if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? '未知失败'}` };
     let balance: number | undefined;
     try {
       const env = digResult(res.text);
-      const v = env.point ?? env.totalPoint ?? env.balance;
+      // ⚠ 余额字段是 **`total`**（真机实测：infoV3 的 result 里没有 `point`/`balance`）
+      const v = env.total ?? env.point ?? env.balance;
       if (typeof v === 'number') balance = v;
       else if (typeof v === 'string' && /^\d+$/.test(v)) balance = Number(v);
     } catch {
@@ -221,12 +252,14 @@ export function runOrderStep(deps: TaskDeps): TaskOutcome {
   // ③ 预热两枪（中间夹 500ms，顺序是契约）
   if (step === 'warm-1' || step === 'warm-2') {
     const keyword = step === 'warm-1' ? VISIT_LOG_KEYWORD_EXCHANGE : VISIT_LOG_KEYWORD_EXCHANGE_TIMES;
-    const res = callRawText(deps.transport, {
-      url: `${deps.baseUrl ?? 'https://m.mcloud.139.com'}/ycloud/visitlog/journaling?module=uservisit&optkeyword=${encodeURIComponent(keyword)}&sourceid=1002&marketName=${encodeURIComponent(VISIT_LOG_MARKET_NAME)}`,
-      method: 'POST',
-      headers: {},
-      body: '',
-    });
+    const res = callRawText(
+      deps.transport,
+      signedReq(deps, {
+        url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/visitlog/journaling?module=uservisit&optkeyword=${encodeURIComponent(keyword)}&sourceid=1002&marketName=${encodeURIComponent(VISIT_LOG_MARKET_NAME)}`,
+        method: 'POST',
+        body: '',
+      }),
+    );
     // ⚠ 它只是埋点：**失败不挡路**（不该因为一次埋点失败就放弃这趟）
     const warn = res.ok ? '' : `（埋点失败但不挡路：${res.error ?? '未知'}）`;
     if (step === 'warm-1') {
@@ -239,12 +272,17 @@ export function runOrderStep(deps: TaskDeps): TaskOutcome {
 
   // ④ 取题面 + 本地解 ⇒ **解不出就不发**
   if (step === 'slide') {
-    const res = callRawText(deps.transport, {
-      url: `${deps.baseUrl ?? 'https://m.mcloud.139.com'}/ycloud/auth-service/slide/getSlide`,
-      method: 'POST',
-      headers: { 'Content-Type': SLIDE_FORM_CONTENT_TYPE },
-      body: '{}',
-    });
+    const res = callRawText(
+      deps.transport,
+      signedReq(deps, {
+        url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/auth-service/slide/getSlide`,
+        method: 'POST',
+        // ⚠ 这一条用 **form** content-type（不是 JSON）—— 逐接口的，不是一刀切
+        contentType: SLIDE_FORM_CONTENT_TYPE,
+        body: '{}',
+        isDeviceId: false,
+      }),
+    );
     if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? '未知失败'}` };
     let puzzle: string | undefined;
     let picture: string | undefined;
@@ -284,12 +322,14 @@ export function runOrderStep(deps: TaskDeps): TaskOutcome {
     }
     if (st.offset === undefined) return done('内部状态缺 offset，这一单作废', false);
     const body = `{"prizeId":${plan.prizeId},"client":"app","clientVersion":"${EXCHANGE_CLIENT_VERSION}","puzzleOffset":${st.offset},"smsCode":"","deviceId":"${deviceId}"}`;
-    const res = callRawText(deps.transport, {
-      url: `${deps.baseUrl ?? 'https://m.mcloud.139.com'}/ycloud/signin/page/exchangeV3`,
+    const req = signedReq(deps, {
+      url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/signin/page/exchangeV3`,
       method: 'POST',
-      headers: { isdeviceid: 'true', origin: 'https://m.mcloud.139.com' },
       body,
+      isDeviceId: true, // 这条**要** isdeviceid，而取滑块那条不要
     });
+    req.headers.origin = MCLOUD_HOST;
+    const res = callRawText(deps.transport, req);
     if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? '未知失败'}` };
 
     let code: number | undefined;
@@ -315,17 +355,16 @@ export function runOrderStep(deps: TaskDeps): TaskOutcome {
   // ⑥ 复查余额差 —— 这才是"成交"的判据
   if (step === 'verify') {
     const before = deps.store.getState(STATE_BASE);
-    const res = callRawText(deps.transport, {
-      url: `${deps.baseUrl ?? 'https://m.mcloud.139.com'}/ycloud/signin/page/infoV3?client=app`,
-      method: 'GET',
-      headers: {},
-      body: undefined,
-    });
+    const res = callRawText(
+      deps.transport,
+      signedReq(deps, { url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/signin/page/infoV3?client=app`, method: 'GET' }),
+    );
     if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? '未知失败'}` };
     let after: number | undefined;
     try {
       const env = digResult(res.text);
-      const v = env.point ?? env.totalPoint ?? env.balance;
+      // ⚠ 余额字段是 **`total`**（真机实测：infoV3 的 result 里没有 `point`/`balance`）
+      const v = env.total ?? env.point ?? env.balance;
       if (typeof v === 'number') after = v;
     } catch {
       /* ignore */
