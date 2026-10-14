@@ -5508,16 +5508,14 @@ function runOrderStep(deps) {
     const p = pickPrize(prizes, query);
     if (!p) return done(`${label}：清单里没有「${query}」—— 这一单不做（名字要**精确**匹配）`, false);
     const verdict = verdictOf(p);
-    if (verdict !== "ok") {
-      return done(`${label}：${p.name} 现在不能兑（${VERDICT_TEXT[verdict]}），不发下一枪`, false);
-    }
+    const verdictNote = verdict === "ok" ? "" : `（上游判据说「${VERDICT_TEXT[verdict]}」，照样发）`;
     const prizeId = num(p.prizeId);
     if (prizeId === void 0) {
       return done(`${label}：清单里那条没有可用的 prizeId ⇒ 这一单不做（不许编一个数字发出去）`, false);
     }
     const plan = { prizeId, prizeName: String(p.name ?? ""), price: num(p.price), query };
     saveState(deps, { ...st, step: "balance", plan });
-    return { ok: true, note: `${label}：目标「${p.name}」（prizeId=${p.prizeId}）${p.price === void 0 ? "" : `，${p.price} 豆`} —— 下一步读余额` };
+    return { ok: true, note: `${label}：目标「${p.name}」（prizeId=${p.prizeId}）${p.price === void 0 ? "" : `，${p.price} 豆`}${verdictNote} —— 下一步读余额` };
   }
   if (step === "balance") {
     const res = callRawText(
@@ -5533,15 +5531,14 @@ function runOrderStep(deps) {
       else if (typeof v === "string" && /^\d+$/.test(v)) balance = Number(v);
     } catch {
     }
+    let shortNote = "";
     if (balance !== void 0) {
       const price = st.plan?.price;
-      if (price !== void 0 && balance < price) {
-        return done(`${label}：余额 ${balance} < 价格 ${price} ⇒ 这一单不做`, false);
-      }
+      if (price !== void 0 && balance < price) shortNote = `（余额 ${balance} < 价格 ${price}，照样发）`;
       deps.store.setState(STATE_BASE, String(balance), deps.nowIso);
     }
     saveState(deps, { ...st, step: "warm-1" });
-    return { ok: true, note: `${label}：${balance ?? "没读到"}${balance === void 0 ? "（照样往下走，成交判据靠余额差）" : ""} —— 下一步预热` };
+    return { ok: true, note: `${label}：${balance ?? "没读到"}${balance === void 0 ? "（照样往下走，成交判据靠余额差）" : ""}${shortNote} —— 下一步预热` };
   }
   if (step === "warm-1" || step === "warm-2") {
     const keyword = step === "warm-1" ? VISIT_LOG_KEYWORD_EXCHANGE : VISIT_LOG_KEYWORD_EXCHANGE_TIMES;
@@ -5588,17 +5585,20 @@ function runOrderStep(deps) {
     if (!puzzle || !picture) {
       return { ok: false, note: `${label}：题面上没有两张图（回 ${res.text.slice(0, 120)}）` };
     }
-    let solution;
+    let offset = null;
+    let why = "";
     try {
-      solution = calcPuzzleOffset(puzzle, picture);
+      const solution = calcPuzzleOffset(puzzle, picture);
+      if (usable(solution)) offset = solution.offsetX;
+      else why = `（解出 ${solution.offsetX} 但置信度只有 ${solution.confidence.toFixed(2)}）`;
     } catch (e) {
-      return done(`${label}：图解码失败（${e instanceof Error ? e.message : String(e)}）⇒ **不发下单那一枪**`, false);
+      why = `（图解码失败：${e instanceof Error ? e.message : String(e)}）`;
     }
-    if (!usable(solution)) {
-      return done(`${label}：算不出 offset（${solution.offsetX}，置信度 ${solution.confidence.toFixed(2)}）⇒ **不发下单那一枪** —— 拿 0 去凑是拿真豆去赌`, false);
-    }
-    saveState(deps, { ...st, step: "order", offset: solution.offsetX });
-    return { ok: true, note: `${label}：offset=${solution.offsetX}（置信度 ${solution.confidence.toFixed(2)}）—— 下一步下单` };
+    saveState(deps, { ...st, step: "order", offset: offset ?? void 0, useNull: offset === null });
+    return {
+      ok: true,
+      note: offset === null ? `${label}：算不出可用的 offset${why} ⇒ 用 \`puzzleOffset: null\` 照样发（那是"我不知道"，不是编一个数）—— 下一步下单` : `${label}：offset=${offset}（置信度已过线）—— 下一步下单`
+    };
   }
   if (step === "order") {
     const plan = st.plan;
@@ -5608,8 +5608,8 @@ function runOrderStep(deps) {
     if (deviceId === "") {
       return done('没有 deviceId（它要现换，见 smid 链）—— 不带它下单会回 615，文案却像"活动太火爆"', false);
     }
-    if (st.offset === void 0) return done("内部状态缺 offset，这一单作废", false);
-    const body = `{"prizeId":${plan.prizeId},"client":"app","clientVersion":"${EXCHANGE_CLIENT_VERSION}","puzzleOffset":${st.offset},"smsCode":"","deviceId":"${deviceId}"}`;
+    const offsetJson = st.useNull === true || st.offset === void 0 ? "null" : String(st.offset);
+    const body = `{"prizeId":${plan.prizeId},"client":"app","clientVersion":"${EXCHANGE_CLIENT_VERSION}","puzzleOffset":${offsetJson},"smsCode":"","deviceId":"${deviceId}"}`;
     const req = signedReq(deps, {
       url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/signin/page/exchangeV3`,
       method: "POST",
