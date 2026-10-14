@@ -48,6 +48,14 @@ import {
   saveGateBase,
 } from './tasks/liveGateTask.ts';
 import {
+  currentAccount,
+  loadAccounts,
+  maskAuth,
+  removeAccount,
+  selectAccount,
+  upsertAccount,
+} from './accounts.ts';
+import {
   BASE_VIDEO_IM_WS,
   STATE_LISTEN_SECONDS,
   listenReadingLine,
@@ -121,6 +129,24 @@ export interface RouteDeps {
 }
 
 const JSON_HEADERS = { 'content-type': 'application/json; charset=utf-8' };
+
+/** 账号列表的**对外形状**：只给掩码，不给凭据（见 accounts.ts 模块头）。 */
+function accountsView(store: Pick<Store, 'getState'>): {
+  current: string;
+  accounts: { id: string; label: string; masked: string; current: boolean; addedAt: string }[];
+} {
+  const cur = currentAccount(store);
+  return {
+    current: cur?.id ?? '',
+    accounts: loadAccounts(store).map((a) => ({
+      id: a.id,
+      label: a.label,
+      masked: maskAuth(a.auth),
+      current: cur?.id === a.id,
+      addedAt: a.addedAt,
+    })),
+  };
+}
 
 const json = (status: number, obj: unknown): RouteResponse => ({
   status,
@@ -549,6 +575,45 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
         });
         deps.log(`小红花探针：${r.note}`);
         return json(200, r);
+      },
+    },
+    {
+      // 账号列表（多账号第 2 片，见 accounts.ts 模块头）。
+      //
+      // ⚠ 只回**掩码**：凭据本身不许出这个口子（它已经能从别处拿，但少一个出口就少一处泄露面）。
+      path: `${base}/accounts`,
+      method: 'GET',
+      handler: () => json(200, { ...accountsView(deps.store) }),
+    },
+    {
+      path: `${base}/accounts`,
+      method: 'POST',
+      handler: (req) => {
+        const body = readBody(req);
+        const op = typeof body.op === 'string' ? body.op : '';
+        const now = deps.now();
+        if (op === 'add') {
+          const auth = typeof body.auth === 'string' ? body.auth.trim() : '';
+          if (auth === '') return json(400, { error: '要传 auth（原生凭据那一串）' });
+          const r = upsertAccount(deps.store, auth, now);
+          // ⚠ 日志里只说"谁"，不说凭据
+          deps.log(`账号：${r.created ? '添加' : '更新'} ${r.account.label}`);
+          if (loadAccounts(deps.store).length === 1) selectAccount(deps.store, r.account.id, now);
+          return json(200, { ...accountsView(deps.store), note: `${r.created ? '已添加' : '已更新'} ${r.account.label}` });
+        }
+        if (op === 'select') {
+          const id = typeof body.id === 'string' ? body.id : '';
+          if (!selectAccount(deps.store, id, now)) return json(400, { error: `列表里没有这个账号：${id}` });
+          deps.log(id === '' ? '账号：清掉"当前"（回到单账号那格）' : `账号：当前切到 ${id}`);
+          return json(200, { ...accountsView(deps.store), note: id === '' ? '已清掉当前账号' : `当前：${id}` });
+        }
+        if (op === 'remove') {
+          const id = typeof body.id === 'string' ? body.id : '';
+          removeAccount(deps.store, id, now);
+          deps.log(`账号：删掉 ${id}`);
+          return json(200, { ...accountsView(deps.store), note: `已删掉 ${id}` });
+        }
+        return json(400, { error: '需要 {"op":"add|select|remove", …}' });
       },
     },
     {
