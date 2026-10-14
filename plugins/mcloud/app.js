@@ -3,7 +3,7 @@
 // 只做**插件自己才知道**的事：
 //   · 分组视图（按风险与依赖分组 —— 主面板只有"插件 → 任务"两层，没有分组）
 //   · 每条任务的最近结果与失败原因（主面板有任务列表，但没有这张表的组织方式）
-//   · 会话与上游地址（插件自己的配置）
+//   · 会话与移动云盘地址（插件自己的配置）
 //   · 逐条「立即执行」
 //
 // 不重复主面板的界面：调度、启停、实时日志、插件管理都在主面板上。
@@ -625,7 +625,7 @@ async function clearH5() {
   await loadH5();
 }
 
-// ──────────────────────────── 会话与上游地址
+// ──────────────────────────── 会话与移动云盘地址
 
 async function loadSession() {
   const d = await req('/plugins/mcloud/api/session');
@@ -681,10 +681,10 @@ async function loadBase() {
   const b = d.baseUrl ?? d.base_url ?? (d.config && d.config.baseUrl) ?? '';
   $('base-url').value = b || '';
   $('base-hint').textContent = b
-    ? '当前指向上游：' + b
-    : '当前用默认上游（移动云盘正式地址）。指向本地 mock 时填 http://127.0.0.1:19040。';
+    ? '当前：来自移动云盘：' + b
+    : '当前用默认上游（移动云盘正式地址）。（高级里才需要改） http://127.0.0.1:19040。';
 
-  // 口令主页：**与上游地址不是一回事**（那是个源，这是个完整 URL）。
+  // 口令主页：**与移动云盘地址不是一回事**（那是个源，这是个完整 URL）。
   // 值等于默认时输入框留空 —— 那样"留空 = 用默认"这句话才成立。
   const lv = d.liveUrl || '';
   const lvDefault = d.liveUrlDefault || '';
@@ -698,7 +698,7 @@ async function loadBase() {
   const gbReal = gb === '(真主机)';
   $('gate-base').value = gbReal ? '' : gb;
   $('gate-base-hint').textContent = gbReal
-    ? '当前用真主机（user-njs.yun.139.com / v.cmcc-cs.cn）。指向本地 mock 时填 http://127.0.0.1:19040。'
+    ? '当前用真主机（user-njs.yun.139.com / v.cmcc-cs.cn）。（高级里才需要改） http://127.0.0.1:19040。'
     : '当前指向：' + gb;
 }
 
@@ -730,7 +730,7 @@ async function saveBase() {
   const v = $('base-url').value.trim();
   const d = await req('/plugins/mcloud/api/config', { method: 'POST', body: { baseUrl: v } });
   if (!d.ok) {
-    showError('保存上游地址失败：' + d.error);
+    showError('保存移动云盘地址失败：' + d.error);
     return;
   }
   showError('');
@@ -738,6 +738,25 @@ async function saveBase() {
 }
 
 // ──────────────────────────── 启动
+
+// ── 「高级 / 诊断」：默认藏起来，点一下才露 ──
+//
+// ⚠ 这一串 id 就是"用户不该看见的东西"：打到哪个地址、抓哪个主页、
+//   听弹幕那条链、自动定时的重算、以及插件自身的自检族。
+//   见 docs/ui-wording.md —— 主界面只说"你要做什么、成了没有"。
+const ADV_IDS = [
+  'base-url', 'base-hint', 'base-save', 'gate-base', 'gate-base-hint', 'gate-base-save',
+  'live-url', 'live-url-hint', 'live-url-save',
+  'live-listen', 'live-listen-hint', 'live-auto', 'live-auto-hint',
+  'h5-card', 'accounts-sub',
+];
+for (const id of ADV_IDS) {
+  const el = $(id);
+  if (el !== null) el.classList.add('adv');
+  const row = el?.closest?.('.row');
+  if (row) row.classList.add('adv');
+}
+$('adv-toggle').addEventListener('click', () => document.body.classList.toggle('show-adv'));
 
 $('refresh').addEventListener('click', () => {
   loadGroups();
