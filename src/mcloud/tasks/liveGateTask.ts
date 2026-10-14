@@ -73,7 +73,7 @@ import {
 } from '../liveGate.ts';
 import type { LiveRoom } from '../liveGate.ts';
 import { parseSsoToken } from '../h5session.ts';
-import { STATE_AUTH } from '../sessionExchange.ts';
+import { STATE_AUTH, loadAuthRaw } from '../sessionExchange.ts';
 import { loadPoolFrom, noteProbe, normalize, poolSummary, savePoolTo } from '../koulingPool.ts';
 import type { PoolSummary, ProbeRoom } from '../koulingPool.ts';
 import type { Store } from '../../store/types.ts';
@@ -158,7 +158,7 @@ export function runLiveGate(deps: TaskDeps): TaskOutcome {
 /** handshake 步：① 换 SSO + ② 换直播侧 JWT（**必须同一次调用** —— SSO 只活几分钟）。 */
 function handshake(deps: TaskDeps, st: GateState, base: string | undefined): TaskOutcome {
   const TASK = 'live-gate';
-  const auth = deps.store.getState(STATE_AUTH) ?? '';
+  const auth = loadAuthRaw(deps.store);
   if (auth === '') {
     const note = '门要**原生凭据**（`Authorization`）：先去界面贴一份（见 docs/howto-session.md）';
     recordError(deps.store, TASK, note, deps.nowIso);
