@@ -6037,6 +6037,9 @@ var SOCKJS_DATA_PREFIX = "a[";
 function sockjsSendFrame(msync) {
   return `["${toBase64(msync)}"]`;
 }
+function sockjsDataFrames(text) {
+  return splitDataFrameJson(text).map((b64) => fromBase64(b64));
+}
 function splitDataFrameJson(text) {
   const json2 = text.slice(SOCKJS_DATA_PREFIX.length - 1);
   let parsed;
@@ -6225,6 +6228,15 @@ function createListener(o) {
 // src/mcloud/tasks/liveListen.ts
 var STATE_LISTEN = "mcloud.live.listen";
 var STATE_WS_BASE = "mcloud.live.ws_base";
+var STATE_WS_HEARTBEAT = "mcloud.live.ws_heartbeat_reply";
+var DEFAULT_WS_HEARTBEAT = "h";
+function loadWsHeartbeat(store2) {
+  const v = store2.getState(STATE_WS_HEARTBEAT);
+  return v === null || v === void 0 ? DEFAULT_WS_HEARTBEAT : v;
+}
+function saveWsHeartbeat(store2, v, nowIso) {
+  store2.setState(STATE_WS_HEARTBEAT, v, nowIso);
+}
 var BASE_VIDEO_IM_WS = "wss://videoim.cmcc-cs.cn:20102";
 var DEFAULT_LISTEN_SECONDS = 600;
 var IDLE_RECHECK_MS = 5 * 60 * 1e3;
@@ -6278,7 +6290,10 @@ function listenerIdle(st, nowMs) {
   return void 0;
 }
 var current;
-function listenerFor(st, nowMs, opts) {
+function parseHeartbeatReply(v) {
+  return v === "" ? void 0 : v;
+}
+function listenerFor(deps, st, nowMs, opts) {
   const handle = st.handle ?? -1;
   if (current !== void 0 && current.handle === handle && current.windowStartMs === st.windowStartMs && current.chatRoomId === opts.chatRoomId) {
     return current.listener;
@@ -6293,7 +6308,7 @@ function listenerFor(st, nowMs, opts) {
     //   2026-10-14 那场房间里安静满 25 秒 ⇒ 服务端真的发了 `h`；回一帧 `h`
     //   之后连接继续可用（读数与判据见 docs/findings.md F-032）。
     //   回 `[""]` 是**错的**：那是 SockJS 的**关闭**帧（抓包 §二 末帧）。
-    sockjsHeartbeatReply: "h"
+    sockjsHeartbeatReply: parseHeartbeatReply(loadWsHeartbeat(deps.store))
   });
   current = {
     handle,
@@ -6511,7 +6526,7 @@ function openStep(deps, st, nowMs) {
     return stepFail2(deps, st, `开 WS 失败：${e instanceof Error ? e.message : String(e)}`);
   }
   st.handle = handle;
-  const listener = listenerFor(st, nowMs, {
+  const listener = listenerFor(deps, st, nowMs, {
     accessToken: st.jwt,
     chatRoomId: st.chatRoomId,
     phone: parsed.phone
@@ -6569,7 +6584,7 @@ function listenStep(deps, st, nowMs, windowMs) {
   if (parsed === null || st.jwt === void 0 || st.chatRoomId === void 0) {
     return stepFail2(deps, st, "听的那一步缺凭据/票/聊天室号");
   }
-  const listener = listenerFor(st, nowMs, {
+  const listener = listenerFor(deps, st, nowMs, {
     accessToken: st.jwt,
     chatRoomId: st.chatRoomId,
     phone: parsed.phone
@@ -6596,6 +6611,16 @@ function listenStep(deps, st, nowMs, windowMs) {
     }
     if (frame.type !== "text") continue;
     st.frames += 1;
+    try {
+      for (const bytes of sockjsDataFrames(frame.data)) {
+        const cmd = decodeMsync(bytes).command;
+        const k = String(cmd);
+        st.kinds = { ...st.kinds ?? {}, [k]: ((st.kinds ?? {})[k] ?? 0) + 1 };
+        if (cmd === CMD_ACK) st.serverAcks = (st.serverAcks ?? 0) + 1;
+      }
+    } catch {
+      st.decodeFail = (st.decodeFail ?? 0) + 1;
+    }
     const actions = listener.onFrame(frame.data, Date.now());
     flush(deps, handle, actions.outbound);
     if (actions.outbound.length > 0) st.acks += 1;
@@ -6699,7 +6724,9 @@ function loadGateBaseOf(store2) {
 }
 function listenReadingLine(st) {
   if (st === null) return "还没听过";
-  if (st.step === "listen") return `听着（帧 ${st.frames}、弹幕 ${st.danmakuFrames}、口令 ${st.codes.length}）`;
+  if (st.step === "listen") {
+    return `听着（帧 ${st.frames}、弹幕 ${st.danmakuFrames}、口令 ${st.codes.length}、回执 ${st.serverAcks ?? 0}` + (st.decodeFail ? `、认不出的帧 ${st.decodeFail}` : "") + "）";
+  }
   if (st.step === "done") return st.note ?? "这一轮结束";
   return `准备中（${st.step}）`;
 }
@@ -8558,6 +8585,8 @@ function mcloudRoutes(deps) {
         // 它是 `wss://` 且带端口，与上面那两台 http 主机不是同一族（混成一个会写出
         // "指到 mock 之后协议的 scheme/端口丢了"这种错）。
         wsBase: loadWsBase(deps.store),
+        // 收到 SockJS 心跳帧 `h` 回什么（空=不回）。默认 `h`（2026-10-14 真机验过）。
+        wsHeartbeat: loadWsHeartbeat(deps.store) || "(不回)",
         // 进房间那一台（videoim.cmcc-cs.cn:20103，HTTPS）—— **第三个口子**：
         // 与上面两台 http 主机、以及带端口的 wss 主机都不是同一个。
         imBase: loadImBase(deps.store) || "(真主机)",
@@ -8617,6 +8646,16 @@ function mcloudRoutes(deps) {
           deps.log(v ? `进房间的主机已改为 ${v}` : "进房间的主机已恢复为真主机");
           out.imBase = v || "(真主机)";
         }
+        if ("wsHeartbeat" in body) {
+          const given = typeof body.wsHeartbeat === "string" ? body.wsHeartbeat.trim() : "";
+          const raw = given === "none" ? "" : given;
+          if (raw !== "" && raw !== "h") {
+            return json(400, { error: 'wsHeartbeat 只能是 "h"（默认）或 "none"（不回）' });
+          }
+          saveWsHeartbeat(deps.store, raw, deps.now());
+          deps.log(raw === "" ? "读到 SockJS 心跳帧 h 时**不回**" : "读到 h 时回一帧 h");
+          out.wsHeartbeat = raw === "" ? "(不回)" : "h";
+        }
         if ("listenSeconds" in body) {
           const n = Number.parseInt(String(body.listenSeconds), 10);
           if (!Number.isFinite(n) || n <= 0 || n > 3600) {
@@ -8628,7 +8667,7 @@ function mcloudRoutes(deps) {
         }
         if (Object.keys(out).length === 0) {
           return json(400, {
-            error: "要传 baseUrl / liveUrl / gateBase / wsBase / imBase / listenSeconds（清空就传空串）"
+            error: "要传 baseUrl / liveUrl / gateBase / wsBase / imBase / wsHeartbeat / listenSeconds（清空就传空串）"
           });
         }
         return json(200, out);
