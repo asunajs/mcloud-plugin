@@ -26,6 +26,7 @@ import { groupView } from './groups.ts';
 import { hasBigInt, sandboxCaps } from './caps.ts';
 import { runAuthRefresh } from './authRefresh.ts';
 import { clearOrder, runOrderStep, startOrder } from './tasks/exchangeOrder.ts';
+import { drawReport } from './tasks/liveDraw.ts';
 import { MATRIX_MARKETS, readMatrix } from './tasks/appTaskMatrix.ts';
 import { readDailyRun } from './dailyState.ts';
 import { VERDICT_TEXT, readExchangeList } from './tasks/exchangeList.ts';
@@ -298,6 +299,19 @@ function buildReadings(deps: RouteDeps): Record<string, unknown> {
         return {
           wakeAt: plan?.wakeAt ?? '',
           wakeInMs: plan === null ? 0 : Math.max(0, plan.wakeAtMs - nowMs),
+        };
+      })(),
+      // 领小红花的**结论**（四栏 + 进账）。界面第一行显示的就是 `line`。
+      // ⚠ 「本场已结束」与「口令无效」分栏的理由见 liveDraw.drawReport 的注释 ——
+      //   分错的后果是用户去重抄一条本来就对的口令。
+      draw: (() => {
+        const st = loadDrawState(deps.store);
+        const r = drawReport(st);
+        return {
+          enabled: claimEnabled(deps.store),
+          step: st?.step ?? '',
+          report: r,
+          line: r === null ? (claimEnabled(deps.store) ? '还没领过' : '领小红花没开启') : r.line,
         };
       })(),
     },
