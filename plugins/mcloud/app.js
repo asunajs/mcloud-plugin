@@ -176,7 +176,8 @@ async function runTask(btn) {
   const name = btn.dataset.run;
   const risk = btn.dataset.risk;
   // 会真扣豆 / 不可逆的，先问一句
-  if ((risk === 'spend' || risk === 'irreversible') && !confirm(`「${name}」是不可逆的写操作，确定现在执行？`)) {
+  // ⚠ 话术：不说"不可逆的写操作"（用户不懂，而且像雷）。只留"不能撤销"这个事实。
+  if ((risk === 'spend' || risk === 'irreversible') && !confirm(`这个操作不能撤销，继续？`)) {
     return;
   }
   btn.disabled = true;
@@ -528,7 +529,7 @@ function renderGate(gate) {
 }
 
 async function toggleClaim() {  const on = $('live-claim').checked;
-  if (on && !confirm('开启后 cron 会**自动**去领小红花（往账号里写）。确定开启？')) {
+  if (on && !confirm('开启后会自动领小红花，不用你点。开启？')) {
     $('live-claim').checked = false;
     return;
   }
