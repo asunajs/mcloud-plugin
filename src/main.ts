@@ -14,11 +14,24 @@
 // —— 面板的「覆盖层」正是为这件事设计的（`jobs.override_expr`），
 // 改完不会跟插件代码打架，插件热更新也会把覆盖保留下来。
 
-import { error, every, http_fetch, log, register_cron, register_route, warn } from 'host-api';
+import {
+  error,
+  every,
+  http_fetch,
+  log,
+  register_cron,
+  register_route,
+  warn,
+  ws_close,
+  ws_open,
+  ws_recv,
+  ws_send,
+} from 'host-api';
 import { hostFetchOptions } from './mcloud/client.ts';
 import { md5Hex, sha256Hex, toBase64, fromBase64, fromUtf8, utf8 } from './crypto/index.ts';
 import { hostStore } from './store/host.ts';
 import type { Store } from './store/types.ts';
+import type { HostWs } from './mcloud/tasks/base.ts';
 import type { Transport } from './mcloud/client.ts';
 import { SLOW_CALL_MS, applyDefaultContentType } from './mcloud/client.ts';
 import { sandboxCaps } from './mcloud/caps.ts';
@@ -36,6 +49,7 @@ import { runAppTaskStep, startAppTask } from './mcloud/tasks/appTask.ts';
 import { runExchangeList } from './mcloud/tasks/exchangeList.ts';
 import { runLiveRoom } from './mcloud/tasks/liveRoom.ts';
 import { runLiveGate } from './mcloud/tasks/liveGateTask.ts';
+import { runLiveListen } from './mcloud/tasks/liveListen.ts';
 import { runLiveDraw } from './mcloud/tasks/liveDraw.ts';
 import { needExchange, runExchangeStep } from './mcloud/sessionExchange.ts';
 import { runReceive } from './mcloud/tasks/receive.ts';
@@ -133,6 +147,12 @@ for (const r of mcloudRoutes({
   now: () => new Date().toISOString(),
   log,
   baseUrl: undefined, // 路由内部按需读 state（改了配置立刻生效）
+  ws: {
+    wsOpen: (url, opts) => ws_open(url, opts),
+    wsSend: (id, text) => ws_send(id, text),
+    wsRecv: (id, timeoutMs) => ws_recv(id, timeoutMs),
+    wsClose: (id) => ws_close(id),
+  },
 })) {
   register_route(r.path, r.method, r.handler);
 }
@@ -203,13 +223,28 @@ register_cron('task-list', '0 8 * * *', (p) => {
 // 每条任务的 `lateMs` 都进 payload（面板给的），底座按「catch-up / skip」语义处理。
 function makeRunner(
   name: string,
-  run: (deps: { store: Store; transport: Transport; nowIso: string; baseUrl: string; lateMs: number }) => { ok: boolean; note: string; skipped?: boolean },
+  run: (deps: {
+    store: Store;
+    transport: Transport;
+    host: HostWs;
+    nowIso: string;
+    baseUrl: string;
+    lateMs: number;
+  }) => { ok: boolean; note: string; skipped?: boolean },
 ) {
   return (p: TaskPayload) => {
     try {
       const out = run({
         store,
         transport,
+        // ⚠ 这一族**只有嵌入式 JS 宿主有**；Node 适配器与 Python 侧都是"函数存在、调用时抛"
+        //   （见面板 docs/host-api.md）。所以任何用到它的任务都必须能在测试里换桩。
+        host: {
+          wsOpen: (url, opts) => ws_open(url, opts),
+          wsSend: (id, text) => ws_send(id, text),
+          wsRecv: (id, timeoutMs) => ws_recv(id, timeoutMs),
+          wsClose: (id) => ws_close(id),
+        },
         nowIso: new Date().toISOString(),
         baseUrl: loadBaseUrl(store),
         lateMs: p.lateMs,
@@ -319,6 +354,11 @@ register_cron('live-gate', '*/10 7-23 * * *', makeRunner('直播日程（门）'
 //
 // 为什么还要 cron：手动那条路（界面按钮）是浏览器循环调 `/api/live/draw/step`，
 // 每步一次调用；cron 是**没人看着时的兜底**（口令变了就自动起一轮）。
+// 听弹幕口令：**每 10 秒一拍**（一拍读 ~1.6 秒）。
+// ⚠ 间隔不决定"漏不漏"：宿主侧那条入队通道是**无界**的，两次调用之间服务端推的帧
+//   会在宿主里排队、下一次调用一次性读出来 ⇒ 节奏影响的是"多快看到口令"。
+//   门关着时它一个请求都不发（`nextCheckAtMs` 冷却），所以放着不影响别的东西。
+register_cron('live-listen', '@every 10s', makeRunner('听弹幕口令', runLiveListen));
 register_cron('live-draw', '*/5 7-23 * * *', (p) => {
   try {
     const out = runLiveDraw({

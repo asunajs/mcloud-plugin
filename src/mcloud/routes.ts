@@ -48,6 +48,16 @@ import {
   saveGateBase,
 } from './tasks/liveGateTask.ts';
 import {
+  BASE_VIDEO_IM_WS,
+  STATE_LISTEN_SECONDS,
+  listenReadingLine,
+  loadListenSeconds,
+  loadListenState,
+  loadWsBase,
+  runLiveListen,
+  saveWsBase,
+} from './tasks/liveListen.ts';
+import {
   JWT_TTL_MS,
   authStatus,
   clearAuth,
@@ -68,6 +78,7 @@ import {
 } from './tasks/liveDraw.ts';
 import type { Store } from '../store/types.ts';
 import type { Transport } from './client.ts';
+import type { HostWs } from './tasks/base.ts';
 
 /** 插件名（= 文件名去掉扩展名）。路由路径要用它。 */
 export const PLUGIN = 'mcloud';
@@ -97,6 +108,9 @@ export interface RouteDeps {
   /** 注入日志：本文件不能 import host-api（见文件头） */
   log(msg: string): void;
   baseUrl?: string | undefined;
+  /** 长连接那一族（`ws_*`）—— **可选**：宿主没有它时那个口子要如实 503。
+   *  `routes.ts` 同样不 import `host-api`（见文件头），所以由 main.ts 注进来。 */
+  ws?: HostWs | undefined;
 }
 
 const JSON_HEADERS = { 'content-type': 'application/json; charset=utf-8' };
@@ -198,6 +212,11 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
           liveUrlDefault: XIAOHONGSHU_KOULING_PROFILE_URL,
           // 门的两个主机（user-njs / v.cmcc-cs.cn）—— 一个口子，见 liveGateTask.loadGateBase
           gateBase: loadGateBase(deps.store) || '(真主机)',
+          // 弹幕那条 WS 的主机（videoim.cmcc-cs.cn:20102）—— **另一个口子**：
+          // 它是 `wss://` 且带端口，与上面那两台 http 主机不是同一族（混成一个会写出
+          // "指到 mock 之后协议的 scheme/端口丢了"这种错）。
+          wsBase: loadWsBase(deps.store),
+          listenSeconds: loadListenSeconds(deps.store),
         }),
     },
     {
@@ -243,8 +262,32 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
           out.gateBase = v || '(真主机)';
         }
 
+        if ('wsBase' in body) {
+          const v = typeof body.wsBase === 'string' ? body.wsBase.trim() : '';
+          // ⚠ 判据是 **ws:// 或 wss://**，不是 http —— 写成 http 这条口子在 CI 里
+          //   连不上 mock，而现象是"WS 握手失败"，会让人去查协议而不是查配置。
+          if (v && !/^wss?:\/\//.test(v)) {
+            return json(400, { error: 'wsBase 要以 ws:// 或 wss:// 开头（清空 = 用真主机）' });
+          }
+          saveWsBase(deps.store, v, deps.now());
+          deps.log(v ? `听弹幕的 WS 主机已改为 ${v}` : '听弹幕的 WS 主机已恢复为真主机');
+          out.wsBase = v || BASE_VIDEO_IM_WS;
+        }
+
+        if ('listenSeconds' in body) {
+          const n = Number.parseInt(String(body.listenSeconds), 10);
+          if (!Number.isFinite(n) || n <= 0 || n > 3600) {
+            return json(400, { error: 'listenSeconds 要给 1..3600 之间的整数（秒）' });
+          }
+          deps.store.setState(STATE_LISTEN_SECONDS, String(n), deps.now());
+          deps.log(`听弹幕的窗口改为 ${n} 秒`);
+          out.listenSeconds = String(n);
+        }
+
         if (Object.keys(out).length === 0) {
-          return json(400, { error: '要传 baseUrl / liveUrl / gateBase（清空就传空串）' });
+          return json(400, {
+            error: '要传 baseUrl / liveUrl / gateBase / wsBase / listenSeconds（清空就传空串）',
+          });
         }
         return json(200, out);
       },
@@ -293,6 +336,11 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
           pool: readPoolSummary(deps.store, localStamp(Date.parse(deps.now())), Date.parse(deps.now())),
           // 直播日程（门）：只读探针的读数 —— 门开没开、看到几间房、「下一场」在 pool 里
           gate: readGateReading(deps.store),
+          // 听弹幕（第二十三轮）：窗口里的过程事实 —— 收到几帧、几条弹幕、哪几条口令
+          listen: {
+            reading: loadListenState(deps.store),
+            line: listenReadingLine(loadListenState(deps.store)),
+          },
           note:
             '口令本身**没法自动化**（主播在弹幕/小红书发，那边无法鉴权）⇒ 要人给；' +
             '能自动的只有「抓主页 + 列出看到的口令」。',
@@ -490,6 +538,39 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
           step: st?.step ?? 'handshake',
           reading: readGateReading(deps.store),
           pool: readPoolSummary(deps.store, localStamp(Date.parse(deps.now())), Date.parse(deps.now())),
+        });
+      },
+    },
+    {
+      // 听弹幕推进一步（界面上的「听一拍」/ e2e 用）。
+      // ⚠ 与门那个 step 口子同样的形状（`done` + `note` + `reading`），
+      //   因为它们是**同一类**东西：一个按步骤推进的只读探针。
+      path: `${base}/live/listen/step`,
+      method: 'POST',
+      handler: () => {
+        const st0 = loadListenState(deps.store);
+        if (deps.ws === undefined) {
+          // ⚠ 宿主没有长连接能力时**明确说不**，而不是走到一半才发现
+          //   （Python / Node 适配器都是"函数存在、调用时抛"）。
+          return json(503, { error: '宿主没有长连接能力（ws_*）—— 这一族只有嵌入式 JS 宿主有' });
+        }
+        const out = runLiveListen({
+          store: deps.store,
+          transport: deps.transport,
+          host: deps.ws,
+          nowIso: deps.now(),
+          baseUrl: loadBaseUrl(deps.store),
+          lateMs: 0,
+        });
+        const st = loadListenState(deps.store);
+        return json(200, {
+          ok: out.ok,
+          note: out.note,
+          done: st?.step === 'done' || st?.step === undefined,
+          step: st?.step ?? 'idle',
+          reading: st,
+          line: listenReadingLine(st),
+          windowOpen: st0?.step === 'listen' || st0?.step === 'open',
         });
       },
     },

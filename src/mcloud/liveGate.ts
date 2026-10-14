@@ -241,6 +241,72 @@ export function tabContentListRequest(
   };
 }
 
+/** ④ 进直播间（`roomBeat`）—— 它是「这间房**有没有聊天室**」的唯一判据。
+ *
+ *  ⚠ `roomBeat` **不是 GET**：路径是 `/api/room/front/roomBeat`，房间号在 **body** 里
+ *  （照 mcloud 的 `room_beat_request` 逐字）。我第一版把它当成
+ *  `GET /api/room/beat?roomId=`，上游回的是**一页 HTML**（而 HTML 与"路径写错了"
+ *  在解析层分不开 —— 这正是 `parseCmlive` 那条"数字码算失败"的报警灯要管的事）。
+ *
+ *  ⚠ `roomId` 传**字符串**：它是 31 位大整数，过一遍 JS 的 Number 有精度风险。 */
+export function roomBeatRequest(
+  roomId: number | string,
+  jwt: string,
+  base?: string | undefined,
+): BuiltRequest {
+  return {
+    url: `${(base ?? BASE_CMLIVE).replace(/\/+$/, '')}/api/room/front/roomBeat`,
+    method: 'POST',
+    headers: { ...cmliveHeaders(jwt), 'content-type': 'application/json' },
+    body: JSON.stringify({ roomId: String(roomId), channelId: LIVE_CHANNEL_ID, sourceApp: 0 }),
+    // 同一个主机（`v.cmcc-cs.cn`）⇒ 见 [`BuiltRequest.tls`]：只给 CBC，必须平台 TLS。
+    tls: 'native',
+  };
+}
+
+/** `roomBeat` 的读数。 */
+export interface RoomBeatReading {
+  status: number;
+  title: string;
+  expectStartTime: string;
+  anchorNickname: string;
+  /** 聊天室 id。**`undefined` = 上游给的是 null 或空串** ⇒ WS 与 `member/apply`
+   *  都**不该发** —— 用 `undefined` 而不是空串，是为了让"没有"与"有但是空"
+   *  在类型上就分得开（它们后面的动作完全相反）。 */
+  chatRoomId: string | undefined;
+}
+
+/** 解析 `roomBeat`。信封判据与其它 `/cmlive` 口一致（数字码算失败）。 */
+export function parseRoomBeat(body: string): Parsed<RoomBeatReading> {
+  const env = parseCmlive(body);
+  // ⚠ 这里**不能** `return env`：`Parsed` 的两个分支带的是**不同的 value 类型**，
+  //    直接返回会让"信封解不出来"与"房间解不出来"在类型上混成一种。
+  if (!env.ok) return { ok: false, error: env.error ?? '直播侧响应解不出来' };
+  if (env.value === undefined) return { ok: false, error: '直播侧响应是空的' };
+  const object = env.value.object;
+  if (typeof object !== 'object' || object === null || Array.isArray(object)) {
+    return { ok: false, error: 'roomBeat 的 object 不是对象' };
+  }
+  const o = object as Record<string, unknown>;
+  const anchor = o['anchor'];
+  const nick =
+    typeof anchor === 'object' && anchor !== null
+      ? ((anchor as Record<string, unknown>)['nickname'] ?? '')
+      : '';
+  const rawChat = o['chatRoomId'];
+  return {
+    ok: true,
+    value: {
+      status: typeof o['status'] === 'number' ? o['status'] : -1,
+      title: typeof o['title'] === 'string' ? o['title'] : '',
+      expectStartTime: typeof o['expectStartTime'] === 'string' ? o['expectStartTime'] : '',
+      anchorNickname: typeof nick === 'string' ? nick : '',
+      // ⚠ **空串也当"没有"**：空串进不了 WS（会拼出一个空的 `cmlive_…`）。
+      chatRoomId: typeof rawChat === 'string' && rawChat !== '' ? rawChat : undefined,
+    },
+  };
+}
+
 /** `tabContentList` 里的一间房。
  *
  *  只留**判据用得到**的字段：上游给的还有 `coverUrl` / `pullUrl` / `uv` 等十几个，

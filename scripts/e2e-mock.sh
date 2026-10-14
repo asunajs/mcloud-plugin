@@ -627,3 +627,69 @@ assert len(pool['sessions']) >= 1, pool.get('sessions')
 assert 'MOCK-LIVE-JWT' not in json.dumps(live), '直播侧 JWT 不该出现在响应里'
 print('   ✅ 直播日程：三步四发、只查 127/129、去重、日程与「下一场」落池、凭据不回显')
 GATEPY
+
+# ── ⑧ 听弹幕（WS / SockJS）—— 真连接、真帧、真口令 ────────────────────────────
+#
+# 这一支以前**没有 e2e**：宿主在第二十一轮之前根本没有 WebSocket，而 mock 也不会
+# 讲 WS。两边都补齐之后，这里才是"弹幕真的能听"的唯一端到端证据（**只打 mock**）。
+#
+# ⚠ 顺序：它接在门后面 —— 因为听弹幕的第一步就是**自己走一遍门**（换票 → 看页签 → roomBeat）。
+# ⚠ 它用 `wsBase` 这个**另一个口子**（`ws://`，带端口），与门的 `gateBase` 不是同一个。
+echo "⑧ 听弹幕（WS/SockJS）"
+curl -fsS "${W[@]}" -X POST \
+  -d "{\"wsBase\":\"ws://127.0.0.1:$MOCK_PORT\"}" "$B/plugins/mcloud/api/config" > /dev/null
+curl -fsS "${W[@]}" "$B/plugins/mcloud/api/config" -o "$TMP/config-ws.json"
+python3 - "$TMP/config-ws.json" <<'CFGWS'
+import json, sys
+cfg = json.load(open(sys.argv[1]))
+assert cfg['wsBase'].startswith('ws://127.0.0.1:'), cfg
+print('   ✅ 配置口子：wsBase 指到 mock（`ws://` 而不是 `http://`）')
+CFGWS
+
+curl -fsS "${W[@]}" -X POST "$B/_debug/requests/clear" > /dev/null 2>&1 || true
+# WS 那一段的请求记在 mock 自己的口子上；这里先清一遍，让"重新走门"的三发可数
+curl -fsS "${W[@]}" "http://127.0.0.1:$MOCK_PORT/_debug/requests/clear" > /dev/null
+for i in 1 2 3 4 5 6; do
+  curl -fsS "${W[@]}" -X POST "$B/plugins/mcloud/api/live/listen/step" -o "$TMP/listen-$i.json"
+  if python3 -c "import json,sys; s=json.load(open('$TMP/listen-$i.json')); sys.exit(0 if s.get('step') in ('listen','done') else 1)"; then break; fi
+  if [ "$i" = 6 ]; then echo "❌ 6 步还没进到 listen/打开 WS" >&2; cat "$TMP/listen-1.json" >&2; exit 1; fi
+done
+
+curl -fsS "${W[@]}" "http://127.0.0.1:$MOCK_PORT/_debug/ws" -o "$TMP/ws.json"
+python3 - "$TMP/ws.json" <<'WSPY'
+import json, sys
+ws = json.load(open(sys.argv[1]))
+assert ws['connected'], 'WS 该连上了'
+assert ws['provisioned'], '该收到 PROVISION 了'
+# 升级请求的形状（抓包 §一 那三条判据里的两条：UA 与 Origin；签名头**不该有**）
+h = ws['upgradeHeaders']
+assert 'cmcc-cs.cn' in json.dumps(h.get('origin', '')), h.get('origin')
+ua = h.get('user-agent', '')
+assert 'MCloudApp' in ua, ua
+assert 'systemmd5' not in h and 'tokenmd5' not in h, 'WS 升级请求不该带签名头（抓包 §一 判据 1）'
+cmds = [f['command'] for f in ws['frames']]
+assert cmds[:1] == [3], cmds          # 第一帧就是 PROVISION
+assert 3 in cmds, cmds
+print(f"   ✅ WS：连上、PROVISION 已发（客户端帧命令 {cmds[:4]}…）、升级头形状照抓包")
+WSPY
+
+# 推一条弹幕（`command=2`，文本在 MSync.9→.2→.6→.4→.2）—— 插件该解出文本、回 ack、把口令落池
+curl -fsS "${W[@]}" -X POST -d '{"text":"小红花口令：一键9图出圈"}' \
+  "http://127.0.0.1:$MOCK_PORT/_debug/ws/danmaku" -o "$TMP/pushed.json"
+curl -fsS "${W[@]}" -X POST "$B/plugins/mcloud/api/live/listen/step" -o "$TMP/listen-after.json"
+curl -fsS "${W[@]}" "http://127.0.0.1:$MOCK_PORT/_debug/ws" -o "$TMP/ws2.json"
+curl -fsS "${H[@]}" "$B/plugins/mcloud/api/live" -o "$TMP/live-listen.json"
+python3 - "$TMP/ws2.json" "$TMP/live-listen.json" <<'DANPY'
+import json, sys
+ws = json.load(open(sys.argv[1]))
+live = json.load(open(sys.argv[2]))
+cmds = [f['command'] for f in ws['frames']]
+assert 0 in cmds, f'收到弹幕该回 ack（command=0）；实际 {cmds}'
+assert ws['acked'] >= 1, ws
+lis = live['listen']['reading']
+assert lis['danmakuFrames'] >= 1, lis
+assert '一键9图出圈' in lis['codes'], lis
+code = [c for c in live['pool']['codes'] if c['value'] == '一键9图出圈']
+assert code and code[0]['source'] == 'danmaku', code
+print('   ✅ 弹幕：文本解出来、回了 ack、口令落池（来源 danmaku）')
+DANPY

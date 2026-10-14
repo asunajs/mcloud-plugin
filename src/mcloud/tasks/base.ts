@@ -17,10 +17,29 @@
 import { callOnce, mergeCookieJar } from '../client.ts';
 import type { CallResult, Transport } from '../client.ts';
 import type { SignInEnvelope } from '../envelope.ts';
+/** ⚠ `WsFrame` 来自宿主 API 的**类型声明**（`src/host-api.d.ts`）——
+ *  它描述的是宿主返回的形状，插件这边不自己另立一份（两处定义必然漂移）。 */
+import type { WsFrame } from 'host-api';
 import { CLIENT_QUERY, EP_METHOD, REFERER_SIGN_IN, SHOW_LOADING, buildH5Request, resolveUrl } from '../h5.ts';
 import type { EndpointName } from '../h5.ts';
 import { SESSION_KEY, loadSession, saveSession } from '../../store/types.ts';
 import type { Session, Store } from '../../store/types.ts';
+
+/** 宿主的长连接那一族（`ws_*`）。**注入式**的理由与 `transport` 一样：
+ *  插件里注入真的（`host-api` 的 `ws_open` 等），Node 测试里注入桩 ——
+ *  否则"听弹幕"这条链在 Node 里根本跑不动（Node 没有宿主 API，适配器也只给桩）。
+ *
+ *  ⚠ 它**不进 `TaskDeps`**：只有听弹幕那一个任务要它（[`ListenDeps`]），
+ *  塞进公共 deps 会让"宿主必须提供长连接"变成所有任务的隐含前提。 */
+export interface HostWs {
+  wsOpen(
+    url: string,
+    opts: { headers?: Record<string, string>; timeout_ms?: number; tls?: 'rustls' | 'native' },
+  ): number;
+  wsSend(id: number, text: string): true;
+  wsRecv(id: number, timeout_ms?: number): WsFrame;
+  wsClose(id: number): true;
+}
 
 export interface TaskDeps {
   store: Store;

@@ -13,6 +13,7 @@
 // 可以作为模块用（`startMock()`，给测试），也可以直接跑（`node mock/upstream.mjs`，
 // 给手工联调：把插件的基址指到它就行）。
 
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 
 /** 固定的会话凭据：mock 不校验，但插件要带，测试就能断言「确实带了」。 */
@@ -91,6 +92,153 @@ export const FIXTURES = {
  * 起一个 mock 上游。
  * @returns {{ url: string, port: number, requests: object[], reset(): void, setBehavior(b): void, close(): Promise<void> }}
  */
+// ══════════════════ 最小 WS + SockJS + msync 工具（够 mock 用就行）══════════════════
+//
+// ⚠ 这里是**测试夹具**，不是生产实现 —— 它只需要"能让插件那条链真的跑起来"：
+//   帧要能被插件的解析路径读懂（所以必须按抓包 §3.1 的字段路径拼），
+//   但不需要实现 RFC6455 的全部（无分片、无压缩 —— 抓包 §一 判据 3 说服务端本来也不接受压缩）。
+
+function varint(n) {
+  const out = [];
+  let v = n >>> 0;
+  while (v >= 0x80) {
+    out.push((v & 0x7f) | 0x80);
+    v >>>= 7;
+  }
+  out.push(v);
+  return Buffer.from(out);
+}
+
+/** protobuf：`(字段号 << 3) | wireType` 的 tag + 内容。 */
+function pbField(num, wire, body) {
+  return Buffer.concat([varint((num << 3) | wire), body]);
+}
+const pbVarint = (num, n) => pbField(num, 0, varint(n));
+const pbBytes = (num, buf) => pbField(num, 2, Buffer.concat([varint(buf.length), buf]));
+
+/** 拼一条 MSync 字节串。
+ *
+ *  - `command=2`（弹幕）：文本放在 **MSync.9 → .2 → .6 → .4 → .2**（抓包 §3.1 逐字节核过的路径）
+ *  - `command=3`（PROVISION 响应）：只带一只有形状的 payload 壳
+ *  - `command=0/1`（ack / 心跳）：由插件那边发，mock 只用得着解它
+ */
+export function msyncBytes({ command, msgId = null, text = null }) {
+  let payload;
+  if (text !== null) {
+    const content = pbBytes(4, pbBytes(2, Buffer.from(text, 'utf8')));
+    const message = Buffer.concat([pbBytes(1, Buffer.from(msgId ?? 'm0', 'utf8')), pbBytes(6, content)]);
+    payload = pbBytes(2, message);
+  } else if (msgId !== null) {
+    payload = pbBytes(2, pbBytes(1, Buffer.from(msgId, 'utf8')));
+  } else {
+    payload = pbBytes(1, pbVarint(1, 0));
+  }
+  return Buffer.concat([pbVarint(8, command), pbBytes(9, payload)]);
+}
+
+/** SockJS 的**服务端推送**形状：`a["<b64>"]`。 */
+export function sockjsData(msync) {
+  return `a[${JSON.stringify(Buffer.from(msync).toString('base64'))}]`;
+}
+
+/** 解 **客户端**发来的 SockJS 帧 `["<b64>"]` → `{ command, hex }`；解不出返回 null。 */
+export function decodeSockjsSend(text) {
+  let arr;
+  try {
+    arr = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(arr) || typeof arr[0] !== 'string') return null;
+  const bytes = Buffer.from(arr[0], 'base64');
+  // 只找字段 8（command）—— mock 不需要解全
+  let i = 0;
+  let command = -1;
+  while (i < bytes.length) {
+    let tag = 0;
+    let shift = 0;
+    while (i < bytes.length) {
+      const b = bytes[i++];
+      tag |= (b & 0x7f) << shift;
+      if ((b & 0x80) === 0) break;
+      shift += 7;
+    }
+    const num = tag >>> 3;
+    const wire = tag & 0x07;
+    if (wire === 0) {
+      let v = 0;
+      shift = 0;
+      while (i < bytes.length) {
+        const b = bytes[i++];
+        v |= (b & 0x7f) << shift;
+        if ((b & 0x80) === 0) break;
+        shift += 7;
+      }
+      if (num === 8) command = v;
+    } else if (wire === 2) {
+      let len = 0;
+      shift = 0;
+      while (i < bytes.length) {
+        const b = bytes[i++];
+        len |= (b & 0x7f) << shift;
+        if ((b & 0x80) === 0) break;
+        shift += 7;
+      }
+      i += len;
+    } else if (wire === 5) i += 4;
+    else if (wire === 1) i += 8;
+    else return null;
+  }
+  return { command, hex: bytes.toString('hex').slice(0, 64) };
+}
+
+/** 写一条**服务端→客户端**的文本帧（服务端**不加掩码**）。 */
+export function wsSendText(socket, text) {
+  const payload = Buffer.from(text, 'utf8');
+  const len = payload.length;
+  let head;
+  if (len < 126) head = Buffer.from([0x81, len]);
+  else if (len < 65536) {
+    head = Buffer.alloc(4);
+    head[0] = 0x81;
+    head[1] = 126;
+    head.writeUInt16BE(len, 2);
+  } else {
+    head = Buffer.alloc(10);
+    head[0] = 0x81;
+    head[1] = 127;
+    head.writeBigUInt64BE(BigInt(len), 2);
+  }
+  socket.write(Buffer.concat([head, payload]));
+}
+
+/** 解一帧**客户端→服务端**（客户端**一定加掩码**）。不够就返回 null。 */
+export function readWsFrame(buf) {
+  if (buf.length < 2) return null;
+  const opcode = buf[0] & 0x0f;
+  let len = buf[1] & 0x7f;
+  let off = 2;
+  if (len === 126) {
+    if (buf.length < 4) return null;
+    len = buf.readUInt16BE(2);
+    off = 4;
+  } else if (len === 127) {
+    if (buf.length < 10) return null;
+    len = Number(buf.readBigUInt64BE(2));
+    off = 10;
+  }
+  const masked = (buf[1] & 0x80) !== 0;
+  if (masked) {
+    if (buf.length < off + 4 + len) return null;
+    const mask = buf.subarray(off, off + 4);
+    const body = Buffer.from(buf.subarray(off + 4, off + 4 + len));
+    for (let i = 0; i < body.length; i += 1) body[i] ^= mask[i % 4];
+    return { opcode, payload: body, rest: buf.subarray(off + 4 + len) };
+  }
+  if (buf.length < off + len) return null;
+  return { opcode, payload: buf.subarray(off, off + len), rest: buf.subarray(off + len) };
+}
+
 export async function startMock(options = {}) {
   const requests = [];
 
@@ -137,6 +285,30 @@ export async function startMock(options = {}) {
         return json(res, 200, { cleared: n });
       }
       if (url.pathname === '/_debug/state') return json(res, 200, st);
+      // ── 弹幕那条链的口子（e2e 用）────────────────────────────────────
+      // 为什么走 HTTP 而不是直接调 mock 的函数：e2e 是**另一个进程**（bash + python）
+      // 在驱动面板，它拿不到 mock 的对象 ⇒ 只能走一个能观察/能推的口子。
+      if (url.pathname === '/_debug/ws') {
+        return json(res, 200, {
+          connected: wsConn !== null,
+          provisioned: wsConn !== null && wsConn.provisioned,
+          acked: wsConn === null ? 0 : wsConn.acked,
+          danmakuSent: wsConn === null ? 0 : wsConn.danmakuSent,
+          upgradeHeaders: wsUpgradeHeaders,
+          frames: wsFrames.map((f) => ({ command: f.command, hex: f.hex })),
+        });
+      }
+      if (url.pathname === '/_debug/ws/danmaku' && req.method === 'POST') {
+        let text = '小红花口令：一键9图出圈';
+        try {
+          const parsed = JSON.parse(body);
+          if (typeof parsed?.text === 'string' && parsed.text) text = parsed.text;
+        } catch {
+          /* 空 body 就用默认文本 */
+        }
+        const ok = pushDanmaku(text);
+        return json(res, ok ? 200 : 409, { pushed: ok, text });
+      }
       if (url.pathname === '/_debug/behavior') {
         if (req.method === 'POST') {
           behavior = body || 'normal';
@@ -187,6 +359,38 @@ export async function startMock(options = {}) {
         }
         const dataList = (LIVE_ROOMS[tabId] || []).map((room) => ({ type: 1, room }));
         return json(res, 200, { rtnCode: '0', rtnMsg: null, object: { dataList } });
+      }
+
+      // 进直播间（`roomBeat`）—— **POST**，房间号在 body 里（不是 GET + query）。
+      //
+      // ⚠ 它是「这间房**有没有聊天室**」的唯一判据：未开播时 `chatRoomId` 是 null，
+      //   而那意味着 WS 与 `member/apply` 都**不该发**（抓包 §5.2）。
+      //   这里给一只有值的，让"能听"那条链在 mock 上跑得起来；
+      //   "没有聊天室"那一支由插件的单测覆盖（它更便宜、也更准确）。
+      if (url.pathname === '/api/room/front/roomBeat') {
+        let roomId = '';
+        try {
+          roomId = String(JSON.parse(body)?.roomId ?? '');
+        } catch {
+          /* body 坏 ⇒ 当成没给 */
+        }
+        const room = Object.values(LIVE_ROOMS)
+          .flat()
+          .find((r) => String(r.id) === roomId);
+        if (!room) return json(res, 200, { rtnCode: '404', rtnMsg: '房间不存在', object: null });
+        return json(res, 200, {
+          rtnCode: '0',
+          rtnMsg: null,
+          object: {
+            status: room.status,
+            title: room.title,
+            channelId: room.channelId,
+            expectStartTime: room.expectStartTime,
+            // 31 位数字串（抓包 §5.2 那个形状）
+            chatRoomId: '15000000000000000000000000000 1'.replace(' ', ''),
+            anchor: { nickname: room.anchor.nickname },
+          },
+        });
       }
 
       // ── 小红花（`liveRoomFeedback`）：领小红花那条链 ────────────────────────
@@ -426,6 +630,88 @@ export async function startMock(options = {}) {
     });
   });
 
+  // ── 直播弹幕那条链的 SockJS/WebSocket 端点 ────────────────────────────────
+  //
+  // 为什么要在这里手写一个：**Node 没有内置 WebSocket 服务端**，而本仓 e2e 的纪律是
+  // 「全程只打 mock」—— 不写它，弹幕那一支就只能靠单测，e2e 里就成了"没覆盖但看起来绿"。
+  //
+  // 它只实现**这条链用到的那几件事**（SockJS 的 `o` / `["<b64>"]` / `a["<b64>"]`），
+  // 不做 RFC6455 的全部（没有分片、没有 permessage-deflate —— 抓包 §一 判据 3 说
+  // 服务端本来也不接受压缩）。
+  const wsFrames = [];   // 收到的**客户端**帧（解出来的 msync 字节的 hex），给 e2e 断言用
+  let wsConn = null;
+
+  server.on('upgrade', (req, socket) => {
+    const key = req.headers['sec-websocket-key'];
+    if (typeof key !== 'string') {
+      socket.destroy();
+      return;
+    }
+    const accept = createHash('sha1')
+      .update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
+      .digest('base64');
+    socket.write(
+      'HTTP/1.1 101 Switching Protocols\r\n' +
+        'Upgrade: websocket\r\n' +
+        'Connection: Upgrade\r\n' +
+        `Sec-WebSocket-Accept: ${accept}\r\n\r\n`,
+    );
+    wsConn = { socket, buf: Buffer.alloc(0), provisioned: false, danmakuSent: 0, acked: 0 };
+    wsUpgradeHeaders = { ...req.headers, path: req.url };
+
+    // SockJS：连上先发 `o`（**抓包 §二 的第 0 帧就是它**）
+    wsSendText(socket, 'o');
+
+    socket.on('data', (chunk) => {
+      wsConn.buf = Buffer.concat([wsConn.buf, chunk]);
+      for (;;) {
+        const f = readWsFrame(wsConn.buf);
+        if (f === null) break;
+        wsConn.buf = f.rest;
+        if (f.opcode === 0x8) {
+          socket.end();
+          wsConn = null;
+          return;
+        }
+        if (f.opcode !== 0x1) continue; // 只看文本（SockJS 全是文本）
+        const text = f.payload.toString('utf8');
+        const msync = decodeSockjsSend(text);
+        wsFrames.push({ text, command: msync?.command ?? -1, hex: msync?.hex ?? '' });
+        if (msync === null) continue;
+        if (msync.command === 3) {
+          wsConn.provisioned = true;
+          // PROVISION 的响应：`a["<b64>"]`（抓包 §二 的第 2 帧）
+          wsSendText(socket, sockjsData(msyncBytes({ command: 3, msgId: null, text: null })));
+        } else if (msync.command === 0) {
+          wsConn.acked += 1;
+        }
+      }
+    });
+    socket.on('error', () => {
+      wsConn = null;
+    });
+    socket.on('close', () => {
+      wsConn = null;
+    });
+  });
+
+  /** 推一条弹幕（`command=2`，文本在 MSync.9.2.6.4.2）。e2e 用它验"文本能解出来"。 */
+  function pushDanmaku(text) {
+    if (wsConn === null) return false;
+    // ⚠ `msgId` 必须是**19 位数字**（抓包形状）。插件侧把它当成判据：
+    //   形状不对 ⇒ 当成"没有 msgId" ⇒ **不 ack**（不许编一个）。
+    //   用 `m<时间戳>` 那种短串的话，e2e 会得到"没有 ack"而看不出原因 —— 我第一版就是。
+    // 19 位、**无前导零**（`1` + 13 位毫秒 + 5 位序号 = 19）。
+    // ⚠ 前导零会被插件的 `encodeAck` 当场拒掉（它按"19 位十进制"校验，
+    //   照抓包形状）—— 我第一版用 `padStart(19,'0')`，e2e 就在那一步拿到一个 500。
+    //   这不是插件太严：msgId 的形状**本身是判据**（编不出对形状的值就不该 ack）。
+    const msgId = '1' + String(Date.now()) + '06041';
+    wsSendText(wsConn.socket, sockjsData(msyncBytes({ command: 2, msgId, text })));
+    wsConn.danmakuSent += 1;
+    return true;
+  }
+  let wsUpgradeHeaders = {};
+
   await new Promise((resolve) => server.listen(options.port ?? 0, '127.0.0.1', resolve));
   const port = server.address().port;
 
@@ -442,6 +728,26 @@ export async function startMock(options = {}) {
     },
     reset() {
       requests.length = 0;
+      wsFrames.length = 0;
+    },
+    /** 弹幕那条链：收到的客户端帧、升级请求头、以及主动推一条弹幕的口子。 */
+    ws: {
+      get frames() {
+        return wsFrames;
+      },
+      get upgradeHeaders() {
+        return wsUpgradeHeaders;
+      },
+      get connected() {
+        return wsConn !== null;
+      },
+      get provisioned() {
+        return wsConn !== null && wsConn.provisioned;
+      },
+      get acked() {
+        return wsConn === null ? 0 : wsConn.acked;
+      },
+      pushDanmaku,
     },
     setBehavior(b, ms = 0) {
       behavior = b;
