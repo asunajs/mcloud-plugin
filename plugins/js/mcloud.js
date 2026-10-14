@@ -1290,8 +1290,12 @@ function parseStatus(result) {
     secondTaskStatus: asInt(o.secondTaskStatus)
   };
 }
-function claimable(s) {
-  return s.secondTaskStatus === SECOND_STATUS_CLAIMABLE;
+var PUSH_ON_OFF = 0;
+function planMsgPush(s) {
+  if (s.pushOn !== void 0 && s.pushOn === PUSH_ON_OFF) return "manual";
+  if (s.secondTaskStatus === void 0) return "unknown";
+  if (s.secondTaskStatus === SECOND_STATUS_CLAIMABLE) return "obtain";
+  return "nothing";
 }
 function runMsgPushStatus(deps) {
   return runTask(
@@ -1308,10 +1312,13 @@ function runMsgPushStatus(deps) {
     },
     (env) => {
       const s = parseStatus(env.result);
-      const can = claimable(s);
-      deps.store.setState(STATE_CAN2, can ? "yes" : "no", deps.nowIso);
+      const plan = planMsgPush(s);
+      const can = plan === "obtain";
+      deps.store.setState(STATE_CAN2, can ? "yes" : plan === "unknown" ? "unknown" : "no", deps.nowIso);
       let note;
-      if (s.pushOn === 0) {
+      if (plan === "unknown") {
+        note = "消息推送：判据字段缺失（没读到 secondTaskStatus）⇒ **判不了**，一个写请求都不发";
+      } else if (s.pushOn === 0) {
         note = "消息推送：通知已被关闭，需要你在 App 里手动打开（这一步我们做不了）";
       } else if (can) {
         note = "消息推送：有可领的奖励（下一次触发会去领）";
@@ -1330,7 +1337,7 @@ function runMsgPushObtain(deps) {
     return {
       ok: true,
       skipped: true,
-      note: `上次问到的状态是「${can ?? "没问过"}」，不发领取请求`
+      note: `上次问到的状态是「${can === "unknown" ? "判不了（判据字段缺失）" : can === "no" ? "不该领" : can === "yes" ? "该领" : "没问过"}」，不发领取请求`
     };
   }
   const out = runTask(
@@ -3823,16 +3830,16 @@ function noticePlan(info) {
     ["槽一", info.one],
     ["槽二", info.two]
   ];
-  const claimable2 = slots.filter(([, s]) => slotClaimable(s)).map(([n]) => n);
+  const claimable = slots.filter(([, s]) => slotClaimable(s)).map(([n]) => n);
   const unjudged = slots.filter(([, s]) => s && !slotJudged(s)).map(([n]) => n);
   const missing = slots.filter(([, s]) => !s).map(([n]) => n);
   const parts = [];
-  if (claimable2.length) parts.push(`${claimable2.join("/")}可领`);
+  if (claimable.length) parts.push(`${claimable.join("/")}可领`);
   if (unjudged.length) parts.push(`${unjudged.join("/")}判据字段不全（不参与判断，避免静默漏领）`);
   if (missing.length) parts.push(`${missing.join("/")}上游没给`);
   if (!parts.length) parts.push("两槽都已入账或无可领");
   return {
-    claimable: claimable2.length > 0,
+    claimable: claimable.length > 0,
     unjudged: unjudged.length > 0,
     detail: parts.join("；")
   };

@@ -1148,3 +1148,48 @@ x-yun-client-info: <设备串>   x-yun-sub-op-type: <op*100>
 这三轮我一直在**自己推**（推接口、推形状、推"未实现"的结论），
 而 mcloud 的注释与日志里**每一条都写着**：V3 才是 App 调的那口、
 548 是过期任务、打卡该用哪个主机。**先读注释和文档，再动手**。
+
+---
+
+## F-026 · 四层来源的权威顺序（用户口径，2026-10-14）
+
+> 1. 从 **mcloud** 中借鉴**业务逻辑**
+> 2. 从**抓包**中核对**内容**
+> 3. 从 **mcloud-sign** 中参考 **ts 算法**
+> 4. 从**实测**中确认**效果**
+
+按这个判据重审"照 mcloud-sign 搬的"那几个文件，结论：
+
+| 模块 | 我写的依据 | 判定 |
+|---|---|---|
+| `slide.ts` | mcloud-sign（滑块**匹配算法**）| ✅ 算法档，TS 可用；⚠ 但 `MIN_CONFIDENCE = 1.5` 是**我自己定的阈值** ⇒ 该按实测标定 |
+| `smid.ts` / `smidRules.ts` | mcloud-sign（DES 规则）| ✅ 算法档 |
+| `crypto/*` | mcloud-sign / crypto-js | ✅ 算法档 |
+| `tasks/msgPush.ts` | ⚠ mcloud-sign 的 `msg-push.ts`（写着"**判据**与文案"）| ❌ **业务档** ⇒ 改照 mcloud 的 `msg_push.rs` |
+| `liveKouling.ts` | mcloud-sign（声明为"**权威源**"）| ⚠ 待分：口令**生成**是算法（TS 可），**流程/判据**是业务（须 mcloud 的 `live_room.rs`）|
+| `appTaskRules.ts` | mcloud-sign 的 `runners.ts` | ❌ 已改：步骤表照 mcloud 的 `step_for` + 状态文档 |
+
+### 本轮改掉的（`msgPush.ts`）
+
+mcloud 的 `msg_push.rs` 是**四档**，我只做了两档：
+
+```
+plan_msg_push:  Obtain | Manual | Nothing | Unknown
+  先判 pushOn（==0 ⇒ Manual，那是用户侧的动作）
+  再判 secondTaskStatus：None ⇒ **Unknown**（判据缺失 ⇒ 一个写请求都不发）
+                        ==2 ⇒ Obtain；其余 ⇒ Nothing
+first_reward_pending: 字段**存在且 != 3**（缺字段 ⇒ false）
+```
+
+⚠ 两处我原来的错：
+
+1. **把 `Unknown` 压成了 `Nothing`** —— 字段缺失时我存 `'no'`、说"没得领"。
+   而 mcloud 的注释说得清楚：**"判不了"与"判了不该领"是两件事**，
+   后者是一句**有根据**的话，前者不是。现在写盘分三档（`yes|no|unknown`）。
+2. **差点踩上旧 TS 的 `!== 3` 坑** —— mcloud 注释点名：`undefined !== 3` 恒真
+   ⇒ 缺字段时旧版会误判成"该领"。我的 `firstRewardPending` 按 mcloud 的口径
+   （缺字段 ⇒ `false`），并写了断言钉住。
+
+⚠ 还有一条设计原则值得抄：mcloud 的 `MsgPushVerdict` 把 **`Failed` 定为零值**，
+理由是"有多条提前 `return` 的路径 —— 零值若是 `Done`，一句'领到了'
+就会在**一个请求都没发**的那趟上被念出来"。
