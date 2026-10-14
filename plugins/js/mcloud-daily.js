@@ -4406,6 +4406,57 @@ import {
   ws_send
 } from "host-api";
 
+// src/drain.ts
+function drain(step, deps, opts) {
+  const startedAt = opts.startedAt ?? Date.now();
+  const notes = [];
+  let steps = 0;
+  let lastNote = "";
+  for (let i = 0; i < opts.maxSteps; i++) {
+    if (i > 0 && opts.more && !opts.more()) {
+      return {
+        ok: true,
+        idle: true,
+        steps,
+        note: `${opts.label}：${steps} 步走完${lastNote ? ` —— ${lastNote}` : ""}`,
+        notes
+      };
+    }
+    if (Date.now() - startedAt > opts.deadlineMs) {
+      return {
+        ok: true,
+        idle: false,
+        steps,
+        note: `${opts.label}：走到时间上限（${opts.deadlineMs}ms / ${steps} 步），下一次接着走`,
+        notes
+      };
+    }
+    let r;
+    try {
+      r = step(deps);
+    } catch (e) {
+      notes.push(`抛异常：${e instanceof Error ? e.message : String(e)}`);
+      return { ok: false, idle: false, steps, note: `${opts.label}：第 ${steps + 1} 步抛异常`, notes };
+    }
+    steps++;
+    lastNote = r.note;
+    notes.push(r.note);
+    if (!r.ok) {
+      return { ok: false, idle: false, steps, note: `${opts.label}：第 ${steps} 步失败 —— ${r.note}`, notes };
+    }
+    if (r.idle || r.skipped) {
+      return { ok: true, idle: true, steps, note: `${opts.label}：${steps} 步走完 —— ${r.note}`, notes };
+    }
+  }
+  return {
+    ok: true,
+    idle: false,
+    steps,
+    note: `${opts.label}：走到步数上限（${opts.maxSteps} 步），下一次接着走`,
+    notes
+  };
+}
+
 // src/store/host.ts
 import { sqlite_exec, sqlite_query } from "host-api";
 function hostStore() {
@@ -4535,44 +4586,6 @@ function taskDeps(store2, transport2, payload) {
     lateMs: payload.lateMs
   };
 }
-function drain(step, deps, opts) {
-  const startedAt = opts.startedAt ?? Date.now();
-  const notes = [];
-  let steps = 0;
-  for (let i = 0; i < opts.maxSteps; i++) {
-    if (Date.now() - startedAt > opts.deadlineMs) {
-      return {
-        ok: true,
-        idle: false,
-        steps,
-        note: `${opts.label}：走到时间上限（${opts.deadlineMs}ms / ${steps} 步），下一次接着走`,
-        notes
-      };
-    }
-    let r;
-    try {
-      r = step(deps);
-    } catch (e) {
-      notes.push(`抛异常：${e instanceof Error ? e.message : String(e)}`);
-      return { ok: false, idle: false, steps, note: `${opts.label}：第 ${steps + 1} 步抛异常`, notes };
-    }
-    steps++;
-    notes.push(r.note);
-    if (!r.ok) {
-      return { ok: false, idle: false, steps, note: `${opts.label}：第 ${steps} 步失败 —— ${r.note}`, notes };
-    }
-    if (r.idle) {
-      return { ok: true, idle: true, steps, note: `${opts.label}：${steps} 步走完 —— ${r.note}`, notes };
-    }
-  }
-  return {
-    ok: true,
-    idle: false,
-    steps,
-    note: `${opts.label}：走到步数上限（${opts.maxSteps} 步），下一次接着走`,
-    notes
-  };
-}
 
 // src/entries/daily.ts
 worker_hint("exclusive");
@@ -4611,12 +4624,35 @@ function runDaily(deps) {
   } else {
     push({ name: "换票", ok: true, note: "票还新鲜，不用换", idle: true });
   }
+  const signPending = () => (store.getState(STATE_STAGE) ?? "") === "need-verify";
+  push(
+    (() => {
+      const r = drain(runSign, deps, {
+        label: "签到",
+        maxSteps: 4,
+        deadlineMs: 2e4,
+        startedAt: started,
+        more: signPending
+      });
+      return { name: "签到", ok: r.ok, note: r.note, idle: r.idle };
+    })()
+  );
   for (const [name, fn] of [
-    ["签到", runSign],
     ["领取AI豆", runReceive],
+    ["备份好礼", runBackupGift],
+    ["开启通知领AI豆", runNotice]
+  ]) {
+    const r = drain(fn, deps, {
+      label: name,
+      maxSteps: 12,
+      deadlineMs: 4e4,
+      startedAt: started
+    });
+    push({ name, ok: r.ok, note: r.note, idle: r.idle });
+  }
+  for (const [name, fn] of [
     ["签到翻倍", runMultiple],
-    ["复活卡", runRevival],
-    ["备份好礼", runBackupGift]
+    ["复活卡", runRevival]
   ]) {
     push(once(name, fn, deps));
   }
@@ -4644,9 +4680,18 @@ function runDaily(deps) {
     });
     push({ name: "App 任务", ok: r.ok, note: r.note, idle: r.idle });
   }
-  push(once("消息推送奖励（问状态）", runMsgPushStatus, deps));
-  push(once("消息推送奖励（领）", runMsgPushObtain, deps));
-  push(once("开启通知领AI豆", runNotice, deps));
+  for (const [name, fn] of [
+    ["消息推送奖励（问状态）", runMsgPushStatus],
+    ["消息推送奖励（领）", runMsgPushObtain]
+  ]) {
+    const r = drain(fn, deps, {
+      label: name,
+      maxSteps: 6,
+      deadlineMs: 2e4,
+      startedAt: started
+    });
+    push({ name, ok: r.ok, note: r.note, idle: r.idle });
+  }
   push(once("凭据续期", (d) => runAuthRefresh(d), deps));
   push(once("待领取奖品", runPrizes, deps));
   push(once("AI豆快照", runCloudSnapshot, deps));
