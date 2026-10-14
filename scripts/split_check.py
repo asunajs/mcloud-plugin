@@ -181,7 +181,37 @@ def main() -> int:
                     pass
             check("沙箱自检路由返回 ok（说明密码学 + SQLite 在沙箱里都对）", ok, detail)
 
-            # ---- ⑦ 线程分配 ----
+            # ---- ⑦ 界面真的能加载 ----
+            print("\n界面（脚本断言）")
+            code, page = http(f"{base}/plugins/mcloud/index.html")
+            check("插件页面能取到", code == 200 and "<html" in page.lower(), f"http {code}")
+            for word in ["账号", "日常", "兑换", "直播", "数据", "推送", "设置"]:
+                check(f"菜单栏有「{word}」", f'>{word}</button>' in page, "菜单里找不到这个词")
+            check(
+                "菜单栏恰好 7 项",
+                page.count('class="menu-item') == 7,
+                f"实际 {page.count('class=\"menu-item')} 项",
+            )
+            check("没有「高级」开关", "adv-toggle" not in page)
+            code, js = http(f"{base}/plugins/mcloud/app.js")
+            check(
+                "app.js 能取到且只调一个读数接口",
+                code == 200 and "api('/readings')" in js,
+                f"http {code}",
+            )
+            code, css = http(f"{base}/plugins/mcloud/style.css")
+            check("样式表能取到", code == 200 and len(css) > 500, f"http {code} {len(css)} 字节")
+            code, body = http(f"{base}/plugins/mcloud/api/readings")
+            ok = False
+            if code == 200:
+                try:
+                    d = json.loads(body)
+                    ok = all(k in d for k in ("account", "daily", "exchange", "live", "data", "push", "settings"))
+                except json.JSONDecodeError:
+                    pass
+            check("聚合读数接口七个区块都在", ok, f"http {code} {body[:100]}")
+
+            # ---- ⑧ 线程分配 ----
             print("\n线程（脚本断言）")
             logf.flush()
             text = logpath.read_text(errors="replace")
