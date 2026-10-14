@@ -4227,16 +4227,6 @@ function env0(text) {
 
 // src/mcloud/tasks/appTaskMatrix.ts
 var MATRIX_MARKETS = ["sign_in_3", "newsign_139mail"];
-var MATRIX_GROUPS = [
-  "new",
-  "beiyong1",
-  "beiyong2",
-  "cloudEmail",
-  "time",
-  "day",
-  "month",
-  "hidden"
-];
 function matrixKey(group) {
   return `mcloud.apptaskmatrix.g.${group}`;
 }
@@ -4251,6 +4241,20 @@ function readMatrix(store2) {
       return null;
     }
   });
+}
+
+// src/mcloud/dailyState.ts
+var DAILY_LAST_KEY = "mcloud.daily.last_run";
+function readDailyRun(store2) {
+  const raw = store2.getState(DAILY_LAST_KEY);
+  if (raw === void 0 || raw === null || raw === "") return null;
+  try {
+    const v = JSON.parse(raw);
+    if (typeof v !== "object" || v === null || !Array.isArray(v.steps)) return null;
+    return v;
+  } catch {
+    return null;
+  }
 }
 
 // src/mcloud/liveKouling.ts
@@ -6651,6 +6655,72 @@ function readBody(req) {
     return { session: raw };
   }
 }
+function buildReadings(deps) {
+  const nowMs = Date.parse(deps.now());
+  const nowIso = deps.now();
+  const view = accountsView(deps.store);
+  return {
+    at: nowIso,
+    account: {
+      loggedIn: view.accounts.length > 0,
+      current: view.current,
+      accounts: view.accounts,
+      session: sessionStatus(deps.store, nowIso)
+    },
+    daily: {
+      // 「今天跑完了吗」看标记；「上次跑成什么样」看读数。两个都要，
+      // 因为它们回答的是不同的问题（用户真正会问的是后面那个）。
+      doneToday: (deps.store.getState("mcloud.daily.done_date") ?? "") === nowIso.slice(0, 10),
+      last: readDailyRun(deps.store)
+    },
+    exchange: {
+      plan: deps.store.getState("mcloud.exchange.plan") ?? "",
+      reading: readExchangeList(deps.store),
+      verdictText: VERDICT_TEXT
+    },
+    live: {
+      reading: readLiveReading(deps.store),
+      codes: loadLiveCodes(deps.store),
+      url: loadLiveUrl(deps.store),
+      pool: readPoolSummary(deps.store, localStamp(nowMs), nowMs),
+      gate: readGateReading(deps.store),
+      listen: {
+        reading: loadListenState(deps.store),
+        line: listenReadingLine(loadListenState(deps.store))
+      },
+      auto: (() => {
+        const plan = loadWakePlan(deps.store);
+        return {
+          wakeAt: plan?.wakeAt ?? "",
+          wakeInMs: plan === null ? 0 : Math.max(0, plan.wakeAtMs - nowMs)
+        };
+      })()
+    },
+    data: {
+      caps: sandboxCaps(),
+      hasBigInt: hasBigInt(),
+      matrix: {
+        groups: readMatrix(deps.store).map((r, i) => ({ group: MATRIX_MARKETS[i], reading: r })),
+        read: readMatrix(deps.store).filter(Boolean).length,
+        total: MATRIX_MARKETS.length
+      }
+    },
+    // ⚠ 推送（10 渠道）在**阶段 ⑤**。这里给一个诚实的空壳而不是编一个假读数 ——
+    //    界面据此显示「还没做」，而不是显示一个看着像好的空表。
+    push: { implemented: false, channels: [], rules: {} },
+    settings: {
+      baseUrl: loadBaseUrl(deps.store),
+      liveUrl: loadLiveUrl(deps.store),
+      liveUrlDefault: XIAOHONGSHU_KOULING_PROFILE_URL,
+      gateBase: loadGateBase(deps.store),
+      wsBase: loadWsBase(deps.store),
+      wsHeartbeat: loadWsHeartbeat(deps.store),
+      listenRoom: loadListenRoom(deps.store) ?? 0,
+      imBase: loadImBase(deps.store),
+      listenSeconds: loadListenSeconds(deps.store)
+    }
+  };
+}
 function mcloudRoutes(deps) {
   const base = `/plugins/${PLUGIN}/api`;
   const verify = () => verifySession({
@@ -6665,6 +6735,12 @@ function mcloudRoutes(deps) {
       path: `${base}/caps`,
       method: "GET",
       handler: () => json(200, { caps: sandboxCaps(), hasBigInt: hasBigInt() })
+    },
+    {
+      // **七个区块的读数一次给全** —— 界面只调这一个
+      path: `${base}/readings`,
+      method: "GET",
+      handler: () => json(200, buildReadings(deps))
     },
     {
       path: `${base}/session`,
@@ -6842,9 +6918,16 @@ function mcloudRoutes(deps) {
       handler: () => {
         const rows = readMatrix(deps.store);
         return json(200, {
-          groups: rows.map((r, i) => ({ group: MATRIX_GROUPS[i], reading: r })),
+          // ⚠ 标签必须跟着 **market** 走，不是 group：`readMatrix` 返回的是
+          //   按市场的两条（游标早就从 group 改成 market 了，见 appTaskMatrix.ts
+          //   里那句「游标现在是**市场**（不是 group）」）。
+          //   用 MATRIX_GROUPS 打标签的话，`sign_in_3` 会被标成 "new"、
+          //   `newsign_139mail` 标成 "beiyong1"，而且 total 报 8 ——
+          //   界面会显示 8 行、只有 2 行有数、两行还都标错。
+          //   （这个 bug 是给 readings 写测试时顺带发现的。）
+          groups: rows.map((r, i) => ({ group: MATRIX_MARKETS[i], reading: r })),
           read: rows.filter(Boolean).length,
-          total: MATRIX_GROUPS.length
+          total: MATRIX_MARKETS.length
         });
       }
     },

@@ -26,7 +26,8 @@ import { groupView } from './groups.ts';
 import { hasBigInt, sandboxCaps } from './caps.ts';
 import { runAuthRefresh } from './authRefresh.ts';
 import { clearOrder, runOrderStep, startOrder } from './tasks/exchangeOrder.ts';
-import { MATRIX_GROUPS, readMatrix } from './tasks/appTaskMatrix.ts';
+import { MATRIX_MARKETS, readMatrix } from './tasks/appTaskMatrix.ts';
+import { readDailyRun } from './dailyState.ts';
 import { VERDICT_TEXT, readExchangeList } from './tasks/exchangeList.ts';
 import {
   EMPTY_SHELL_HINT_CHARS,
@@ -168,7 +169,102 @@ function readBody(req: RouteRequest): Record<string, unknown> {
   }
 }
 
-/** 路由表。main.ts 遍历它去调用真的 `register_route`。 */
+
+/** 一次调用把**七个区块要的读数**全给出来。
+ *
+ *  # 为什么要聚合
+ *
+ *  旧界面是「一个区块一个接口」，于是打开页面要打十几次请求，而且每一块各自
+ *  有各自的加载/错误状态 —— 用户看到的是「有的块有数、有的块空着、有的块报错」，
+ *  而**没人知道该看哪个**。那是「界面完全搞不懂」的来源之一。
+ *
+ *  聚合之后界面只有两种状态：**有读数** 或者 **一次都没读到**（一个错误信息）。
+ *
+ *  # 区块与键的对应（界面菜单栏的七块）
+ *
+ *  | 键 | 区块 | 里面是什么 |
+ *  |---|---|---|
+ *  | `account` | 账号 | 登录状态、账号列表、会话体检 |
+ *  | `daily` | 日常 | 今天跑没跑、**最近一次运行的每一步结果** |
+ *  | `exchange` | 兑换 | 兑换目标、奖品清单、判据文案 |
+ *  | `live` | 直播 | 口令池、日程门、听窗口、下一次几点醒 |
+ *  | `data` | 数据 | 沙箱能力、App 任务矩阵读数（纯读数，没有动作） |
+ *  | `push` | 推送 | **阶段 ⑤ 才实现** —— 现在给一个诚实的空壳 |
+ *  | `settings` | 设置 | 五个上游口子 + 听窗口参数 |
+ *
+ *  ⚠ 这里**只读**：一个上游请求都不发。要刷新上游读数得跑对应的任务
+ *  （日常 / 直播 / 兑换），或者用区块里的「现在跑一次」按钮。
+ *  这样「打开页面」永远不会因为上游慢而卡住。
+ */
+function buildReadings(deps: RouteDeps): Record<string, unknown> {
+  const nowMs = Date.parse(deps.now());
+  const nowIso = deps.now();
+  const view = accountsView(deps.store);
+
+  return {
+    at: nowIso,
+    account: {
+      loggedIn: view.accounts.length > 0,
+      current: view.current,
+      accounts: view.accounts,
+      session: sessionStatus(deps.store, nowIso),
+    },
+    daily: {
+      // 「今天跑完了吗」看标记；「上次跑成什么样」看读数。两个都要，
+      // 因为它们回答的是不同的问题（用户真正会问的是后面那个）。
+      doneToday: (deps.store.getState('mcloud.daily.done_date') ?? '') === nowIso.slice(0, 10),
+      last: readDailyRun(deps.store),
+    },
+    exchange: {
+      plan: deps.store.getState('mcloud.exchange.plan') ?? '',
+      reading: readExchangeList(deps.store),
+      verdictText: VERDICT_TEXT,
+    },
+    live: {
+      reading: readLiveReading(deps.store),
+      codes: loadLiveCodes(deps.store),
+      url: loadLiveUrl(deps.store),
+      pool: readPoolSummary(deps.store, localStamp(nowMs), nowMs),
+      gate: readGateReading(deps.store),
+      listen: {
+        reading: loadListenState(deps.store),
+        line: listenReadingLine(loadListenState(deps.store)),
+      },
+      auto: (() => {
+        const plan = loadWakePlan(deps.store);
+        return {
+          wakeAt: plan?.wakeAt ?? '',
+          wakeInMs: plan === null ? 0 : Math.max(0, plan.wakeAtMs - nowMs),
+        };
+      })(),
+    },
+    data: {
+      caps: sandboxCaps(),
+      hasBigInt: hasBigInt(),
+      matrix: {
+        groups: readMatrix(deps.store).map((r, i) => ({ group: MATRIX_MARKETS[i], reading: r })),
+        read: readMatrix(deps.store).filter(Boolean).length,
+        total: MATRIX_MARKETS.length,
+      },
+    },
+    // ⚠ 推送（10 渠道）在**阶段 ⑤**。这里给一个诚实的空壳而不是编一个假读数 ——
+    //    界面据此显示「还没做」，而不是显示一个看着像好的空表。
+    push: { implemented: false, channels: [], rules: {} },
+    settings: {
+      baseUrl: loadBaseUrl(deps.store),
+      liveUrl: loadLiveUrl(deps.store),
+      liveUrlDefault: XIAOHONGSHU_KOULING_PROFILE_URL,
+      gateBase: loadGateBase(deps.store),
+      wsBase: loadWsBase(deps.store),
+      wsHeartbeat: loadWsHeartbeat(deps.store),
+      listenRoom: loadListenRoom(deps.store) ?? 0,
+      imBase: loadImBase(deps.store),
+      listenSeconds: loadListenSeconds(deps.store),
+    },
+  };
+}
+
+/** 路由表。四个入口遍历它去调用真的 `register_route`。 */
 export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
   const base = `/plugins/${PLUGIN}/api`;
   // 基址**每次调用时从 state 读**，而不是用注入的那份快照 ——
@@ -187,6 +283,12 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
       path: `${base}/caps`,
       method: 'GET',
       handler: () => json(200, { caps: sandboxCaps(), hasBigInt: hasBigInt() }),
+    },
+    {
+      // **七个区块的读数一次给全** —— 界面只调这一个
+      path: `${base}/readings`,
+      method: 'GET',
+      handler: () => json(200, buildReadings(deps)),
     },
     {
       path: `${base}/session`,
@@ -392,9 +494,16 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
       handler: () => {
         const rows = readMatrix(deps.store);
         return json(200, {
-          groups: rows.map((r, i) => ({ group: MATRIX_GROUPS[i], reading: r })),
+          // ⚠ 标签必须跟着 **market** 走，不是 group：`readMatrix` 返回的是
+          //   按市场的两条（游标早就从 group 改成 market 了，见 appTaskMatrix.ts
+          //   里那句「游标现在是**市场**（不是 group）」）。
+          //   用 MATRIX_GROUPS 打标签的话，`sign_in_3` 会被标成 "new"、
+          //   `newsign_139mail` 标成 "beiyong1"，而且 total 报 8 ——
+          //   界面会显示 8 行、只有 2 行有数、两行还都标错。
+          //   （这个 bug 是给 readings 写测试时顺带发现的。）
+          groups: rows.map((r, i) => ({ group: MATRIX_MARKETS[i], reading: r })),
           read: rows.filter(Boolean).length,
-          total: MATRIX_GROUPS.length,
+          total: MATRIX_MARKETS.length,
         });
       },
     },
