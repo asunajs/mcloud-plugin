@@ -137,6 +137,23 @@ export interface TaskPayload {
   scheduledAt: string;
   firedAt: string;
   lateMs: number;
+  /** 这一拍相对**理论**时刻抖了多少毫秒（没写抖动规则时恒为 0）。
+   *
+   *  ⚠ 它在 `docs/redesign-plan.md` 里是 ①-4 那个能力的一部分，但**类型里
+   *  一直没声明** —— 用的时候只能 `as` 或者干脆不读。补上。
+   *
+   *  关系式：`firedAt - scheduledAt == lateMs + jitterMs`。 */
+  jitterMs: number;
+  /** 这一拍是**落后重对齐**（或熔断重试、首次装载）来的，不是按理论线走到的。
+   *
+   *  ⚠ 为什么要单独一格：那几种情况**故意不加抖动** ⇒ `jitterMs` 是 `0`，
+   *  而对称抖动的**中点也是 `0`**（合法取值）。只看 `jitterMs == 0` 分不出
+   *  「这一拍没抖」和「这一拍是重对齐」。
+   *
+   *  对抢兑这条链的意义：重对齐那一拍**已经错过了窗口**（它是"我落后了，
+   *  从下一拍重新对齐"），所以链上那道时间闸会照常把它挡掉 —— 不会因为
+   *  重对齐而误发一枪。 */
+  realigned: boolean;
   /** `register_cron(…, { params })` 给的那份参数（没给就是 undefined）。 */
   params?: unknown;
 }

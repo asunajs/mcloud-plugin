@@ -22,6 +22,22 @@ export interface JobPayload {
   firedAt: string;
   /** 实际比原定晚多少毫秒 —— 观察调度精度就看它 */
   lateMs: number;
+  /** 这一拍相对**理论**时刻抖了多少毫秒（没写抖动规则时恒为 0）。
+   *
+   *  ⚠ 面板从第二十三轮起就在发这一格（`docs/host-api.md` 的 ①-4 那节），
+   *  但**这里一直没声明** —— 用的时候只能 `as`。补上。
+   *
+   *  关系式：`firedAt - scheduledAt == lateMs + jitterMs`。 */
+  jitterMs: number;
+  /** 这一拍是**落后重对齐**（或熔断重试、首次装载）来的，不是按理论线走到的。
+   *
+   *  ⚠ 那几种情况**故意不加抖动** ⇒ `jitterMs` 是 `0`，而对称抖动的**中点也是
+   *  `0`**（合法取值）⇒ 只看 `jitterMs == 0` 分不出「没抖」与「重对齐」。
+   *
+   *  实测撞上过：`rust-plugin-panel/scripts/jitter_check.py` 那条
+   *  "同一种子给出同一偏移"的断言会随机红 —— 三个实例同时跑，谁被负载拖得
+   *  落后谁就重对齐，而重对齐是**时刻**决定的、不是种子决定的。 */
+  realigned: boolean;
   /** `register_cron(…, { params })` 给的那份参数（没给就是 `undefined`）。
    *  形状由插件自己定，面板只原样存、原样交回（第二十三轮新增）。 */
   params?: unknown;
