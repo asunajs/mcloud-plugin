@@ -60,7 +60,7 @@
 > 后面这一支是用**诊断口子** `listenRoom` 去一间安静的房间逼出来的
 > （正常那间房一直有人说话，这个分支走不到）。
 >
-> 决策见下，压出来的问题见 [`docs/findings.md`](docs/findings.md)（F-001 ~ F-043）。
+> 决策见下，压出来的问题见 [`docs/findings.md`](docs/findings.md)（F-001 ~ F-044）。
 
 ## 先跑起来（不用真账号）
 
