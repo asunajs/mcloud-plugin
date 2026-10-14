@@ -213,6 +213,15 @@ async function main() {
     await shot(name);
   }
 
+  // 回到「日常」，真跑一次，再截一张 —— 「最近几次」那个列表只有真跑过才有内容
+  await send('Runtime.evaluate', {
+    expression: `document.querySelector('.menu-item[data-block="daily"]').click()`,
+  });
+  await sleep(300);
+  await send('Runtime.evaluate', { expression: `document.getElementById('daily-run').click()` });
+  await sleep(8000);
+  await shot('08-daily-recent');
+
   ws.close();
   chrome.kill();
   fs.rmSync(profile, { recursive: true, force: true });

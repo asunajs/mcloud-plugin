@@ -21,6 +21,7 @@
 """
 
 import json
+import time
 import os
 import socket
 import subprocess
@@ -391,7 +392,65 @@ def main() -> int:
             )
             check("规则也回到读数里了", len(p8.get("rules") or []) == 1, str(p8.get("rules")))
 
-            # ---- ⑩ 线程分配 ----
+            # ---- ⑩ 运行记录（⑤-2）：一次运行一行 ----
+            print("\n运行记录（脚本断言）")
+            code, body = http(f"{base}/plugins/mcloud/api/readings")
+            d = json.loads(body) if code == 200 else {}
+            for task in ("daily", "exchange", "live"):
+                blk = d.get(task) or {}
+                check(
+                    f"「{task}」块里有 recent（最近几次的摘要）",
+                    isinstance(blk.get("recent"), list),
+                    f"http {code}，拿到 {type(blk.get('recent')).__name__}",
+                )
+            # 真跑一次日常，然后看记录里有没有它
+            code, body = http(
+                f"{base}/api/tasks/mcloud-daily/%E6%97%A5%E5%B8%B8/run",
+                method="POST",
+                body=b"{}",
+                headers={"content-type": "application/json", "x-panel": "1"},
+            )
+            check("能触发一次日常", code == 200, f"http {code} {body[:100]}")
+            time.sleep(2)
+            code, body = http(f"{base}/plugins/mcloud/api/readings")
+            d2 = json.loads(body) if code == 200 else {}
+            recent = (d2.get("daily") or {}).get("recent") or []
+            check(
+                "⚠ 跑完之后「最近几次」里真的多了一条",
+                len(recent) >= 1,
+                f"拿到 {len(recent)} 条",
+            )
+            if recent:
+                r0 = recent[0]
+                check("摘要里有一行结论", bool(r0.get("note")), str(r0)[:120])
+                check(
+                    "⚠ 摘要里**没有** steps（20 次 × 40 步全塞进读数就是几百 KB）",
+                    "steps" not in r0,
+                    str(list(r0.keys())),
+                )
+                check("摘要里有耗时", isinstance(r0.get("ms"), int), str(r0.get("ms")))
+                check(
+                    "摘要里分了成功 / 失败 / 没做事三档",
+                    all(k in r0 for k in ("okCount", "badCount", "idleCount")),
+                    str(list(r0.keys())),
+                )
+                # 按 id 取那一次的步骤
+                code, body = http(f"{base}/plugins/mcloud/api/runs?id={r0['id']}")
+                check(
+                    "能按 id 取到那一次的步骤",
+                    code == 200 and isinstance((json.loads(body) if code == 200 else {}).get("steps"), list),
+                    f"http {code} {body[:120]}",
+                )
+                code, body = http(f"{base}/plugins/mcloud/api/runs?id=daily-0000000000000")
+                check(
+                    "取一个不存在的 id ⇒ 404（不是空对象）",
+                    code == 404,
+                    f"http {code}",
+                )
+                code, body = http(f"{base}/plugins/mcloud/api/runs")
+                check("不给 id ⇒ 400", code == 400, f"http {code}")
+
+            # ---- ⑪ 线程分配 ----
             print("\n线程（脚本断言）")
             logf.flush()
             text = logpath.read_text(errors="replace")

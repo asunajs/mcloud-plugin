@@ -2849,6 +2849,68 @@ function runAuthRefresh(deps, force = false, leadDays = DEFAULT_LEAD_DAYS) {
   };
 }
 
+// src/mcloud/runLog.ts
+var RUN_LOG_KEY = "mcloud.run.log";
+var RUNS_PER_TASK = 20;
+var MAX_STEPS = 40;
+var MAX_NOTE = 300;
+function clip(s, max = MAX_NOTE) {
+  const t = typeof s === "string" ? s : String(s ?? "");
+  return t.length <= max ? t : `…${t.slice(t.length - max + 1)}`;
+}
+function cleanStep(s) {
+  return {
+    name: clip(s.name, 60),
+    ok: s.ok === true,
+    note: clip(s.note),
+    idle: s.idle === true
+  };
+}
+function readRuns(store2) {
+  const raw = store2.getState(RUN_LOG_KEY);
+  if (raw === void 0 || raw === null || raw === "") return [];
+  try {
+    const v = JSON.parse(raw);
+    if (!Array.isArray(v)) return [];
+    return v.filter(
+      (r) => typeof r === "object" && r !== null && typeof r.id === "string"
+    );
+  } catch {
+    return [];
+  }
+}
+function appendRun(store2, rec) {
+  const steps = rec.steps.slice(0, MAX_STEPS).map(cleanStep);
+  const id = `${rec.task}-${Date.parse(rec.at) || 0}`;
+  const all = readRuns(store2);
+  const next = {
+    id,
+    task: rec.task,
+    at: rec.at,
+    ms: Math.max(0, Math.round(rec.ms)),
+    ok: rec.ok === true,
+    note: clip(rec.note),
+    steps,
+    truncated: rec.steps.length > MAX_STEPS
+  };
+  const kept = all.filter((r) => r.id !== id);
+  kept.push(next);
+  const byTask = /* @__PURE__ */ new Map();
+  for (const r of kept) {
+    const list = byTask.get(r.task) ?? [];
+    list.push(r);
+    byTask.set(r.task, list);
+  }
+  const trimmed = [];
+  for (const list of byTask.values()) {
+    list.sort((a, b) => a.at < b.at ? 1 : a.at > b.at ? -1 : 0);
+    trimmed.push(...list.slice(0, RUNS_PER_TASK));
+  }
+  trimmed.sort((a, b) => a.at < b.at ? 1 : a.at > b.at ? -1 : 0);
+  store2.setState(RUN_LOG_KEY, JSON.stringify(trimmed), rec.at);
+  return id;
+}
+
 // src/mcloud/tasks/base.ts
 var ERR_PREFIX = "mcloud.last_error.";
 function recordError(store2, task, note, nowIso) {
@@ -5168,6 +5230,7 @@ register_cron(
   "*/30 7-22 * * *",
   (p) => {
     const nowIso = (/* @__PURE__ */ new Date()).toISOString();
+    const startedMs = Date.parse(nowIso);
     const today2 = nowIso.slice(0, 10);
     const doneDate = store.getState(DONE_KEY);
     if (doneDate === today2) return;
@@ -5192,6 +5255,15 @@ register_cron(
       }),
       nowIso
     );
+    const runId = appendRun(store, {
+      task: "daily",
+      at: nowIso,
+      ms: Date.now() - startedMs,
+      ok: r.ok,
+      note: r.note,
+      steps: r.steps
+    });
+    log2(`日常：本次运行 id=${runId}`);
     if (r.ok) {
       store.setState(DONE_KEY, today2, nowIso);
       log2(`日常：${r.note}`);

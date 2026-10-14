@@ -254,6 +254,7 @@ function renderAccount(a, login) {
 }
 
 function renderDaily(d) {
+  renderRecent('daily-recent', 'daily-steps', d.recent);
   const run = d.last;
   if (!run) {
     setText('daily-hero', '还没跑过');
@@ -269,20 +270,14 @@ function renderDaily(d) {
     setText('daily-sub', run.note);
   }
 
-  setText('daily-when', run ? `${when(run.at)} 那一次，${run.steps.length} 步` : '');
-
-  // 每一步一行。`idle` 的显示成灰点 —— 「今天不用领」和「领到了」是两件事，
-  // 都给绿勾等于骗人。
-  paintList(
-    'daily-steps',
-    run
-      ? run.steps.map((s) => [(s.ok ? (s.idle ? '· ' : '✓ ') : '✗ ') + s.name, s.note, ''])
-      : [],
-    '还没有运行记录。',
-  );
+  setText('daily-when', '点「看」展开某一次的每一步。');
+  // ⚠ 这里**不再**直接画 `daily-steps` —— 那个容器现在归「最近几次」的详情面板
+  //   （`renderRecent` 管它，默认展开最近一次）。两处都画就会叠两层，
+  //   而第一版就是这样：列表下面又冒出一份一模一样的步骤。
 }
 
 function renderExchange(e) {
+  renderRecent('ex-recent', 'ex-steps', e.recent);
   setText('ex-hero', e.plan ? `要换：${e.plan}` : '还没设兑换目标');
   setText('ex-sub', e.plan ? '' : '设一个之后它才会去下单。');
 
@@ -310,6 +305,7 @@ function renderExchange(e) {
 }
 
 function renderLive(l) {
+  renderRecent('live-recent', 'live-steps', l.recent);
   const pool = l.pool || {};
   const codes = (l.codes || []).filter((c) => c && c.code);
   const valid = pool.validCount || 0;
@@ -366,6 +362,118 @@ function renderData(d) {
     '还没有矩阵读数。',
   );
   setText('caps-line', d.caps || '');
+}
+
+// ── 运行记录（三块共用） ──
+//
+// # 为什么是「一次运行一行」而不是「一条日志一行」
+//
+// 面板的环形日志混着所有插件、而且只有 200 行 —— 用它回答
+// 「昨天那次兑换为什么没成」是做不到的。所以插件自己记：
+// **一次运行 = 一行**，点开才看那一次的步骤。
+//
+// 列表只给**摘要**（成功几步 / 失败几步 / 没做事几步），步骤按需再取 ——
+// 20 次 × 40 步全塞进一次读数就是几百 KB 的 JSON，而这是 iframe 里的页面。
+
+/** 画一个任务的「最近几次」。`boxId` / `stepsId` 是那一块的容器。
+ *
+ *  ⚠ **最近一次默认展开**。全折起来虽然"干净"，但页面一打开什么都没有 ——
+ *  用户得先点一下才知道跑成什么样，而"要点哪个"正是这一版要解决的问题。 */
+function renderRecent(boxId, stepsId, recent) {
+  const box = $(boxId);
+  if (!box) return;
+  box.innerHTML = '';
+  const list = recent || [];
+  if (list.length === 0) {
+    const empty = el('p', 'hint');
+    empty.textContent = '还没跑过。';
+    box.appendChild(empty);
+    const ul = $(stepsId);
+    if (ul) ul.innerHTML = '';
+    return;
+  }
+
+  list.forEach((r, i) => {
+    const row = el('div', 'row' + (r.ok ? ' is-on' : ''));
+    const name = el('span', 'row-name');
+    name.textContent = when(r.at);
+    row.appendChild(name);
+
+    const state = el('span', 'row-state');
+    // 「几步失败 · 几步成了 · 几步没做事」—— 失败那一栏只在真有失败时出现，
+    // 否则每行都挂着「0 步失败」，看着像在报警
+    const bits = [];
+    if (r.badCount > 0) bits.push(`${r.badCount} 失败`);
+    if (r.okCount > 0) bits.push(`${r.okCount} 成了`);
+    if (r.idleCount > 0) bits.push(`${r.idleCount} 跳过`);
+    state.textContent = bits.join(' · ') || '没有步骤';
+    row.appendChild(state);
+
+    const dur = el('span', 'row-dur');
+    dur.textContent = r.ms >= 1000 ? `${(r.ms / 1000).toFixed(1)}s` : `${r.ms}ms`;
+    row.appendChild(dur);
+
+    const btn = el('button', 'btn btn-sm btn-ghost');
+    btn.type = 'button';
+    btn.textContent = i === 0 ? '收起' : '看';
+    btn.addEventListener('click', () => {
+      const ul = $(stepsId);
+      const open = ul && ul.dataset.run === r.id;
+      // 再点一次 = 收起
+      if (open) {
+        ul.innerHTML = '';
+        delete ul.dataset.run;
+        btn.textContent = '看';
+        return;
+      }
+      btn.textContent = '收起';
+      loadRunDetail(stepsId, r.id);
+    });
+    row.appendChild(btn);
+    box.appendChild(row);
+
+    // 摘要那一句也显示出来（它才是"成没成"的答案）
+    const note = el('div', 'row-note');
+    note.textContent = r.note + (r.truncated ? '（步骤太多，只留了前面一部分）' : '');
+    box.appendChild(note);
+  });
+
+  // 默认展开最近一次
+  loadRunDetail(stepsId, list[0].id);
+}
+
+/** 取某一次运行的步骤并画出来。
+ *
+ *  ⚠ 取不到（记录已经被新记录挤掉）时说清是**过期**，不是"出错了" ——
+ *  运行记录只留最近 N 次，用户手上那个 id 确实可能已经没了。 */
+async function loadRunDetail(stepsId, id) {
+  const ul = $(stepsId);
+  if (!ul) return;
+  ul.innerHTML = '';
+  // 记下现在展开的是哪一次 —— 按钮靠它判断"再点一次是收起"
+  ul.dataset.run = id;
+  try {
+    const r = await api(`/runs?id=${encodeURIComponent(id)}`);
+    for (const s of r.steps || []) {
+      const li = el('li', s.ok ? (s.idle ? 'is-idle' : 'is-ok') : 'is-bad');
+      const n = el('span', 'step-name');
+      n.textContent = s.name;
+      const t = el('span', 'step-note');
+      t.textContent = s.note;
+      li.appendChild(n);
+      li.appendChild(t);
+      ul.appendChild(li);
+    }
+    if ((r.steps || []).length === 0) {
+      const li = el('li', 'is-idle');
+      li.textContent = '这一次没有步骤';
+      ul.appendChild(li);
+    }
+  } catch (e) {
+    const li = el('li', 'is-idle');
+    li.textContent = `这一次的记录已经过期了（只留最近几次）：${e.message}`;
+    ul.appendChild(li);
+  }
 }
 
 // ── 推送 ──

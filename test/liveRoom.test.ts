@@ -144,7 +144,7 @@ function callRoute(deps: Parameters<typeof mcloudRoutes>[0], method: string, pat
   const key = `${method} ${path}`;
   const entry = mcloudRoutes(deps).find((r) => `${r.method} ${r.path}` === key);
   assert.ok(entry, `没有这条路由：${key}`);
-  return entry.handler({ method, path, query: {}, headers: {}, body: body === undefined ? '' : JSON.stringify(body) });
+  return entry.handler({ method, path, query: '', headers: {}, body: body === undefined ? '' : JSON.stringify(body) });
 }
 
 test('路由 GET /api/live：把读数、口令、以及"口令要人给"那句话都给界面', () => {
@@ -189,7 +189,7 @@ test('路由 POST /api/live/codes：贴纯文本 body 也能存（少一步转�
   const deps = testDeps(store, { now: NOW });
 
   const entry = mcloudRoutes(deps).find((r) => r.path.endsWith('/live/codes'))!;
-  const r = entry.handler({ method: 'POST', path: entry.path, query: {}, headers: {}, body: '短漫上新免费看' });
+  const r = entry.handler({ method: 'POST', path: entry.path, query: '', headers: {}, body: '短漫上新免费看' });
   assert.equal(r.status, 200);
   assert.deepEqual(loadLiveCodes(store)!.codes, ['短漫上新免费看']);
 });

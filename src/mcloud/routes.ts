@@ -42,6 +42,8 @@ import {
   savePushRules,
   type PushRule,
 } from './pushConfig.ts';
+import { parseQuery } from './query.ts';
+import { readRun, recentRuns } from './runLog.ts';
 import { drawReport } from './tasks/liveDraw.ts';
 import { MATRIX_MARKETS, readMatrix } from './tasks/appTaskMatrix.ts';
 import { readDailyRun } from './dailyState.ts';
@@ -169,7 +171,10 @@ export const PLUGIN = 'mcloud';
 export interface RouteRequest {
   method?: string;
   path?: string;
-  query?: Record<string, string>;
+  /** ⚠ **原始查询串**（`"id=abc&x=1"`），不是解析好的对象 ——
+   *  见 `host-api.d.ts` 里 `RouteRequest.query` 那段实测记录。
+   *  要按名取值用 `parseQuery()`。 */
+  query?: string;
   headers?: Record<string, string>;
   body?: string;
 }
@@ -308,8 +313,12 @@ function buildReadings(deps: RouteDeps): Record<string, unknown> {
       // 因为它们回答的是不同的问题（用户真正会问的是后面那个）。
       doneToday: (deps.store.getState('mcloud.daily.done_date') ?? '') === nowIso.slice(0, 10),
       last: readDailyRun(deps.store),
+      // 最近几次的**摘要**（只有一行一句）。步骤要按需再取 ——
+      // 20 条 × 40 步全塞进来，首屏就是几百 KB 的 JSON。
+      recent: recentRuns(deps.store, 'daily'),
     },
     exchange: {
+      recent: recentRuns(deps.store, 'exchange'),
       plan: deps.store.getState('mcloud.exchange.plan') ?? '',
       reading: readExchangeList(deps.store),
       verdictText: VERDICT_TEXT,
@@ -324,6 +333,7 @@ function buildReadings(deps: RouteDeps): Record<string, unknown> {
         reading: loadListenState(deps.store),
         line: listenReadingLine(loadListenState(deps.store)),
       },
+      recent: recentRuns(deps.store, 'live'),
       auto: (() => {
         const plan = loadWakePlan(deps.store);
         return {
@@ -491,6 +501,27 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
       path: `${base}/caps`,
       method: 'GET',
       handler: () => json(200, { caps: sandboxCaps(), hasBigInt: hasBigInt() }),
+    },
+
+    // ── 运行记录 ────────────────────────────────────────────────────
+    {
+      // 某一次运行的**步骤**。列表只给摘要，点开才取这个 ——
+      // 理由见 `runLog.ts` 的 `RunSummary`。
+      // ⚠ 走**查询串**而不是 `/runs/:id`：宿主给的是 `req.query`，
+      //   没有路径参数（见 `host-api.d.ts` 的 `RouteRequest`）。
+      path: `${base}/runs`,
+      method: 'GET',
+      handler: (req) => {
+        // ⚠ `req.query` 是**原始字符串** —— 要 `parseQuery` 才能按名取
+        //   （见 host-api.d.ts 里那段实测记录）
+        const id = parseQuery(req.query)['id'] ?? '';
+        if (id === '') return json(400, { error: '要带一个 id' });
+        const r = readRun(deps.store, id);
+        // 找不到就 404，**不返回空对象** —— 界面据此显示"这次记录已经过期了"
+        // （运行记录只留最近 N 次，用户手上那个 id 可能已经被挤掉了）
+        if (r === null) return json(404, { error: `没有这次运行（可能已经被新记录挤掉了）：${id}` });
+        return json(200, r);
+      },
     },
 
     // ── 推送 ────────────────────────────────────────────────────────

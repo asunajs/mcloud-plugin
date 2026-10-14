@@ -7,6 +7,68 @@
 // src/entries/exchange.ts
 import { log as log2, register_cron, warn as warn2, worker_hint } from "host-api";
 
+// src/mcloud/runLog.ts
+var RUN_LOG_KEY = "mcloud.run.log";
+var RUNS_PER_TASK = 20;
+var MAX_STEPS = 40;
+var MAX_NOTE = 300;
+function clip(s, max2 = MAX_NOTE) {
+  const t = typeof s === "string" ? s : String(s ?? "");
+  return t.length <= max2 ? t : `…${t.slice(t.length - max2 + 1)}`;
+}
+function cleanStep(s) {
+  return {
+    name: clip(s.name, 60),
+    ok: s.ok === true,
+    note: clip(s.note),
+    idle: s.idle === true
+  };
+}
+function readRuns(store2) {
+  const raw = store2.getState(RUN_LOG_KEY);
+  if (raw === void 0 || raw === null || raw === "") return [];
+  try {
+    const v = JSON.parse(raw);
+    if (!Array.isArray(v)) return [];
+    return v.filter(
+      (r) => typeof r === "object" && r !== null && typeof r.id === "string"
+    );
+  } catch {
+    return [];
+  }
+}
+function appendRun(store2, rec) {
+  const steps = rec.steps.slice(0, MAX_STEPS).map(cleanStep);
+  const id = `${rec.task}-${Date.parse(rec.at) || 0}`;
+  const all = readRuns(store2);
+  const next = {
+    id,
+    task: rec.task,
+    at: rec.at,
+    ms: Math.max(0, Math.round(rec.ms)),
+    ok: rec.ok === true,
+    note: clip(rec.note),
+    steps,
+    truncated: rec.steps.length > MAX_STEPS
+  };
+  const kept = all.filter((r) => r.id !== id);
+  kept.push(next);
+  const byTask = /* @__PURE__ */ new Map();
+  for (const r of kept) {
+    const list = byTask.get(r.task) ?? [];
+    list.push(r);
+    byTask.set(r.task, list);
+  }
+  const trimmed = [];
+  for (const list of byTask.values()) {
+    list.sort((a, b) => a.at < b.at ? 1 : a.at > b.at ? -1 : 0);
+    trimmed.push(...list.slice(0, RUNS_PER_TASK));
+  }
+  trimmed.sort((a, b) => a.at < b.at ? 1 : a.at > b.at ? -1 : 0);
+  store2.setState(RUN_LOG_KEY, JSON.stringify(trimmed), rec.at);
+  return id;
+}
+
 // src/mcloud/envelope.ts
 var isRecord = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
 function parseSignInEnvelope(body) {
@@ -1841,25 +1903,37 @@ var DEADLINE_MS = BUDGET_MS - 1e4;
 var PLAN_KEY = "mcloud.exchange.plan";
 function runExchange(deps) {
   const started = Date.now();
-  const detail = [];
+  const steps = [];
+  const add = (name, ok, note, idle = false) => {
+    steps.push({ name, ok, note, idle });
+  };
   try {
     const l = runExchangeList(deps);
-    detail.push(`清单：${l.ok ? "" : "失败 "}${l.note}`);
+    add("清单", l.ok, l.note);
   } catch (e) {
-    detail.push(`清单：抛异常 ${e instanceof Error ? e.message : String(e)}`);
+    add("清单", false, `抛异常 ${e instanceof Error ? e.message : String(e)}`);
   }
   const plan = store.getState(PLAN_KEY) ?? "";
   if (plan === "") {
+    add("下单", true, "没有设兑换目标（设置里填「兑换目标」之后才会下单）", true);
     return {
       ok: true,
       note: "没有设兑换目标（设置里填「兑换目标」之后才会下单）",
-      detail
+      detail: steps.map((x) => `${x.name}：${x.ok ? "" : "失败 "}${x.note}`),
+      steps
     };
   }
   if (!store.getState("mcloud.exchange.order.step")) {
     const s = startOrder(deps, plan);
-    detail.push(`起单：${s.note}`);
-    if (!s.ok) return { ok: false, note: s.note, detail };
+    add("起单", s.ok, s.note);
+    if (!s.ok) {
+      return {
+        ok: false,
+        note: s.note,
+        detail: steps.map((x) => `${x.name}：${x.ok ? "" : "失败 "}${x.note}`),
+        steps
+      };
+    }
   }
   const r = drain(runOrderStep, deps, {
     label: "兑换",
@@ -1867,11 +1941,16 @@ function runExchange(deps) {
     deadlineMs: DEADLINE_MS,
     startedAt: started
   });
-  detail.push(...r.notes);
+  for (const line of r.notes) {
+    const i = line.indexOf("：");
+    if (i < 0) add("兑换", true, line);
+    else add(line.slice(0, i), true, line.slice(i + 1));
+  }
   return {
     ok: r.ok,
     note: `${r.note}（用时 ${((Date.now() - started) / 1e3).toFixed(1)}s）`,
-    detail
+    detail: steps.map((x) => `${x.name}：${x.ok ? "" : "失败 "}${x.note}`),
+    steps
   };
 }
 register_cron(
@@ -1880,8 +1959,18 @@ register_cron(
   //    现在的语义是「每小时看一眼有没有要兑换的」，不会真的去抢。
   "@every 1h",
   (p) => {
+    const startedMs = Date.now();
+    const at = new Date(startedMs).toISOString();
     const deps = taskDeps(store, transport, p);
     const r = runExchange(deps);
+    appendRun(store, {
+      task: "exchange",
+      at,
+      ms: Date.now() - startedMs,
+      ok: r.ok,
+      note: r.note,
+      steps: r.steps
+    });
     store.recordRun({
       task: p.name,
       runs: p.runs,
