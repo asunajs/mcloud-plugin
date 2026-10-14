@@ -47,9 +47,12 @@ import {
   parseCmpassLogin,
   parseRoomBeat,
   parseTabContentList,
+  parseUserToken,
   roomBeatRequest,
   tabContentListRequest,
+  userTokenRequest,
 } from '../liveGate.ts';
+import { applyRoomRequest, parseApplyRoom } from '../liveIm.ts';
 import { parseSsoToken } from '../h5session.ts';
 import { STATE_AUTH } from '../sessionExchange.ts';
 import { parseAuthorization } from '../authRefresh.ts';
@@ -79,7 +82,17 @@ export const RECV_SLICE_MS = 700;
 /** 握手超时（毫秒）—— 与 `ws_open` 的默认一致。 */
 export const WS_OPEN_TIMEOUT_MS = 8000;
 
-export type ListenStep = 'handshake' | 'rooms' | 'roomBeat' | 'open' | 'listen' | 'done';
+export type ListenStep =
+  | 'handshake'
+  | 'rooms'
+  /** 取 WS 凭据（`userToken`）—— ⚠ 不是门那个 JWT（见 `liveGate.userTokenRequest`）。 */
+  | 'userToken'
+  | 'roomBeat'
+  /** 进聊天室（`member/apply`）—— **不发给房间推消息**，这是"听不到"的根因。 */
+  | 'apply'
+  | 'open'
+  | 'listen'
+  | 'done';
 
 /** 这个任务**额外**需要宿主的长连接能力（`ws_*`）。
  *  用"交叉类型"而不是往公共 `TaskDeps` 里加字段：这样只有它自己知道这个前提。 */
@@ -92,8 +105,12 @@ export interface ListenState {
   /** 冷却：到这个时刻之前**一个请求都不发**（门关着时用它）。 */
   nextCheckAtMs?: number;
   jwt?: string;
+  /** WS 凭据（`userToken` 换来的 `access_token`）。PROVISION 的 `auth` 用它。 */
+  accessToken?: string;
   roomId?: number;
   chatRoomId?: string;
+  /** `member/apply` 过了没有。 */
+  applied?: boolean;
   /** WS 句柄（宿主侧的编号；**面板重启后就失效** ⇒ 那时必须重新 `ws_open`）。 */
   handle?: number;
   lastHeartbeatAtMs?: number;
@@ -265,8 +282,12 @@ export function runLiveListen(deps: ListenDeps): TaskOutcome {
       return handshakeStep(deps, st);
     case 'rooms':
       return roomsStep(deps, st, nowMs);
+    case 'userToken':
+      return userTokenStep(deps, st);
     case 'roomBeat':
       return roomBeatStep(deps, st, nowMs);
+    case 'apply':
+      return applyStep(deps, st, nowMs);
     case 'open':
       return openStep(deps, st, nowMs);
     case 'listen':
@@ -365,9 +386,30 @@ function roomsStep(deps: ListenDeps, st: ListenState, nowMs: number): TaskOutcom
     return { ok: true, note: st.note };
   }
   st.roomId = anchorLive[0]?.id;
+  // ⚠ 顺序照 mcloud 的 `listen_danmaku_with`：先取 **WS 凭据**，再问聊天室号，再进房间。
+  st.step = 'userToken';
+  persist(deps, st);
+  return { ok: true, note: `门开着：房间 ${st.roomId}，接着取 WS 凭据` };
+}
+
+/** ③ 取 WS 凭据（`userToken`）。
+ *
+ *  ⚠⚠ 2026-10-14 实机：漏了这一步（拿门的 JWT 当 WS 凭据）⇒ **一条弹幕都收不到**
+ *  （只有自己的心跳回包）。表现与"这间房没人说话"完全一样，所以我先误判成后者。 */
+function userTokenStep(deps: ListenDeps, st: ListenState): TaskOutcome {
+  const base = loadGateBaseOf(deps.store);
+  const jwt = st.jwt ?? '';
+  if (jwt === '') return stepFail(deps, st, '③ 没有票（上一拍的 JWT 不在）');
+  const r = callRawText(deps.transport, userTokenRequest(jwt, base));
+  if (!r.ok) return stepFail(deps, st, `③ 取 WS 凭据失败：${r.error ?? '未知失败'}`);
+  const parsed = parseUserToken(r.text);
+  if (!parsed.ok || parsed.value === undefined) {
+    return stepFail(deps, st, `③ 取 WS 凭据失败：${parsed.error ?? '响应里没有 access_token'}`);
+  }
+  st.accessToken = parsed.value.accessToken;
   st.step = 'roomBeat';
   persist(deps, st);
-  return { ok: true, note: `门开着：房间 ${st.roomId}，接着问聊天室号` };
+  return { ok: true, note: `③ 取到 WS 凭据（${parsed.value.accessToken.length} 字符，${parsed.value.expiresIn}s）` };
 }
 
 /** ④ roomBeat → `chatRoomId`。**没有它就不该开 WS**（抓包 §一/§5.2 的判据）。 */
@@ -397,11 +439,44 @@ function roomBeatStep(deps: ListenDeps, st: ListenState, nowMs: number): TaskOut
     return { ok: true, note: st.note };
   }
   st.chatRoomId = beat.chatRoomId;
+  st.step = 'apply';
+  persist(deps, st);
+  return {
+    ok: true,
+    note: `房间 ${st.roomId}（${beat.title || '无标题'}）聊天室 ${st.chatRoomId}，接着进房间`,
+  };
+}
+
+/** ⑤ 进聊天室（`member/apply`）—— **建 WS 之前**那一步。
+ *
+ *  ⚠⚠ 这是"听不到弹幕"的**根因**：连得上、心跳通、PROVISION 也回了，但服务端
+ *  不往这条连接推房间消息（2026-10-14 实机对照：补上这一步之前 96 秒零弹幕）。
+ *
+ *  ⚠ 两个签名头**服务端不校验**（抓包 §8.6 反证实验：打全 0 照样 `code:0`），
+ *  但仍然按实拍算式算出来 —— 报文与原客户端一致，别的地方才不会在某天突然露出来。 */
+function applyStep(deps: ListenDeps, st: ListenState, nowMs: number): TaskOutcome {
+  const auth = deps.store.getState(STATE_AUTH) ?? '';
+  const parsed = parseAuthorization(auth);
+  if (parsed === null) return stepFail(deps, st, '⑤ 进房间要手机号（`userName` 用 `cmlive_c_<手机>`）');
+  if (st.chatRoomId === undefined || st.accessToken === undefined) {
+    return stepFail(deps, st, '⑤ 进房间缺聊天室号或 WS 凭据（上一拍的状态不完整）');
+  }
+  // ⚠ `userName` 与 `invoker` **同一个串**（照 mcloud 的调用点）。
+  const userName = `cmlive_c_${parsed.phone}`;
+  const req = applyRoomRequest(st.chatRoomId, userName, userName, st.accessToken, String(nowMs), {
+    // 没配口子 ⇒ `applyRoomRequest` 自己用真主机（`BASE_VIDEO_IM`）
+    base: loadImBase(deps.store),
+  });
+  const r = callRawText(deps.transport, req);
+  if (!r.ok) return stepFail(deps, st, `⑤ 进房间失败：${r.error ?? '未知失败'}`);
+  const out = parseApplyRoom(r.text);
+  if (!out.ok) return stepFail(deps, st, `⑤ 进房间失败：${out.error}`);
+  st.applied = true;
   st.step = 'open';
   persist(deps, st);
   return {
     ok: true,
-    note: `房间 ${st.roomId}（${beat.title || '无标题'}）聊天室 ${st.chatRoomId}`,
+    note: `⑤ 进房间成功（appId=${out.value.appId || '?'}，回显聊天室 ${out.value.roomId || '?'}）`,
   };
 }
 
@@ -637,6 +712,23 @@ function finish(deps: ListenDeps, st: ListenState, note: string): TaskOutcome {
   st.note = note;
   persist(deps, st);
   return { ok: true, note };
+}
+
+/** 进房间那一台（`videoim.cmcc-cs.cn:20103`）的口子。
+ *
+ *  ⚠ 与门的 `gateBase` **不是同一个键**：门在 `v.cmcc-cs.cn`（HTTPS，直播侧），
+ *  进房间在 `videoim`（HTTPS，**带端口 20103**）。混成一个的后果是 CI 里
+ *  `member/apply` 打到真主机上 —— 现象是一个 **401**（我第一版就是这样，
+ *  而 401 看起来像"凭据不对"，会让人去查 token 而不是查配置）。 */
+export const STATE_IM_BASE = 'mcloud.live.im_base';
+
+export function loadImBase(store: Pick<Store, 'getState'>): string | undefined {
+  const v = store.getState(STATE_IM_BASE);
+  return v && v.trim() ? v.trim().replace(/\/+$/, '') : undefined;
+}
+
+export function saveImBase(store: Store, base: string, nowIso: string): void {
+  store.setState(STATE_IM_BASE, base.trim().replace(/\/+$/, ''), nowIso);
 }
 
 /** 取门那个 `gateBase` 口子（**同一个键**：两台主机在 CI 里就是同一个 mock）。 */

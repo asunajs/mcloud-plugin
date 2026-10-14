@@ -154,3 +154,20 @@ test('`h5Headers`：`jwttoken` 只在给了票时才加，且头名小写', () =
   assert.equal(withJwt.jwttoken, 'J');
   assert.equal(withJwt.jwtToken, undefined, '不能驼峰化');
 });
+test('口子给**空串**（= 用真上游）时 URL 仍然是绝对的 —— 2026-10-14 实机踩出来的洞', () => {
+  // ⚠ 背景：`loadBaseUrl()` 用 `''` 表示"没配 ⇒ 用真上游"（界面也这么显示），
+  //   而构建函数原来写 `base ?? DEFAULT` —— `??` 只挡 `undefined`，空串一路穿到底
+  //   ⇒ 拼出**相对 URL**（`/user/querySpecTokenV2`）⇒ 宿主报 `missing uri scheme`，
+  //   **换票一步都发不出去**。e2e 里口子指着 mock，所以这个洞一直被挡着。
+  const sign = makeSign('0000000000000');
+  const cases: Array<{ name: string; url: string }> = [
+    { name: 'specToken', url: specTokenRequest(SIGN_IN_RECIPE, 'Basic x', '').url },
+    { name: 'timestamp', url: timestampRequest(SIGN_IN_RECIPE, 'https://x/y', '').url },
+    { name: 'tyrzLogin', url: tyrzLoginRequest(SIGN_IN_RECIPE, 'SSO', sign, 'https://x/y', '').url },
+  ];
+  for (const c of cases) {
+    assert.match(c.url, /^https:\/\//, `${c.name} 的空串口子必须落到默认主机，实际是 ${c.url}`);
+  }
+  // 空白同理（界面上手输一个空格是常事）
+  assert.match(timestampRequest(SIGN_IN_RECIPE, 'https://x/y', '   ').url, /^https:\/\//);
+});

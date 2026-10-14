@@ -637,22 +637,27 @@ GATEPY
 # ⚠ 它用 `wsBase` 这个**另一个口子**（`ws://`，带端口），与门的 `gateBase` 不是同一个。
 echo "⑧ 听弹幕（WS/SockJS）"
 curl -fsS "${W[@]}" -X POST \
-  -d "{\"wsBase\":\"ws://127.0.0.1:$MOCK_PORT\"}" "$B/plugins/mcloud/api/config" > /dev/null
+  -d "{\"wsBase\":\"ws://127.0.0.1:$MOCK_PORT\",\"imBase\":\"http://127.0.0.1:$MOCK_PORT\"}" "$B/plugins/mcloud/api/config" > /dev/null
 curl -fsS "${W[@]}" "$B/plugins/mcloud/api/config" -o "$TMP/config-ws.json"
 python3 - "$TMP/config-ws.json" <<'CFGWS'
 import json, sys
 cfg = json.load(open(sys.argv[1]))
 assert cfg['wsBase'].startswith('ws://127.0.0.1:'), cfg
 print('   ✅ 配置口子：wsBase 指到 mock（`ws://` 而不是 `http://`）')
+# ⚠ `imBase`（进房间那一台）**必须单独指**：不指的话 `member/apply` 会打到真主机
+#   `videoim.cmcc-cs.cn:20103` 上，现象是一个 **401**（看起来像"凭据不对"）。
+assert cfg['imBase'].startswith('http://127.0.0.1:'), cfg
+print('   ✅ 配置口子：imBase 指到 mock（进房间那一台也是另一个键）')
 CFGWS
 
 curl -fsS "${W[@]}" -X POST "$B/_debug/requests/clear" > /dev/null 2>&1 || true
 # WS 那一段的请求记在 mock 自己的口子上；这里先清一遍，让"重新走门"的三发可数
 curl -fsS "${W[@]}" "http://127.0.0.1:$MOCK_PORT/_debug/requests/clear" > /dev/null
-for i in 1 2 3 4 5 6; do
+# 链是 6 步（handshake/rooms/**userToken**/roomBeat/**apply**/open）⇒ 最多 8 次尝试
+for i in 1 2 3 4 5 6 7 8; do
   curl -fsS "${W[@]}" -X POST "$B/plugins/mcloud/api/live/listen/step" -o "$TMP/listen-$i.json"
   if python3 -c "import json,sys; s=json.load(open('$TMP/listen-$i.json')); sys.exit(0 if s.get('step') in ('listen','done') else 1)"; then break; fi
-  if [ "$i" = 6 ]; then echo "❌ 6 步还没进到 listen/打开 WS" >&2; cat "$TMP/listen-1.json" >&2; exit 1; fi
+  if [ "$i" = 8 ]; then echo "❌ 8 步还没进到 listen/打开 WS" >&2; cat "$TMP/listen-1.json" >&2; exit 1; fi
 done
 
 curl -fsS "${W[@]}" "http://127.0.0.1:$MOCK_PORT/_debug/ws" -o "$TMP/ws.json"

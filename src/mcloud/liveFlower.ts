@@ -51,6 +51,7 @@
 // ⚠ 只判等、**不判形状**：别按"都是 `2001xx`"去推。`200103`（红花数不够）出自
 // **别的**接口；`609` / `200101` / `200111` 在 H5 自己的映射表里都是**独立的**码。
 
+import { rootOrDefault } from './h5.ts';
 import type { BuiltRequest } from './h5.ts';
 import type { SignInEnvelope } from './envelope.ts';
 
@@ -133,7 +134,9 @@ export function liveRoomHeaders(): Record<string, string> {
  *  `m.mcloud.139.com`**（拿的是假 jwt，被 `90001` 挡下、没碰到账号，但这是纪律问题：
  *  仓库的规矩是"CI 全程只打 mock"）。真机上出这种错就是"测试污染真环境"。 */
 export function liveRoomUrl(path: string, base?: string | undefined): string {
-  return `${(base ?? LIVE_ROOM_ORIGIN).replace(/\/+$/, '')}${path}`;
+  // ⚠ 口子给**空串**时必须落到默认主机 —— 见 `h5.ts::rootOrDefault`（2026-10-14 实机：
+  //   `??` 只挡 `undefined`，空串会拼出相对 URL，宿主报 `missing scheme`）。
+  return `${rootOrDefault(base, LIVE_ROOM_ORIGIN)}${path}`;
 }
 
 /** ① / ⑥ 余额（`result.flowerCnt` 是余额的**唯一**判据）。 */

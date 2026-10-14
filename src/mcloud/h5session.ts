@@ -46,6 +46,7 @@
 // ⚠ ⑤ **SSO token 不缓存**（实测"换到 4 分钟后重放已被拒"），换完立刻用；
 //    `jwttoken` 也要短存 —— 它 2 小时即废。
 
+import { rootOrDefault } from './h5.ts';
 import { signHeadersWith } from './sign.ts';
 import type { SignHeaders } from './sign.ts';
 import { nonce as newNonce, uuidV4 } from './rand.ts';
@@ -173,7 +174,7 @@ export function specTokenRequest(
   base?: string | undefined,
 ): { url: string; method: 'POST'; headers: Record<string, string>; body: string } {
   return {
-    url: `${(base ?? BASE_USER_YUN).replace(/\/+$/, '')}${SPEC_TOKEN_PATH}`,
+    url: `${rootOrDefault(base, BASE_USER_YUN)}${SPEC_TOKEN_PATH}`,
     method: 'POST',
     headers: { 'Content-Type': H5_CONTENT_TYPE, Authorization: authorization },
     body: JSON.stringify({ toSourceId: params.toSourceId }),
@@ -187,7 +188,7 @@ export function timestampRequest(
   base?: string | undefined,
 ): { url: string; method: 'GET'; headers: Record<string, string>; body: undefined } {
   return {
-    url: `${(base ?? BASE_MCLOUD).replace(/\/+$/, '')}${TIMESTAMP_PATH}`,
+    url: `${rootOrDefault(base, BASE_MCLOUD)}${TIMESTAMP_PATH}`,
     method: 'GET',
     headers: h5Headers(params, referer, undefined, 'true'),
     body: undefined,
@@ -214,7 +215,7 @@ export function tyrzLoginRequest(
     token: ssoToken,
   });
   return {
-    url: `${(base ?? BASE_MCLOUD).replace(/\/+$/, '')}${TYRZ_LOGIN_PATH}`,
+    url: `${rootOrDefault(base, BASE_MCLOUD)}${TYRZ_LOGIN_PATH}`,
     method: 'POST',
     headers: {
       ...h5Headers(params, referer, undefined, 'true'),

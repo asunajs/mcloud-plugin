@@ -229,6 +229,22 @@ function fakeUpstream(over: { live?: boolean; chatRoomId?: string | null } = {})
           ];
       return { status: 200, headers: {}, body: JSON.stringify({ rtnCode: '0', rtnMsg: null, object: { dataList } }) };
     }
+    // ③ 取 WS 凭据（`userToken`）—— ⚠ 与门的 JWT **不是**同一枚
+    if (req.url.includes('/api/user/customer/userToken')) {
+      return {
+        status: 200,
+        headers: {},
+        body: JSON.stringify({ rtnCode: '0', rtnMsg: null, object: { access_token: 'WS-ACCESS-TOKEN-1', expires_in: 7200 } }),
+      };
+    }
+    // ⑤ 进聊天室（`member/apply`）—— **数字码**信封（第三套）
+    if (req.url.includes('/v3/room/member/apply')) {
+      return {
+        status: 200,
+        headers: {},
+        body: JSON.stringify({ code: 0, msg: 'ok', data: { appId: 'cmosim', appKey: 'k', roomId: '1234567890123456789012345678901' }, timestamp: 1750000000000 }),
+      };
+    }
     if (req.url.includes('/api/room/front/roomBeat')) {
       const chat = over.chatRoomId === undefined ? '1234567890123456789012345678901' : over.chatRoomId;
       return {
@@ -250,7 +266,12 @@ function deps(store: ReturnType<typeof memStore>, transport: Transport, host: Ho
   return { store, transport, host, nowIso, baseUrl: '', lateMs: 0 };
 }
 
-/** 把链推到"开始听"（每一步一次调用 —— 纪律在测试里也照做）。 */
+/** 把链推到"开始听"（每一步一次调用 —— 纪律在测试里也照做）。
+ *
+ *  ⚠ 步数**按状态推**而不是写死：链从 4 步长到 6 步（补了 `userToken` 与
+ *  `member/apply`）时，写死 4 的写法会让所有用例一起红，而红的原因与它们要守的
+ *  判据无关 —— 那种"改一处红一片"的测试很快就会被改成"随便多推几步"。
+ *  这里按 `step` 判，`listen` / `done` 就停。 */
 function advanceToListen(
   store: ReturnType<typeof memStore>,
   transport: Transport,
@@ -258,7 +279,12 @@ function advanceToListen(
   nowIso = NOW,
 ) {
   const notes: string[] = [];
-  for (let i = 0; i < 4; i += 1) notes.push(runLiveListen(deps(store, transport, host, nowIso)).note);
+  for (let i = 0; i < 9; i += 1) {
+    const out = runLiveListen(deps(store, transport, host, nowIso));
+    notes.push(out.note);
+    const step = loadListenState(store)?.step;
+    if (step === 'listen' || step === 'done' || step === undefined) break;
+  }
   return notes;
 }
 
@@ -312,9 +338,12 @@ test('`chatRoomId` 是空/null ⇒ **不开 WS**，如实说"没有聊天室"', 
   const up = fakeUpstream({ live: true, chatRoomId: null });
   const f = fakeHost([]);
 
-  runLiveListen(deps(store, up.transport, f.host)); // handshake
-  runLiveListen(deps(store, up.transport, f.host)); // rooms
-  const out = runLiveListen(deps(store, up.transport, f.host)); // roomBeat
+  // ⚠ 推到有结论为止（链是 6 步：handshake/rooms/userToken/roomBeat/apply/open）
+  let out = { ok: false, note: '' };
+  for (let i = 0; i < 9; i += 1) {
+    out = runLiveListen(deps(store, up.transport, f.host));
+    if (loadListenState(store)?.step === 'done') break;
+  }
 
   assert.match(out.note, /没有聊天室/);
   assert.equal(f.opened.length, 0, '没有聊天室 ⇒ 一个 WS 都不该开');
@@ -326,9 +355,10 @@ test('roomBeat 是 **POST** 到 `/api/room/front/roomBeat`，房间号在 body �
   store.setState(STATE_AUTH, AUTH, NOW);
   const up = fakeUpstream({ live: true });
   const f = fakeHost([]);
-  runLiveListen(deps(store, up.transport, f.host));
-  runLiveListen(deps(store, up.transport, f.host));
-  runLiveListen(deps(store, up.transport, f.host));
+  for (let i = 0; i < 9; i += 1) {
+    runLiveListen(deps(store, up.transport, f.host));
+    if (loadListenState(store)?.step === 'listen') break;
+  }
   const beat = up.sent.find((s) => s.url.includes('roomBeat'));
   assert.ok(beat, '该发过 roomBeat');
   assert.match(beat.url, /\/api\/room\/front\/roomBeat$/);
@@ -480,4 +510,31 @@ test('sessionId 是 8 个小写字母数字（抓包里的形状），且每次�
 
 test('一拍最多读 RECV_SLICE_MS 这么久（预算 2000ms 之内）', () => {
   assert.ok(RECV_SLICE_MS > 0 && RECV_SLICE_MS < 1000, '单次 ws_recv 不能贴近预算');
+});
+
+test('链的顺序照 mcloud：换票 → **取 WS 凭据** → 问聊天室 → **进房间** → 才连 WS', () => {
+  // ⚠ 这条是 2026-10-14 实机踩出来的次序：漏掉 userToken / member/apply 时
+  //   「连得上、心跳通、就是没有弹幕」—— 而 permille 顺序错了就是这个现象。
+  const store = memStore();
+  store.setState(STATE_AUTH, AUTH, NOW);
+  const up = fakeUpstream({ live: true });
+  const f = fakeHost(['o', provisionAckFrame()]);
+  advanceToListen(store, up.transport, f.host);
+
+  const paths = up.sent.map((x) => x.url.replace(/^https?:\/\/[^/]+/, ''));
+  const idx = (needle: string) => paths.findIndex((p) => p.includes(needle));
+  const iSso = idx('querySpecTokenV2');
+  const iJwt = idx('cmpassLoginByCmToken');
+  const iToken = idx('userToken');
+  const iBeat = idx('roomBeat');
+  const iApply = idx('member/apply');
+  assert.ok(iSso >= 0 && iJwt > iSso, paths.join(' | '));
+  assert.ok(iToken > iJwt, `WS 凭据要在换票之后：${paths.join(' | ')}`);
+  assert.ok(iBeat > iToken, `问聊天室要在取凭据之后：${paths.join(' | ')}`);
+  assert.ok(iApply > iBeat, `进房间要在拿到聊天室号之后：${paths.join(' | ')}`);
+  // 两口的主机也不同：凭据/聊天室在 v.cmcc-cs.cn，进房间在 videoim:20103
+  assert.match(up.sent[iToken]!.url, /v\.cmcc-cs\.cn/);
+  assert.match(up.sent[iApply]!.url, /videoim\.cmcc-cs\.cn:20103\/v3\/room\/member\/apply/);
+  // WS 最后才连
+  assert.equal(f.opened.length, 1);
 });
