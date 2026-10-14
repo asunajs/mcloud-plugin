@@ -28,7 +28,7 @@
 import { callRawText } from '../client.ts';
 import { calcPuzzleOffset, usable } from '../slide.ts';
 import { loadSession, SESSION_KEY } from '../../store/types.ts';
-import { LIMIT_AVAILABLE, VERDICT_TEXT, verdictOf } from './exchangeList.ts';
+import { LIMIT_AVAILABLE, VERDICT_TEXT, parseExchangeList, verdictOf } from './exchangeList.ts';
 import type { ExchangePrize } from './exchangeList.ts';
 import type { TaskDeps, TaskOutcome } from './base.ts';
 
@@ -163,24 +163,20 @@ export function runOrderStep(deps: TaskDeps): TaskOutcome {
       body: undefined,
     });
     if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? '未知失败'}` };
-    let prizes: ExchangePrize[] = [];
-    try {
-      const env = digResult(res.text);
-      const groups = env as Record<string, unknown>;
-      for (const k of Object.keys(groups)) {
-        const g = groups[k];
-        if (g && typeof g === 'object') {
-          const list = (g as Record<string, unknown>).prizeList ?? (g as Record<string, unknown>).prizes;
-          if (Array.isArray(list)) prizes.push(...(list as ExchangePrize[]));
-        }
-      }
-    } catch (e) {
-      return { ok: false, note: `${label}：清单解析不了（${e instanceof Error ? e.message : String(e)}）` };
-    }
+    // ⚠ 复用 `exchangeList.ts` 的 `parseExchangeList` —— **不要**在这里自己walk一遍：
+    //   我第一版就是自己走的分组，结果对着真机清单说"清单里没有这件奖品"，
+    //   而清单里明明有（字段名与分组形状都跟我猜的不一样）。
+    //   已经有一份**真机验过**的解析，就没有理由再写第二份 —— 两份迟早分叉。
+    const { prizes } = parseExchangeList(digResult(res.text));
     const p = pickPrize(prizes, query);
     if (!p) return done(`${label}：清单里没有「${query}」—— 这一单不做（名字要**精确**匹配）`, false);
+    // ⚠ 只在判据是**明确否定**时才拦（`limit` 有值且不是"可兑"）。
+    //   真机上 `limit` 那一族的形态与我按文档假设的不一样：同一份数据在汇总那里
+    //   被判成 51/51 可兑，单独判这一件却是"判不了"。把"判不了"当成"不能兑"，
+    //   现象是**永远不下单**而理由是"判不了"—— 一个查不出所以然的死结。
+    //   所以：判不了就往下走，让**余额**与**上游**去判（它们才是真扣豆的地方）。
     const verdict = verdictOf(p);
-    if (verdict !== 'ok' && p.limit !== LIMIT_AVAILABLE) {
+    if (p.limit !== undefined && p.limit !== LIMIT_AVAILABLE) {
       return done(`${label}：${p.name} 现在不能兑（${VERDICT_TEXT[verdict]}），不发下一枪`, false);
     }
     // ⚠ 取不到**数字** prizeId 就拒绝 —— 兜成 -1 会真把 `prizeId:-1` 发出去

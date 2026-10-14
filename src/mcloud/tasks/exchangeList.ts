@@ -144,7 +144,11 @@ export function parsePrize(raw: unknown): ExchangePrize | undefined {
     monthLimit: parseMonthLimit(o.probability2),
     received: asInt(o.receiveQuantity ?? o.receive_quantity),
     groupId: asInt(o.groupId ?? o.group_id),
-    price: asInt(o.price),
+    // ⚠⚠ 价格是 **`pOrder`**（不是 `price`）—— 而且同一份响应里 `POrder` 与 `pOrder`
+    // **两种拼法并存**，只读一个键的写法会把一部分商品的价格判成"没给"，
+    // 于是"余额够不够"那道判断对那几件**恒假**（看着像"没配置价格"，其实是不检查就下单）。
+    // 逐字照 mcloud 的 `parse_price`：小写先试，大写兜底。
+    price: asInt(o.pOrder) ?? asInt(o.POrder),
     limit: asInt(o.limit),
     count: asInt(o.count),
     totalCount: asInt(o.totalCount ?? o.total_count),
