@@ -187,7 +187,7 @@ function renderLogin(l) {
     // 滑块图只在"要过滑块"时出现 —— 它是**异常路径**（首次发码被风控拦下）
     $('slider-box').hidden = !sms.hasSlider;
     if (sms.hasSlider && sms.slider) {
-      setText('slider-note', '上游要滑块：下面这张图已经解出缺口位置，点「发验证码」会带着答案发。');
+      setText('slider-note', '移动云盘要滑块：下面这张图已经解出缺口位置，点「发验证码」会带着答案发。');
       $('slider-bg').src = `data:image/jpeg;base64,${sms.slider.backgroundB64}`;
     }
   } else {
@@ -498,7 +498,7 @@ $('sms-send').addEventListener('click', (e) =>
       }
       throw new Error(r.note || '发码没成');
     },
-    (r) => (r && r.needSlider ? '上游要滑块 —— 图已取到，再点一次「发验证码」' : '验证码已发出'),
+    (r) => (r && r.needSlider ? '移动云盘要滑块 —— 图已取到，再点一次「发验证码」' : '验证码已发出'),
   ),
 );
 
