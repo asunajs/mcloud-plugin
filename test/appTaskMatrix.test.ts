@@ -4,13 +4,13 @@
 //   · `result` 是空**对象**（`{}`）而不是空数组 —— 实拍就是这样
 //   · `groupid` 全小写 / `groupId` 驼峰 —— 两族的真实差异，都要认
 //   · 字段不全 ⇒ 不参与（`skip`），不是"可做" —— 宁可漏报，也不要报出不存在的活
-//   · 一次调用**只读一个 group**、只发一个请求，8 次覆盖一轮
+//   · 一次调用**只读一个 group**、只发一个请求，2 次覆盖一轮
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  MATRIX_GROUPS,
+  MATRIX_MARKETS,
   STATE_GROUP_INDEX,
   judgeItem,
   parseMatrix,
@@ -46,7 +46,7 @@ function router(table: Array<[RegExp, () => string]>) {
   };
 }
 
-const LIST_RE = /task\/taskListV2/;
+const LIST_RE = /task\/taskListV3/;
 
 test('解析：result 是空对象也要当空（实拍就是 {}）', () => {
   assert.deepEqual(parseMatrix({}), []);
@@ -72,31 +72,36 @@ test('判据：FINISH 算已完成、enable=1 算可做、其余不参与（字�
   assert.deepEqual({ done: s.done, todo: s.todo, skip: s.skip }, { done: 1, todo: 1, skip: 1 });
 });
 
-test('一步只读一个 group、只发一个请求，8 次覆盖一轮并回卷', () => {
+test('一步只读一个**市场**、只发一个请求，2 次覆盖一轮并回卷（V3：每市场一发）', () => {
   const store = seeded();
   const r = router([[LIST_RE, () => JSON.stringify({ code: 0, msg: 'success', result: {} })]]);
   const deps = { store, transport: r.transport, nowIso: NOW, lateMs: 0 };
 
-  for (let i = 0; i < MATRIX_GROUPS.length; i++) {
+  for (let i = 0; i < MATRIX_MARKETS.length; i++) {
     const before = r.sent.length;
     const out = runAppTaskMatrix(deps);
     assert.equal(out.ok, true);
     assert.equal(r.sent.length - before, 1, `第 ${i + 1} 次只该发一个请求`);
     assert.equal(r.sent[before]!.method, 'POST');
-    // 请求体里带着这一次要读的 group
+    // ⚠ V3：`group` 是**空串**，市场在 `marketname` 上（一发拿整个市场）
     assert.ok(
-      r.sent[before]!.body.includes(`"group":"${MATRIX_GROUPS[i]}"`) ||
-        r.sent[before]!.body.includes(`group=${MATRIX_GROUPS[i]}`),
-      `第 ${i + 1} 次的体里该有 group=${MATRIX_GROUPS[i]}，实际 ${r.sent[before]!.body.slice(0, 120)}`,
+      r.sent[before]!.body.includes(`"marketname":"${MATRIX_MARKETS[i]}"`),
+      `第 ${i + 1} 次的体里该有 marketname=${MATRIX_MARKETS[i]}，实际 ${r.sent[before]!.body.slice(0, 120)}`,
     );
-    assert.ok(String(out.note).includes(`group=${MATRIX_GROUPS[i]}`), out.note);
+    assert.ok(
+      r.sent[before]!.body.includes('"group":""'),
+      `V3 的 group 该是空串，实际 ${r.sent[before]!.body.slice(0, 120)}`,
+    );
+    assert.ok(String(out.note).includes(`market=${MATRIX_MARKETS[i]}`), out.note);
   }
-  // 第 9 次回到第一个
+  // 第 3 次回到第一个（2 个市场 ⇒ 两发一轮）
+  const before = r.sent.length;
   runAppTaskMatrix(deps);
-  assert.equal(r.sent[8]!.body.includes(`"group":"${MATRIX_GROUPS[0]}"`), true);
+  assert.equal(r.sent.length - before, 1);
+  assert.equal(r.sent[before]!.body.includes(`"marketname":"${MATRIX_MARKETS[0]}"`), true);
 });
 
-test('只读：整轮下来只碰 taskListV2，一个写请求都没有', () => {
+test('只读：整轮下来只碰 taskListV3，一个写请求都没有', () => {
   const store = seeded();
   const r = router([
     [
@@ -109,12 +114,12 @@ test('只读：整轮下来只碰 taskListV2，一个写请求都没有', () => 
         }),
     ],
   ]);
-  for (let i = 0; i < MATRIX_GROUPS.length; i++) {
+  for (let i = 0; i < MATRIX_MARKETS.length; i++) {
     runAppTaskMatrix({ store, transport: r.transport, nowIso: NOW, lateMs: 0 });
   }
-  assert.equal(r.sent.length, MATRIX_GROUPS.length);
+  assert.equal(r.sent.length, MATRIX_MARKETS.length);
   for (const q of r.sent) assert.ok(LIST_RE.test(q.url), `不该碰别的端点：${q.url}`);
-  // 游标真的在推进（8 次之后回到 0）
+  // 游标真的在推进（2 次之后回到 0）
   assert.equal(store.getState(STATE_GROUP_INDEX), '0');
 });
 

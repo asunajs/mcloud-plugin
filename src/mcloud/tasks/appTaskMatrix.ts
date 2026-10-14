@@ -33,6 +33,24 @@ export const STATE_GROUP_INDEX = 'mcloud.apptaskmatrix.group_index';
 export const STATE_LAST = 'mcloud.apptaskmatrix.last';
 
 /** 8 个 group，顺序照原项目的常量表（逐字抄）。 */
+/** ⚠ **只走 V3**（`taskListV3`），不再按 group 拉 V2。
+ *
+ *  mcloud 的 `docs/task-log.md` 第 212 条（用户当场提的）已经查实：
+ *  · **抓包里 `taskListV2` = 0 处** —— 真机云盘 App 云朵中心那一趟**只调 V3**；
+ *    按 8 个 group 拉 V2 拿到的是**陈旧视图** ✗
+ *  · **548 / 550 / 1078 是过期任务** —— `limitType` 从 `EVER` 变 `MONTH`、
+ *    `lastupdate` 从 09-12 跳到 10-01 ⇒ `548/549`、`550/551`、`1078/1079` 是
+ *    **同名新旧两版**，V2 里新旧都在、V3 里只剩新版 ✓
+ *  ⇒ 改法：**每市场一发 V3**（`group` 空串 = 一次拿整个市场），拉取数 18 → 2 ✓
+ *  ⇒ 改后列表里 **548/550/1078 消失**，与 App 一致 ✓
+ *
+ *  ⚠ 我一开始按 V2 拉，于是看到了 548/549/550/551/607 这些**根本不该出现的条目**，
+ *  还据此写了"未实现"的表 —— 那是**照陈旧视图推**出来的结论。 */
+export const MATRIX_MARKETS = ['sign_in_3', 'newsign_139mail'] as const;
+
+/** V3 的路径（与 V2 同前缀，换末段）。 */
+export const TASK_LIST_V3_PATH = '/ycloud/signin/task/taskListV3';
+
 export const MATRIX_GROUPS = [
   'new',
   'beiyong1',
@@ -105,7 +123,9 @@ export function parseMatrix(result: unknown, group?: string): MatrixItem[] {
   let list: unknown = result;
   if (list !== null && typeof list === 'object' && !Array.isArray(list)) {
     const o = list as Record<string, unknown>;
-    // ⚠ **真机形状**（2026-10-14 实测）：`result` 是**按组名分键**的对象 ——
+    // ⚠ V3：`result` **就是扁平数组**（mcloud 的 task-log 212 条：夹具改 V3 形状
+    //   ⇒ "`result` 摊平成数组"）。V2 那种"按组名分键"的形状**也认**（老读数兼容）。
+    // ⚠ **真机形状**（V2，已弃用）：`result` 是**按组名分键**的对象 ——
     //   `result.day` / `result.month` / …（`group=new` 那条回 `result:{}` 是真的空，
     //   不是解析失败）。原来这里只找 `list/tasks/taskList/items`，一个都对不上
     //   ⇒ **8 个组全读成 0 条**，而每条 note 都写着"成功"。
@@ -144,7 +164,7 @@ export function matrixKey(group: string): string {
 }
 
 export function readMatrix(store: { getState(k: string): string | null | undefined }): (MatrixReading | null)[] {
-  return MATRIX_GROUPS.map((g) => {
+  return MATRIX_MARKETS.map((g) => {
     const raw = store.getState(matrixKey(g));
     if (!raw) return null;
     try {
@@ -184,42 +204,45 @@ export function summarize(items: MatrixItem[]): MatrixSummary {
 export function runAppTaskMatrix(deps: TaskDeps): TaskOutcome {
   const raw = deps.store.getState(STATE_GROUP_INDEX);
   const parsed = raw === undefined || raw === null ? 0 : Number(raw);
-  const idx = Number.isFinite(parsed) && parsed >= 0 && parsed < MATRIX_GROUPS.length ? parsed : 0;
-  const group = MATRIX_GROUPS[idx]!;
+  const idx = Number.isFinite(parsed) && parsed >= 0 && parsed < MATRIX_MARKETS.length ? parsed : 0;
+  // ⚠ 游标现在是**市场**（不是 group）：V3 一发拿整个市场，每市场一发 ⇒ 2 发跑完一轮
+  const market = MATRIX_MARKETS[idx]!;
 
   const out = runTask(
     deps,
     {
       task: 'app-task-matrix',
-      endpoint: 'taskListV2',
+      endpoint: 'taskListV3',
       method: 'POST',
-      marketName: MARKET_NAME,
+      // ⚠ `activityid` 跟着**本次的 marketname** 走（mcloud 的 V3 构造器：先剥再补）
+      marketName: market,
       isDeviceId: false,
       stateKey: STATE_LAST,
       // 实拍体：{"clientVersion":"12.6.0","group":<group>,"marketname":"sign_in_3"}
       // 体是**字符串**（与 receiveV3Body 同一约定）
-      body: JSON.stringify({ clientVersion: TASK_CLIENT_VERSION, group, marketname: MARKET_NAME }),
+      // ⚠ V3：`group` 是**空串** = 一次拿整个市场（实拍 content-length 62 逐字节对出来的）
+      body: JSON.stringify({ marketname: market, clientVersion: TASK_CLIENT_VERSION, group: '' }),
     },
     (env) => {
-      const items = parseMatrix(env.result, group);
+      const items = parseMatrix(env.result, market);
       const s = summarize(items);
-      deps.store.setState(STATE_GROUP_INDEX, String((idx + 1) % MATRIX_GROUPS.length), deps.nowIso);
-      // 按 group 落一条读数（界面直接吃这个）
+      deps.store.setState(STATE_GROUP_INDEX, String((idx + 1) % MATRIX_MARKETS.length), deps.nowIso);
+      // 按**市场**落一条读数（界面直接吃这个）
       const reading: MatrixReading = {
-        group,
+        group: market,
         at: deps.nowIso,
         ...s,
         items,
         groupState: (env as { groupState?: unknown }).groupState,
       };
-      deps.store.setState(matrixKey(group), JSON.stringify(reading), deps.nowIso);
+      deps.store.setState(matrixKey(market), JSON.stringify(reading), deps.nowIso);
       const names = s.todoNames.length ? `（可做：${s.todoNames.join('、')}）` : '';
       return {
         ok: true,
         note:
-          `App 任务矩阵[${idx + 1}/${MATRIX_GROUPS.length} group=${group}]：` +
+          `App 任务矩阵[${idx + 1}/${MATRIX_MARKETS.length} market=${market}]：` +
           `已完成 ${s.done} 条、可做 ${s.todo} 条、不参与 ${s.skip} 条${names}`,
-        snapshot: { group, ...s, items: items.slice(0, 20) },
+        snapshot: { group: market, ...s, items: items.slice(0, 20) },
       };
     },
   );

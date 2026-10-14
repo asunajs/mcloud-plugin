@@ -30,20 +30,31 @@ import { loadSession } from '../../store/types.ts';
 import { judgeItem, readMatrix } from './appTaskMatrix.ts';
 import { runUploadStep, startUpload, uploadDone } from './upload.ts';
 import { cloudFileOpHeaders, deterministicFile } from '../cloudUpload.ts';
-import { shouldSkip, uploadShapeFor } from '../appTaskRules.ts';
+import { stepFor, uploadShapeFor } from '../appTaskRules.ts';
 import type { BuiltRequest } from '../h5.ts';
 import type { TaskDeps, TaskOutcome } from './base.ts';
 
 export const STATE_TASK = 'mcloud.apptask.state';
 
-/** 「开启通知」那条链上的打卡口 —— ⚠ **GET 却是写**，而且主机**带端口**。 */
-export const CLICK_HOST = 'https://caiyun.feixin.10086.cn:7071';
+/** 打卡那一口的主机 —— ⚠ **`m.mcloud.139.com`**，与矩阵同一个域。
+ *
+ *  ⚠ 这里我**错过一次**（2026-10-14，用户一句"你确定没有用错接口"点出来的）：
+ *  原先写的是 `caiyun.feixin.10086.cn:7071` —— 那是**「开启通知」那条链**的打卡口
+ *  （`app_notice.rs` 的 `NOTICE_SIGNIN_TASK_CLICK`）。两处路径**字面相同**
+ *  （`/ycloud/signin/task/click`），所以看着"抄对了"，而主机不同。
+ *  真机后果：请求被接受、回 **HTTP 200**，而**状态一条都不变**。
+ *  ⇒ 同路径不同主机这种"长得一样"的坑，只能靠**核对 import 的主机常量**发现，
+ *    不能靠"路径对了就算对了"。 */
+export const CLICK_HOST = 'https://m.mcloud.139.com';
 export const CLICK_PATH = '/ycloud/signin/task/click';
+/** 访问日志（"我点了哪条任务"）—— ⚠ **点之前要先发这一枪**，否则打卡可能不生效。 */
+export const JOURNALING_PATH = '/ycloud/visitlog/journaling';
+export const JOURNALING_SOURCE_ID = '1077';
 
 /** 收尾：批量移进回收站。 */
 export const BATCH_TRASH_URL = 'https://personal-kd-njs.yun.139.com/hcy/recyclebin/batchTrash';
 
-export type TaskPhase = 'upload' | 'click' | 'trash' | 'done';
+export type TaskPhase = 'upload' | 'visit' | 'click' | 'trash' | 'done';
 
 interface TaskState {
   gi: number;
@@ -62,6 +73,7 @@ interface TaskState {
 
 const PHASE_TEXT: Record<TaskPhase, string> = {
   upload: '传文件（过名字门/按钮门）',
+  visit: '记访问日志（"我点了哪条任务"）',
   click: '打卡（不可回滚）',
   trash: '收尾（移进回收站）',
   done: '这一趟走完了',
@@ -81,6 +93,26 @@ export function clickRequest(deps: TaskDeps, id: number): ReturnType<typeof buil
     marketName: 'sign_in_3',
     session: session ? sessionHeaders(session) : {},
   });
+}
+
+/** 访问日志那一枪：`POST /ycloud/visitlog/journaling`，**form 体**。
+ *
+ *  体（mcloud 逐字）：`module=uservisit&optkeyword=139newsignin_index_task_<id>&sourceid=1077&marketName=<mn>`
+ *
+ *  ⚠ 这一枪我一开始**整个漏了** —— 少了它，打卡回 200 但状态不变。 */
+export function journalingRequest(deps: TaskDeps, taskId: number, marketname = 'sign_in_3'): BuiltRequest {
+  const session = loadSession(deps.store);
+  return {
+    url: `${CLICK_HOST}${JOURNALING_PATH}`,
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+      ...(session ? sessionHeaders(session) : {}),
+    },
+    body:
+      `module=uservisit&optkeyword=139newsignin_index_task_${taskId}` +
+      `&sourceid=${JOURNALING_SOURCE_ID}&marketName=${marketname}`,
+  };
 }
 
 /** 收尾那一枪。⚠ **空数组不发**（见文件头 ②）。
@@ -122,6 +154,19 @@ function freshClicked(st: TaskState, deps: TaskDeps): number[] {
   return st.day === today(deps) ? st.clicked : [];
 }
 
+/** ⚠ **判据是状态变了，不是 HTTP 200**。
+ *
+ *  真机教训（2026-10-14）：点了 `time` 组三条（548/549/550），三枪全回 **200**，
+ *  而**状态一条都没变**（还是 `WAIT`）；同一次里 `month` 的 607 点了就真变成 `FINISH`。
+ *  ⇒ `task/click` 回 200 **只说明"请求被接受了"**，不说明"这条做完了"。
+ *  ⇒ 复查只能靠**再读一次矩阵**：点过的条目如果还是 `todo`，那就要**如实报出来**。 */
+function clickedButIneffective(deps: TaskDeps, st: TaskState): number[] {
+  const clicked = freshClicked(st, deps);
+  if (clicked.length === 0) return [];
+  const still = pendingItems(deps).filter((p) => clicked.includes(p.itemId));
+  return still.map((p) => p.itemId);
+}
+
 /** 换到下一条待办（跳过今天已经点过的）。没有下一条 ⇒ 收摊。 */
 function advance(deps: TaskDeps, st: TaskState): TaskOutcome {
   const clicked = freshClicked(st, deps);
@@ -130,19 +175,31 @@ function advance(deps: TaskDeps, st: TaskState): TaskOutcome {
     // ⚠ **不清空**：清成 `''` 会把"今天点过"那份名单一起毁掉，于是下一趟
     //   拿着同一份（没刷新的）读数就会**重复点**。标成 `done` 把名单留着。
     save(deps, { ...st, phase: 'done', fileId: undefined, clicked, day: today(deps) });
-    return { ok: true, note: `待办都走完了（这一趟点了 ${clicked.length} 条）` };
+    // ⚠ 收摊时**必须**把"点了但状态没变"的那些报出来 —— 否则面板上会是一句
+    //   "都走完了"，而实际上一大半根本没生效（真机上就是这样）。
+    const dead = clickedButIneffective(deps, { ...st, clicked });
+    const warn =
+      dead.length === 0
+        ? ''
+        : `。⚠ 其中 ${dead.length} 条**点了但状态没变**（#${dead.join('、')}）—— ` +
+          'HTTP 200 只说明"请求被接受了"。这类多半要**先做那个动作**（开启备份 / 开启通知），' +
+          '光点一下不算数';
+    return { ok: dead.length === 0, note: `待办都走完了（这一趟点了 ${clicked.length} 条）${warn}` };
   }
   if (next.needUpload) beginUpload(deps, next.itemId, next.name);
   save(deps, {
     gi: next.gi,
     ii: next.ii,
-    phase: next.needUpload ? 'upload' : 'click',
+    phase: next.needUpload ? 'upload' : 'visit',
     itemId: next.itemId,
     clicked,
     day: today(deps),
   });
   return { ok: true, note: `下一条 #${next.itemId}（「${next.name}」）` };
 }
+
+/** 上一次 `pendingItems` 里"未实现"的那些 id（只用于文案）。 */
+let lastSkipped: number[] = [];
 
 /** 待办清单：从**矩阵的读数**里挑（本文件不自己读矩阵）。 */
 export interface Pending {
@@ -156,14 +213,25 @@ export interface Pending {
 
 export function pendingItems(deps: TaskDeps): Pending[] {
   const out: Pending[] = [];
+  const skipped: number[] = [];
   const readings = readMatrix(deps.store);
   readings.forEach((reading, gi) => {
     if (!reading) return;
     // ⚠ 老读数（这一环补上之前落的）没有 `items` —— 那时只能当"读不出条目"，
     //   不能当"没有待办"（后者会让这一族静默地什么都不做）。
     for (const [ii, item] of (reading.items ?? []).entries()) {
-      if (judgeItem(item) !== 'todo') return;
-      if (shouldSkip(item.taskId)) return; // ③ 判据说"不做"的一枪都不发
+      // ⚠ **`continue`，不是 `return`** —— 这里在 `forEach` 的**回调**里套了一个
+      //   `for...of`，`return` 退的是**整个回调**（这一份读数里剩下的条目全被跳过 ✗）。
+      //   真机/测试里的症状：只要**第一条**是"未实现"的（548），后面全部消失 ⇒
+      //   `pendingItems` 回 `[]`，看着像"这账号没有任务"。我查了好几轮才定位到。
+      if (judgeItem(item) !== 'todo') continue;
+      // ⚠ **只做"知道该做什么"的那些**（见 `stepFor` 的注释）——
+      //   第一版是"不在黑名单就打"，那是重写；真机上点了 4 条状态一条没变，
+      //   因为它们在 mcloud 的账本里全是"未实现"。
+      if (stepFor({ taskId: item.taskId, groupId: item.groupId, name: item.name, buttonAppLink: item.buttonAppLink }) === undefined) {
+        skipped.push(item.taskId ?? 0);
+        continue; // ⚠ 同上：不能 `return`（那会退掉整份读数）
+      }
       out.push({
         gi,
         ii,
@@ -202,7 +270,12 @@ export function startAppTask(deps: TaskDeps): TaskOutcome {
   const clicked = prev ? freshClicked(prev, deps) : [];
   const all = pendingItems(deps);
   if (all.length === 0) {
-    return { ok: true, idle: true, note: '矩阵里没有待办（先跑一次 `app-task-matrix` 把读数填上）' };
+    const sk = lastSkipped;
+    const extra =
+      sk.length === 0
+        ? '（先跑一次 `app-task-matrix` 把读数填上）'
+        : `；另有 ${sk.length} 条上游列为待做，但**本插件还没实现**（#${sk.slice(0, 6).join('、')}${sk.length > 6 ? '…' : ''}）⇒ 不动它们（点了也不变状态）`;
+    return { ok: true, idle: true, note: `矩阵里没有本插件能做的待办${extra}` };
   }
   const todo = all.filter((p) => !clicked.includes(p.itemId));
   if (todo.length === 0) {
@@ -217,7 +290,7 @@ export function startAppTask(deps: TaskDeps): TaskOutcome {
   save(deps, {
     gi: first.gi,
     ii: first.ii,
-    phase: first.needUpload ? 'upload' : 'click',
+    phase: first.needUpload ? 'upload' : 'visit',
     itemId: first.itemId,
     clicked,
     day: today(deps),
@@ -244,19 +317,27 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
   if (st.phase === 'upload') {
     if (uploadDone(deps)) {
       const up = JSON.parse(deps.store.getState('mcloud.upload.state') ?? '{}') as { fileId?: string };
-      save(deps, { ...st, phase: 'click', fileId: up.fileId, day: today(deps) });
-      return { ok: true, note: `文件已传完（收尾要用它的 id）—— 下一步打卡` };
+      save(deps, { ...st, phase: 'visit', fileId: up.fileId, day: today(deps) });
+      return { ok: true, note: `文件已传完（收尾要用它的 id）—— 下一步记访问日志` };
     }
     const out = runUploadStep(deps, deterministicFile(`app-task-${st.itemId}`, 256));
     if (out.idle) {
-      save(deps, { ...st, phase: 'click' });
-      return { ok: true, note: '没有待传的 —— 下一步打卡' };
+      save(deps, { ...st, phase: 'visit', day: today(deps) });
+      return { ok: true, note: '没有待传的 —— 下一步记访问日志' };
     }
     if (uploadDone(deps)) {
       const up = JSON.parse(deps.store.getState('mcloud.upload.state') ?? '{}') as { fileId?: string };
-      save(deps, { ...st, phase: 'click', fileId: up.fileId, day: today(deps) });
+      save(deps, { ...st, phase: 'visit', fileId: up.fileId, day: today(deps) });
     }
     return out;
+  }
+
+  // ①b 记访问日志（漏了它打卡不生效）
+  if (st.phase === 'visit') {
+    const res = callRawText(deps.transport, journalingRequest(deps, st.itemId));
+    if (!res.ok) return { ok: false, note: `记访问日志 #${st.itemId} 失败：${res.error ?? '未知失败'}` };
+    save(deps, { ...st, phase: 'click', day: today(deps) });
+    return { ok: true, note: `已记访问日志 #${st.itemId}（HTTP ${res.status}）—— 下一步打卡` };
   }
 
   // ② 打卡
@@ -280,7 +361,13 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
       return { ok: true, note: `打卡 #${st.itemId}（HTTP ${res.status}）—— 下一步收尾` };
     }
     const out = advance(deps, { ...st, clicked });
-    return { ok: true, note: `打卡 #${st.itemId}（HTTP ${res.status}）—— 这条没有要收尾的文件。${out.note}` };
+    // ⚠ **要把 `advance` 的结论带出去**：这一趟可能以"有条目点了没生效"收摊，
+    //   那时 `advance` 回 `ok: false` —— 吞掉它就会把"没生效"报成成功。
+    //   （打卡本身回 200 是真的，但**整趟的结论**不是"成功"。）
+    return {
+      ok: out.ok,
+      note: `打卡 #${st.itemId}（HTTP ${res.status}）—— 这条没有要收尾的文件。${out.note}`,
+    };
   }
 
   // ③ 收尾
