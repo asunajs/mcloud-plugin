@@ -97,3 +97,61 @@ private_id(uid) = md5_hex(uid)[0..16]
 6. `smid.ts` 组装 + 上报 + 解析 `B…`
 7. 接进 `sessionExchange`：换票之后顺手取 deviceId 并写进会话
 8. 真机验 `receive`
+
+---
+
+## 八、四个原语的**确切形态**（从 `mcloud-crypto` 抄下来，省得下次重查）
+
+### AES —— `aes.rs::aes_encrypt_compat(key, message)`
+
+```rust
+const AES_FIXED_IV: &[u8; 16] = b"0102030405060708";   // ⚠ 是 ASCII 数字，不是 0x01…
+let k  = fit_key16(key);        // key[0..16] 截断 + 用 **\0** 补齐（不是空格）
+let ct = aes_cbc_encrypt(&k, AES_FIXED_IV, msg.as_bytes());  // AES-CBC/**PKCS7**
+hex::encode(ct)                 // ⚠ 输出是 **hex**，不是 base64
+```
+
+### DES —— `des.rs::des_encrypt_b64(message, key)`
+
+```rust
+let k = fit_key8(key);                    // 同样：截断 + \0 补齐
+let padded = pad_zero_to_block(msg);      // ⚠ **零填充**，不是 PKCS7
+for chunk in buf.chunks_mut(8) { ... }    // ECB，逐 8 字节块
+base64(cipher)                            // ⚠ 输出是 **base64**（与 AES 不一样）
+// ⚠ 空明文 ⇒ 返回**空串**（无块可加密），不是错误
+```
+
+> ⚠ **两处"填充/编码不一样"是最容易抄错的**：AES 是 PKCS7 + hex，
+> DES 是零填充 + base64。抄混了的表现是"字段解出来是乱码"，而服务端只会说参数错误。
+
+### gzip —— `gzip.rs::gzip_with_os19_base64(data)`
+
+标准 base64（**不是** URL-safe），gzip 头里 OS 字节写 **19**。
+实现上**DEFLATE 用 stored 块就够**（合法 gzip、不必实现 Huffman）——
+省下来的几百行正是最容易写错的那部分。
+
+### `tn` —— `tn.rs::get_tn_md5(value) = md5_hex(get_tn(value))`
+
+`get_tn` 的规则（逐条对齐旧实现，**别按直觉改**）：
+
+1. 只处理 JSON 对象；**按键名排序**后遍历（**排序是内容的一部分**）；
+2. `number` 一律 `* 10000`：整数 `v*10000`、非整数 `Math.floor(v*10000)`；
+3. `object`（含数组，不含 `null`）→ **递归**；
+4. 其余 `String(v)` 拼接 —— `null` ⇒ `"null"`（**不是空串**）、bool ⇒ `"true"`/`"false"`。
+
+已知边界（旧实现如此，**不要"顺手修好"**）：键排序 JS 按 UTF-16 码元、Rust 按 UTF-8 字节
+（特征体的键全是 ASCII，当前等价）；极大数 JS 会出 `1e+21` 而 Rust `f64` 不会
+（特征体里碰不到）。
+
+### 已读到的小件（直接可抄）
+
+```rust
+smid_string(time_digits, uid):
+  v = time_digits + md5_hex(uid) + "00"
+  return v + md5_hex("smsk_web_" + v)[0..14] + "0"
+private_id(uid) = md5_hex(uid)[0..16]
+```
+
+`API_HOST = https://slw.h5cmpassport.com:9090`、`API_PATH = /deviceprofile/v4`、
+`ORGANIZATION = FXlyfmWg2AzwbrxDKSv5`、`APP_ID = "default"`、`OK_CODE = 1100`、
+`DEVICE_ID_PREFIX = "B"`；上报体 `{appId, organization, ep, data, os:"web", encode:5, compress:2}`。
