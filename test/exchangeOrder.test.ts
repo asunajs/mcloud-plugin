@@ -118,21 +118,25 @@ test('**主线**：一步一枪，顺序与枪序一致', () => {
   void steps;
 });
 
-test('⚠ **总方针**：清单判据说"不能兑" ⇒ **照样发**（判据只记不挡）', () => {
-  const store = mkStore();
-  const { transport, sent } = upstream({
-    exchangeList: { code: 0, result: { g1: [{ prizeId: 42, prizeName: '季卡', limit: 2, pOrder: 880 }] } },
-    infoV3: { code: 0, result: { total: 5000 } },
-  });
-  startOrder(deps(store, transport), '季卡');
-  const out = runOrderStep(deps(store, transport));
-  assert.equal(out.ok, true, `该继续走下去：${out.note}`);
-  assert.match(out.note, /本件本月已兑/, '判据要写进 note（让人看得见），只是不挡路');
-  assert.match(out.note, /照样发/);
-  assert.equal(sent.length, 1);
+test('⚠ **不判**：清单里那些"不能兑"的字段**完全不影响**走向（判据被删掉了）', () => {
+  // 用户定的方向：既然本地判据永远不该挡住发送，那它就不该存在 ——
+  // 不挡路的判据是装饰，算了不用只会让人以为它在起作用。
+  // 所以①只做**选择**（按名字找出目标），四档否定一律视而不见。
+  for (const limit of [0, 1, 2, 4, 9, undefined] as const) {
+    const store = mkStore();
+    const { transport, sent } = upstream({
+      exchangeList: { code: 0, result: { g1: [{ prizeId: 42, prizeName: '季卡', limit, pOrder: 880 }] } },
+      infoV3: { code: 0, result: { total: 5000 } },
+    });
+    startOrder(deps(store, transport), '季卡');
+    const out = runOrderStep(deps(store, transport));
+    assert.equal(out.ok, true, `limit=${String(limit)}：${out.note}`);
+    assert.doesNotMatch(out.note, /可兑|不能兑|判不了|已兑|明日/, 'note 里不该出现任何判据用语');
+    assert.equal(sent.length, 1, `limit=${String(limit)}`);
+  }
 });
 
-test('⚠ **总方针**：余额看着不够 ⇒ **照样发**（那是估算，失败也不扣豆）', () => {
+test('⚠ **不判**：余额低于价格**完全不影响**走向（那半段是死代码，删了）', () => {
   const store = mkStore();
   const { transport, sent } = upstream({
     exchangeList: LIST_HIT,
@@ -142,11 +146,13 @@ test('⚠ **总方针**：余额看着不够 ⇒ **照样发**（那是估算，
   runOrderStep(deps(store, transport)); // ① 清单
   const out = runOrderStep(deps(store, transport)); // ② 余额
   assert.equal(out.ok, true, out.note);
-  assert.match(out.note, /照样发/);
+  assert.doesNotMatch(out.note, /不够|不足/, '不许出现"余额不够"这种判据用语');
+  assert.match(out.note, /基准/, '它的身份是成交复查的基准，不是判据');
   assert.equal(sent.length, 2);
-  // 下一步也能继续（没有被"停在这里"）
   const st = JSON.parse(store.getState(STATE_STEP)!) as { step: string };
-  assert.equal(st.step, 'warm-1');
+  assert.equal(st.step, 'warm-1', '照常往下走');
+  // 基准仍然落库 —— ⑥ 靠它算差值（这才是这一读的作用）
+  assert.equal(store.getState('mcloud.exchange.order.baseline'), '100');
 });
 
 test('⚠ 滑块解不出来 ⇒ **不发**（这一枪发出去是无效的，不是"少一次机会"）', () => {
@@ -317,23 +323,152 @@ test('⚠ 余额字段是 `total`（真机实测；写成 `point` 的现象是"�
 });
 
 
-test('判据那一层：**每一档否定都照样发**，但话要说清楚（与滑块不同）', () => {
-  // 判据是本地估算，**发出去可能成功**（放不放行由上游说了算）⇒ 倾向于发。
-  // 滑块不是这一类：offset 错了那一枪**不可能成功** ⇒ 不发。
-  for (const [limit, word] of [[1, '明日'], [2, '已兑'], [4, '已兑'], [9, '判不了'], [undefined, '判不了']] as const) {
-    const store = mkStore();
-    const { transport, sent } = upstream({
-      exchangeList: {
-        code: 0,
-        result: { g1: [{ prizeId: 42, prizeName: '季卡', limit, pOrder: 880 }] },
-      },
-      infoV3: { code: 0, result: { total: 5000 } },
-    });
-    startOrder(deps(store, transport), '季卡');
-    const out = runOrderStep(deps(store, transport));
-    assert.equal(out.ok, true, `limit=${String(limit)} 该继续走：${out.note}`);
-    assert.match(out.note, new RegExp(word), `limit=${String(limit)}：${out.note}`);
-    assert.match(out.note, /照样发/, `limit=${String(limit)}：得写明是"照样发"`);
-    assert.equal(sent.length, 1);
+test('⚠ 没有 deviceId ⇒ 停在下单前（不回 615 让上游说"活动太火爆"）', () => {
+  const store = memStore();
+  store.ensureSchema();
+  store.setState(SESSION_KEY, JSON.stringify({ cookie: '', jwt: 'J', savedAt: NOW }), NOW);
+  const { transport, sent } = upstream({
+    exchangeList: LIST_HIT,
+    infoV3: { code: 0, result: { total: 5000 } },
+    journaling: { code: 0 },
+  });
+  startOrder(deps(store, transport), '钻石会员季卡');
+  for (let i = 0; i < 4; i += 1) runOrderStep(deps(store, transport));
+  // 直接把状态推到 order 那一步（跳过取题，专测 deviceId 这条闸门）
+  store.setState(
+    STATE_STEP,
+    JSON.stringify({ step: 'order', round: 0, plan: { prizeId: 42, prizeName: 'x', query: 'x' }, offset: 137 }),
+    NOW,
+  );
+  const out = runOrderStep(deps(store, transport));
+  assert.equal(out.ok, false);
+  assert.match(out.note, /deviceId/);
+  assert.equal(sent.filter((r) => r.url.includes('exchangeV3')).length, 0);
+});
+
+test('`514` ⇒ 重取一题再来一枪，上限 2 轮，且**只有它**能重来', () => {
+  assert.equal(SLIDER_ROUNDS, 2);
+  assert.equal(CODE_SLIDER_WRONG, 514);
+  // 状态推到"刚取到 offset、准备下单"
+  const store = mkStore();
+  const { transport, sent } = upstream({ exchangeV3: { code: 0, result: { code: 514 } } });
+  store.setState(
+    STATE_STEP,
+    JSON.stringify({ step: 'order', round: 0, plan: { prizeId: 42, prizeName: 'x', query: 'x' }, offset: 137 }),
+    NOW,
+  );
+  const r1 = runOrderStep(deps(store, transport));
+  assert.equal(r1.ok, true);
+  assert.match(r1.note, /514/);
+  const st1 = JSON.parse(store.getState(STATE_STEP)!) as { step: string; round: number };
+  assert.equal(st1.step, 'slide', '要回到取题那一步（重取一题）');
+  assert.equal(st1.round, 1);
+  assert.equal(sent.length, 1);
+  // 第二轮再 514 ⇒ 超过上限就得停手
+  store.setState(
+    STATE_STEP,
+    JSON.stringify({ step: 'order', round: 2, plan: { prizeId: 42, prizeName: 'x', query: 'x' }, offset: 137 }),
+    NOW,
+  );
+  const r2 = runOrderStep(deps(store, transport));
+  assert.equal(r2.ok, false);
+  assert.match(r2.note, /停手/);
+});
+
+test('⚠ 成交判据是**余额差**，不是响应里那句话', () => {
+  const store = mkStore();
+  // ⚠ 这里状态直接从 `verify` 起步（基准是手工塞的），所以**只有一枪** `infoV3`
+  //   —— 它回的就是"成交之后"的那个数
+  const after = { code: 0, result: { total: 4120 } };
+  const sent: BuiltRequest[] = [];
+  const transport = ((req: BuiltRequest) => {
+    sent.push(req);
+    return { status: 200, headers: {}, body: JSON.stringify(after) };
+  }) as never;
+  store.setState(
+    STATE_STEP,
+    JSON.stringify({ step: 'verify', round: 0, plan: { prizeId: 42, prizeName: 'x', query: 'x' } }),
+    NOW,
+  );
+  store.setState('mcloud.exchange.order.baseline', '5000', NOW);
+  const out = runOrderStep(deps(store, transport));
+  assert.equal(out.ok, true, out.note);
+  assert.match(out.note, /成交/);
+  assert.match(out.note, /扣了 880 豆/);
+});
+
+test('没扣豆 ⇒ 如实报"没成交"（哪怕上游回了个成功码）', () => {
+  const store = mkStore();
+  const transport = ((req: BuiltRequest) => {
+    if (req.url.includes('infoV3')) {
+      return { status: 200, headers: {}, body: JSON.stringify({ code: 0, result: { total: 5000 } }) };
+    }
+    return { status: 200, headers: {}, body: JSON.stringify({ code: 0, result: { msg: '兑换成功' } }) };
+  }) as never;
+  store.setState(
+    STATE_STEP,
+    JSON.stringify({ step: 'verify', round: 0, plan: { prizeId: 42, prizeName: 'x', query: 'x' } }),
+    NOW,
+  );
+  store.setState('mcloud.exchange.order.baseline', '5000', NOW);
+  const out = runOrderStep(deps(store, transport));
+  assert.equal(out.ok, false);
+  assert.match(out.note, /没成交/);
+  assert.match(out.note, /只有余额差算数/);
+});
+
+test('逐接口的入参差异：取滑块用 **form**、下单才有 `isdeviceid`', () => {
+  assert.equal(SLIDE_FORM_CONTENT_TYPE, 'application/x-www-form-urlencoded;charset=UTF-8');
+  const store = mkStore();
+  const { transport, sent } = upstream({ exchangeV3: { code: 0, result: {} }, getSlide: { code: 0, result: {} } });
+  store.setState(
+    STATE_STEP,
+    JSON.stringify({ step: 'order', round: 0, plan: { prizeId: 42, prizeName: 'x', query: 'x' }, offset: 137 }),
+    NOW,
+  );
+  runOrderStep(deps(store, transport));
+  assert.equal(sent[0]!.headers.isdeviceid, 'true');
+  assert.equal(sent[0]!.headers.origin, 'https://m.mcloud.139.com');
+  const body = JSON.parse(sent[0]!.body!) as Record<string, unknown>;
+  assert.equal(body.prizeId, 42);
+  assert.equal(body.puzzleOffset, 137, 'offset 要**原样**带上（不是字符串）');
+  assert.equal(body.deviceId, 'BDEV');
+  assert.equal(body.client, 'app');
+  assert.equal(body.clientVersion, '12.6.0');
+});
+
+test('`clearOrder` 把这一单彻底清掉（再做一单不会续上旧的）', () => {
+  const store = mkStore();
+  const { transport } = upstream({});
+  startOrder(deps(store, transport), '季卡');
+  assert.ok(store.getState(STATE_STEP));
+  clearOrder(deps(store, transport));
+  assert.equal(store.getState(STATE_STEP), '');
+  assert.equal(runOrderStep(deps(store, transport)).idle, true);
+});
+
+test('步骤文案齐全（面板要靠它显示走到哪了）', () => {
+  for (const k of ['list', 'balance', 'warm-1', 'warm-2', 'slide', 'order', 'verify', 'done'] as const) {
+    assert.ok(STEP_TEXT[k], `缺 ${k}`);
   }
 });
+
+
+test('⚠ 余额字段是 `total`（真机实测；写成 `point` 的现象是"没读到"）', () => {
+  // 真机 infoV3 的 result 键：beforeTotal / signInPoints / total / time / … —— **没有** `point`
+  const store = mkStore();
+  const transport = ((req: BuiltRequest) =>
+    ({ status: 200, headers: {}, body: JSON.stringify({ code: 0, result: { total: 9188, beforeTotal: 5392 } }) })) as never;
+  startOrder(deps(store, transport), '季卡');
+  // 推到 ② 读余额
+  store.setState(
+    STATE_STEP,
+    JSON.stringify({ step: 'balance', round: 0, plan: { prizeId: 42, prizeName: 'x', price: 50, query: 'x' } }),
+    NOW,
+  );
+  const out = runOrderStep(deps(store, transport));
+  assert.match(out.note, /9188/, `该读到 total=9188：${out.note}`);
+  assert.equal(store.getState('mcloud.exchange.order.baseline'), '9188', '基准要落库（⑥ 靠它算差值）');
+});
+
+
