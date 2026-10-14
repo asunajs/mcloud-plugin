@@ -225,7 +225,15 @@ export const TASK_META: TaskMeta[] = [
   // ⚠ 未实现 —— 而理由**不是**"它会写网盘"（那是它的内容，不是风险）。
   //    真理由：App 原生族（上传 / 分享 / 固定入口）的报文形状还没抓全。
   { name: 'app-task', title: 'App 任务（做任务）', group: 'cloud-write', kind: 'Action', risk: 'write-cloud', missed: 'skip', deps: ['jwt'], batch: false, hidden: false, implemented: false, note: '未实现的原因**不是**"它会写网盘"（上传/建外链/发邮件正是这个任务的内容），而是 App 原生族的报文形状没抓全' },
-  { name: 'task-expansion', title: '任务拓展', group: 'cloud-write', kind: 'Action', risk: 'write-cloud', missed: 'skip', deps: ['jwt'], batch: false, hidden: false, implemented: false, note: '延期领取那一口已经接了；剩下的是写网盘那半边（写文件是它的内容，不是副作用）' },
+    // ⚠ 实现时两处**照抓包、别照 TS**：
+  //   ① `receiveTaskExpansion` 发的是**裸 GET**，不许写 `?acceptDate=`。
+  //      抓包 §3.6.6 实测：H5 传的是 `{acceptDate: t.acceptDate}`，而两个真实账号的
+  //      `receiveList[]` 里**根本没有 acceptDate 这个字段**（只有 cloudNum/cloudType）
+  //      ⇒ 值是 undefined ⇒ axios 把整个键丢掉 ⇒ 线上是**一个查询参数都没有**。
+  //      多一个空参数就是**另一个请求**。（`receive` 那条同坑，那边已经照做了。）
+  //   ② 云朵与「云盘专属 AI豆」是**同一个东西的两个名字**（2026-07-31 按 1:1 改名），
+  //      不是两种货币 —— 别把它们当两笔账记。
+  { name: 'task-expansion', title: '任务拓展', group: 'cloud-write', kind: 'Action', risk: 'write-cloud', missed: 'skip', deps: ['jwt'], batch: false, hidden: false, implemented: false, note: '三件：读状态 → **上传一个文件**把本月备份做出来 → 领云朵（**裸 GET**，见注释①）。上传是它的内容不是副作用；缺的是共用上传流程（建/取址/传/确认）' },
   { name: 'ai-avatar', title: 'AI 头像生成与抽奖', group: 'cloud-write', kind: 'Action', risk: 'write-cloud', missed: 'skip', deps: ['basic+jwt'], batch: false, hidden: false, implemented: false, note: '生成的头像要落到网盘才能抽奖 —— 那是它的流程，不是副作用。原实现里默认关的是**开关**，不是"要不要写"' },
 
   // ── 高风险（未实现）──
