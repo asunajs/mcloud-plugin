@@ -5,7 +5,19 @@
 //   mcloud-plugin 0.0.0
 
 // src/main.ts
-import { error, every, http_fetch, log, register_cron, register_route, warn } from "host-api";
+import {
+  error,
+  every,
+  http_fetch,
+  log,
+  register_cron,
+  register_route,
+  warn,
+  ws_close,
+  ws_open,
+  ws_recv,
+  ws_send
+} from "host-api";
 
 // src/mcloud/envelope.ts
 var isRecord = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -3014,7 +3026,7 @@ function runExchangeStep(deps) {
   if (!st || st.step === "done" || !auth) {
     return { ok: true, note: "没有待换票的任务（先去界面上贴一份原生凭据）", done: true };
   }
-  const finish2 = (s, ok, note2) => {
+  const finish3 = (s, ok, note2) => {
     s.step = "done";
     s.finishedAt = deps.nowIso;
     s.ok = ok;
@@ -3050,7 +3062,7 @@ function runExchangeStep(deps) {
       },
       deps.nowIso
     );
-    return finish2(st, true, `④ 换到 deviceId（${got.deviceId.length} 字符，B 开头）—— 领取类接口现在能用了`);
+    return finish3(st, true, `④ 换到 deviceId（${got.deviceId.length} 字符，B 开头）—— 领取类接口现在能用了`);
   }
   if (st.step === "spec-token") {
     const res2 = callRawText(deps.transport, specTokenRequest(SIGN_IN_RECIPE, auth, deps.baseUrl));
@@ -3076,7 +3088,7 @@ function runExchangeStep(deps) {
   }
   const ts = st.ts;
   if (ts === void 0 || !st.ssoToken) {
-    return finish2(st, false, "③ 前置状态丢了（SSO token 或时间戳）—— SSO token 不缓存，得从头再来");
+    return finish3(st, false, "③ 前置状态丢了（SSO token 或时间戳）—— SSO token 不缓存，得从头再来");
   }
   const res = callRawText(
     deps.transport,
@@ -3126,7 +3138,7 @@ function runExchangeStep(deps) {
     },
     deps.nowIso
   );
-  return finish2(
+  return finish3(
     st,
     true,
     `③ 换到 jwttoken（${p.value.jwt.length} 字符${p.value.mobile ? `，回显 ${maskMobile(p.value.mobile)}` : ""}）—— 约 ${Math.round(JWT_TTL_MS / 6e4)} 分钟后该续` + // ⚠ 主动说出"缺 deviceId"：不说的话，用户第一次用 `receive` 会看到
@@ -5269,6 +5281,40 @@ function tabContentListRequest(tabId, jwt, base) {
     tls: "native"
   };
 }
+function roomBeatRequest(roomId, jwt, base) {
+  return {
+    url: `${(base ?? BASE_CMLIVE).replace(/\/+$/, "")}/api/room/front/roomBeat`,
+    method: "POST",
+    headers: { ...cmliveHeaders(jwt), "content-type": "application/json" },
+    body: JSON.stringify({ roomId: String(roomId), channelId: LIVE_CHANNEL_ID, sourceApp: 0 }),
+    // 同一个主机（`v.cmcc-cs.cn`）⇒ 见 [`BuiltRequest.tls`]：只给 CBC，必须平台 TLS。
+    tls: "native"
+  };
+}
+function parseRoomBeat(body) {
+  const env = parseCmlive(body);
+  if (!env.ok) return { ok: false, error: env.error ?? "直播侧响应解不出来" };
+  if (env.value === void 0) return { ok: false, error: "直播侧响应是空的" };
+  const object = env.value.object;
+  if (typeof object !== "object" || object === null || Array.isArray(object)) {
+    return { ok: false, error: "roomBeat 的 object 不是对象" };
+  }
+  const o = object;
+  const anchor = o["anchor"];
+  const nick = typeof anchor === "object" && anchor !== null ? anchor["nickname"] ?? "" : "";
+  const rawChat = o["chatRoomId"];
+  return {
+    ok: true,
+    value: {
+      status: typeof o["status"] === "number" ? o["status"] : -1,
+      title: typeof o["title"] === "string" ? o["title"] : "",
+      expectStartTime: typeof o["expectStartTime"] === "string" ? o["expectStartTime"] : "",
+      anchorNickname: typeof nick === "string" ? nick : "",
+      // ⚠ **空串也当"没有"**：空串进不了 WS（会拼出一个空的 `cmlive_…`）。
+      chatRoomId: typeof rawChat === "string" && rawChat !== "" ? rawChat : void 0
+    }
+  };
+}
 function parseTabContentList(env) {
   const o = objectOf(env, "查房间列表");
   if (!o.ok || o.value === void 0) return { ok: false, error: o.error ?? "查房间列表失败" };
@@ -5461,6 +5507,904 @@ function parseJson2(raw) {
   } catch {
     return null;
   }
+}
+
+// src/mcloud/msync.ts
+var CMD_ACK = 0;
+var CMD_HEARTBEAT = 1;
+var CMD_DANMAKU = 2;
+var CMD_PROVISION = 3;
+var LIVE_APP_KEY = "cmos#ngvlcs";
+var LIVE_DOMAIN = "cmosim.com";
+var LIVE_AUTH_PREFIX = "$t$";
+var LIVE_RESOURCE_PREFIX = "webim_";
+var LIVE_DEVICE_INFO_ASCII = "830652084dda69b6b957e2c3a7bd9b18db65922e29051b1b342ccf15bebc0fdbd9c03439bcd8fff7ea316192960629f2";
+var LIVE_IDENTIFICATION_PREFIX = "cmos_im2";
+var PROVISION_OS_TYPE_JS = 7;
+var PROVISION_VERSION = "23.0.2";
+var PROVISION_APP_SIGN = "cmlive_cmos_js_sdk";
+var PROVISION_DEVICE_NAME = "webim";
+var WIRE_VARINT = 0;
+var WIRE_FIXED64 = 1;
+var WIRE_BYTES = 2;
+var WIRE_FIXED32 = 5;
+function readVarint(data, pos) {
+  let value = 0n;
+  let shift = 0n;
+  for (let i = pos; i < data.length; i += 1) {
+    const b = data[i];
+    const idx = i - pos;
+    if (idx >= 10) throw new Error(`varint 超过 10 字节（第 ${idx + 1} 字节 = 0x${b.toString(16)}）`);
+    if (idx === 9 && b > 1) throw new Error(`varint 溢出（第 10 字节 = 0x${b.toString(16)}）`);
+    value |= BigInt(b & 127) << shift;
+    if ((b & 128) === 0) return { value, next: i + 1 };
+    shift += 7n;
+  }
+  throw new Error("varint 被截断");
+}
+function scanProtoFields(data) {
+  const out = [];
+  let i = 0;
+  while (i < data.length) {
+    const key = readVarint(data, i);
+    i = key.next;
+    const num3 = Number(key.value >> 3n);
+    const wire = Number(key.value & 7n);
+    if (num3 === 0) throw new Error(`字段号为 0（key = ${key.value.toString()}）`);
+    if (!Number.isSafeInteger(num3)) throw new Error(`字段号超出安全整数（key = ${key.value.toString()}）`);
+    let value = 0n;
+    let raw = new Uint8Array(0);
+    if (wire === WIRE_VARINT) {
+      const v = readVarint(data, i);
+      i = v.next;
+      value = v.value;
+    } else if (wire === WIRE_BYTES) {
+      const len = readVarint(data, i);
+      i = len.next;
+      const size = Number(len.value);
+      if (!Number.isSafeInteger(size) || size < 0) throw new Error(`字段 ${num3} 的声明长度超出范围`);
+      if (data.length - i < size) {
+        throw new Error(`字段 ${num3} 声明长度 ${size}，实际只剩 ${data.length - i} 字节`);
+      }
+      raw = new Uint8Array(data.subarray(i, i + size));
+      i += size;
+    } else if (wire === WIRE_FIXED64) {
+      if (data.length - i < 8) throw new Error(`字段 ${num3} 的 64 位定长值被截断`);
+      i += 8;
+    } else if (wire === WIRE_FIXED32) {
+      if (data.length - i < 4) throw new Error(`字段 ${num3} 的 32 位定长值被截断`);
+      i += 4;
+    } else {
+      throw new Error(`不支持的 wire type ${wire}（字段 ${num3}）`);
+    }
+    out.push({ num: num3, wire, value, raw });
+  }
+  return out;
+}
+function fieldsOf(data) {
+  try {
+    return scanProtoFields(data);
+  } catch {
+    return [];
+  }
+}
+function lastBytesField(fields, num3) {
+  let found;
+  for (const f of fields) if (f.num === num3 && f.wire === WIRE_BYTES) found = f.raw;
+  return found;
+}
+function lastVarintField(fields, num3) {
+  let found;
+  for (const f of fields) if (f.num === num3 && f.wire === WIRE_VARINT) found = f.value;
+  return found;
+}
+function putVarint(out, value) {
+  let v = value;
+  while (v >= 0x80n) {
+    out.push(Number(v & 0x7fn) | 128);
+    v >>= 7n;
+  }
+  out.push(Number(v));
+}
+function putTag(out, num3, wire) {
+  putVarint(out, BigInt(num3) << 3n | BigInt(wire));
+}
+function putScalar(out, num3, value) {
+  if (value === 0n) return;
+  putTag(out, num3, WIRE_VARINT);
+  putVarint(out, value);
+}
+function putScalarForced(out, num3, value) {
+  putTag(out, num3, WIRE_VARINT);
+  putVarint(out, value);
+}
+function putString(out, num3, value) {
+  if (value.length === 0) return;
+  putBytesRaw(out, num3, utf8(value));
+}
+function putStringKeepingEmpty(out, num3, value) {
+  putBytesRaw(out, num3, utf8(value));
+}
+function putBytesRaw(out, num3, body) {
+  putTag(out, num3, WIRE_BYTES);
+  putVarint(out, BigInt(body.length));
+  for (let i = 0; i < body.length; i += 1) out.push(body[i]);
+}
+function putBytes(out, num3, body) {
+  if (body.length === 0) return;
+  putBytesRaw(out, num3, body);
+}
+function putMessage(out, num3, body) {
+  putBytesRaw(out, num3, body);
+}
+function be64(value) {
+  const out = new Uint8Array(8);
+  let v = value;
+  for (let i = 7; i >= 0; i -= 1) {
+    out[i] = Number(v & 0xffn);
+    v >>= 8n;
+  }
+  return out;
+}
+function secondsBytes(nowMs) {
+  if (!Number.isFinite(nowMs)) throw new Error(`nowMs 必须是有限数：${nowMs}`);
+  const sec = Math.floor(nowMs / 1e3);
+  if (sec < 0 || sec > 4294967295) {
+    throw new Error(`nowMs=${nowMs} 换算成秒后超出 4 字节（${sec}）—— 本协议只给 32 位秒`);
+  }
+  return new Uint8Array([sec >>> 24 & 255, sec >>> 16 & 255, sec >>> 8 & 255, sec & 255]);
+}
+function identificationBytes(nowMs, identTail) {
+  const prefix = utf8(LIVE_IDENTIFICATION_PREFIX);
+  if (prefix.length !== 8) {
+    throw new Error(`identification 前缀必须是 8 字节 ASCII，实际 ${prefix.length} 字节`);
+  }
+  const tail = identTail ?? be64(BigInt(Math.floor(nowMs)));
+  if (tail.length !== 8) throw new Error(`identification 的后半段必须是 8 字节，实际 ${tail.length}`);
+  const out = new Uint8Array(16);
+  out.set(prefix, 0);
+  out.set(tail, 8);
+  return out;
+}
+function encodeJid(phone, nowMs) {
+  const out = [];
+  putString(out, 1, LIVE_APP_KEY);
+  putString(out, 2, `cmlive_c_${phone}`);
+  putString(out, 3, LIVE_DOMAIN);
+  putString(out, 4, `${LIVE_RESOURCE_PREFIX}${Math.floor(nowMs)}`);
+  return new Uint8Array(out);
+}
+function encodeProvisionPayload(input, auth) {
+  const out = [];
+  putScalar(out, 1, BigInt(PROVISION_OS_TYPE_JS));
+  putString(out, 2, PROVISION_VERSION);
+  putString(out, 4, PROVISION_APP_SIGN);
+  putScalarForced(out, 5, 0n);
+  putScalarForced(out, 6, 0n);
+  putStringKeepingEmpty(out, 9, input.deviceUuid);
+  putString(out, 12, PROVISION_DEVICE_NAME);
+  putString(out, 13, input.resource);
+  putString(out, 14, auth);
+  return new Uint8Array(out);
+}
+function encodeProvision(input, nowMs, identTail) {
+  const auth = `${LIVE_AUTH_PREFIX}${input.accessToken}`;
+  const out = [];
+  putMessage(out, 2, encodeJid(input.phone, nowMs));
+  putString(out, 3, auth);
+  putScalarForced(out, 8, BigInt(CMD_PROVISION));
+  putMessage(out, 9, encodeProvisionPayload(input, auth));
+  putScalarForced(out, 10, 0n);
+  putScalarForced(out, 11, 0n);
+  putBytes(out, 13, utf8(LIVE_DEVICE_INFO_ASCII));
+  putBytes(out, 14, secondsBytes(nowMs));
+  putBytes(out, 15, identificationBytes(nowMs, identTail));
+  return new Uint8Array(out);
+}
+function encodeHeartbeat(nowMs, identTail) {
+  const out = [];
+  putScalarForced(out, 8, BigInt(CMD_HEARTBEAT));
+  putScalarForced(out, 11, 0n);
+  putBytes(out, 13, utf8(LIVE_DEVICE_INFO_ASCII));
+  putBytes(out, 14, secondsBytes(nowMs));
+  putBytes(out, 15, identificationBytes(nowMs, identTail));
+  return new Uint8Array(out);
+}
+function encodeAck(msgId, nowMs, identTail) {
+  if (!/^(0|[1-9][0-9]*)$/.test(msgId)) {
+    throw new Error(`encodeAck 的 msgId 必须是十进制串（无前导零），收到 ${JSON.stringify(msgId)}`);
+  }
+  const out = [];
+  putScalarForced(out, 8, BigInt(CMD_ACK));
+  putMessage(out, 9, ackPayload(BigInt(msgId)));
+  putScalarForced(out, 11, 0n);
+  putBytes(out, 13, utf8(LIVE_DEVICE_INFO_ASCII));
+  putBytes(out, 14, secondsBytes(nowMs));
+  putBytes(out, 15, identificationBytes(nowMs, identTail));
+  return new Uint8Array(out);
+}
+function ackPayload(msgId) {
+  const inner = [];
+  putScalarForced(inner, 1, msgId);
+  const out = [];
+  putMessage(out, 1, new Uint8Array(inner));
+  return new Uint8Array(out);
+}
+function decodeMsync(bytes) {
+  let fields;
+  try {
+    fields = scanProtoFields(bytes);
+  } catch {
+    return { command: 0, msgId: void 0, texts: [], isMsync: false };
+  }
+  if (fields.length === 0) return { command: 0, msgId: void 0, texts: [], isMsync: false };
+  const command = Number(lastVarintField(fields, 8) ?? 0n) & 255;
+  const payload = lastBytesField(fields, 9);
+  if (command === CMD_DANMAKU && payload !== void 0) {
+    return { command, ...danmakuOf(payload), isMsync: true };
+  }
+  if (command === CMD_ACK && payload !== void 0) {
+    return { command, msgId: ackMsgIdOf(payload), texts: [], isMsync: true };
+  }
+  return { command, msgId: void 0, texts: [], isMsync: true };
+}
+function danmakuOf(payload) {
+  const texts = [];
+  let msgId;
+  for (const meta of fieldsOf(payload)) {
+    if (meta.num !== 2) continue;
+    if (meta.wire === WIRE_VARINT) {
+      msgId = meta.value.toString();
+      continue;
+    }
+    if (meta.wire !== WIRE_BYTES) continue;
+    const inner = fieldsOf(meta.raw);
+    for (const body of inner) {
+      if (body.num !== 6 || body.wire !== WIRE_BYTES) continue;
+      for (const content of fieldsOf(body.raw)) {
+        if (content.num !== 4 || content.wire !== WIRE_BYTES) continue;
+        const text = lastBytesField(fieldsOf(content.raw), 2);
+        if (text !== void 0) texts.push(fromUtf8(text));
+      }
+    }
+    const id = msgIdOf(inner);
+    if (id !== void 0) msgId = id;
+  }
+  return { msgId, texts };
+}
+function msgIdOf(messageFields) {
+  const v = lastVarintField(messageFields, 1);
+  if (v !== void 0) return v.toString();
+  const s = lastBytesField(messageFields, 1);
+  if (s === void 0) return void 0;
+  const asText = fromUtf8(s);
+  return /^[0-9]+$/.test(asText) ? asText : void 0;
+}
+function ackMsgIdOf(payload) {
+  const fields = fieldsOf(payload);
+  const direct = lastVarintField(fields, 2);
+  if (direct !== void 0) return direct.toString();
+  const one = lastBytesField(fields, 1);
+  if (one === void 0) return void 0;
+  const inner = lastVarintField(fieldsOf(one), 1);
+  return inner !== void 0 && inner > 0n ? inner.toString() : void 0;
+}
+
+// src/mcloud/liveWs.ts
+var SOCKJS_OPEN = "o";
+var SOCKJS_HEARTBEAT = "h";
+var SOCKJS_CLOSE_PREFIX = "c[";
+var SOCKJS_DATA_PREFIX = "a[";
+function sockjsSendFrame(msync) {
+  return `["${toBase64(msync)}"]`;
+}
+function splitDataFrameJson(text) {
+  const json2 = text.slice(SOCKJS_DATA_PREFIX.length - 1);
+  let parsed;
+  try {
+    parsed = JSON.parse(json2);
+  } catch (e) {
+    throw new Error(`SockJS 数据帧不是合法 JSON 数组：${String(e)}`);
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error("SockJS 数据帧不是 JSON 数组");
+  }
+  const out = [];
+  for (const item of parsed) {
+    if (typeof item !== "string") {
+      throw new Error("SockJS 数据帧的数组元素必须是 base64 字符串");
+    }
+    out.push(item);
+  }
+  return out;
+}
+var DEFAULT_HEARTBEAT_MS = 15e3;
+var DEFAULT_MALFORMED_LIMIT = 8;
+var CLOSE_REASON_SERVER = "服务端关闭帧 c[";
+var CLOSE_REASON_MALFORMED = "连续 ";
+var CLOSE_REASON_SOCKJS_HEARTBEAT = "收到 SockJS 心跳帧 h";
+function createListener(o) {
+  const heartbeatMs = o.heartbeatMs ?? DEFAULT_HEARTBEAT_MS;
+  const malformedLimit = o.malformedLimit ?? DEFAULT_MALFORMED_LIMIT;
+  const st = {
+    openSeen: false,
+    provisionSent: false,
+    provisionAckSeen: false,
+    heartbeatCount: 0,
+    lastHeartbeatAtMs: void 0,
+    consecutiveMalformed: 0,
+    closeReason: void 0
+  };
+  const giveUp = (reason) => {
+    st.closeReason = reason;
+    return { outbound: [], texts: [], closed: reason };
+  };
+  const heartbeatFrame = (nowMs) => {
+    st.heartbeatCount += 1;
+    st.lastHeartbeatAtMs = nowMs;
+    return sockjsSendFrame(encodeHeartbeat(nowMs));
+  };
+  const onFrameInner = (text, nowMs) => {
+    if (text === SOCKJS_HEARTBEAT) {
+      if (o.sockjsHeartbeatReply !== void 0) {
+        return {
+          kind: "heartbeat",
+          outbound: [o.sockjsHeartbeatReply],
+          texts: [],
+          closed: void 0
+        };
+      }
+      return {
+        kind: "heartbeat",
+        outbound: [],
+        texts: [],
+        closed: `${CLOSE_REASON_SOCKJS_HEARTBEAT}：抓包 §四 4.1 全程零样本（业务帧太密，从未静默满 25 秒）⇒「h 该回什么」判为**未判定**，本层不猜、不回帧；请调用方决定（回 "h" / 回 [""] / 忽略并断开）`
+      };
+    }
+    if (text.startsWith(SOCKJS_CLOSE_PREFIX)) {
+      return {
+        kind: "closed",
+        outbound: [],
+        texts: [],
+        closed: `${CLOSE_REASON_SERVER}…]：服务端关闭了这条连接，不再往上写任何东西`
+      };
+    }
+    if (text === SOCKJS_OPEN) {
+      st.openSeen = true;
+      if (st.provisionSent) {
+        return { kind: "open", outbound: [], texts: [], closed: void 0 };
+      }
+      const resource = `webim_${nowMs}`;
+      const frame = sockjsSendFrame(
+        encodeProvision(
+          { accessToken: o.accessToken, resource, deviceUuid: o.deviceUuid, phone: o.phone },
+          nowMs
+        )
+      );
+      st.provisionSent = true;
+      return { kind: "open", outbound: [frame], texts: [], closed: void 0 };
+    }
+    if (!text.startsWith(SOCKJS_DATA_PREFIX)) {
+      return { kind: "ignored", outbound: [], texts: [], closed: void 0 };
+    }
+    let pieces;
+    try {
+      pieces = splitDataFrameJson(text);
+    } catch {
+      return { kind: "malformed", outbound: [], texts: [], closed: void 0 };
+    }
+    const outbound = [];
+    const texts = [];
+    let kind = "silent";
+    let malformed = false;
+    for (const piece of pieces) {
+      const decoded = decodeMsync(fromBase64(piece));
+      if (!decoded.isMsync) {
+        malformed = true;
+        continue;
+      }
+      const command = decoded.command;
+      const msgId = decoded.msgId;
+      const frameTexts = decoded.texts;
+      switch (command) {
+        case CMD_PROVISION: {
+          kind = "provision_ack";
+          st.provisionAckSeen = true;
+          if (st.lastHeartbeatAtMs === void 0) {
+            outbound.push(heartbeatFrame(nowMs));
+          }
+          break;
+        }
+        case CMD_DANMAKU: {
+          kind = "danmaku";
+          if (frameTexts.length > 0) {
+            texts.push(...frameTexts);
+          }
+          if (msgId === void 0) {
+            break;
+          }
+          outbound.push(sockjsSendFrame(encodeAck(msgId, nowMs)));
+          break;
+        }
+        case CMD_ACK:
+          break;
+        case CMD_HEARTBEAT:
+          break;
+        default:
+          break;
+      }
+    }
+    if (malformed && kind === "silent") {
+      kind = "malformed";
+    }
+    return { kind, outbound, texts, closed: void 0 };
+  };
+  const onFrame = (text, nowMs) => {
+    if (st.closeReason !== void 0) {
+      return { outbound: [], texts: [], closed: st.closeReason };
+    }
+    const r = onFrameInner(text, nowMs);
+    if (r.kind === "malformed") {
+      st.consecutiveMalformed += 1;
+    } else {
+      st.consecutiveMalformed = 0;
+    }
+    if (r.kind === "malformed" && malformedLimit !== 0 && st.consecutiveMalformed >= malformedLimit) {
+      return giveUp(
+        `${CLOSE_REASON_MALFORMED}${st.consecutiveMalformed} 帧解不开（上限 ${malformedLimit} 帧）：这条连接还在通，但说的不是我们的协议 ⇒ 请收工（别挂到超时）`
+      );
+    }
+    if (r.kind === "closed") {
+      st.closeReason = r.closed;
+    }
+    return { outbound: r.outbound, texts: r.texts, closed: r.closed };
+  };
+  const dueHeartbeat = (nowMs) => {
+    if (st.closeReason !== void 0) {
+      return [];
+    }
+    if (!st.provisionAckSeen) {
+      return [];
+    }
+    if (st.lastHeartbeatAtMs !== void 0 && nowMs - st.lastHeartbeatAtMs < heartbeatMs) {
+      return [];
+    }
+    return [heartbeatFrame(nowMs)];
+  };
+  const state = () => ({
+    provisionSent: st.provisionSent,
+    provisionAckSeen: st.provisionAckSeen,
+    // 判据照 Rust：收到过 `o` **并且**收到过 PROVISION 的响应（cmd=3）才算进过房间。
+    enteredRoom: st.openSeen && st.provisionAckSeen,
+    heartbeatCount: st.heartbeatCount,
+    lastHeartbeatAtMs: st.lastHeartbeatAtMs,
+    closed: st.closeReason !== void 0
+  });
+  return { onFrame, state, dueHeartbeat };
+}
+
+// src/mcloud/tasks/liveListen.ts
+var STATE_LISTEN = "mcloud.live.listen";
+var STATE_WS_BASE = "mcloud.live.ws_base";
+var BASE_VIDEO_IM_WS = "wss://videoim.cmcc-cs.cn:20102";
+var DEFAULT_LISTEN_SECONDS = 600;
+var IDLE_RECHECK_MS = 5 * 60 * 1e3;
+var READ_BURST_MS = 1600;
+var RECV_SLICE_MS = 700;
+var WS_OPEN_TIMEOUT_MS = 8e3;
+var parseJson3 = (raw) => {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+};
+function loadListenState(store2) {
+  return parseJson3(store2.getState(STATE_LISTEN));
+}
+function loadWsBase(store2) {
+  const v = store2.getState(STATE_WS_BASE);
+  return v && v.trim() ? v.trim().replace(/\/+$/, "") : BASE_VIDEO_IM_WS;
+}
+function saveWsBase(store2, base, nowIso) {
+  store2.setState(STATE_WS_BASE, base.trim().replace(/\/+$/, ""), nowIso);
+}
+function liveWsUrl(base, serverId, sessionId) {
+  return `${base.replace(/\/+$/, "")}/ws/${serverId}/${sessionId}/websocket`;
+}
+function sockjsSessionId(rand = Math.random) {
+  const alpha = "abcdefghijklmnopqrstuvwxyz0123456789";
+  let out = "";
+  for (let i = 0; i < 8; i += 1) out += alpha[Math.floor(rand() * alpha.length)] ?? "a";
+  return out;
+}
+function randomServerId(rand = Math.random) {
+  return Math.floor(rand() * 1e3);
+}
+function wsHandshakeHeaders() {
+  return { origin: LIVE_ORIGIN, "user-agent": LIVE_USER_AGENT };
+}
+function listenerIdle(st, nowMs) {
+  if (st.nextCheckAtMs !== void 0 && nowMs < st.nextCheckAtMs) {
+    const at = new Date(st.nextCheckAtMs).toISOString().slice(11, 19);
+    return `门关着，等下一次检查（${at}Z 之后）`;
+  }
+  return void 0;
+}
+var current;
+function listenerFor(st, nowMs, opts) {
+  const handle = st.handle ?? -1;
+  if (current !== void 0 && current.handle === handle && current.windowStartMs === st.windowStartMs && current.chatRoomId === opts.chatRoomId) {
+    return current.listener;
+  }
+  const listener = createListener({
+    accessToken: opts.accessToken,
+    chatRoomId: opts.chatRoomId,
+    phone: opts.phone,
+    // ⚠ 这一格照抓包给**空串**（§5.5：字段在、长度为 0），不是毫秒串。
+    deviceUuid: "",
+    // ⚠⚠ `h`（SockJS 心跳）抓包**零样本**（§四 4.1），所以这一格是**实机试出来的**：
+    //   2026-10-14 那场房间里安静满 25 秒 ⇒ 服务端真的发了 `h`；回一帧 `h`
+    //   之后连接继续可用（读数与判据见 docs/findings.md F-032）。
+    //   回 `[""]` 是**错的**：那是 SockJS 的**关闭**帧（抓包 §二 末帧）。
+    sockjsHeartbeatReply: "h"
+  });
+  current = {
+    handle,
+    windowStartMs: st.windowStartMs,
+    chatRoomId: opts.chatRoomId,
+    listener
+  };
+  return listener;
+}
+function runLiveListen(deps) {
+  const nowMs = Date.parse(deps.nowIso);
+  const prev = loadListenState(deps.store);
+  const windowMs = loadListenSeconds(deps.store) * 1e3;
+  if (prev !== null && prev.step === "done") {
+    const idle = listenerIdle(prev, nowMs);
+    if (idle !== void 0) return { ok: true, note: idle };
+  }
+  const inWindow = prev !== null && (prev.step === "listen" || prev.step === "open");
+  const stale = prev === null || prev.step === "done" || !inWindow && nowMs - prev.windowStartMs > windowMs;
+  const st = !stale ? prev : {
+    step: "handshake",
+    windowStartMs: nowMs,
+    frames: 0,
+    danmakuFrames: 0,
+    acks: 0,
+    codes: [],
+    startedAt: deps.nowIso
+  };
+  switch (st.step) {
+    case "handshake":
+      return handshakeStep(deps, st);
+    case "rooms":
+      return roomsStep2(deps, st, nowMs);
+    case "roomBeat":
+      return roomBeatStep(deps, st, nowMs);
+    case "open":
+      return openStep(deps, st, nowMs);
+    case "listen":
+      return listenStep(deps, st, nowMs, windowMs);
+    default:
+      return finish2(deps, st, "窗口已结束");
+  }
+}
+var STATE_LISTEN_SECONDS = "mcloud.live.listen_seconds";
+function loadListenSeconds(store2) {
+  const raw = store2.getState(STATE_LISTEN_SECONDS);
+  const n = raw ? Number.parseInt(raw, 10) : Number.NaN;
+  return Number.isFinite(n) && n > 0 ? Math.min(n, 3600) : DEFAULT_LISTEN_SECONDS;
+}
+function persist(deps, st) {
+  deps.store.setState(STATE_LISTEN, JSON.stringify(st), deps.nowIso);
+}
+function stepFail2(deps, st, note2) {
+  recordError(deps.store, "live-listen", note2, deps.nowIso);
+  persist(deps, st);
+  return { ok: false, note: note2 };
+}
+function handshakeStep(deps, st) {
+  const base = loadGateBaseOf(deps.store);
+  const auth = deps.store.getState(STATE_AUTH) ?? "";
+  if (auth === "") {
+    return stepFail2(deps, st, "听弹幕要**原生凭据**（`Authorization`）：先去界面贴一份");
+  }
+  const r1 = callRawText(deps.transport, gateSpecTokenRequest(auth, base));
+  if (!r1.ok) return stepFail2(deps, st, `① 换 SSO token 失败：${r1.error ?? "未知失败"}`);
+  const sso = parseSsoToken(r1.text);
+  if (!sso.ok || sso.value === void 0) {
+    return stepFail2(deps, st, `① 换 SSO token 失败：${sso.error ?? "响应里没有 data.token"}`);
+  }
+  const r2 = callRawText(deps.transport, cmpassLoginRequest(sso.value, base));
+  if (!r2.ok) return stepFail2(deps, st, `② 换直播侧 JWT 失败：${r2.error ?? "未知失败"}`);
+  const env = parseCmlive(r2.text);
+  if (!env.ok || env.value === void 0) {
+    return stepFail2(deps, st, `② 换直播侧 JWT 失败：${env.error ?? "响应解不出来"}`);
+  }
+  const jwt = parseCmpassLogin(env.value);
+  if (!jwt.ok || jwt.value === void 0) {
+    return stepFail2(deps, st, `② 换直播侧 JWT 失败：${jwt.error ?? "object 不是 JWT"}`);
+  }
+  st.jwt = jwt.value;
+  st.step = "rooms";
+  persist(deps, st);
+  clearError(deps.store, "live-listen", deps.nowIso);
+  return { ok: true, note: "① SSO + ② 直播侧 JWT 都换到了（JWT 只在这一个窗口里活）" };
+}
+function roomsStep2(deps, st, nowMs) {
+  const base = loadGateBaseOf(deps.store);
+  const jwt = st.jwt ?? "";
+  if (jwt === "") return stepFail2(deps, st, "③ 没有票（上一拍的 JWT 不在）");
+  const groups = [];
+  for (const tabId of GATE_TAB_IDS) {
+    const r = callRawText(deps.transport, tabContentListRequest(tabId, jwt, base));
+    if (!r.ok) return stepFail2(deps, st, `③ 页签 ${tabId} 失败：${r.error ?? "未知失败"}`);
+    const env = parseCmlive(r.text);
+    if (!env.ok || env.value === void 0) {
+      return stepFail2(deps, st, `③ 页签 ${tabId} 失败：${env.error ?? "响应解不出来"}`);
+    }
+    const parsed = parseTabContentList(env.value);
+    if (!parsed.ok || parsed.value === void 0) {
+      return stepFail2(deps, st, `③ 页签 ${tabId} 失败：${parsed.error ?? "房间列表解不出来"}`);
+    }
+    groups.push([...parsed.value]);
+  }
+  const merged = mergeRooms(groups);
+  void nowMs;
+  const anchorLive = koulingRooms(merged);
+  if (anchorLive.length === 0) {
+    st.step = "done";
+    st.nextCheckAtMs = Date.parse(deps.nowIso) + IDLE_RECHECK_MS;
+    st.closedReason = "那个主播没在播";
+    st.finishedAt = deps.nowIso;
+    st.note = `门关着（合并后 ${merged.length} 间房）—— 隔 ${Math.round(IDLE_RECHECK_MS / 6e4)} 分钟再看`;
+    persist(deps, st);
+    return { ok: true, note: st.note };
+  }
+  st.roomId = anchorLive[0]?.id;
+  st.step = "roomBeat";
+  persist(deps, st);
+  return { ok: true, note: `门开着：房间 ${st.roomId}，接着问聊天室号` };
+}
+function roomBeatStep(deps, st, nowMs) {
+  void nowMs;
+  const base = loadGateBaseOf(deps.store);
+  const jwt = st.jwt ?? "";
+  if (st.roomId === void 0 || jwt === "") {
+    return stepFail2(deps, st, "④ 缺房间号或票（上一拍的状态不完整）");
+  }
+  const r = callRawText(deps.transport, roomBeatRequest(st.roomId, jwt, base));
+  if (!r.ok) return stepFail2(deps, st, `④ roomBeat 失败：${r.error ?? "未知失败"}`);
+  const parsed = parseRoomBeat(r.text);
+  if (!parsed.ok || parsed.value === void 0) {
+    return stepFail2(deps, st, `④ roomBeat 失败：${parsed.error ?? "响应解不出来"}`);
+  }
+  const beat = parsed.value;
+  if (beat.chatRoomId === void 0) {
+    st.step = "done";
+    st.nextCheckAtMs = Date.parse(deps.nowIso) + IDLE_RECHECK_MS;
+    st.closedReason = `房间 ${st.roomId} 没有聊天室（status=${beat.status}）`;
+    st.finishedAt = deps.nowIso;
+    st.note = st.closedReason;
+    persist(deps, st);
+    return { ok: true, note: st.note };
+  }
+  st.chatRoomId = beat.chatRoomId;
+  st.step = "open";
+  persist(deps, st);
+  return {
+    ok: true,
+    note: `房间 ${st.roomId}（${beat.title || "无标题"}）聊天室 ${st.chatRoomId}`
+  };
+}
+function openStep(deps, st, nowMs) {
+  const auth = deps.store.getState(STATE_AUTH) ?? "";
+  const parsed = parseAuthorization(auth);
+  if (parsed === null) {
+    return stepFail2(deps, st, "WS 那一步要手机号（PROVISION 的 `guid.name` 用它）—— 凭据解不出来");
+  }
+  if (st.chatRoomId === void 0 || st.jwt === void 0) {
+    return stepFail2(deps, st, "开 WS 缺聊天室号或票（上一拍的状态不完整）");
+  }
+  const url = liveWsUrl(loadWsBase(deps.store), randomServerId(), sockjsSessionId());
+  const opts = {
+    headers: wsHandshakeHeaders(),
+    timeout_ms: WS_OPEN_TIMEOUT_MS
+  };
+  if (url.startsWith("wss:")) opts.tls = "native";
+  let handle;
+  try {
+    handle = deps.host.wsOpen(url, opts);
+  } catch (e) {
+    return stepFail2(deps, st, `开 WS 失败：${e instanceof Error ? e.message : String(e)}`);
+  }
+  st.handle = handle;
+  const listener = listenerFor(st, nowMs, {
+    accessToken: st.jwt,
+    chatRoomId: st.chatRoomId,
+    phone: parsed.phone
+  });
+  let first;
+  try {
+    first = deps.host.wsRecv(handle, RECV_SLICE_MS);
+  } catch (e) {
+    try {
+      deps.host.wsClose(handle);
+    } catch {
+    }
+    current = void 0;
+    st.handle = void 0;
+    st.step = "done";
+    st.closedReason = `句柄失效（${e instanceof Error ? e.message : String(e)}）`;
+    st.finishedAt = deps.nowIso;
+    persist(deps, st);
+    return { ok: false, note: `WS 句柄失效：${st.closedReason}` };
+  }
+  if (first.type === "close" || first.type === "error") {
+    deps.host.wsClose(handle);
+    st.handle = void 0;
+    st.step = "done";
+    st.closedReason = first.type === "close" ? first.reason : first.message;
+    st.finishedAt = deps.nowIso;
+    persist(deps, st);
+    return { ok: false, note: `WS 刚连上就断了：${st.closedReason ?? ""}` };
+  }
+  let sent = 0;
+  if (first.type === "text") {
+    const actions = listener.onFrame(first.data, nowMs);
+    sent += flush(deps, handle, actions.outbound);
+    st.frames += 1;
+  }
+  if (sent === 0) {
+    persist(deps, st);
+    return { ok: true, note: "WS 连上了，还没等到 SockJS 的 `o`（下一拍接着等）" };
+  }
+  st.lastHeartbeatAtMs = nowMs;
+  st.step = "listen";
+  persist(deps, st);
+  return { ok: true, note: `WS 连上了（句柄 ${handle}），PROVISION 已发 —— 开始听弹幕` };
+}
+function listenStep(deps, st, nowMs, windowMs) {
+  const handle = st.handle;
+  if (handle === void 0) {
+    current = void 0;
+    st.step = "handshake";
+    persist(deps, st);
+    return { ok: true, note: "WS 句柄不在了（面板重启过？）⇒ 重新走一遍门" };
+  }
+  const auth = deps.store.getState(STATE_AUTH) ?? "";
+  const parsed = parseAuthorization(auth);
+  if (parsed === null || st.jwt === void 0 || st.chatRoomId === void 0) {
+    return stepFail2(deps, st, "听的那一步缺凭据/票/聊天室号");
+  }
+  const listener = listenerFor(st, nowMs, {
+    accessToken: st.jwt,
+    chatRoomId: st.chatRoomId,
+    phone: parsed.phone
+  });
+  const deadline = Date.now() + READ_BURST_MS;
+  const found = [];
+  let endReason;
+  while (Date.now() < deadline) {
+    const sliceMs = Math.min(RECV_SLICE_MS, Math.max(120, deadline - Date.now()));
+    let frame;
+    try {
+      frame = deps.host.wsRecv(handle, sliceMs);
+    } catch (e) {
+      endReason = `句柄失效（${e instanceof Error ? e.message : String(e)}）`;
+      break;
+    }
+    if (frame.type === "close") {
+      endReason = frame.reason;
+      break;
+    }
+    if (frame.type === "error") {
+      endReason = frame.message;
+      break;
+    }
+    if (frame.type !== "text") continue;
+    st.frames += 1;
+    const actions = listener.onFrame(frame.data, Date.now());
+    flush(deps, handle, actions.outbound);
+    if (actions.outbound.length > 0) st.acks += 1;
+    if (actions.texts.length > 0) {
+      st.danmakuFrames += 1;
+      for (const text of actions.texts) {
+        if (!hasKouling(text)) continue;
+        const codes = extractKouling(text);
+        for (const code of codes) found.push(code);
+      }
+    }
+    if (actions.closed !== void 0) {
+      endReason = actions.closed;
+      break;
+    }
+  }
+  if (found.length > 0) {
+    const { pool } = loadPoolFrom(deps.store);
+    note(pool, found, "danmaku", Date.now());
+    savePoolTo(deps.store, pool, deps.nowIso);
+    for (const code of found) if (!st.codes.includes(code)) st.codes.push(code);
+  }
+  const due = listener.dueHeartbeat(Date.now());
+  if (due.length > 0) {
+    flush(deps, handle, due);
+    st.lastHeartbeatAtMs = Date.now();
+  }
+  if (endReason !== void 0) {
+    try {
+      deps.host.wsClose(handle);
+    } catch {
+    }
+    current = void 0;
+    st.handle = void 0;
+    st.step = "done";
+    st.closedReason = endReason;
+    st.finishedAt = deps.nowIso;
+    st.note = `弹幕连接结束：${endReason}（这一段里收到 ${st.frames} 帧、弹幕 ${st.danmakuFrames} 条）`;
+    persist(deps, st);
+    return { ok: true, note: st.note };
+  }
+  if (Date.now() - st.windowStartMs >= windowMs) {
+    try {
+      deps.host.wsClose(handle);
+    } catch {
+    }
+    current = void 0;
+    st.handle = void 0;
+    st.step = "done";
+    st.closedReason = "窗口到点";
+    st.finishedAt = deps.nowIso;
+    st.note = `窗口到点，主动断开（收到 ${st.frames} 帧、弹幕 ${st.danmakuFrames} 条、口令 ${st.codes.length} 条）`;
+    persist(deps, st);
+    return { ok: true, note: st.note };
+  }
+  persist(deps, st);
+  const got = found.length > 0 ? `，本轮口令 ${found.join(" / ")}` : "";
+  return {
+    ok: true,
+    note: `听着（帧 ${st.frames}、弹幕 ${st.danmakuFrames}、口令 ${st.codes.length}${got}）`
+  };
+}
+function flush(deps, handle, outbound) {
+  let n = 0;
+  for (const text of outbound) {
+    try {
+      deps.host.wsSend(handle, text);
+      n += 1;
+    } catch {
+      break;
+    }
+  }
+  return n;
+}
+function finish2(deps, st, note2) {
+  current = void 0;
+  if (st.handle !== void 0) {
+    try {
+      deps.host.wsClose(st.handle);
+    } catch {
+    }
+    st.handle = void 0;
+  }
+  st.step = "done";
+  st.finishedAt = deps.nowIso;
+  st.note = note2;
+  persist(deps, st);
+  return { ok: true, note: note2 };
+}
+function loadGateBaseOf(store2) {
+  const v = store2.getState("mcloud.live.gate_base");
+  return v && v.trim() ? v.trim().replace(/\/+$/, "") : void 0;
+}
+function listenReadingLine(st) {
+  if (st === null) return "还没听过";
+  if (st.step === "listen") return `听着（帧 ${st.frames}、弹幕 ${st.danmakuFrames}、口令 ${st.codes.length}）`;
+  if (st.step === "done") return st.note ?? "这一轮结束";
+  return `准备中（${st.step}）`;
 }
 
 // src/mcloud/liveFlower.ts
@@ -6260,6 +7204,7 @@ var TASK_META = [
   // 写那半。**默认关**（`mcloud.live.claim_enabled`），开关与二次确认都在插件界面上。
   // 它虽然记账，但**基本幂等**：同一条口令再领一次回 `200112`（已兑换过），不会重复发奖。
   // 所以 risk 是 `ledger` 而不是 `irreversible`。
+  { name: "live-listen", title: "听弹幕口令（只读）", group: "activity", kind: "Query", risk: "none", missed: "catch-up", deps: ["basic"], batch: false, hidden: false, implemented: true, evidence: "captured", note: "真机验过：SockJS 握手 + PROVISION + 心跳（15s 一拍）+ ack + 弹幕文本进池（来源 danmaku）。一次调用读 ~1.6 秒（面板预算 2000ms），窗口默认 10 分钟；门关着时**一个请求都不发**" },
   { name: "live-draw", title: "领小红花（写）", group: "activity", kind: "Action", risk: "ledger", missed: "skip", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "partial", note: "六步链 9+N 个请求，一次调用一步；**默认关**。同口令重领回 200112 ⇒ 基本幂等。⚠ 请求头形状未在真账号上验过" },
   // ── 要用网盘（未实现；原因见各条的 note，**不是**"它会写网盘"）──
   // ⚠ 未实现 —— 而理由**不是**"它会写网盘"（那是它的内容，不是风险）。
@@ -7306,7 +8251,12 @@ function mcloudRoutes(deps) {
         liveUrl: loadLiveUrl(deps.store),
         liveUrlDefault: XIAOHONGSHU_KOULING_PROFILE_URL,
         // 门的两个主机（user-njs / v.cmcc-cs.cn）—— 一个口子，见 liveGateTask.loadGateBase
-        gateBase: loadGateBase(deps.store) || "(真主机)"
+        gateBase: loadGateBase(deps.store) || "(真主机)",
+        // 弹幕那条 WS 的主机（videoim.cmcc-cs.cn:20102）—— **另一个口子**：
+        // 它是 `wss://` 且带端口，与上面那两台 http 主机不是同一族（混成一个会写出
+        // "指到 mock 之后协议的 scheme/端口丢了"这种错）。
+        wsBase: loadWsBase(deps.store),
+        listenSeconds: loadListenSeconds(deps.store)
       })
     },
     {
@@ -7344,8 +8294,28 @@ function mcloudRoutes(deps) {
           deps.log(v ? `直播日程的上游已改为 ${v}` : "直播日程的上游已恢复为真主机");
           out.gateBase = v || "(真主机)";
         }
+        if ("wsBase" in body) {
+          const v = typeof body.wsBase === "string" ? body.wsBase.trim() : "";
+          if (v && !/^wss?:\/\//.test(v)) {
+            return json(400, { error: "wsBase 要以 ws:// 或 wss:// 开头（清空 = 用真主机）" });
+          }
+          saveWsBase(deps.store, v, deps.now());
+          deps.log(v ? `听弹幕的 WS 主机已改为 ${v}` : "听弹幕的 WS 主机已恢复为真主机");
+          out.wsBase = v || BASE_VIDEO_IM_WS;
+        }
+        if ("listenSeconds" in body) {
+          const n = Number.parseInt(String(body.listenSeconds), 10);
+          if (!Number.isFinite(n) || n <= 0 || n > 3600) {
+            return json(400, { error: "listenSeconds 要给 1..3600 之间的整数（秒）" });
+          }
+          deps.store.setState(STATE_LISTEN_SECONDS, String(n), deps.now());
+          deps.log(`听弹幕的窗口改为 ${n} 秒`);
+          out.listenSeconds = String(n);
+        }
         if (Object.keys(out).length === 0) {
-          return json(400, { error: "要传 baseUrl / liveUrl / gateBase（清空就传空串）" });
+          return json(400, {
+            error: "要传 baseUrl / liveUrl / gateBase / wsBase / listenSeconds（清空就传空串）"
+          });
         }
         return json(200, out);
       }
@@ -7393,6 +8363,11 @@ function mcloudRoutes(deps) {
         pool: readPoolSummary(deps.store, localStamp(Date.parse(deps.now())), Date.parse(deps.now())),
         // 直播日程（门）：只读探针的读数 —— 门开没开、看到几间房、「下一场」在 pool 里
         gate: readGateReading(deps.store),
+        // 听弹幕（第二十三轮）：窗口里的过程事实 —— 收到几帧、几条弹幕、哪几条口令
+        listen: {
+          reading: loadListenState(deps.store),
+          line: listenReadingLine(loadListenState(deps.store))
+        },
         note: "口令本身**没法自动化**（主播在弹幕/小红书发，那边无法鉴权）⇒ 要人给；能自动的只有「抓主页 + 列出看到的口令」。",
         // 写那半（领小红花）：默认关，开关在这里
         claim: {
@@ -7582,6 +8557,37 @@ function mcloudRoutes(deps) {
       }
     },
     {
+      // 听弹幕推进一步（界面上的「听一拍」/ e2e 用）。
+      // ⚠ 与门那个 step 口子同样的形状（`done` + `note` + `reading`），
+      //   因为它们是**同一类**东西：一个按步骤推进的只读探针。
+      path: `${base}/live/listen/step`,
+      method: "POST",
+      handler: () => {
+        const st0 = loadListenState(deps.store);
+        if (deps.ws === void 0) {
+          return json(503, { error: "宿主没有长连接能力（ws_*）—— 这一族只有嵌入式 JS 宿主有" });
+        }
+        const out = runLiveListen({
+          store: deps.store,
+          transport: deps.transport,
+          host: deps.ws,
+          nowIso: deps.now(),
+          baseUrl: loadBaseUrl(deps.store),
+          lateMs: 0
+        });
+        const st = loadListenState(deps.store);
+        return json(200, {
+          ok: out.ok,
+          note: out.note,
+          done: st?.step === "done" || st?.step === void 0,
+          step: st?.step ?? "idle",
+          reading: st,
+          line: listenReadingLine(st),
+          windowOpen: st0?.step === "listen" || st0?.step === "open"
+        });
+      }
+    },
+    {
       path: `${base}/live/codes`,
       method: "POST",
       handler: (req) => {
@@ -7682,8 +8688,14 @@ for (const r of mcloudRoutes({
   transport,
   now: () => (/* @__PURE__ */ new Date()).toISOString(),
   log,
-  baseUrl: void 0
+  baseUrl: void 0,
   // 路由内部按需读 state（改了配置立刻生效）
+  ws: {
+    wsOpen: (url, opts) => ws_open(url, opts),
+    wsSend: (id, text) => ws_send(id, text),
+    wsRecv: (id, timeoutMs) => ws_recv(id, timeoutMs),
+    wsClose: (id) => ws_close(id)
+  }
 })) {
   register_route(r.path, r.method, r.handler);
 }
@@ -7739,6 +8751,14 @@ function makeRunner(name, run) {
       const out = run({
         store,
         transport,
+        // ⚠ 这一族**只有嵌入式 JS 宿主有**；Node 适配器与 Python 侧都是"函数存在、调用时抛"
+        //   （见面板 docs/host-api.md）。所以任何用到它的任务都必须能在测试里换桩。
+        host: {
+          wsOpen: (url, opts) => ws_open(url, opts),
+          wsSend: (id, text) => ws_send(id, text),
+          wsRecv: (id, timeoutMs) => ws_recv(id, timeoutMs),
+          wsClose: (id) => ws_close(id)
+        },
         nowIso: (/* @__PURE__ */ new Date()).toISOString(),
         baseUrl: loadBaseUrl(store),
         lateMs: p.lateMs
@@ -7785,6 +8805,7 @@ register_cron("app-task", SIGNIN_CRON, makeRunner("App 任务（做任务）", (
 register_cron("exchange-list", SIGNIN_CRON, makeRunner("兑换清单（只看）", runExchangeList));
 register_cron("live-room", "*/30 7-23 * * *", makeRunner("直播口令（只看）", runLiveRoom));
 register_cron("live-gate", "*/10 7-23 * * *", makeRunner("直播日程（门）", runLiveGate));
+register_cron("live-listen", "@every 10s", makeRunner("听弹幕口令", runLiveListen));
 register_cron("live-draw", "*/5 7-23 * * *", (p) => {
   try {
     const out = runLiveDraw({
