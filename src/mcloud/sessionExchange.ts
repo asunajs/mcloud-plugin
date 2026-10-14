@@ -31,6 +31,11 @@ import { loadSession, saveSession } from '../store/types.ts';
 import type { Store } from '../store/types.ts';
 import { sha256Hex } from '../crypto/index.ts';
 import {
+  ensureFingerprint,
+  parseDeviceId,
+  smidUploadRequest,
+} from './smid.ts';
+import {
   SIGN_IN_RECIPE,
   authFingerprint,
   makeSign,
@@ -50,6 +55,8 @@ export const STATE_AUTH = 'mcloud.h5.auth';
 export const STATE_EXCHANGE = 'mcloud.h5.exchange';
 /** 换到的票。 */
 export const STATE_JWT = 'mcloud.h5.jwt';
+/** 最近一次换到的 `deviceId`（`B…`）。留一份单独的键，好在换票之前就能拿它当 `box` 用。 */
+export const STATE_DEVICE_ID = 'mcloud.smid.deviceId';
 
 /** `jwttoken` 的有效期按 **100 分钟**算（上游 2 小时即废，留足余量）。
  *
@@ -58,7 +65,7 @@ export const STATE_JWT = 'mcloud.h5.jwt';
  *  就能在它变成一片红之前自己续上。 */
 export const JWT_TTL_MS = 100 * 60 * 1000;
 
-export type ExchangeStep = 'spec-token' | 'timestamp' | 'tyrz-login' | 'done';
+export type ExchangeStep = 'spec-token' | 'timestamp' | 'tyrz-login' | 'smid' | 'done';
 
 export interface ExchangeState {
   step: ExchangeStep;
@@ -170,6 +177,30 @@ export function runExchangeStep(deps: TaskDeps): { ok: boolean; note: string; do
     return { ok, note, done: true };
   };
 
+  // ④ 换 `deviceId`（smid 风控上报）—— 只发一枪，结果写进会话
+  if (st.step === 'smid') {
+    const fp = ensureFingerprint(deps.store, deps.nowIso);
+    const req = smidUploadRequest(fp, deps.store.getState(STATE_DEVICE_ID) ?? '', new Date(deps.nowIso));
+    const res = callRawText(deps.transport, req);
+    if (!res.ok) return failStep(deps, st, `④ 换 deviceId 失败：${res.error ?? '未知失败'}`);
+    const got = parseDeviceId(res.text);
+    if (!got.ok || got.deviceId === undefined) return failStep(deps, st, `④ ${got.error}`);
+    deps.store.setState(STATE_DEVICE_ID, got.deviceId, deps.nowIso);
+    const cur = loadSession(deps.store);
+    saveSession(
+      deps.store,
+      {
+        cookie: cur?.cookie ?? '',
+        jwt: cur?.jwt ?? '',
+        deviceId: got.deviceId,
+        userAgent: cur?.userAgent,
+        savedAt: '',
+      },
+      deps.nowIso,
+    );
+    return finish(st, true, `④ 换到 deviceId（${got.deviceId.length} 字符，B 开头）—— 领取类接口现在能用了`);
+  }
+
   // ① 换 SSO token
   if (st.step === 'spec-token') {
     const res = callRawText(deps.transport, specTokenRequest(SIGN_IN_RECIPE, auth, deps.baseUrl));
@@ -219,6 +250,38 @@ export function runExchangeStep(deps: TaskDeps): { ok: boolean; note: string; do
   };
   deps.store.setState(STATE_JWT, JSON.stringify(rec), deps.nowIso);
 
+  // ⚠⚠ 拿到票之后**再走一步**：把 `deviceId` 也换回来。
+  //
+  // 为什么必须在这一条链里：领取类接口（`receiveV3`）不带 `deviceId` 回 `615`、
+  // 带错回 `614`，而这两句的文案都是「活动太火爆啦」—— 看起来像限流，
+  // 其实是参数（findings F-018）。换票换到的只是一张**浏览器会话**，
+  // 而 `deviceId` 是另一条链（smid 风控上报）发的。
+  //
+  // ⚠ 已经有 deviceId 的会话**跳过这一步**（手工贴过的人不该被多打一枪）。
+  const sess = loadSession(deps.store);
+  const needDevice = (sess?.deviceId ?? '') === '';
+  if (needDevice) {
+    saveSession(
+      deps.store,
+      {
+        cookie: sess?.cookie ?? '',
+        jwt: p.value.jwt,
+        deviceId: sess?.deviceId,
+        userAgent: sess?.userAgent,
+        savedAt: '',
+      },
+      deps.nowIso,
+    );
+    st.step = 'smid';
+    deps.store.setState(STATE_EXCHANGE, JSON.stringify(st), deps.nowIso);
+    return {
+      ok: true,
+      note:
+        `③ 换到 jwttoken（${p.value.jwt.length} 字符）—— 再走一步换 \`deviceId\`（领取类接口要它）`,
+      done: false,
+    };
+  }
+
   // 写进**会话** —— 这是任务读票的唯一入口（`loadSession`）。
   //
   // ⚠ 没有会话时**要新建一个**，不能只写 STAT_JWT 那格。
@@ -226,7 +289,6 @@ export function runExchangeStep(deps: TaskDeps): { ok: boolean; note: string; do
   // 的人换票成功、却依然被判未登录 —— 而这**正是这个功能的目标场景**
   // （不用手抄 cookie/jwt，只给一份原生凭据）。
   // `cookie` 留空是合法的：H5 那一族本来就不发 cookie（见 store/types.ts 的 loadSession）。
-  const sess = loadSession(deps.store);
   saveSession(
     deps.store,
     {
