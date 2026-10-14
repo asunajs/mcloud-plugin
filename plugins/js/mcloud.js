@@ -5585,20 +5585,23 @@ function runOrderStep(deps) {
     if (!puzzle || !picture) {
       return { ok: false, note: `${label}：题面上没有两张图（回 ${res.text.slice(0, 120)}）` };
     }
-    let offset = null;
-    let why = "";
+    let solution;
     try {
-      const solution = calcPuzzleOffset(puzzle, picture);
-      if (usable(solution)) offset = solution.offsetX;
-      else why = `（解出 ${solution.offsetX} 但置信度只有 ${solution.confidence.toFixed(2)}）`;
+      solution = calcPuzzleOffset(puzzle, picture);
     } catch (e) {
-      why = `（图解码失败：${e instanceof Error ? e.message : String(e)}）`;
+      return done(
+        `${label}：图解码失败（${e instanceof Error ? e.message : String(e)}）⇒ 不发下单那一枪（offset 错了那一枪不可能成功，只会白耗一次题面）`,
+        false
+      );
     }
-    saveState(deps, { ...st, step: "order", offset: offset ?? void 0, useNull: offset === null });
-    return {
-      ok: true,
-      note: offset === null ? `${label}：算不出可用的 offset${why} ⇒ 用 \`puzzleOffset: null\` 照样发（那是"我不知道"，不是编一个数）—— 下一步下单` : `${label}：offset=${offset}（置信度已过线）—— 下一步下单`
-    };
+    if (!usable(solution)) {
+      return done(
+        `${label}：算不出可用的 offset（解出 ${solution.offsetX}，置信度 ${solution.confidence.toFixed(2)}）⇒ 不发下单那一枪 —— 这一枪发出去是无效的，不是"少一次机会"而是"多一次白打"`,
+        false
+      );
+    }
+    saveState(deps, { ...st, step: "order", offset: solution.offsetX });
+    return { ok: true, note: `${label}：offset=${solution.offsetX}（置信度 ${solution.confidence.toFixed(2)}）—— 下一步下单` };
   }
   if (step === "order") {
     const plan = st.plan;
@@ -5608,8 +5611,8 @@ function runOrderStep(deps) {
     if (deviceId === "") {
       return done('没有 deviceId（它要现换，见 smid 链）—— 不带它下单会回 615，文案却像"活动太火爆"', false);
     }
-    const offsetJson = st.useNull === true || st.offset === void 0 ? "null" : String(st.offset);
-    const body = `{"prizeId":${plan.prizeId},"client":"app","clientVersion":"${EXCHANGE_CLIENT_VERSION}","puzzleOffset":${offsetJson},"smsCode":"","deviceId":"${deviceId}"}`;
+    if (st.offset === void 0) return done("内部状态缺 offset，这一单作废（不发一个没算出来的数）", false);
+    const body = `{"prizeId":${plan.prizeId},"client":"app","clientVersion":"${EXCHANGE_CLIENT_VERSION}","puzzleOffset":${st.offset},"smsCode":"","deviceId":"${deviceId}"}`;
     const req = signedReq(deps, {
       url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/signin/page/exchangeV3`,
       method: "POST",
