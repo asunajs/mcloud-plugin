@@ -157,3 +157,46 @@ export function needsPortalEntry(taskId: number | undefined): boolean {
 export function isShare(taskId: number | undefined): boolean {
   return taskId === SHARE_TASK_ID;
 }
+
+// ───────────────────────── 这一条走哪一步（mcloud 的步骤表） ─────────────────────────
+
+/** 这一条要走的动作。`undefined` = **mcloud 里没实现** ⇒ 本插件也**不动它**。
+ *
+ *  # ⚠ 为什么必须有这张表（用户点出来的错）
+ *
+ *  我第一版是"**不在黑名单就打**" —— 那是**重写**，不是迁移。
+ *  真机后果：点了 `time` 组的 548/549/550 与 `month` 的 607，四枪全回 **HTTP 200**，
+ *  而**状态一条都不变**（还是 `WAIT`）——
+ *  因为它们在 mcloud 的账本里**全是"未实现"**（`docs/app-task-status.md` §2）。
+ *
+ *  mcloud 的口径是**逐条实拍**：只有真知道"这条要做什么动作"的才动手，
+ *  其余一律不动（`⚠ 谁拿它做什么必须逐条看`）。凭空点一下不但没用，
+ *  还会按"状态没变 ⇒ 失败"的判据**报出一堆假失败**。
+ *
+ *  ⚠ 与 `SKIP_TASK_LIST` 是两件事：那一串是"**刻意不打**"（打了有副作用或无意义），
+ *  这一层是"**还不知道怎么打**"。两者都不打，但**理由不同** —— 报出来的话也要不同。 */
+export type TaskStep =
+  | { kind: 'upload'; shape: UploadShape }
+  | { kind: 'clickOnly' }
+  | { kind: 'portalEntry' };
+
+/** mcloud 里**已实现**的那些（`docs/app-task-status.md` §0）：
+ *  106、113、409、434、522、547、604、609、615 —— 加上判定门 118。
+ *
+ *  ⚠ 这里只列**本插件已经搬好的**步骤。像 434（分享）、609（AI 对话）这类
+ *  需要额外链路（建外链 / AI 鉴权 + SSE）的，**还没搬 ⇒ 现在也不该点**
+ *  （点了同样不变状态）。 */
+export function stepFor(item: AppTaskItem): TaskStep | undefined {
+  if (shouldSkip(item.taskId)) return undefined;
+  const shape = uploadShapeFor(item);
+  if (shape) return { kind: 'upload', shape };
+  if (isClickOnly(item.taskId)) return { kind: 'clickOnly' };
+  if (needsPortalEntry(item.taskId)) return { kind: 'portalEntry' };
+  return undefined;
+}
+
+/** 这一条 mcloud 里**没实现**（本插件也不动它）—— 报出来用。 */
+export function isUnimplemented(taskId: number | undefined): boolean {
+  if (taskId === undefined) return true;
+  return !shouldSkip(taskId) && !isClickOnly(taskId) && !needsPortalEntry(taskId);
+}
