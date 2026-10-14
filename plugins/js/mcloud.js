@@ -705,6 +705,25 @@ function mergeCookieJar(existing, incoming) {
   return [...jar.entries()].map(([k, v]) => `${k}=${v}`).join("; ");
 }
 
+// src/mcloud/caps.ts
+function sandboxCaps() {
+  const g = globalThis;
+  let applyOk = "ok";
+  try {
+    String.fromCharCode.apply(null, new Array(1e5).fill(65));
+  } catch (e) {
+    applyOk = e instanceof Error ? `抛(${e.constructor.name})` : "抛";
+  }
+  return [
+    `BigInt=${typeof g.BigInt}`,
+    `DataView=${typeof g.DataView}`,
+    `10万字符apply=${applyOk}`
+  ].join(" ");
+}
+function hasBigInt() {
+  return typeof globalThis.BigInt === "function";
+}
+
 // src/mcloud/sign.ts
 var SALT_MAP = [
   [1, "seedMdYYLIZfbCxg"],
@@ -3021,6 +3040,12 @@ function mcloudRoutes(deps) {
   });
   return [
     {
+      // 沙箱能力（**随时可问**，不用等 5 分钟一跳的自检）
+      path: `${base}/caps`,
+      method: "GET",
+      handler: () => json(200, { caps: sandboxCaps(), hasBigInt: hasBigInt() })
+    },
+    {
       path: `${base}/session`,
       method: "GET",
       handler: () => json(200, sessionStatus(deps.store, deps.now()))
@@ -3361,10 +3386,11 @@ function selftest() {
   checks.push(["sqlite 自增主键返回", id > 0]);
   const stats = store.lateStats("__selftest__", 10);
   checks.push(["sqlite 聚合查询可用", stats.n >= 1]);
+  const caps = sandboxCaps();
   const bad = checks.filter(([, ok]) => !ok).map(([name]) => name);
   return {
     ok: bad.length === 0,
-    detail: bad.length === 0 ? `${checks.length}/${checks.length} 通过` : `失败：${bad.join("、")}`
+    detail: (bad.length === 0 ? `${checks.length}/${checks.length} 通过` : `失败：${bad.join("、")}`) + ` · ${caps}`
   };
 }
 for (const r of mcloudRoutes({

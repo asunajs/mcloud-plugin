@@ -20,6 +20,7 @@ import { hostStore } from './store/host.ts';
 import type { Store } from './store/types.ts';
 import type { Transport } from './mcloud/client.ts';
 import { SLOW_CALL_MS, applyDefaultContentType } from './mcloud/client.ts';
+import { sandboxCaps } from './mcloud/caps.ts';
 import { runTaskList } from './mcloud/tasks/taskList.ts';
 import { runPrizes } from './mcloud/tasks/prizes.ts';
 import { runCloudSnapshot } from './mcloud/tasks/cloudSnapshot.ts';
@@ -107,10 +108,15 @@ function selftest(): { ok: boolean; detail: string } {
   const stats = store.lateStats('__selftest__', 10);
   checks.push(['sqlite 聚合查询可用', stats.n >= 1]);
 
+  // ⑤ 沙箱能力探测（只报告、不判失败；探的每一项决定后面哪条链能做 —— 见 caps.ts）
+  const caps = sandboxCaps();
+
   const bad = checks.filter(([, ok]) => !ok).map(([name]) => name);
   return {
     ok: bad.length === 0,
-    detail: bad.length === 0 ? `${checks.length}/${checks.length} 通过` : `失败：${bad.join('、')}`,
+    detail:
+      (bad.length === 0 ? `${checks.length}/${checks.length} 通过` : `失败：${bad.join('、')}`) +
+      ` · ${caps}`,
   };
 }
 

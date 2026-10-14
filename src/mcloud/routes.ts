@@ -23,6 +23,7 @@ import {
 } from './session.ts';
 import { TASK_NAMES, STATE_LAST_TASKLIST } from './tasks/taskList.ts';
 import { groupView } from './groups.ts';
+import { hasBigInt, sandboxCaps } from './caps.ts';
 import { MATRIX_GROUPS, readMatrix } from './tasks/appTaskMatrix.ts';
 import { VERDICT_TEXT, readExchangeList } from './tasks/exchangeList.ts';
 import {
@@ -123,6 +124,12 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
     });
 
   return [
+    {
+      // 沙箱能力（**随时可问**，不用等 5 分钟一跳的自检）
+      path: `${base}/caps`,
+      method: 'GET',
+      handler: () => json(200, { caps: sandboxCaps(), hasBigInt: hasBigInt() }),
+    },
     {
       path: `${base}/session`,
       method: 'GET',
