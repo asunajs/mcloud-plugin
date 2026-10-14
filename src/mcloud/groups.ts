@@ -238,6 +238,7 @@ export const TASK_META: TaskMeta[] = [
   // 写那半。**默认关**（`mcloud.live.claim_enabled`），开关与二次确认都在插件界面上。
   // 它虽然记账，但**基本幂等**：同一条口令再领一次回 `200112`（已兑换过），不会重复发奖。
   // 所以 risk 是 `ledger` 而不是 `irreversible`。
+  { name: 'live-listen', title: '听弹幕口令（只读）', group: 'activity', kind: 'Query', risk: 'none', missed: 'catch-up', deps: ['basic'], batch: false, hidden: false, implemented: true, evidence: 'captured', note: '真机验过：SockJS 握手 + PROVISION + 心跳（15s 一拍）+ ack + 弹幕文本进池（来源 danmaku）。一次调用读 ~1.6 秒（面板预算 2000ms），窗口默认 10 分钟；门关着时**一个请求都不发**' },
   { name: 'live-draw', title: '领小红花（写）', group: 'activity', kind: 'Action', risk: 'ledger', missed: 'skip', deps: ['jwt'], batch: false, hidden: false, implemented: true, evidence: 'partial', note: '六步链 9+N 个请求，一次调用一步；**默认关**。同口令重领回 200112 ⇒ 基本幂等。⚠ 请求头形状未在真账号上验过' },
 
   // ── 要用网盘（未实现；原因见各条的 note，**不是**"它会写网盘"）──
