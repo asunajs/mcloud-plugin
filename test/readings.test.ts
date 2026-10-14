@@ -15,6 +15,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { mcloudRoutes } from '../src/mcloud/routes.ts';
+import { testDeps } from './helpers.ts';
 import {
   DAILY_DONE_KEY,
   DAILY_LAST_KEY,
@@ -32,12 +33,10 @@ const explodingTransport: Transport = () => {
 };
 
 function deps(store: Store) {
-  return {
-    store,
-    transport: explodingTransport,
-    now: () => NOW,
-    log: () => {},
-  };
+  // ⚠ 用 `explodingTransport`：**读数接口一个上游请求都不发**这条性质
+  //   就是靠它证明的（发了就抛）。推送那两条路由也在这份 deps 里，
+  //   而它们同样不该被读数触发。
+  return testDeps(store, { transport: explodingTransport, now: NOW });
 }
 
 function readings(store: Store): Record<string, any> {
@@ -65,9 +64,16 @@ test('空库：七个区块都在，且不抛（刚装上的机器上会被调�
   assert.equal(d.data.matrix.total, 2, '矩阵是轮着读的，总共两个市场');
 });
 
-test('推送区块诚实地说「还没做」，而不是给一个看着像好的空表', () => {
+test('推送区块：没配时说「还没配」，配了之后列出渠道（**不给空表也不给假数据**）', () => {
+  // ⓘ 这一条原来断言的是「`implemented: false` ⇒ 界面显示『还没做』」——
+  //   那在阶段 ⑤ 之前是对的。⑤-1 做完之后它变成**过期断言**：
+  //   推送真的能用了，还钉着"还没做"就是在阻止功能上线。
   const d = readings(memStore());
-  assert.equal(d.push.implemented, false, '阶段 ⑤ 之前必须是 false —— 界面据此显示"还没做"');
+  assert.equal(d.push.channels.length, 10, '10 个渠道要都列出来（不然配不了）');
+  assert.deepEqual(d.push.configured, [], '没配就是空数组');
+  assert.equal(d.push.implemented, undefined, '`implemented` 那个占位字段该删了');
+  // 渠道要有"要填什么"的提示语，否则界面上是一排光秃秃的名字
+  for (const c of d.push.channels) assert.ok(c.hint.length > 0, `${c.id} 缺提示语`);
 });
 
 test('⚠ 它是只读的：一个上游请求都不发（transport 一调就抛）', () => {

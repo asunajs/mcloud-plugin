@@ -5,7 +5,7 @@
 //   mcloud-plugin 0.0.0 · 插件 `mcloud-exchange`
 
 // src/entries/exchange.ts
-import { log, register_cron, warn, worker_hint } from "host-api";
+import { log as log2, register_cron, warn as warn2, worker_hint } from "host-api";
 
 // src/mcloud/envelope.ts
 var isRecord = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -1520,13 +1520,13 @@ function runOrderStep(deps) {
         body: ""
       })
     );
-    const warn2 = res.ok ? "" : `（埋点失败但不挡路：${res.error ?? "未知"}）`;
+    const warn3 = res.ok ? "" : `（埋点失败但不挡路：${res.error ?? "未知"}）`;
     if (step === "warm-1") {
       saveState(deps, { ...st, step: "warm-2" });
-      return { ok: true, note: `${label}：${keyword}${warn2} —— 下一步第二枪（中间那 500ms 由面板的下一次触发承担）` };
+      return { ok: true, note: `${label}：${keyword}${warn3} —— 下一步第二枪（中间那 500ms 由面板的下一次触发承担）` };
     }
     saveState(deps, { ...st, step: "slide" });
-    return { ok: true, note: `${label}：${keyword}${warn2} —— 下一步取滑块题面` };
+    return { ok: true, note: `${label}：${keyword}${warn3} —— 下一步取滑块题面` };
   }
   if (step === "slide") {
     const res = callRawText(
@@ -1642,6 +1642,9 @@ function env0(text) {
 // src/entries/shared.ts
 import {
   http_fetch,
+  log,
+  smtp_send,
+  warn,
   ws_close,
   ws_open,
   ws_recv,
@@ -1888,12 +1891,12 @@ register_cron(
       ok: r.ok,
       note: r.note
     });
-    if (r.ok) log(`兑换：${r.note}`);
-    else warn(`兑换：${r.note}`);
+    if (r.ok) log2(`兑换：${r.note}`);
+    else warn2(`兑换：${r.note}`);
     for (const line of r.detail) {
-      if (line.includes("失败")) warn(`  · ${line}`);
+      if (line.includes("失败")) warn2(`  · ${line}`);
     }
   },
   { budget_ms: BUDGET_MS }
 );
-log(`mcloud-exchange：任务「兑换」（预算 ${BUDGET_MS / 1e3}s，独占线程）—— 毫秒窗口与多账号并行在阶段 ③`);
+log2(`mcloud-exchange：任务「兑换」（预算 ${BUDGET_MS / 1e3}s，独占线程）—— 毫秒窗口与多账号并行在阶段 ③`);

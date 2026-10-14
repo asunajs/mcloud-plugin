@@ -31,6 +31,7 @@ import {
   validCount,
 } from '../src/mcloud/koulingPool.ts';
 import { mcloudRoutes } from '../src/mcloud/routes.ts';
+import { testDeps } from './helpers.ts';
 import { memStore } from '../src/store/memory.ts';
 import { startMock } from '../mock/upstream.mjs';
 import type { Transport } from '../src/mcloud/client.ts';
@@ -149,7 +150,7 @@ function callRoute(deps: Parameters<typeof mcloudRoutes>[0], method: string, pat
 test('路由 GET /api/live：把读数、口令、以及"口令要人给"那句话都给界面', () => {
   const store = memStore();
   store.ensureSchema();
-  const deps = { store, transport: (() => ({ status: 200, headers: {}, body: '' })) as Transport, now: () => NOW, log: () => {} };
+  const deps = testDeps(store, { now: NOW });
 
   const r = callRoute(deps, 'GET', '/plugins/mcloud/api/live');
   assert.equal(r.status, 200);
@@ -164,7 +165,7 @@ test('路由 POST /api/live/codes：存 / 清空 / 拒绝提问', () => {
   const store = memStore();
   store.ensureSchema();
   const logged: string[] = [];
-  const deps = { store, transport: (() => ({ status: 200, headers: {}, body: '' })) as Transport, now: () => NOW, log: (m: string) => logged.push(m) };
+  const deps = testDeps(store, { now: NOW, log: (m) => logged.push(m) });
 
   const ok = callRoute(deps, 'POST', '/plugins/mcloud/api/live/codes', { codes: '云盘AI高效复盘' });
   assert.equal(ok.status, 200);
@@ -185,7 +186,7 @@ test('路由 POST /api/live/codes：存 / 清空 / 拒绝提问', () => {
 test('路由 POST /api/live/codes：贴纯文本 body 也能存（少一步转换）', () => {
   const store = memStore();
   store.ensureSchema();
-  const deps = { store, transport: (() => ({ status: 200, headers: {}, body: '' })) as Transport, now: () => NOW, log: () => {} };
+  const deps = testDeps(store, { now: NOW });
 
   const entry = mcloudRoutes(deps).find((r) => r.path.endsWith('/live/codes'))!;
   const r = entry.handler({ method: 'POST', path: entry.path, query: {}, headers: {}, body: '短漫上新免费看' });
@@ -199,7 +200,7 @@ test('路由 GET /api/live：读数落库后能读回（界面卡片靠这个）
   const { transport } = transportReturning(bigPage('小红花口令：云盘AI高效复盘'));
   runLiveRoom({ store, transport, nowIso: NOW });
 
-  const deps = { store, transport, now: () => NOW, log: () => {} };
+  const deps = testDeps(store, { transport, now: NOW });
   const r = callRoute(deps, 'GET', '/plugins/mcloud/api/live');
   const d = JSON.parse(r.body) as { reading: { codes: string[]; chars: number } };
   assert.deepEqual(d.reading.codes, ['云盘AI高效复盘']);
@@ -240,12 +241,7 @@ test('主页地址可改：指到哪就抓哪（CI 靠这个口子不碰外站�
 test('改口令主页**不会**把上游基址一起抹掉（配置项互相踩是最难查的一类错）', () => {
   const store = memStore();
   store.ensureSchema();
-  const deps = {
-    store,
-    transport: (() => ({ status: 200, headers: {}, body: '' })) as Transport,
-    now: () => NOW,
-    log: () => {},
-  };
+  const deps = testDeps(store, { now: NOW });
 
   callRoute(deps, 'POST', '/plugins/mcloud/api/config', { baseUrl: 'http://127.0.0.1:19040' });
   assert.equal(store.getState('mcloud.base_url'), 'http://127.0.0.1:19040');
@@ -268,7 +264,7 @@ test('改口令主页**不会**把上游基址一起抹掉（配置项互相踩�
 test('路由 GET /api/live：主页地址取的是**当前配置**，不是写死的常量', () => {
   const store = memStore();
   store.ensureSchema();
-  const deps = { store, transport: (() => ({ status: 200, headers: {}, body: '' })) as Transport, now: () => NOW, log: () => {} };
+  const deps = testDeps(store, { now: NOW });
 
   saveLiveUrl(store, 'http://127.0.0.1:19040/xhs/profile', NOW);
   const d = JSON.parse(callRoute(deps, 'GET', '/plugins/mcloud/api/live').body) as { url: string };
@@ -352,7 +348,7 @@ test('⚠ 人贴进来的一栏文本：**空白也算分隔符**（原先会被
 test('路由 GET /api/live：带上池快照（界面要能看见"够没够两条""还要等多久"）', () => {
   const store = memStore();
   store.ensureSchema();
-  const deps = { store, transport: (() => ({ status: 200, headers: {}, body: '' })) as Transport, now: () => NOW, log: () => {} };
+  const deps = testDeps(store, { now: NOW });
 
   const d = JSON.parse(callRoute(deps, 'GET', '/plugins/mcloud/api/live').body) as {
     pool: { validCount: number; stopScraping: boolean; xhsWaitMs: number; codes: unknown[] };

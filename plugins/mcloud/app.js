@@ -139,6 +139,16 @@ function when(iso) {
   return `${d.getMonth() + 1}-${d.getDate()} ${hm}`;
 }
 
+/** 建一个元素。`el('div', 'row')` —— 比到处 `createElement` + `className` 短得多。 */
+function el(tag, cls) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  return e;
+}
+
+/** 调插件的**写**路由（要带 `x-panel: 1`，`call` 里已经处理了）。 */
+const post = (path, body) => api(`/${path}`, { method: 'POST', body, write: true });
+
 const setText = (id, v) => {
   const el = $(id);
   if (el) el.textContent = v === undefined || v === null ? '' : String(v);
@@ -358,16 +368,252 @@ function renderData(d) {
   setText('caps-line', d.caps || '');
 }
 
+// ── 推送 ──
+//
+// # 界面的取舍
+//
+// 10 个渠道 × 每个 1~5 个字段 = 三十几个输入框。**全铺出来就是"文字一大堆"**，
+// 而那正是这一版要解决的问题。所以：
+//
+//   · 渠道**一行一个**，只显示「配了 / 没配」+ 一个按钮
+//   · 点「填」才展开**那一个**渠道的字段（同时只展开一个）
+//   · 绑定默认"全部渠道"，用户不碰也能用
+//
+// 配好的渠道显示**掩码**（`abc…yz（共 32 字符）`）—— 值本身从不上屏。
+
+/** 每个渠道要填的字段。`secret` 的会按口令框显示。 */
+const PUSH_FIELDS = {
+  pushplus: [['token', 'token', true]],
+  serverChan: [['token', 'SendKey', true]],
+  workWeixin: [
+    ['corpid', 'corpid', false],
+    ['corpsecret', 'corpsecret', true],
+    ['agentid', 'agentid（数字）', false],
+  ],
+  workWeixinBot: [['url', '群机器人 webhook 地址', false]],
+  tgBot: [
+    ['token', 'bot token', true],
+    ['chat_id', 'chat_id（群 ID 是负数）', false],
+  ],
+  bark: [['key', 'key', true]],
+  twoIm: [
+    ['key', 'key', true],
+    ['sid', 'sid', true],
+  ],
+  dingTalk: [
+    ['token', 'access_token', true],
+    ['secret', '加签密钥（有就填）', true],
+  ],
+  email: [
+    ['host', 'SMTP 主机', false],
+    ['from', '发件人', false],
+    ['pass', '密码', true],
+    ['to', '收件人', false],
+    ['port', '端口（不给按 587 / 465 推）', false],
+  ],
+  customPost: [['url', '请求地址', false]],
+};
+
+/** 当前展开的是哪个渠道（同时只展开一个）。 */
+let pushEditing = '';
+
 function renderPush(p) {
-  if (p && p.implemented) {
-    setText('push-hero', `${(p.channels || []).length} 个渠道`);
-    setText('push-sub', '');
+  const chans = (p && p.channels) || [];
+  const configured = (p && p.configured) || [];
+  const fields = (p && p.fields) || {};
+
+  if (chans.length === 0) {
+    setText('push-hero', '还没做');
+    setText('push-sub', '推送在阶段 ⑤。');
     return;
   }
-  // 诚实地说「还没做」，而不是画一个看着像好的空表
-  setText('push-hero', '还没做');
-  setText('push-sub', '推送（10 个渠道 + 每个任务选一条规则）在阶段 ⑤。');
+
+  // 第一行回答"配了没有" —— 这是这一块唯一必须一眼看到的事
+  setText('push-hero', configured.length === 0 ? '还没配推送' : `配了 ${configured.length} 个渠道`);
+  setText(
+    'push-sub',
+    configured.length === 0
+      ? '配一个渠道，任务跑完就会给你发一条。'
+      : configured.map((c) => CH_LABEL(c)).join(' · '),
+  );
+
+  const box = $('push-channels');
+  if (!box) return;
+  box.innerHTML = '';
+  for (const ch of chans) {
+    const on = configured.includes(ch.id);
+    const row = el('div', 'row' + (on ? ' is-on' : ''));
+
+    const name = el('span', 'row-name');
+    name.textContent = CH_LABEL(ch.id);
+    row.appendChild(name);
+
+    const state = el('span', 'row-state');
+    state.textContent = on ? '已配' : '';
+    row.appendChild(state);
+
+    const btn = el('button', 'btn btn-sm' + (on ? ' btn-ghost' : ''));
+    btn.type = 'button';
+    btn.textContent = on ? '改' : '填';
+    btn.addEventListener('click', () => {
+      pushEditing = pushEditing === ch.id ? '' : ch.id;
+      renderPush(last.push);
+    });
+    row.appendChild(btn);
+    box.appendChild(row);
+
+    if (on && fields[ch.id]) {
+      const hint = el('div', 'row-note');
+      hint.textContent = Object.entries(fields[ch.id])
+        .map(([k, v]) => `${k}=${v}`)
+        .join('  ');
+      box.appendChild(hint);
+    }
+
+    // 展开：**只这一个**渠道的字段
+    if (pushEditing === ch.id) {
+      const form = el('div', 'form');
+      const inputs = {};
+      for (const [key, label, secret] of PUSH_FIELDS[ch.id] || []) {
+        const lab = el('label', 'field');
+        const span = el('span');
+        span.textContent = label;
+        const input = document.createElement('input');
+        input.type = secret ? 'password' : 'text';
+        input.autocomplete = 'off';
+        input.placeholder = label;
+        // 已配的字段**不回填值**（值在服务端存着，界面拿不到也不该拿）——
+        // 留空 = 不改这一项
+        lab.appendChild(span);
+        lab.appendChild(input);
+        form.appendChild(lab);
+        inputs[key] = input;
+      }
+      const note = el('p', 'hint');
+      note.textContent = '已经填过的项留空 = 不改。';
+      form.appendChild(note);
+
+      const save = el('button', 'btn');
+      save.type = 'button';
+      save.textContent = '保存';
+      save.addEventListener('click', () => {
+        // ⚠ 只发**这一个渠道的改动**（`{set, remove}` 形状）——
+        //   界面拿不到已存的值（读数里只有掩码），所以没法整份发回去。
+        const one = {};
+        for (const [key, input] of Object.entries(inputs)) {
+          const v = input.value.trim();
+          if (v === '') continue; // 留空 = 不改这一项
+          one[key] = key === 'agentid' || key === 'port' ? Number(v) : v;
+        }
+        if (Object.keys(one).length === 0) {
+          toast('一项都没填', true);
+          return;
+        }
+        act('push-config', () => post('push/config', { set: { [ch.id]: one } }), '推送配置已保存');
+      });
+      form.appendChild(save);
+
+      if (on) {
+        const del = el('button', 'btn btn-ghost');
+        del.type = 'button';
+        del.textContent = '不用这个';
+        del.addEventListener('click', () => {
+          act('push-config', () => post('push/config', { remove: [ch.id] }), '已去掉这个渠道');
+        });
+        form.appendChild(del);
+      }
+      box.appendChild(form);
+    }
+  }
+
+  // ── 绑定：三行下拉 ──
+  const bbox = $('push-bindings');
+  if (bbox) {
+    bbox.innerHTML = '';
+    const rules = (p && p.rules) || [];
+    const bindings = (p && p.bindings) || {};
+    for (const [key, label] of [['daily', '日常'], ['exchange', '兑换'], ['live', '直播']]) {
+      const row = el('div', 'row');
+      const name = el('span', 'row-name');
+      name.textContent = label;
+      row.appendChild(name);
+      const sel = document.createElement('select');
+      sel.className = 'select';
+      const none = document.createElement('option');
+      none.value = '';
+      none.textContent = '不发';
+      sel.appendChild(none);
+      for (const r of rules) {
+        const o = document.createElement('option');
+        o.value = r.id;
+        o.textContent = r.name;
+        sel.appendChild(o);
+      }
+      sel.value = bindings[key] || '';
+      sel.addEventListener('change', () => {
+        const next = { ...bindings, [key]: sel.value };
+        act('push-bindings', () => post('push/bindings', next), '绑定已保存');
+      });
+      row.appendChild(sel);
+      bbox.appendChild(row);
+    }
+  }
+
+  // ── 规则列表 ──
+  const rbox = $('push-rules');
+  if (rbox) {
+    rbox.innerHTML = '';
+    const rules = (p && p.rules) || [];
+    if (rules.length === 0) {
+      const empty = el('p', 'hint');
+      empty.textContent = '还没有规则。加一条，然后在上面给任务选上。';
+      rbox.appendChild(empty);
+    }
+    for (const r of rules) {
+      const row = el('div', 'row');
+      const name = el('span', 'row-name');
+      name.textContent = r.name;
+      row.appendChild(name);
+      const state = el('span', 'row-state');
+      const n = (r.channels || []).length;
+      state.textContent =
+        (n === 0 ? '全部渠道' : `${n} 个渠道`) +
+        (r.minLevel === 'error' ? ' · 只在有失败时' : '');
+      row.appendChild(state);
+      const del = el('button', 'btn btn-sm btn-ghost');
+      del.type = 'button';
+      del.textContent = '删';
+      del.addEventListener('click', () => {
+        const next = rules.filter((x) => x.id !== r.id);
+        act('push-rules', () => post('push/rules', next), '规则已删除');
+      });
+      row.appendChild(del);
+      rbox.appendChild(row);
+    }
+  }
 }
+
+/** 渠道 id → 界面上的名字（**与 pushConfig.ts 的 CHANNEL_LABELS 一致**）。 */
+function CH_LABEL(id) {
+  return (
+    {
+      pushplus: 'pushplus',
+      serverChan: 'Server酱',
+      workWeixin: '企业微信',
+      workWeixinBot: '企业微信机器人',
+      tgBot: 'Telegram',
+      bark: 'Bark',
+      twoIm: '回逍',
+      dingTalk: '钉钉',
+      email: '邮件',
+      customPost: '自定义',
+    }[id] || id
+  );
+}
+
+// ⚠ 这里**故意没有**"整份配置的缓存"：界面拿不到已存的值（只有掩码），
+//   所以保存走的是 `{set, remove}` 增量形状。曾经想缓存一份再整份发回去，
+//   但那要么要求界面持有秘密、要么在保存时把别的渠道**清空**。
 
 function renderSettings(s) {
   const fill = (id, v) => {
@@ -739,6 +985,38 @@ $('selftest-run').addEventListener('click', (e) =>
     (r) => r.detail,
   ),
 );
+
+// ── 推送：试发一条 ──
+$('push-test').addEventListener('click', (ev) =>
+  act(
+    ev.currentTarget,
+    async () => {
+      const r = await post('push/test', {});
+      // ⚠ 试发**失败也把结果当"成功返回"处理**（接口本身是 200）——
+      //   这里要的是把 `line` 显示出来，而不是让 `act` 抛错后只显示一句
+      //   笼统的错误。所以成败自己判。
+      if (!r.ok) throw new Error(r.line || '没发出去');
+      return r;
+    },
+    (r) => r.line,
+  ),
+);
+
+// ── 推送：加一条规则 ──
+$('push-add-rule').addEventListener('click', (ev) => {
+  const name = prompt('这条规则叫什么？（比如「只在有失败时」）', '全部渠道');
+  if (!name) return;
+  const onlyError = confirm('只在有失败的时候才推？\n确定 = 只在有失败时推；取消 = 每次都推');
+  const rules = ((last.push && last.push.rules) || []).slice();
+  rules.push({
+    // id 用时间戳 —— 不需要稳定，只要在规则列表里唯一
+    id: `r${Date.now()}`,
+    name,
+    channels: [],
+    minLevel: onlyError ? 'error' : 'always',
+  });
+  act(ev.currentTarget, () => post('push/rules', rules), '规则已加，去下面给任务选上');
+});
 
 // ──────────────────────────────────────────────────────────── 起手
 

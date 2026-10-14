@@ -27,6 +27,9 @@
 
 import {
   http_fetch,
+  log,
+  smtp_send,
+  warn,
   ws_close,
   ws_open,
   ws_recv,
@@ -37,10 +40,25 @@ import { drain } from '../drain.ts';
 export { drain } from '../drain.ts';
 export type { DrainResult } from '../drain.ts';
 import type { Transport } from '../mcloud/client.ts';
-import { applyDefaultContentType, hostFetchOptions } from '../mcloud/client.ts';
+import { applyDefaultContentType, hostFetchOptions, isFetchError } from '../mcloud/client.ts';
 import type { Store } from '../store/types.ts';
 import { hostStore } from '../store/host.ts';
 import { loadBaseUrl } from '../mcloud/session.ts';
+import {
+  configuredChannels,
+  sendPush,
+  type PushChannel,
+  type PushConfig,
+  type PushDeps,
+  type PushResult,
+} from '../mcloud/push.ts';
+import {
+  TASK_LABELS,
+  loadPushBindings,
+  loadPushConfig,
+  loadPushRules,
+  type TaskKey,
+} from '../mcloud/pushConfig.ts';
 
 /** 插件用的 transport：宿主 API 的**同步**请求（沙箱里唯一的选择）。
  *
@@ -123,3 +141,106 @@ export interface TaskPayload {
   params?: unknown;
 }
 
+
+// ══════════════════════════════ 推送：挂在「一次运行结束」上 ══════════════════════════════
+//
+// # 为什么在 shared.ts（而不是 push.ts）
+//
+// `push.ts` 是纯的（能在 Node 里测），发出去要 `http_fetch` 与 `smtp_send` ——
+// 这两个只有引了 `host-api` 的文件才有。`shared.ts` 就是那个文件。
+//
+// # 「一次运行结束」是**唯一**的挂点
+//
+// 不是"每条日志推一次"，也不是"每个步骤推一次"：一次运行 = 一条推送。
+// 理由：
+//   · 一条链有十几个请求，逐步推就是刷屏（用户的原话是"文字一大堆"）
+//   · 用户要的是**结果**："今天跑完了，3 个账号都成了"
+//   · 失败时那条推送里要**带上失败的那一步**，否则用户还得去翻界面
+//
+// ⚠ 推送**不抛错**：它自己失败不该让任务判失败（任务已经干完活了）。
+//   推送的结果**写进这次运行的读数**（界面上看得到），日志里也留一行。
+
+/** 推送用的宿主能力。
+ *
+ *  ⚠ 复用传进来的 `Transport`（就是任务在用的那一条），**不另造一个** ——
+ *  它已经处理了「补默认 content-type」「认失败形状」「tls 只对 https 生效」
+ *  这三件事（见 `client.ts`）。另造一个就是把这些再踩一遍。 */
+export function makePushDeps(transport: Transport): PushDeps {
+  return {
+    http: (r) => {
+      // 返回值可能是 `{status,headers,body}` 也可能是失败形状 `{"error":…}`
+      const res = transport(r);
+      if (isFetchError(res)) {
+        return { ok: false, status: 0, body: '', error: res.error };
+      }
+      return { ok: true, status: res.status, body: res.body ?? '', error: undefined };
+    },
+    smtp: (opts) => {
+      // ⚠ 失败是**抛错**，错误文本是服务器那句原话（`535 bad credentials`）——
+      //   `sendPush` 那边接住了并原样写进读数。
+      const res = smtp_send(opts);
+      return { ok: res.ok === true, response: String(res.response ?? '') };
+    },
+    nowMs: () => Date.now(),
+    log: (msg) => log(msg),
+  };
+}
+
+/** 跑完一次之后要不要推、推什么。
+ *
+ *  @param taskKey 日常 / 兑换 / 直播
+ *  @param title   标题（默认用任务的显示名）
+ *  @param text    正文（**这次运行的结果**，多行）
+ *  @param hadFailure 这次有没有失败的一步（`minLevel: 'error'` 的规则只在 true 时发）
+ */
+export function notify(
+  store: Store,
+  transport: Transport,
+  taskKey: TaskKey,
+  title: string,
+  text: string,
+  hadFailure: boolean,
+): PushResult | null {
+  const bindings = loadPushBindings(store);
+  const ruleId = bindings[taskKey];
+  if (ruleId === '') return null; // 没绑规则 ⇒ 不发（不是失败）
+
+  const rule = loadPushRules(store).find((r) => r.id === ruleId);
+  if (rule === undefined) {
+    // 规则被删了而绑定还在 ⇒ 说清，然后不发。**不静默** ——
+    // 用户会以为"配了就该收到"，而收到的是沉默。
+    warn(`推送规则「${ruleId}」不存在了（${TASK_LABELS[taskKey]} 还绑着它）—— 这次没发`);
+    return null;
+  }
+  if (rule.minLevel === 'error' && !hadFailure) return null;
+
+  const cfg = loadPushConfig(store);
+  // 规则选了渠道就用它选的；一条都没选 = 全部配了的渠道
+  const picked: PushConfig =
+    rule.channels.length === 0 ? cfg : pickChannels(cfg, rule.channels);
+  if (configuredChannels(picked).length === 0) {
+    warn(`推送规则「${rule.name}」一个渠道都没配上 —— 这次没发`);
+    return null;
+  }
+
+  const result = sendPush(makePushDeps(transport), picked, title, text);
+  log(`推送（${rule.name}）：${result.line}`);
+  return result;
+}
+
+/** 从整份配置里挑出指定的几个渠道。 */
+export function pickChannels(cfg: PushConfig, channels: PushChannel[]): PushConfig {
+  const out: PushConfig = { title: cfg.title };
+  for (const c of channels) {
+    if (c === 'customPost') {
+      if (cfg.customPost && cfg.customPost.length > 0) out.customPost = cfg.customPost;
+      continue;
+    }
+    const v = cfg[c];
+    if (v !== undefined && v !== null) {
+      // 逐渠道搬（键名与 PushConfig 一致）
+      (out as Record<string, unknown>)[c] = v;
+    }
+  }
+  return out;
+}

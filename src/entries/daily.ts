@@ -63,6 +63,7 @@ import {
   drain,
   makeStore,
   makeTransport,
+  notify,
   taskDeps,
 } from './shared.ts';
 import type { TaskPayload } from './shared.ts';
@@ -344,6 +345,24 @@ register_cron(
     for (const line of r.detail) {
       if (line.includes('失败')) warn(`  · ${line}`);
     }
+
+    // ── 推送：挂在**一次运行结束**上（不是每条日志推一次）──
+    // 正文 = 这次的结果 + **失败的那几步**。带上失败的那几步是必须的：
+    // 否则用户收到「有失败」还得回界面翻是哪一步。
+    const bad = r.detail.filter((l) => l.includes('失败'));
+    notify(
+      store,
+      transport,
+      'daily',
+      `日常：${r.ok ? '跑完了' : '有失败'}`,
+      [
+        r.note,
+        '',
+        ...r.detail.map((l) => `· ${l}`),
+        ...(bad.length > 0 ? ['', '失败的那几步在上面（带 · 的行）'] : []),
+      ].join('\n'),
+      !r.ok,
+    );
   },
   { budget_ms: BUDGET_MS },
 );
