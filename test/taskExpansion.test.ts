@@ -77,7 +77,9 @@ test('⚠ 备份已开（`true`）⇒ **不传文件**，直接去领', () => {
   const r2 = runExpansionStep(deps);
   assert.equal(r2.ok, true, r2.note);
   assert.match(r2.note, /100/);
-  assert.equal(sent[1]!.url.includes('?'), false, '⚠ 裸 GET —— 一个查询参数都不许有');
+  // ⚠ **必须带这个参数**：真机实测裸 GET 回 404、带 `?acceptDate=` 才 200。
+  //   抓包 §3.6.6 那条"别写成 ?acceptDate="被真机推翻了（见 F-021）。
+  assert.match(sent[1]!.url, /\?acceptDate=/, '参数必须在（空值也行）—— 裸 GET 会 404');
 });
 
 test('⚠ 未开启备份（`false`）⇒ 起上传；上传三枪走完后再复查', () => {
