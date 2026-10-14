@@ -308,3 +308,30 @@ test('⚠ 余额字段是 `total`（真机实测；写成 `point` 的现象是"�
   assert.match(out.note, /9188/, `该读到 total=9188：${out.note}`);
   assert.equal(store.getState('mcloud.exchange.order.baseline'), '9188', '基准要落库（⑥ 靠它算差值）');
 });
+
+
+test('⚠ 判不了（缺 `limit`）⇒ **也不发** —— 放宽等于把"不确定"当成"可以花豆"', () => {
+  const store = mkStore();
+  const { transport, sent } = upstream({
+    exchangeList: { code: 0, result: { g1: [{ prizeId: 42, prizeName: '季卡', pOrder: 880 }] } },
+  });
+  startOrder(deps(store, transport), '季卡');
+  const out = runOrderStep(deps(store, transport));
+  assert.equal(out.ok, false);
+  assert.match(out.note, /判不了/);
+  assert.equal(sent.length, 1, '只该有那次只读清单');
+});
+
+test('判据回到"**只有 ok 才走**"：四档否定各拦一次', () => {
+  for (const [limit, word] of [[1, '明日'], [2, '已兑'], [4, '已兑'], [9, '判不了']] as const) {
+    const store = mkStore();
+    const { transport, sent } = upstream({
+      exchangeList: { code: 0, result: { g1: [{ prizeId: 42, prizeName: '季卡', limit, pOrder: 880 }] } },
+    });
+    startOrder(deps(store, transport), '季卡');
+    const out = runOrderStep(deps(store, transport));
+    assert.equal(out.ok, false, `limit=${limit} 该被拦住`);
+    assert.match(out.note, new RegExp(word), `limit=${limit}：${out.note}`);
+    assert.equal(sent.length, 1, `limit=${limit} 不该有第二枪`);
+  }
+});

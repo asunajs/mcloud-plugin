@@ -5508,7 +5508,7 @@ function runOrderStep(deps) {
     const p = pickPrize(prizes, query);
     if (!p) return done(`${label}：清单里没有「${query}」—— 这一单不做（名字要**精确**匹配）`, false);
     const verdict = verdictOf(p);
-    if (p.limit !== void 0 && p.limit !== LIMIT_AVAILABLE) {
+    if (verdict !== "ok") {
       return done(`${label}：${p.name} 现在不能兑（${VERDICT_TEXT[verdict]}），不发下一枪`, false);
     }
     const prizeId = num(p.prizeId);
