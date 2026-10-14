@@ -15,9 +15,10 @@
   "devDependencies": {
     "@types/node": "^22.10.0",
     "esbuild": "^0.25.0",
+    "fast-png": "^8.0.0",
     "typescript": "^5.7.0"
   },
   "dependencies": {
-    "fast-png": "^8.0.0"
+    "fflate": "^0.8.3"
   }
 }
