@@ -59,3 +59,14 @@ test('样式表里没有指向不存在 class 的孤儿规则（改名留下的�
   const orphan = [...new Set(idSelectors)].filter((id) => !declared.has(id) && !dynamic.has(id));
   assert.deepEqual(orphan, [], `样式里引用了不存在的 id：${orphan.join(', ')}`);
 });
+
+test('看板必须挂在**真读数**那个接口上（读错接口 ⇒ 它永远空着，而且看着像"没数据"）', () => {
+  // ⚠ 2026-10-14 实机踩过：看板原本读 `/api/matrix`，而那个接口是 **App 任务矩阵**
+  //   （`{"groups":[{"group":"new","reading":null}]}`）⇒ 渲染出来永远是空的。
+  //   真正的任务读数在 `/api/groups`（`lastError` + `recent`）。
+  assert.ok(/lastGroups = \w+/.test(js), '`loadGroups` 里要把响应存下来（看板的数据源）');
+  assert.ok(/const d = lastGroups/.test(js), '`renderBoard` 要从 `lastGroups` 取数据');
+  assert.ok(!/const d = lastMatrix/.test(js), '不许再读那个读错接口的老变量');
+  // 数字是从读数**文字**里抽的（不给 30 个任务各写适配器）
+  assert.ok(/function numbersInText/.test(js), '要有"从文字里抽数字"那一层');
+});
