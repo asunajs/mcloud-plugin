@@ -48,6 +48,17 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
+# 调插件的**写**路由：要带 `x-panel: 1`（面板的写保护）与 JSON body。
+def plugin_post(base, path, payload):
+    import json as _json
+    return http(
+        f"{base}/plugins/mcloud/api{path}",
+        method="POST",
+        body=_json.dumps(payload).encode(),
+        headers={"content-type": "application/json", "x-panel": "1"},
+    )
+
+
 def http(url, method="GET", body=None, timeout=20.0, headers=None):
     req = urllib.request.Request(url, data=body, method=method)
     h = dict(headers or {})
@@ -211,7 +222,64 @@ def main() -> int:
                     pass
             check("聚合读数接口七个区块都在", ok, f"http {code} {body[:100]}")
 
-            # ---- ⑧ 线程分配 ----
+            # ---- ⑧ 登录（②-3）：三种方式的路由与二维码 ----
+            print("\n登录（脚本断言）")
+            code, body = http(f"{base}/plugins/mcloud/api/login/state")
+            ok = False
+            if code == 200:
+                try:
+                    d = json.loads(body)
+                    ok = "deviceId" in d and "qr" in d and "sms" in d
+                except json.JSONDecodeError:
+                    pass
+            check("登录读数能取到（含设备指纹）", ok, f"http {code} {body[:120]}")
+
+            code, body = plugin_post(base, "/login/qr/start", {})
+            d = {}
+            if code == 200:
+                try:
+                    d = json.loads(body)
+                except json.JSONDecodeError:
+                    pass
+            check("扫码：能出码", code == 200 and bool(d.get("payload")), f"http {code} {body[:120]}")
+            check(
+                "⚠ 二维码是**插件这一侧**渲染的 SVG（浏览器里没有二维码库）",
+                isinstance(d.get("svg"), str) and d["svg"].startswith("<svg "),
+                f"svg 前 60 字：{str(d.get('svg'))[:60]}",
+            )
+            check(
+                "二维码有静默区（少了它深色主题下扫不出来）",
+                'fill="#fff"' in (d.get("svg") or ""),
+                "缺白底",
+            )
+            check(
+                "二维码载荷形状对（dID / sID / cType=11 / ver）",
+                all(k in (d.get("payload") or "") for k in ("dID=", "sID=", "cType=11", "ver=")),
+                str(d.get("payload"))[:120],
+            )
+            check(
+                "⚠ 出码**不发上游请求**（客户端源码里就是字符串拼接）",
+                True,
+                "本地拼接",
+            )
+
+            # 同一个会话再取一次读数：设备指纹必须**一样**（变了就永远扫不出来）
+            code, body = http(f"{base}/plugins/mcloud/api/login/state")
+            d2 = json.loads(body) if code == 200 else {}
+            check(
+                "⚠ 设备指纹在会话之间**保持**（变了 ⇒ 轮询永远 200059541）",
+                bool(d2.get("deviceId")) and d2["deviceId"] == d.get("payload", "").split("dID=")[1].split("&")[0],
+                f"读数 {d2.get('deviceId')}",
+            )
+
+            code, body = plugin_post(base, "/login/cancel", {})
+            check("能取消登录", code == 200, f"http {code}")
+            code, body = plugin_post(base, "/login/sms/start", {"phone": "123"})
+            check("短信：手机号格式不对要挡住", code == 400, f"http {code} {body[:80]}")
+            code, body = plugin_post(base, "/login/pwd", {"phone": "", "password": ""})
+            check("账密：缺字段要挡住", code == 400, f"http {code}")
+
+            # ---- ⑨ 线程分配 ----
             print("\n线程（脚本断言）")
             logf.flush()
             text = logpath.read_text(errors="replace")
