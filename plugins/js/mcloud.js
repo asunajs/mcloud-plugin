@@ -3643,7 +3643,11 @@ function parsePrize(raw) {
     monthLimit: parseMonthLimit(o.probability2),
     received: asInt4(o.receiveQuantity ?? o.receive_quantity),
     groupId: asInt4(o.groupId ?? o.group_id),
-    price: asInt4(o.price),
+    // ⚠⚠ 价格是 **`pOrder`**（不是 `price`）—— 而且同一份响应里 `POrder` 与 `pOrder`
+    // **两种拼法并存**，只读一个键的写法会把一部分商品的价格判成"没给"，
+    // 于是"余额够不够"那道判断对那几件**恒假**（看着像"没配置价格"，其实是不检查就下单）。
+    // 逐字照 mcloud 的 `parse_price`：小写先试，大写兜底。
+    price: asInt4(o.pOrder) ?? asInt4(o.POrder),
     limit: asInt4(o.limit),
     count: asInt4(o.count),
     totalCount: asInt4(o.totalCount ?? o.total_count),
@@ -5483,24 +5487,11 @@ function runOrderStep(deps) {
       body: void 0
     });
     if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? "未知失败"}` };
-    let prizes = [];
-    try {
-      const env = digResult(res.text);
-      const groups = env;
-      for (const k of Object.keys(groups)) {
-        const g = groups[k];
-        if (g && typeof g === "object") {
-          const list = g.prizeList ?? g.prizes;
-          if (Array.isArray(list)) prizes.push(...list);
-        }
-      }
-    } catch (e) {
-      return { ok: false, note: `${label}：清单解析不了（${e instanceof Error ? e.message : String(e)}）` };
-    }
+    const { prizes } = parseExchangeList(digResult(res.text));
     const p = pickPrize(prizes, query);
     if (!p) return done(`${label}：清单里没有「${query}」—— 这一单不做（名字要**精确**匹配）`, false);
     const verdict = verdictOf(p);
-    if (verdict !== "ok" && p.limit !== LIMIT_AVAILABLE) {
+    if (p.limit !== void 0 && p.limit !== LIMIT_AVAILABLE) {
       return done(`${label}：${p.name} 现在不能兑（${VERDICT_TEXT[verdict]}），不发下一枪`, false);
     }
     const prizeId = num(p.prizeId);
