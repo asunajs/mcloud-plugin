@@ -6229,6 +6229,16 @@ function createListener(o) {
 var STATE_LISTEN = "mcloud.live.listen";
 var STATE_WS_BASE = "mcloud.live.ws_base";
 var STATE_WS_HEARTBEAT = "mcloud.live.ws_heartbeat_reply";
+var STATE_LISTEN_ROOM = "mcloud.live.listen_room";
+function loadListenRoom(store2) {
+  const v = (store2.getState(STATE_LISTEN_ROOM) ?? "").trim();
+  if (v === "") return void 0;
+  const n = Number.parseInt(v, 10);
+  return Number.isFinite(n) && n > 0 ? n : void 0;
+}
+function saveListenRoom(store2, v, nowIso) {
+  store2.setState(STATE_LISTEN_ROOM, v.trim(), nowIso);
+}
 var DEFAULT_WS_HEARTBEAT = "h";
 function loadWsHeartbeat(store2) {
   const v = store2.getState(STATE_WS_HEARTBEAT);
@@ -6290,8 +6300,11 @@ function listenerIdle(st, nowMs) {
   return void 0;
 }
 var current;
+function hbPolicyOf(v) {
+  return v === "h" ? "reply" : "none";
+}
 function parseHeartbeatReply(v) {
-  return v === "" ? void 0 : v;
+  return hbPolicyOf(v) === "reply" ? v : void 0;
 }
 function listenerFor(deps, st, nowMs, opts) {
   const handle = st.handle ?? -1;
@@ -6418,21 +6431,25 @@ function roomsStep2(deps, st, nowMs) {
   }
   const merged = mergeRooms(groups);
   void nowMs;
-  const anchorLive = koulingRooms(merged);
-  if (anchorLive.length === 0) {
+  const forced = loadListenRoom(deps.store);
+  const chosen = forced !== void 0 ? forced : koulingRooms(merged)[0]?.id;
+  if (chosen === void 0) {
     st.step = "done";
     const coolMs = idleCooldownMs(deps, Date.parse(deps.nowIso));
     st.nextCheckAtMs = Date.parse(deps.nowIso) + coolMs;
     st.closedReason = "那个主播没在播";
     st.finishedAt = deps.nowIso;
-    st.note = coolMs > IDLE_RECHECK_MS ? `门关着（合并后 ${merged.length} 间房）—— 按日程睡到下一场之后（${Math.round(coolMs / 6e4)} 分钟）` : `门关着（合并后 ${merged.length} 间房）—— 隔 ${Math.round(coolMs / 6e4)} 分钟再看`;
+    st.note = forced !== void 0 ? `指定的房间 ${forced} 不在这次探到的 ${merged.length} 间房里（诊断口子）` : coolMs > IDLE_RECHECK_MS ? `门关着（合并后 ${merged.length} 间房）—— 按日程睡到下一场之后（${Math.round(coolMs / 6e4)} 分钟）` : `门关着（合并后 ${merged.length} 间房）—— 隔 ${Math.round(coolMs / 6e4)} 分钟再看`;
     persist(deps, st);
     return { ok: true, note: st.note };
   }
-  st.roomId = anchorLive[0]?.id;
+  st.roomId = chosen;
   st.step = "userToken";
   persist(deps, st);
-  return { ok: true, note: `门开着：房间 ${st.roomId}，接着取 WS 凭据` };
+  return {
+    ok: true,
+    note: forced === void 0 ? `门开着：房间 ${st.roomId}，接着取 WS 凭据` : `诊断口子：直接听指定的房间 ${st.roomId}，接着取 WS 凭据`
+  };
 }
 function userTokenStep(deps, st) {
   const base = loadGateBaseOf(deps.store);
@@ -6611,6 +6628,7 @@ function listenStep(deps, st, nowMs, windowMs) {
     }
     if (frame.type !== "text") continue;
     st.frames += 1;
+    if (frame.data === "h") st.sockjsHb = (st.sockjsHb ?? 0) + 1;
     try {
       for (const bytes of sockjsDataFrames(frame.data)) {
         const cmd = decodeMsync(bytes).command;
@@ -6633,6 +6651,7 @@ function listenStep(deps, st, nowMs, windowMs) {
       }
     }
     if (actions.closed !== void 0) {
+      if (actions.closed.includes("SockJS 心跳帧")) continue;
       endReason = actions.closed;
       break;
     }
@@ -6725,7 +6744,7 @@ function loadGateBaseOf(store2) {
 function listenReadingLine(st) {
   if (st === null) return "还没听过";
   if (st.step === "listen") {
-    return `听着（帧 ${st.frames}、弹幕 ${st.danmakuFrames}、口令 ${st.codes.length}、回执 ${st.serverAcks ?? 0}` + (st.decodeFail ? `、认不出的帧 ${st.decodeFail}` : "") + "）";
+    return `听着（帧 ${st.frames}、弹幕 ${st.danmakuFrames}、口令 ${st.codes.length}、回执 ${st.serverAcks ?? 0}` + (st.sockjsHb ? `、h 帧 ${st.sockjsHb}` : "") + (st.decodeFail ? `、认不出的帧 ${st.decodeFail}` : "") + "）";
   }
   if (st.step === "done") return st.note ?? "这一轮结束";
   return `准备中（${st.step}）`;
@@ -8587,6 +8606,8 @@ function mcloudRoutes(deps) {
         wsBase: loadWsBase(deps.store),
         // 收到 SockJS 心跳帧 `h` 回什么（空=不回）。默认 `h`（2026-10-14 真机验过）。
         wsHeartbeat: loadWsHeartbeat(deps.store) || "(不回)",
+        // 听哪一间房的**诊断口子**（空 = 按主播昵称选）。见 liveListen.loadListenRoom 的注释。
+        listenRoom: loadListenRoom(deps.store) ?? 0,
         // 进房间那一台（videoim.cmcc-cs.cn:20103，HTTPS）—— **第三个口子**：
         // 与上面两台 http 主机、以及带端口的 wss 主机都不是同一个。
         imBase: loadImBase(deps.store) || "(真主机)",
@@ -8654,7 +8675,16 @@ function mcloudRoutes(deps) {
           }
           saveWsHeartbeat(deps.store, raw, deps.now());
           deps.log(raw === "" ? "读到 SockJS 心跳帧 h 时**不回**" : "读到 h 时回一帧 h");
-          out.wsHeartbeat = raw === "" ? "(不回)" : "h";
+          out.wsHeartbeat = raw === "" ? "(不回)" : raw;
+        }
+        if ("listenRoom" in body) {
+          const raw = String(body.listenRoom ?? "").trim();
+          if (raw !== "" && !/^\d+$/.test(raw)) {
+            return json(400, { error: "listenRoom 要给房间号（纯数字）或空串（= 按主播昵称选）" });
+          }
+          saveListenRoom(deps.store, raw, deps.now());
+          deps.log(raw === "" ? "听弹幕：恢复按主播昵称选房" : `听弹幕：诊断口子 —— 只听房间 ${raw}`);
+          out.listenRoom = raw === "" ? "0" : raw;
         }
         if ("listenSeconds" in body) {
           const n = Number.parseInt(String(body.listenSeconds), 10);
@@ -8667,7 +8697,7 @@ function mcloudRoutes(deps) {
         }
         if (Object.keys(out).length === 0) {
           return json(400, {
-            error: "要传 baseUrl / liveUrl / gateBase / wsBase / imBase / wsHeartbeat / listenSeconds（清空就传空串）"
+            error: "要传 baseUrl / liveUrl / gateBase / wsBase / imBase / wsHeartbeat / listenRoom / listenSeconds（清空就传空串）"
           });
         }
         return json(200, out);
