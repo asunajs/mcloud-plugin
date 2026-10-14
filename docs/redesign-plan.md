@@ -175,8 +175,15 @@
 
 ### 阶段 ② 插件骨架（仓库 `mcloud-plugin`，能真跑起来）
 
-- [ ] ②-1 拆成 4 个插件：`mcloud`（路由/登录/设置/读数）· `mcloud-daily` ·
-      `mcloud-exchange` · `mcloud-live`（前缀都是 `mcloud` ⇒ 面板聚成一块）
+- [x] ②-1 拆成 4 个插件　✅ `66238d5`
+      `mcloud`（路由/登录/设置/读数，**无 cron**）· `mcloud-daily` ·
+      `mcloud-exchange` · `mcloud-live`，后三个各 `worker_hint('exclusive')`。
+      **25 条 → 3 条**：日常（原 14 条）· 兑换（原 2 条）· 直播（原 5 条）。
+      核心原语 `drain()`（`src/entries/shared.ts`）把「一次一步」的状态机
+      在一次触发里跑到走完。`selftest` 从 cron 改成路由，`diag` 删掉。
+      验收 `scripts/split_check.py`：21 项断言对着真面板跑，全过
+      （**面板上恰好 3 条任务且就是「日常/兑换/直播」**）。
+      ⚠ 未做：README 还在描述旧的 25 条结构，需重写（② 收尾时做）。
 - [ ] ②-2 保留协议层不动：`crypto/*` · `client/h5/sign/envelope/rand/smid` ·
       各任务的**协议逻辑** · `mock/upstream.mjs` + 黄金向量
 - [ ] ②-3 登录三种（扫码/短信/账密）+ 多账号 + 设备号
@@ -239,3 +246,4 @@
 | 2026-10-15 | ①-3 插件声明的侧边栏入口 | `rust-plugin-panel` `8cdaf77` |
 | 2026-10-15 | ①-5 `smtp_send`（发邮件） | `rust-plugin-panel` `b8643c1` |
 | 2026-10-15 | ①-6 按任务/路由声明执行预算（**计划外，②的硬前提**） | `rust-plugin-panel` `0dbbe8a` |
+| 2026-10-15 | ②-1 拆成 4 个插件（25 条任务 → 3 条） | `mcloud-plugin` `66238d5` |
