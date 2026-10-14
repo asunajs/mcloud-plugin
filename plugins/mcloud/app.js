@@ -594,10 +594,7 @@ async function autoNow() {
  *  —— 一个"从头跑到尾"的调用会在第 2、3 个请求处被判超时，而那时**上游的账已经记了**。
  *  每次 HTTP 调用一个上游请求，这是这套架构的纪律。 */
 async function drawNow() {
-  if (!confirm('领小红花会**真的往你的账号里写**（记账、留活动足迹）。同一条口令重领只会回「已兑换过」，不会重复发奖。确定现在领？')) {
-    return;
-  }
-  const btn = $('live-draw');
+    const btn = $('live-draw');
   btn.disabled = true;
   const hint = $('live-draw-hint');
   let steps = 0;
@@ -915,11 +912,6 @@ const RUN_ORDER = [
 ];
 
 async function runAll() {
-  // ⚠ 这是**会写进账号**的动作（签到、领豆、领小红花），所以点之前说清后果 ——
-  //   用户看不懂"跑一遍"这种词，但看得懂"会写进你的账号"（F-043 那七条里的一条）。
-  if (!confirm('一键日常任务会做这些：签到、领AI豆、领口令小红花、查余额与奖品。\n其中领取会**写进你的账号**（重复领只会回「已领过」，不会重复发）。现在做？')) {
-    return;
-  }
   const btn = $('run-all');
   btn.disabled = true;
   const old = btn.textContent;
