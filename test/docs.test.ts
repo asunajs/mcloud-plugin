@@ -134,6 +134,17 @@ test('README 说的任务数，与 `split_check` 断言的条数一致', () => {
 
 // ── ⑤ 用词规则要**可执行**（不然它只是一张纸） ──────────────────────
 
+test('⚠ UI 里不许有**字面 Markdown 标记**（HTML 不渲染它，会原样显示）', () => {
+  // 实测抓到的：`<p class="hint">「提前多少毫秒发」是**你到云端的传输耗时**。</p>`
+  // —— 页面上真的显示出了那四个星号。HTML 不是 Markdown，`**` 就是两个字符。
+  // ⚠ 截图之前看不出来（静态测试不会"看"页面）—— 这类缺陷只有渲染才暴露。
+  const html = readFileSync(new URL('../plugins/mcloud/index.html', import.meta.url), 'utf8');
+  // ⚠ HTML 注释里的 `**` 是**给维护者看的**文档，不算（它不会被渲染）
+  const visible = html.replace(/<!--[\s\S]*?-->/g, '');
+  const hits = visible.match(/\*\*[^*\n]{1,60}\*\*/g) ?? [];
+  assert.deepEqual(hits, [], `可见文本里出现了字面 Markdown：${hits.join(' / ')}`);
+});
+
 test('⚠ 界面里不许出现用词规则禁掉的那些词', () => {
   // `docs/ui-wording.md` 写了规则，但规则写成文档就只是"一张纸" ——
   // 这一版的新界面就是**规则写完才做的**，于是当场踩了四处（`上游` ×4）。
