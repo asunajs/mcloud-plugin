@@ -222,6 +222,9 @@ register_cron('task-list', '0 8 * * *', (p) => {
 //
 // 调度照 mcloud 的语义：签到流程一早在 8 点前后，查询类挪到稍晚、避免与动作抢上游。
 // 每条任务的 `lateMs` 都进 payload（面板给的），底座按「catch-up / skip」语义处理。
+/** 每个任务"上一次记过的读数"，用来把空闲时的重复日志压掉（见 `makeRunner` 里的说明）。 */
+const lastLogged = new Map<string, string>();
+
 function makeRunner(
   name: string,
   run: (deps: {
@@ -259,8 +262,21 @@ function makeRunner(
         ok: out.ok,
         note: out.note,
       });
-      if (out.ok) log(`${name}：${out.note}`);
-      else warn(`${name} 失败：${out.note}`);
+      // ⚠ 只在**读数变了**的时候记日志（2026-10-14 实机 soak 发现的问题）：
+      //   `live-listen` 是 `@every 10s`，而"门关着、等下一次检查"这段时间里它每 10 秒
+      //   醒一次、每次都返回**同一句**读数 —— 于是一个 5 分钟的空闲窗口能刷 30 行
+      //   **一模一样**的日志，把真事件（真探门、抓到口令、收尾原因）埋掉。
+      //   实机日志里"17:39:29 到 17:44:19 全是同一句"就是这个。
+      //
+      //   判据只看 note 文本：变了就记（含 `ok` 翻转）。`recordRun` 照旧每次都写
+      //   （那是任务历史，该全量留着）。
+      const last = lastLogged.get(name);
+      const now = `${out.ok ? '' : '失败：'}${out.note}`;
+      if (last !== now) {
+        lastLogged.set(name, now);
+        if (out.ok) log(`${name}：${out.note}`);
+        else warn(`${name} 失败：${out.note}`);
+      }
     } catch (e) {
       // 各任务设计上不抛；真抛了说明是插件自己的 bug，必须让它可见
       error(`${name} 抛异常（这是插件 bug）：${e instanceof Error ? e.message : String(e)}`);
@@ -384,7 +400,15 @@ register_cron('live-auto', '@every 5m', (p) => {
     return { ok: false, note: `直播自动定时抛异常：${e instanceof Error ? e.message : String(e)}` };
   }
 });
-register_cron('live-draw', '*/5 7-23 * * *', (p) => {
+// ⚠ 从"每 5 分钟"改成"每 30 秒"（2026-10-14）：这条链就是「听到就领」的**衔接器** ——
+// 听弹幕抓到的口令进池（来源 `danmaku`），这个任务下一次醒来就去领。
+// 5 分钟那一版意味着"听到之后最多 5 分钟才动手"，而口令是**当场有效**的东西
+// （mcloud 的 `live-room` 就是听到即领 —— 它没有这一层延迟）。
+//
+// 便宜的理由：它的处理器在"没口令可领 / 上一轮刚跑完"时**一个请求都不发**就返回 idle
+// （见 liveDraw.ts 开头那两段；`*/5` 那版也是这个道理，只是没必要等那么久）。
+// 顺带把"一条口令的六步链"从 5 分钟×N 步压到 30 秒×N 步。
+register_cron('live-draw', '@every 30s', (p) => {
   try {
     const out = runLiveDraw({
       store,
