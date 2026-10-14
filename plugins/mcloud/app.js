@@ -923,6 +923,7 @@ async function runAll() {
       const name = RUN_ORDER[i];
       // ⚠ 进度里**不许出现任务名**（`multiple`/`cloud-snapshot` 是内部叫法，见 docs/ui-wording.md）
       btn.textContent = `正在处理 ${i + 1}/${RUN_ORDER.length}…`;
+      $('action-hint').textContent = '正在一条条做，别关页面 —— 做完这里会写结果。';
       const d = await req(`/api/tasks/mcloud/${name}/run`, { method: 'POST' });
       if (!d.ok) {
         // 单个失败不停 —— 用户要的是"一遍过完"，具体哪条失败在下面看
@@ -931,6 +932,7 @@ async function runAll() {
       await new Promise((r) => setTimeout(r, 250));
     }
     showError('');
+    $('action-hint').textContent = '做完了。下面的「看板」和「口令」里能看到结果。';
     await loadGroups();
     await loadLive();
   } finally {
