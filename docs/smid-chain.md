@@ -155,3 +155,34 @@ private_id(uid) = md5_hex(uid)[0..16]
 `API_HOST = https://slw.h5cmpassport.com:9090`、`API_PATH = /deviceprofile/v4`、
 `ORGANIZATION = FXlyfmWg2AzwbrxDKSv5`、`APP_ID = "default"`、`OK_CODE = 1100`、
 `DEVICE_ID_PREFIX = "B"`；上报体 `{appId, organization, ep, data, os:"web", encode:5, compress:2}`。
+
+---
+
+## 九、DES 那张表**别凭记忆抄** —— 有权威来源
+
+DES 的 S 盒是 512 个任意常量，**手抄错一个字节**的表现是"某个字段解出来是乱码"，
+而上游只会回一句参数错误。所以表从**权威来源**取，不从记忆取：
+
+```
+mcloud/Cargo.lock:450  →  des 0.8.1
+~/.cargo/registry/src/index.crates.io-*/des-0.8.1/src/consts.rs
+                        →  SHIFTS[16]、SBOXES[[u8;64];8]
+~/.cargo/registry/src/index.crates.io-*/des-0.8.1/src/des.rs
+                        →  IP / FP / E / P / PC1 / PC2（以宏参数形式内联）
+```
+
+⚠ **它的 S 盒是"重排过"的**（`consts.rs` 第 3-9 行的注释写明了）：
+标准表用输入 6 位里的**第 1 与第 6 位选行**、中间 4 位选列；
+这个 crate 把行/列换成了**高 2 位选行、低 4 位选列** ⇒ 可以直接用 6 位值索引。
+**照抄时要连这个约定一起抄** —— 混着用（用重排的表配标准的索引）出来的是
+"长度对、内容错"的密文，而它只在跟已知向量对拍时才暴露。
+
+### 验收：用 **FIPS 的已知答案**，不用"跟我自己算的一样"
+
+```
+key = 0x133457799BBCDFF1   plain = 0x0123456789ABCDEF
+                        ⇒ cipher = 0x85E813540F0AB405
+```
+
+⚠ Node 里 `createCipheriv('des-ecb', …)` 在较新版本可能因 legacy provider 而不可用 ⇒
+**别把测试押在它上面**，直接钉上面这条 KAT（再加 FIPS 81 的 CBC 向量更稳）。
