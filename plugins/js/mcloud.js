@@ -5662,7 +5662,7 @@ function runOrderStep(deps) {
       if (typeof v === "number") after = v;
     } catch {
     }
-    if (before === "" || after === void 0) {
+    if (!before || after === void 0) {
       return done(`${label}：拿不到余额差（基准「${before || "缺"}」/ 现在「${after ?? "缺"}」）⇒ 成交与否**不知道**，如实报`, false);
     }
     const delta = Number(before) - after;
