@@ -56,8 +56,13 @@ import type { Store } from '../store/types.ts';
 /** 副作用等级。顺序即"从安全到危险"，界面按它排序/配色。 */
 export type Risk = 'none' | 'ledger' | 'write-cloud' | 'irreversible' | 'spend';
 
-/** 需要的凭据。 */
-export type Dep = 'jwt' | 'activity-token' | 'basic+jwt' | 'websocket' | 'slider';
+// 需要的凭据。
+//
+// ⚠ `basic` 与 `basic+jwt` **不是一回事**：前者只要那份**原生 Authorization**
+// （换票用的那一份），后者两样都要。2026-10-14 加 `basic` 是因为 `live-gate` 出现了
+// 真实的第一例"只要原生凭据"—— 拿 `basic+jwt` 标它会让界面说"它需要票"，
+// 而那条链**一个 `jwttoken` 都不发**（它换的是**直播侧**另一套 JWT）。
+export type Dep = 'jwt' | 'activity-token' | 'basic' | 'basic+jwt' | 'websocket' | 'slider';
 
 /** 错过触发点时的兜底策略（与面板的 `lateMs` 配合，见 base.ts 的跳过策略）。 */
 export type Missed = 'catch-up' | 'skip';
@@ -224,6 +229,12 @@ export const TASK_META: TaskMeta[] = [
   // 抓主页走的是原项目 `xiaohongshu.ts` 的公开 GET + 逐字移植的提取器（41 条黄金向量守着）。
   // 领小红花那一步（写、会入群足迹）**仍然没做** —— 所以 risk 维持 `ledger` 不变。
   { name: 'live-room', title: '直播口令（只看）', group: 'activity', kind: 'Query', risk: 'none', missed: 'catch-up', deps: [], batch: false, hidden: false, implemented: true, evidence: 'partial', note: '抓口令发布方的**公开**主页 + 列出口令（**不需要凭据**）；口令要人给（那边无法鉴权）' },
+  // 门（直播日程）：只读地问上游「今天开播了吗 / 下一场几点」。
+  // ⚠ 它**不需要**会话（云盘那套），要的是**原生凭据**（换直播侧 JWT 用）——
+  //   所以 deps 是 ['auth'] 而不是 ['jwt']。缺凭据时它如实失败并说清缺什么。
+  // 证据等级 `captured`：mcloud 那边这一段是**实证**的（只读探针主动走过一遍，
+  //   出处 `docs/capture/app-live-redflower-samples.txt` §5.3），与 WS 那半段分开标。
+  { name: 'live-gate', title: '直播日程（门）', group: 'activity', kind: 'Query', risk: 'none', missed: 'catch-up', deps: ['basic'], batch: false, hidden: false, implemented: true, evidence: 'captured', note: '只读：①②换直播侧 JWT（SSO 只活几分钟 ⇒ 两发同一次调用）+ ③两个页签各一发。结果落**口令池**（日程/门/场次）与界面读数' },
   // 写那半。**默认关**（`mcloud.live.claim_enabled`），开关与二次确认都在插件界面上。
   // 它虽然记账，但**基本幂等**：同一条口令再领一次回 `200112`（已兑换过），不会重复发奖。
   // 所以 risk 是 `ledger` 而不是 `irreversible`。

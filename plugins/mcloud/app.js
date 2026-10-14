@@ -254,6 +254,9 @@ async function loadLive() {
   //   · 每一条口令现在是什么状态（未知 / 有效 / 无效，无效的带原因）
   $('live-pool').innerHTML = renderPool(d.pool);
 
+  // ── 门（直播日程，只读）──
+  $('live-gate-rooms').innerHTML = renderGate(d.gate);
+
   // ── 写那半（领小红花）──
   const claim = d.claim || {};
   $('live-claim').checked = !!claim.enabled;
@@ -302,6 +305,31 @@ function renderPool(pool) {
   return esc(bits.join(' · ')) + (sessions ? ` · 见过 ${sessions} 场` : '') + list;
 }
 
+/** 门那一行：**只读**探针看到的日程。
+ *
+ *  ⚠ 措辞照读数里那句 `note` 来（它已经分好了三种情形：门开着 / 谁都没在播 /
+ *  有在播但不是那个主播）—— 界面**不许**自己再下结论。
+ *  ⚠ 预告场是这一行的**主要产出**：口令只在开播那一小时有效，而"今天几点开"
+ *  是预告给的（`expectStartTime`，**原样显示**，别解析成时间戳）。 */
+function renderGate(gate) {
+  if (!gate) return '<div class="hint">还没探过 —— 点「现在探一次」（只读，不需要口令）</div>';
+  const at = (gate.at || '').slice(11, 19);
+  const head = `看到 ${gate.rooms.length} 间房 · 在播 ${gate.liveCount} 间 · ${at}`;
+  const rows = (gate.rooms || [])
+    .map((r) => {
+      const state = r.status === 1 ? '在播' : r.status === 6 ? '回放' : '预告';
+      const when = r.expectStartTime ? ` <code>${esc(r.expectStartTime)}</code>` : '';
+      const mine = r.anchorNickname === '中国移动云盘' ? '' : ' <span class="dim">（不是那个主播）</span>';
+      return `<li><span class="dim">${state}</span> ${esc(r.title || '#' + r.roomId)}${when}${mine}</li>`;
+    })
+    .join('');
+  return (
+    `<div class="hint">${esc(head)}</div>` +
+    `<div class="hint">${esc(gate.note || '')}</div>` +
+    (rows ? `<ul class="ok-list">${rows}</ul>` : '')
+  );
+}
+
 async function toggleClaim() {  const on = $('live-claim').checked;
   if (on && !confirm('开启后 cron 会**自动**去领小红花（往账号里写）。确定开启？')) {
     $('live-claim').checked = false;
@@ -344,6 +372,36 @@ async function drawNow() {
     // 上限只是防死循环：9 + 口令数 + 余量。真到了说明状态机卡住了。
     if (steps > 40) {
       hint.textContent = `推了 ${steps} 步还没跑完，停下（${d.note || ''}）—— 状态可能卡住了`;
+      break;
+    }
+  }
+  btn.disabled = false;
+  await loadLive();
+}
+
+/** 现在探一次：与 `drawNow` 同一个形状 —— 浏览器循环调「推进一步」。
+ *
+ *  一次调用**最多两发**上游（handshake 步 ①② / rooms 步 ③③）：
+ *  SSO token 只活几分钟，①② 拆开必然过期（见 liveGateTask.ts 文件头）。
+ *  这条路**全是只读**，所以"多探几次"没有任何代价。 */
+async function probeGate() {
+  const btn = $('live-gate');
+  btn.disabled = true;
+  const hint = $('live-gate-hint');
+  let steps = 0;
+  for (;;) {
+    const d = await req('/plugins/mcloud/api/live/gate/step', { method: 'POST' });
+    if (d.error) {
+      showError('探测失败：' + d.error);
+      break;
+    }
+    hint.textContent = d.note || '';
+    if (!d.ok) showError(d.note || '这一步失败了');
+    else showError('');
+    steps += 1;
+    if (d.done) break;
+    if (steps > 6) {
+      hint.textContent = `推了 ${steps} 步还没完，停下（${d.note || ''}）`;
       break;
     }
   }
@@ -519,6 +577,26 @@ async function loadBase() {
   $('live-url-hint').textContent = lv
     ? (lv === lvDefault ? '当前抓发布方的小红书主页（默认）：' : '当前抓：') + lv
     : '还没配（任务会用默认主页）';
+
+  // 直播主机（门的两个主机 —— 一个口子，见 liveGateTask.loadGateBase）
+  const gb = d.gateBase || '';
+  const gbReal = gb === '(真主机)';
+  $('gate-base').value = gbReal ? '' : gb;
+  $('gate-base-hint').textContent = gbReal
+    ? '当前用真主机（user-njs.yun.139.com / v.cmcc-cs.cn）。指向本地 mock 时填 http://127.0.0.1:19040。'
+    : '当前指向：' + gb;
+}
+
+async function saveGateBase() {
+  const v = $('gate-base').value.trim();
+  const d = await req('/plugins/mcloud/api/config', { method: 'POST', body: { gateBase: v } });
+  if (!d.ok) {
+    showError('保存直播主机失败：' + d.error);
+    return;
+  }
+  showError('');
+  await loadBase();
+  await loadLive();
 }
 
 async function saveLiveUrl() {
@@ -560,6 +638,8 @@ $('base-save').addEventListener('click', saveBase);
 $('h5-save').addEventListener('click', saveH5Auth);
 $('h5-clear').addEventListener('click', clearH5);
 $('live-url-save').addEventListener('click', saveLiveUrl);
+$('gate-base-save').addEventListener('click', saveGateBase);
+$('live-gate').addEventListener('click', probeGate);
 $('live-save').addEventListener('click', saveLiveCodes);
 $('live-clear').addEventListener('click', clearLiveCodes);
 $('live-claim').addEventListener('change', toggleClaim);
