@@ -1398,6 +1398,39 @@ function runMsgPushObtain(deps) {
   return out;
 }
 
+// src/mcloud/accounts.ts
+var STATE_ACCOUNTS = "mcloud.accounts";
+var STATE_CURRENT_ACCOUNT = "mcloud.account.current";
+function loadAccounts(store2) {
+  const raw = store2.getState(STATE_ACCOUNTS);
+  if (raw === null || raw === void 0 || raw.trim() === "") return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const out = [];
+  for (const it of parsed) {
+    if (it === null || typeof it !== "object") continue;
+    const o = it;
+    if (typeof o.id !== "string" || typeof o.auth !== "string" || o.auth === "") continue;
+    out.push({
+      id: o.id,
+      label: typeof o.label === "string" && o.label !== "" ? o.label : o.id,
+      auth: o.auth,
+      addedAt: typeof o.addedAt === "string" ? o.addedAt : ""
+    });
+  }
+  return out;
+}
+function currentAccount(store2) {
+  const id = (store2.getState(STATE_CURRENT_ACCOUNT) ?? "").trim();
+  if (id === "") return void 0;
+  return loadAccounts(store2).find((a) => a.id === id);
+}
+
 // src/crypto/aes.ts
 function gfMul(a, b) {
   let r = 0;
@@ -2986,6 +3019,11 @@ function authFingerprint(sha256hex) {
 
 // src/mcloud/sessionExchange.ts
 var STATE_AUTH = "mcloud.h5.auth";
+function loadAuthRaw(store2) {
+  const cur = currentAccount(store2);
+  if (cur !== void 0) return cur.auth;
+  return store2.getState(STATE_AUTH) ?? "";
+}
 var STATE_EXCHANGE = "mcloud.h5.exchange";
 var STATE_JWT = "mcloud.h5.jwt";
 var STATE_DEVICE_ID = "mcloud.smid.deviceId";
@@ -3034,7 +3072,7 @@ function clearAuth(store2, nowIso) {
 }
 function runExchangeStep(deps) {
   const st = loadExchange(deps.store);
-  const auth = deps.store.getState(STATE_AUTH);
+  const auth = loadAuthRaw(deps.store) || null;
   if (!st || st.step === "done" || !auth) {
     return { ok: true, note: "没有待换票的任务（先去界面上贴一份原生凭据）", done: true };
   }
@@ -3170,7 +3208,7 @@ function failStep(deps, st, note2) {
 }
 var RETRY_AFTER_MS = 30 * 60 * 1e3;
 function needExchange(store2, nowMs) {
-  if (!store2.getState(STATE_AUTH)) return false;
+  if (loadAuthRaw(store2) === "") return false;
   if (jwtFresh(store2, nowMs)) return false;
   const st = loadExchange(store2);
   if (!st) return true;
@@ -3327,7 +3365,7 @@ function assertUsable(raw) {
 }
 var STATE_LAST = "mcloud.auth.refresh.last";
 function runAuthRefresh(deps, force = false, leadDays = DEFAULT_LEAD_DAYS) {
-  const raw = deps.store.getState(STATE_AUTH) ?? "";
+  const raw = loadAuthRaw(deps.store);
   if (raw === "") {
     return { ok: true, skipped: true, note: "没有原生凭据，谈不上续期（先贴一份）" };
   }
@@ -5070,7 +5108,7 @@ function earliestPreviewIn(rooms, onlyTarget, notBefore) {
 
 // src/mcloud/tasks/liveRoomRules.ts
 function accountOf(store2) {
-  const raw = store2.getState(STATE_AUTH) ?? "";
+  const raw = loadAuthRaw(store2);
   if (raw === "") return accountKey("");
   const seg = parseAuthorization(raw);
   return accountKey(seg?.phone ?? "");
@@ -5467,7 +5505,7 @@ function runLiveGate(deps) {
 }
 function handshake(deps, st, base) {
   const TASK = "live-gate";
-  const auth = deps.store.getState(STATE_AUTH) ?? "";
+  const auth = loadAuthRaw(deps.store);
   if (auth === "") {
     const note2 = "门要**原生凭据**（`Authorization`）：先去界面贴一份（见 docs/howto-session.md）";
     recordError(deps.store, TASK, note2, deps.nowIso);
@@ -6385,7 +6423,7 @@ function stepFail2(deps, st, note2) {
 }
 function handshakeStep(deps, st) {
   const base = loadGateBaseOf(deps.store);
-  const auth = deps.store.getState(STATE_AUTH) ?? "";
+  const auth = loadAuthRaw(deps.store);
   if (auth === "") {
     return stepFail2(deps, st, "听弹幕要**原生凭据**（`Authorization`）：先去界面贴一份");
   }
@@ -6500,7 +6538,7 @@ function roomBeatStep(deps, st, nowMs) {
   };
 }
 function applyStep(deps, st, nowMs) {
-  const auth = deps.store.getState(STATE_AUTH) ?? "";
+  const auth = loadAuthRaw(deps.store);
   const parsed = parseAuthorization(auth);
   if (parsed === null) return stepFail2(deps, st, "⑤ 进房间要手机号（`userName` 用 `cmlive_c_<手机>`）");
   if (st.chatRoomId === void 0 || st.accessToken === void 0) {
@@ -6524,7 +6562,7 @@ function applyStep(deps, st, nowMs) {
   };
 }
 function openStep(deps, st, nowMs) {
-  const auth = deps.store.getState(STATE_AUTH) ?? "";
+  const auth = loadAuthRaw(deps.store);
   const parsed = parseAuthorization(auth);
   if (parsed === null) {
     return stepFail2(deps, st, "WS 那一步要手机号（PROVISION 的 `guid.name` 用它）—— 凭据解不出来");
@@ -6598,7 +6636,7 @@ function listenStep(deps, st, nowMs, windowMs) {
     persist(deps, st);
     return { ok: true, note: "WS 句柄不在了（面板重启过？）⇒ 重新走一遍门" };
   }
-  const auth = deps.store.getState(STATE_AUTH) ?? "";
+  const auth = loadAuthRaw(deps.store);
   const parsed = parseAuthorization(auth);
   if (parsed === null || st.jwt === void 0 || st.chatRoomId === void 0) {
     return stepFail2(deps, st, "听的那一步缺凭据/票/聊天室号");

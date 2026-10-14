@@ -35,7 +35,7 @@
 
 import { fromBase64, fromUtf8, toBase64, utf8 } from '../crypto/bytes.ts';
 import { callRawText } from './client.ts';
-import { STATE_AUTH, loadJwt, startExchange } from './sessionExchange.ts';
+import { STATE_AUTH, loadAuthRaw, loadJwt, startExchange } from './sessionExchange.ts';
 import type { TaskDeps, TaskOutcome } from './tasks/base.ts';
 import type { BuiltRequest } from './h5.ts';
 
@@ -274,7 +274,7 @@ export const STATE_LAST = 'mcloud.auth.refresh.last';
 
 /** 续期一次。`force` 跳过判据（对应 mcloud CLI 的 `--force`）。 */
 export function runAuthRefresh(deps: TaskDeps, force = false, leadDays = DEFAULT_LEAD_DAYS): TaskOutcome {
-  const raw = deps.store.getState(STATE_AUTH) ?? '';
+  const raw = loadAuthRaw(deps.store);
   if (raw === '') {
     return { ok: true, skipped: true, note: '没有原生凭据，谈不上续期（先贴一份）' };
   }
