@@ -25,6 +25,7 @@ import { TASK_NAMES, STATE_LAST_TASKLIST } from './tasks/taskList.ts';
 import { groupView } from './groups.ts';
 import { hasBigInt, sandboxCaps } from './caps.ts';
 import { runAuthRefresh } from './authRefresh.ts';
+import { clearOrder, runOrderStep, startOrder } from './tasks/exchangeOrder.ts';
 import { MATRIX_GROUPS, readMatrix } from './tasks/appTaskMatrix.ts';
 import { VERDICT_TEXT, readExchangeList } from './tasks/exchangeList.ts';
 import {
@@ -345,6 +346,28 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
         });
         deps.log(`换票：${r.note}`);
         return json(200, { ...r, exchange: loadExchange(deps.store) });
+      },
+    },
+    {
+      // 兑换下单 —— **不可逆**（真扣豆）。起单只是写字（**不发请求**），
+      // 后面每次 `step` 走一步、发一枪。见 tasks/exchangeOrder.ts 的枪序。
+      path: `${base}/exchange/order`,
+      method: 'POST',
+      handler: (req) => {
+        const b = readBody(req) as { query?: unknown; action?: unknown };
+        const d = { store: deps.store, transport: deps.transport, nowIso: deps.now(), baseUrl: loadBaseUrl(deps.store) };
+        if (b.action === 'clear') {
+          clearOrder(d);
+          return json(200, { ok: true, note: '这一单已清掉' });
+        }
+        if (b.action === 'step') {
+          const r = runOrderStep(d);
+          deps.log(`兑换：${r.note}`);
+          return json(200, r);
+        }
+        const r = startOrder(d, typeof b.query === 'string' ? b.query : '');
+        deps.log(`兑换起单：${r.note}`);
+        return json(200, { ...r, queue: deps.store.getState('mcloud.exchange.order.step') ?? '' });
       },
     },
     {
