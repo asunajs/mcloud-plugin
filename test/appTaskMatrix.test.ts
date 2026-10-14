@@ -125,3 +125,25 @@ test('上游报错时如实失败，且**不推进游标**（下一轮还能重�
   assert.equal(out.ok, false);
   assert.equal(store.getState(STATE_GROUP_INDEX) ?? '0', '0', '失败了不该跳过这一组');
 });
+
+// ⚠ 真机形状（2026-10-14 实测）：`result` 是**按组名分键**的对象。
+//   这一条是"只跑单测发现不了"的典型 —— 原来只找 list/tasks/taskList/items，
+//   于是 8 个组全读成 0 条，而每条 note 都写着"成功"。
+test('⚠ `result` 按**组名分键**（真机形状）—— 组名对上才取得到条目', () => {
+  const real = {
+    day: [{ id: 106, marketname: 'sign_in_3', groupid: 'day', enable: 1, name: '手动上传一个文件' }],
+    month: [{ id: 607, groupid: 'month', enable: 1, name: '下月签到领惊喜福利' }],
+  };
+  const day = parseMatrix(real, 'day');
+  assert.equal(day.length, 1);
+  assert.equal(day[0]!.taskId, 106);
+  assert.equal(day[0]!.groupId, 'day');
+  const month = parseMatrix(real, 'month');
+  assert.equal(month[0]!.taskId, 607);
+  // ⚠ 空组是真的空（`group=new` 那条回 `result:{}`）—— 不是解析失败
+  assert.deepEqual(parseMatrix({}, 'new'), []);
+  // 组名对不上 ⇒ 取不到（不是"退回取第一个键" —— 那会把 day 的条目当成 month 的）
+  assert.deepEqual(parseMatrix(real, 'nope'), []);
+  // 兼容老形状（list/tasks/taskList/items）
+  assert.equal(parseMatrix({ list: [{ id: 1, enable: 1 }] }, 'day').length, 1);
+});
