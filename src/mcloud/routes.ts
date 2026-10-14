@@ -52,12 +52,14 @@ import {
   STATE_LISTEN_SECONDS,
   listenReadingLine,
   loadImBase,
+  loadListenRoom,
   loadListenSeconds,
   loadWsHeartbeat,
   loadListenState,
   loadWsBase,
   runLiveListen,
   saveImBase,
+  saveListenRoom,
   saveWsBase,
   saveWsHeartbeat,
 } from './tasks/liveListen.ts';
@@ -223,6 +225,8 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
           wsBase: loadWsBase(deps.store),
           // 收到 SockJS 心跳帧 `h` 回什么（空=不回）。默认 `h`（2026-10-14 真机验过）。
           wsHeartbeat: loadWsHeartbeat(deps.store) || '(不回)',
+          // 听哪一间房的**诊断口子**（空 = 按主播昵称选）。见 liveListen.loadListenRoom 的注释。
+          listenRoom: loadListenRoom(deps.store) ?? 0,
           // 进房间那一台（videoim.cmcc-cs.cn:20103，HTTPS）—— **第三个口子**：
           // 与上面两台 http 主机、以及带端口的 wss 主机都不是同一个。
           imBase: loadImBase(deps.store) || '(真主机)',
@@ -302,12 +306,24 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
           // ⚠ 只认这两档：`h`（默认，实测有效）与空（不回）。别让它变成"回任意字符串"——
           //   那是往一条协议连接里写自由文本，出错时的现象是"服务端把我们踢了"，
           //   而原因在日志里根本看不出来。
+          // 两档（2026-10-14 实测定下来）：`h`（回，默认）/ 空或 none（不回）。
+          // ⚠ 两档都**不**把 `h` 当收尾理由 —— 实测不回也活了 6 拍/90 秒。
           if (raw !== '' && raw !== 'h') {
-            return json(400, { error: "wsHeartbeat 只能是 \"h\"（默认）或 \"none\"（不回）" });
+            return json(400, { error: 'wsHeartbeat 只能是 "h"（默认）或 "none"（不回）' });
           }
           saveWsHeartbeat(deps.store, raw, deps.now());
           deps.log(raw === '' ? '读到 SockJS 心跳帧 h 时**不回**' : '读到 h 时回一帧 h');
-          out.wsHeartbeat = raw === '' ? '(不回)' : 'h';
+          out.wsHeartbeat = raw === '' ? '(不回)' : raw;
+        }
+
+        if ('listenRoom' in body) {
+          const raw = String(body.listenRoom ?? '').trim();
+          if (raw !== '' && !/^\d+$/.test(raw)) {
+            return json(400, { error: 'listenRoom 要给房间号（纯数字）或空串（= 按主播昵称选）' });
+          }
+          saveListenRoom(deps.store, raw, deps.now());
+          deps.log(raw === '' ? '听弹幕：恢复按主播昵称选房' : `听弹幕：诊断口子 —— 只听房间 ${raw}`);
+          out.listenRoom = raw === '' ? '0' : raw;
         }
 
         if ('listenSeconds' in body) {
@@ -322,7 +338,7 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
 
         if (Object.keys(out).length === 0) {
           return json(400, {
-            error: '要传 baseUrl / liveUrl / gateBase / wsBase / imBase / wsHeartbeat / listenSeconds（清空就传空串）',
+            error: '要传 baseUrl / liveUrl / gateBase / wsBase / imBase / wsHeartbeat / listenRoom / listenSeconds（清空就传空串）',
           });
         }
         return json(200, out);

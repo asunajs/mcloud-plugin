@@ -79,6 +79,28 @@ export const STATE_WS_BASE = 'mcloud.live.ws_base';
  *  ⇒ 默认就是 `'h'`。留这个口子是为了让"**不回**会怎样"那一支也能在真机上被验一次
  *  （F-039），而不是靠猜。 */
 export const STATE_WS_HEARTBEAT = 'mcloud.live.ws_heartbeat_reply';
+
+/** "听哪一间房" 的**诊断口子**（空 = 按主播昵称选，正常路径）。
+ *
+ *  ⚠ 为什么要有它：`h`（SockJS 心跳帧）只在**服务端**静默满 25 秒后才发 ——
+ *  正常那间房一直有人说话，这个分支**根本走不到**（F-039 里就这么"没复现"了一次）。
+ *  指定一间**安静的房间**就能把它逼出来。
+ *
+ *  它与 `gateBase` / `wsBase` / `imBase` 是同一族（**测试/诊断用**，界面上照实标出），
+ *  不影响"按主播选房"那条正常路径 —— 那种选房判据（昵称精确匹配 + 只算在播）
+ *  是业务判据，不该被一个诊断口子替掉。 */
+export const STATE_LISTEN_ROOM = 'mcloud.live.listen_room';
+
+export function loadListenRoom(store: Pick<Store, 'getState'>): number | undefined {
+  const v = (store.getState(STATE_LISTEN_ROOM) ?? '').trim();
+  if (v === '') return undefined;
+  const n = Number.parseInt(v, 10);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+export function saveListenRoom(store: Store, v: string, nowIso: string): void {
+  store.setState(STATE_LISTEN_ROOM, v.trim(), nowIso);
+}
 export const DEFAULT_WS_HEARTBEAT = 'h';
 
 export function loadWsHeartbeat(store: Pick<Store, 'getState'>): string {
@@ -156,6 +178,11 @@ export interface ListenState {
   kinds?: Record<string, number>;
   /** 连"是不是 SockJS 数据帧"都没认出来的文本帧条数（探针自己的失败计数）。 */
   decodeFail?: number;
+  /** 收到过几帧 SockJS 心跳 `h`。
+   *
+   *  ⭐ 这一格是"实验有没有真的走到那个分支"的判据 —— 没有它，
+   *  一次"没复现"与一次"复现了但没事"在读数上**长得一样**（F-039 就吃过这个亏）。 */
+  sockjsHb?: number;
   /** 收到的**服务端回执帧**（`cmd=0`）条数。
    *
    *  ⭐ 这是"我们那条**缩短过的 ack** 服务端认不认"的**证据位**：
@@ -257,9 +284,25 @@ let current:
   | { handle: number; windowStartMs: number; chatRoomId: string; listener: Listener }
   | undefined;
 
-/** 口子那格字符串 ⇒ listener 的选项（空串 = 不回 = `undefined`）。 */
+/** `h`（SockJS 心跳）的处置档位 —— **两档**（2026-10-14 实测定下来的）。
+ *
+ *  * `reply` —— 回一帧 `h`（默认）
+ *  * `none`  —— 不回
+ *
+ *  ⚠⚠ 原来还有第三档"不回且收尾"，**实测之后删掉了**：在那间安静的房里 90 秒里
+ *  服务端发了 **6 拍 `h`**，我们**一次都没回**，连接**一直活着**（`closedReason` 始终空）
+ *  ⇒ "不回会被踢"这个担心不成立 ⇒ 收到 `h` 收尾是白白丢掉听的时间。
+ *
+ *  ⇒ 现在**两档都不把 `h` 当成收尾理由**（只记进读数 `sockjsHb`），差别只在"回不回那一帧"。 */
+export type HbPolicy = 'reply' | 'none';
+
+export function hbPolicyOf(v: string): HbPolicy {
+  return v === 'h' ? 'reply' : 'none';
+}
+
+/** 口子那格字符串 ⇒ listener 的选项（`none` 档 = `undefined` = 不回）。 */
 function parseHeartbeatReply(v: string): string | undefined {
-  return v === '' ? undefined : v;
+  return hbPolicyOf(v) === 'reply' ? v : undefined;
 }
 
 function listenerFor(
@@ -434,25 +477,41 @@ function roomsStep(deps: ListenDeps, st: ListenState, nowMs: number): TaskOutcom
   void nowMs;
 
   // 门那条判据：**按主播昵称精确匹配 + 只算在播**（同一刻可能有两间房在播，实测过）
-  const anchorLive = koulingRooms(merged);
-  if (anchorLive.length === 0) {
+  //
+  // ⚠ 诊断口子优先：指定了房间号就直接用那一间（`status` 不筛 —— 用它就是为了
+  //   去一间"可能在播但没人说话"的房，把 `h` 那个分支逼出来）。房号不在列表里也算数：
+  //   `roomBeat` 会自己告诉我们那间房有没有聊天室（那一步的判据不该被这里预先否决）。
+  const forced = loadListenRoom(deps.store);
+  // ⚠ 两条路只在"选哪一间"上不同，**后面的所有判据都共用**（roomBeat 才是"有没有聊天室"
+  //   的唯一判据，见 liveGate 的注释）。所以这里收敛成一个 `chosen`，而不是分叉整段逻辑。
+  const chosen: number | undefined =
+    forced !== undefined ? forced : koulingRooms(merged)[0]?.id;
+  if (chosen === undefined) {
     st.step = 'done';
     const coolMs = idleCooldownMs(deps, Date.parse(deps.nowIso));
     st.nextCheckAtMs = Date.parse(deps.nowIso) + coolMs;
     st.closedReason = '那个主播没在播';
     st.finishedAt = deps.nowIso;
     st.note =
-      coolMs > IDLE_RECHECK_MS
-        ? `门关着（合并后 ${merged.length} 间房）—— 按日程睡到下一场之后（${Math.round(coolMs / 60000)} 分钟）`
-        : `门关着（合并后 ${merged.length} 间房）—— 隔 ${Math.round(coolMs / 60000)} 分钟再看`;
+      forced !== undefined
+        ? `指定的房间 ${forced} 不在这次探到的 ${merged.length} 间房里（诊断口子）`
+        : coolMs > IDLE_RECHECK_MS
+          ? `门关着（合并后 ${merged.length} 间房）—— 按日程睡到下一场之后（${Math.round(coolMs / 60000)} 分钟）`
+          : `门关着（合并后 ${merged.length} 间房）—— 隔 ${Math.round(coolMs / 60000)} 分钟再看`;
     persist(deps, st);
     return { ok: true, note: st.note };
   }
-  st.roomId = anchorLive[0]?.id;
+  st.roomId = chosen;
   // ⚠ 顺序照 mcloud 的 `listen_danmaku_with`：先取 **WS 凭据**，再问聊天室号，再进房间。
   st.step = 'userToken';
   persist(deps, st);
-  return { ok: true, note: `门开着：房间 ${st.roomId}，接着取 WS 凭据` };
+  return {
+    ok: true,
+    note:
+      forced === undefined
+        ? `门开着：房间 ${st.roomId}，接着取 WS 凭据`
+        : `诊断口子：直接听指定的房间 ${st.roomId}，接着取 WS 凭据`,
+  };
 }
 
 /** ③ 取 WS 凭据（`userToken`）。
@@ -673,6 +732,7 @@ function listenStep(deps: ListenDeps, st: ListenState, nowMs: number, windowMs: 
     }
     if (frame.type !== 'text') continue; // timeout / binary：继续等
     st.frames += 1;
+    if (frame.data === 'h') st.sockjsHb = (st.sockjsHb ?? 0) + 1;
     // ⚠ 这里自己解一遍**只是为了计数**（状态机那边已经解过了）。按 `command` 分类记：
     //
     //   `cmd=0` = 服务端对我们 ack 的**回执** ⇒ 这一格只要在涨，就说明
@@ -704,6 +764,9 @@ function listenStep(deps: ListenDeps, st: ListenState, nowMs: number, windowMs: 
       }
     }
     if (actions.closed !== undefined) {
+      // ⚠ 收到 SockJS 心跳 `h` **不是**收尾理由（2026-10-14 实测：不回也活了 6 拍 / 90 秒）。
+      //   只把它记进读数（`sockjsHb`），继续听 —— 原来那一版收到就收尾，是在白丢听的时间。
+      if (actions.closed.includes('SockJS 心跳帧')) continue;
       endReason = actions.closed;
       break;
     }
@@ -828,6 +891,7 @@ export function listenReadingLine(st: ListenState | null): string {
   if (st.step === 'listen') {
     return (
       `听着（帧 ${st.frames}、弹幕 ${st.danmakuFrames}、口令 ${st.codes.length}、回执 ${st.serverAcks ?? 0}` +
+      (st.sockjsHb ? `、h 帧 ${st.sockjsHb}` : '') +
       (st.decodeFail ? `、认不出的帧 ${st.decodeFail}` : '') +
       '）'
     );

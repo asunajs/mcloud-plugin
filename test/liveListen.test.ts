@@ -538,3 +538,48 @@ test('链的顺序照 mcloud：换票 → **取 WS 凭据** → 问聊天室 →
   // WS 最后才连
   assert.equal(f.opened.length, 1);
 });
+
+test('诊断口子：指定房间号 ⇒ **不走主播昵称那套判据**，直接听那一间', () => {
+  // ⚠ 它存在的理由：`h`（SockJS 心跳）只在服务端静默满 25 秒后才发，正常那间房
+  //   一直有人说话 ⇒ 那个分支**走不到**（F-039 就这么"没复现"过一次）。
+  //   指定一间安静的房间就能把它逼出来 ⇒ 需要一个绕过"按昵称选房"的口子。
+  const store = memStore();
+  store.setState(STATE_AUTH, AUTH, NOW);
+  store.setState('mcloud.live.listen_room', '147849', NOW);
+  const up = fakeUpstream({ live: false }); // 主播**没在播**（按昵称那套会判"门关着"）
+  const f = fakeHost(['o', provisionAckFrame()]);
+  advanceToListen(store, up.transport, f.host);
+  // 口子生效 ⇒ 不该停在"门关着"，而是走到了 listen
+  assert.equal(loadListenState(store)?.step, 'listen');
+  assert.ok(up.sent.some((x) => x.url.includes('roomBeat')), '该拿指定房间去问聊天室号');
+  // 选中的房号会落在状态里（`roomBeat` 就是拿它去问的）
+  assert.equal(loadListenState(store)?.roomId, 147849);
+});
+
+test('收到 SockJS 心跳 `h` ⇒ **继续听**（不当收尾理由），并且记进读数', () => {
+  // ⚠ 2026-10-14 实测：安静的房里 90 秒来 6 拍 `h`，我们一次不回，连接一直活着
+  //   ⇒ 原来那版"收到 h 就收尾"是白白丢掉听的时间。
+  const store = memStore();
+  store.setState(STATE_AUTH, AUTH, NOW);
+  const up = fakeUpstream({ live: true });
+  // 脚本：o → PROVISION 响应 → h → 再一条弹幕（证明 h 之后机器照常工作）
+  // ⚠ 用 `timeout` 档：脚本演完之后**不许 close** —— 否则"收尾原因 = 脚本演完了"会
+  //   盖住这条测试要守的东西（`h` 不会让窗口收尾）。代价是这一条要真的等满一拍（~1.6 秒）。
+  const f = fakeHost(
+    ['o', provisionAckFrame(), 'h', danmakuFrame('小红花口令：秋收万颗子')],
+    'timeout',
+  );
+  const notes = advanceToListen(store, up.transport, f.host);
+  // ⚠ `advanceToListen` 到 `listen` 就停（`h` 在它后面）⇒ 还要**再推一拍**
+  //   才会读到 `h` 与那条弹幕。
+  notes.push(runLiveListen(deps(store, up.transport, f.host)).note);
+  const st = loadListenState(store);
+  // ⚠ 这一拍最后会因**窗口到点**收尾（测试里的窗口起点是写死的 `NOW`，早过期了）——
+  //   所以判据不是"还停在 listen"，而是"**收尾原因与 `h` 无关**"。
+  assert.ok(
+    st?.closedReason === undefined || !st.closedReason.includes('心跳帧'),
+    `不该因为 h 收尾：${String(st?.closedReason)} | ${notes.join(' | ')}`,
+  );
+  assert.equal(st?.sockjsHb, 1, 'h 要记进读数（否则"没复现"与"复现了但没事"分不开）');
+  assert.ok((st?.danmakuFrames ?? 0) >= 1, 'h 之后的弹幕照收');
+});
