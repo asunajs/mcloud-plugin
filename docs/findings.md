@@ -2708,3 +2708,98 @@ export const DAILY_DONE_KEY = 'mcloud.daily.done_date';   // ← 全局
 **必须做的验证**：每修一个键，都要有 F-048/F-049 那样的**负向验证**
 （退回全局 ⇒ 测试必须红）。只测"改完之后能跑"是不够的 —— 全局键在单账号下
 **也是能跑的**，这正是这些 bug 活到现在的原因。
+
+---
+
+## F-052 · 我修 F-048/049/050 的方向是**错的** —— 参考实现根本没有"全局键"这个类别（2026-10-15）
+
+用户提醒「你还是多参考参考 mcloud」，去读了 `mcloud-core/src/traits.rs` 与
+`mcloud-tasks/src/app_task.rs`。**结论：我在打补丁，参考实现在结构上就没有这个 bug。**
+
+### 参考实现的模型：**账号是容器**
+
+```rust
+/// 读取账号运行期状态（deviceId、jwtToken 缓存等）。
+async fn account_state(&self, id: &AccountId) -> Result<serde_json::Value>;
+async fn save_account_state(&self, id: &AccountId, state: &serde_json::Value) -> Result<()>;
+```
+
+**账号的全部运行时状态是一个 JSON blob，而且 API 强制你传账号 id。**
+所以"忘了分账号"这件事**在结构上不可能发生** —— 你没法在不指名账号的情况下读状态。
+
+`task_expansion.rs` 里那句注释正是我 F-050 的发现：
+
+> 落在 `ctx.store.account_state(&ctx.account.id)` 上 —— **按账号 id** 存的一份状态；
+> **绝不做成进程级全局**，那会让 A 账号的"没备份"把 B 账号的 month 任务一起跳掉。
+
+### 键住在 blob **里面**，不是一个全局命名空间
+
+```rust
+pub async fn read_share_done_day(ctx: &TaskContext) -> Option<String> {
+    let state = ctx.store.account_state(&ctx.account.id).await.ok()?;
+    state.get(SHARE_DONE_STATE_KEY)?.as_str().map(str::to_string)
+}
+pub async fn save_share_done_day(ctx: &TaskContext, day: &str) -> Result<()> {
+    let mut state = ctx.store.account_state(&ctx.account.id).await?;
+    ...
+    ctx.store.save_account_state(&ctx.account.id, &state).await
+}
+```
+
+注释点明了它和我的区别：
+
+> 读-改-写，理由同 `save_month_backup` ✓（**这张表里还躺着 `device_id` /
+> `pc_platform` / `cur_month_backup` 这些别的任务的键** ✗）
+
+**一个账号一个 blob，里面躺着所有任务的键。**
+
+### 同一文件里还有一条同源原则：**失败关闭**
+
+> 归属过滤是安全边界，默认必须**失败关闭**：真后端忘了实现它，表现是
+> 「看不到任何账号」（会立刻被发现），而不是「看到别人的账号」（静默、不可发现）。
+
+### 我的做法差在哪
+
+| | 参考实现 | 我的（F-048/049/050） |
+|---|---|---|
+| 地址 | **参数**（`account_state(id)`） | **键名前缀**（`mcloud.session.<id>`） |
+| 忘了分账号 | **不可能**（编译期就没有那个重载） | **完全可能**，而且**单账号下照样能跑** |
+| 新加一个键 | 塞进 blob，自动按账号 | **必须记得加前缀** |
+| 发现方式 | — | 等出事故 |
+
+我修了 5 个键，还剩 `exchange.order.*`(6)、`apptask.*`、`backupgift.*`、
+`cloudsnapshot.*`、`exchangelist.*`、`live.*`、`h5.auth` 没修 ——
+而**下一个新键照样会忘**。这就是"打补丁"和"改结构"的差别。
+
+### 修法（下一轮，按参考实现的形状）
+
+插件这边宿主只给 `getState/setState`（扁平 KV），所以对应形状是：
+
+```text
+mcloud.acct.<账号 id>   →  一个 JSON 对象，躺着这个账号的全部运行时状态
+    {
+      "deviceId": "…", "pcPlatform": "win",
+      "daily.done_date": "2026-10-15",
+      "h5.jwt": { "sign-in": {…}, "msg-push-on": {…} },
+      "exchange.order": { "step": …, "orderedHour": … },
+      "session": {…},
+      …
+    }
+```
+
+配两个助手（**形状照 `read_share_done_day` / `save_share_done_day`**）：
+
+```ts
+readAcct<T>(store, key): T | undefined          // 读-改-写，一次一个键
+writeAcct(store, key, value, nowIso): void
+```
+
+然后**所有**按账号的键都走它 —— 键名不再拼前缀，`accountScopedKey` 那个助手可以删掉。
+
+⚠ 这次重构必须配**结构性的测试**，不只是"改完能跑"：
+
+1. 两个账号各写一遍同一个键 ⇒ 各自读到自己的（这是 F-048/049/050 那几条的合并版）
+2. **删掉一个账号** ⇒ 它的 blob 一起删（现在扁平键是散落的，删账号不会清）
+3. **没有当前账号时**读按账号的键 ⇒ 必须**失败关闭**（报错或返回 undefined），
+   不许回落到裸键 —— 参考实现那条"默认必须失败关闭"就是为这个
+4. 逐键负向验证：把某个键退回全局 ⇒ 测试必须红
