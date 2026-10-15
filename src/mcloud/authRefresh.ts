@@ -33,6 +33,7 @@
 //    这个接口不签名，所以顺序今天不影响结果 —— 但一旦上游改成按体签名，
 //    "顺序对不上"会表现成一个含义模糊的鉴权错，而没人会想到是键序。
 
+
 import { fromBase64, fromUtf8, toBase64, utf8 } from '../crypto/bytes.ts';
 import { callRawText } from './client.ts';
 import { STATE_AUTH, loadAuthRaw, loadJwt, startExchange } from './sessionExchange.ts';
@@ -325,16 +326,12 @@ export function runAuthRefresh(deps: TaskDeps, force = false, leadDays = DEFAULT
   if (!usable.ok) return { ok: false, note: `拒绝落库：${usable.error}` };
 
   deps.store.setState(STATE_AUTH, applied.raw, deps.nowIso);
-  deps.store.setState(
-    STATE_LAST,
-    JSON.stringify({
+  deps.store.setState(STATE_LAST, JSON.stringify({
       at: deps.nowIso,
       expireSeconds: parsed.result.expireSeconds ?? null,
       oldFingerprint: seg.token.slice(-6),
       newFingerprint: parsed.result.token.slice(-6),
-    }),
-    deps.nowIso,
-  );
+    }), deps.nowIso);
   // ⚠ 凭据换了 ⇒ 手里的票是**旧凭据换来的**，重跑一次换票（下一次触发时逐条推进）。
   startExchange(deps.store, applied.raw, deps.nowIso);
 

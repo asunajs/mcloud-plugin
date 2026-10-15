@@ -40,6 +40,7 @@
 // 所以 7 点那一跳和 8 点那一跳会各跑一次整趟；第二次上游已经签过了，各步自己会
 // 秒返回。这是**刻意接受**的：宁可多一次便宜的整趟，也不要漏掉一整天。
 
+
 import { log, register_cron, warn, worker_hint } from 'host-api';
 import { runAuthRefresh } from '../mcloud/authRefresh.ts';
 import { appendRun } from '../mcloud/runLog.ts';
@@ -70,7 +71,7 @@ import { runRevival } from '../mcloud/tasks/revival.ts';
 import { STATE_STAGE as SIGN_STAGE, runSign } from '../mcloud/tasks/sign.ts';
 import { runExpansionStep, startExpansion } from '../mcloud/tasks/taskExpansion.ts';
 import type { TaskDeps, TaskOutcome } from '../mcloud/tasks/base.ts';
-import { dailyDoneKey, dailyLastKey } from '../mcloud/dailyState.ts';
+import { DAILY_DONE_KEY, DAILY_LAST_KEY } from '../mcloud/dailyState.ts';
 import type { DailyStep } from '../mcloud/dailyState.ts';
 import {
   LONG_REQUEST_TIMEOUT_MS,
@@ -107,8 +108,9 @@ const DEADLINE_MS = BUDGET_MS - 15_000;
 // 这正是「按一次运行组织的日志」那条需求的落点：组织单位是**一次运行**，
 // 而运行的结果是一条读数，不是一个滚动窗口。
 // ⚠ 这两个**按账号分**（F-050）—— 全局的话第二个账号的日常会被整个跳过。
-const DONE_KEY = dailyDoneKey;
-const LAST_KEY = dailyLastKey;
+//   分法在 `scoped()` 里（store 自己路由），所以这里就是键名。
+const DONE_KEY = DAILY_DONE_KEY;
+const LAST_KEY = DAILY_LAST_KEY;
 
 /** 一步的调度：跑一次 `step`，把结果收进 `steps` 数组。
  *
@@ -334,7 +336,7 @@ register_cron(
     // ⚠ 这一步**不记 run**：记了的话面板上会看到一天 30 条「跳过」，
     //   把真事件埋掉（老版本实机 soak 踩过这个，见 main.ts 里 lastLogged 那段）。
     // ⚠ `getState` 返回的是**字符串本身**（不是 `{value}` 那种行对象）—— 见 store/types.ts
-    const doneDate = store.getState(DONE_KEY(store));
+    const doneDate = store.getState(DONE_KEY);
     if (doneDate === today) return;
 
     const deps = taskDeps(store, transport, p);
@@ -351,16 +353,12 @@ register_cron(
     });
 
     // 「一次运行」的完整结果落一条读数 —— 界面读它，不用去翻环形日志
-    store.setState(
-      LAST_KEY(store),
-      JSON.stringify({
+    store.setState(LAST_KEY, JSON.stringify({
         at: nowIso,
         ok: r.ok,
         note: r.note,
         steps: r.steps,
-      }),
-      nowIso,
-    );
+      }), nowIso);
 
     // 同时进**运行记录**（留最近 N 次）。`LAST_KEY` 只有最后一次，
     // 覆盖掉之后"上次明明好的"这类问题就查不了了。
@@ -375,7 +373,7 @@ register_cron(
     log(`日常：本次运行 id=${runId}`);
 
     if (r.ok) {
-      store.setState(DONE_KEY(store), today, nowIso);
+      store.setState(DONE_KEY, today, nowIso);
       log(`日常：${r.note}`);
     } else {
       // 不落标记 ⇒ 下一跳重试（这正是「一次运行 = 一个结果」该有的样子）

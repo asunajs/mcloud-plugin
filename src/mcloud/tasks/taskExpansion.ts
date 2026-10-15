@@ -28,6 +28,7 @@
 // （两个测试号本月都已领过）。所以这一枪的**成功响应形状没被实拍验过** ——
 // 实现照源码逐字，但拿不到成功样本时不要假装它被验过。
 
+
 import { callRawText } from '../client.ts';
 import { REFERER_SIGN_IN, SHOW_LOADING, buildH5Request } from '../h5.ts';
 import { sessionHeaders } from './base.ts';

@@ -24,6 +24,7 @@
 // 手动前置是真的存在（要去移动云盘 App 里开启「邮箱通知 / 短信通知」），
 // 只是**我们判不出来** —— 这一句只能由人看文档知道，别假装代码能判。
 
+
 import { resultObject } from '../envelope.ts';
 import { runTask } from './base.ts';
 import type { TaskDeps, TaskOutcome } from './base.ts';

@@ -21,6 +21,7 @@
 // 状态说不需要动作时就只是一次只读检查。副作用是**对盒子不常在线这件事很宽容** ——
 // 8 点整没开机，9 点上线照样会把今天补上（这正是 mcloud 任务表里 catch-up 的意思）。
 
+
 import { fetchInfoV3 } from './info.ts';
 import { runTask } from './base.ts';
 import type { TaskDeps, TaskOutcome } from './base.ts';

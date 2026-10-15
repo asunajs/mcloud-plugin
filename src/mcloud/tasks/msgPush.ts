@@ -23,6 +23,7 @@
 // `secondTaskStatus === 2` 才是"可领"；`pushOn === 0` 是"通知被关了"（要用户自己去 App 开）；
 // 领的成功判据是 `result.obtainCode === 0`。
 
+
 import { resultObject } from '../envelope.ts';
 import { runTask } from './base.ts';
 import type { TaskDeps, TaskOutcome } from './base.ts';

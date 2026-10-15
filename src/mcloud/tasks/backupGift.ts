@@ -17,6 +17,7 @@
 // ⚠️ 有一个必须守住的细节：**`info` 说不能领时，下一次不要再去领**。
 // `receive` 的响应告诉我们上一次领没领成；没成的话，状态里保留原文，等 `info` 再变。
 
+
 import { resultObject } from '../envelope.ts';
 import { runTask } from './base.ts';
 import type { TaskDeps, TaskOutcome } from './base.ts';

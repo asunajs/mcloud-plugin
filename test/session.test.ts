@@ -18,9 +18,9 @@ import {
 } from '../src/mcloud/session.ts';
 import { mcloudRoutes } from '../src/mcloud/routes.ts';
 import { testDeps } from './helpers.ts';
-import { SESSION_KEY, loadSession, saveSession, sessionKey } from '../src/store/types.ts';
+import { SESSION_KEY, loadSession, saveSession } from '../src/store/types.ts';
 import { idOf, selectAccount, upsertAccount } from '../src/mcloud/accounts.ts';
-import { dailyDoneKey, dailyLastKey, readDailyRun } from '../src/mcloud/dailyState.ts';
+import { DAILY_DONE_KEY, DAILY_LAST_KEY, readDailyRun } from '../src/mcloud/dailyState.ts';
 import { STATE_LAST_TASKLIST } from '../src/mcloud/tasks/taskList.ts';
 import { SHOW_LOADING } from '../src/mcloud/h5.ts';
 import { memStore } from '../src/store/memory.ts';
@@ -304,21 +304,27 @@ test('⚠ 多账号：会话不能串（A 的任务不能读到 B 的票）', ()
     '⚠ A 的会话被 B 覆盖了 ⇒ A 会以 B 的身份发请求',
   );
 
-  // 两把键必须不同
+  // ⚠ 两边的**键名是同一个**（都是 `SESSION_KEY`）—— 分账号靠的是
+  //   `scoped()` 把袋名加进去，而不是靠调用方拼不同的键。
+  //   所以这里断言的是**效果**不同，而不是键名不同。
+  //   （曾经这里有 `sessionKey(store)`，它按账号拼键 —— 那要求每个调用点都记得用，
+  //    而"记得"是纪律不是结构；现在删掉了。）
   selectAccount(store, idOf(A), NOW);
-  const ka = sessionKey(store);
+  const va = loadSession(store)?.jwt;
   selectAccount(store, idOf(B), NOW);
-  const kb = sessionKey(store);
-  assert.notEqual(ka, kb, '两个账号必须落在不同的键上');
+  const vb = loadSession(store)?.jwt;
+  assert.equal(va, 'JWT-A');
+  assert.equal(vb, 'JWT-B');
+  assert.notEqual(va, vb, '两个账号必须读到不同的会话');
 });
 
 test('单账号那套（没有账号列表）仍然用**裸键**，老数据照常读得到', () => {
   const store = memStore();
   store.ensureSchema();
   // 直接往裸键里塞一份会话 —— 模拟升级前的老数据
+  // 没有当前账号 ⇒ 落在 `default` 那个袋里；老数据由加载时的 `migrateFlatKeys` 搬进去。
   store.setState(SESSION_KEY, JSON.stringify({ cookie: '', jwt: 'OLD', savedAt: NOW }), NOW);
-  assert.equal(sessionKey(store), SESSION_KEY, '没有当前账号 ⇒ 键就是裸的（不用迁移）');
-  assert.equal(loadSession(store)?.jwt, 'OLD', '老数据照常读得到');
+  assert.equal(loadSession(store)?.jwt, 'OLD', '没有账号时也读得到（走 default 袋）');
 });
 
 test('⚠ 切账号**不会**把会话漏到新账号名下', () => {
@@ -359,17 +365,17 @@ test('⚠ 多账号：「今天跑完了」的标记不能是全局的（否则�
 
   const today = NOW.slice(0, 10);
   selectAccount(store, idOf(A), NOW);
-  store.setState(dailyDoneKey(store), today, NOW);
+  store.setState(DAILY_DONE_KEY, today, NOW);
 
-  assert.equal(store.getState(dailyDoneKey(store)), today, 'A 落下了标记');
+  assert.equal(store.getState(DAILY_DONE_KEY), today, 'A 落下了标记');
   selectAccount(store, idOf(B), NOW);
   assert.notEqual(
-    store.getState(dailyDoneKey(store)),
+    store.getState(DAILY_DONE_KEY),
     today,
     '⚠ B 读到了 A 的标记 ⇒ B 的日常会被整个跳过',
   );
   selectAccount(store, idOf(A), NOW);
-  assert.equal(store.getState(dailyDoneKey(store)), today, 'A 的标记还在');
+  assert.equal(store.getState(DAILY_DONE_KEY), today, 'A 的标记还在');
 });
 
 test('⚠ 多账号：「上次跑成什么样」也不能是全局的（否则界面显示别人的结果）', () => {
@@ -382,7 +388,7 @@ test('⚠ 多账号：「上次跑成什么样」也不能是全局的（否则�
 
   selectAccount(store, idOf(A), NOW);
   store.setState(
-    dailyLastKey(store),
+    DAILY_LAST_KEY,
     JSON.stringify({ at: NOW, ok: true, note: 'A 的结果', steps: [] }),
     NOW,
   );

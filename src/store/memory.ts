@@ -6,6 +6,7 @@
 // 这里刻意**不做** SQL：接口语义（尤其是 `lateStats` 的分位数口径）要和宿主实现一致，
 // 所以两边都按同一份接口文档实现，并由同一批测试断言同样的行为。
 
+import { scoped } from './scoped.ts';
 import type { RunRecord, RunStat, SqlParam, Store } from './types.ts';
 
 interface Row extends RunRecord {
@@ -13,11 +14,12 @@ interface Row extends RunRecord {
 }
 
 export function memStore(): Store {
+  // ⚠ 与生产**同一条路由**（见 scoped.ts 文件头）——不然"测试里对、真机里错"。
   const state = new Map<string, string>();
   const runs: Row[] = [];
   let seq = 0;
 
-  return {
+  return scoped({
     ensureSchema: () => {},
 
     getState: (key) => state.get(key) ?? null,
@@ -67,5 +69,5 @@ export function memStore(): Store {
           ok: r.ok ? 1 : 0,
           note: (r.note ?? null) as SqlParam,
         })),
-  };
+  });
 }
