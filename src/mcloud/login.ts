@@ -595,7 +595,14 @@ export function decryptUserInfo(ciphertext: string, key = LOGIN_AES_KEY): Record
 // ══════════════════════════════ 凭据 ══════════════════════════════
 
 /** PC 端的 auth 前缀。App 端是 `mobile`。 */
-export const PC_AUTH_PREFIX = 'pc';
+import { PC_AUTH_PREFIX } from './auth.ts';
+
+/** ⚠ 这一个**从这里转出**，定义在 `auth.ts`。
+ *
+ *  原来这里和 `auth.ts` 各写了一份 `'pc'` —— 那正是"同一个事实有两个常量
+ *  就会漂移"的典型：两边不一致时，表现是"登录能出码、但凭据被当成手机端"，
+ *  排查时很难联想到是两处常量不一致。 */
+export { PC_AUTH_PREFIX } from './auth.ts';
 export const APP_AUTH_PREFIX = 'mobile';
 
 /** 拼出整串凭据：`Basic base64("<前缀>:<账号>:<authToken>")`。
