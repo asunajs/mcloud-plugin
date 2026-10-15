@@ -1380,6 +1380,50 @@ function hasBigInt() {
   return typeof globalThis.BigInt === "function";
 }
 
+// src/mcloud/auth.ts
+var PC_AUTH_PREFIX = "pc";
+function lenientB64(s) {
+  let payload = "";
+  for (const c of s) {
+    if (c === "=") break;
+    if (/[A-Za-z0-9+/]/.test(c)) payload += c;
+  }
+  if (payload.length === 0 || payload.length % 4 === 1) return void 0;
+  const pad = payload.length % 4 === 0 ? "" : "=".repeat(4 - payload.length % 4);
+  let text;
+  try {
+    text = fromUtf8(fromBase64(payload + pad));
+  } catch {
+    return void 0;
+  }
+  return text.length === 0 ? void 0 : text;
+}
+function isPlainDecimal(s) {
+  if (s.length === 0) return false;
+  let i = 0;
+  if (s[0] === "+" || s[0] === "-") i = 1;
+  if (i >= s.length) return false;
+  for (; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 48 || c > 57) return false;
+  }
+  return true;
+}
+function parseAuth(auth) {
+  if (auth.trim() === "") return void 0;
+  const i = auth.indexOf("Basic ");
+  const clean = i < 0 ? auth : auth.slice(0, i) + auth.slice(i + "Basic ".length);
+  const decoded = lenientB64(clean);
+  if (decoded === void 0) return void 0;
+  const parts = decoded.split(":", 4);
+  const platform = parts[0] ?? "";
+  const phone = parts[1] ?? "";
+  const token = parts[2] ?? "";
+  const seg = token.split("|")[3]?.trim();
+  const expire = seg !== void 0 && isPlainDecimal(seg) ? Math.trunc(Number(seg)) || 0 : 0;
+  return { raw: `Basic ${clean}`, platform, phone, token, expire };
+}
+
 // src/mcloud/accounts.ts
 var STATE_ACCOUNTS = "mcloud.accounts";
 var STATE_CURRENT_ACCOUNT = "mcloud.account.current";
@@ -1427,10 +1471,16 @@ function loadAccounts(store2) {
     if (it === null || typeof it !== "object") continue;
     const o = it;
     if (typeof o.id !== "string" || typeof o.auth !== "string" || o.auth === "") continue;
+    const auth = o.auth;
+    const info = parseAuth(auth);
+    const pc = o.pcPlatform;
     out.push({
       id: o.id,
       label: typeof o.label === "string" && o.label !== "" ? o.label : o.id,
-      auth: o.auth,
+      auth,
+      // 老账号没存过这两格 ⇒ 从凭据里现解一次（不用迁移）
+      platform: typeof o.platform === "string" ? o.platform : info?.platform ?? "",
+      pcPlatform: pc === "win" || pc === "mac" ? pc : void 0,
       addedAt: typeof o.addedAt === "string" ? o.addedAt : ""
     });
   }
@@ -1439,14 +1489,19 @@ function loadAccounts(store2) {
 function saveAccounts(store2, list, nowIso) {
   store2.setState(STATE_ACCOUNTS, JSON.stringify(list), nowIso);
 }
-function upsertAccount(store2, auth, nowIso, label) {
+function upsertAccount(store2, auth, nowIso, label, pcPlatform) {
   const list = loadAccounts(store2);
   const id = idOf(auth);
   const idx = list.findIndex((a) => a.id === id);
+  const info = parseAuth(auth);
   const account = {
     id,
     label: label !== void 0 && label !== "" ? label : phoneOf(auth) ?? `账号 ${list.length + 1}`,
     auth,
+    platform: info?.platform ?? "",
+    // ⚠ 只在 PC 端才有意义。手机端传进来也丢掉 —— 留着会让"这个账号用哪套
+    //   设备头"这件事出现两个互相矛盾的来源。
+    pcPlatform: info?.platform === PC_AUTH_PREFIX ? pcPlatform ?? list[idx]?.pcPlatform ?? "win" : void 0,
     addedAt: idx >= 0 ? list[idx].addedAt : nowIso
   };
   if (idx >= 0) list[idx] = account;
@@ -8362,7 +8417,6 @@ function decryptUserInfo(ciphertext, key = LOGIN_AES_KEY) {
   if (typeof v !== "object" || v === null) throw new Error("userInfo 不是 JSON 对象");
   return v;
 }
-var PC_AUTH_PREFIX = "pc";
 function formatAuth(prefix, account, authToken) {
   if (account === "" || authToken === "") {
     throw new Error("拼 auth 缺少账号或 authToken");
@@ -8622,7 +8676,9 @@ function accountsView(store2) {
       label: a.label,
       masked: maskAuth(a.auth),
       current: cur?.id === a.id,
-      addedAt: a.addedAt
+      addedAt: a.addedAt,
+      platform: a.platform,
+      pcPlatform: a.pcPlatform ?? ""
     }))
   };
 }
@@ -9608,7 +9664,29 @@ function mcloudRoutes(deps) {
         if (op === "add") {
           const auth = typeof body.auth === "string" ? body.auth.trim() : "";
           if (auth === "") return json(400, { error: "要传 auth（原生凭据那一串）" });
-          const r = upsertAccount(deps.store, auth, now);
+          const info = parseAuth(auth);
+          if (info === void 0) {
+            return json(400, {
+              error: "这段凭据解不开。它应该是 `Basic <base64>`（或只有 base64 那段），里面是 `<平台>:<手机号>:<token>`"
+            });
+          }
+          const pcRaw = typeof body.pcPlatform === "string" ? body.pcPlatform : "";
+          if (pcRaw !== "" && pcRaw !== "win" && pcRaw !== "mac") {
+            return json(400, { error: "pcPlatform 只能是 win 或 mac" });
+          }
+          if (info.platform === PC_AUTH_PREFIX && pcRaw === "") {
+            return json(400, {
+              error: "这条是 PC 端 —— 选一下它当初是 Windows 还是 macOS（决定以后的请求头）",
+              needPcPlatform: true
+            });
+          }
+          const r = upsertAccount(
+            deps.store,
+            auth,
+            now,
+            void 0,
+            pcRaw === "" ? void 0 : pcRaw
+          );
           deps.log(`账号：${r.created ? "添加" : "更新"} ${r.account.label}`);
           if (loadAccounts(deps.store).length === 1) selectAccount(deps.store, r.account.id, now);
           return json(200, { ...accountsView(deps.store), note: `${r.created ? "已添加" : "已更新"} ${r.account.label}` });

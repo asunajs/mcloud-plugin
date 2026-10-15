@@ -543,7 +543,62 @@ def main() -> int:
                 detail[:200],
             )
 
-            # ---- ⑭ 线程分配 ----
+            # ---- ⑭ 凭据（auth，不是 cookie）----
+            #
+            # 参考实现的「添加账号」里那个页签叫**凭据**，收的是
+            # `Basic base64("<平台>:<手机号>:<token>")` —— **不是 cookie**。
+            # 平台只有 `pc` / `mobile` 两种，而 `pc` 分不出 win/mac
+            # ⇒ 那个选择必须单独问、单独落盘（它决定以后的请求头）。
+            print("\n凭据（脚本断言）")
+            import base64 as _b64
+
+            def auth_of(payload: str) -> str:
+                return "Basic " + _b64.b64encode(payload.encode()).decode()
+
+            def add_account(auth, **kw):
+                return plugin_post(base, "/accounts", {"op": "add", "auth": auth, **kw})
+
+            pc = auth_of("pc:13800138000:tok|1|2|1735689600000")
+            mb = auth_of("mobile:13900139000:tok")
+
+            code, body = add_account(pc)
+            d = json.loads(body) if code else {}
+            check("⚠ PC 端凭据**要问** win/mac（凭据里分不出）", d.get("needPcPlatform") is True, f"http {code} {body[:90]}")
+
+            code, body = add_account("SESSIONID=abc; UID=1")
+            check("⚠ cookie 串被挡住（这个口子收的是 auth）", code == 400, f"http {code}")
+
+            code, body = add_account(mb)
+            d = json.loads(body) if code == 200 else {}
+            row = next((a for a in d.get("accounts", []) if a.get("platform") == "mobile"), None)
+            check("手机端凭据能存下，且**不问**形态", row is not None and row.get("pcPlatform") == "", str(row))
+
+            code, body = add_account(pc, pcPlatform="mac")
+            d = json.loads(body) if code == 200 else {}
+            row = next((a for a in d.get("accounts", []) if a.get("platform") == "pc"), None)
+            check("PC 端给了形态就能存下", row is not None and row.get("pcPlatform") == "mac", str(row))
+
+            n_before = len(d.get("accounts", []))
+            code, body = add_account(pc, pcPlatform="win")
+            d = json.loads(body) if code == 200 else {}
+            check(
+                "⚠ 同一个号再导一次是**更新**（不是多一条）",
+                len(d.get("accounts", [])) == n_before,
+                f"之前 {n_before} 条，之后 {len(d.get('accounts', []))} 条",
+            )
+            row = next((a for a in d.get("accounts", []) if a.get("platform") == "pc"), None)
+            check("形态能改（mac → win）", row is not None and row.get("pcPlatform") == "win", str(row))
+
+            code, body = add_account(pc, pcPlatform="linux")
+            check("非法形态被挡住", code == 400, f"http {code}")
+
+            # 清干净，别影响后面的断言
+            for a in (json.loads(body) if code == 400 else {}).get("accounts", []) or []:
+                pass
+            code, body = plugin_post(base, "/accounts", {"op": "remove", "id": "13800138000"})
+            code, body = plugin_post(base, "/accounts", {"op": "remove", "id": "13900139000"})
+
+            # ---- ⑮ 线程分配 ----
             print("\n线程（脚本断言）")
             logf.flush()
             text = logpath.read_text(errors="replace")

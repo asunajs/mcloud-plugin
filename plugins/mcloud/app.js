@@ -60,7 +60,15 @@ async function call(url, { method = 'GET', body, write = false } = {}) {
     throw new Error(`${res.status} ${text.slice(0, 200)}`);
   }
   if (!res.ok || (data && data.error)) {
-    throw new Error((data && data.error) || `${res.status} ${text.slice(0, 200)}`);
+    const err = new Error((data && data.error) || `${res.status} ${text.slice(0, 200)}`);
+    // ⚠ 把**整个响应体**挂到错误上。
+    //
+    // 只抛 `message` 的话，调用方拿不到后端除 `error` 之外说的话 ——
+    // 而有些接口要用别的字段驱动界面（比如 `/accounts` 的 `needPcPlatform`
+    // 决定"要不要把 win/mac 那个选择露出来"）。丢掉它就只能靠字符串比对，
+    // 而字符串比对会在改文案时静默失效。
+    if (data && typeof data === 'object') err.data = data;
+    throw err;
   }
   return data;
 }
@@ -956,19 +964,59 @@ $('device-reset').addEventListener('click', (e) =>
 $('paste-open').addEventListener('click', () => {
   $('pane-paste').hidden = !$('pane-paste').hidden;
 });
+
+// 「凭据」那一栏里选的 PC 形态（win / mac）。**只对 pc 端的凭据有意义**。
+let pastePc = 'win';
+function paintPastePc() {
+  $('paste-win').classList.toggle('is-on', pastePc === 'win');
+  $('paste-mac').classList.toggle('is-on', pastePc === 'mac');
+}
+$('paste-win').addEventListener('click', () => {
+  pastePc = 'win';
+  paintPastePc();
+});
+$('paste-mac').addEventListener('click', () => {
+  pastePc = 'mac';
+  paintPastePc();
+});
+
+// ⚠ **不在界面上重复一份解析逻辑**。
+//
+// `app.js` 是手写的静态文件（不是从 `src/` 构建的），import 不到
+// `src/mcloud/auth.ts` 的解析器。而复制一份的代价是"两份会漂移"——
+// 漂移的表现是"界面说这是手机端、后端当成了 PC 端"，很难查。
+//
+// 所以**解析只在后端做一次**：贴进来先直接提交，后端说"这条是 PC 端、
+// 要选形态"时再把那个选择显示出来。多一次点击，换来的是**一个事实一个来源**。
+
 $('paste-submit').addEventListener('click', (e) =>
   act(
     e.currentTarget,
     async () => {
       const raw = $('paste-body').value.trim();
-      if (!raw) throw new Error('先把会话串贴进来');
-      const r = await api('/session', { method: 'POST', write: true, body: { session: raw } });
-      if (!r.verified) throw new Error(`导入成功但验证没过：${r.note || ''}`);
+      if (!raw) throw new Error('先把凭据贴进来');
+      const body = { op: 'add', auth: raw };
+      // PC 端才带上形态（手机端带了后端也会丢掉）
+      if (!$('paste-pc').hidden) body.pcPlatform = pastePc;
+      let r;
+      try {
+        r = await api('/accounts', { method: 'POST', write: true, body });
+      } catch (err) {
+        // 后端说"这条是 PC 端、要选形态" ⇒ 把那个选择露出来（**别清空输入**）
+        if (err && err.data && err.data.needPcPlatform) {
+          $('paste-pc').hidden = false;
+          paintPastePc();
+          $('paste-note').textContent = '这条是 PC 端 —— 选一种，然后再点一次「存下」';
+          return { ok: true, note: '选了形态再点一次' };
+        }
+        throw err;
+      }
       $('paste-body').value = '';
+      $('paste-note').textContent = '';
       $('pane-paste').hidden = true;
       return r;
     },
-    '导入并验证通过',
+    '凭据已存下',
   ),
 );
 

@@ -367,6 +367,49 @@ function saveSession(store2, s, nowIso) {
   store2.setState(SESSION_KEY, JSON.stringify({ ...s, savedAt: nowIso }), nowIso);
 }
 
+// src/mcloud/auth.ts
+function lenientB64(s) {
+  let payload = "";
+  for (const c of s) {
+    if (c === "=") break;
+    if (/[A-Za-z0-9+/]/.test(c)) payload += c;
+  }
+  if (payload.length === 0 || payload.length % 4 === 1) return void 0;
+  const pad = payload.length % 4 === 0 ? "" : "=".repeat(4 - payload.length % 4);
+  let text;
+  try {
+    text = fromUtf8(fromBase64(payload + pad));
+  } catch {
+    return void 0;
+  }
+  return text.length === 0 ? void 0 : text;
+}
+function isPlainDecimal(s) {
+  if (s.length === 0) return false;
+  let i = 0;
+  if (s[0] === "+" || s[0] === "-") i = 1;
+  if (i >= s.length) return false;
+  for (; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 48 || c > 57) return false;
+  }
+  return true;
+}
+function parseAuth(auth) {
+  if (auth.trim() === "") return void 0;
+  const i = auth.indexOf("Basic ");
+  const clean = i < 0 ? auth : auth.slice(0, i) + auth.slice(i + "Basic ".length);
+  const decoded = lenientB64(clean);
+  if (decoded === void 0) return void 0;
+  const parts = decoded.split(":", 4);
+  const platform = parts[0] ?? "";
+  const phone = parts[1] ?? "";
+  const token = parts[2] ?? "";
+  const seg = token.split("|")[3]?.trim();
+  const expire = seg !== void 0 && isPlainDecimal(seg) ? Math.trunc(Number(seg)) || 0 : 0;
+  return { raw: `Basic ${clean}`, platform, phone, token, expire };
+}
+
 // src/mcloud/accounts.ts
 var STATE_ACCOUNTS = "mcloud.accounts";
 var STATE_CURRENT_ACCOUNT = "mcloud.account.current";
@@ -385,10 +428,16 @@ function loadAccounts(store2) {
     if (it === null || typeof it !== "object") continue;
     const o = it;
     if (typeof o.id !== "string" || typeof o.auth !== "string" || o.auth === "") continue;
+    const auth = o.auth;
+    const info = parseAuth(auth);
+    const pc = o.pcPlatform;
     out.push({
       id: o.id,
       label: typeof o.label === "string" && o.label !== "" ? o.label : o.id,
-      auth: o.auth,
+      auth,
+      // 老账号没存过这两格 ⇒ 从凭据里现解一次（不用迁移）
+      platform: typeof o.platform === "string" ? o.platform : info?.platform ?? "",
+      pcPlatform: pc === "win" || pc === "mac" ? pc : void 0,
       addedAt: typeof o.addedAt === "string" ? o.addedAt : ""
     });
   }
