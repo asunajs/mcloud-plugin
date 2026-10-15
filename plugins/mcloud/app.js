@@ -228,6 +228,22 @@ function renderLogin(l) {
   } else {
     $('slider-box').hidden = true;
   }
+
+  // 手机端那一格（形状与 `sms` 一样，见 `loginReading` 里那段说明）
+  const app = l.app;
+  if (app) {
+    if ($('add-dialog').hidden === false) showAddTab('app');
+    const ph = $('app-phone');
+    if (ph && document.activeElement !== ph) ph.value = app.phone;
+    setText('app-note', app.sent ? `${app.note} · 看短信，填 6 位码` : app.note);
+    $('app-slider-box').hidden = !app.hasSlider;
+    if (app.hasSlider && app.slider) {
+      setText('app-slider-note', '移动云盘要滑块：下面这张图已经解出缺口位置，点「发验证码」会带着答案发。');
+      $('app-slider-bg').src = `data:image/jpeg;base64,${app.slider.backgroundB64}`;
+    }
+  } else {
+    $('app-slider-box').hidden = true;
+  }
 }
 
 function renderAccount(a, login) {
@@ -1070,6 +1086,62 @@ $('paste-submit').addEventListener('click', (e) =>
       return r;
     },
     '凭据已存下',
+  ),
+);
+
+// ────────── 手机端（App 链路）──────────
+//
+// ⚠ 这一路的滑块与 PC **不是同一件事**（参考实现的注释）：
+//   两端 `NeedSlider` 名字一样，但 PC 是"取图 → 本地识别 → 重发"，
+//   而 App 真机是"开 WebView，短信由那个 H5 发"。
+//   我们这边两端都走"取图自己解"（参考实现的 App 那条也是），但**成功载荷的
+//   形状不同**：App 的 `data` 是密文字符串、要用**另一把钥匙**解。
+//   所以这里是三条独立的路由，不是把 PC 那套换个头。
+
+$('app-start').addEventListener('click', (e) =>
+  act(
+    e.currentTarget,
+    () =>
+      api('/login/app/start', {
+        method: 'POST',
+        write: true,
+        body: { phone: $('app-phone').value.trim() },
+      }),
+    (r) => r.note || '手机号记下了',
+  ),
+);
+
+$('app-send').addEventListener('click', (e) =>
+  act(
+    e.currentTarget,
+    async () => {
+      const r = await api('/login/app/send', { method: 'POST', write: true });
+      if (r.sent) return r;
+      if (r.needSlider) {
+        // 被风控拦下 ⇒ 去取题面。**缺口坐标是解出来的**，不用人眼量像素。
+        const p = await api('/login/app/slider', { method: 'POST', write: true });
+        if (!p.ok) throw new Error(p.note || '取题面失败');
+        $('app-slider-box').hidden = false;
+        setText('app-slider-note', p.note);
+        $('app-slider-bg').src = `data:image/jpeg;base64,${p.background}`;
+        return p;
+      }
+      throw new Error(r.note || '发码没成');
+    },
+    (r) => (r && r.needSlider ? '移动云盘要滑块 —— 题面已取到，再点一次「发验证码」' : '验证码已发出'),
+  ),
+);
+
+$('app-submit').addEventListener('click', (e) =>
+  act(
+    e.currentTarget,
+    () =>
+      api('/login/app/submit', {
+        method: 'POST',
+        write: true,
+        body: { code: $('app-code').value.trim() },
+      }),
+    (r) => r.note || '登录成功',
   ),
 );
 

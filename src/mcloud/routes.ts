@@ -134,7 +134,10 @@ import {
   decryptUserInfo,
   isSuccessCode,
   parseLoginEnvelope,
+  LOGIN_AES_KEY,
   parseSliderPuzzle,
+  puzzleVerfycodeEncrypt,
+  type SliderPuzzle,
   pcClient,
   qrExpired,
   qrPayload,
@@ -168,10 +171,22 @@ import {
   setSmsSlider,
   startQrSession,
   startSmsSession,
+  loadAppSession,
+  saveAppSession,
+  startAppSession,
 } from './loginSession.ts';
 import type { Store } from '../store/types.ts';
 import { rawStoreOf, scoped } from '../store/scoped.ts';
 import { setAccountDisabled, setAccountLabel } from './accounts.ts';
+import {
+  APP_LOGIN_AES_KEY,
+  APP_SLIDER_PUZZLE_PATH,
+  appPost,
+  appSendSmsCodeRequest,
+  appThirdloginRequest,
+  classifyAppLogin,
+  classifyAppSendSms,
+} from './appLogin.ts';
 import { readBag } from '../store/keys.ts';
 import type { BuiltRequest } from './h5.ts';
 import type { Transport } from './client.ts';
@@ -513,16 +528,22 @@ function adoptLoginResult(
   deps: RouteDeps,
   encrypted: string,
   note: string,
+  // ⚠ 这两样**必须参数化**：PC 与手机端用的是**两把不同的钥匙**
+  //（`qPqDw263XgFgL3u8` / `lYzvvBMUjucw+h^R`）与**两个不同的前缀**
+  //（`pc` / `mobile`）。写死一个的话，另一端登录出来的凭据会带着错的前缀，
+  // 而"前缀不对"在任务里表现为"身份用错了"，离现场很远。
+  prefix: string = PC_AUTH_PREFIX,
+  key: string = LOGIN_AES_KEY,
 ): { ok: boolean; note: string; account?: { id: string; label: string } } {
   let info: Record<string, unknown>;
   try {
-    info = decryptUserInfo(encrypted);
+    info = decryptUserInfo(encrypted, key);
   } catch (e) {
     return { ok: false, note: `登录成功了，但结果解不开：${e instanceof Error ? e.message : String(e)}` };
   }
   let auth: string;
   try {
-    auth = authFromUserInfo(info, PC_AUTH_PREFIX);
+    auth = authFromUserInfo(info, prefix);
   } catch (e) {
     return { ok: false, note: `登录结果缺字段：${e instanceof Error ? e.message : String(e)}` };
   }
@@ -890,6 +911,122 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
             ? '验证码不对（或者过期了），再看一眼短信'
             : `登录没成：${out.kind === 'other' ? out.message || `code=${out.code}` : out.kind}`;
         return json(200, { ok: false, stop: false, note });
+      },
+    },
+
+    // ── 登录：手机端（App 链路）─────────────────────────────────────
+    //
+    // ⚠ 与短信那条**不是一个东西**，所以四条路由都是新的：
+    //   · 请求头是 App 那套（`appHeaders`），凭据前缀是 `mobile`
+    //   · 第三枪的体是**加密的**（AES-128-ECB + 末 10 位错位）
+    //   · 响应的成功载荷是**密文字符串**，要用 **App 那把钥匙**解
+    //   参考实现特意没复用 PC 的枚举，理由写得很直白：「共用一个枚举会让调用方
+    //   写错分支却仍然编译通过」。
+    {
+      path: `${base}/login/app/start`,
+      method: 'POST',
+      handler: (req) => {
+        const b = readBody(req) as { phone?: unknown };
+        const phone = typeof b.phone === 'string' ? b.phone.trim() : '';
+        if (!/^1\d{10}$/.test(phone)) return json(400, { error: '手机号要 11 位（1 开头）' });
+        const a = startAppSession(deps.store, phone, Date.parse(deps.now()), deps.now());
+        deps.log('手机端登录：手机号记下了');
+        return json(200, { ok: true, phone: a.phone, note: '手机号记下了 —— 点「发验证码」' });
+      },
+    },
+    {
+      path: `${base}/login/app/send`,
+      method: 'POST',
+      handler: () => {
+        const a = loadAppSession(deps.store);
+        if (a === null) return json(400, { error: '没有正在进行的手机端登录（先填手机号）' });
+        const deviceId = loadDeviceId(deps.store, deps.now());
+        const nowMs = Date.parse(deps.now());
+        // 已经有题面 ⇒ 带答案重发（首次发码被风控拦下才走这条）
+        let puzzle = '';
+        if (a.slider !== null) {
+          try {
+            puzzle = puzzleVerfycodeEncrypt(sliderAnswer(a.slider));
+          } catch (e) {
+            return json(400, { error: `滑块图解不开：${e instanceof Error ? e.message : String(e)}` });
+          }
+        }
+        const r = loginCall(deps, appSendSmsCodeRequest(deviceId, nowMs, a.phone, puzzle));
+        if (!r.ok || r.env === null) return json(502, { error: `发码请求没成功：${r.error}` });
+
+        const out = classifyAppSendSms(r.env);
+        if (out.kind === 'sent') {
+          saveAppSession(deps.store, { ...a, sent: true, lastNote: '验证码已发出' }, deps.now());
+          return json(200, {
+            ok: true,
+            sent: true,
+            remainGetTimes: out.remainGetTimes,
+            note:
+              out.remainGetTimes === null
+                ? '验证码已发出'
+                : `验证码已发出（今天还能发 ${out.remainGetTimes} 次）`,
+          });
+        }
+        if (out.kind === 'need-captcha' || out.kind === 'slider-exhausted') {
+          // ⚠ `slider-exhausted` **不是**"账号被限流了"，而是"这一道题的尝试次数
+          //   用完了" ⇒ 正确的反应是**重取一道新题**，不是拿旧答案再试。
+          saveAppSession(deps.store, { ...a, slider: null, lastNote: out.note }, deps.now());
+          return json(200, { ok: false, needSlider: true, note: out.note });
+        }
+        return json(200, { ok: false, sent: false, note: out.note });
+      },
+    },
+    {
+      path: `${base}/login/app/slider`,
+      method: 'POST',
+      handler: () => {
+        const a = loadAppSession(deps.store);
+        if (a === null) return json(400, { error: '没有正在进行的手机端登录（先填手机号）' });
+        const deviceId = loadDeviceId(deps.store, deps.now());
+        // 题面体与 PC **一样**（`{account, type: 2}`，`type` 是数字）—— 路径也同一个
+        //（`/user/verfycode`）。差别只在**请求头**是 App 那套。
+        const r = loginCall(
+          deps,
+          appPost(APP_SLIDER_PUZZLE_PATH, JSON.stringify(sliderPuzzleBody(a.phone)), deviceId, Date.parse(deps.now())),
+        );
+        if (!r.ok || r.env === null) return json(502, { error: `取题面没成功：${r.error}` });
+        let p: SliderPuzzle;
+        try {
+          p = parseSliderPuzzle(r.env);
+        } catch (e) {
+          return json(200, { ok: false, note: `题面解不开：${e instanceof Error ? e.message : String(e)}` });
+        }
+        saveAppSession(deps.store, { ...a, slider: p, lastNote: '题面已取到' }, deps.now());
+        return json(200, {
+          ok: true,
+          background: p.backgroundB64,
+          note: '题面已取到 —— 缺口位置由这一侧解出，再点一次「发验证码」会带着答案发',
+        });
+      },
+    },
+    {
+      path: `${base}/login/app/submit`,
+      method: 'POST',
+      handler: (req) => {
+        const b = readBody(req) as { code?: unknown };
+        const code = typeof b.code === 'string' ? b.code.trim() : '';
+        if (!/^\d{4,8}$/.test(code)) return json(400, { error: '验证码要 4–8 位数字' });
+        const a = loadAppSession(deps.store);
+        if (a === null) return json(400, { error: '没有正在进行的手机端登录（先填手机号）' });
+        const deviceId = loadDeviceId(deps.store, deps.now());
+        const r = loginCall(
+          deps,
+          appThirdloginRequest(deviceId, Date.parse(deps.now()), a.phone, code, a.random),
+        );
+        if (!r.ok || r.env === null) return json(502, { error: `提交请求没成功：${r.error}` });
+
+        const out = classifyAppLogin(r.env);
+        if (out.kind === 'success') {
+          // ⚠ 前缀是 **`mobile`**，钥匙是 **App 那把** —— 两处都与 PC 不同。
+          const adopted = adoptLoginResult(deps, out.encrypted, '手机端登录成功', APP_AUTH_PREFIX, APP_LOGIN_AES_KEY);
+          return json(200, { ...adopted, stop: true });
+        }
+        return json(200, { ok: false, stop: false, note: out.note });
       },
     },
 
