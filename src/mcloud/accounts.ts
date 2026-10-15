@@ -13,6 +13,7 @@
 // ⚠ 凭据是**秘密**：这个模块只负责存取，**不许**把它写进日志/读数/界面
 //   （要给界面看的一律走 `maskAuth`）。
 
+import { PC_AUTH_PREFIX, parseAuth, type PcPlatform } from './auth.ts';
 import { fromBase64, fromUtf8 } from '../crypto/bytes.ts';
 import type { Store } from '../store/types.ts';
 
@@ -27,6 +28,23 @@ export type Account = {
   label: string;
   /** 原始凭据（`Authorization` 那一串）。**不许**进日志/界面。 */
   auth: string;
+  /** 凭据里那段平台：`pc` 或 `mobile`（从 `auth` 里解出来的）。
+   *
+   *  ⚠ **可能为空**：上游有缺段的样本，而"报错"会让一条能用但信息不全的凭据
+   *  变成不可用 —— 所以缺段留空串。判平台要**显式比对前缀**，不能靠"非空"。
+   *  见 `mcloud/auth.ts` 的 `parseAuth` / `isPcAuth`。 */
+  platform: string;
+  /** **只对 `pc` 有意义**：是 Windows 还是 macOS。
+   *
+   *  # 为什么它必须单独存
+   *
+   *  凭据里那一格恒是字面量 `pc`（Windows 与 macOS 都是它，客户端源码里
+   *  就是 `pc`，不是平台号）⇒ **光看凭据分不出平台**。而它决定后续每一次
+   *  请求的 UA 与设备头 —— 选错的话这个账号以后一直用错的身份发请求。
+   *
+   *  参考实现里也是单独一格（`Account::pc_platform`）。
+   *  `platform === 'mobile'` 时这一格**没有意义**（手机端不存在 win/mac 之分）。 */
+  pcPlatform?: PcPlatform | undefined;
   addedAt: string;
 };
 
@@ -101,10 +119,16 @@ export function loadAccounts(store: Pick<Store, 'getState'>): Account[] {
     if (it === null || typeof it !== 'object') continue;
     const o = it as Record<string, unknown>;
     if (typeof o.id !== 'string' || typeof o.auth !== 'string' || o.auth === '') continue;
+    const auth = o.auth;
+    const info = parseAuth(auth);
+    const pc = o.pcPlatform;
     out.push({
       id: o.id,
       label: typeof o.label === 'string' && o.label !== '' ? o.label : o.id,
-      auth: o.auth,
+      auth,
+      // 老账号没存过这两格 ⇒ 从凭据里现解一次（不用迁移）
+      platform: typeof o.platform === 'string' ? o.platform : (info?.platform ?? ''),
+      pcPlatform: pc === 'win' || pc === 'mac' ? pc : undefined,
       addedAt: typeof o.addedAt === 'string' ? o.addedAt : '',
     });
   }
@@ -121,14 +145,20 @@ export function upsertAccount(
   auth: string,
   nowIso: string,
   label?: string,
+  pcPlatform?: PcPlatform,
 ): { list: Account[]; account: Account; created: boolean } {
   const list = loadAccounts(store);
   const id = idOf(auth);
   const idx = list.findIndex((a) => a.id === id);
+  const info = parseAuth(auth);
   const account: Account = {
     id,
     label: label !== undefined && label !== '' ? label : (phoneOf(auth) ?? `账号 ${list.length + 1}`),
     auth,
+    platform: info?.platform ?? '',
+    // ⚠ 只在 PC 端才有意义。手机端传进来也丢掉 —— 留着会让"这个账号用哪套
+    //   设备头"这件事出现两个互相矛盾的来源。
+    pcPlatform: info?.platform === PC_AUTH_PREFIX ? (pcPlatform ?? list[idx]?.pcPlatform ?? 'win') : undefined,
     addedAt: idx >= 0 ? list[idx]!.addedAt : nowIso,
   };
   if (idx >= 0) list[idx] = account;

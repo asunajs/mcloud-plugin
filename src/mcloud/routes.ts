@@ -48,6 +48,7 @@ import { readRun, recentRuns } from './runLog.ts';
 import { STATE_LEAD_MS, STATE_ORDERED_HOUR, exchangeLeadMs } from './tasks/exchangeOrder.ts';
 import { runExchange } from './tasks/exchangeRun.ts';
 import { STATE_TARGET_HOUR, targetHourOf } from './exchangeTiming.ts';
+import { APP_AUTH_PREFIX, parseAuth } from './auth.ts';
 import { drawReport } from './tasks/liveDraw.ts';
 import { MATRIX_MARKETS, readMatrix } from './tasks/appTaskMatrix.ts';
 import { readDailyRun } from './dailyState.ts';
@@ -224,7 +225,17 @@ const JSON_HEADERS = { 'content-type': 'application/json; charset=utf-8' };
 /** 账号列表的**对外形状**：只给掩码，不给凭据（见 accounts.ts 模块头）。 */
 function accountsView(store: Pick<Store, 'getState'>): {
   current: string;
-  accounts: { id: string; label: string; masked: string; current: boolean; addedAt: string }[];
+  accounts: {
+    id: string;
+    label: string;
+    masked: string;
+    current: boolean;
+    addedAt: string;
+    /** `pc` / `mobile` / `''`（认不出）。界面要说清"这条是哪一端"。 */
+    platform: string;
+    /** PC 端才有：`win` / `mac`。手机端恒为 `''`。 */
+    pcPlatform: string;
+  }[];
 } {
   const cur = currentAccount(store);
   return {
@@ -235,6 +246,8 @@ function accountsView(store: Pick<Store, 'getState'>): {
       masked: maskAuth(a.auth),
       current: cur?.id === a.id,
       addedAt: a.addedAt,
+      platform: a.platform,
+      pcPlatform: a.pcPlatform ?? '',
     })),
   };
 }
@@ -1392,7 +1405,40 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
         if (op === 'add') {
           const auth = typeof body.auth === 'string' ? body.auth.trim() : '';
           if (auth === '') return json(400, { error: '要传 auth（原生凭据那一串）' });
-          const r = upsertAccount(deps.store, auth, now);
+          // ⚠ **先解析再落盘**：解不开的串存进去只会变成一个"永远登录不上、
+          //   也看不出为什么"的账号。参考实现也是先 `parse_auth` 再建账号。
+          const info = parseAuth(auth);
+          if (info === undefined) {
+            return json(400, {
+              error:
+                '这段凭据解不开。它应该是 `Basic <base64>`（或只有 base64 那段），' +
+                '里面是 `<平台>:<手机号>:<token>`',
+            });
+          }
+          const pcRaw = typeof body.pcPlatform === 'string' ? body.pcPlatform : '';
+          if (pcRaw !== '' && pcRaw !== 'win' && pcRaw !== 'mac') {
+            return json(400, { error: 'pcPlatform 只能是 win 或 mac' });
+          }
+          // ⚠ PC 端**要问**形态：凭据里那一格恒是 `pc`（Windows 与 macOS 都是它），
+          //   分不出 win/mac，而它决定后续每一次请求的 UA 与设备头 ——
+          //   选错的话这个账号以后一直用错的身份发请求。
+          //
+          //   界面上**没有**解析逻辑（`app.js` 是静态文件，import 不到解析器），
+          //   所以这里用 `needPcPlatform` 让界面把那个选择露出来 ——
+          //   解析只在后端做一次，界面不复制一份（两份会漂移）。
+          if (info.platform === PC_AUTH_PREFIX && pcRaw === '') {
+            return json(400, {
+              error: '这条是 PC 端 —— 选一下它当初是 Windows 还是 macOS（决定以后的请求头）',
+              needPcPlatform: true,
+            });
+          }
+          const r = upsertAccount(
+            deps.store,
+            auth,
+            now,
+            undefined,
+            pcRaw === '' ? undefined : (pcRaw as 'win' | 'mac'),
+          );
           // ⚠ 日志里只说"谁"，不说凭据
           deps.log(`账号：${r.created ? '添加' : '更新'} ${r.account.label}`);
           if (loadAccounts(deps.store).length === 1) selectAccount(deps.store, r.account.id, now);
