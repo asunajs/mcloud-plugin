@@ -44,6 +44,19 @@ import { log, register_cron, warn, worker_hint } from 'host-api';
 import { runAuthRefresh } from '../mcloud/authRefresh.ts';
 import { appendRun } from '../mcloud/runLog.ts';
 import { needExchange, runExchangeStep } from '../mcloud/sessionExchange.ts';
+import type { SessionRecipe } from '../mcloud/h5session.ts';
+
+/** 这一趟要跑的族**分别落在哪一页** —— 一页一张票，所以按页换。
+ *
+ *  ⚠ 这里列的是"这一趟真的会用到票的页"。多列一页的代价是每次多三枪；
+ *  少列一页的代价是那一族**用错页面的票**（而"行不行"没有样本）。 */
+const DAILY_PAGES: readonly SessionRecipe[] = ['sign-in', 'msg-push-on'];
+
+/** 界面上的名字。用"哪一族"而不是配方编号 —— 用户不认 `sign-in`。 */
+const PAGE_LABEL: Record<SessionRecipe, string> = {
+  'sign-in': '签到族',
+  'msg-push-on': '消息推送',
+};
 import { MATRIX_MARKETS, runAppTaskMatrix } from '../mcloud/tasks/appTaskMatrix.ts';
 import { runAppTaskStep, startAppTask } from '../mcloud/tasks/appTask.ts';
 import { runBackupGift } from '../mcloud/tasks/backupGift.ts';
@@ -138,20 +151,32 @@ function runDaily(deps: TaskDeps): {
   };
 
   // ① 换票（H5 的 jwttoken 约 2 小时即废）。票新鲜时 `needExchange` 直接说不用。
-  if (needExchange(store, Date.now())) {
-    // ⚠ `runExchangeStep` 返回的是 `{ok, note, done}`，不是 `TaskOutcome` ——
-    //   它用 `done` 而不是 `idle` 表示「这一趟走完了」。包一层对上 drain 的契约。
-    const r = drain(
-      (d) => {
-        const x = runExchangeStep(d);
-        return { ok: x.ok, note: x.note, idle: x.done };
-      },
-      deps,
-      { label: '换票', maxSteps: 4, deadlineMs: 30_000, startedAt: started },
-    );
-    push({ name: '换票', ok: r.ok, note: r.note, idle: r.idle });
-  } else {
-    push({ name: '换票', ok: true, note: '票还新鲜，不用换', idle: true });
+  //
+  // ⚠ **一页一张票**，所以这里按页循环。参考实现的实测结论是
+  //   「每个页面用自己的参数换自己的票，票与票之间逐字节不等」——
+  //   而这一趟要跑的两族正好落在两页上：
+  //
+  //     签到族（签到 / 备份有礼 / …） → `sign-in`
+  //     消息推送奖励                   → `msg-push-on`
+  //
+  //   只换一页的表现是另一族**用错页面的票**。而那"行不行"**没有样本**
+  //   （参考实现自己标的是"反向未验证"）—— 所以不赌，该换的都换。
+  for (const page of DAILY_PAGES) {
+    if (needExchange(store, Date.now(), page)) {
+      // ⚠ `runExchangeStep` 返回的是 `{ok, note, done}`，不是 `TaskOutcome` ——
+      //   它用 `done` 而不是 `idle` 表示「这一趟走完了」。包一层对上 drain 的契约。
+      const r = drain(
+        (d) => {
+          const x = runExchangeStep(d, page);
+          return { ok: x.ok, note: x.note, idle: x.done };
+        },
+        deps,
+        { label: `换票（${PAGE_LABEL[page]}）`, maxSteps: 4, deadlineMs: 30_000, startedAt: started },
+      );
+      push({ name: `换票（${PAGE_LABEL[page]}）`, ok: r.ok, note: r.note, idle: r.idle });
+    } else {
+      push({ name: `换票（${PAGE_LABEL[page]}）`, ok: true, note: '票还新鲜，不用换', idle: true });
+    }
   }
 
   // ② 签到族。
