@@ -258,8 +258,8 @@ function renderAccount(a, login) {
     '还没有账号。上面选一种方式登录。',
   );
 
-  const dev = $('device-id');
-  if (dev && document.activeElement !== dev) dev.value = ses.deviceId || '';
+  // 本机设备指纹：**只读显示**（它不是用户填的东西 —— 见 index.html 那段说明）。
+  setText('device-id-show', login.deviceId || '（还没生成）');
 
   // 登录方式：没做的**说清楚**，而不是留一个点了没反应的按钮
   setText(
@@ -961,6 +961,15 @@ $('device-reset').addEventListener('click', (e) =>
   ),
 );
 
+// 同一个动作的第二个入口（按**症状**命名 —— 见 index.html 里那段说明）。
+$('qr-reset').addEventListener('click', (e) =>
+  act(
+    e.currentTarget,
+    () => api('/login/device/reset', { method: 'POST', write: true }),
+    (r) => r.note,
+  ),
+);
+
 $('paste-open').addEventListener('click', () => {
   $('pane-paste').hidden = !$('pane-paste').hidden;
 });
@@ -1017,19 +1026,6 @@ $('paste-submit').addEventListener('click', (e) =>
       return r;
     },
     '凭据已存下',
-  ),
-);
-
-$('device-save').addEventListener('click', (e) =>
-  act(
-    e.currentTarget,
-    () =>
-      api('/accounts', {
-        method: 'POST',
-        write: true,
-        body: { op: 'device', deviceId: $('device-id').value.trim() },
-      }),
-    '设备号已保存',
   ),
 );
 
