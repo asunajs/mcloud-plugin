@@ -21,11 +21,13 @@ import {
   loadExchange,
   loadJwt,
   maskMobile,
+  jwtKey,
   needExchange,
   runExchangeStep,
   startExchange,
 } from '../src/mcloud/sessionExchange.ts';
 import { SESSION_KEY, loadSession } from '../src/store/types.ts';
+import { idOf, selectAccount, upsertAccount } from '../src/mcloud/accounts.ts';
 import { memStore } from '../src/store/memory.ts';
 import type { Transport } from '../src/mcloud/client.ts';
 import type { BuiltRequest } from '../src/mcloud/h5.ts';
@@ -265,4 +267,119 @@ test('没有待换票的任务时：一步都不发，直接 done', () => {
 test('手机号脱敏：只留前 3 后 4', () => {
   assert.equal(maskMobile('13800000000'), '138****0000');
   assert.equal(maskMobile('123'), '***');
+});
+
+// ══════════════════════ 多账号：票**必须按账号分开** ══════════════════════
+
+test('⚠ 多账号：票不能串（B 的请求不能带 A 的票）', () => {
+  // # 这条钉的是**跨账号串票**
+  //
+  // 原来票与换票进度各占**一个全局槽位**。多账号下的实际行为是：
+  //
+  //     账号 A 换票  → 全局票 = A 的票
+  //     账号 B 要跑  → `jwtFresh` 看到"票还新" ⇒ **B 根本不换**
+  //     账号 B 发请求 → 带的是 **A 的票**
+  //
+  // 也就是 B 以 A 的身份发请求 —— 而 `jwttoken` 恰恰是**身份**。
+  //
+  // 参考实现是按账号建会话的（`mcloud-tasks/src/beans.rs`：
+  // 「会话是按账号建的（`H5Client` 按主机注入 `jwttoken`）」）。
+  const store = memStore();
+  store.ensureSchema();
+  const A = 'Basic bW9iaWxlOjEzODAwMDAwMDAwOnRva2VuQQ=='; // …QQ（A）
+  const B = 'Basic bW9iaWxlOjEzOTAwMDAwMDAwOnRva2VuQg=='; // …Qg（B）
+  upsertAccount(store, A, NOW, 'A 号');
+  upsertAccount(store, B, NOW, 'B 号');
+
+  // ── A 换票 ──
+  selectAccount(store, idOf(A), NOW);
+  const a = fakeUpstream({ login: JSON.stringify({ code: 0, msg: 'ok', result: { token: 'JWT-A', mobile: '138' } }) });
+  assert.equal(needExchange(store, NOW_MS), true, 'A 还没票 ⇒ 要换');
+  startExchange(store, A, NOW);
+  drive(store, a.transport);
+  const jwtA = loadJwt(store);
+  assert.equal(jwtA?.jwt, 'JWT-A', 'A 换到了自己的票');
+  assert.equal(jwtFresh(store, NOW_MS), true);
+
+  // ── 切到 B：**票必须是"没有"**，而不是"A 那张还新" ──
+  selectAccount(store, idOf(B), NOW);
+  assert.equal(
+    loadJwt(store),
+    null,
+    'B 名下不该有票（有的话就是拿到了 A 那张）',
+  );
+  assert.equal(jwtFresh(store, NOW_MS), false, '⚠ B 的票不新鲜 ⇒ 必须去换');
+  assert.equal(needExchange(store, NOW_MS), true, '⚠ 这里返回 false 就是串票那个 bug');
+
+  // ── B 换票 ──
+  const b = fakeUpstream({ login: JSON.stringify({ code: 0, msg: 'ok', result: { token: 'JWT-B', mobile: '139' } }) });
+  startExchange(store, B, NOW);
+  drive(store, b.transport);
+  assert.equal(loadJwt(store)?.jwt, 'JWT-B', 'B 换到的是 B 的票');
+
+  // ── 切回 A：A 的票**还在**（没被 B 覆盖） ──
+  selectAccount(store, idOf(A), NOW);
+  assert.equal(loadJwt(store)?.jwt, 'JWT-A', '⚠ A 的票被 B 覆盖了');
+  assert.equal(needExchange(store, NOW_MS), false, 'A 的票还新 ⇒ 不该重换');
+});
+
+test('⚠ 多账号：换票进度也要分开（否则 B 会接着 A 的半截进度走）', () => {
+  const store = memStore();
+  store.ensureSchema();
+  const A = 'Basic bW9iaWxlOjEzODAwMDAwMDAwOnRva2VuQQ==';
+  const B = 'Basic bW9iaWxlOjEzOTAwMDAwMDAwOnRva2VuQg==';
+  upsertAccount(store, A, NOW, 'A');
+  upsertAccount(store, B, NOW, 'B');
+
+  // A 只走第一步（进度停在中间态）
+  selectAccount(store, idOf(A), NOW);
+  const a = fakeUpstream();
+  startExchange(store, A, NOW);
+  runExchangeStep({ store, transport: a.transport, nowIso: NOW });
+  const stepA = loadExchange(store);
+  assert.ok(stepA, 'A 有进度');
+  assert.notEqual(stepA.step, 'done', 'A 停在中间');
+
+  // B 名下的进度必须是**没有**，而不是"A 那半截"
+  selectAccount(store, idOf(B), NOW);
+  assert.equal(
+    loadExchange(store),
+    null,
+    '⚠ B 读到了 A 的半截进度 ⇒ B 会拿 A 的指纹去换票',
+  );
+
+  // 切回 A：进度还在，能接着走
+  selectAccount(store, idOf(A), NOW);
+  assert.deepEqual(loadExchange(store), stepA, 'A 的进度不该被动过');
+});
+
+test('⚠ 清票只清**当前账号**那两格（别顺手删了别人的）', () => {
+  const store = memStore();
+  store.ensureSchema();
+  const A = 'Basic bW9iaWxlOjEzODAwMDAwMDAwOnRva2VuQQ==';
+  const B = 'Basic bW9iaWxlOjEzOTAwMDAwMDAwOnRva2VuQg==';
+  upsertAccount(store, A, NOW, 'A');
+  upsertAccount(store, B, NOW, 'B');
+
+  for (const [raw, tok] of [[A, 'JWT-A'], [B, 'JWT-B']] as const) {
+    selectAccount(store, idOf(raw), NOW);
+    startExchange(store, raw, NOW);
+    drive(store, fakeUpstream({ login: JSON.stringify({ code: 0, result: { token: tok } }) }).transport);
+  }
+
+  selectAccount(store, idOf(A), NOW);
+  clearAuth(store, NOW);
+  assert.equal(loadJwt(store), null, 'A 的票清了');
+  selectAccount(store, idOf(B), NOW);
+  assert.equal(loadJwt(store)?.jwt, 'JWT-B', '⚠ B 的票被一起清了（"清一个账号，全部要重换"）');
+});
+
+test('单账号那套（没有账号列表）仍然用**裸键**，老数据照常读得到', () => {
+  const store = memStore();
+  store.ensureSchema();
+  // 直接往裸键里塞一张票 —— 模拟升级前的老数据
+  store.setState(STATE_JWT, JSON.stringify({ jwt: 'OLD', at: NOW }), NOW);
+  assert.equal(loadJwt(store)?.jwt, 'OLD', '没有当前账号 ⇒ 读裸键');
+  assert.equal(jwtKey(store), STATE_JWT, '没有当前账号时键就是裸的（不用迁移）');
+  assert.equal(jwtFresh(store, NOW_MS), true);
 });
