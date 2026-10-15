@@ -113,7 +113,6 @@
 
         <div class="row">
           <button class="btn btn-sm" id="paste-open">凭据</button>
-          <button class="btn btn-sm" id="h5-open">H5 换票</button>
           <button class="btn btn-sm" id="device-reset">我的码一直扫不出来</button>
         </div>
 
@@ -132,17 +131,13 @@
             <button class="btn btn-sm" id="paste-mac">macOS</button>
           </div>
           <p class="hint" id="paste-note"></p>
+          <p class="hint">
+            存下之后<b>不用再管换票</b> —— H5 那几张票是任务自己换的（约 2 小时废一次，
+            所以每次跑都会看一眼，新鲜就跳过）。
+          </p>
           <button class="btn btn-primary" id="paste-submit">存下</button>
         </div>
 
-        <div class="pane" id="pane-h5" hidden>
-          <p class="hint">
-            从移动云盘 App 的 WebView 里抓到的那段 <code>Authorization</code>（Basic …）贴进来。
-            它会走三步换成 H5 的票 —— 之后听弹幕、领小红花才用得上。
-          </p>
-          <textarea id="h5-body" rows="2" placeholder="Basic …"></textarea>
-          <button class="btn btn-primary" id="h5-submit">存下并换票</button>
-        </div>
 
         <h3 class="h3">已登录的账号</h3>
         <ul class="list" id="acct-list"></ul>
