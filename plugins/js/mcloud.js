@@ -3237,11 +3237,21 @@ function authStatus(store2) {
   if (!v) return { present: false };
   return { present: true, fingerprint: authFingerprint(sha256Hex(v)), length: v.length };
 }
+function scopedKey(base, store2) {
+  const cur = currentAccount(store2);
+  return cur === void 0 ? base : `${base}.${cur.id}`;
+}
+function jwtKey(store2) {
+  return scopedKey(STATE_JWT, store2);
+}
+function exchangeKey(store2) {
+  return scopedKey(STATE_EXCHANGE, store2);
+}
 function loadExchange(store2) {
-  return parse(store2.getState(STATE_EXCHANGE));
+  return parse(store2.getState(exchangeKey(store2)));
 }
 function loadJwt(store2) {
-  return parse(store2.getState(STATE_JWT));
+  return parse(store2.getState(jwtKey(store2)));
 }
 function jwtFresh(store2, nowMs) {
   const r = loadJwt(store2);
@@ -3255,7 +3265,7 @@ function startExchange(store2, raw, nowIso) {
   const fingerprint = authFingerprint(sha256Hex(norm.value));
   store2.setState(STATE_AUTH, norm.value, nowIso);
   store2.setState(
-    STATE_EXCHANGE,
+    exchangeKey(store2),
     JSON.stringify({ step: "spec-token", fingerprint, startedAt: nowIso }),
     nowIso
   );
@@ -3263,8 +3273,8 @@ function startExchange(store2, raw, nowIso) {
 }
 function clearAuth(store2, nowIso) {
   store2.setState(STATE_AUTH, "", nowIso);
-  store2.setState(STATE_EXCHANGE, "", nowIso);
-  store2.setState(STATE_JWT, "", nowIso);
+  store2.setState(exchangeKey(store2), "", nowIso);
+  store2.setState(jwtKey(store2), "", nowIso);
 }
 function runExchangeStep(deps) {
   const st = loadExchange(deps.store);
@@ -3279,7 +3289,7 @@ function runExchangeStep(deps) {
     s.note = note2;
     delete s.ssoToken;
     delete s.ts;
-    deps.store.setState(STATE_EXCHANGE, JSON.stringify(s), deps.nowIso);
+    deps.store.setState(exchangeKey(deps.store), JSON.stringify(s), deps.nowIso);
     return { ok, note: note2, done: true };
   };
   if (st.step === "smid") {
@@ -3318,7 +3328,7 @@ function runExchangeStep(deps) {
     st.ssoToken = p2.value;
     st.referer = pageUrl(SIGN_IN_RECIPE, p2.value);
     st.step = "timestamp";
-    deps.store.setState(STATE_EXCHANGE, JSON.stringify(st), deps.nowIso);
+    deps.store.setState(exchangeKey(deps.store), JSON.stringify(st), deps.nowIso);
     return { ok: true, note: "① 换到 SSO token（**不缓存**，下一步立刻用）", done: false };
   }
   if (st.step === "timestamp") {
@@ -3329,7 +3339,7 @@ function runExchangeStep(deps) {
     st.ssoToken = st.ssoToken ?? "";
     st.ts = p2.value;
     st.step = "tyrz-login";
-    deps.store.setState(STATE_EXCHANGE, JSON.stringify(st), deps.nowIso);
+    deps.store.setState(exchangeKey(deps.store), JSON.stringify(st), deps.nowIso);
     return { ok: true, note: `② 服务端时间戳 ${p2.value}（**必须用它**，本地时钟偏一点就是 401）`, done: false };
   }
   const ts = st.ts;
@@ -3350,7 +3360,7 @@ function runExchangeStep(deps) {
     mobile: p.value.mobile,
     fingerprint: st.fingerprint
   };
-  deps.store.setState(STATE_JWT, JSON.stringify(rec), deps.nowIso);
+  deps.store.setState(jwtKey(deps.store), JSON.stringify(rec), deps.nowIso);
   const sess = loadSession(deps.store);
   const needDevice = (sess?.deviceId ?? "") === "";
   if (needDevice) {
@@ -3366,7 +3376,7 @@ function runExchangeStep(deps) {
       deps.nowIso
     );
     st.step = "smid";
-    deps.store.setState(STATE_EXCHANGE, JSON.stringify(st), deps.nowIso);
+    deps.store.setState(exchangeKey(deps.store), JSON.stringify(st), deps.nowIso);
     return {
       ok: true,
       note: `③ 换到 jwttoken（${p.value.jwt.length} 字符）—— 再走一步换 \`deviceId\`（领取类接口要它）`,
@@ -3399,7 +3409,7 @@ function failStep(deps, st, note2) {
   st.note = note2;
   delete st.ssoToken;
   delete st.ts;
-  deps.store.setState(STATE_EXCHANGE, JSON.stringify(st), deps.nowIso);
+  deps.store.setState(exchangeKey(deps.store), JSON.stringify(st), deps.nowIso);
   return { ok: false, note: note2, done: true };
 }
 var RETRY_AFTER_MS = 30 * 60 * 1e3;
@@ -9533,6 +9543,19 @@ function mcloudRoutes(deps) {
       }
     },
     {
+      // ⚠ **这条没有界面入口了**（2026-10-15 删掉了那个「H5 换票」按钮）。
+      //
+      // 为什么删：它是个**用户看不懂**的按钮 —— 而参考实现里根本没有它。
+      // 那边换票是**任务里自动的一步**，而且**每个页面有自己的票**
+      // （`SessionRecipe`：`SignInPage` → `sign_in_3`/`1002`、
+      //  `MsgPushOn` → `msgpushon`/`1062`；实拍一趟抓到**三张互不相等的
+      //  `jwttoken`**）。一个叫「H5 换票」的按钮会让人以为换的是"通用的票"。
+      //
+      // 留着这条路由的理由：它是**单账号那套**（`mcloud.h5.auth`）唯一的写入口，
+      // 而 `loadAuthRaw` 还回落到那一格（老数据）。也留一条不带界面的
+      // "清空"路径（`{clear:true}`）。
+      //
+      // 界面上的凭据入口是 `/accounts` 的 `op:'add'`（那个「凭据」页签）。
       path: `${base}/h5/auth`,
       method: "POST",
       handler: (req) => {

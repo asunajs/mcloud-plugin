@@ -1020,28 +1020,6 @@ $('paste-submit').addEventListener('click', (e) =>
   ),
 );
 
-$('h5-open').addEventListener('click', () => {
-  $('pane-h5').hidden = !$('pane-h5').hidden;
-});
-$('h5-submit').addEventListener('click', (e) =>
-  act(
-    e.currentTarget,
-    async () => {
-      const raw = $('h5-body').value.trim();
-      if (!raw) throw new Error('先把 Authorization 贴进来');
-      const r = await api('/h5/auth', {
-        method: 'POST',
-        write: true,
-        body: { authorization: raw },
-      });
-      $('h5-body').value = '';
-      $('pane-h5').hidden = true;
-      return r;
-    },
-    (r) => `已存下（指纹 ${r.fingerprint}）—— 点「现在跑一次」时它会自己换票`,
-  ),
-);
-
 $('device-save').addEventListener('click', (e) =>
   act(
     e.currentTarget,

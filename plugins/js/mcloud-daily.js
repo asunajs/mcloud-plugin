@@ -2519,11 +2519,21 @@ function parse(raw) {
     return null;
   }
 }
+function scopedKey(base, store2) {
+  const cur = currentAccount(store2);
+  return cur === void 0 ? base : `${base}.${cur.id}`;
+}
+function jwtKey(store2) {
+  return scopedKey(STATE_JWT, store2);
+}
+function exchangeKey(store2) {
+  return scopedKey(STATE_EXCHANGE, store2);
+}
 function loadExchange(store2) {
-  return parse(store2.getState(STATE_EXCHANGE));
+  return parse(store2.getState(exchangeKey(store2)));
 }
 function loadJwt(store2) {
-  return parse(store2.getState(STATE_JWT));
+  return parse(store2.getState(jwtKey(store2)));
 }
 function jwtFresh(store2, nowMs) {
   const r = loadJwt(store2);
@@ -2537,7 +2547,7 @@ function startExchange(store2, raw, nowIso) {
   const fingerprint = authFingerprint(sha256Hex(norm.value));
   store2.setState(STATE_AUTH, norm.value, nowIso);
   store2.setState(
-    STATE_EXCHANGE,
+    exchangeKey(store2),
     JSON.stringify({ step: "spec-token", fingerprint, startedAt: nowIso }),
     nowIso
   );
@@ -2556,7 +2566,7 @@ function runExchangeStep(deps) {
     s.note = note;
     delete s.ssoToken;
     delete s.ts;
-    deps.store.setState(STATE_EXCHANGE, JSON.stringify(s), deps.nowIso);
+    deps.store.setState(exchangeKey(deps.store), JSON.stringify(s), deps.nowIso);
     return { ok, note, done: true };
   };
   if (st.step === "smid") {
@@ -2595,7 +2605,7 @@ function runExchangeStep(deps) {
     st.ssoToken = p2.value;
     st.referer = pageUrl(SIGN_IN_RECIPE, p2.value);
     st.step = "timestamp";
-    deps.store.setState(STATE_EXCHANGE, JSON.stringify(st), deps.nowIso);
+    deps.store.setState(exchangeKey(deps.store), JSON.stringify(st), deps.nowIso);
     return { ok: true, note: "① 换到 SSO token（**不缓存**，下一步立刻用）", done: false };
   }
   if (st.step === "timestamp") {
@@ -2606,7 +2616,7 @@ function runExchangeStep(deps) {
     st.ssoToken = st.ssoToken ?? "";
     st.ts = p2.value;
     st.step = "tyrz-login";
-    deps.store.setState(STATE_EXCHANGE, JSON.stringify(st), deps.nowIso);
+    deps.store.setState(exchangeKey(deps.store), JSON.stringify(st), deps.nowIso);
     return { ok: true, note: `② 服务端时间戳 ${p2.value}（**必须用它**，本地时钟偏一点就是 401）`, done: false };
   }
   const ts = st.ts;
@@ -2627,7 +2637,7 @@ function runExchangeStep(deps) {
     mobile: p.value.mobile,
     fingerprint: st.fingerprint
   };
-  deps.store.setState(STATE_JWT, JSON.stringify(rec), deps.nowIso);
+  deps.store.setState(jwtKey(deps.store), JSON.stringify(rec), deps.nowIso);
   const sess = loadSession(deps.store);
   const needDevice = (sess?.deviceId ?? "") === "";
   if (needDevice) {
@@ -2643,7 +2653,7 @@ function runExchangeStep(deps) {
       deps.nowIso
     );
     st.step = "smid";
-    deps.store.setState(STATE_EXCHANGE, JSON.stringify(st), deps.nowIso);
+    deps.store.setState(exchangeKey(deps.store), JSON.stringify(st), deps.nowIso);
     return {
       ok: true,
       note: `③ 换到 jwttoken（${p.value.jwt.length} 字符）—— 再走一步换 \`deviceId\`（领取类接口要它）`,
@@ -2676,7 +2686,7 @@ function failStep(deps, st, note) {
   st.note = note;
   delete st.ssoToken;
   delete st.ts;
-  deps.store.setState(STATE_EXCHANGE, JSON.stringify(st), deps.nowIso);
+  deps.store.setState(exchangeKey(deps.store), JSON.stringify(st), deps.nowIso);
   return { ok: false, note, done: true };
 }
 var RETRY_AFTER_MS = 30 * 60 * 1e3;
