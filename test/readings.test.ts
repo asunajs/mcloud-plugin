@@ -85,7 +85,9 @@ test('⚠ 它是只读的：一个上游请求都不发（transport 一调就抛
 
 test('配置被改过也不炸（口子全是空串 / 畸形值时）', () => {
   const store = memStore();
-  store.setState('mcloud.baseUrl', '', NOW);
+  // ⚠ 这里原来写的是 `mcloud.baseUrl` —— 那是**改名前留下的旧键**
+  //   （真键是 `mcloud.base_url`），所以这一行一直是个空操作。
+  store.setState('mcloud.base_url', '', NOW);
   store.setState('mcloud.live.url', 'not a url', NOW);
   const d = readings(store);
   assert.equal(typeof d.settings.baseUrl, 'string');

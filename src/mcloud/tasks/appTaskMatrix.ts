@@ -22,6 +22,7 @@
 // ② **`groupid` 全小写**，而拍拍那一族是驼峰 `groupId`。这是两族的**真实差异**
 //    （原项目逐字比对过实拍）—— 所以两个都认，别"统一"成一种。
 
+
 import { resultObject } from '../envelope.ts';
 import { MARKET_NAME, TASK_CLIENT_VERSION } from '../h5.ts';
 import { runTask } from './base.ts';

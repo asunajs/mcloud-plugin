@@ -55,6 +55,7 @@
 //   读数（STATE_READING）      ：界面那张卡片要看的那几个数（门开没开、看到几间房）
 // ```
 
+
 import { callRawText } from '../client.ts';
 import { clearError, recordError } from './base.ts';
 import type { TaskDeps, TaskOutcome } from './base.ts';

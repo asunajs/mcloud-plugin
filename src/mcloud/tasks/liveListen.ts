@@ -32,6 +32,7 @@
 //   否则每 10 秒就重跑一次"三发换票"，一天两万多发请求，那是不可接受的。
 // * JWT 与 WS 句柄都**只在窗口内活**，窗口结束就 `ws_close` + 抹掉状态。
 
+
 import { callRawText } from '../client.ts';
 import { clearError, recordError } from './base.ts';
 import type { HostWs, TaskDeps, TaskOutcome } from './base.ts';

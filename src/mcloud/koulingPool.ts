@@ -66,6 +66,7 @@
 // 每个改动的入口**自己也会先 normalize**（与 mcloud 逐条相同）——
 // 于是"忘了先归一化"这种错不会出现，代价是一次多余的比较。
 
+
 import { sha256, toHex, utf8 } from '../crypto/index.ts';
 import type { Store } from '../store/types.ts';
 

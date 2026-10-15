@@ -14,6 +14,7 @@
 // ⚠️ 手动触发时 `lateMs` 是**负数**（面板的已知问题，见 F-001）——
 // 负数一律当「手动」处理，不参与跳过判断，否则点了「立即执行」反而什么都不做。
 
+
 import { callOnce, mergeCookieJar } from '../client.ts';
 import type { CallResult, Transport } from '../client.ts';
 import type { SignInEnvelope } from '../envelope.ts';
@@ -206,11 +207,7 @@ export function runTask(
   // ⑥ 判定（各任务自己的事）+ 落盘
   const verdict = judge(res.env as SignInEnvelope, res);
   if (verdict.snapshot !== undefined && spec.stateKey) {
-    deps.store.setState(
-      spec.stateKey,
-      JSON.stringify({ at: deps.nowIso, lateMs: late, value: verdict.snapshot }),
-      deps.nowIso,
-    );
+    deps.store.setState(spec.stateKey, JSON.stringify({ at: deps.nowIso, lateMs: late, value: verdict.snapshot }), deps.nowIso);
   }
   if (verdict.ok) clearError(deps.store, spec.task, deps.nowIso);
   else recordError(deps.store, spec.task, verdict.note, deps.nowIso);
