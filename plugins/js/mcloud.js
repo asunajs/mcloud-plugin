@@ -45,6 +45,10 @@ var KEY_SCOPE = {
   //（PC 取图自己解、App 真机是开 WebView），共用一格会让"进行中的是哪一端"
   // 变成要靠猜。
   "mcloud.login.app": "global",
+  // 每条任务跑哪些账号。**global** —— 它说的是这条任务用哪些号，
+  // 不是某个号自己的设置（放进账号袋会让 A 的名单被 B 读到）。
+  // ⚠ 动态键（键里带任务名）⇒ 靠  登记，见下面那张表。
+  "mcloud.task.accounts.": "global",
   "mcloud.login.base": "global",
   "mcloud.login.userDomainId": "global",
   "mcloud.sign.stage": "account",
@@ -119,6 +123,10 @@ var KEY_SCOPE = {
   "mcloud.tasklist.last": "global"
 };
 var KEY_PREFIX_SCOPE = [
+  // 每条任务"跑哪些账号"（`mcloud.task.accounts.日常`）—— 键里带任务名，
+  // 静态扫描扫不到整串，所以按前缀登记。⚠ **global**：它说的是"这条任务用哪些号"，
+  // 不是"某个号自己的设置"。
+  ["mcloud.task.accounts.", "global"],
   ["mcloud.last_error.", "account"],
   // 票与换票进度：**按配方**分（`mcloud.h5.jwt.sign-in` / `.msg-push-on`）。
   // ⚠ 账号那一维由 `scoped()` 加（袋名），所以这里只剩配方这一段。
@@ -9115,6 +9123,47 @@ function scoped(base, acctId) {
   return wrapped;
 }
 
+// src/mcloud/taskAccounts.ts
+function taskAccountsKey(task) {
+  return `mcloud.task.accounts.${task}`;
+}
+var DEFAULT_TASK_ACCOUNTS = { all: true, ids: [] };
+function loadTaskAccounts(store2, task) {
+  const raw = (store2.getState(taskAccountsKey(task)) ?? "").trim();
+  if (raw === "") return { ...DEFAULT_TASK_ACCOUNTS };
+  try {
+    const v = JSON.parse(raw);
+    const ids = Array.isArray(v.ids) ? v.ids.filter((x) => typeof x === "string") : [];
+    return { all: v.all === true, ids };
+  } catch {
+    return { ...DEFAULT_TASK_ACCOUNTS };
+  }
+}
+function saveTaskAccounts(store2, task, v, nowIso) {
+  store2.setState(taskAccountsKey(task), JSON.stringify({ all: v.all, ids: v.ids }), nowIso);
+}
+function resolveTaskAccounts(store2, task) {
+  const sel = loadTaskAccounts(store2, task);
+  const all = loadAccounts(store2);
+  const enabled = all.filter((a) => a.disabled !== true);
+  if (sel.all) return enabled.map((a) => a.id);
+  const want = new Set(sel.ids);
+  return enabled.filter((a) => want.has(a.id)).map((a) => a.id);
+}
+function taskAccountsView(store2, task) {
+  const sel = loadTaskAccounts(store2, task);
+  return {
+    all: sel.all,
+    picked: sel.ids,
+    resolved: resolveTaskAccounts(store2, task),
+    accounts: loadAccounts(store2).map((a) => ({
+      id: a.id,
+      label: a.label,
+      disabled: a.disabled === true
+    }))
+  };
+}
+
 // src/mcloud/routes.ts
 var QR_POLL_MS = 2e3;
 var PLUGIN = "mcloud";
@@ -9183,6 +9232,14 @@ function buildReadings(deps) {
       current: view.current,
       accounts: view.accounts,
       session: sessionStatus(deps.store, nowIso)
+    },
+    // 三条任务各自"跑哪些账号"。⚠ 与上面那个 `account`（账号表）**分开给**：
+    //   一个是"有哪些号"，一个是"这条任务用哪些号"—— 界面上它们在不同页
+    //  （账号页 / 任务页）。合成一个的话，界面分不清该显示哪一个。
+    taskAccounts: {
+      日常: taskAccountsView(deps.store, "日常"),
+      兑换: taskAccountsView(deps.store, "兑换"),
+      直播: taskAccountsView(deps.store, "直播")
     },
     // 登录会话（三种方式的进行中状态）。挂在 `account` 块里 ——
     // 界面上的「登录」那一节就是它。
@@ -9663,6 +9720,31 @@ function mcloudRoutes(deps) {
         }
         const note2 = r.env.code === CODES.SMS_CODE_WRONG ? "验证码不对（或者过期了），再看一眼短信" : `登录没成：${out.kind === "other" ? out.message || `code=${out.code}` : out.kind}`;
         return json(200, { ok: false, stop: false, note: note2 });
+      }
+    },
+    {
+      // 写"这条任务跑哪些账号"。
+      //
+      // ⚠ 校验两件事：任务名必须是我们认识的那三个（不然键会被人拼出来乱写），
+      //   以及**选中的 id 必须真的存在** —— 存一堆不存在的 id 会让任务静默不跑，
+      //   而界面上看起来"选好了"。
+      path: `${base}/task/accounts`,
+      method: "POST",
+      handler: (req) => {
+        const b = readBody(req);
+        const task = typeof b.task === "string" ? b.task : "";
+        if (!TASK_NAMES.includes(task)) {
+          return json(400, { error: `不认识的任务：${task || "(空)"}` });
+        }
+        const all = b.all === true;
+        const known = new Set(loadAccounts(deps.store).map((a) => a.id));
+        const ids = Array.isArray(b.ids) ? b.ids.filter((x) => typeof x === "string" && known.has(x)) : [];
+        saveTaskAccounts(deps.store, task, { all, ids }, deps.now());
+        deps.log(`任务账号（${task}）：${all ? "全部" : `${ids.length} 个`}`);
+        return json(200, {
+          ...taskAccountsView(deps.store, task),
+          note: all ? `${task}：全部账号` : `${task}：${ids.length} 个账号`
+        });
       }
     },
     // ── 登录：手机端（App 链路）─────────────────────────────────────

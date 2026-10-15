@@ -54,6 +54,8 @@ import { runAuthRefresh } from '../mcloud/authRefresh.ts';
 import { appendRun } from '../mcloud/runLog.ts';
 import { needExchange, runExchangeStep } from '../mcloud/sessionExchange.ts';
 import type { SessionRecipe } from '../mcloud/h5session.ts';
+import { labelOf } from '../mcloud/taskAccounts.ts';
+import { rawStoreOf, scoped } from '../store/scoped.ts';
 
 /** 这一趟要跑的族**分别落在哪一页** —— 一页一张票，所以按页换。
  *
@@ -88,6 +90,7 @@ import {
   makeTransport,
   notify,
   taskDeps,
+  forEachTaskAccount,
 } from './shared.ts';
 import type { TaskPayload } from './shared.ts';
 
@@ -339,58 +342,98 @@ register_cron(
     const startedMs = Date.parse(nowIso);
     const today = nowIso.slice(0, 10);
 
-    // 今天已经整趟成功过 ⇒ 零请求秒返回。
+    // ── 这一趟跑**这条任务选的账号**（多选 / 全部），**串行** ──
     //
-    // ⚠ 这一步**不记 run**：记了的话面板上会看到一天 30 条「跳过」，
-    //   把真事件埋掉（老版本实机 soak 踩过这个，见 main.ts 里 lastLogged 那段）。
-    // ⚠ `getState` 返回的是**字符串本身**（不是 `{value}` 那种行对象）—— 见 store/types.ts
-    const doneDate = store.getState(DONE_KEY);
-    if (doneDate === today) return;
-
-    const deps = taskDeps(store, transport, p);
-    const r = runDaily(deps);
-
-    store.recordRun({
-      task: p.name,
-      runs: p.runs,
-      scheduledAt: p.scheduledAt,
-      firedAt: p.firedAt,
-      lateMs: p.lateMs,
-      ok: r.ok,
-      note: r.note,
+    // ⚠ 串行不是性能取舍，是**必须**：一个插件只有一条工作线程，而且上游有限流。
+    //   参考实现的口径：「点击运行后**后端保证串行执行**」。
+    //
+    // ⚠ 每一条的 `DONE_KEY`（今天跑过没）**在它自己的袋里** —— 所以"今天已经
+    //   成功过"要**逐条**判。放在循环外面判一次的话，A 跑完之后 B 就被跳过了
+    //   （那正是 F-050 那个"B 的整趟被跳过"的老毛病）。
+    const runs = forEachTaskAccount(store, '日常', p, transport, (deps) => {
+      // ⚠ 这一步**不记 run**：记了的话面板上会看到一天 30 条「跳过」，
+      //   把真事件埋掉（老版本实机 soak 踩过这个，见 main.ts 里 lastLogged 那段）。
+      // ⚠ `getState` 返回的是**字符串本身**（不是 `{value}` 那种行对象）—— 见 store/types.ts
+      if (deps.store.getState(DONE_KEY) === today) return null; // 这一条今天跑过了
+      return runDaily(deps);
     });
+
+    // 没选到账号 ⇒ **静默返回**。那不是失败，是"这条任务没配账号"。
+    if (runs.length === 0) return;
+
+    const results: typeof runs = [];
+    for (const [i, one] of runs.entries()) {
+      const r = one.result;
+      if (r === null) continue; // 这一条今天已经跑过
+      results.push(one);
+
+      const who = labelOf(store, one.acctId);
+      const note = runs.length > 1 ? `${who}：${r.note}` : r.note;
+
+      store.recordRun({
+        task: p.name,
+        runs: p.runs,
+        scheduledAt: p.scheduledAt,
+        firedAt: p.firedAt,
+        lateMs: p.lateMs,
+        ok: r.ok,
+        note,
+      });
+
+      // 同时进**运行记录**（留最近 N 次）。`LAST_KEY` 只有最后一次，
+      // 覆盖掉之后"上次明明好的"这类问题就查不了了。
+      const runId = appendRun(store, {
+        task: 'daily',
+        at: nowIso,
+        ms: Date.now() - startedMs,
+        ok: r.ok,
+        note,
+        steps: r.steps,
+      });
+
+      if (r.ok) {
+        // ⚠ 标记落在**这一条自己的袋里**（`deps.store` 已经按账号路由过了）
+        // ⚠ 标记必须落在**这一条自己的袋里** —— `deps.store` 已经按账号路由过了，
+        //   但它在闭包里，所以这里现取一个"作用在指定账号上"的 store。
+        scoped(rawStoreOf(store), one.acctId).setState(DONE_KEY, today, nowIso);
+        log(`日常（${who}）：${r.note}（运行 id=${runId}）`);
+      } else {
+        // 不落标记 ⇒ 下一跳重试（这正是「一次运行 = 一个结果」该有的样子）
+        warn(`日常（${who}）：${r.note}（运行 id=${runId}）`);
+      }
+      // 每一步的原话都进日志：出问题时「走到哪一步」是最要紧的信息
+      for (const line of r.detail) {
+        if (line.includes('失败')) warn(`  · ${line}`);
+      }
+    }
+
+    // 全都"今天已经跑过" ⇒ 静默返回（不推、不记）
+    if (results.length === 0) return;
 
     // 「一次运行」的完整结果落一条读数 —— 界面读它，不用去翻环形日志
+    const okAll = results.every((x) => x.result!.ok);
+    const summary =
+      results.length === 1
+        ? results[0]!.result!.note
+        : `${results.length} 个账号：${results.filter((x) => x.result!.ok).length} 成功 / ${results.filter((x) => !x.result!.ok).length} 失败`;
     store.setState(LAST_KEY, JSON.stringify({
         at: nowIso,
-        ok: r.ok,
-        note: r.note,
-        steps: r.steps,
+        ok: okAll,
+        note: summary,
+        steps: results.flatMap((x) => x.result!.steps),
       }), nowIso);
 
-    // 同时进**运行记录**（留最近 N 次）。`LAST_KEY` 只有最后一次，
-    // 覆盖掉之后"上次明明好的"这类问题就查不了了。
-    const runId = appendRun(store, {
-      task: 'daily',
-      at: nowIso,
-      ms: Date.now() - startedMs,
-      ok: r.ok,
-      note: r.note,
-      steps: r.steps,
-    });
-    log(`日常：本次运行 id=${runId}`);
-
-    if (r.ok) {
-      store.setState(DONE_KEY, today, nowIso);
-      log(`日常：${r.note}`);
-    } else {
-      // 不落标记 ⇒ 下一跳重试（这正是「一次运行 = 一个结果」该有的样子）
-      warn(`日常：${r.note}`);
-    }
-    // 每一步的原话都进日志：出问题时「走到哪一步」是最要紧的信息
-    for (const line of r.detail) {
-      if (line.includes('失败')) warn(`  · ${line}`);
-    }
+    // 下面那段推送用这两个名字（原来它们指"那一次"的结果）
+    const r = {
+      ok: okAll,
+      note: summary,
+      detail: results.flatMap((x) =>
+        results.length > 1
+          ? x.result!.detail.map((l) => `${labelOf(store, x.acctId)} ${l}`)
+          : x.result!.detail,
+      ),
+      steps: results.flatMap((x) => x.result!.steps),
+    };
 
     // ── 推送：挂在**一次运行结束**上（不是每条日志推一次）──
     // 正文 = 这次的结果 + **失败的那几步**。带上失败的那几步是必须的：

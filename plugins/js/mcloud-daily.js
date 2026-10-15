@@ -375,6 +375,10 @@ var KEY_SCOPE = {
   //（PC 取图自己解、App 真机是开 WebView），共用一格会让"进行中的是哪一端"
   // 变成要靠猜。
   "mcloud.login.app": "global",
+  // 每条任务跑哪些账号。**global** —— 它说的是这条任务用哪些号，
+  // 不是某个号自己的设置（放进账号袋会让 A 的名单被 B 读到）。
+  // ⚠ 动态键（键里带任务名）⇒ 靠  登记，见下面那张表。
+  "mcloud.task.accounts.": "global",
   "mcloud.login.base": "global",
   "mcloud.login.userDomainId": "global",
   "mcloud.sign.stage": "account",
@@ -449,6 +453,10 @@ var KEY_SCOPE = {
   "mcloud.tasklist.last": "global"
 };
 var KEY_PREFIX_SCOPE = [
+  // 每条任务"跑哪些账号"（`mcloud.task.accounts.日常`）—— 键里带任务名，
+  // 静态扫描扫不到整串，所以按前缀登记。⚠ **global**：它说的是"这条任务用哪些号"，
+  // 不是"某个号自己的设置"。
+  ["mcloud.task.accounts.", "global"],
   ["mcloud.last_error.", "account"],
   // 票与换票进度：**按配方**分（`mcloud.h5.jwt.sign-in` / `.msg-push-on`）。
   // ⚠ 账号那一维由 `scoped()` 加（袋名），所以这里只剩配方这一段。
@@ -3192,6 +3200,58 @@ function appendRun(store2, rec) {
   return id;
 }
 
+// src/mcloud/taskAccounts.ts
+function taskAccountsKey(task) {
+  return `mcloud.task.accounts.${task}`;
+}
+var DEFAULT_TASK_ACCOUNTS = { all: true, ids: [] };
+function loadTaskAccounts(store2, task) {
+  const raw = (store2.getState(taskAccountsKey(task)) ?? "").trim();
+  if (raw === "") return { ...DEFAULT_TASK_ACCOUNTS };
+  try {
+    const v = JSON.parse(raw);
+    const ids = Array.isArray(v.ids) ? v.ids.filter((x) => typeof x === "string") : [];
+    return { all: v.all === true, ids };
+  } catch {
+    return { ...DEFAULT_TASK_ACCOUNTS };
+  }
+}
+function resolveTaskAccounts(store2, task) {
+  const sel = loadTaskAccounts(store2, task);
+  const all = loadAccounts(store2);
+  const enabled = all.filter((a) => a.disabled !== true);
+  if (sel.all) return enabled.map((a) => a.id);
+  const want = new Set(sel.ids);
+  return enabled.filter((a) => want.has(a.id)).map((a) => a.id);
+}
+function labelOf(store2, acctId) {
+  const a = loadAccounts(store2).find((x) => x.id === acctId);
+  return a?.label || a?.id || acctId;
+}
+
+// src/store/scoped.ts
+var WRAPPED = Symbol.for("__mcloud_scoped_store__");
+var RAW = Symbol.for("__mcloud_raw_store__");
+function rawStoreOf(s) {
+  const raw = s[RAW];
+  return raw ?? s;
+}
+function scoped(base, acctId) {
+  if (base[WRAPPED] === true) {
+    throw new Error(
+      "store 已经被 scoped() 包过一次了 —— 双重包装会让 `mcloud.acct.*` 也去查登记表然后抛错。"
+    );
+  }
+  const wrapped = {
+    ...base,
+    getState: (key) => routeGet(base, key, acctId),
+    setState: (key, value, nowIso) => routeSet(base, key, value, nowIso, acctId)
+  };
+  Object.defineProperty(wrapped, WRAPPED, { value: true, enumerable: false });
+  Object.defineProperty(wrapped, RAW, { value: base, enumerable: false });
+  return wrapped;
+}
+
 // src/mcloud/tasks/base.ts
 var ERR_PREFIX = "mcloud.last_error.";
 function recordError(store2, task, note, nowIso) {
@@ -4922,25 +4982,6 @@ function hostStore() {
   };
 }
 
-// src/store/scoped.ts
-var WRAPPED = Symbol.for("__mcloud_scoped_store__");
-var RAW = Symbol.for("__mcloud_raw_store__");
-function scoped(base, acctId) {
-  if (base[WRAPPED] === true) {
-    throw new Error(
-      "store 已经被 scoped() 包过一次了 —— 双重包装会让 `mcloud.acct.*` 也去查登记表然后抛错。"
-    );
-  }
-  const wrapped = {
-    ...base,
-    getState: (key) => routeGet(base, key, acctId),
-    setState: (key, value, nowIso) => routeSet(base, key, value, nowIso, acctId)
-  };
-  Object.defineProperty(wrapped, WRAPPED, { value: true, enumerable: false });
-  Object.defineProperty(wrapped, RAW, { value: base, enumerable: false });
-  return wrapped;
-}
-
 // src/mcloud/session.ts
 var STATE_BASE_URL = "mcloud.base_url";
 function loadBaseUrl(store2) {
@@ -5318,6 +5359,16 @@ function makeStore() {
   }
   return s;
 }
+function forEachTaskAccount(base, task, payload, transport2, fn) {
+  const targets = resolveTaskAccounts(rawStoreOf(base), task);
+  const out = [];
+  for (const [i, acctId] of targets.entries()) {
+    const one = scoped(rawStoreOf(base), acctId);
+    const deps = taskDeps(one, transport2, payload);
+    out.push({ acctId, result: fn(deps, acctId, i, targets.length) });
+  }
+  return out;
+}
 function taskDeps(store2, transport2, payload) {
   return {
     store: store2,
@@ -5540,43 +5591,62 @@ register_cron(
     const nowIso = (/* @__PURE__ */ new Date()).toISOString();
     const startedMs = Date.parse(nowIso);
     const today2 = nowIso.slice(0, 10);
-    const doneDate = store.getState(DONE_KEY);
-    if (doneDate === today2) return;
-    const deps = taskDeps(store, transport, p);
-    const r = runDaily(deps);
-    store.recordRun({
-      task: p.name,
-      runs: p.runs,
-      scheduledAt: p.scheduledAt,
-      firedAt: p.firedAt,
-      lateMs: p.lateMs,
-      ok: r.ok,
-      note: r.note
+    const runs = forEachTaskAccount(store, "日常", p, transport, (deps) => {
+      if (deps.store.getState(DONE_KEY) === today2) return null;
+      return runDaily(deps);
     });
+    if (runs.length === 0) return;
+    const results = [];
+    for (const [i, one] of runs.entries()) {
+      const r2 = one.result;
+      if (r2 === null) continue;
+      results.push(one);
+      const who = labelOf(store, one.acctId);
+      const note = runs.length > 1 ? `${who}：${r2.note}` : r2.note;
+      store.recordRun({
+        task: p.name,
+        runs: p.runs,
+        scheduledAt: p.scheduledAt,
+        firedAt: p.firedAt,
+        lateMs: p.lateMs,
+        ok: r2.ok,
+        note
+      });
+      const runId = appendRun(store, {
+        task: "daily",
+        at: nowIso,
+        ms: Date.now() - startedMs,
+        ok: r2.ok,
+        note,
+        steps: r2.steps
+      });
+      if (r2.ok) {
+        scoped(rawStoreOf(store), one.acctId).setState(DONE_KEY, today2, nowIso);
+        log2(`日常（${who}）：${r2.note}（运行 id=${runId}）`);
+      } else {
+        warn2(`日常（${who}）：${r2.note}（运行 id=${runId}）`);
+      }
+      for (const line of r2.detail) {
+        if (line.includes("失败")) warn2(`  · ${line}`);
+      }
+    }
+    if (results.length === 0) return;
+    const okAll = results.every((x) => x.result.ok);
+    const summary = results.length === 1 ? results[0].result.note : `${results.length} 个账号：${results.filter((x) => x.result.ok).length} 成功 / ${results.filter((x) => !x.result.ok).length} 失败`;
     store.setState(LAST_KEY, JSON.stringify({
       at: nowIso,
-      ok: r.ok,
-      note: r.note,
-      steps: r.steps
+      ok: okAll,
+      note: summary,
+      steps: results.flatMap((x) => x.result.steps)
     }), nowIso);
-    const runId = appendRun(store, {
-      task: "daily",
-      at: nowIso,
-      ms: Date.now() - startedMs,
-      ok: r.ok,
-      note: r.note,
-      steps: r.steps
-    });
-    log2(`日常：本次运行 id=${runId}`);
-    if (r.ok) {
-      store.setState(DONE_KEY, today2, nowIso);
-      log2(`日常：${r.note}`);
-    } else {
-      warn2(`日常：${r.note}`);
-    }
-    for (const line of r.detail) {
-      if (line.includes("失败")) warn2(`  · ${line}`);
-    }
+    const r = {
+      ok: okAll,
+      note: summary,
+      detail: results.flatMap(
+        (x) => results.length > 1 ? x.result.detail.map((l) => `${labelOf(store, x.acctId)} ${l}`) : x.result.detail
+      ),
+      steps: results.flatMap((x) => x.result.steps)
+    };
     const bad = r.detail.filter((l) => l.includes("失败"));
     notify(
       store,

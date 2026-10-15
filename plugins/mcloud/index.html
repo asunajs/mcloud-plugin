@@ -252,7 +252,23 @@
       <section class="block" id="block-daily">
         <p class="hero" id="daily-hero">…</p>
         <p class="sub" id="daily-sub"></p>
-        <div class="row">
+                <!-- 账号选择器：**多选 + 全部**。⚠ 「全部」是**独立开关**，不是"把每一项都勾上"
+             —— 存的是 `{all:true}`，展开时**当下**去读账号表；勾名单的话以后新登录的
+             账号就永远进不来了（参考实现的原话：「勾每一项就锁死了当时的名单」）。
+             ⚠ 切账号属于**任务**，不属于账号管理 —— 见账号页那段说明。 -->
+        <div class="picker" data-picker="日常">
+          <button class="btn btn-sm picker-btn" id="daily-acct-btn" aria-expanded="false">
+            <span id="daily-acct-label">全部账号</span> ▾
+          </button>
+          <div class="picker-panel" id="daily-acct-panel" hidden>
+            <label class="picker-row picker-all">
+              <input type="checkbox" id="daily-acct-all" />
+              <span><b>全部账号</b><br /><span class="hint">以后新登录的账号也一起跑</span></span>
+            </label>
+            <div class="picker-list" id="daily-acct-list"></div>
+          </div>
+        </div>
+<div class="row">
           <button class="btn btn-primary" id="daily-run">现在跑一次</button>
         </div>
         <h3 class="h3">最近几次</h3>
@@ -288,7 +304,23 @@
           <button class="btn" id="ex-lead-save">保存</button>
         </div>
 
-        <div class="row">
+                <!-- 账号选择器：**多选 + 全部**。⚠ 「全部」是**独立开关**，不是"把每一项都勾上"
+             —— 存的是 `{all:true}`，展开时**当下**去读账号表；勾名单的话以后新登录的
+             账号就永远进不来了（参考实现的原话：「勾每一项就锁死了当时的名单」）。
+             ⚠ 切账号属于**任务**，不属于账号管理 —— 见账号页那段说明。 -->
+        <div class="picker" data-picker="兑换">
+          <button class="btn btn-sm picker-btn" id="exchange-acct-btn" aria-expanded="false">
+            <span id="exchange-acct-label">全部账号</span> ▾
+          </button>
+          <div class="picker-panel" id="exchange-acct-panel" hidden>
+            <label class="picker-row picker-all">
+              <input type="checkbox" id="exchange-acct-all" />
+              <span><b>全部账号</b><br /><span class="hint">以后新登录的账号也一起跑</span></span>
+            </label>
+            <div class="picker-list" id="exchange-acct-list"></div>
+          </div>
+        </div>
+<div class="row">
           <button class="btn btn-primary" id="ex-run">现在试一次</button>
         </div>
         <h3 class="h3">最近几次</h3>
@@ -307,7 +339,23 @@
         <h3 class="h3">贴一条口令去领</h3>
         <p class="hint">从直播弹幕里抄来的口令贴这里。会替你领小红花。</p>
         <textarea id="live-paste" rows="2" placeholder="口令"></textarea>
-        <div class="row">
+                <!-- 账号选择器：**多选 + 全部**。⚠ 「全部」是**独立开关**，不是"把每一项都勾上"
+             —— 存的是 `{all:true}`，展开时**当下**去读账号表；勾名单的话以后新登录的
+             账号就永远进不来了（参考实现的原话：「勾每一项就锁死了当时的名单」）。
+             ⚠ 切账号属于**任务**，不属于账号管理 —— 见账号页那段说明。 -->
+        <div class="picker" data-picker="直播">
+          <button class="btn btn-sm picker-btn" id="live-acct-btn" aria-expanded="false">
+            <span id="live-acct-label">全部账号</span> ▾
+          </button>
+          <div class="picker-panel" id="live-acct-panel" hidden>
+            <label class="picker-row picker-all">
+              <input type="checkbox" id="live-acct-all" />
+              <span><b>全部账号</b><br /><span class="hint">以后新登录的账号也一起跑</span></span>
+            </label>
+            <div class="picker-list" id="live-acct-list"></div>
+          </div>
+        </div>
+<div class="row">
           <button class="btn btn-primary" id="live-claim">贴进去领取</button>
           <button class="btn" id="live-run">现在听一次</button>
         </div>
