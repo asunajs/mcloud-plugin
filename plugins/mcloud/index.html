@@ -97,6 +97,34 @@
         </div>
       </section>
 
+      <!-- ══════════ 每账号设置（弹窗） ══════════
+           ⚠ 这两个字段原来挂在**全局**的设置区块里，而它们是**按账号的键** ——
+           "改了哪个账号"取决于当前选中，界面却不说。搬过来之后由"点的那条"决定。 -->
+      <div class="modal" id="acct-cfg-dialog" hidden>
+        <div class="modal-box">
+          <div class="modal-head">
+            <h3 class="h3">设置 · <span id="acct-cfg-title"></span></h3>
+            <button class="btn btn-sm" id="acct-cfg-close" aria-label="关闭">×</button>
+          </div>
+          <p class="hint">这些设置<b>只对这一个账号</b>生效。</p>
+          <label class="field">
+            <span>听窗口长度（秒）</span>
+            <input id="acct-cfg-seconds" type="number" min="10" max="3600" placeholder="10 – 3600" />
+          </label>
+          <label class="field">
+            <span>只听这间房（留空 = 自动）</span>
+            <input id="acct-cfg-room" type="number" min="0" placeholder="留空 = 自动" />
+          </label>
+          <label class="field">
+            <span>心跳回帧</span>
+            <input id="acct-cfg-heartbeat" type="text" placeholder="h" />
+          </label>
+          <p class="hint" id="acct-cfg-note"></p>
+          <p class="hint">留空的那一项<b>不改</b>（不是设成 0）。</p>
+          <button class="btn btn-primary" id="acct-cfg-save">存下</button>
+        </div>
+      </div>
+
       <!-- ══════════ 添加账号（弹窗，复刻 mcloud） ══════════
            参考实现的形状：五个页签 + **客户端形态在最上面**（对全部页签生效）
            + 各页签自己的内容。 -->
@@ -342,10 +370,11 @@
         </label>
         <button class="btn btn-primary" id="cfg-save">保存</button>
 
-        <h3 class="h3">听窗口</h3>
-        <label class="field"><span>窗口长度（秒）</span><input id="cfg-listenSeconds" type="number" min="10" max="3600" /></label>
-        <label class="field"><span>心跳回帧</span><input id="cfg-wsHeartbeat" type="text" placeholder="h" /></label>
-        <label class="field"><span>只听这间房（0 = 自动）</span><input id="cfg-listenRoom" type="number" min="0" /></label>
+        <!-- ⚠ 「听窗口长度 / 只听这间房 / 心跳回帧」原来在这里，而它们都是
+             **按账号的键**（`KEY_SCOPE` 里登记成 `account`）—— 挂在全局页上，
+             等于"改了哪个账号"取决于当前选中，而界面一个字都不说。
+             现在搬到**账号卡片的「设置」弹窗**里（复刻参考实现的做法）。
+             ⇒ 那几格在这里**故意不出现**，不是漏了。 -->
 
         <h3 class="h3">自检</h3>
         <p class="hint">验一下沙箱这一层（密码学、编码、数据库）是不是好的。装上去先点一次。</p>
