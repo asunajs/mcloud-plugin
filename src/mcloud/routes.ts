@@ -266,6 +266,12 @@ function accountsView(store: Pick<Store, 'getState'>): {
     deviceId: string;
     /** 停用。⚠ 与"删掉"不是一回事：停用**保留**状态（见 accounts.ts）。 */
     disabled: boolean;
+    /** 听窗口长度（秒）。**按账号**。`NaN` = 还没设过（用缺省值）。 */
+    listenSeconds: number;
+    /** 只听这间房（0 / `NaN` = 自动）。**按账号**。 */
+    listenRoom: number;
+    /** 弹幕心跳的回帧内容。**按账号**。空串 = 用缺省。 */
+    wsHeartbeat: string;
   }[];
 } {
   const cur = currentAccount(store);
@@ -289,6 +295,12 @@ function accountsView(store: Pick<Store, 'getState'>): {
         expireDays: exp > 0 ? Math.floor((exp - nowMs) / 86_400_000) : null,
         deviceId: readBag(raw, a.id)['mcloud.smid.deviceId'] ?? '',
         disabled: a.disabled === true,
+        // ⚠ 这两个键**是按账号的**（`KEY_SCOPE` 里登记成 `account`）。
+        //   所以"哪一条的设置"必须**按 id 读那一条的袋** —— 用当前账号那一格
+        //   会把 A 的设置显示在 B 的弹窗里。
+        listenSeconds: Number.parseInt(readBag(raw, a.id)['mcloud.live.listen_seconds'] ?? '', 10),
+        listenRoom: Number.parseInt(readBag(raw, a.id)['mcloud.live.listen_room'] ?? '', 10),
+        wsHeartbeat: readBag(raw, a.id)['mcloud.live.ws_heartbeat_reply'] ?? '',
       };
     }),
   };
@@ -1628,6 +1640,36 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
           if (loadAccounts(deps.store).length === 1) selectAccount(deps.store, r.account.id, now);
           return json(200, { ...accountsView(deps.store), note: `${r.created ? '已添加' : '已更新'} ${r.account.label}` });
         }
+        // **按账号**写设置。
+        //
+        // ⚠ 与 `refresh` 同一个理由：这两个键是按账号的，而"改哪一条"必须由
+        //   调用方**指名**，不能靠"当前选中是谁" —— 那会改错人而且看不出来。
+        if (op === 'set-settings') {
+          const id = typeof body.id === 'string' ? body.id : '';
+          const found = loadAccounts(deps.store).find((a) => a.id === id);
+          if (!found) return json(400, { error: `列表里没有这个账号：${id}` });
+          const one = scoped(rawStoreOf(deps.store), id);
+          const secs = typeof body.listenSeconds === 'number' ? body.listenSeconds : null;
+          const room = typeof body.listenRoom === 'number' ? body.listenRoom : null;
+          if (secs !== null) {
+            // 后端上限 3600（与 `loadListenSeconds` 的夹取一致）—— 这里也夹一次，
+            // 免得库里存着一个读的时候会被悄悄改掉的值（那会让人以为"没存上"）。
+            const clamped = Math.max(10, Math.min(3600, Math.round(secs)));
+            one.setState('mcloud.live.listen_seconds', String(clamped), now);
+          }
+          if (room !== null) {
+            one.setState('mcloud.live.listen_room', room > 0 ? String(Math.round(room)) : '', now);
+          }
+          if (typeof body.wsHeartbeat === 'string') {
+            one.setState('mcloud.live.ws_heartbeat_reply', body.wsHeartbeat.trim(), now);
+          }
+          deps.log(`账号设置（${found.label}）：窗口 ${secs ?? '不变'}s / 房间 ${room ?? '不变'}`);
+          return json(200, {
+            ...accountsView(deps.store as unknown as Store),
+            note: `${found.label} 的设置已存下`,
+          });
+        }
+
         // **按账号**刷新凭据。
         //
         // ⚠ 这一条必须有"指定账号"的能力：`/auth/refresh` 刷的是**当前**账号，
