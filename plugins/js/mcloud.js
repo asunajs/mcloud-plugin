@@ -3075,6 +3075,19 @@ var SIGN_IN_RECIPE = {
   portalPage: "mobilecloud",
   targetSourceId: "001005"
 };
+var MSG_PUSH_ON_RECIPE = {
+  toSourceId: "001005",
+  marketName: "msgpushon",
+  sourceId: "1062",
+  h5AppId: void 0,
+  pagePath: "openNoticeGift",
+  portalPage: "hcyview",
+  targetSourceId: void 0
+};
+var FALLBACK_RECIPE = "sign-in";
+function recipeParams(recipe) {
+  return recipe === "msg-push-on" ? MSG_PUSH_ON_RECIPE : SIGN_IN_RECIPE;
+}
 function pageUrl(p, ssoToken) {
   let url = `${BASE_MCLOUD}/portal/${p.portalPage}/index.html?path=${p.pagePath}&sourceid=${p.sourceId}`;
   if (p.h5AppId !== void 0) url += `&enableShare=1&appID=${p.h5AppId}`;
@@ -3237,36 +3250,42 @@ function authStatus(store2) {
   if (!v) return { present: false };
   return { present: true, fingerprint: authFingerprint(sha256Hex(v)), length: v.length };
 }
-function scopedKey(base, store2) {
+function scopedKey(base, store2, recipe) {
   const cur = currentAccount(store2);
-  return cur === void 0 ? base : `${base}.${cur.id}`;
+  if (cur === void 0 && recipe === FALLBACK_RECIPE) return base;
+  return `${base}.${cur?.id ?? "default"}.${recipe}`;
 }
-function jwtKey(store2) {
-  return scopedKey(STATE_JWT, store2);
+function jwtKey(store2, recipe = FALLBACK_RECIPE) {
+  return scopedKey(STATE_JWT, store2, recipe);
 }
-function exchangeKey(store2) {
-  return scopedKey(STATE_EXCHANGE, store2);
+function exchangeKey(store2, recipe = FALLBACK_RECIPE) {
+  return scopedKey(STATE_EXCHANGE, store2, recipe);
 }
-function loadExchange(store2) {
-  return parse(store2.getState(exchangeKey(store2)));
+function loadExchange(store2, recipe = FALLBACK_RECIPE) {
+  return parse(store2.getState(exchangeKey(store2, recipe)));
 }
-function loadJwt(store2) {
-  return parse(store2.getState(jwtKey(store2)));
+function loadJwt(store2, recipe = FALLBACK_RECIPE) {
+  return parse(store2.getState(jwtKey(store2, recipe)));
 }
-function jwtFresh(store2, nowMs) {
-  const r = loadJwt(store2);
+function jwtFresh(store2, nowMs, recipe = FALLBACK_RECIPE) {
+  const r = loadJwt(store2, recipe);
   if (!r) return false;
   const at = Date.parse(r.at);
   return Number.isFinite(at) && nowMs - at < JWT_TTL_MS;
 }
-function startExchange(store2, raw, nowIso) {
+function startExchange(store2, raw, nowIso, recipe = FALLBACK_RECIPE) {
   const norm = normalizeAuthorization(raw);
   if (!norm.ok || norm.value === void 0) return { ok: false, error: norm.error };
   const fingerprint = authFingerprint(sha256Hex(norm.value));
   store2.setState(STATE_AUTH, norm.value, nowIso);
   store2.setState(
-    exchangeKey(store2),
-    JSON.stringify({ step: "spec-token", fingerprint, startedAt: nowIso }),
+    exchangeKey(store2, recipe),
+    JSON.stringify({
+      step: "spec-token",
+      recipe,
+      fingerprint,
+      startedAt: nowIso
+    }),
     nowIso
   );
   return { ok: true, fingerprint };
@@ -3276,12 +3295,13 @@ function clearAuth(store2, nowIso) {
   store2.setState(exchangeKey(store2), "", nowIso);
   store2.setState(jwtKey(store2), "", nowIso);
 }
-function runExchangeStep(deps) {
-  const st = loadExchange(deps.store);
+function runExchangeStep(deps, recipe = FALLBACK_RECIPE) {
+  const st = loadExchange(deps.store, recipe);
   const auth = loadAuthRaw(deps.store) || null;
   if (!st || st.step === "done" || !auth) {
     return { ok: true, note: "没有待换票的任务（先去界面上贴一份原生凭据）", done: true };
   }
+  const rp = recipeParams(st.recipe ?? recipe);
   const finish3 = (s, ok, note2) => {
     s.step = "done";
     s.finishedAt = deps.nowIso;
@@ -3289,7 +3309,7 @@ function runExchangeStep(deps) {
     s.note = note2;
     delete s.ssoToken;
     delete s.ts;
-    deps.store.setState(exchangeKey(deps.store), JSON.stringify(s), deps.nowIso);
+    deps.store.setState(exchangeKey(deps.store, recipe), JSON.stringify(s), deps.nowIso);
     return { ok, note: note2, done: true };
   };
   if (st.step === "smid") {
@@ -3321,25 +3341,25 @@ function runExchangeStep(deps) {
     return finish3(st, true, `④ 换到 deviceId（${got.deviceId.length} 字符，B 开头）—— 领取类接口现在能用了`);
   }
   if (st.step === "spec-token") {
-    const res2 = callRawText(deps.transport, specTokenRequest(SIGN_IN_RECIPE, auth, deps.baseUrl));
+    const res2 = callRawText(deps.transport, specTokenRequest(rp, auth, deps.baseUrl));
     if (!res2.ok) return failStep(deps, st, `① 换 SSO token 失败：${res2.error ?? "未知失败"}`);
     const p2 = parseSsoToken(res2.text);
     if (!p2.ok || p2.value === void 0) return failStep(deps, st, `① ${p2.error}`);
     st.ssoToken = p2.value;
-    st.referer = pageUrl(SIGN_IN_RECIPE, p2.value);
+    st.referer = pageUrl(rp, p2.value);
     st.step = "timestamp";
-    deps.store.setState(exchangeKey(deps.store), JSON.stringify(st), deps.nowIso);
+    deps.store.setState(exchangeKey(deps.store, recipe), JSON.stringify(st), deps.nowIso);
     return { ok: true, note: "① 换到 SSO token（**不缓存**，下一步立刻用）", done: false };
   }
   if (st.step === "timestamp") {
-    const res2 = callRawText(deps.transport, timestampRequest(SIGN_IN_RECIPE, st.referer ?? "", deps.baseUrl));
+    const res2 = callRawText(deps.transport, timestampRequest(rp, st.referer ?? "", deps.baseUrl));
     if (!res2.ok) return failStep(deps, st, `② 取时间戳失败：${res2.error ?? "未知失败"}`);
     const p2 = parseServerTimestamp(res2.text);
     if (!p2.ok || p2.value === void 0) return failStep(deps, st, `② ${p2.error}`);
     st.ssoToken = st.ssoToken ?? "";
     st.ts = p2.value;
     st.step = "tyrz-login";
-    deps.store.setState(exchangeKey(deps.store), JSON.stringify(st), deps.nowIso);
+    deps.store.setState(exchangeKey(deps.store, recipe), JSON.stringify(st), deps.nowIso);
     return { ok: true, note: `② 服务端时间戳 ${p2.value}（**必须用它**，本地时钟偏一点就是 401）`, done: false };
   }
   const ts = st.ts;
@@ -3348,7 +3368,7 @@ function runExchangeStep(deps) {
   }
   const res = callRawText(
     deps.transport,
-    tyrzLoginRequest(SIGN_IN_RECIPE, st.ssoToken, makeSign(ts), st.referer ?? "", deps.baseUrl)
+    tyrzLoginRequest(rp, st.ssoToken, makeSign(ts), st.referer ?? "", deps.baseUrl)
   );
   if (!res.ok) return failStep(deps, st, `③ 换 jwttoken 失败：${res.error ?? "未知失败"}`);
   const p = parseJwtToken(res.text);
@@ -3360,7 +3380,7 @@ function runExchangeStep(deps) {
     mobile: p.value.mobile,
     fingerprint: st.fingerprint
   };
-  deps.store.setState(jwtKey(deps.store), JSON.stringify(rec), deps.nowIso);
+  deps.store.setState(jwtKey(deps.store, recipe), JSON.stringify(rec), deps.nowIso);
   const sess = loadSession(deps.store);
   const needDevice = (sess?.deviceId ?? "") === "";
   if (needDevice) {
@@ -3376,7 +3396,7 @@ function runExchangeStep(deps) {
       deps.nowIso
     );
     st.step = "smid";
-    deps.store.setState(exchangeKey(deps.store), JSON.stringify(st), deps.nowIso);
+    deps.store.setState(exchangeKey(deps.store, recipe), JSON.stringify(st), deps.nowIso);
     return {
       ok: true,
       note: `③ 换到 jwttoken（${p.value.jwt.length} 字符）—— 再走一步换 \`deviceId\`（领取类接口要它）`,
@@ -3409,7 +3429,7 @@ function failStep(deps, st, note2) {
   st.note = note2;
   delete st.ssoToken;
   delete st.ts;
-  deps.store.setState(exchangeKey(deps.store), JSON.stringify(st), deps.nowIso);
+  deps.store.setState(exchangeKey(deps.store, st.recipe ?? FALLBACK_RECIPE), JSON.stringify(st), deps.nowIso);
   return { ok: false, note: note2, done: true };
 }
 var RETRY_AFTER_MS = 30 * 60 * 1e3;

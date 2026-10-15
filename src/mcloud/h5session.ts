@@ -103,6 +103,69 @@ export const SIGN_IN_RECIPE: RecipeParams = {
   targetSourceId: '001005',
 };
 
+/** 开启通知页配方（**有实拍**，见参考实现 `session.rs` 的三张票核对表）。
+ *
+ *  ⚠ 与签到页**三处不同**，全都是实拍差异，不是"忘了填"：
+ *
+ *  | | 签到页 | 开启通知页 |
+ *  |---|---|---|
+ *  | `marketName` | `sign_in_3` | `msgpushon` |
+ *  | `sourceId` | `1002` | `1062` |
+ *  | `appID` | 有（40 字符） | **没有** |
+ *  | 入口路径段 | `portal/mobilecloud/` | `portal/hcyview/` |
+ *  | `targetSourceId` | 有 | **没有** |
+ *
+ *  ⚠ 最后两行**照抄，别顺手补齐**：「补一枚上游不认的参数」与「漏一枚上游必需的
+ *  参数」是两种错，而哪一种是这里的真相**没有样本**。 */
+export const MSG_PUSH_ON_RECIPE: RecipeParams = {
+  toSourceId: '001005',
+  marketName: 'msgpushon',
+  sourceId: '1062',
+  h5AppId: undefined,
+  pagePath: 'openNoticeGift',
+  portalPage: 'hcyview',
+  targetSourceId: undefined,
+};
+
+/** 会话配方编号 —— **不是页面名**。
+ *
+ *  ⚠ 两个页面映射到同一个配方，意思是"目前按同一套参数换票"，
+ *  **不是**"这两个页面是同一个页面"。 */
+export type SessionRecipe = 'sign-in' | 'msg-push-on';
+
+/** 页面 → 配方。
+ *
+ *  # ⚠ **公共票是兜底**
+ *
+ *  参考实现的实测结论是「每个页面用自己的参数换自己的票，票与票之间逐字节不等」，
+ *  已实拍四页（签到 / 备份有礼 / 开启通知 / 拍拍门户）。
+ *
+ *  但**只有两页**拿到了完整实拍 ⇒ 其余页面**映射到签到页那一套**（这就是"兜底"）。
+ *  参考实现的原话：「这是**唯一有完整实拍**的配方，其余页面在拿到自己的实拍前
+ *  映射到它」。
+ *
+ *  所以这里的分支是：**知道自己配方的走自己的，不知道的走兜底** ——
+ *  而不是"所有页面都用签到页那一套"（那是兜底被当成了正路）。 */
+export function recipeFor(page: H5Page): SessionRecipe {
+  return PAGE_RECIPES[page] ?? FALLBACK_RECIPE;
+}
+
+/** 已知有实拍的页面。**没列进来的页面一律走兜底。** */
+export type H5Page = 'sign-in' | 'msg-push-on';
+
+/** ⚠ **兜底配方**：其余页面在拿到自己的实拍之前都用它。 */
+export const FALLBACK_RECIPE: SessionRecipe = 'sign-in';
+
+const PAGE_RECIPES: Partial<Record<H5Page, SessionRecipe>> = {
+  'sign-in': 'sign-in',
+  'msg-push-on': 'msg-push-on',
+};
+
+/** 配方编号 → 参数。 */
+export function recipeParams(recipe: SessionRecipe): RecipeParams {
+  return recipe === 'msg-push-on' ? MSG_PUSH_ON_RECIPE : SIGN_IN_RECIPE;
+}
+
 /** 这一页的 H5 落地页地址（纯协议实现里只用来当 `referer`）。
  *
  *  真实客户端把 SSO token 直接拼在查询串里交给 WebView，H5 自己拿它去 `tyrzLogin` 建会话。
