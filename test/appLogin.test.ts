@@ -12,6 +12,11 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+
+// ⚠ 相对**文件本身**解析：`new URL('..', import.meta.url)` 退到的是
+//   "文件的父目录的父"（`test/` 的上一级已经是仓库根了），会多退一级。
+const SRC = new URL('../src/mcloud/appLogin.ts', import.meta.url);
 
 import {
   APP_CLIENT_TYPE,
@@ -19,7 +24,11 @@ import {
   APP_LOGIN_AES_KEY,
   APP_LOGIN_AES_KEY_ALT,
   APP_VERSION,
+  APP_X_USER_AGENT,
+  APP_X_YUN_USER_AGENT,
   SEND_SMS_RANDOM,
+  appSendSmsCodeRequest,
+  appThirdloginRequest,
   appClientInfo,
   appDeviceInfo,
   appHeaders,
@@ -167,4 +176,47 @@ test('⚠ 请求头：**故意不发** `hcy-cool-flag`', () => {
     (h['x-yun-client-info'] ?? '').startsWith(h['x-DeviceInfo'] ?? ''),
     'client-info = device-info + 尾巴',
   );
+});
+
+// ────────────────────── 请求构造 ──────────────────────
+
+test('⚠ App 的三枪：头是 App 那套，体是**密文**', () => {
+  const send = appSendSmsCodeRequest('DEV1', 1700000000000, '13800000000');
+  assert.equal(send.url, 'https://user-njs.yun.139.com/user/sms/getSmsCode');
+  assert.equal(send.method, 'POST');
+  // 头必须走 App 那套（不是 PC 的 `pcHeaders`）
+  assert.equal(send.headers['x-UserAgent'], APP_X_USER_AGENT);
+  assert.equal(send.headers['x-yun-user-agent'], APP_X_YUN_USER_AGENT);
+  // ⚠ 发码是**明文**体
+  const body = JSON.parse(send.body ?? '{}') as Record<string, unknown>;
+  assert.equal(body['phoneNumber'], '13800000000');
+  assert.equal(body['clientType'], APP_CLIENT_TYPE);
+
+  const third = appThirdloginRequest('DEV1', 1700000000000, '13800000000', '123456', 'rnd123');
+  assert.equal(third.url, 'https://user-njs.yun.139.com/user/thirdlogin');
+  // ⚠ 体**不是 JSON** —— 它是 hex 文本。这条钉的就是"加密这一步没被漏掉"：
+  //   漏掉的话这里会是一段能 parse 的 JSON，而下面这行会红。
+  assert.equal(third.body !== undefined && third.body.trim().startsWith('{'), false, '体不该是明文 JSON');
+  assert.match(third.body ?? '', /^[0-9a-f]+$/, '体该是一串 hex');
+  // 而且**能解回**那份明文（密钥对了才解得开）
+  const plain = decryptBody(third.body ?? '');
+  const back = JSON.parse(plain) as Record<string, unknown>;
+  // ⚠ 字段名是 **`msisdn` / `dycpwd`**（不是 phoneNumber / smsCode）——
+  //   这条顺带把字段名也钉住了：改错了这里会红，而线上表现是
+  //   `9103 输入参数不合法`，看起来像加密不对，会把人引去查加密层。
+  assert.equal(back['msisdn'], '13800000000');
+  assert.equal(back['dycpwd'], '123456');
+  assert.equal(back['pintype'], '8');
+  assert.equal(back['clienttype'], APP_CLIENT_TYPE);
+});
+
+test('⚠ 加密在构造里完成，调用点**没有**"忘了加密"这个选项', () => {
+  // 这是参考实现的原话：「传进来的是明文，加密在这里完成 —— 这样"忘了加密"
+  // 在类型层面就不可能发生」。所以 `appThirdloginRequest` 收的是**明文参数**，
+  // 不收支密文（收密文的话调用点可以先忘了加密再传进来）。
+  const src = readFileSync(SRC, 'utf8');
+  const fn = src.slice(src.indexOf('export function appThirdloginRequest'));
+  const sig = fn.slice(0, fn.indexOf('{'));
+  assert.ok(!/cipher|wire|encrypted/i.test(sig), `签名里不该出现密文参数：${sig}`);
+  assert.ok(/phone: string/.test(sig) && /smsCode: string/.test(sig), '签名该收明文手机号与验证码');
 });
