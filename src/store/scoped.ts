@@ -50,7 +50,7 @@ export function rawStoreOf<S extends object>(s: S): S {
  *  ⚠ **不许包两次**。包两次的行为是：外层把 `mcloud.acct.<id>` 这个键也拿去
  *  查登记表 ⇒ 查不到 ⇒ 抛 `UnregisteredKeyError`。也就是说双重包装会**立刻炸**
  *  （而不是静默出错），这是有意的；这里的标记只是把错误信息说得更清楚。 */
-export function scoped(base: Store): Store {
+export function scoped(base: Store, acctId?: string): Store {
   if ((base as unknown as Record<symbol, unknown>)[WRAPPED] === true) {
     throw new Error(
       'store 已经被 scoped() 包过一次了 —— 双重包装会让 `mcloud.acct.*` 也去查登记表然后抛错。',
@@ -60,8 +60,8 @@ export function scoped(base: Store): Store {
   //   袋（`mcloud.acct.*`）与全局键。所以它是"唯一路由点"，不会递归。
   const wrapped: Store = {
     ...base,
-    getState: (key) => routeGet(base, key),
-    setState: (key, value, nowIso) => routeSet(base, key, value, nowIso),
+    getState: (key) => routeGet(base, key, acctId),
+    setState: (key, value, nowIso) => routeSet(base, key, value, nowIso, acctId),
   };
   Object.defineProperty(wrapped, WRAPPED, { value: true, enumerable: false });
   Object.defineProperty(wrapped, RAW, { value: base, enumerable: false });
