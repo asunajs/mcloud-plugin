@@ -12,10 +12,330 @@ import {
   register_route
 } from "host-api";
 
+// src/crypto/bytes.ts
+function utf8(s) {
+  const out = [];
+  for (let i = 0; i < s.length; i += 1) {
+    let cp = s.charCodeAt(i);
+    if (cp >= 55296 && cp <= 56319 && i + 1 < s.length) {
+      const low = s.charCodeAt(i + 1);
+      if (low >= 56320 && low <= 57343) {
+        cp = 65536 + (cp - 55296 << 10) + (low - 56320);
+        i += 1;
+      } else {
+        cp = 65533;
+      }
+    } else if (cp >= 55296 && cp <= 57343) {
+      cp = 65533;
+    }
+    if (cp < 128) {
+      out.push(cp);
+    } else if (cp < 2048) {
+      out.push(192 | cp >> 6, 128 | cp & 63);
+    } else if (cp < 65536) {
+      out.push(224 | cp >> 12, 128 | cp >> 6 & 63, 128 | cp & 63);
+    } else {
+      out.push(
+        240 | cp >> 18,
+        128 | cp >> 12 & 63,
+        128 | cp >> 6 & 63,
+        128 | cp & 63
+      );
+    }
+  }
+  return new Uint8Array(out);
+}
+function fromUtf8(b) {
+  let s = "";
+  let codePoint = 0;
+  let bytesSeen = 0;
+  let bytesNeeded = 0;
+  let lower = 128;
+  let upper = 191;
+  const emit = (cp) => {
+    if (cp < 65536) {
+      s += String.fromCharCode(cp);
+    } else {
+      const v = cp - 65536;
+      s += String.fromCharCode(55296 + (v >> 10), 56320 + (v & 1023));
+    }
+  };
+  const reset = () => {
+    codePoint = 0;
+    bytesSeen = 0;
+    bytesNeeded = 0;
+    lower = 128;
+    upper = 191;
+  };
+  let i = 0;
+  while (i < b.length) {
+    const byte = b[i];
+    let reprocess = false;
+    if (bytesNeeded === 0) {
+      if (byte <= 127) {
+        s += String.fromCharCode(byte);
+      } else if (byte >= 194 && byte <= 223) {
+        bytesNeeded = 1;
+        codePoint = byte & 31;
+      } else if (byte >= 224 && byte <= 239) {
+        if (byte === 224) lower = 160;
+        if (byte === 237) upper = 159;
+        bytesNeeded = 2;
+        codePoint = byte & 15;
+      } else if (byte >= 240 && byte <= 244) {
+        if (byte === 240) lower = 144;
+        if (byte === 244) upper = 143;
+        bytesNeeded = 3;
+        codePoint = byte & 7;
+      } else {
+        s += "�";
+      }
+    } else if (byte < lower || byte > upper) {
+      reset();
+      s += "�";
+      reprocess = true;
+    } else {
+      lower = 128;
+      upper = 191;
+      codePoint = codePoint << 6 | byte & 63;
+      bytesSeen += 1;
+      if (bytesSeen === bytesNeeded) {
+        emit(codePoint);
+        reset();
+      }
+    }
+    if (!reprocess) i += 1;
+  }
+  if (bytesNeeded !== 0) s += "�";
+  return s;
+}
+var HEX = "0123456789abcdef";
+function toHex(b) {
+  let s = "";
+  for (let i = 0; i < b.length; i += 1) {
+    const v = b[i];
+    s += HEX[v >> 4] + HEX[v & 15];
+  }
+  return s;
+}
+function fromHex(h) {
+  const clean = h.replace(/[^0-9a-fA-F]/g, "");
+  const out = new Uint8Array(clean.length >> 1);
+  for (let i = 0; i < out.length; i += 1) {
+    out[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
+  }
+  return out;
+}
+var B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+function toBase64(b) {
+  let s = "";
+  for (let i = 0; i < b.length; i += 3) {
+    const n = b[i] << 16 | (b[i + 1] ?? 0) << 8 | (b[i + 2] ?? 0);
+    s += B64[n >> 18 & 63] + B64[n >> 12 & 63];
+    s += i + 1 < b.length ? B64[n >> 6 & 63] : "=";
+    s += i + 2 < b.length ? B64[n & 63] : "=";
+  }
+  return s;
+}
+function fromBase64(s) {
+  const clean = s.replace(/[^A-Za-z0-9+/]/g, "");
+  const out = new Uint8Array(Math.floor(clean.length * 6 / 8));
+  let bits2 = 0;
+  let acc = 0;
+  let o = 0;
+  for (let i = 0; i < clean.length; i += 1) {
+    const v = B64.indexOf(clean[i]);
+    if (v < 0) continue;
+    acc = acc << 6 | v;
+    bits2 += 6;
+    if (bits2 >= 8) {
+      bits2 -= 8;
+      out[o] = acc >> bits2 & 255;
+      o += 1;
+    }
+  }
+  return out.subarray(0, o);
+}
+function writeU32BE(out, off, v) {
+  out[off] = v >>> 24 & 255;
+  out[off + 1] = v >>> 16 & 255;
+  out[off + 2] = v >>> 8 & 255;
+  out[off + 3] = v & 255;
+}
+function writeU32LE(out, off, v) {
+  out[off] = v & 255;
+  out[off + 1] = v >>> 8 & 255;
+  out[off + 2] = v >>> 16 & 255;
+  out[off + 3] = v >>> 24 & 255;
+}
+function readU32BE(b, off) {
+  return (b[off] << 24 | b[off + 1] << 16 | b[off + 2] << 8 | b[off + 3]) >>> 0;
+}
+function readU32LE(b, off) {
+  return (b[off + 3] << 24 | b[off + 2] << 16 | b[off + 1] << 8 | b[off]) >>> 0;
+}
+function lengthBits(bytes) {
+  const bits2 = bytes * 8;
+  return { hi: Math.floor(bits2 / 4294967296) >>> 0, lo: bits2 >>> 0 };
+}
+
+// src/mcloud/auth.ts
+var PC_AUTH_PREFIX = "pc";
+function lenientB64(s) {
+  let payload = "";
+  for (const c of s) {
+    if (c === "=") break;
+    if (/[A-Za-z0-9+/]/.test(c)) payload += c;
+  }
+  if (payload.length === 0 || payload.length % 4 === 1) return void 0;
+  const pad = payload.length % 4 === 0 ? "" : "=".repeat(4 - payload.length % 4);
+  let text;
+  try {
+    text = fromUtf8(fromBase64(payload + pad));
+  } catch {
+    return void 0;
+  }
+  return text.length === 0 ? void 0 : text;
+}
+function isPlainDecimal(s) {
+  if (s.length === 0) return false;
+  let i = 0;
+  if (s[0] === "+" || s[0] === "-") i = 1;
+  if (i >= s.length) return false;
+  for (; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 48 || c > 57) return false;
+  }
+  return true;
+}
+function parseAuth(auth) {
+  if (auth.trim() === "") return void 0;
+  const i = auth.indexOf("Basic ");
+  const clean = i < 0 ? auth : auth.slice(0, i) + auth.slice(i + "Basic ".length);
+  const decoded = lenientB64(clean);
+  if (decoded === void 0) return void 0;
+  const parts = decoded.split(":", 4);
+  const platform = parts[0] ?? "";
+  const phone = parts[1] ?? "";
+  const token = parts[2] ?? "";
+  const seg = token.split("|")[3]?.trim();
+  const expire = seg !== void 0 && isPlainDecimal(seg) ? Math.trunc(Number(seg)) || 0 : 0;
+  return { raw: `Basic ${clean}`, platform, phone, token, expire };
+}
+
+// src/mcloud/accounts.ts
+var STATE_ACCOUNTS = "mcloud.accounts";
+var STATE_CURRENT_ACCOUNT = "mcloud.account.current";
+function maskAuth(raw) {
+  const phone = phoneOf(raw);
+  const len = raw.length;
+  if (phone !== void 0) return `${phone.slice(0, 1)}****${phone.slice(-4)} · ${len} 字符`;
+  return `（认不出手机号）· ${len} 字符`;
+}
+function phoneOf(raw) {
+  const plain = /1\d{10}/.exec(raw);
+  if (plain !== null) return plain[0];
+  const m = /^\s*basic\s+([A-Za-z0-9+/=]+)\s*$/i.exec(raw);
+  if (m === null) return void 0;
+  try {
+    const decoded = fromUtf8(fromBase64(m[1]));
+    const inB64 = /1\d{10}/.exec(decoded);
+    return inB64 === null ? void 0 : inB64[0];
+  } catch {
+    return void 0;
+  }
+}
+function idOf(raw) {
+  const phone = phoneOf(raw);
+  if (phone !== void 0) return phone;
+  let h = 2166136261;
+  for (let i = 0; i < raw.length; i++) {
+    h ^= raw.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return `anon-${(h >>> 0).toString(36)}`;
+}
+function loadAccounts(store2) {
+  const raw = store2.getState(STATE_ACCOUNTS);
+  if (raw === null || raw === void 0 || raw.trim() === "") return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const out = [];
+  for (const it of parsed) {
+    if (it === null || typeof it !== "object") continue;
+    const o = it;
+    if (typeof o.id !== "string" || typeof o.auth !== "string" || o.auth === "") continue;
+    const auth = o.auth;
+    const info = parseAuth(auth);
+    const pc = o.pcPlatform;
+    out.push({
+      id: o.id,
+      label: typeof o.label === "string" && o.label !== "" ? o.label : o.id,
+      auth,
+      // 老账号没存过这两格 ⇒ 从凭据里现解一次（不用迁移）
+      platform: typeof o.platform === "string" ? o.platform : info?.platform ?? "",
+      pcPlatform: pc === "win" || pc === "mac" ? pc : void 0,
+      addedAt: typeof o.addedAt === "string" ? o.addedAt : ""
+    });
+  }
+  return out;
+}
+function saveAccounts(store2, list, nowIso) {
+  store2.setState(STATE_ACCOUNTS, JSON.stringify(list), nowIso);
+}
+function upsertAccount(store2, auth, nowIso, label, pcPlatform) {
+  const list = loadAccounts(store2);
+  const id = idOf(auth);
+  const idx = list.findIndex((a) => a.id === id);
+  const info = parseAuth(auth);
+  const account = {
+    id,
+    label: label !== void 0 && label !== "" ? label : phoneOf(auth) ?? `账号 ${list.length + 1}`,
+    auth,
+    platform: info?.platform ?? "",
+    // ⚠ 只在 PC 端才有意义。手机端传进来也丢掉 —— 留着会让"这个账号用哪套
+    //   设备头"这件事出现两个互相矛盾的来源。
+    pcPlatform: info?.platform === PC_AUTH_PREFIX ? pcPlatform ?? list[idx]?.pcPlatform ?? "win" : void 0,
+    addedAt: idx >= 0 ? list[idx].addedAt : nowIso
+  };
+  if (idx >= 0) list[idx] = account;
+  else list.push(account);
+  saveAccounts(store2, list, nowIso);
+  return { list, account, created: idx < 0 };
+}
+function removeAccount(store2, id, nowIso) {
+  const list = loadAccounts(store2).filter((a) => a.id !== id);
+  saveAccounts(store2, list, nowIso);
+  if (store2.getState(STATE_CURRENT_ACCOUNT) === id) store2.setState(STATE_CURRENT_ACCOUNT, "", nowIso);
+  return list;
+}
+function selectAccount(store2, id, nowIso) {
+  if (id !== "" && !loadAccounts(store2).some((a) => a.id === id)) return false;
+  store2.setState(STATE_CURRENT_ACCOUNT, id, nowIso);
+  return true;
+}
+function currentAccount(store2) {
+  const id = (store2.getState(STATE_CURRENT_ACCOUNT) ?? "").trim();
+  if (id === "") return void 0;
+  return loadAccounts(store2).find((a) => a.id === id);
+}
+
 // src/store/types.ts
 var SESSION_KEY = "mcloud.session";
+function accountScopedKey(store2, base) {
+  const cur = currentAccount(store2);
+  return cur === void 0 ? base : `${base}.${cur.id}`;
+}
+function sessionKey(store2) {
+  return accountScopedKey(store2, SESSION_KEY);
+}
 function loadSession(store2) {
-  const raw = store2.getState(SESSION_KEY);
+  const raw = store2.getState(sessionKey(store2));
   if (!raw) return null;
   try {
     const v = JSON.parse(raw);
@@ -34,7 +354,7 @@ function loadSession(store2) {
   }
 }
 function saveSession(store2, s, nowIso) {
-  store2.setState(SESSION_KEY, JSON.stringify({ ...s, savedAt: nowIso }), nowIso);
+  store2.setState(sessionKey(store2), JSON.stringify({ ...s, savedAt: nowIso }), nowIso);
 }
 
 // src/mcloud/envelope.ts
@@ -208,173 +528,6 @@ function mergeCookieJar(existing, incoming) {
   eat(existing);
   for (const c of incoming) eat(c);
   return [...jar.entries()].map(([k, v]) => `${k}=${v}`).join("; ");
-}
-
-// src/crypto/bytes.ts
-function utf8(s) {
-  const out = [];
-  for (let i = 0; i < s.length; i += 1) {
-    let cp = s.charCodeAt(i);
-    if (cp >= 55296 && cp <= 56319 && i + 1 < s.length) {
-      const low = s.charCodeAt(i + 1);
-      if (low >= 56320 && low <= 57343) {
-        cp = 65536 + (cp - 55296 << 10) + (low - 56320);
-        i += 1;
-      } else {
-        cp = 65533;
-      }
-    } else if (cp >= 55296 && cp <= 57343) {
-      cp = 65533;
-    }
-    if (cp < 128) {
-      out.push(cp);
-    } else if (cp < 2048) {
-      out.push(192 | cp >> 6, 128 | cp & 63);
-    } else if (cp < 65536) {
-      out.push(224 | cp >> 12, 128 | cp >> 6 & 63, 128 | cp & 63);
-    } else {
-      out.push(
-        240 | cp >> 18,
-        128 | cp >> 12 & 63,
-        128 | cp >> 6 & 63,
-        128 | cp & 63
-      );
-    }
-  }
-  return new Uint8Array(out);
-}
-function fromUtf8(b) {
-  let s = "";
-  let codePoint = 0;
-  let bytesSeen = 0;
-  let bytesNeeded = 0;
-  let lower = 128;
-  let upper = 191;
-  const emit = (cp) => {
-    if (cp < 65536) {
-      s += String.fromCharCode(cp);
-    } else {
-      const v = cp - 65536;
-      s += String.fromCharCode(55296 + (v >> 10), 56320 + (v & 1023));
-    }
-  };
-  const reset = () => {
-    codePoint = 0;
-    bytesSeen = 0;
-    bytesNeeded = 0;
-    lower = 128;
-    upper = 191;
-  };
-  let i = 0;
-  while (i < b.length) {
-    const byte = b[i];
-    let reprocess = false;
-    if (bytesNeeded === 0) {
-      if (byte <= 127) {
-        s += String.fromCharCode(byte);
-      } else if (byte >= 194 && byte <= 223) {
-        bytesNeeded = 1;
-        codePoint = byte & 31;
-      } else if (byte >= 224 && byte <= 239) {
-        if (byte === 224) lower = 160;
-        if (byte === 237) upper = 159;
-        bytesNeeded = 2;
-        codePoint = byte & 15;
-      } else if (byte >= 240 && byte <= 244) {
-        if (byte === 240) lower = 144;
-        if (byte === 244) upper = 143;
-        bytesNeeded = 3;
-        codePoint = byte & 7;
-      } else {
-        s += "�";
-      }
-    } else if (byte < lower || byte > upper) {
-      reset();
-      s += "�";
-      reprocess = true;
-    } else {
-      lower = 128;
-      upper = 191;
-      codePoint = codePoint << 6 | byte & 63;
-      bytesSeen += 1;
-      if (bytesSeen === bytesNeeded) {
-        emit(codePoint);
-        reset();
-      }
-    }
-    if (!reprocess) i += 1;
-  }
-  if (bytesNeeded !== 0) s += "�";
-  return s;
-}
-var HEX = "0123456789abcdef";
-function toHex(b) {
-  let s = "";
-  for (let i = 0; i < b.length; i += 1) {
-    const v = b[i];
-    s += HEX[v >> 4] + HEX[v & 15];
-  }
-  return s;
-}
-function fromHex(h) {
-  const clean = h.replace(/[^0-9a-fA-F]/g, "");
-  const out = new Uint8Array(clean.length >> 1);
-  for (let i = 0; i < out.length; i += 1) {
-    out[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
-  }
-  return out;
-}
-var B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-function toBase64(b) {
-  let s = "";
-  for (let i = 0; i < b.length; i += 3) {
-    const n = b[i] << 16 | (b[i + 1] ?? 0) << 8 | (b[i + 2] ?? 0);
-    s += B64[n >> 18 & 63] + B64[n >> 12 & 63];
-    s += i + 1 < b.length ? B64[n >> 6 & 63] : "=";
-    s += i + 2 < b.length ? B64[n & 63] : "=";
-  }
-  return s;
-}
-function fromBase64(s) {
-  const clean = s.replace(/[^A-Za-z0-9+/]/g, "");
-  const out = new Uint8Array(Math.floor(clean.length * 6 / 8));
-  let bits2 = 0;
-  let acc = 0;
-  let o = 0;
-  for (let i = 0; i < clean.length; i += 1) {
-    const v = B64.indexOf(clean[i]);
-    if (v < 0) continue;
-    acc = acc << 6 | v;
-    bits2 += 6;
-    if (bits2 >= 8) {
-      bits2 -= 8;
-      out[o] = acc >> bits2 & 255;
-      o += 1;
-    }
-  }
-  return out.subarray(0, o);
-}
-function writeU32BE(out, off, v) {
-  out[off] = v >>> 24 & 255;
-  out[off + 1] = v >>> 16 & 255;
-  out[off + 2] = v >>> 8 & 255;
-  out[off + 3] = v & 255;
-}
-function writeU32LE(out, off, v) {
-  out[off] = v & 255;
-  out[off + 1] = v >>> 8 & 255;
-  out[off + 2] = v >>> 16 & 255;
-  out[off + 3] = v >>> 24 & 255;
-}
-function readU32BE(b, off) {
-  return (b[off] << 24 | b[off + 1] << 16 | b[off + 2] << 8 | b[off + 3]) >>> 0;
-}
-function readU32LE(b, off) {
-  return (b[off + 3] << 24 | b[off + 2] << 16 | b[off + 1] << 8 | b[off]) >>> 0;
-}
-function lengthBits(bytes) {
-  const bits2 = bytes * 8;
-  return { hi: Math.floor(bits2 / 4294967296) >>> 0, lo: bits2 >>> 0 };
 }
 
 // src/crypto/md5.ts
@@ -1378,152 +1531,6 @@ function sandboxCaps() {
 }
 function hasBigInt() {
   return typeof globalThis.BigInt === "function";
-}
-
-// src/mcloud/auth.ts
-var PC_AUTH_PREFIX = "pc";
-function lenientB64(s) {
-  let payload = "";
-  for (const c of s) {
-    if (c === "=") break;
-    if (/[A-Za-z0-9+/]/.test(c)) payload += c;
-  }
-  if (payload.length === 0 || payload.length % 4 === 1) return void 0;
-  const pad = payload.length % 4 === 0 ? "" : "=".repeat(4 - payload.length % 4);
-  let text;
-  try {
-    text = fromUtf8(fromBase64(payload + pad));
-  } catch {
-    return void 0;
-  }
-  return text.length === 0 ? void 0 : text;
-}
-function isPlainDecimal(s) {
-  if (s.length === 0) return false;
-  let i = 0;
-  if (s[0] === "+" || s[0] === "-") i = 1;
-  if (i >= s.length) return false;
-  for (; i < s.length; i++) {
-    const c = s.charCodeAt(i);
-    if (c < 48 || c > 57) return false;
-  }
-  return true;
-}
-function parseAuth(auth) {
-  if (auth.trim() === "") return void 0;
-  const i = auth.indexOf("Basic ");
-  const clean = i < 0 ? auth : auth.slice(0, i) + auth.slice(i + "Basic ".length);
-  const decoded = lenientB64(clean);
-  if (decoded === void 0) return void 0;
-  const parts = decoded.split(":", 4);
-  const platform = parts[0] ?? "";
-  const phone = parts[1] ?? "";
-  const token = parts[2] ?? "";
-  const seg = token.split("|")[3]?.trim();
-  const expire = seg !== void 0 && isPlainDecimal(seg) ? Math.trunc(Number(seg)) || 0 : 0;
-  return { raw: `Basic ${clean}`, platform, phone, token, expire };
-}
-
-// src/mcloud/accounts.ts
-var STATE_ACCOUNTS = "mcloud.accounts";
-var STATE_CURRENT_ACCOUNT = "mcloud.account.current";
-function maskAuth(raw) {
-  const phone = phoneOf(raw);
-  const len = raw.length;
-  if (phone !== void 0) return `${phone.slice(0, 1)}****${phone.slice(-4)} · ${len} 字符`;
-  return `（认不出手机号）· ${len} 字符`;
-}
-function phoneOf(raw) {
-  const plain = /1\d{10}/.exec(raw);
-  if (plain !== null) return plain[0];
-  const m = /^\s*basic\s+([A-Za-z0-9+/=]+)\s*$/i.exec(raw);
-  if (m === null) return void 0;
-  try {
-    const decoded = fromUtf8(fromBase64(m[1]));
-    const inB64 = /1\d{10}/.exec(decoded);
-    return inB64 === null ? void 0 : inB64[0];
-  } catch {
-    return void 0;
-  }
-}
-function idOf(raw) {
-  const phone = phoneOf(raw);
-  if (phone !== void 0) return phone;
-  let h = 2166136261;
-  for (let i = 0; i < raw.length; i++) {
-    h ^= raw.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return `anon-${(h >>> 0).toString(36)}`;
-}
-function loadAccounts(store2) {
-  const raw = store2.getState(STATE_ACCOUNTS);
-  if (raw === null || raw === void 0 || raw.trim() === "") return [];
-  let parsed;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return [];
-  }
-  if (!Array.isArray(parsed)) return [];
-  const out = [];
-  for (const it of parsed) {
-    if (it === null || typeof it !== "object") continue;
-    const o = it;
-    if (typeof o.id !== "string" || typeof o.auth !== "string" || o.auth === "") continue;
-    const auth = o.auth;
-    const info = parseAuth(auth);
-    const pc = o.pcPlatform;
-    out.push({
-      id: o.id,
-      label: typeof o.label === "string" && o.label !== "" ? o.label : o.id,
-      auth,
-      // 老账号没存过这两格 ⇒ 从凭据里现解一次（不用迁移）
-      platform: typeof o.platform === "string" ? o.platform : info?.platform ?? "",
-      pcPlatform: pc === "win" || pc === "mac" ? pc : void 0,
-      addedAt: typeof o.addedAt === "string" ? o.addedAt : ""
-    });
-  }
-  return out;
-}
-function saveAccounts(store2, list, nowIso) {
-  store2.setState(STATE_ACCOUNTS, JSON.stringify(list), nowIso);
-}
-function upsertAccount(store2, auth, nowIso, label, pcPlatform) {
-  const list = loadAccounts(store2);
-  const id = idOf(auth);
-  const idx = list.findIndex((a) => a.id === id);
-  const info = parseAuth(auth);
-  const account = {
-    id,
-    label: label !== void 0 && label !== "" ? label : phoneOf(auth) ?? `账号 ${list.length + 1}`,
-    auth,
-    platform: info?.platform ?? "",
-    // ⚠ 只在 PC 端才有意义。手机端传进来也丢掉 —— 留着会让"这个账号用哪套
-    //   设备头"这件事出现两个互相矛盾的来源。
-    pcPlatform: info?.platform === PC_AUTH_PREFIX ? pcPlatform ?? list[idx]?.pcPlatform ?? "win" : void 0,
-    addedAt: idx >= 0 ? list[idx].addedAt : nowIso
-  };
-  if (idx >= 0) list[idx] = account;
-  else list.push(account);
-  saveAccounts(store2, list, nowIso);
-  return { list, account, created: idx < 0 };
-}
-function removeAccount(store2, id, nowIso) {
-  const list = loadAccounts(store2).filter((a) => a.id !== id);
-  saveAccounts(store2, list, nowIso);
-  if (store2.getState(STATE_CURRENT_ACCOUNT) === id) store2.setState(STATE_CURRENT_ACCOUNT, "", nowIso);
-  return list;
-}
-function selectAccount(store2, id, nowIso) {
-  if (id !== "" && !loadAccounts(store2).some((a) => a.id === id)) return false;
-  store2.setState(STATE_CURRENT_ACCOUNT, id, nowIso);
-  return true;
-}
-function currentAccount(store2) {
-  const id = (store2.getState(STATE_CURRENT_ACCOUNT) ?? "").trim();
-  if (id === "") return void 0;
-  return loadAccounts(store2).find((a) => a.id === id);
 }
 
 // src/crypto/aes.ts
@@ -6419,9 +6426,16 @@ function readMatrix(store2) {
 }
 
 // src/mcloud/dailyState.ts
+var DAILY_DONE_KEY = "mcloud.daily.done_date";
 var DAILY_LAST_KEY = "mcloud.daily.last_run";
+function dailyDoneKey(store2) {
+  return accountScopedKey(store2, DAILY_DONE_KEY);
+}
+function dailyLastKey(store2) {
+  return accountScopedKey(store2, DAILY_LAST_KEY);
+}
 function readDailyRun(store2) {
-  const raw = store2.getState(DAILY_LAST_KEY);
+  const raw = store2.getState(dailyLastKey(store2));
   if (raw === void 0 || raw === null || raw === "") return null;
   try {
     const v = JSON.parse(raw);
@@ -8757,7 +8771,10 @@ function buildReadings(deps) {
     daily: {
       // 「今天跑完了吗」看标记；「上次跑成什么样」看读数。两个都要，
       // 因为它们回答的是不同的问题（用户真正会问的是后面那个）。
-      doneToday: (deps.store.getState("mcloud.daily.done_date") ?? "") === nowIso.slice(0, 10),
+      // ⚠ 走 `dailyDoneKey(store)`，**不要**写键名字面量 —— 那处原来是硬编码的
+      //   `'mcloud.daily.done_date'`，而键一旦按账号分（F-050）它就会**永远读不到**，
+      //   表现是"界面永远显示今天没跑过"（看着像定时任务坏了）。
+      doneToday: (deps.store.getState(dailyDoneKey(deps.store)) ?? "") === nowIso.slice(0, 10),
       last: readDailyRun(deps.store),
       // 最近几次的**摘要**（只有一行一句）。步骤要按需再取 ——
       // 20 条 × 40 步全塞进来，首屏就是几百 KB 的 JSON。

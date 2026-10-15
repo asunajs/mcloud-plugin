@@ -18,6 +18,9 @@ import {
 } from '../src/mcloud/session.ts';
 import { mcloudRoutes } from '../src/mcloud/routes.ts';
 import { testDeps } from './helpers.ts';
+import { SESSION_KEY, loadSession, saveSession, sessionKey } from '../src/store/types.ts';
+import { idOf, selectAccount, upsertAccount } from '../src/mcloud/accounts.ts';
+import { dailyDoneKey, dailyLastKey, readDailyRun } from '../src/mcloud/dailyState.ts';
 import { STATE_LAST_TASKLIST } from '../src/mcloud/tasks/taskList.ts';
 import { SHOW_LOADING } from '../src/mcloud/h5.ts';
 import { memStore } from '../src/store/memory.ts';
@@ -261,4 +264,150 @@ test('路由：状态不回显凭据、导入后立刻真验、坏输入 400、�
   store.setState('mcloud.last_error.prizes', 'code=90001 未登录 @ ' + NOW, NOW);
   const t2 = JSON.parse(call('GET', '/plugins/mcloud/api/tasks').body);
   assert.match(t2.lastErrorByTask.prizes ?? '', /90001/);
+});
+
+// ══════════════════ 会话按账号分（F-049）══════════════════
+
+test('⚠ 多账号：会话不能串（A 的任务不能读到 B 的票）', () => {
+  // # 这是 F-048 的**上一层**
+  //
+  // F-048 修的是「票」（`mcloud.h5.jwt.<账号>.<配方>`）。但**任务读票的唯一入口**
+  // 是 `loadSession`，而它原来读的是 `SESSION_KEY = 'mcloud.session'` ——
+  // **一个全局槽位**。所以：
+  //
+  //     账号 A 换票  →  saveSession({jwt: A 的票})
+  //     账号 B 换票  →  saveSession({jwt: B 的票})   ← **A 那张被覆盖**
+  //     账号 A 的任务 →  读会话 ⇒ 带的是 **B 的票**
+  //
+  // ⚠ 这一层的症状比 F-048 **更难查**：F-048 是"B 根本不换票"（看得出来）；
+  //   这一层是"两个账号都换了、票都对、但请求以对方的身份发出去"，
+  //   而且**只在"一趟跑两个账号"时才出现** —— 单账号测不出来。
+  const store = memStore();
+  store.ensureSchema();
+  const A = 'Basic bW9iaWxlOjEzODAwMDAwMDAwOnRva2VuQQ==';
+  const B = 'Basic bW9iaWxlOjEzOTAwMDAwMDAwOnRva2VuQg==';
+  upsertAccount(store, A, NOW, 'A 号');
+  upsertAccount(store, B, NOW, 'B 号');
+
+  selectAccount(store, idOf(A), NOW);
+  saveSession(store, { cookie: '', jwt: 'JWT-A', savedAt: '' }, NOW);
+  selectAccount(store, idOf(B), NOW);
+  saveSession(store, { cookie: '', jwt: 'JWT-B', savedAt: '' }, NOW);
+
+  assert.equal(loadSession(store)?.jwt, 'JWT-B', 'B 读到自己那张');
+
+  // ⚠ 切回 A —— A 那张**必须还在**
+  selectAccount(store, idOf(A), NOW);
+  assert.equal(
+    loadSession(store)?.jwt,
+    'JWT-A',
+    '⚠ A 的会话被 B 覆盖了 ⇒ A 会以 B 的身份发请求',
+  );
+
+  // 两把键必须不同
+  selectAccount(store, idOf(A), NOW);
+  const ka = sessionKey(store);
+  selectAccount(store, idOf(B), NOW);
+  const kb = sessionKey(store);
+  assert.notEqual(ka, kb, '两个账号必须落在不同的键上');
+});
+
+test('单账号那套（没有账号列表）仍然用**裸键**，老数据照常读得到', () => {
+  const store = memStore();
+  store.ensureSchema();
+  // 直接往裸键里塞一份会话 —— 模拟升级前的老数据
+  store.setState(SESSION_KEY, JSON.stringify({ cookie: '', jwt: 'OLD', savedAt: NOW }), NOW);
+  assert.equal(sessionKey(store), SESSION_KEY, '没有当前账号 ⇒ 键就是裸的（不用迁移）');
+  assert.equal(loadSession(store)?.jwt, 'OLD', '老数据照常读得到');
+});
+
+test('⚠ 切账号**不会**把会话漏到新账号名下', () => {
+  // 反方向的错：如果实现成"读不到就回落到裸键"，那么切到一个新账号时
+  // 会读到**上一个账号**的会话 —— 同样是串身份，而且更隐蔽
+  // （因为"有会话"看起来是正常的）。
+  const store = memStore();
+  store.ensureSchema();
+  const A = 'Basic bW9iaWxlOjEzODAwMDAwMDAwOnRva2VuQQ==';
+  const B = 'Basic bW9iaWxlOjEzOTAwMDAwMDAwOnRva2VuQg==';
+  // 裸键里放一份"老会话"
+  store.setState(SESSION_KEY, JSON.stringify({ cookie: '', jwt: 'LEGACY', savedAt: NOW }), NOW);
+
+  upsertAccount(store, A, NOW, 'A');
+  selectAccount(store, idOf(A), NOW);
+  assert.equal(loadSession(store), null, '⚠ 有当前账号时**不许**回落到裸键里的老会话');
+
+  // 没有当前账号时才回落到裸键
+  selectAccount(store, '', NOW);
+  assert.equal(loadSession(store)?.jwt, 'LEGACY', '清掉当前账号 ⇒ 才回落');
+});
+
+// ══════════════ 其它按账号的状态键（F-050）══════════════
+
+test('⚠ 多账号：「今天跑完了」的标记不能是全局的（否则第二个账号被整个跳过）', () => {
+  // 这是 F-049 的**同一个类**，但后果更直接：
+  //
+  //     账号 A 跑完日常 → 落 `done_date = 今天`
+  //     账号 B 的日常   → 看到"今天跑过了" ⇒ **整个被跳过**
+  //
+  // 也就是**第二个账号的日常一次都不跑**，而界面显示"今天已完成"（看着是对的）。
+  const store = memStore();
+  store.ensureSchema();
+  const A = 'Basic bW9iaWxlOjEzODAwMDAwMDAwOnRva2VuQQ==';
+  const B = 'Basic bW9iaWxlOjEzOTAwMDAwMDAwOnRva2VuQg==';
+  upsertAccount(store, A, NOW, 'A');
+  upsertAccount(store, B, NOW, 'B');
+
+  const today = NOW.slice(0, 10);
+  selectAccount(store, idOf(A), NOW);
+  store.setState(dailyDoneKey(store), today, NOW);
+
+  assert.equal(store.getState(dailyDoneKey(store)), today, 'A 落下了标记');
+  selectAccount(store, idOf(B), NOW);
+  assert.notEqual(
+    store.getState(dailyDoneKey(store)),
+    today,
+    '⚠ B 读到了 A 的标记 ⇒ B 的日常会被整个跳过',
+  );
+  selectAccount(store, idOf(A), NOW);
+  assert.equal(store.getState(dailyDoneKey(store)), today, 'A 的标记还在');
+});
+
+test('⚠ 多账号：「上次跑成什么样」也不能是全局的（否则界面显示别人的结果）', () => {
+  const store = memStore();
+  store.ensureSchema();
+  const A = 'Basic bW9iaWxlOjEzODAwMDAwMDAwOnRva2VuQQ==';
+  const B = 'Basic bW9iaWxlOjEzOTAwMDAwMDAwOnRva2VuQg==';
+  upsertAccount(store, A, NOW, 'A');
+  upsertAccount(store, B, NOW, 'B');
+
+  selectAccount(store, idOf(A), NOW);
+  store.setState(
+    dailyLastKey(store),
+    JSON.stringify({ at: NOW, ok: true, note: 'A 的结果', steps: [] }),
+    NOW,
+  );
+  selectAccount(store, idOf(B), NOW);
+  assert.equal(
+    readDailyRun(store),
+    null,
+    '⚠ B 读到了 A 的"上次结果" ⇒ 界面会显示另一个账号跑成什么样',
+  );
+});
+
+test('配置类的键**不**按账号分（分了反而错）', () => {
+  // 判据是问一句：账号 A 写进去之后，账号 B 读到它会不会做出**错的**决定？
+  // 「几点抢兑」不会 —— 它是配置，跟账号无关。分了的话表现是
+  // "在 A 名下设的时间，切到 B 就不生效了"。
+  const store = memStore();
+  store.ensureSchema();
+  const A = 'Basic bW9iaWxlOjEzODAwMDAwMDAwOnRva2VuQQ==';
+  upsertAccount(store, A, NOW, 'A');
+  selectAccount(store, idOf(A), NOW);
+  store.setState('mcloud.exchange.target_hour', '10', NOW);
+  selectAccount(store, '', NOW);
+  assert.equal(
+    store.getState('mcloud.exchange.target_hour'),
+    '10',
+    '配置不按账号分 ⇒ 切账号后仍然生效',
+  );
 });
