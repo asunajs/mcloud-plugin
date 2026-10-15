@@ -288,6 +288,7 @@ function renderAccount(a, login) {
                 </div>
                 <div class="acct-acts">
                   ${x.current ? '' : `<button class="btn btn-sm" data-acc-select="${esc(x.id)}">切到这个</button>`}
+                  <button class="btn btn-sm" data-acc-refresh="${esc(x.id)}">刷新</button>
                   <button class="btn btn-sm" data-acc-rename="${esc(x.id)}">编辑</button>
                   <button class="btn btn-sm" data-acc-disable="${esc(x.id)}" data-on="${x.disabled ? '1' : ''}">${x.disabled ? '启用' : '停用'}</button>
                   <button class="btn btn-sm btn-danger" data-acc-del="${esc(x.id)}">移除</button>
@@ -1120,10 +1121,11 @@ $('qr-reset').addEventListener('click', resetDevice);
 $('acct-list').addEventListener('click', async (ev) => {
   const pick = (name) => ev.target.closest(`[data-acc-${name}]`);
   const sel = pick('select');
+  const ref = pick('refresh');
   const ren = pick('rename');
   const dis = pick('disable');
   const del = pick('del');
-  if (!sel && !ren && !dis && !del) return;
+  if (!sel && !ref && !ren && !dis && !del) return;
   const post = (body) => api('/accounts', { method: 'POST', write: true, body });
   try {
     if (sel) {
@@ -1131,6 +1133,11 @@ $('acct-list').addEventListener('click', async (ev) => {
       //   而后端只认 add/select/remove ⇒ 又一个点了没反应的按钮。
       const r = await post({ op: 'select', id: sel.dataset.accSelect });
       toast(r.note || '已切到这个账号');
+    } else if (ref) {
+      // ⚠ 这一条**不改当前选中的账号**：后端用 `scoped(store, id)` 作用在
+      //   指定账号上。老做法只能"先切过去再刷"，那会让用户莫名其妙的换号。
+      const r = await post({ op: 'refresh', id: ref.dataset.accRefresh });
+      toast(r.note || '凭据已刷新');
     } else if (ren) {
       const id = ren.dataset.accRename;
       const cur = (last && last.account && last.account.accounts) || [];

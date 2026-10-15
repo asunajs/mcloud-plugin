@@ -478,13 +478,20 @@ def main() -> int:
                 isinstance(ex.get("orderedThisHour"), bool),
                 str(ex.get("orderedThisHour")),
             )
-            # 任务挂的是 10 秒节拍（不是 1 小时一枪）
+            # ⚠ 兑换挂的是「每小时 59 分」——**不是** `@every 10s`。
+            #
+            #   第一版是 10 秒节拍（一天 8640 次）。逻辑上没错，但用户看到任务列表
+            #   里那个表达式就说了「太特么频繁了」。判据是：
+            #   **触发频率该由"这件事一天发生几次"决定，不是由"多久看一眼"决定**。
+            #
+            #   `59 * * * *` 落在**目标小时的前一分钟**，那一刻这一趟有 60 秒可用 ——
+            #   足够预热再自旋到整点−10ms 发单；剩下 23 次是静默零请求。
             code, body = http(f"{base}/api/state")
             state = json.loads(body) if code == 200 else {}
             row = next((j for j in (state.get("jobs") or []) if j.get("name") == "兑换"), None)
             check(
-                "⚠ 兑换挂的是 10 秒节拍（粗粒度等待交给调度器，细粒度才自旋）",
-                row is not None and row.get("schedule") == "@every 10s",
+                "⚠ 兑换挂的是「每小时 59 分」（一天 24 次，不是 8640 次）",
+                row is not None and row.get("schedule") == "59 * * * *",
                 str(row.get("schedule") if row else "没找到「兑换」这条任务"),
             )
 
@@ -630,6 +637,17 @@ def main() -> int:
             code, body = plugin_post(base, "/accounts", {"op": "edit", "id": aid, "label": ""})
             d = json.loads(body)
             check("⚠ 空串改名 ⇒ **回落成手机号**（不是留空）", d["accounts"][0]["label"] == "13700137000", d["accounts"][0]["label"])
+
+            # ⚠ 按账号刷新：**不能改掉当前选中的账号**。
+            #   老做法只能"先切过去再刷"，那会让用户莫名其妙换号。
+            plugin_post(base, "/accounts", {"op": "select", "id": aid})
+            code, body = plugin_post(base, "/accounts", {"op": "refresh", "id": aid})
+            d = json.loads(body)
+            check("⚠ 按账号刷新**不动当前选中**", d.get("current") == aid, f"current={d.get('current')}")
+            check("按账号刷新有如实的结果", bool(d.get("note")), str(d.get("note"))[:40])
+
+            code, body = plugin_post(base, "/accounts", {"op": "refresh", "id": "不存在的号"})
+            check("刷一个不存在的账号被挡住", code == 400, f"http {code}")
 
             code, body = plugin_post(base, "/accounts", {"op": "disable", "id": "不存在的号", "disabled": True})
             check("停用一个不存在的账号被挡住", code == 400, f"http {code}")

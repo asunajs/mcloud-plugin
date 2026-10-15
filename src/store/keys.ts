@@ -227,7 +227,11 @@ export function scopeOf(key: string): KeyScope | undefined {
  *  ⚠ 直接读那一格，**不**走 `currentAccount()` —— 后者还要去账号表里找这个 id
  *  在不在（会引入循环依赖，见 {@link STATE_CURRENT_ACCOUNT}）。
  *  "当前 id 指向一个已删掉的账号"由 `removeAccount` 负责清（它已经会清）。 */
-export function acctIdOf(store: ReadableState): string {
+export function acctIdOf(store: ReadableState, override?: string): string {
+  // ⚠ `override` 是给"**操作指定账号**"用的（按账号刷新凭据那类动作）。
+  //   没有它的话，这类动作只能"先切过去再刷"—— 那会**改掉用户当前选中的账号**，
+  //   而用户只是想让另一个号刷新一下。
+  if (override !== undefined && override !== '') return override;
   const id = (store.getState(STATE_CURRENT_ACCOUNT) ?? '').trim();
   return id === '' ? DEFAULT_ACCT : id;
 }
@@ -292,7 +296,7 @@ export class UnregisteredKeyError extends Error {
  *
  *  ⚠ 返回值与 `store.getState` 一致（`string | null`），所以这是**纯键改写**的迁移，
  *  调用点的判空/判 `''` 逻辑一行都不用动。 */
-export function routeGet(store: ReadableState, key: string): string | null {
+export function routeGet(store: ReadableState, key: string, acctId?: string): string | null {
   // ⚠ 袋自己的**物理**键：直接透传，不走登记表。
   //
   //   它不是逻辑键（没有"作用域"这回事 —— 它**就是**那个容器）。
@@ -307,7 +311,7 @@ export function routeGet(store: ReadableState, key: string): string | null {
   const scope = scopeOf(key);
   if (scope === undefined) throw new UnregisteredKeyError(key);
   if (scope === 'global') return store.getState(key) ?? null;
-  const bag = readBag(store, acctIdOf(store));
+  const bag = readBag(store, acctIdOf(store, acctId));
   return bag[key] ?? null;
 }
 
@@ -317,7 +321,13 @@ export function routeGet(store: ReadableState, key: string): string | null {
  *  （`deviceId` / `session` / `daily.done_date` …），只写一个字段会**把别人抹掉**。
  *  参考实现 `save_share_done_day` 同样是读-改-写，注释里点明了这个坑：
  *  「这张表里还躺着 `device_id` / `pc_platform` / `cur_month_backup` 这些别的任务的键」。 */
-export function routeSet(store: WritableState, key: string, value: string, nowIso: string): void {
+export function routeSet(
+  store: WritableState,
+  key: string,
+  value: string,
+  nowIso: string,
+  acctId?: string,
+): void {
   // 同上：袋的物理键直接透传（见 `routeGet` 那段说明）。
   if (key.startsWith(ACCT_PREFIX)) {
     store.setState(key, value, nowIso);
@@ -334,8 +344,8 @@ export function routeSet(store: WritableState, key: string, value: string, nowIs
     store.setState(key, value, nowIso);
     return;
   }
-  const acctId = acctIdOf(store);
-  const bag = readBag(store, acctId);
+  const acct = acctIdOf(store, acctId);
+  const bag = readBag(store, acct);
   // ⚠ 空串**照存**，不删字段。
   //
   //   "写空串 = 删字段"看着更干净，但它**改了行为**：老的扁平键写 `''` 之后
@@ -343,7 +353,7 @@ export function routeSet(store: WritableState, key: string, value: string, nowIs
   //   （`x === ''` 与 `x === null` 不通用）。迁移的第一要求是**行为不变**，
   //   不是"顺便更干净"。袋里多几个空串字段的代价可以忽略。
   bag[key] = value;
-  writeBag(store, acctId, bag, nowIso);
+  writeBag(store, acct, bag, nowIso);
 }
 
 /** 把一个账号的**旧扁平键**搬进它的袋（一次性迁移，幂等）。

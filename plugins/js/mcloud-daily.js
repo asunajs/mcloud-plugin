@@ -466,7 +466,8 @@ function scopeOf(key) {
   }
   return best?.scope;
 }
-function acctIdOf(store2) {
+function acctIdOf(store2, override) {
+  if (override !== void 0 && override !== "") return override;
   const id = (store2.getState(STATE_CURRENT_ACCOUNT) ?? "").trim();
   return id === "" ? DEFAULT_ACCT : id;
 }
@@ -501,16 +502,16 @@ var UnregisteredKeyError = class extends Error {
     this.name = "UnregisteredKeyError";
   }
 };
-function routeGet(store2, key) {
+function routeGet(store2, key, acctId) {
   if (key.startsWith(ACCT_PREFIX)) return store2.getState(key) ?? null;
   if (!key.startsWith(PLUGIN_NS)) return store2.getState(key) ?? null;
   const scope = scopeOf(key);
   if (scope === void 0) throw new UnregisteredKeyError(key);
   if (scope === "global") return store2.getState(key) ?? null;
-  const bag = readBag(store2, acctIdOf(store2));
+  const bag = readBag(store2, acctIdOf(store2, acctId));
   return bag[key] ?? null;
 }
-function routeSet(store2, key, value, nowIso) {
+function routeSet(store2, key, value, nowIso, acctId) {
   if (key.startsWith(ACCT_PREFIX)) {
     store2.setState(key, value, nowIso);
     return;
@@ -525,10 +526,10 @@ function routeSet(store2, key, value, nowIso) {
     store2.setState(key, value, nowIso);
     return;
   }
-  const acctId = acctIdOf(store2);
-  const bag = readBag(store2, acctId);
+  const acct = acctIdOf(store2, acctId);
+  const bag = readBag(store2, acct);
   bag[key] = value;
-  writeBag(store2, acctId, bag, nowIso);
+  writeBag(store2, acct, bag, nowIso);
 }
 function migrateFlatKeys(store2, nowIso) {
   const acctId = acctIdOf(store2);
@@ -4920,7 +4921,7 @@ function hostStore() {
 // src/store/scoped.ts
 var WRAPPED = Symbol.for("__mcloud_scoped_store__");
 var RAW = Symbol.for("__mcloud_raw_store__");
-function scoped(base) {
+function scoped(base, acctId) {
   if (base[WRAPPED] === true) {
     throw new Error(
       "store 已经被 scoped() 包过一次了 —— 双重包装会让 `mcloud.acct.*` 也去查登记表然后抛错。"
@@ -4928,8 +4929,8 @@ function scoped(base) {
   }
   const wrapped = {
     ...base,
-    getState: (key) => routeGet(base, key),
-    setState: (key, value, nowIso) => routeSet(base, key, value, nowIso)
+    getState: (key) => routeGet(base, key, acctId),
+    setState: (key, value, nowIso) => routeSet(base, key, value, nowIso, acctId)
   };
   Object.defineProperty(wrapped, WRAPPED, { value: true, enumerable: false });
   Object.defineProperty(wrapped, RAW, { value: base, enumerable: false });

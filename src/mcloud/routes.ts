@@ -170,7 +170,7 @@ import {
   startSmsSession,
 } from './loginSession.ts';
 import type { Store } from '../store/types.ts';
-import { rawStoreOf } from '../store/scoped.ts';
+import { rawStoreOf, scoped } from '../store/scoped.ts';
 import { setAccountDisabled, setAccountLabel } from './accounts.ts';
 import { readBag } from '../store/keys.ts';
 import type { BuiltRequest } from './h5.ts';
@@ -1491,6 +1491,33 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
           if (loadAccounts(deps.store).length === 1) selectAccount(deps.store, r.account.id, now);
           return json(200, { ...accountsView(deps.store), note: `${r.created ? '已添加' : '已更新'} ${r.account.label}` });
         }
+        // **按账号**刷新凭据。
+        //
+        // ⚠ 这一条必须有"指定账号"的能力：`/auth/refresh` 刷的是**当前**账号，
+        //   而卡片上的「刷新」是要刷**那一条**的。老做法只能"先切过去再刷" ——
+        //   那会**改掉用户当前选中的账号**，而用户只是想让另一个号刷新一下。
+        //   现在 `scoped(store, id)` 直接给出"作用在指定账号上"的 store。
+        if (op === 'refresh') {
+          const id = typeof body.id === 'string' ? body.id : '';
+          const found = loadAccounts(deps.store).find((a) => a.id === id);
+          if (!found) return json(400, { error: `列表里没有这个账号：${id}` });
+          const one = scoped(rawStoreOf(deps.store), id);
+          const r = runAuthRefresh(
+            {
+              store: one,
+              transport: deps.transport,
+              nowIso: deps.now(),
+              baseUrl: loadBaseUrl(one),
+            },
+            true,
+          );
+          deps.log(`凭据续期（${found.label}）：${r.note}`);
+          return json(200, {
+            ...accountsView(deps.store as unknown as Store),
+            note: `${found.label}：${r.note}`,
+          });
+        }
+
         // 停用 / 启用。⚠ 与"删掉"不是一回事：停用**保留**状态袋
         //（票、进度、`ordered_hour` 都还在），所以不能用"删了重加"来模拟。
         if (op === 'disable') {
