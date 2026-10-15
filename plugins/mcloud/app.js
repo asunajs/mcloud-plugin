@@ -306,6 +306,7 @@ function renderAccount(a, login) {
                   ${x.current ? '' : `<button class="btn btn-sm" data-acc-select="${esc(x.id)}">切到这个</button>`}
                   <button class="btn btn-sm" data-acc-refresh="${esc(x.id)}">刷新</button>
                   <button class="btn btn-sm" data-acc-rename="${esc(x.id)}">编辑</button>
+                  <button class="btn btn-sm" data-acc-settings="${esc(x.id)}">设置</button>
                   <button class="btn btn-sm" data-acc-disable="${esc(x.id)}" data-on="${x.disabled ? '1' : ''}">${x.disabled ? '启用' : '停用'}</button>
                   <button class="btn btn-sm btn-danger" data-acc-del="${esc(x.id)}">移除</button>
                 </div>
@@ -817,9 +818,7 @@ function renderSettings(s) {
   fill('cfg-gateBase', s.gateBase);
   fill('cfg-wsBase', s.wsBase);
   fill('cfg-imBase', s.imBase);
-  fill('cfg-listenSeconds', s.listenSeconds);
-  fill('cfg-wsHeartbeat', s.wsHeartbeat);
-  fill('cfg-listenRoom', s.listenRoom);
+  // ⚠ 这三格搬去账号卡片的「设置」弹窗了（它们按账号，见 index.html 那段说明）。
   fill('cfg-loginBase', s.loginBase);
   const plat = $('cfg-loginPlatform');
   if (plat && document.activeElement !== plat && s.loginPlatform) plat.value = s.loginPlatform;
@@ -939,6 +938,52 @@ $('acct-upstream').addEventListener('click', () => showBlock('data'));
 $('acct-config').addEventListener('click', () => showBlock('settings'));
 $('acct-refresh-all').addEventListener('click', (e) =>
   act(e.currentTarget, () => api('/auth/refresh', { method: 'POST', write: true }), (r) => r.note || '已刷新'),
+);
+
+// ══════════ 每账号设置（复刻 mcloud 的「设置」） ══════════
+//
+// ⚠ 这两个字段（听窗口长度 / 只听这间房）**是按账号的键**，而它们原来挂在
+//   **全局**的设置区块里 —— 也就是说"改了哪个账号"取决于当前选中，而界面
+//   一个字都不说。用户看到的现象会是"我明明改了，怎么另一个号也跟着变了"。
+//   搬到这里之后，"改的是哪一条"由**打开弹窗时点的那条**决定，不再靠猜。
+let acctSettingsId = '';
+
+function openAcctSettings(id) {
+  const list = (last && last.account && last.account.accounts) || [];
+  const a = list.find((x) => x.id === id);
+  if (!a) return;
+  acctSettingsId = id;
+  setText('acct-cfg-title', a.label || a.masked || id);
+  $('acct-cfg-seconds').value = Number.isFinite(a.listenSeconds) ? String(a.listenSeconds) : '';
+  $('acct-cfg-room').value = Number.isFinite(a.listenRoom) && a.listenRoom > 0 ? String(a.listenRoom) : '';
+  $('acct-cfg-heartbeat').value = a.wsHeartbeat || '';
+  setText('acct-cfg-note', '');
+  $('acct-cfg-dialog').hidden = false;
+}
+
+$('acct-cfg-close').addEventListener('click', () => {
+  $('acct-cfg-dialog').hidden = true;
+});
+$('acct-cfg-dialog').addEventListener('click', (ev) => {
+  if (ev.target === $('acct-cfg-dialog')) $('acct-cfg-dialog').hidden = true;
+});
+$('acct-cfg-save').addEventListener('click', (e) =>
+  act(
+    e.currentTarget,
+    async () => {
+      const secs = $('acct-cfg-seconds').value.trim();
+      const room = $('acct-cfg-room').value.trim();
+      const body = { op: 'set-settings', id: acctSettingsId };
+      // 空串 = **这一项不改**（不是"设成 0"）—— 留空就是"保持原样"。
+      if (secs !== '') body.listenSeconds = Number(secs);
+      if (room !== '') body.listenRoom = Number(room);
+      body.wsHeartbeat = $('acct-cfg-heartbeat').value.trim();
+      const r = await api('/accounts', { method: 'POST', write: true, body });
+      $('acct-cfg-dialog').hidden = true;
+      return r;
+    },
+    (r) => r.note || '设置已存下',
+  ),
 );
 
 // ══════════ 扫码：自动轮询（**没有**"我扫完了"按钮） ══════════
@@ -1195,9 +1240,10 @@ $('acct-list').addEventListener('click', async (ev) => {
   const sel = pick('select');
   const ref = pick('refresh');
   const ren = pick('rename');
+  const cfg = pick('settings');
   const dis = pick('disable');
   const del = pick('del');
-  if (!sel && !ref && !ren && !dis && !del) return;
+  if (!sel && !ref && !ren && !cfg && !dis && !del) return;
   const post = (body) => api('/accounts', { method: 'POST', write: true, body });
   try {
     if (sel) {
@@ -1218,6 +1264,9 @@ $('acct-list').addEventListener('click', async (ev) => {
       if (label === null) return;
       const r = await post({ op: 'edit', id, label });
       toast(r.note || '已改名');
+    } else if (cfg) {
+      openAcctSettings(cfg.dataset.accSettings);
+      return; // 弹窗自己会 load()，不走下面那一趟
     } else if (dis) {
       const on = dis.dataset.on !== '1'; // 当前是启用 ⇒ 这次要停用
       const r = await post({ op: 'disable', id: dis.dataset.accDisable, disabled: on });
@@ -1297,9 +1346,6 @@ $('cfg-save').addEventListener('click', (e) =>
           gateBase: $('cfg-gateBase').value.trim(),
           wsBase: $('cfg-wsBase').value.trim(),
           imBase: $('cfg-imBase').value.trim(),
-          listenSeconds: Number($('cfg-listenSeconds').value) || 0,
-          wsHeartbeat: $('cfg-wsHeartbeat').value.trim(),
-          listenRoom: Number($('cfg-listenRoom').value) || 0,
           loginBase: $('cfg-loginBase').value.trim(),
           loginPlatform: $('cfg-loginPlatform').value,
         },
