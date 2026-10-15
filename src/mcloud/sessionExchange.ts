@@ -178,6 +178,8 @@ function scopedKey(
   const cur = currentAccount(store);
   // 兜底 + 单账号 ⇒ 裸键（不用迁移）
   if (cur === undefined && recipe === FALLBACK_RECIPE) return base;
+  // ⚠ 形状与 `accountScopedKey` 保持一致（`<base>.<账号 id>`），
+  //   只是这里多一段配方。两处不一致的表现是"读不到"（像没数据），不报错。
   return `${base}.${cur?.id ?? 'default'}.${recipe}`;
 }
 

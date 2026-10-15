@@ -2639,3 +2639,72 @@ export const SESSION_KEY = 'mcloud.session';   // ← 一个全局槽位
 改完要有 F-048 那样的**负向验证**（退回全局 ⇒ 测试必须红）。
 
 **它为什么没被测出来**：现有测试都是单账号跑的。F-048 那 4 条测试是这次才加的。
+
+---
+
+## F-050 · 「日常」的两个标记也是全局的 —— **第二个账号的日常被整个跳过**（2026-10-15）
+
+F-049 修了会话（`mcloud.session`）。顺着问下去：**还有哪些键是"属于某一个账号"的？**
+
+最直接的一个：
+
+```ts
+// dailyState.ts
+export const DAILY_DONE_KEY = 'mcloud.daily.done_date';   // ← 全局
+```
+
+| 步骤 | 会发生什么 |
+|---|---|
+| 账号 A 跑完日常 | 落 `done_date = 今天` |
+| 账号 B 的日常 | 看到"今天跑过了" ⇒ **`return`，整个被跳过** |
+| 界面 | 显示"今天已完成" —— **看着是对的** |
+
+也就是**第二个账号的日常一次都不跑**，而没有任何报错。
+
+同一个文件里 `DAILY_LAST_KEY`（"上次跑成什么样"）也是全局的 ⇒ 界面会显示
+**另一个账号**的上次结果。
+
+**修法**：加了 `accountScopedKey(store, base)` 助手（一处拼键，形状只有一个），
+两个键改成 `dailyDoneKey(store)` / `dailyLastKey(store)`。
+
+⚠ 顺带修掉 `routes.ts` 里一处**硬编码的键名字面量**
+（`getState('mcloud.daily.done_date')`）—— 键一分它就**永远读不到**，
+表现是"界面永远显示今天没跑过"（看着像定时任务坏了，而不是键写错了）。
+
+---
+
+## F-051 · 审计：还有哪些状态键**按账号分**（2026-10-15）
+
+判据是一句话：
+
+> 账号 A 写进去之后，账号 B 读到它会不会做出**错的**决定？
+
+| 键 | 该分吗 | 不分的话会怎样 |
+|---|---|---|
+| `mcloud.session` | ✅ 已分（F-049） | B 以 A 的身份发请求 |
+| `mcloud.h5.jwt` / `.exchange` | ✅ 已分（F-048） | 用错账号的票 |
+| `mcloud.daily.done_date` / `.last_run` | ✅ 已分（F-050） | **第二个账号的日常被整个跳过** |
+| `mcloud.exchange.order.ordered_hour` | ⚠ **该分，未分** | **B 的抢兑被整点守卫跳过** |
+| `mcloud.exchange.order.step` / `.baseline` / `.round` / `.plan` | ⚠ **该分，未分** | B 接着 A 的中间态走 |
+| `mcloud.exchange.plan` | ⚠ **该分，未分** | 同上 |
+| `mcloud.apptask.state` / `apptaskmatrix.*` | ⚠ 该分，未分 | 任务状态串号 |
+| `mcloud.backupgift.can_receive` / `.info` | ⚠ 该分，未分 | 用 A 的可领状态决定 B 领不领 |
+| `mcloud.cloudsnapshot.last` | ⚠ 该分，未分 | 同上 |
+| `mcloud.exchangelist.last` / `.raw` | ⚠ 该分，未分 | 界面显示别人的兑换清单 |
+| `mcloud.live.draw` / `.gate` / `.codes` | ⚠ 该分，未分 | 直播那一族串号 |
+| `mcloud.h5.auth` | ⚠ 该分，未分 | 单账号那套的凭据格（`loadAuthRaw` 的回落） |
+| `mcloud.exchange.target_hour` / `.lead_ms` | ❌ **不分** | 是**配置**，跟账号无关 |
+| `mcloud.base_url` / `login.pref` / `live.claim_enabled` | ❌ **不分** | 配置 |
+| `mcloud.accounts` / `account.current` | ❌ **不分** | 账号表本身 |
+
+**为什么这一轮没全改**：抢兑那几个键有 **33 处**调用，跨 3 个文件，
+而**抢兑是不可逆的**（没有幂等键）。在预算见底时批量改 33 处，
+改错的代价是"某个账号下错单"——比晚一轮大得多。
+
+**修法（与 F-048/F-050 同构）**：用 `accountScopedKey`；为了避免 33 处各拼键名
+（各拼各的会出现三种写法，而键不一致的表现是"读不到"，不报错），
+建议做一个**作用域门面**：一处声明"哪些键按账号分"，调用点不改。
+
+**必须做的验证**：每修一个键，都要有 F-048/F-049 那样的**负向验证**
+（退回全局 ⇒ 测试必须红）。只测"改完之后能跑"是不够的 —— 全局键在单账号下
+**也是能跑的**，这正是这些 bug 活到现在的原因。
