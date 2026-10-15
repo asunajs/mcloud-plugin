@@ -51,7 +51,7 @@ import { STATE_TARGET_HOUR, targetHourOf } from './exchangeTiming.ts';
 import { APP_AUTH_PREFIX, parseAuth } from './auth.ts';
 import { drawReport } from './tasks/liveDraw.ts';
 import { MATRIX_MARKETS, readMatrix } from './tasks/appTaskMatrix.ts';
-import { readDailyRun } from './dailyState.ts';
+import { dailyDoneKey, readDailyRun } from './dailyState.ts';
 import { VERDICT_TEXT, readExchangeList } from './tasks/exchangeList.ts';
 import {
   EMPTY_SHELL_HINT_CHARS,
@@ -328,7 +328,11 @@ function buildReadings(deps: RouteDeps): Record<string, unknown> {
     daily: {
       // 「今天跑完了吗」看标记；「上次跑成什么样」看读数。两个都要，
       // 因为它们回答的是不同的问题（用户真正会问的是后面那个）。
-      doneToday: (deps.store.getState('mcloud.daily.done_date') ?? '') === nowIso.slice(0, 10),
+      // ⚠ 走 `dailyDoneKey(store)`，**不要**写键名字面量 —— 那处原来是硬编码的
+      //   `'mcloud.daily.done_date'`，而键一旦按账号分（F-050）它就会**永远读不到**，
+      //   表现是"界面永远显示今天没跑过"（看着像定时任务坏了）。
+      doneToday:
+        (deps.store.getState(dailyDoneKey(deps.store)) ?? '') === nowIso.slice(0, 10),
       last: readDailyRun(deps.store),
       // 最近几次的**摘要**（只有一行一句）。步骤要按需再取 ——
       // 20 条 × 40 步全塞进来，首屏就是几百 KB 的 JSON。

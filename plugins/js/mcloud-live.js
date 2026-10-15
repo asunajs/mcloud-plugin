@@ -1105,10 +1105,99 @@ function rootOrDefault(base, fallback) {
   return t === "" ? fallback : t.replace(/\/+$/, "");
 }
 
+// src/mcloud/auth.ts
+function lenientB64(s) {
+  let payload = "";
+  for (const c of s) {
+    if (c === "=") break;
+    if (/[A-Za-z0-9+/]/.test(c)) payload += c;
+  }
+  if (payload.length === 0 || payload.length % 4 === 1) return void 0;
+  const pad = payload.length % 4 === 0 ? "" : "=".repeat(4 - payload.length % 4);
+  let text;
+  try {
+    text = fromUtf8(fromBase64(payload + pad));
+  } catch {
+    return void 0;
+  }
+  return text.length === 0 ? void 0 : text;
+}
+function isPlainDecimal(s) {
+  if (s.length === 0) return false;
+  let i = 0;
+  if (s[0] === "+" || s[0] === "-") i = 1;
+  if (i >= s.length) return false;
+  for (; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 48 || c > 57) return false;
+  }
+  return true;
+}
+function parseAuth(auth) {
+  if (auth.trim() === "") return void 0;
+  const i = auth.indexOf("Basic ");
+  const clean = i < 0 ? auth : auth.slice(0, i) + auth.slice(i + "Basic ".length);
+  const decoded = lenientB64(clean);
+  if (decoded === void 0) return void 0;
+  const parts = decoded.split(":", 4);
+  const platform = parts[0] ?? "";
+  const phone = parts[1] ?? "";
+  const token = parts[2] ?? "";
+  const seg = token.split("|")[3]?.trim();
+  const expire = seg !== void 0 && isPlainDecimal(seg) ? Math.trunc(Number(seg)) || 0 : 0;
+  return { raw: `Basic ${clean}`, platform, phone, token, expire };
+}
+
+// src/mcloud/accounts.ts
+var STATE_ACCOUNTS = "mcloud.accounts";
+var STATE_CURRENT_ACCOUNT = "mcloud.account.current";
+function loadAccounts(store2) {
+  const raw = store2.getState(STATE_ACCOUNTS);
+  if (raw === null || raw === void 0 || raw.trim() === "") return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const out = [];
+  for (const it of parsed) {
+    if (it === null || typeof it !== "object") continue;
+    const o = it;
+    if (typeof o.id !== "string" || typeof o.auth !== "string" || o.auth === "") continue;
+    const auth = o.auth;
+    const info = parseAuth(auth);
+    const pc = o.pcPlatform;
+    out.push({
+      id: o.id,
+      label: typeof o.label === "string" && o.label !== "" ? o.label : o.id,
+      auth,
+      // 老账号没存过这两格 ⇒ 从凭据里现解一次（不用迁移）
+      platform: typeof o.platform === "string" ? o.platform : info?.platform ?? "",
+      pcPlatform: pc === "win" || pc === "mac" ? pc : void 0,
+      addedAt: typeof o.addedAt === "string" ? o.addedAt : ""
+    });
+  }
+  return out;
+}
+function currentAccount(store2) {
+  const id = (store2.getState(STATE_CURRENT_ACCOUNT) ?? "").trim();
+  if (id === "") return void 0;
+  return loadAccounts(store2).find((a) => a.id === id);
+}
+
 // src/store/types.ts
 var SESSION_KEY = "mcloud.session";
+function accountScopedKey(store2, base) {
+  const cur = currentAccount(store2);
+  return cur === void 0 ? base : `${base}.${cur.id}`;
+}
+function sessionKey(store2) {
+  return accountScopedKey(store2, SESSION_KEY);
+}
 function loadSession(store2) {
-  const raw = store2.getState(SESSION_KEY);
+  const raw = store2.getState(sessionKey(store2));
   if (!raw) return null;
   try {
     const v = JSON.parse(raw);
@@ -1426,88 +1515,6 @@ function extractKoulingFromXiaohongshuHtml(html) {
     if (codes.length > 0) return codes;
   }
   return [];
-}
-
-// src/mcloud/auth.ts
-function lenientB64(s) {
-  let payload = "";
-  for (const c of s) {
-    if (c === "=") break;
-    if (/[A-Za-z0-9+/]/.test(c)) payload += c;
-  }
-  if (payload.length === 0 || payload.length % 4 === 1) return void 0;
-  const pad = payload.length % 4 === 0 ? "" : "=".repeat(4 - payload.length % 4);
-  let text;
-  try {
-    text = fromUtf8(fromBase64(payload + pad));
-  } catch {
-    return void 0;
-  }
-  return text.length === 0 ? void 0 : text;
-}
-function isPlainDecimal(s) {
-  if (s.length === 0) return false;
-  let i = 0;
-  if (s[0] === "+" || s[0] === "-") i = 1;
-  if (i >= s.length) return false;
-  for (; i < s.length; i++) {
-    const c = s.charCodeAt(i);
-    if (c < 48 || c > 57) return false;
-  }
-  return true;
-}
-function parseAuth(auth) {
-  if (auth.trim() === "") return void 0;
-  const i = auth.indexOf("Basic ");
-  const clean = i < 0 ? auth : auth.slice(0, i) + auth.slice(i + "Basic ".length);
-  const decoded = lenientB64(clean);
-  if (decoded === void 0) return void 0;
-  const parts = decoded.split(":", 4);
-  const platform = parts[0] ?? "";
-  const phone = parts[1] ?? "";
-  const token = parts[2] ?? "";
-  const seg = token.split("|")[3]?.trim();
-  const expire = seg !== void 0 && isPlainDecimal(seg) ? Math.trunc(Number(seg)) || 0 : 0;
-  return { raw: `Basic ${clean}`, platform, phone, token, expire };
-}
-
-// src/mcloud/accounts.ts
-var STATE_ACCOUNTS = "mcloud.accounts";
-var STATE_CURRENT_ACCOUNT = "mcloud.account.current";
-function loadAccounts(store2) {
-  const raw = store2.getState(STATE_ACCOUNTS);
-  if (raw === null || raw === void 0 || raw.trim() === "") return [];
-  let parsed;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return [];
-  }
-  if (!Array.isArray(parsed)) return [];
-  const out = [];
-  for (const it of parsed) {
-    if (it === null || typeof it !== "object") continue;
-    const o = it;
-    if (typeof o.id !== "string" || typeof o.auth !== "string" || o.auth === "") continue;
-    const auth = o.auth;
-    const info = parseAuth(auth);
-    const pc = o.pcPlatform;
-    out.push({
-      id: o.id,
-      label: typeof o.label === "string" && o.label !== "" ? o.label : o.id,
-      auth,
-      // 老账号没存过这两格 ⇒ 从凭据里现解一次（不用迁移）
-      platform: typeof o.platform === "string" ? o.platform : info?.platform ?? "",
-      pcPlatform: pc === "win" || pc === "mac" ? pc : void 0,
-      addedAt: typeof o.addedAt === "string" ? o.addedAt : ""
-    });
-  }
-  return out;
-}
-function currentAccount(store2) {
-  const id = (store2.getState(STATE_CURRENT_ACCOUNT) ?? "").trim();
-  if (id === "") return void 0;
-  return loadAccounts(store2).find((a) => a.id === id);
 }
 
 // src/crypto/aes.ts

@@ -342,31 +342,6 @@ function mergeCookieJar(existing, incoming) {
   return [...jar.entries()].map(([k, v]) => `${k}=${v}`).join("; ");
 }
 
-// src/store/types.ts
-var SESSION_KEY = "mcloud.session";
-function loadSession(store2) {
-  const raw = store2.getState(SESSION_KEY);
-  if (!raw) return null;
-  try {
-    const v = JSON.parse(raw);
-    const cookie = typeof v.cookie === "string" ? v.cookie : "";
-    const jwt = typeof v.jwt === "string" ? v.jwt : "";
-    if (cookie === "" && jwt === "") return null;
-    return {
-      cookie,
-      jwt: jwt === "" ? void 0 : jwt,
-      deviceId: typeof v.deviceId === "string" ? v.deviceId : void 0,
-      userAgent: typeof v.userAgent === "string" ? v.userAgent : void 0,
-      savedAt: typeof v.savedAt === "string" ? v.savedAt : ""
-    };
-  } catch {
-    return null;
-  }
-}
-function saveSession(store2, s, nowIso) {
-  store2.setState(SESSION_KEY, JSON.stringify({ ...s, savedAt: nowIso }), nowIso);
-}
-
 // src/mcloud/auth.ts
 function lenientB64(s) {
   let payload = "";
@@ -447,6 +422,38 @@ function currentAccount(store2) {
   const id = (store2.getState(STATE_CURRENT_ACCOUNT) ?? "").trim();
   if (id === "") return void 0;
   return loadAccounts(store2).find((a) => a.id === id);
+}
+
+// src/store/types.ts
+var SESSION_KEY = "mcloud.session";
+function accountScopedKey(store2, base) {
+  const cur = currentAccount(store2);
+  return cur === void 0 ? base : `${base}.${cur.id}`;
+}
+function sessionKey(store2) {
+  return accountScopedKey(store2, SESSION_KEY);
+}
+function loadSession(store2) {
+  const raw = store2.getState(sessionKey(store2));
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw);
+    const cookie = typeof v.cookie === "string" ? v.cookie : "";
+    const jwt = typeof v.jwt === "string" ? v.jwt : "";
+    if (cookie === "" && jwt === "") return null;
+    return {
+      cookie,
+      jwt: jwt === "" ? void 0 : jwt,
+      deviceId: typeof v.deviceId === "string" ? v.deviceId : void 0,
+      userAgent: typeof v.userAgent === "string" ? v.userAgent : void 0,
+      savedAt: typeof v.savedAt === "string" ? v.savedAt : ""
+    };
+  } catch {
+    return null;
+  }
+}
+function saveSession(store2, s, nowIso) {
+  store2.setState(sessionKey(store2), JSON.stringify({ ...s, savedAt: nowIso }), nowIso);
 }
 
 // src/crypto/md5.ts
@@ -4566,6 +4573,12 @@ function withBase(deps, path) {
 // src/mcloud/dailyState.ts
 var DAILY_DONE_KEY = "mcloud.daily.done_date";
 var DAILY_LAST_KEY = "mcloud.daily.last_run";
+function dailyDoneKey(store2) {
+  return accountScopedKey(store2, DAILY_DONE_KEY);
+}
+function dailyLastKey(store2) {
+  return accountScopedKey(store2, DAILY_LAST_KEY);
+}
 
 // src/entries/shared.ts
 import {
@@ -5170,8 +5183,8 @@ var store = makeStore();
 var transport = makeTransport(LONG_REQUEST_TIMEOUT_MS);
 var BUDGET_MS = 12e4;
 var DEADLINE_MS = BUDGET_MS - 15e3;
-var DONE_KEY = DAILY_DONE_KEY;
-var LAST_KEY = DAILY_LAST_KEY;
+var DONE_KEY = dailyDoneKey;
+var LAST_KEY = dailyLastKey;
 function once(name, fn, deps) {
   try {
     const r = fn(deps);
@@ -5318,7 +5331,7 @@ register_cron(
     const nowIso = (/* @__PURE__ */ new Date()).toISOString();
     const startedMs = Date.parse(nowIso);
     const today2 = nowIso.slice(0, 10);
-    const doneDate = store.getState(DONE_KEY);
+    const doneDate = store.getState(DONE_KEY(store));
     if (doneDate === today2) return;
     const deps = taskDeps(store, transport, p);
     const r = runDaily(deps);
@@ -5332,7 +5345,7 @@ register_cron(
       note: r.note
     });
     store.setState(
-      LAST_KEY,
+      LAST_KEY(store),
       JSON.stringify({
         at: nowIso,
         ok: r.ok,
@@ -5351,7 +5364,7 @@ register_cron(
     });
     log2(`日常：本次运行 id=${runId}`);
     if (r.ok) {
-      store.setState(DONE_KEY, today2, nowIso);
+      store.setState(DONE_KEY(store), today2, nowIso);
       log2(`日常：${r.note}`);
     } else {
       warn2(`日常：${r.note}`);
