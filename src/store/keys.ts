@@ -118,6 +118,10 @@ export const KEY_SCOPE: Readonly<Record<string, KeyScope>> = {
   //（PC 取图自己解、App 真机是开 WebView），共用一格会让"进行中的是哪一端"
   // 变成要靠猜。
   'mcloud.login.app': 'global',
+  // 每条任务跑哪些账号。**global** —— 它说的是这条任务用哪些号，
+  // 不是某个号自己的设置（放进账号袋会让 A 的名单被 B 读到）。
+  // ⚠ 动态键（键里带任务名）⇒ 靠  登记，见下面那张表。
+  'mcloud.task.accounts.': 'global',
   'mcloud.login.base': 'global',
   'mcloud.login.userDomainId': 'global',
   'mcloud.sign.stage': 'account',
@@ -199,6 +203,10 @@ export const KEY_SCOPE: Readonly<Record<string, KeyScope>> = {
  *  ⚠ 查表要**最长前缀优先**（将来出现 `mcloud.a.b.` 与 `mcloud.a.` 两个前缀时，
  *  短的那个会抢走本该属于长的键）。 */
 export const KEY_PREFIX_SCOPE: readonly (readonly [string, KeyScope])[] = [
+  // 每条任务"跑哪些账号"（`mcloud.task.accounts.日常`）—— 键里带任务名，
+  // 静态扫描扫不到整串，所以按前缀登记。⚠ **global**：它说的是"这条任务用哪些号"，
+  // 不是"某个号自己的设置"。
+  ['mcloud.task.accounts.', 'global'],
   ['mcloud.last_error.', 'account'],
   // 票与换票进度：**按配方**分（`mcloud.h5.jwt.sign-in` / `.msg-push-on`）。
   // ⚠ 账号那一维由 `scoped()` 加（袋名），所以这里只剩配方这一段。

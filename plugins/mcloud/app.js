@@ -303,7 +303,10 @@ function renderAccount(a, login) {
                   <div class="acct-sub">${dev}${exp}</div>
                 </div>
                 <div class="acct-acts">
-                  ${x.current ? '' : `<button class="btn btn-sm" data-acc-select="${esc(x.id)}">切到这个</button>`}
+                  <!-- ⚠ 这里原来有「切到这个」。删了 —— **切账号不是账号管理**
+                       （参考实现的口径）：账号页管的是"有哪些账号"（登录 / 改昵称 /
+                       刷新 / 停用 / 移除），而"这一趟用哪些号跑"是**任务**的属性。
+                       那个按钮让人以为"切换"是账号页的事，于是任务页上就没去找。 -->
                   <button class="btn btn-sm" data-acc-refresh="${esc(x.id)}">刷新</button>
                   <button class="btn btn-sm" data-acc-rename="${esc(x.id)}">编辑</button>
                   <button class="btn btn-sm" data-acc-settings="${esc(x.id)}">设置</button>
@@ -313,6 +316,9 @@ function renderAccount(a, login) {
               </li>`;
           })
           .join('');
+
+  // 三条任务的账号选择器
+  for (const cfg of PICKERS) renderPicker(cfg);
 
   // 本机设备指纹：**只读显示**（它不是用户填的东西 —— 见 index.html 那段说明）。
   setText('device-id-show', login.deviceId || '（还没生成）');
@@ -940,6 +946,129 @@ $('acct-refresh-all').addEventListener('click', (e) =>
   act(e.currentTarget, () => api('/auth/refresh', { method: 'POST', write: true }), (r) => r.note || '已刷新'),
 );
 
+// ══════════ 账号选择器（多选 + 全部） ══════════
+//
+// 参考实现为这个控件单独写了一个组件，理由有两条：
+//  · 原生 `<select multiple>` 要靠"按住 + 点选"，**移动端几乎不可用**；
+//  · 展开面板**不能进文档流**（那会把卡片撑高、把下面的内容顶下去）。
+// 所以这里是**浮层**，而且点外部要能关。
+//
+// ⚠ 三条任务共用**同一个控制器**（下面那张表驱动）—— 参考实现的原话：
+//   「任务页与直播页各有一张'选账号再运行'的表单，两处必须是**同一套控件、
+//    同一套口径**，否则迟早一处改了、另一处没改」。
+const PICKERS = [
+  { task: '日常', key: 'daily', btn: 'daily-acct-btn', panel: 'daily-acct-panel', all: 'daily-acct-all', list: 'daily-acct-list' },
+  { task: '兑换', key: 'exchange', btn: 'exchange-acct-btn', panel: 'exchange-acct-panel', all: 'exchange-acct-all', list: 'exchange-acct-list' },
+  { task: '直播', key: 'live', btn: 'live-acct-btn', panel: 'live-acct-panel', all: 'live-acct-all', list: 'live-acct-list' },
+];
+
+/** 选择器按钮上那行字。⚠ 「全部」要**说出来**，不能只靠"都勾上了"表示。 */
+function pickerLabel(v) {
+  if (!v) return '…';
+  if (v.all) return '全部账号';
+  const n = (v.picked || []).length;
+  if (n === 0) return '没选账号';
+  if (n === 1) {
+    const a = (v.accounts || []).find((x) => x.id === v.picked[0]);
+    return (a && a.label) || v.picked[0];
+  }
+  return `${n} 个账号`;
+}
+
+function renderPicker(cfg) {
+  const all = (last && last.taskAccounts && last.taskAccounts[cfg.task]) || null;
+  const v = all || { all: true, picked: [], accounts: [] };
+  setText(`${cfg.key}-acct-label`, pickerLabel(v));
+  $(`${cfg.key}-acct-all`).checked = v.all === true;
+
+  // 名单。⚠ 「全部」勾着时下面那些**不禁用** —— 用户可以先挑几个，
+  //   取消「全部」时就带着这份名单继续，不用从头勾一遍。
+  const list = $(`${cfg.key}-acct-list`);
+  list.innerHTML = (v.accounts || [])
+    .map((a) => {
+      const on = v.all || (v.picked || []).includes(a.id);
+      return `<label class="picker-row${a.disabled ? ' is-off' : ''}">
+        <input type="checkbox" data-pick="${esc(a.id)}"${on ? ' checked' : ''}${a.disabled ? ' disabled' : ''} />
+        <span>${esc(a.label || a.id)}${a.disabled ? '（已停用）' : ''}</span>
+      </label>`;
+    })
+    .join('') || '<p class="hint">还没有已登录的账号。先去「账号」页加一个。</p>';
+}
+
+/** 把当前勾选存下来。 */
+async function savePicker(cfg, all, ids) {
+  const r = await api('/task/accounts', {
+    method: 'POST',
+    write: true,
+    body: { task: cfg.task, all, ids },
+  });
+  toast(r.note || '已存下');
+  await load();
+}
+
+// ── 共用的三个动作（三条任务**同一套口径**）──
+
+/** 展开 / 收起。⚠ 同时只开一个 —— 开着两个会让人分不清在改哪条任务。 */
+function pickerToggle(cfg, ev) {
+  ev.stopPropagation();
+  const panel = $(cfg.panel);
+  const open = panel.hidden;
+  for (const o of PICKERS) $(o.panel).hidden = true;
+  panel.hidden = !open;
+  $(cfg.btn).setAttribute('aria-expanded', String(open));
+}
+
+/** 「全部」那个开关。⚠ 它是**独立开关**，不是"把每一项都勾上"（见文件头）。 */
+function pickerToggleAll(cfg, checked) {
+  const cur = (last && last.taskAccounts && last.taskAccounts[cfg.task]) || { picked: [] };
+  void savePicker(cfg, checked, cur.picked || []).catch((e) =>
+    toast(e.message || '没存上', true),
+  );
+}
+
+/** 名单里勾一项。 */
+function pickerPick(cfg, ev) {
+  const box = ev.target.closest('[data-pick]');
+  if (!box) return;
+  const cur = (last && last.taskAccounts && last.taskAccounts[cfg.task]) || { all: true, picked: [] };
+  const id = box.dataset.pick;
+  const has = (cur.picked || []).includes(id);
+  const ids = has ? (cur.picked || []).filter((x) => x !== id) : [...(cur.picked || []), id];
+  // ⚠ 手动勾一项 = **取消「全部」**：用户的意思很清楚（"不是全部，是这几个"）。
+  //   留着「全部」的话勾选会被忽略 —— 那看起来像"点了没反应"。
+  void savePicker(cfg, false, ids).catch((e) => toast(e.message || '没存上', true));
+}
+
+// ── 绑定：三条任务**各写一行**（字面 id，不套模板）──
+//
+// ⚠ 为什么不用 `for (const cfg of PICKERS) $(`${cfg.key}-btn`)…` 那种循环绑定：
+//   那样静态检查**看不出**"这个按钮到底绑没绑"（`test/webui.test.ts` 里那两条
+//   就是钉这件事的，而它们当初正是为了抓"绑了但点了没反应"）。
+//   共用的是**逻辑**（上面三个函数），绑定保持显式 —— 两边都要。
+$('daily-acct-btn').addEventListener('click', (ev) => pickerToggle(PICKERS[0], ev));
+$('daily-acct-all').addEventListener('change', (ev) =>
+  pickerToggleAll(PICKERS[0], ev.currentTarget.checked),
+);
+$('daily-acct-list').addEventListener('change', (ev) => pickerPick(PICKERS[0], ev));
+
+$('exchange-acct-btn').addEventListener('click', (ev) => pickerToggle(PICKERS[1], ev));
+$('exchange-acct-all').addEventListener('change', (ev) =>
+  pickerToggleAll(PICKERS[1], ev.currentTarget.checked),
+);
+$('exchange-acct-list').addEventListener('change', (ev) => pickerPick(PICKERS[1], ev));
+
+$('live-acct-btn').addEventListener('click', (ev) => pickerToggle(PICKERS[2], ev));
+$('live-acct-all').addEventListener('change', (ev) =>
+  pickerToggleAll(PICKERS[2], ev.currentTarget.checked),
+);
+$('live-acct-list').addEventListener('change', (ev) => pickerPick(PICKERS[2], ev));
+
+// 点外部关闭（浮层的基本礼貌 —— 参考实现特意点过这一条）
+document.addEventListener('click', (ev) => {
+  if (ev.target.closest('.picker')) return;
+  for (const o of PICKERS) $(`${o.key}-acct-panel`).hidden = true;
+});
+
 // ══════════ 每账号设置（复刻 mcloud 的「设置」） ══════════
 //
 // ⚠ 这两个字段（听窗口长度 / 只听这间房）**是按账号的键**，而它们原来挂在
@@ -1241,21 +1370,15 @@ $('device-reset').addEventListener('click', resetDevice);
 // 账号列表里的切换 / 删除（按钮是画出来的，用事件代理）
 $('acct-list').addEventListener('click', async (ev) => {
   const pick = (name) => ev.target.closest(`[data-acc-${name}]`);
-  const sel = pick('select');
   const ref = pick('refresh');
   const ren = pick('rename');
   const cfg = pick('settings');
   const dis = pick('disable');
   const del = pick('del');
-  if (!sel && !ref && !ren && !cfg && !dis && !del) return;
+  if (!ref && !ren && !cfg && !dis && !del) return;
   const post = (body) => api('/accounts', { method: 'POST', write: true, body });
   try {
-    if (sel) {
-      // ⚠ 这里是 `select`，**不是** `switch` —— 原来写的是 `switch`，
-      //   而后端只认 add/select/remove ⇒ 又一个点了没反应的按钮。
-      const r = await post({ op: 'select', id: sel.dataset.accSelect });
-      toast(r.note || '已切到这个账号');
-    } else if (ref) {
+    if (ref) {
       // ⚠ 这一条**不改当前选中的账号**：后端用 `scoped(store, id)` 作用在
       //   指定账号上。老做法只能"先切过去再刷"，那会让用户莫名其妙的换号。
       const r = await post({ op: 'refresh', id: ref.dataset.accRefresh });

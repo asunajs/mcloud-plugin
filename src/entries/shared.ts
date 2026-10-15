@@ -43,7 +43,8 @@ import type { Transport } from '../mcloud/client.ts';
 import { applyDefaultContentType, hostFetchOptions, isFetchError } from '../mcloud/client.ts';
 import type { Store } from '../store/types.ts';
 import { hostStore } from '../store/host.ts';
-import { scoped } from '../store/scoped.ts';
+import { rawStoreOf, scoped } from '../store/scoped.ts';
+import { resolveTaskAccounts } from '../mcloud/taskAccounts.ts';
 import { migrateFlatKeys } from '../store/keys.ts';
 import { loadBaseUrl } from '../mcloud/session.ts';
 import {
@@ -124,6 +125,44 @@ export function makeHost(): HostWs {
 }
 
 /** 任务 handler 里拼 `TaskDeps` 的公共部分。 */
+/** 按**这条任务选的账号**串行跑一趟。
+ *
+ * # 为什么要这个东西
+ *
+ * 用户口径（照参考实现 `account-picker.tsx` 记的）：「任何（包括直播小红花）应该
+ * 允许配置**多账号/全部**，点击运行后后端保证**串行执行**」。
+ *
+ * 所以"这一趟用哪些号"是**任务**的属性（挂在任务界面上），不是账号管理的属性
+ *（账号页上那个「切到这个」是错的）。而"串行"这件事必须由**这一侧**保证：
+ * 一个插件的工作线程只有一条，并行跑等于把上游的限流踩满。
+ *
+ * # 返回什么
+ *
+ * 每个账号一条结果。调用方拿它决定怎么记 run / 怎么拼 note。
+ * ⚠ 没选到账号时返回**空数组**（调用方据此**静默返回**，不记 run）——
+ * 那不是失败，是"这条任务没配账号"。
+ */
+export function forEachTaskAccount<T>(
+  base: Store,
+  task: string,
+  payload: { lateMs: number },
+  transport: Transport,
+  fn: (deps: TaskDeps, acctId: string, index: number, total: number) => T,
+): { acctId: string; result: T }[] {
+  // ⚠ `all` 在**这里**展开（不是存的时候）—— 以后新登录的账号也进得来。
+  const targets = resolveTaskAccounts(rawStoreOf(base), task);
+  const out: { acctId: string; result: T }[] = [];
+  for (const [i, acctId] of targets.entries()) {
+    // ⚠ **每个账号一个 store**：`scoped(base, acctId)` 让这一趟里所有按账号的
+    //   读写都落到那一条的袋里。不这么做的话，循环里第二次跑的还是第一个号的
+    //   状态（"拿 A 的票发 B 的请求"），而那正是 F-048/F-049 那一类。
+    const one = scoped(rawStoreOf(base), acctId);
+    const deps = taskDeps(one, transport, payload);
+    out.push({ acctId, result: fn(deps, acctId, i, targets.length) });
+  }
+  return out;
+}
+
 export function taskDeps(
   store: Store,
   transport: Transport,
