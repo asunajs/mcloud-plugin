@@ -8922,6 +8922,7 @@ function scoped(base) {
 }
 
 // src/mcloud/routes.ts
+var QR_POLL_MS = 2e3;
 var PLUGIN = "mcloud";
 function parseJson5(body) {
   if (typeof body !== "string") return body ?? null;
@@ -9307,7 +9308,11 @@ function mcloudRoutes(deps) {
           // 在那里现写一个等于把"码对不对"交给前端（见 crypto/qr.ts 的文件头）。
           svg: qrSvg(payload),
           expiresInMs: QR_TTL_SECONDS * 1e3,
-          note: "用手机上的移动云盘 App 扫这个码"
+          // ⚠ 轮询间隔**由这一侧给**，界面不许自己写死一个数 ——
+          //   参考实现的注释：「客户端写死一个数会和状态机分叉」。
+          //   2 秒是"人扫完到界面看到"的延迟与上游压力的折中。
+          pollMs: QR_POLL_MS,
+          note: "用手机上的移动云盘 App 扫这个码，然后在手机上确认"
         });
       }
     },
