@@ -9146,7 +9146,13 @@ function accountsView(store2) {
         pcPlatform: a.pcPlatform ?? "",
         expireDays: exp > 0 ? Math.floor((exp - nowMs) / 864e5) : null,
         deviceId: readBag(raw, a.id)["mcloud.smid.deviceId"] ?? "",
-        disabled: a.disabled === true
+        disabled: a.disabled === true,
+        // ⚠ 这两个键**是按账号的**（`KEY_SCOPE` 里登记成 `account`）。
+        //   所以"哪一条的设置"必须**按 id 读那一条的袋** —— 用当前账号那一格
+        //   会把 A 的设置显示在 B 的弹窗里。
+        listenSeconds: Number.parseInt(readBag(raw, a.id)["mcloud.live.listen_seconds"] ?? "", 10),
+        listenRoom: Number.parseInt(readBag(raw, a.id)["mcloud.live.listen_room"] ?? "", 10),
+        wsHeartbeat: readBag(raw, a.id)["mcloud.live.ws_heartbeat_reply"] ?? ""
       };
     })
   };
@@ -10283,6 +10289,29 @@ function mcloudRoutes(deps) {
           deps.log(`账号：${r.created ? "添加" : "更新"} ${r.account.label}`);
           if (loadAccounts(deps.store).length === 1) selectAccount(deps.store, r.account.id, now);
           return json(200, { ...accountsView(deps.store), note: `${r.created ? "已添加" : "已更新"} ${r.account.label}` });
+        }
+        if (op === "set-settings") {
+          const id = typeof body.id === "string" ? body.id : "";
+          const found = loadAccounts(deps.store).find((a) => a.id === id);
+          if (!found) return json(400, { error: `列表里没有这个账号：${id}` });
+          const one = scoped(rawStoreOf(deps.store), id);
+          const secs = typeof body.listenSeconds === "number" ? body.listenSeconds : null;
+          const room = typeof body.listenRoom === "number" ? body.listenRoom : null;
+          if (secs !== null) {
+            const clamped = Math.max(10, Math.min(3600, Math.round(secs)));
+            one.setState("mcloud.live.listen_seconds", String(clamped), now);
+          }
+          if (room !== null) {
+            one.setState("mcloud.live.listen_room", room > 0 ? String(Math.round(room)) : "", now);
+          }
+          if (typeof body.wsHeartbeat === "string") {
+            one.setState("mcloud.live.ws_heartbeat_reply", body.wsHeartbeat.trim(), now);
+          }
+          deps.log(`账号设置（${found.label}）：窗口 ${secs ?? "不变"}s / 房间 ${room ?? "不变"}`);
+          return json(200, {
+            ...accountsView(deps.store),
+            note: `${found.label} 的设置已存下`
+          });
         }
         if (op === "refresh") {
           const id = typeof body.id === "string" ? body.id : "";

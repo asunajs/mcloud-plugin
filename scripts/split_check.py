@@ -646,6 +646,44 @@ def main() -> int:
             check("⚠ 按账号刷新**不动当前选中**", d.get("current") == aid, f"current={d.get('current')}")
             check("按账号刷新有如实的结果", bool(d.get("note")), str(d.get("note"))[:40])
 
+            # ⚠ 每账号设置：**A 的设置不许出现在 B 身上**。
+            #   这几个键（听窗口长度 / 只听这间房 / 心跳回帧）原来挂在**全局**
+            #   设置区块里 —— "改了哪个账号"取决于当前选中，界面却不说。
+            #   这条断言钉的就是"搬过来之后真的按账号了"。
+            code, body = plugin_post(base, "/accounts", {"op": "select", "id": aid})
+            code, body = plugin_post(
+                base,
+                "/accounts",
+                {"op": "set-settings", "id": aid, "listenSeconds": 45, "listenRoom": 7001, "wsHeartbeat": "ha"},
+            )
+            check("写每账号设置", code == 200, f"http {code}")
+
+            other = acc_of("pc:13600136999:tok|1|2|" + exp)
+            plugin_post(base, "/accounts", {"op": "add", "auth": other, "pcPlatform": "win"})
+            code, body = plugin_post(base, "/accounts", {"op": "refresh", "id": "不存在的号"})
+            d = json.loads(body) if code == 400 else {}
+            # 重取列表（刚才 add 了一个别的号）
+            code, body = http(f"{base}/plugins/mcloud/api/accounts")
+            rows = json.loads(body)["accounts"]
+            mine = next((a for a in rows if a["id"] == aid), None)
+            theirs = next((a for a in rows if a["id"] == "13600136999"), None)
+            check(
+                "⚠ A 的设置写进去了",
+                mine is not None and mine["listenSeconds"] == 45 and mine["listenRoom"] == 7001 and mine["wsHeartbeat"] == "ha",
+                str(mine and (mine["listenSeconds"], mine["listenRoom"], mine["wsHeartbeat"])),
+            )
+            check(
+                '⚠ A 的设置**没漏到 B**（这正是原来那个「全局页改的是谁」的毛病）',
+                theirs is not None and theirs["wsHeartbeat"] == "" and theirs["listenRoom"] is None,
+                str(theirs and (theirs["listenSeconds"], theirs["listenRoom"], theirs["wsHeartbeat"])),
+            )
+            check(
+                "每账号设置也要能挡住不存在的号",
+                plugin_post(base, "/accounts", {"op": "set-settings", "id": "没有这个号", "listenSeconds": 30})[0] == 400,
+                "",
+            )
+            plugin_post(base, "/accounts", {"op": "remove", "id": "13600136999"})
+
             code, body = plugin_post(base, "/accounts", {"op": "refresh", "id": "不存在的号"})
             check("刷一个不存在的账号被挡住", code == 400, f"http {code}")
 
