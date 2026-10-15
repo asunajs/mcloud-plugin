@@ -28,6 +28,7 @@ import {
   type SmsSession,
   type SliderPuzzle,
 } from './login.ts';
+import { newLoginRandom, type AppSession } from './appLogin.ts';
 
 /** 设备指纹（PC 客户端形态的 `dID`）。**持久化，见文件头。** */
 export const STATE_DEVICE_ID = 'mcloud.login.deviceId';
@@ -37,6 +38,13 @@ export const STATE_QR_SESSION = 'mcloud.login.qr';
 
 /** 正在进行的短信会话。 */
 export const STATE_SMS_SESSION = 'mcloud.login.sms';
+
+/** 正在进行的**手机端（App）**登录。
+ *
+ *  ⚠ 与 `sms` **分开一格**。两端的滑块语义不同（PC 取图自己解；App 真机是开
+ *  WebView，短信由那个 H5 发），响应分类也不同（App 的成功载荷是**密文字符串**）。
+ *  共用一格的话，"进行中的是哪一端"就得靠猜。 */
+export const STATE_APP_SESSION = 'mcloud.login.app';
 
 /** 登录方式与平台的记忆（下一次开界面时预填）。值是 `windows` / `macos`。 */
 export const STATE_LOGIN_PREF = 'mcloud.login.pref';
@@ -110,9 +118,33 @@ export function saveSmsSession(store: Store, s: SmsSession, nowIso: string): voi
 }
 
 /** 清掉正在进行的登录（换方式 / 取消 / 成功之后都要清）。 */
+export function loadAppSession(store: Pick<Store, 'getState'>): AppSession | null {
+  return parseJson<AppSession>(store.getState(STATE_APP_SESSION));
+}
+
+export function saveAppSession(store: Store, a: AppSession, nowIso: string): void {
+  store.setState(STATE_APP_SESSION, JSON.stringify(a), nowIso);
+}
+
+export function startAppSession(store: Store, phone: string, nowMs: number, nowIso: string): AppSession {
+  const a: AppSession = {
+    phone,
+    // ⚠ 用 App 的随机串构造（`newLoginRandom`），**不是** PC 那个 ——
+    //   它是 `smsThirdloginBody` 的一个字段，两端格式不同。
+    random: newLoginRandom(),
+    startedAtMs: nowMs,
+    sent: false,
+    slider: null,
+    lastNote: '还没发码',
+  };
+  saveAppSession(store, a, nowIso);
+  return a;
+}
+
 export function clearLogin(store: Store): void {
   store.setState(STATE_QR_SESSION, '', new Date().toISOString());
   store.setState(STATE_SMS_SESSION, '', new Date().toISOString());
+  store.setState(STATE_APP_SESSION, '', new Date().toISOString());
 }
 
 /** 开一次扫码登录：**用已有的设备指纹**，不要新生成。 */
@@ -165,6 +197,16 @@ export interface LoginReading {
     expiresInMs: number;
     note: string;
   } | null;
+  /** 手机端（App 那条）。形状与 `sms` 一样 —— 见 `loginReading` 里那段说明。 */
+  app: {
+    active: boolean;
+    phone: string;
+    sent: boolean;
+    hasSlider: boolean;
+    slider: SliderPuzzle | null;
+    expiresInMs: number;
+    note: string;
+  } | null;
 }
 
 export function loginReading(
@@ -201,5 +243,21 @@ export function loginReading(
             expiresInMs: Math.max(0, sms.startedAtMs + 300_000 - nowMs),
             note: sms.lastNote,
           },
+    // 手机端（App 那条）。形状与 `sms` 刻意一致 —— 界面上两者的进度显示一样，
+    // 差别只在**这一趟走的是哪一套头/体**，而那件事由页签决定，不用读数来说。
+    app: (() => {
+      const a = loadAppSession(store);
+      return a === null
+        ? null
+        : {
+            active: true,
+            phone: a.phone,
+            sent: a.sent,
+            hasSlider: a.slider !== null,
+            slider: a.slider,
+            expiresInMs: Math.max(0, a.startedAtMs + 300_000 - nowMs),
+            note: a.lastNote,
+          };
+    })(),
   };
 }

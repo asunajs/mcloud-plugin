@@ -163,21 +163,31 @@
           </div>
 
           <!-- ── 手机端（App 链路） ── -->
-          <!-- ── 手机端（App 链路）━━
-               ⚠ 这一路**还没接上流程**（加密层已过实拍黄金值，缺的是状态机与路由）。
-               所以这里**不放按钮** —— 放了就是"点了没反应"，而那正是这一版要消灭的东西。
-               参考实现这条路的样子（`app_login.rs`）：发码（`/user/sms/getSmsCode`，App 版）
-               → 可能要滑块 → `/user/thirdlogin`（**AES 加密体**）→ 拿到 `mobile:` 前缀的凭据。 -->
+          <!-- ── 手机端（App 链路）──
+               走 App 自己的头与体（`appLogin.ts`）：发码 → 可能要滑块 → `thirdlogin`
+               （**AES 加密体**）→ 拿到 `mobile:` 前缀的凭据。
+               ⚠ 这条路**不存在 Windows / macOS 之分** —— 上面那个形态选择对它没有意义。 -->
           <div class="pane" data-pane="app" hidden>
             <p class="hint">
               用 App 自己的身份（<code>mobile</code> 前缀）与设备头发请求 —— 这条路拿到的凭据
-              就是 App 那套，不存在 Windows / macOS 之分。
+              就是 App 那套，<b>不存在 Windows / macOS 之分</b>（上面那个形态选择对它没有意义）。
             </p>
-            <p class="hint">
-              <b>这一路还没接上。</b>底子已经好了（App 端的加密与请求头逐字节对过实拍值），
-              缺的是"发码 → 可能要滑块 → 换凭据"这套流程。
-              现在想加 App 账号的话，用「凭据」那一栏贴一段 <code>Basic &lt;base64&gt;</code>。
-            </p>
+            <div class="row">
+              <input id="app-phone" class="grow" type="tel" placeholder="13800000000" autocomplete="tel" />
+              <button class="btn" id="app-start">下一步</button>
+            </div>
+            <p class="hint" id="app-note"></p>
+            <div class="row">
+              <button class="btn" id="app-send">发验证码</button>
+              <input id="app-code" class="grow" type="text" placeholder="6 位验证码" inputmode="numeric" />
+              <button class="btn btn-primary" id="app-submit">登录</button>
+            </div>
+            <!-- 滑块图只在"要过滑块"时出现 —— 它是**异常路径**（首次发码被风控拦下）。
+                 ⚠ 缺口位置是这一侧解出来的，不用人眼量像素（与 PC 那条同一套）。 -->
+            <div class="slider" id="app-slider-box" hidden>
+              <p class="hint" id="app-slider-note"></p>
+              <img id="app-slider-bg" alt="滑块背景" />
+            </div>
           </div>
 
           <!-- ── 账密 ── -->
