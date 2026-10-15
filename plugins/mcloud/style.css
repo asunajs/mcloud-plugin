@@ -769,8 +769,17 @@ textarea:focus {
   background: var(--soft);
 }
 
-.picker-row input {
-  margin-top: 3px;
+/* ⚠ 复选框要把全局那条 `input { width: 100% }` **抵掉** ——
+   不然它会被撑满整行，文字被推到很远的地方（看起来像"文字居中"）。
+   全局那条还给了边框和内边距，复选框上也要撤掉（浏览器自己的样式才对）。 */
+.picker-row input[type='checkbox'] {
+  flex: 0 0 auto;
+  width: auto;
+  min-width: 0;
+  margin: 3px 0 0;
+  padding: 0;
+  border: 0;
+  background: none;
 }
 
 /* 「全部」那一行与下面的名单之间画一条线 —— 它是**开关**，不是名单里的一项。 */
