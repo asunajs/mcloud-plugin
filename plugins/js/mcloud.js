@@ -487,6 +487,7 @@ function loadAccounts(store2) {
       // 老账号没存过这两格 ⇒ 从凭据里现解一次（不用迁移）
       platform: typeof o.platform === "string" ? o.platform : info?.platform ?? "",
       pcPlatform: pc === "win" || pc === "mac" ? pc : void 0,
+      disabled: o.disabled === true,
       addedAt: typeof o.addedAt === "string" ? o.addedAt : ""
     });
   }
@@ -508,12 +509,34 @@ function upsertAccount(store2, auth, nowIso, label, pcPlatform) {
     // ⚠ 只在 PC 端才有意义。手机端传进来也丢掉 —— 留着会让"这个账号用哪套
     //   设备头"这件事出现两个互相矛盾的来源。
     pcPlatform: info?.platform === PC_AUTH_PREFIX ? pcPlatform ?? list[idx]?.pcPlatform ?? "win" : void 0,
+    // ⚠ 重加同一个号时**保留**停用状态（"刷新凭据"不该顺手把人启用回来）
+    disabled: list[idx]?.disabled === true,
     addedAt: idx >= 0 ? list[idx].addedAt : nowIso
   };
   if (idx >= 0) list[idx] = account;
   else list.push(account);
   saveAccounts(store2, list, nowIso);
   return { list, account, created: idx < 0 };
+}
+function setAccountDisabled(store2, id, disabled, nowIso) {
+  const list = loadAccounts(store2);
+  const idx = list.findIndex((a) => a.id === id);
+  if (idx < 0) return void 0;
+  list[idx] = { ...list[idx], disabled };
+  saveAccounts(store2, list, nowIso);
+  return list[idx];
+}
+function setAccountLabel(store2, id, label, nowIso) {
+  const list = loadAccounts(store2);
+  const idx = list.findIndex((a) => a.id === id);
+  if (idx < 0) return void 0;
+  const auth = list[idx].auth;
+  list[idx] = {
+    ...list[idx],
+    label: label.trim() !== "" ? label.trim() : phoneOf(auth) ?? `账号 ${idx + 1}`
+  };
+  saveAccounts(store2, list, nowIso);
+  return list[idx];
 }
 function removeAccount(store2, id, nowIso) {
   const list = loadAccounts(store2).filter((a) => a.id !== id);
@@ -8875,6 +8898,29 @@ function loginReading(store2, nowMs, qrPayloadOf) {
   };
 }
 
+// src/store/scoped.ts
+var WRAPPED = Symbol.for("__mcloud_scoped_store__");
+var RAW = Symbol.for("__mcloud_raw_store__");
+function rawStoreOf(s) {
+  const raw = s[RAW];
+  return raw ?? s;
+}
+function scoped(base) {
+  if (base[WRAPPED] === true) {
+    throw new Error(
+      "store 已经被 scoped() 包过一次了 —— 双重包装会让 `mcloud.acct.*` 也去查登记表然后抛错。"
+    );
+  }
+  const wrapped = {
+    ...base,
+    getState: (key) => routeGet(base, key),
+    setState: (key, value, nowIso) => routeSet(base, key, value, nowIso)
+  };
+  Object.defineProperty(wrapped, WRAPPED, { value: true, enumerable: false });
+  Object.defineProperty(wrapped, RAW, { value: base, enumerable: false });
+  return wrapped;
+}
+
 // src/mcloud/routes.ts
 var PLUGIN = "mcloud";
 function parseJson5(body) {
@@ -8888,17 +8934,26 @@ function parseJson5(body) {
 var JSON_HEADERS = { "content-type": "application/json; charset=utf-8" };
 function accountsView(store2) {
   const cur = currentAccount(store2);
+  const nowMs = Date.now();
+  const raw = rawStoreOf(store2);
   return {
     current: cur?.id ?? "",
-    accounts: loadAccounts(store2).map((a) => ({
-      id: a.id,
-      label: a.label,
-      masked: maskAuth(a.auth),
-      current: cur?.id === a.id,
-      addedAt: a.addedAt,
-      platform: a.platform,
-      pcPlatform: a.pcPlatform ?? ""
-    }))
+    accounts: loadAccounts(store2).map((a) => {
+      const info = parseAuth(a.auth);
+      const exp = info?.expire ?? 0;
+      return {
+        id: a.id,
+        label: a.label,
+        masked: maskAuth(a.auth),
+        current: cur?.id === a.id,
+        addedAt: a.addedAt,
+        platform: a.platform,
+        pcPlatform: a.pcPlatform ?? "",
+        expireDays: exp > 0 ? Math.floor((exp - nowMs) / 864e5) : null,
+        deviceId: readBag(raw, a.id)["mcloud.smid.deviceId"] ?? "",
+        disabled: a.disabled === true
+      };
+    })
   };
 }
 var json = (status, obj) => ({
@@ -9926,6 +9981,28 @@ function mcloudRoutes(deps) {
           if (loadAccounts(deps.store).length === 1) selectAccount(deps.store, r.account.id, now);
           return json(200, { ...accountsView(deps.store), note: `${r.created ? "已添加" : "已更新"} ${r.account.label}` });
         }
+        if (op === "disable") {
+          const id = typeof body.id === "string" ? body.id : "";
+          const disabled = body.disabled === true;
+          const a = setAccountDisabled(deps.store, id, disabled, now);
+          if (!a) return json(400, { error: `列表里没有这个账号：${id}` });
+          deps.log(`账号：${disabled ? "停用" : "启用"} ${a.label}`);
+          return json(200, {
+            ...accountsView(deps.store),
+            note: `${disabled ? "已停用" : "已启用"} ${a.label}`
+          });
+        }
+        if (op === "edit") {
+          const id = typeof body.id === "string" ? body.id : "";
+          const label = typeof body.label === "string" ? body.label : "";
+          const a = setAccountLabel(deps.store, id, label, now);
+          if (!a) return json(400, { error: `列表里没有这个账号：${id}` });
+          deps.log(`账号：改名为 ${a.label}`);
+          return json(200, {
+            ...accountsView(deps.store),
+            note: `已改名为 ${a.label}`
+          });
+        }
         if (op === "select") {
           const id = typeof body.id === "string" ? body.id : "";
           if (!selectAccount(deps.store, id, now)) return json(400, { error: `列表里没有这个账号：${id}` });
@@ -10198,25 +10275,6 @@ function hostStore() {
       [Math.min(limit, 1e3)]
     )
   };
-}
-
-// src/store/scoped.ts
-var WRAPPED = Symbol.for("__mcloud_scoped_store__");
-var RAW = Symbol.for("__mcloud_raw_store__");
-function scoped(base) {
-  if (base[WRAPPED] === true) {
-    throw new Error(
-      "store 已经被 scoped() 包过一次了 —— 双重包装会让 `mcloud.acct.*` 也去查登记表然后抛错。"
-    );
-  }
-  const wrapped = {
-    ...base,
-    getState: (key) => routeGet(base, key),
-    setState: (key, value, nowIso) => routeSet(base, key, value, nowIso)
-  };
-  Object.defineProperty(wrapped, WRAPPED, { value: true, enumerable: false });
-  Object.defineProperty(wrapped, RAW, { value: base, enumerable: false });
-  return wrapped;
 }
 
 // src/entries/shared.ts

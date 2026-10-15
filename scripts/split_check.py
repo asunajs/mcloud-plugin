@@ -598,6 +598,43 @@ def main() -> int:
             code, body = plugin_post(base, "/accounts", {"op": "remove", "id": "13800138000"})
             code, body = plugin_post(base, "/accounts", {"op": "remove", "id": "13900139000"})
 
+            # ---- ⑭·2 账号卡片的字段（复刻 mcloud 用的那几个）----
+            print("\n账号卡片（脚本断言）")
+            import base64 as _b64, time as _t
+
+            def acc_of(payload: str) -> str:
+                return "Basic " + _b64.b64encode(payload.encode()).decode()
+
+            exp = str(int((_t.time() + 13 * 86400) * 1000))
+            auth13 = acc_of("mobile:13700137000:tok|1|2|" + exp)
+            code, body = add_account(auth13)
+            d = json.loads(body) if code == 200 else {}
+            row = next((a for a in d.get("accounts", []) if a.get("platform") == "mobile"), None)
+            check("卡片要的 `凭据 N 天后`（从凭据第 4 段算）", row is not None and row.get("expireDays") == 12, str(row and row.get("expireDays")))
+            check("卡片要的 `设备`（没上报过 ⇒ 空串，不是 null）", row is not None and row.get("deviceId") == "", str(row and row.get("deviceId")))
+            check("卡片要的 `停用`", row is not None and row.get("disabled") is False, str(row and row.get("disabled")))
+
+            aid = row["id"]
+
+            # ⚠ 这条是为了钉一个**反了的 bug**：第一版传 `disabled:true` 实际是"启用"。
+            code, body = plugin_post(base, "/accounts", {"op": "disable", "id": aid, "disabled": True})
+            d = json.loads(body)
+            check("⚠ `disabled:true` 是**停用**（第一版反了）", d["accounts"][0]["disabled"] is True, str(d["accounts"][0]["disabled"]))
+            code, body = plugin_post(base, "/accounts", {"op": "disable", "id": aid, "disabled": False})
+            d = json.loads(body)
+            check("⚠ `disabled:false` 是**启用**", d["accounts"][0]["disabled"] is False, str(d["accounts"][0]["disabled"]))
+
+            code, body = plugin_post(base, "/accounts", {"op": "edit", "id": aid, "label": "小号"})
+            d = json.loads(body)
+            check("改昵称", d["accounts"][0]["label"] == "小号", d["accounts"][0]["label"])
+            code, body = plugin_post(base, "/accounts", {"op": "edit", "id": aid, "label": ""})
+            d = json.loads(body)
+            check("⚠ 空串改名 ⇒ **回落成手机号**（不是留空）", d["accounts"][0]["label"] == "13700137000", d["accounts"][0]["label"])
+
+            code, body = plugin_post(base, "/accounts", {"op": "disable", "id": "不存在的号", "disabled": True})
+            check("停用一个不存在的账号被挡住", code == 400, f"http {code}")
+            plugin_post(base, "/accounts", {"op": "remove", "id": aid})
+
             # ---- ⑮ 线程分配 ----
             print("\n线程（脚本断言）")
             logf.flush()
