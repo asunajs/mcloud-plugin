@@ -41,6 +41,10 @@ var KEY_SCOPE = {
   "mcloud.login.deviceId": "global",
   "mcloud.login.qr": "global",
   "mcloud.login.sms": "global",
+  // 手机端（App 链路）那次登录。与 `sms` **分开存**：两端的滑块语义不同
+  //（PC 取图自己解、App 真机是开 WebView），共用一格会让"进行中的是哪一端"
+  // 变成要靠猜。
+  "mcloud.login.app": "global",
   "mcloud.login.base": "global",
   "mcloud.login.userDomainId": "global",
   "mcloud.sign.stage": "account",
@@ -391,6 +395,7 @@ function lengthBits(bytes) {
 
 // src/mcloud/auth.ts
 var PC_AUTH_PREFIX = "pc";
+var APP_AUTH_PREFIX = "mobile";
 function lenientB64(s) {
   let payload = "";
   for (const c of s) {
@@ -1956,6 +1961,18 @@ function aes128EcbDecrypt(key, ct) {
     out.set(aes128DecryptBlock(rk, ct.subarray(off, off + 16)), off);
   }
   return out;
+}
+function aes128EcbEncrypt(key, msg) {
+  const rk = aes128KeyExpansion(key);
+  const padded = pkcs7Pad(msg, 16);
+  const out = new Uint8Array(padded.length);
+  for (let off = 0; off < padded.length; off += 16) {
+    out.set(aes128EncryptBlock(rk, padded.subarray(off, off + 16)), off);
+  }
+  return out;
+}
+function aesEcbPkcs7EncryptHex(key, message) {
+  return toHex(aes128EcbEncrypt(fitKey16(key), utf8(message)));
 }
 function encryptWithDynamicIv(key, iv, plaintext) {
   const ct = aes128CbcEncrypt(key, iv, pkcs7Pad(utf8(plaintext), 16));
@@ -8810,10 +8827,146 @@ function newSmsSession(phone, nowMs) {
   };
 }
 
+// src/mcloud/appLogin.ts
+var APP_LOGIN_AES_KEY = "lYzvvBMUjucw+h^R";
+var SEND_SMS_RANDOM = "qwert";
+var APP_CLIENT_TYPE2 = "412";
+var APP_CPID = "55";
+var APP_VERSION = "12.6.0";
+var APP_CHANNEL = "10000020";
+var APP_SERVICE_IDENTIFIER = "service_identifier_userDomain";
+var APP_USER_AGENT = "mCloud_iPhone/12.6.0 (iPad; iOS 26.6; Scale/2.00)";
+var APP_X_USER_AGENT = "412|iPad|ios 26.6|12.6.0-200";
+var APP_X_YUN_USER_AGENT = "iPad|iPad|ios 26.6|mCloud12.6.0-200";
+var APP_DEVICE_NAME_B64 = "aVBhZA==";
+var APP_DEFAULT_IP = "192.168.3.179";
+var APP_DEVICE_MODEL = "iPad8,6";
+var APP_SEND_SMS_CODE_PATH = "/user/sms/getSmsCode";
+var APP_THIRDLOGIN_PATH = "/user/thirdlogin";
+function shiftTail10ToFront(hex) {
+  if (hex.length <= 10) return hex;
+  return hex.slice(-10) + hex.slice(0, -10);
+}
+function encryptBody(plaintext, key = APP_LOGIN_AES_KEY) {
+  return shiftTail10ToFront(aesEcbPkcs7EncryptHex(key, plaintext));
+}
+function sendSmsCodeBody2(phone, puzzleVerfycode = "") {
+  return {
+    mode: "0",
+    phoneNumber: phone,
+    reqType: "3",
+    clientType: APP_CLIENT_TYPE2,
+    random: SEND_SMS_RANDOM,
+    puzzleVerfycode
+  };
+}
+function smsThirdloginBody2(phone, smsCode, random) {
+  return {
+    cpid: APP_CPID,
+    extInfo: { ifOpenAccount: "1" },
+    dycpwd: smsCode,
+    pintype: "8",
+    loginMode: "0",
+    verType: "1",
+    version: APP_VERSION,
+    msisdn: phone,
+    random,
+    clienttype: APP_CLIENT_TYPE2
+  };
+}
+function newLoginRandom() {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  let out = "";
+  for (let i = 0; i < 6; i++) out += chars[Math.floor(Math.random() * chars.length)];
+  return out;
+}
+function appDeviceInfo(deviceId) {
+  return `1|${APP_DEFAULT_IP}|2|${APP_VERSION}|APPLE|${APP_DEVICE_MODEL}|${deviceId}|AAA000000000|ipados 26.6|375 * 667|zh-Hans-CN|0.0000|0.0000|`;
+}
+function appClientInfo(deviceId) {
+  return `${appDeviceInfo(deviceId)}${APP_DEVICE_NAME_B64}|0|;`;
+}
+function appHeaders(deviceId, timestamp) {
+  return {
+    Pragma: "no-cache",
+    "x-yun-user-timestamp": String(timestamp),
+    "x-yun-app-channel": APP_CHANNEL,
+    "x-yun-net-type": "1",
+    "x-yun-svc-type": "1",
+    "x-huawei-channelSrc": APP_CHANNEL,
+    "x-yun-api-version": "v1",
+    "x-UserAgent": APP_X_USER_AGENT,
+    "x-yun-client-info": appClientInfo(deviceId),
+    "Accept-Language": "zh-CN",
+    service_identifier_key: APP_SERVICE_IDENTIFIER,
+    "User-Agent": APP_USER_AGENT,
+    "x-DeviceName": APP_DEVICE_NAME_B64,
+    "x-DeviceInfo": appDeviceInfo(deviceId),
+    "x-yun-user-agent": APP_X_YUN_USER_AGENT,
+    "x-SvcType": "1",
+    // ⚠ 这里**故意没有** `hcy-cool-flag`（见上面的说明）。
+    //   要加的话响应体会变成一段没有密钥的加密串。
+    "Content-Type": "application/json;charset=UTF-8"
+  };
+}
+var APP_LOGIN_HOST = "https://user-njs.yun.139.com";
+function appPost(path, rawBody, deviceId, timestamp) {
+  return {
+    url: `${APP_LOGIN_HOST}${path}`,
+    method: "POST",
+    headers: appHeaders(deviceId, timestamp),
+    body: rawBody
+  };
+}
+function appSendSmsCodeRequest(deviceId, timestamp, phone, puzzleVerfycode = "") {
+  return appPost(
+    APP_SEND_SMS_CODE_PATH,
+    JSON.stringify(sendSmsCodeBody2(phone, puzzleVerfycode)),
+    deviceId,
+    timestamp
+  );
+}
+function appThirdloginRequest(deviceId, timestamp, phone, smsCode, random, key = APP_LOGIN_AES_KEY) {
+  const plaintext = JSON.stringify(smsThirdloginBody2(phone, smsCode, random));
+  return appPost(APP_THIRDLOGIN_PATH, encryptBody(plaintext, key), deviceId, timestamp);
+}
+var APP_SLIDER_PUZZLE_PATH = "/user/verfycode";
+function classifyAppSendSms(env) {
+  if (isSuccessCode(env.code)) {
+    const d = env.data ?? {};
+    const remain = typeof d["remainGetTimes"] === "number" ? d["remainGetTimes"] : null;
+    return { kind: "sent", remainGetTimes: remain };
+  }
+  if (env.code === CODES.NEED_SLIDER) {
+    return { kind: "need-captcha", note: "移动云盘要滑块 —— 先点「发验证码」取题面" };
+  }
+  if (env.code === CODES.SLIDER_EXHAUSTED) {
+    return { kind: "slider-exhausted", note: "这道滑块的尝试次数用完了 —— 会重取一道新题" };
+  }
+  return { kind: "other", note: `发码没成：${env.message || `code=${env.code}`}` };
+}
+function classifyAppLogin(env) {
+  if (isSuccessCode(env.code)) {
+    if (typeof env.data === "string") return { kind: "success", encrypted: env.data };
+    return { kind: "other", note: "登录成功了，但返回的载荷不是密文字符串（形状不对）" };
+  }
+  if (env.code === CODES.UNDECRYPTABLE_BODY) {
+    return { kind: "undecryptable", note: "服务端解不开请求体（9103）—— 加密或错位那一层不对" };
+  }
+  if (env.code === CODES.SMS_CODE_WRONG) {
+    return { kind: "code-wrong", note: "验证码不对（或者过期了），再看一眼短信" };
+  }
+  if (env.code === CODES.LOGIN_FAILED) {
+    return { kind: "failed", note: "登录失败（9999）—— 设备头缺失或不完整" };
+  }
+  return { kind: "other", note: `登录没成：${env.message || `code=${env.code}`}` };
+}
+
 // src/mcloud/loginSession.ts
 var STATE_DEVICE_ID2 = "mcloud.login.deviceId";
 var STATE_QR_SESSION = "mcloud.login.qr";
 var STATE_SMS_SESSION = "mcloud.login.sms";
+var STATE_APP_SESSION = "mcloud.login.app";
 var STATE_LOGIN_PREF = "mcloud.login.pref";
 var STATE_LOGIN_BASE = "mcloud.login.base";
 var STATE_LOGIN_DOMAIN = "mcloud.login.userDomainId";
@@ -8857,9 +9010,30 @@ function loadSmsSession(store2) {
 function saveSmsSession(store2, s, nowIso) {
   store2.setState(STATE_SMS_SESSION, JSON.stringify(s), nowIso);
 }
+function loadAppSession(store2) {
+  return parseJson4(store2.getState(STATE_APP_SESSION));
+}
+function saveAppSession(store2, a, nowIso) {
+  store2.setState(STATE_APP_SESSION, JSON.stringify(a), nowIso);
+}
+function startAppSession(store2, phone, nowMs, nowIso) {
+  const a = {
+    phone,
+    // ⚠ 用 App 的随机串构造（`newLoginRandom`），**不是** PC 那个 ——
+    //   它是 `smsThirdloginBody` 的一个字段，两端格式不同。
+    random: newLoginRandom(),
+    startedAtMs: nowMs,
+    sent: false,
+    slider: null,
+    lastNote: "还没发码"
+  };
+  saveAppSession(store2, a, nowIso);
+  return a;
+}
 function clearLogin(store2) {
   store2.setState(STATE_QR_SESSION, "", (/* @__PURE__ */ new Date()).toISOString());
   store2.setState(STATE_SMS_SESSION, "", (/* @__PURE__ */ new Date()).toISOString());
+  store2.setState(STATE_APP_SESSION, "", (/* @__PURE__ */ new Date()).toISOString());
 }
 function startQrSession(store2, nowMs, nowIso) {
   const deviceId = loadDeviceId(store2, nowIso);
@@ -8900,7 +9074,21 @@ function loginReading(store2, nowMs, qrPayloadOf) {
       // 验证码 5 分钟（上游实测），从**发码**那一刻算 —— 这里用会话开始时刻近似
       expiresInMs: Math.max(0, sms.startedAtMs + 3e5 - nowMs),
       note: sms.lastNote
-    }
+    },
+    // 手机端（App 那条）。形状与 `sms` 刻意一致 —— 界面上两者的进度显示一样，
+    // 差别只在**这一趟走的是哪一套头/体**，而那件事由页签决定，不用读数来说。
+    app: (() => {
+      const a = loadAppSession(store2);
+      return a === null ? null : {
+        active: true,
+        phone: a.phone,
+        sent: a.sent,
+        hasSlider: a.slider !== null,
+        slider: a.slider,
+        expiresInMs: Math.max(0, a.startedAtMs + 3e5 - nowMs),
+        note: a.lastNote
+      };
+    })()
   };
 }
 
@@ -9122,16 +9310,16 @@ function loginPlatform(store2) {
   const pref = store2.getState(STATE_LOGIN_PREF);
   return pref === "macos" ? "macos" : "windows";
 }
-function adoptLoginResult(deps, encrypted, note2) {
+function adoptLoginResult(deps, encrypted, note2, prefix = PC_AUTH_PREFIX, key = LOGIN_AES_KEY) {
   let info;
   try {
-    info = decryptUserInfo(encrypted);
+    info = decryptUserInfo(encrypted, key);
   } catch (e) {
     return { ok: false, note: `登录成功了，但结果解不开：${e instanceof Error ? e.message : String(e)}` };
   }
   let auth;
   try {
-    auth = authFromUserInfo(info, PC_AUTH_PREFIX);
+    auth = authFromUserInfo(info, prefix);
   } catch (e) {
     return { ok: false, note: `登录结果缺字段：${e instanceof Error ? e.message : String(e)}` };
   }
@@ -9469,6 +9657,110 @@ function mcloudRoutes(deps) {
         }
         const note2 = r.env.code === CODES.SMS_CODE_WRONG ? "验证码不对（或者过期了），再看一眼短信" : `登录没成：${out.kind === "other" ? out.message || `code=${out.code}` : out.kind}`;
         return json(200, { ok: false, stop: false, note: note2 });
+      }
+    },
+    // ── 登录：手机端（App 链路）─────────────────────────────────────
+    //
+    // ⚠ 与短信那条**不是一个东西**，所以四条路由都是新的：
+    //   · 请求头是 App 那套（`appHeaders`），凭据前缀是 `mobile`
+    //   · 第三枪的体是**加密的**（AES-128-ECB + 末 10 位错位）
+    //   · 响应的成功载荷是**密文字符串**，要用 **App 那把钥匙**解
+    //   参考实现特意没复用 PC 的枚举，理由写得很直白：「共用一个枚举会让调用方
+    //   写错分支却仍然编译通过」。
+    {
+      path: `${base}/login/app/start`,
+      method: "POST",
+      handler: (req) => {
+        const b = readBody(req);
+        const phone = typeof b.phone === "string" ? b.phone.trim() : "";
+        if (!/^1\d{10}$/.test(phone)) return json(400, { error: "手机号要 11 位（1 开头）" });
+        const a = startAppSession(deps.store, phone, Date.parse(deps.now()), deps.now());
+        deps.log("手机端登录：手机号记下了");
+        return json(200, { ok: true, phone: a.phone, note: "手机号记下了 —— 点「发验证码」" });
+      }
+    },
+    {
+      path: `${base}/login/app/send`,
+      method: "POST",
+      handler: () => {
+        const a = loadAppSession(deps.store);
+        if (a === null) return json(400, { error: "没有正在进行的手机端登录（先填手机号）" });
+        const deviceId = loadDeviceId(deps.store, deps.now());
+        const nowMs = Date.parse(deps.now());
+        let puzzle = "";
+        if (a.slider !== null) {
+          try {
+            puzzle = puzzleVerfycodeEncrypt(sliderAnswer(a.slider));
+          } catch (e) {
+            return json(400, { error: `滑块图解不开：${e instanceof Error ? e.message : String(e)}` });
+          }
+        }
+        const r = loginCall(deps, appSendSmsCodeRequest(deviceId, nowMs, a.phone, puzzle));
+        if (!r.ok || r.env === null) return json(502, { error: `发码请求没成功：${r.error}` });
+        const out = classifyAppSendSms(r.env);
+        if (out.kind === "sent") {
+          saveAppSession(deps.store, { ...a, sent: true, lastNote: "验证码已发出" }, deps.now());
+          return json(200, {
+            ok: true,
+            sent: true,
+            remainGetTimes: out.remainGetTimes,
+            note: out.remainGetTimes === null ? "验证码已发出" : `验证码已发出（今天还能发 ${out.remainGetTimes} 次）`
+          });
+        }
+        if (out.kind === "need-captcha" || out.kind === "slider-exhausted") {
+          saveAppSession(deps.store, { ...a, slider: null, lastNote: out.note }, deps.now());
+          return json(200, { ok: false, needSlider: true, note: out.note });
+        }
+        return json(200, { ok: false, sent: false, note: out.note });
+      }
+    },
+    {
+      path: `${base}/login/app/slider`,
+      method: "POST",
+      handler: () => {
+        const a = loadAppSession(deps.store);
+        if (a === null) return json(400, { error: "没有正在进行的手机端登录（先填手机号）" });
+        const deviceId = loadDeviceId(deps.store, deps.now());
+        const r = loginCall(
+          deps,
+          appPost(APP_SLIDER_PUZZLE_PATH, JSON.stringify(sliderPuzzleBody(a.phone)), deviceId, Date.parse(deps.now()))
+        );
+        if (!r.ok || r.env === null) return json(502, { error: `取题面没成功：${r.error}` });
+        let p;
+        try {
+          p = parseSliderPuzzle(r.env);
+        } catch (e) {
+          return json(200, { ok: false, note: `题面解不开：${e instanceof Error ? e.message : String(e)}` });
+        }
+        saveAppSession(deps.store, { ...a, slider: p, lastNote: "题面已取到" }, deps.now());
+        return json(200, {
+          ok: true,
+          background: p.backgroundB64,
+          note: "题面已取到 —— 缺口位置由这一侧解出，再点一次「发验证码」会带着答案发"
+        });
+      }
+    },
+    {
+      path: `${base}/login/app/submit`,
+      method: "POST",
+      handler: (req) => {
+        const b = readBody(req);
+        const code = typeof b.code === "string" ? b.code.trim() : "";
+        if (!/^\d{4,8}$/.test(code)) return json(400, { error: "验证码要 4–8 位数字" });
+        const a = loadAppSession(deps.store);
+        if (a === null) return json(400, { error: "没有正在进行的手机端登录（先填手机号）" });
+        const deviceId = loadDeviceId(deps.store, deps.now());
+        const r = loginCall(
+          deps,
+          appThirdloginRequest(deviceId, Date.parse(deps.now()), a.phone, code, a.random)
+        );
+        if (!r.ok || r.env === null) return json(502, { error: `提交请求没成功：${r.error}` });
+        const out = classifyAppLogin(r.env);
+        if (out.kind === "success") {
+          const adopted = adoptLoginResult(deps, out.encrypted, "手机端登录成功", APP_AUTH_PREFIX, APP_LOGIN_AES_KEY);
+          return json(200, { ...adopted, stop: true });
+        }
+        return json(200, { ok: false, stop: false, note: out.note });
       }
     },
     // ── 登录：账密 ──────────────────────────────────────────────────

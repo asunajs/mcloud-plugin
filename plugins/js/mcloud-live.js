@@ -1134,6 +1134,10 @@ var KEY_SCOPE = {
   "mcloud.login.deviceId": "global",
   "mcloud.login.qr": "global",
   "mcloud.login.sms": "global",
+  // 手机端（App 链路）那次登录。与 `sms` **分开存**：两端的滑块语义不同
+  //（PC 取图自己解、App 真机是开 WebView），共用一格会让"进行中的是哪一端"
+  // 变成要靠猜。
+  "mcloud.login.app": "global",
   "mcloud.login.base": "global",
   "mcloud.login.userDomainId": "global",
   "mcloud.sign.stage": "account",

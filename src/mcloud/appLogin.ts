@@ -52,6 +52,8 @@ import { aesEcbPkcs7EncryptHex, aesEcbPkcs7DecryptHex } from '../crypto/aes.ts';
  *  反汇编实证：客户端里它是 `csel` 选出来的**字面量**，不是从配置取的 ——
  *  所以客户端改个变量名不影响我们，改的是这个常量本身。 */
 import type { BuiltRequest } from './h5.ts';
+import type { SliderPuzzle } from './login.ts';
+import { CODES, isSuccessCode, type LoginEnvelope } from './login.ts';
 
 export const APP_LOGIN_AES_KEY = 'lYzvvBMUjucw+h^R';
 
@@ -274,6 +276,22 @@ export function appHeaders(deviceId: string, timestamp: number): Record<string, 
   };
 }
 
+/** 一次**手机端**登录的进行态。
+ *
+ *  ⚠ 刻意与 PC 的 `SmsSession` 分开：两端的滑块语义与响应分类都不同
+ * （见 `loginSession.ts` 里 `STATE_APP_SESSION` 那段）。 */
+export interface AppSession {
+  phone: string;
+  /** `smsThirdloginBody` 的 `random` 字段。⚠ 格式与 PC 那个不同。 */
+  random: string;
+  startedAtMs: number;
+  /** 已经发过码。 */
+  sent: boolean;
+  /** 已经取过滑块挑战（且还没作废）。形状与 PC 那个**共用** —— 题面是同一种。 */
+  slider: SliderPuzzle | null;
+  lastNote: string;
+}
+
 // ══════════════════════ 请求构造 ══════════════════════
 //
 // ⚠ 主机与 PC 那条**是同一个**（`user-njs.yun.139.com`）—— 参考实现里
@@ -332,4 +350,74 @@ export function appThirdloginRequest(
 ): BuiltRequest {
   const plaintext = JSON.stringify(smsThirdloginBody(phone, smsCode, random));
   return appPost(APP_THIRDLOGIN_PATH, encryptBody(plaintext, key), deviceId, timestamp);
+}
+
+// ══════════════════════ 响应分类 ══════════════════════
+//
+// ⚠ 与 PC 那两个分类器**刻意不复用**。参考实现的原话：
+//
+//   「两端的 `NeedSlider` 名字一样，但**下一步动作完全不同** ——
+//     PC 端：取图 → 本地识别 → 编码成 `puzzleVerfycode` 重发；
+//     App 端：真机是**开 WebView**，短信由那个 H5 发。
+//     共用一个枚举会让调用方写错分支却仍然编译通过。」
+//
+//   实际上我们这边两端都走"取图自己解"（参考实现的 App 那条也是），
+//   但**成功载荷的形状不同**：App 的 `data` 是**密文字符串**、用**另一把钥匙**解。
+//   所以"分不分开"这件事的答案仍然是不分开会错。
+
+/** `/user/verfycode`（App 那条）。路径与 PC 同一个，头不同。 */
+export const APP_SLIDER_PUZZLE_PATH = '/user/verfycode';
+
+export type AppSendSmsOutcome =
+  | { kind: 'sent'; remainGetTimes: number | null }
+  | { kind: 'need-captcha'; note: string }
+  | { kind: 'slider-exhausted'; note: string }
+  | { kind: 'other'; note: string };
+
+/** 归类 App 的 `getSmsCode` 响应。 */
+export function classifyAppSendSms(env: LoginEnvelope): AppSendSmsOutcome {
+  if (isSuccessCode(env.code)) {
+    const d = (env.data ?? {}) as Record<string, unknown>;
+    const remain = typeof d['remainGetTimes'] === 'number' ? d['remainGetTimes'] : null;
+    return { kind: 'sent', remainGetTimes: remain };
+  }
+  if (env.code === CODES.NEED_SLIDER) {
+    return { kind: 'need-captcha', note: '移动云盘要滑块 —— 先点「发验证码」取题面' };
+  }
+  if (env.code === CODES.SLIDER_EXHAUSTED) {
+    // ⚠ 这**不是**"你的账号被限流了"，而是"这一道题的尝试次数用完了"。
+    //   正确的反应是重取一道**新题**，不是拿旧答案再试一次。
+    return { kind: 'slider-exhausted', note: '这道滑块的尝试次数用完了 —— 会重取一道新题' };
+  }
+  return { kind: 'other', note: `发码没成：${env.message || `code=${env.code}`}` };
+}
+
+export type AppLoginOutcome =
+  | { kind: 'success'; encrypted: string }
+  | { kind: 'undecryptable'; note: string }
+  | { kind: 'code-wrong'; note: string }
+  | { kind: 'failed'; note: string }
+  | { kind: 'other'; note: string };
+
+/** 归类 App 的 `thirdlogin` 响应。
+ *
+ *  ⚠ 成功载荷必须是**字符串**（密文）。不是字符串时**如实报告形状不对**，
+ *  不伪造一份空凭据 —— 伪造出来的凭据会一路带到任务里，而那时错误已经离现场很远了。 */
+export function classifyAppLogin(env: LoginEnvelope): AppLoginOutcome {
+  if (isSuccessCode(env.code)) {
+    if (typeof env.data === 'string') return { kind: 'success', encrypted: env.data };
+    return { kind: 'other', note: '登录成功了，但返回的载荷不是密文字符串（形状不对）' };
+  }
+  if (env.code === CODES.UNDECRYPTABLE_BODY) {
+    // ⚠ `9103` 的语义是**服务端解不开请求体** —— 也就是加密/错位/字段名那一层错了。
+    //   它看起来像"字段名不对"，会把人引去查请求体，而真正的问题在加密层。
+    return { kind: 'undecryptable', note: '服务端解不开请求体（9103）—— 加密或错位那一层不对' };
+  }
+  if (env.code === CODES.SMS_CODE_WRONG) {
+    return { kind: 'code-wrong', note: '验证码不对（或者过期了），再看一眼短信' };
+  }
+  if (env.code === CODES.LOGIN_FAILED) {
+    return { kind: 'failed', note: '登录失败（9999）—— 设备头缺失或不完整' };
+  }
+  return { kind: 'other', note: `登录没成：${env.message || `code=${env.code}`}` };
 }
