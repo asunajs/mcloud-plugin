@@ -28,6 +28,11 @@ import {
 } from '../src/mcloud/sessionExchange.ts';
 import { SESSION_KEY, loadSession } from '../src/store/types.ts';
 import { idOf, selectAccount, upsertAccount } from '../src/mcloud/accounts.ts';
+import {
+  FALLBACK_RECIPE,
+  recipeFor,
+  recipeParams,
+} from '../src/mcloud/h5session.ts';
 import { memStore } from '../src/store/memory.ts';
 import type { Transport } from '../src/mcloud/client.ts';
 import type { BuiltRequest } from '../src/mcloud/h5.ts';
@@ -65,10 +70,14 @@ function fakeUpstream(over: { specFail?: boolean; login?: string } = {}) {
   return { transport, sent };
 }
 
-function drive(store: ReturnType<typeof memStore>, transport: Transport) {
+function drive(
+  store: ReturnType<typeof memStore>,
+  transport: Transport,
+  recipe: 'sign-in' | 'msg-push-on' = 'sign-in',
+) {
   const notes: string[] = [];
   for (let i = 0; i < 6; i += 1) {
-    const r = runExchangeStep({ store, transport, nowIso: NOW });
+    const r = runExchangeStep({ store, transport, nowIso: NOW }, recipe);
     notes.push(r.note);
     if (r.done) return { notes, last: r };
   }
@@ -382,4 +391,84 @@ test('单账号那套（没有账号列表）仍然用**裸键**，老数据照�
   assert.equal(loadJwt(store)?.jwt, 'OLD', '没有当前账号 ⇒ 读裸键');
   assert.equal(jwtKey(store), STATE_JWT, '没有当前账号时键就是裸的（不用迁移）');
   assert.equal(jwtFresh(store, NOW_MS), true);
+});
+
+// ══════════════════ 配方：每页一张票 + 公共票是兜底 ══════════════════
+
+test('⚠ 同一账号、两页：票**必须分开**（"票与票之间逐字节不等"）', () => {
+  // 参考实现的实测结论：「每个页面用自己的参数换自己的票，票与票之间逐字节不等」。
+  // 不分的表现是**用错页面的票** —— 而"拿签到页那张去打开启通知页的接口行不行"
+  // **没有样本**（参考实现自己标的是"反向未验证"）。
+  // 分开放之后"哪一页该用哪张"就是确定的。
+  const store = memStore();
+  store.ensureSchema();
+  upsertAccount(store, AUTH, NOW, '一号');
+  selectAccount(store, idOf(AUTH), NOW);
+
+  startExchange(store, AUTH, NOW, 'sign-in');
+  drive(store, fakeUpstream({ login: JSON.stringify({ code: 0, result: { token: 'JWT-SIGNIN' } }) }).transport, 'sign-in');
+  startExchange(store, AUTH, NOW, 'msg-push-on');
+  drive(store, fakeUpstream({ login: JSON.stringify({ code: 0, result: { token: 'JWT-MSGPUSH' } }) }).transport, 'msg-push-on');
+
+  assert.equal(loadJwt(store, 'sign-in')?.jwt, 'JWT-SIGNIN');
+  assert.equal(loadJwt(store, 'msg-push-on')?.jwt, 'JWT-MSGPUSH', '⚠ 两页的票串了');
+  assert.notEqual(jwtKey(store, 'sign-in'), jwtKey(store, 'msg-push-on'), '键必须不同');
+});
+
+test('⚠ 一页的三枪打的是**同一页**的参数（不是签到页那套）', () => {
+  // 步骤是跨多次调用走的（面板预算 2000ms，三步要跳三次），所以"这一轮是哪一页"
+  // 必须**存在状态里**，不能靠调用方每次都记得传对。
+  //
+  // 这里钉两件事：
+  //   ① 状态里记了配方（跨调用找得回来）
+  //   ② 打出去的参数确实是**那一页**的（不是签到页那套）
+  const store = memStore();
+  store.ensureSchema();
+  upsertAccount(store, AUTH, NOW, '一号');
+  selectAccount(store, idOf(AUTH), NOW);
+  startExchange(store, AUTH, NOW, 'msg-push-on');
+  assert.equal(loadExchange(store, 'msg-push-on')?.recipe, 'msg-push-on');
+
+  const up = fakeUpstream();
+  drive(store, up.transport, 'msg-push-on');
+
+  // ⚠ 第一枪**两条配方是同一个** `toSourceId=001005` —— 这不是 bug：
+  //   参考实现注明 `MsgPushOn` 的第一步沿用 `001005`（依据是旁证：Go 侧记的
+  //   拍拍页两步流程第一步打的也是它）。所以差异在**第三枪**（`tyrzLogin`）。
+  assert.equal(up.sent[0]?.body, '{"toSourceId":"001005"}', '第一枪两页相同');
+
+  const login = up.sent.find((r) => r.url.includes('tyrzLogin'));
+  assert.ok(login, '发了 tyrzLogin 那一枪');
+  const lb = JSON.stringify(login.body ?? '');
+  assert.ok(lb.includes('msgpushon'), `tyrzLogin 该带这一页的 marketName：${lb}`);
+  assert.ok(lb.includes('1062'), `…和 sourceId：${lb}`);
+  assert.equal(lb.includes('sign_in_3'), false, '⚠ 打成签到页那套了');
+
+  // ⚠ 传错配方 = "没有待换的任务"（安全失败），不是"打错页" —— 这一点也要钉住，
+  //   因为它决定了"调用方忘了传"的后果是**不发请求**而不是**发错请求**。
+  const up2 = fakeUpstream();
+  const r = runExchangeStep({ store, transport: up2.transport, nowIso: NOW }, 'sign-in');
+  assert.equal(up2.sent.length, 0, '⚠ 传错配方不该发任何请求');
+  assert.equal(r.done, true);
+});
+
+test('兜底：不知道配方的页面走公共票（`recipeFor`）', () => {
+  // 「公共票是兜底」：参考实现只有两页拿到完整实拍，其余页面**映射到签到页那一套**。
+  // 注意这是"不知道自己配方的走兜底"，**不是**"所有页面都用签到页那一套"。
+  assert.equal(recipeFor('sign-in'), 'sign-in');
+  assert.equal(recipeFor('msg-push-on'), 'msg-push-on', '这一页有实拍 ⇒ 用自己的');
+  assert.equal(FALLBACK_RECIPE, 'sign-in');
+  // 两页的参数确实不同（逐条都是实拍差异，不是"忘了填"）
+  const a = recipeParams('sign-in');
+  const b = recipeParams('msg-push-on');
+  assert.equal(a.marketName, 'sign_in_3');
+  assert.equal(b.marketName, 'msgpushon');
+  assert.equal(a.sourceId, '1002');
+  assert.equal(b.sourceId, '1062');
+  assert.equal(a.h5AppId !== undefined, true, '签到页**有** appID');
+  assert.equal(b.h5AppId, undefined, '⚠ 开启通知页**没有** appID（实拍如此，别顺手补齐）');
+  assert.equal(a.portalPage, 'mobilecloud');
+  assert.equal(b.portalPage, 'hcyview', '⚠ 两页的入口路径段不同');
+  assert.equal(a.targetSourceId, '001005');
+  assert.equal(b.targetSourceId, undefined, '⚠ 开启通知页**没有** targetSourceId');
 });

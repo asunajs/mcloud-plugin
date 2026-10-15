@@ -37,7 +37,10 @@ import {
   smidUploadRequest,
 } from './smid.ts';
 import {
+  FALLBACK_RECIPE,
   SIGN_IN_RECIPE,
+  recipeParams,
+  type SessionRecipe,
   authFingerprint,
   makeSign,
   normalizeAuthorization,
@@ -87,6 +90,12 @@ export type ExchangeStep = 'spec-token' | 'timestamp' | 'tyrz-login' | 'smid' | 
 
 export interface ExchangeState {
   step: ExchangeStep;
+  /** 这一轮换的是**哪一页**的票。
+   *
+   *  ⚠ 存进状态而不是靠调用方一直传：步骤是**跨多次调用**走的
+   *  （面板预算 2000ms，三步要跳三次），中间任何一次调用方都可能换了一页。
+   *  不带的话表现是"第一枪按 A 页打、第三枪按 B 页打"，而票是 A 的。 */
+  recipe: SessionRecipe;
   /** 凭据指纹（只用于"是不是同一份凭据"，不是凭据本身） */
   fingerprint: string;
   /** ⚠ SSO token **不缓存**（实测"换到 4 分钟后重放已被拒"）——它只活在这一轮里 */
@@ -147,33 +156,68 @@ export function authStatus(store: Pick<Store, 'getState'>): {
 //
 // 没有当前账号（单账号那套）⇒ 用原来的**裸键**，老数据照常读得到、不用迁移。
 
-/** 票与换票进度的存储键。按当前账号分；没有当前账号就用裸键。 */
-function scopedKey(base: string, store: Pick<Store, 'getState'>): string {
+/** 票与换票进度的存储键：**按（账号 × 配方）分**。
+ *
+ *  # 两个维度都必要
+ *
+ *  · **账号**：不分的表现是**串票** —— 账号 B 的请求带账号 A 的票
+ *    （`jwttoken` 恰恰是身份）。见 F-048。
+ *  · **配方**：不分的表现是**用错页面的票**。参考实现的实测结论是
+ *    「每个页面用自己的参数换自己的票，**票与票之间逐字节不等**」——
+ *    所以拿签到页那张去打开启通知页的接口，是不是也能过**没有样本**。
+ *    分开放之后，"哪一页该用哪张"就是确定的；而**兜底**（见
+ *    `h5session.ts` 的 `recipeFor`）仍然让不知道配方的页面有票可用。
+ *
+ *  ⚠ 键的形状：`mcloud.h5.jwt.<账号 id>.<配方>`。
+ *  没有当前账号（单账号那套）且是兜底配方 ⇒ 用**裸键**，老数据照常读得到。 */
+function scopedKey(
+  base: string,
+  store: Pick<Store, 'getState'>,
+  recipe: SessionRecipe,
+): string {
   const cur = currentAccount(store);
-  return cur === undefined ? base : `${base}.${cur.id}`;
+  // 兜底 + 单账号 ⇒ 裸键（不用迁移）
+  if (cur === undefined && recipe === FALLBACK_RECIPE) return base;
+  return `${base}.${cur?.id ?? 'default'}.${recipe}`;
 }
 
-/** 票的键（导出是为了让"清掉某一个账号的票"这类操作能对准）。 */
-export function jwtKey(store: Pick<Store, 'getState'>): string {
-  return scopedKey(STATE_JWT, store);
+/** 票的键（导出是为了让"清掉某一个账号/某一页的票"这类操作能对准）。 */
+export function jwtKey(
+  store: Pick<Store, 'getState'>,
+  recipe: SessionRecipe = FALLBACK_RECIPE,
+): string {
+  return scopedKey(STATE_JWT, store, recipe);
 }
 
 /** 换票进度的键。 */
-export function exchangeKey(store: Pick<Store, 'getState'>): string {
-  return scopedKey(STATE_EXCHANGE, store);
+export function exchangeKey(
+  store: Pick<Store, 'getState'>,
+  recipe: SessionRecipe = FALLBACK_RECIPE,
+): string {
+  return scopedKey(STATE_EXCHANGE, store, recipe);
 }
 
-export function loadExchange(store: Pick<Store, 'getState'>): ExchangeState | null {
-  return parse<ExchangeState>(store.getState(exchangeKey(store)));
+export function loadExchange(
+  store: Pick<Store, 'getState'>,
+  recipe: SessionRecipe = FALLBACK_RECIPE,
+): ExchangeState | null {
+  return parse<ExchangeState>(store.getState(exchangeKey(store, recipe)));
 }
 
-export function loadJwt(store: Pick<Store, 'getState'>): JwtRecord | null {
-  return parse<JwtRecord>(store.getState(jwtKey(store)));
+export function loadJwt(
+  store: Pick<Store, 'getState'>,
+  recipe: SessionRecipe = FALLBACK_RECIPE,
+): JwtRecord | null {
+  return parse<JwtRecord>(store.getState(jwtKey(store, recipe)));
 }
 
 /** 票还新吗。`nowMs` 显式传入 —— 时间在这条链上是判据，不能藏在 `Date.now()` 里。 */
-export function jwtFresh(store: Pick<Store, 'getState'>, nowMs: number): boolean {
-  const r = loadJwt(store);
+export function jwtFresh(
+  store: Pick<Store, 'getState'>,
+  nowMs: number,
+  recipe: SessionRecipe = FALLBACK_RECIPE,
+): boolean {
+  const r = loadJwt(store, recipe);
   if (!r) return false;
   const at = Date.parse(r.at);
   return Number.isFinite(at) && nowMs - at < JWT_TTL_MS;
@@ -187,6 +231,7 @@ export function startExchange(
   store: Store,
   raw: string,
   nowIso: string,
+  recipe: SessionRecipe = FALLBACK_RECIPE,
 ): { ok: boolean; error?: string; fingerprint?: string } {
   const norm = normalizeAuthorization(raw);
   if (!norm.ok || norm.value === undefined) return { ok: false, error: norm.error };
@@ -194,8 +239,13 @@ export function startExchange(
   const fingerprint = authFingerprint(sha256Hex(norm.value));
   store.setState(STATE_AUTH, norm.value, nowIso);
   store.setState(
-    exchangeKey(store),
-    JSON.stringify({ step: 'spec-token', fingerprint, startedAt: nowIso } satisfies ExchangeState),
+    exchangeKey(store, recipe),
+    JSON.stringify({
+      step: 'spec-token',
+      recipe,
+      fingerprint,
+      startedAt: nowIso,
+    } satisfies ExchangeState),
     nowIso,
   );
   return { ok: true, fingerprint };
@@ -212,14 +262,20 @@ export function clearAuth(store: Store, nowIso: string): void {
 /** 推进一步（**一次调用最多发一个请求**）。
  *
  *  返回 `done=true` 表示这一轮结束（成功或失败都算结束，好让界面的循环停下来）。 */
-export function runExchangeStep(deps: TaskDeps): { ok: boolean; note: string; done: boolean } {
-  const st = loadExchange(deps.store);
+export function runExchangeStep(
+  deps: TaskDeps,
+  recipe: SessionRecipe = FALLBACK_RECIPE,
+): { ok: boolean; note: string; done: boolean } {
+  const st = loadExchange(deps.store, recipe);
   // ⚠ 走 `loadAuthRaw`：多账号下"当前账号"才是这一轮要换票的那个
   const auth = loadAuthRaw(deps.store) || null;
 
   if (!st || st.step === 'done' || !auth) {
     return { ok: true, note: '没有待换票的任务（先去界面上贴一份原生凭据）', done: true };
   }
+  // ⚠ 用**状态里记的**那一页，不是入参默认值 —— 步骤跨多次调用，
+  //   调用方可能已经换了页，而这一轮的三枪必须打同一页。
+  const rp = recipeParams(st.recipe ?? recipe);
 
   const finish = (s: ExchangeState, ok: boolean, note: string): { ok: boolean; note: string; done: boolean } => {
     s.step = 'done';
@@ -230,7 +286,7 @@ export function runExchangeStep(deps: TaskDeps): { ok: boolean; note: string; do
     // 留着只会让"下次也许还能用"变成一个错觉
     delete s.ssoToken;
     delete (s as ExchangeState & { ts?: string }).ts;
-    deps.store.setState(exchangeKey(deps.store), JSON.stringify(s), deps.nowIso);
+    deps.store.setState(exchangeKey(deps.store, recipe), JSON.stringify(s), deps.nowIso);
     return { ok, note, done: true };
   };
 
@@ -266,20 +322,20 @@ export function runExchangeStep(deps: TaskDeps): { ok: boolean; note: string; do
 
   // ① 换 SSO token
   if (st.step === 'spec-token') {
-    const res = callRawText(deps.transport, specTokenRequest(SIGN_IN_RECIPE, auth, deps.baseUrl));
+    const res = callRawText(deps.transport, specTokenRequest(rp, auth, deps.baseUrl));
     if (!res.ok) return failStep(deps, st, `① 换 SSO token 失败：${res.error ?? '未知失败'}`);
     const p = parseSsoToken(res.text);
     if (!p.ok || p.value === undefined) return failStep(deps, st, `① ${p.error}`);
     st.ssoToken = p.value;
-    st.referer = pageUrl(SIGN_IN_RECIPE, p.value);
+    st.referer = pageUrl(rp, p.value);
     st.step = 'timestamp';
-    deps.store.setState(exchangeKey(deps.store), JSON.stringify(st), deps.nowIso);
+    deps.store.setState(exchangeKey(deps.store, recipe), JSON.stringify(st), deps.nowIso);
     return { ok: true, note: '① 换到 SSO token（**不缓存**，下一步立刻用）', done: false };
   }
 
   // ② 取服务端时间戳
   if (st.step === 'timestamp') {
-    const res = callRawText(deps.transport, timestampRequest(SIGN_IN_RECIPE, st.referer ?? '', deps.baseUrl));
+    const res = callRawText(deps.transport, timestampRequest(rp, st.referer ?? '', deps.baseUrl));
     if (!res.ok) return failStep(deps, st, `② 取时间戳失败：${res.error ?? '未知失败'}`);
     const p = parseServerTimestamp(res.text);
     if (!p.ok || p.value === undefined) return failStep(deps, st, `② ${p.error}`);
@@ -287,7 +343,7 @@ export function runExchangeStep(deps: TaskDeps): { ok: boolean; note: string; do
     st.ssoToken = st.ssoToken ?? '';
     (st as ExchangeState & { ts?: string }).ts = p.value;
     st.step = 'tyrz-login';
-    deps.store.setState(exchangeKey(deps.store), JSON.stringify(st), deps.nowIso);
+    deps.store.setState(exchangeKey(deps.store, recipe), JSON.stringify(st), deps.nowIso);
     return { ok: true, note: `② 服务端时间戳 ${p.value}（**必须用它**，本地时钟偏一点就是 401）`, done: false };
   }
 
@@ -298,7 +354,7 @@ export function runExchangeStep(deps: TaskDeps): { ok: boolean; note: string; do
   }
   const res = callRawText(
     deps.transport,
-    tyrzLoginRequest(SIGN_IN_RECIPE, st.ssoToken, makeSign(ts), st.referer ?? '', deps.baseUrl),
+    tyrzLoginRequest(rp, st.ssoToken, makeSign(ts), st.referer ?? '', deps.baseUrl),
   );
   if (!res.ok) return failStep(deps, st, `③ 换 jwttoken 失败：${res.error ?? '未知失败'}`);
   const p = parseJwtToken(res.text);
@@ -311,7 +367,7 @@ export function runExchangeStep(deps: TaskDeps): { ok: boolean; note: string; do
     mobile: p.value.mobile,
     fingerprint: st.fingerprint,
   };
-  deps.store.setState(jwtKey(deps.store), JSON.stringify(rec), deps.nowIso);
+  deps.store.setState(jwtKey(deps.store, recipe), JSON.stringify(rec), deps.nowIso);
 
   // ⚠⚠ 拿到票之后**再走一步**：把 `deviceId` 也换回来。
   //
@@ -336,7 +392,7 @@ export function runExchangeStep(deps: TaskDeps): { ok: boolean; note: string; do
       deps.nowIso,
     );
     st.step = 'smid';
-    deps.store.setState(exchangeKey(deps.store), JSON.stringify(st), deps.nowIso);
+    deps.store.setState(exchangeKey(deps.store, recipe), JSON.stringify(st), deps.nowIso);
     return {
       ok: true,
       note:
@@ -394,7 +450,9 @@ function failStep(
   st.note = note;
   delete st.ssoToken;
   delete (st as ExchangeState & { ts?: string }).ts;
-  deps.store.setState(exchangeKey(deps.store), JSON.stringify(st), deps.nowIso);
+  // 用**状态里记的**那一页 —— 这个辅助函数没有 recipe 参数，
+  // 而这一轮是哪一页本来就是状态的属性
+  deps.store.setState(exchangeKey(deps.store, st.recipe ?? FALLBACK_RECIPE), JSON.stringify(st), deps.nowIso);
   return { ok: false, note, done: true };
 }
 
@@ -405,10 +463,14 @@ function failStep(
 export const RETRY_AFTER_MS = 30 * 60 * 1000;
 
 /** 该不该起一轮换票（给续票 cron 用）。**纯判据，不发请求。** */
-export function needExchange(store: Pick<Store, 'getState'>, nowMs: number): boolean {
+export function needExchange(
+  store: Pick<Store, 'getState'>,
+  nowMs: number,
+  recipe: SessionRecipe = FALLBACK_RECIPE,
+): boolean {
   if (loadAuthRaw(store) === '') return false; // 没凭据 —— 换不了，也别报错（多账号下也照这条）
-  if (jwtFresh(store, nowMs)) return false; // 票还新
-  const st = loadExchange(store);
+  if (jwtFresh(store, nowMs, recipe)) return false; // **这一页**的票还新
+  const st = loadExchange(store, recipe);
   if (!st) return true; // 从来没换过
   if (st.step !== 'done') return true; // 中途断了 ⇒ 接着走
   if (st.ok === true) return true; // 上一轮成了、票却不新鲜（过期/时钟跳）⇒ 该续
