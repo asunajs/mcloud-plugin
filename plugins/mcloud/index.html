@@ -113,7 +113,11 @@
 
         <div class="row">
           <button class="btn btn-sm" id="paste-open">凭据</button>
-          <button class="btn btn-sm" id="device-reset">我的码一直扫不出来</button>
+          <!-- ⚠ 与下面「本机设备指纹」那块是**同一个动作**，只是按症状命名。
+               两处都留是因为：用户的念头是"我的码扫不出来"，而他要找的东西
+               叫「换一台设备」—— 名字对不上就会来回翻。
+               ID 必须不同（`device-reset` 在下面那块），否则 `$()` 只绑到第一个。 -->
+          <button class="btn btn-sm" id="qr-reset">我的码一直扫不出来</button>
         </div>
 
         <!-- 凭据：直接贴一段已有的 Authorization（**不走登录链路**）。
@@ -142,11 +146,22 @@
         <h3 class="h3">已登录的账号</h3>
         <ul class="list" id="acct-list"></ul>
 
-        <h3 class="h3">这个设备</h3>
-        <p class="hint">设备号让移动云盘把「这台机器」当成同一个设备。留空就按账号自己生成一个。</p>
+        <!-- 本机设备指纹。
+             ⚠ 它**不是**用户要填的东西 —— 它是这台机器的指纹，只读。
+             参考实现（`web/src/pages/accounts-page.tsx`）的原话：
+             「扫码时它作为 `dID` 上报，服务端据此定位会话。它跨重启稳定；
+               换掉会让旧的扫码会话立即失效，但已登录账号不受影响。」
+             所以这里只有**一个动作**：「换一台设备」——不是输入框。
+             原来这里是个文本框 + 保存，而那个保存**后端根本不支持**
+             （`op:'device'`），也就是一次点击没反应。 -->
+        <h3 class="h3">本机设备指纹</h3>
+        <code class="finger" id="device-id-show">（还没生成）</code>
+        <p class="hint">
+          扫码时它作为 <code>dID</code> 上报，服务端据此定位会话。
+          它跨重启稳定；换掉会让<b>旧的扫码会话</b>立即失效，但<b>已登录的账号不受影响</b>。
+        </p>
         <div class="row">
-          <input id="device-id" class="grow" type="text" placeholder="（留空 = 自动）" />
-          <button class="btn" id="device-save">保存</button>
+          <button class="btn btn-sm" id="device-reset">换一台设备</button>
         </div>
       </section>
 

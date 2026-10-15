@@ -1120,11 +1120,22 @@ var KEY_SCOPE = {
   "mcloud.h5.jwt": "account",
   "mcloud.daily.done_date": "account",
   "mcloud.daily.last_run": "account",
-  "mcloud.login.deviceId": "account",
-  "mcloud.login.qr": "account",
-  "mcloud.login.sms": "account",
-  "mcloud.login.base": "account",
-  "mcloud.login.userDomainId": "account",
+  // ⚠ 登录这一族是**本机**的，不是某个账号的。
+  //
+  //   · `deviceId` —— 本机设备指纹。参考实现（`accounts-page.tsx`）的原话：
+  //     「扫码时它作为 `dID` 上报，服务端据此定位会话。它**跨重启稳定**；
+  //      换掉会让旧的扫码会话立即失效，但已登录账号不受影响。」
+  //     ⇒ 它是"这台机器长什么样"，写在**账号**名下是错的。
+  //   · `qr` / `sms` —— "我正在进行的那次登录"（还没变成账号）。
+  //   · `base` / `userDomainId` —— 登录服下发的主机，同样是本机的。
+  //
+  //   ⚠ 这几格**原来就是扁平的全局键**。把它们改成按账号是**我的改动**，不是原行为
+  //   —— 而"语义说不清楚时保持原行为"才是对的。见下面那段纪律。
+  "mcloud.login.deviceId": "global",
+  "mcloud.login.qr": "global",
+  "mcloud.login.sms": "global",
+  "mcloud.login.base": "global",
+  "mcloud.login.userDomainId": "global",
   "mcloud.sign.stage": "account",
   "mcloud.sign.last": "account",
   "mcloud.upload.state": "account",
