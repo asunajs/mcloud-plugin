@@ -69,6 +69,225 @@ function appendRun(store2, rec) {
   return id;
 }
 
+// src/store/keys.ts
+var DEFAULT_ACCT = "default";
+var PLUGIN_NS = "mcloud.";
+var ACCT_PREFIX = "mcloud.acct.";
+var STATE_CURRENT_ACCOUNT = "mcloud.account.current";
+var STATE_ACCOUNTS = "mcloud.accounts";
+var KEY_SCOPE = {
+  // ── 账号运行期状态 ──────────────────────────────────────────
+  "mcloud.session": "account",
+  "mcloud.session.last_check": "account",
+  "mcloud.h5.auth": "account",
+  "mcloud.h5.exchange": "account",
+  "mcloud.h5.jwt": "account",
+  "mcloud.daily.done_date": "account",
+  "mcloud.daily.last_run": "account",
+  // ⚠ 登录这一族是**本机**的，不是某个账号的。
+  //
+  //   · `deviceId` —— 本机设备指纹。参考实现（`accounts-page.tsx`）的原话：
+  //     「扫码时它作为 `dID` 上报，服务端据此定位会话。它**跨重启稳定**；
+  //      换掉会让旧的扫码会话立即失效，但已登录账号不受影响。」
+  //     ⇒ 它是"这台机器长什么样"，写在**账号**名下是错的。
+  //   · `qr` / `sms` —— "我正在进行的那次登录"（还没变成账号）。
+  //   · `base` / `userDomainId` —— 登录服下发的主机，同样是本机的。
+  //
+  //   ⚠ 这几格**原来就是扁平的全局键**。把它们改成按账号是**我的改动**，不是原行为
+  //   —— 而"语义说不清楚时保持原行为"才是对的。见下面那段纪律。
+  "mcloud.login.deviceId": "global",
+  "mcloud.login.qr": "global",
+  "mcloud.login.sms": "global",
+  // 手机端（App 链路）那次登录。与 `sms` **分开存**：两端的滑块语义不同
+  //（PC 取图自己解、App 真机是开 WebView），共用一格会让"进行中的是哪一端"
+  // 变成要靠猜。
+  "mcloud.login.app": "global",
+  // 每条任务跑哪些账号。**global** —— 它说的是这条任务用哪些号，
+  // 不是某个号自己的设置（放进账号袋会让 A 的名单被 B 读到）。
+  // ⚠ 动态键（键里带任务名）⇒ 靠  登记，见下面那张表。
+  "mcloud.task.accounts.": "global",
+  "mcloud.login.base": "global",
+  "mcloud.login.userDomainId": "global",
+  "mcloud.sign.stage": "account",
+  "mcloud.sign.last": "account",
+  "mcloud.upload.state": "account",
+  "mcloud.taskexpansion.state": "account",
+  "mcloud.apptask.state": "account",
+  "mcloud.apptaskmatrix.last": "account",
+  "mcloud.apptaskmatrix.group_index": "account",
+  "mcloud.notice.can_claim": "account",
+  "mcloud.notice.info": "account",
+  "mcloud.backupgift.can_receive": "account",
+  "mcloud.backupgift.info": "account",
+  "mcloud.msgpush.can": "account",
+  "mcloud.msgpush.last": "account",
+  "mcloud.prizes.last": "account",
+  "mcloud.multiple.last": "account",
+  "mcloud.revival.last": "account",
+  "mcloud.receive.last": "account",
+  "mcloud.receive.queue": "account",
+  "mcloud.cloudsnapshot.last": "account",
+  "mcloud.exchangelist.last": "account",
+  "mcloud.exchangelist.raw": "account",
+  "mcloud.exchange.plan": "account",
+  "mcloud.exchange.order.step": "account",
+  "mcloud.exchange.order.baseline": "account",
+  "mcloud.exchange.order.plan": "account",
+  "mcloud.exchange.order.round": "account",
+  "mcloud.exchange.order.ordered_hour": "account",
+  "mcloud.exchange.order.last_wait": "account",
+  "mcloud.live.gate": "account",
+  "mcloud.live.gate.reading": "account",
+  "mcloud.live.gate_base": "account",
+  "mcloud.live.reading": "account",
+  "mcloud.live.draw": "account",
+  "mcloud.live.codes": "account",
+  "mcloud.live.listen": "account",
+  "mcloud.live.listen_room": "account",
+  "mcloud.live.listen_seconds": "account",
+  "mcloud.live.url": "account",
+  "mcloud.live.wake_plan": "account",
+  "mcloud.live.ws_base": "account",
+  "mcloud.live.ws_heartbeat_reply": "account",
+  "mcloud.live.im_base": "account",
+  "mcloud.smid.deviceId": "account",
+  "mcloud.smid.fingerprint": "account",
+  "mcloud.auth.refresh.last": "account",
+  // ── 实例级配置 / 跨账号共享 ────────────────────────────────
+  /** 账号表本身。 */
+  "mcloud.accounts": "global",
+  /** "当前选中哪个账号"。⚠ 它是**选择**，不是某个账号的状态。 */
+  "mcloud.account.current": "global",
+  /** 上游域名。 */
+  "mcloud.base_url": "global",
+  /** 登录方式偏好（扫码 / 短信 / 账密）。 */
+  "mcloud.login.pref": "global",
+  /** 几点抢兑 —— 是**配置**，跟账号无关。 */
+  "mcloud.exchange.target_hour": "global",
+  /** 提前量 —— "网络慢的人该调大"，是**这台机器**的调参，与账号无关。 */
+  "mcloud.exchange.order.lead_ms": "global",
+  /** 领小红花的开关。 */
+  "mcloud.live.claim_enabled": "global",
+  /** 推送配置（渠道 / 规则 / 事件绑到哪个渠道）。 */
+  "mcloud.push.config": "global",
+  "mcloud.push.rules": "global",
+  "mcloud.push.bindings": "global",
+  /** ⚠ 共享口令池 —— 参考实现明写"实例级：跨 mcloud 用户、跨重启"。 */
+  "mcloud.kouling.pool": "global",
+  /** 运行日志（每条记录里自己带账号）。 */
+  "mcloud.run.log": "global",
+  /** 任务清单缓存。 */
+  "mcloud.tasklist.last": "global"
+};
+var KEY_PREFIX_SCOPE = [
+  // 每条任务"跑哪些账号"（`mcloud.task.accounts.日常`）—— 键里带任务名，
+  // 静态扫描扫不到整串，所以按前缀登记。⚠ **global**：它说的是"这条任务用哪些号"，
+  // 不是"某个号自己的设置"。
+  ["mcloud.task.accounts.", "global"],
+  ["mcloud.last_error.", "account"],
+  // 票与换票进度：**按配方**分（`mcloud.h5.jwt.sign-in` / `.msg-push-on`）。
+  // ⚠ 账号那一维由 `scoped()` 加（袋名），所以这里只剩配方这一段。
+  //   两个维度都必要：不分账号会串身份，不分配方会用错页面的票。
+  ["mcloud.h5.jwt.", "account"],
+  ["mcloud.h5.exchange.", "account"],
+  // 矩阵按**市场**分（`mcloud.apptaskmatrix.g.sign_in_3`）—— 动态拼出来的，
+  // 静态扫描扫不到整串，所以按前缀登记。
+  ["mcloud.apptaskmatrix.g.", "account"]
+];
+function scopeOf(key) {
+  const exact = KEY_SCOPE[key];
+  if (exact !== void 0) return exact;
+  let best;
+  for (const [prefix, scope] of KEY_PREFIX_SCOPE) {
+    if (key.startsWith(prefix) && (best === void 0 || prefix.length > best.len)) {
+      best = { len: prefix.length, scope };
+    }
+  }
+  return best?.scope;
+}
+function acctIdOf(store2, override) {
+  if (override !== void 0 && override !== "") return override;
+  const id = (store2.getState(STATE_CURRENT_ACCOUNT) ?? "").trim();
+  return id === "" ? DEFAULT_ACCT : id;
+}
+function acctBagKey(acctId) {
+  return `${ACCT_PREFIX}${acctId}`;
+}
+function readBag(store2, acctId) {
+  const raw = store2.getState(acctBagKey(acctId));
+  if (raw === void 0 || raw === null || raw === "") return {};
+  try {
+    const v = JSON.parse(raw);
+    if (typeof v !== "object" || v === null || Array.isArray(v)) return {};
+    const out = {};
+    for (const [k, val] of Object.entries(v)) {
+      if (typeof val === "string") out[k] = val;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+function writeBag(store2, acctId, bag, nowIso) {
+  store2.setState(acctBagKey(acctId), JSON.stringify(bag), nowIso);
+}
+var UnregisteredKeyError = class extends Error {
+  constructor(key) {
+    super(
+      `状态键「${key}」没有在 store/keys.ts 的 KEY_SCOPE 里登记。
+⚠ 不许默认当成全局键 —— 那正是多账号串号那一串 bug 的成因（见该文件头）。
+判据：账号 A 写进去之后，账号 B 读到它会不会做出**错的**决定？会 ⇒ 'account'。`
+    );
+    this.name = "UnregisteredKeyError";
+  }
+};
+function routeGet(store2, key, acctId) {
+  if (key.startsWith(ACCT_PREFIX)) return store2.getState(key) ?? null;
+  if (!key.startsWith(PLUGIN_NS)) return store2.getState(key) ?? null;
+  const scope = scopeOf(key);
+  if (scope === void 0) throw new UnregisteredKeyError(key);
+  if (scope === "global") return store2.getState(key) ?? null;
+  const bag = readBag(store2, acctIdOf(store2, acctId));
+  return bag[key] ?? null;
+}
+function routeSet(store2, key, value, nowIso, acctId) {
+  if (key.startsWith(ACCT_PREFIX)) {
+    store2.setState(key, value, nowIso);
+    return;
+  }
+  if (!key.startsWith(PLUGIN_NS)) {
+    store2.setState(key, value, nowIso);
+    return;
+  }
+  const scope = scopeOf(key);
+  if (scope === void 0) throw new UnregisteredKeyError(key);
+  if (scope === "global") {
+    store2.setState(key, value, nowIso);
+    return;
+  }
+  const acct = acctIdOf(store2, acctId);
+  const bag = readBag(store2, acct);
+  bag[key] = value;
+  writeBag(store2, acct, bag, nowIso);
+}
+function migrateFlatKeys(store2, nowIso) {
+  const acctId = acctIdOf(store2);
+  const bag = readBag(store2, acctId);
+  const moved = [];
+  for (const [key, scope] of Object.entries(KEY_SCOPE)) {
+    if (scope !== "account") continue;
+    const flat = store2.getState(key);
+    if (flat === void 0 || flat === null || flat === "") continue;
+    if (bag[key] === void 0) {
+      bag[key] = flat;
+      moved.push(key);
+    }
+    store2.setState(key, "", nowIso);
+  }
+  if (moved.length > 0) writeBag(store2, acctId, bag, nowIso);
+  return { moved };
+}
+
 // src/crypto/bytes.ts
 function utf8(s) {
   const out = [];
@@ -234,6 +453,116 @@ function readU32LE(b, off) {
 function lengthBits(bytes) {
   const bits = bytes * 8;
   return { hi: Math.floor(bits / 4294967296) >>> 0, lo: bits >>> 0 };
+}
+
+// src/mcloud/auth.ts
+function lenientB64(s) {
+  let payload = "";
+  for (const c of s) {
+    if (c === "=") break;
+    if (/[A-Za-z0-9+/]/.test(c)) payload += c;
+  }
+  if (payload.length === 0 || payload.length % 4 === 1) return void 0;
+  const pad = payload.length % 4 === 0 ? "" : "=".repeat(4 - payload.length % 4);
+  let text;
+  try {
+    text = fromUtf8(fromBase64(payload + pad));
+  } catch {
+    return void 0;
+  }
+  return text.length === 0 ? void 0 : text;
+}
+function isPlainDecimal(s) {
+  if (s.length === 0) return false;
+  let i = 0;
+  if (s[0] === "+" || s[0] === "-") i = 1;
+  if (i >= s.length) return false;
+  for (; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 48 || c > 57) return false;
+  }
+  return true;
+}
+function parseAuth(auth) {
+  if (auth.trim() === "") return void 0;
+  const i = auth.indexOf("Basic ");
+  const clean = i < 0 ? auth : auth.slice(0, i) + auth.slice(i + "Basic ".length);
+  const decoded = lenientB64(clean);
+  if (decoded === void 0) return void 0;
+  const parts = decoded.split(":", 4);
+  const platform = parts[0] ?? "";
+  const phone = parts[1] ?? "";
+  const token = parts[2] ?? "";
+  const seg = token.split("|")[3]?.trim();
+  const expire = seg !== void 0 && isPlainDecimal(seg) ? Math.trunc(Number(seg)) || 0 : 0;
+  return { raw: `Basic ${clean}`, platform, phone, token, expire };
+}
+
+// src/mcloud/accounts.ts
+function loadAccounts(store2) {
+  const raw = store2.getState(STATE_ACCOUNTS);
+  if (raw === null || raw === void 0 || raw.trim() === "") return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const out = [];
+  for (const it of parsed) {
+    if (it === null || typeof it !== "object") continue;
+    const o = it;
+    if (typeof o.id !== "string" || typeof o.auth !== "string" || o.auth === "") continue;
+    const auth = o.auth;
+    const info = parseAuth(auth);
+    const pc = o.pcPlatform;
+    out.push({
+      id: o.id,
+      label: typeof o.label === "string" && o.label !== "" ? o.label : o.id,
+      auth,
+      // 老账号没存过这两格 ⇒ 从凭据里现解一次（不用迁移）
+      platform: typeof o.platform === "string" ? o.platform : info?.platform ?? "",
+      pcPlatform: pc === "win" || pc === "mac" ? pc : void 0,
+      disabled: o.disabled === true,
+      addedAt: typeof o.addedAt === "string" ? o.addedAt : ""
+    });
+  }
+  return out;
+}
+function currentAccount(store2) {
+  const id = (store2.getState(STATE_CURRENT_ACCOUNT) ?? "").trim();
+  if (id === "") return void 0;
+  return loadAccounts(store2).find((a) => a.id === id);
+}
+
+// src/mcloud/taskAccounts.ts
+function taskAccountsKey(task) {
+  return `mcloud.task.accounts.${task}`;
+}
+var DEFAULT_TASK_ACCOUNTS = { all: true, ids: [] };
+function loadTaskAccounts(store2, task) {
+  const raw = (store2.getState(taskAccountsKey(task)) ?? "").trim();
+  if (raw === "") return { ...DEFAULT_TASK_ACCOUNTS };
+  try {
+    const v = JSON.parse(raw);
+    const ids = Array.isArray(v.ids) ? v.ids.filter((x) => typeof x === "string") : [];
+    return { all: v.all === true, ids };
+  } catch {
+    return { ...DEFAULT_TASK_ACCOUNTS };
+  }
+}
+function resolveTaskAccounts(store2, task) {
+  const sel = loadTaskAccounts(store2, task);
+  const all = loadAccounts(store2);
+  const enabled = all.filter((a) => a.disabled !== true);
+  if (sel.all) return enabled.map((a) => a.id);
+  const want = new Set(sel.ids);
+  return enabled.filter((a) => want.has(a.id)).map((a) => a.id);
+}
+function labelOf(store2, acctId) {
+  const a = loadAccounts(store2).find((x) => x.id === acctId);
+  return a?.label || a?.id || acctId;
 }
 
 // src/crypto/md5.ts
@@ -1103,298 +1432,6 @@ var REFERER_SIGN_IN = `${MCLOUD_HOST}/mcloud/sign_in/index.html`;
 function rootOrDefault(base, fallback) {
   const t = (base ?? "").trim();
   return t === "" ? fallback : t.replace(/\/+$/, "");
-}
-
-// src/store/keys.ts
-var DEFAULT_ACCT = "default";
-var PLUGIN_NS = "mcloud.";
-var ACCT_PREFIX = "mcloud.acct.";
-var STATE_CURRENT_ACCOUNT = "mcloud.account.current";
-var STATE_ACCOUNTS = "mcloud.accounts";
-var KEY_SCOPE = {
-  // ── 账号运行期状态 ──────────────────────────────────────────
-  "mcloud.session": "account",
-  "mcloud.session.last_check": "account",
-  "mcloud.h5.auth": "account",
-  "mcloud.h5.exchange": "account",
-  "mcloud.h5.jwt": "account",
-  "mcloud.daily.done_date": "account",
-  "mcloud.daily.last_run": "account",
-  // ⚠ 登录这一族是**本机**的，不是某个账号的。
-  //
-  //   · `deviceId` —— 本机设备指纹。参考实现（`accounts-page.tsx`）的原话：
-  //     「扫码时它作为 `dID` 上报，服务端据此定位会话。它**跨重启稳定**；
-  //      换掉会让旧的扫码会话立即失效，但已登录账号不受影响。」
-  //     ⇒ 它是"这台机器长什么样"，写在**账号**名下是错的。
-  //   · `qr` / `sms` —— "我正在进行的那次登录"（还没变成账号）。
-  //   · `base` / `userDomainId` —— 登录服下发的主机，同样是本机的。
-  //
-  //   ⚠ 这几格**原来就是扁平的全局键**。把它们改成按账号是**我的改动**，不是原行为
-  //   —— 而"语义说不清楚时保持原行为"才是对的。见下面那段纪律。
-  "mcloud.login.deviceId": "global",
-  "mcloud.login.qr": "global",
-  "mcloud.login.sms": "global",
-  // 手机端（App 链路）那次登录。与 `sms` **分开存**：两端的滑块语义不同
-  //（PC 取图自己解、App 真机是开 WebView），共用一格会让"进行中的是哪一端"
-  // 变成要靠猜。
-  "mcloud.login.app": "global",
-  "mcloud.login.base": "global",
-  "mcloud.login.userDomainId": "global",
-  "mcloud.sign.stage": "account",
-  "mcloud.sign.last": "account",
-  "mcloud.upload.state": "account",
-  "mcloud.taskexpansion.state": "account",
-  "mcloud.apptask.state": "account",
-  "mcloud.apptaskmatrix.last": "account",
-  "mcloud.apptaskmatrix.group_index": "account",
-  "mcloud.notice.can_claim": "account",
-  "mcloud.notice.info": "account",
-  "mcloud.backupgift.can_receive": "account",
-  "mcloud.backupgift.info": "account",
-  "mcloud.msgpush.can": "account",
-  "mcloud.msgpush.last": "account",
-  "mcloud.prizes.last": "account",
-  "mcloud.multiple.last": "account",
-  "mcloud.revival.last": "account",
-  "mcloud.receive.last": "account",
-  "mcloud.receive.queue": "account",
-  "mcloud.cloudsnapshot.last": "account",
-  "mcloud.exchangelist.last": "account",
-  "mcloud.exchangelist.raw": "account",
-  "mcloud.exchange.plan": "account",
-  "mcloud.exchange.order.step": "account",
-  "mcloud.exchange.order.baseline": "account",
-  "mcloud.exchange.order.plan": "account",
-  "mcloud.exchange.order.round": "account",
-  "mcloud.exchange.order.ordered_hour": "account",
-  "mcloud.exchange.order.last_wait": "account",
-  "mcloud.live.gate": "account",
-  "mcloud.live.gate.reading": "account",
-  "mcloud.live.gate_base": "account",
-  "mcloud.live.reading": "account",
-  "mcloud.live.draw": "account",
-  "mcloud.live.codes": "account",
-  "mcloud.live.listen": "account",
-  "mcloud.live.listen_room": "account",
-  "mcloud.live.listen_seconds": "account",
-  "mcloud.live.url": "account",
-  "mcloud.live.wake_plan": "account",
-  "mcloud.live.ws_base": "account",
-  "mcloud.live.ws_heartbeat_reply": "account",
-  "mcloud.live.im_base": "account",
-  "mcloud.smid.deviceId": "account",
-  "mcloud.smid.fingerprint": "account",
-  "mcloud.auth.refresh.last": "account",
-  // ── 实例级配置 / 跨账号共享 ────────────────────────────────
-  /** 账号表本身。 */
-  "mcloud.accounts": "global",
-  /** "当前选中哪个账号"。⚠ 它是**选择**，不是某个账号的状态。 */
-  "mcloud.account.current": "global",
-  /** 上游域名。 */
-  "mcloud.base_url": "global",
-  /** 登录方式偏好（扫码 / 短信 / 账密）。 */
-  "mcloud.login.pref": "global",
-  /** 几点抢兑 —— 是**配置**，跟账号无关。 */
-  "mcloud.exchange.target_hour": "global",
-  /** 提前量 —— "网络慢的人该调大"，是**这台机器**的调参，与账号无关。 */
-  "mcloud.exchange.order.lead_ms": "global",
-  /** 领小红花的开关。 */
-  "mcloud.live.claim_enabled": "global",
-  /** 推送配置（渠道 / 规则 / 事件绑到哪个渠道）。 */
-  "mcloud.push.config": "global",
-  "mcloud.push.rules": "global",
-  "mcloud.push.bindings": "global",
-  /** ⚠ 共享口令池 —— 参考实现明写"实例级：跨 mcloud 用户、跨重启"。 */
-  "mcloud.kouling.pool": "global",
-  /** 运行日志（每条记录里自己带账号）。 */
-  "mcloud.run.log": "global",
-  /** 任务清单缓存。 */
-  "mcloud.tasklist.last": "global"
-};
-var KEY_PREFIX_SCOPE = [
-  ["mcloud.last_error.", "account"],
-  // 票与换票进度：**按配方**分（`mcloud.h5.jwt.sign-in` / `.msg-push-on`）。
-  // ⚠ 账号那一维由 `scoped()` 加（袋名），所以这里只剩配方这一段。
-  //   两个维度都必要：不分账号会串身份，不分配方会用错页面的票。
-  ["mcloud.h5.jwt.", "account"],
-  ["mcloud.h5.exchange.", "account"],
-  // 矩阵按**市场**分（`mcloud.apptaskmatrix.g.sign_in_3`）—— 动态拼出来的，
-  // 静态扫描扫不到整串，所以按前缀登记。
-  ["mcloud.apptaskmatrix.g.", "account"]
-];
-function scopeOf(key) {
-  const exact = KEY_SCOPE[key];
-  if (exact !== void 0) return exact;
-  let best;
-  for (const [prefix, scope] of KEY_PREFIX_SCOPE) {
-    if (key.startsWith(prefix) && (best === void 0 || prefix.length > best.len)) {
-      best = { len: prefix.length, scope };
-    }
-  }
-  return best?.scope;
-}
-function acctIdOf(store2, override) {
-  if (override !== void 0 && override !== "") return override;
-  const id = (store2.getState(STATE_CURRENT_ACCOUNT) ?? "").trim();
-  return id === "" ? DEFAULT_ACCT : id;
-}
-function acctBagKey(acctId) {
-  return `${ACCT_PREFIX}${acctId}`;
-}
-function readBag(store2, acctId) {
-  const raw = store2.getState(acctBagKey(acctId));
-  if (raw === void 0 || raw === null || raw === "") return {};
-  try {
-    const v = JSON.parse(raw);
-    if (typeof v !== "object" || v === null || Array.isArray(v)) return {};
-    const out = {};
-    for (const [k, val] of Object.entries(v)) {
-      if (typeof val === "string") out[k] = val;
-    }
-    return out;
-  } catch {
-    return {};
-  }
-}
-function writeBag(store2, acctId, bag, nowIso) {
-  store2.setState(acctBagKey(acctId), JSON.stringify(bag), nowIso);
-}
-var UnregisteredKeyError = class extends Error {
-  constructor(key) {
-    super(
-      `状态键「${key}」没有在 store/keys.ts 的 KEY_SCOPE 里登记。
-⚠ 不许默认当成全局键 —— 那正是多账号串号那一串 bug 的成因（见该文件头）。
-判据：账号 A 写进去之后，账号 B 读到它会不会做出**错的**决定？会 ⇒ 'account'。`
-    );
-    this.name = "UnregisteredKeyError";
-  }
-};
-function routeGet(store2, key, acctId) {
-  if (key.startsWith(ACCT_PREFIX)) return store2.getState(key) ?? null;
-  if (!key.startsWith(PLUGIN_NS)) return store2.getState(key) ?? null;
-  const scope = scopeOf(key);
-  if (scope === void 0) throw new UnregisteredKeyError(key);
-  if (scope === "global") return store2.getState(key) ?? null;
-  const bag = readBag(store2, acctIdOf(store2, acctId));
-  return bag[key] ?? null;
-}
-function routeSet(store2, key, value, nowIso, acctId) {
-  if (key.startsWith(ACCT_PREFIX)) {
-    store2.setState(key, value, nowIso);
-    return;
-  }
-  if (!key.startsWith(PLUGIN_NS)) {
-    store2.setState(key, value, nowIso);
-    return;
-  }
-  const scope = scopeOf(key);
-  if (scope === void 0) throw new UnregisteredKeyError(key);
-  if (scope === "global") {
-    store2.setState(key, value, nowIso);
-    return;
-  }
-  const acct = acctIdOf(store2, acctId);
-  const bag = readBag(store2, acct);
-  bag[key] = value;
-  writeBag(store2, acct, bag, nowIso);
-}
-function migrateFlatKeys(store2, nowIso) {
-  const acctId = acctIdOf(store2);
-  const bag = readBag(store2, acctId);
-  const moved = [];
-  for (const [key, scope] of Object.entries(KEY_SCOPE)) {
-    if (scope !== "account") continue;
-    const flat = store2.getState(key);
-    if (flat === void 0 || flat === null || flat === "") continue;
-    if (bag[key] === void 0) {
-      bag[key] = flat;
-      moved.push(key);
-    }
-    store2.setState(key, "", nowIso);
-  }
-  if (moved.length > 0) writeBag(store2, acctId, bag, nowIso);
-  return { moved };
-}
-
-// src/mcloud/auth.ts
-function lenientB64(s) {
-  let payload = "";
-  for (const c of s) {
-    if (c === "=") break;
-    if (/[A-Za-z0-9+/]/.test(c)) payload += c;
-  }
-  if (payload.length === 0 || payload.length % 4 === 1) return void 0;
-  const pad = payload.length % 4 === 0 ? "" : "=".repeat(4 - payload.length % 4);
-  let text;
-  try {
-    text = fromUtf8(fromBase64(payload + pad));
-  } catch {
-    return void 0;
-  }
-  return text.length === 0 ? void 0 : text;
-}
-function isPlainDecimal(s) {
-  if (s.length === 0) return false;
-  let i = 0;
-  if (s[0] === "+" || s[0] === "-") i = 1;
-  if (i >= s.length) return false;
-  for (; i < s.length; i++) {
-    const c = s.charCodeAt(i);
-    if (c < 48 || c > 57) return false;
-  }
-  return true;
-}
-function parseAuth(auth) {
-  if (auth.trim() === "") return void 0;
-  const i = auth.indexOf("Basic ");
-  const clean = i < 0 ? auth : auth.slice(0, i) + auth.slice(i + "Basic ".length);
-  const decoded = lenientB64(clean);
-  if (decoded === void 0) return void 0;
-  const parts = decoded.split(":", 4);
-  const platform = parts[0] ?? "";
-  const phone = parts[1] ?? "";
-  const token = parts[2] ?? "";
-  const seg = token.split("|")[3]?.trim();
-  const expire = seg !== void 0 && isPlainDecimal(seg) ? Math.trunc(Number(seg)) || 0 : 0;
-  return { raw: `Basic ${clean}`, platform, phone, token, expire };
-}
-
-// src/mcloud/accounts.ts
-function loadAccounts(store2) {
-  const raw = store2.getState(STATE_ACCOUNTS);
-  if (raw === null || raw === void 0 || raw.trim() === "") return [];
-  let parsed;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return [];
-  }
-  if (!Array.isArray(parsed)) return [];
-  const out = [];
-  for (const it of parsed) {
-    if (it === null || typeof it !== "object") continue;
-    const o = it;
-    if (typeof o.id !== "string" || typeof o.auth !== "string" || o.auth === "") continue;
-    const auth = o.auth;
-    const info = parseAuth(auth);
-    const pc = o.pcPlatform;
-    out.push({
-      id: o.id,
-      label: typeof o.label === "string" && o.label !== "" ? o.label : o.id,
-      auth,
-      // 老账号没存过这两格 ⇒ 从凭据里现解一次（不用迁移）
-      platform: typeof o.platform === "string" ? o.platform : info?.platform ?? "",
-      pcPlatform: pc === "win" || pc === "mac" ? pc : void 0,
-      disabled: o.disabled === true,
-      addedAt: typeof o.addedAt === "string" ? o.addedAt : ""
-    });
-  }
-  return out;
-}
-function currentAccount(store2) {
-  const id = (store2.getState(STATE_CURRENT_ACCOUNT) ?? "").trim();
-  if (id === "") return void 0;
-  return loadAccounts(store2).find((a) => a.id === id);
 }
 
 // src/store/types.ts
@@ -3716,6 +3753,10 @@ function hostStore() {
 // src/store/scoped.ts
 var WRAPPED = Symbol.for("__mcloud_scoped_store__");
 var RAW = Symbol.for("__mcloud_raw_store__");
+function rawStoreOf(s) {
+  const raw = s[RAW];
+  return raw ?? s;
+}
 function scoped(base, acctId) {
   if (base[WRAPPED] === true) {
     throw new Error(
@@ -3768,6 +3809,16 @@ function makeHost() {
     wsRecv: (id, timeoutMs) => ws_recv(id, timeoutMs),
     wsClose: (id) => ws_close(id)
   };
+}
+function forEachTaskAccount(base, task, payload, transport2, fn) {
+  const targets = resolveTaskAccounts(rawStoreOf(base), task);
+  const out = [];
+  for (const [i, acctId] of targets.entries()) {
+    const one = scoped(rawStoreOf(base), acctId);
+    const deps = taskDeps(one, transport2, payload);
+    out.push({ acctId, result: fn(deps, acctId, i, targets.length) });
+  }
+  return out;
 }
 function taskDeps(store2, transport2, payload) {
   return {
@@ -3857,29 +3908,34 @@ register_cron(
   (p) => {
     const startedMs = Date.now();
     const at = new Date(startedMs).toISOString();
-    const deps = taskDeps(store, transport, p);
-    const r = runLive(deps);
-    appendRun(store, {
-      task: "live",
-      at,
-      ms: Date.now() - startedMs,
-      ok: r.ok,
-      note: r.note,
-      steps: r.steps
-    });
-    store.recordRun({
-      task: p.name,
-      runs: p.runs,
-      scheduledAt: p.scheduledAt,
-      firedAt: p.firedAt,
-      lateMs: p.lateMs,
-      ok: r.ok,
-      note: r.note
-    });
-    if (r.ok) log2(`直播：${r.note}`);
-    else warn2(`直播：${r.note}`);
-    for (const line of r.detail) {
-      if (line.includes("失败") || line.includes("抛异常")) warn2(`  · ${line}`);
+    const runs = forEachTaskAccount(store, "直播", p, transport, (deps) => runLive(deps));
+    if (runs.length === 0) return;
+    for (const one of runs) {
+      const r = one.result;
+      const who = labelOf(store, one.acctId);
+      const note2 = runs.length > 1 ? `${who}：${r.note}` : r.note;
+      appendRun(store, {
+        task: "live",
+        at,
+        ms: Date.now() - startedMs,
+        ok: r.ok,
+        note: note2,
+        steps: r.steps
+      });
+      store.recordRun({
+        task: p.name,
+        runs: p.runs,
+        scheduledAt: p.scheduledAt,
+        firedAt: p.firedAt,
+        lateMs: p.lateMs,
+        ok: r.ok,
+        note: note2
+      });
+      if (r.ok) log2(`直播（${who}）：${r.note}`);
+      else warn2(`直播（${who}）：${r.note}`);
+      for (const line of r.detail) {
+        if (line.includes("失败") || line.includes("抛异常")) warn2(`  · ${line}`);
+      }
     }
   },
   { budget_ms: BUDGET_MS }

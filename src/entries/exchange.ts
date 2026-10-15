@@ -49,10 +49,12 @@ import type { TaskDeps } from '../mcloud/tasks/base.ts';
 import {
   LONG_REQUEST_TIMEOUT_MS,
   drain,
+  forEachTaskAccount,
   makeStore,
   makeTransport,
   taskDeps,
 } from './shared.ts';
+import { labelOf } from '../mcloud/taskAccounts.ts';
 import type { TaskPayload } from './shared.ts';
 import { BUDGET_MS, runExchange } from '../mcloud/tasks/exchangeRun.ts';
 
@@ -83,59 +85,75 @@ register_cron(
   (p: TaskPayload) => {
     const startedMs = Date.now();
     const at = new Date(startedMs).toISOString();
-    const deps = taskDeps(store, transport, p);
-
-    // ⚠ **小时闸**：这一小时已经发过单了 ⇒ 零请求秒返回。
-    //   链里那段自旋会让排在后面的触发积压，跑完之后它们立刻依次执行 ——
-    //   而那时已经过了整点，链会判"现在就发" ⇒ **每一枪都真花豆**。
-    //   下单不可逆、无幂等键，所以这道闸是必需品（见 STATE_ORDERED_HOUR）。
     const thisHour = hourKey(startedMs);
-    if (store.getState(STATE_ORDERED_HOUR) === thisHour) {
-      return;
-    }
 
-    const r = runExchange(deps);
+    // ── 这一趟跑**这条任务选的账号**，**串行**（见 `forEachTaskAccount`）──
+    const runs = forEachTaskAccount(store, '兑换', p, transport, (deps) => {
+      // ⚠ **小时闸**：这一小时已经发过单了 ⇒ 零请求秒返回。
+      //   链里那段自旋会让排在后面的触发积压，跑完之后它们立刻依次执行 ——
+      //   而那时已经过了整点，链会判"现在就发" ⇒ **每一枪都真花豆**。
+      //   下单不可逆、无幂等键，所以这道闸是必需品（见 STATE_ORDERED_HOUR）。
+      //   ⚠ 闸是**按账号**的（键在账号袋里）—— 所以它在循环**里面**判。
+      //     放外面的话 A 发过单之后 B 就不发了（而 B 那一小时还没发过）。
+      if (deps.store.getState(STATE_ORDERED_HOUR) === thisHour) return null;
+      return runExchange(deps);
+    });
 
-    // ⚠ **离窗口还远 ⇒ 一条日志都不写**。
-    //   这一趟一个请求都没发（`idle`），写出来只是噪声 —— 用户的原话「太特么频繁了」。
-    //   老版本 `@every 10s` 一天要写 8639 行这种东西。
-    //   ⚠ 读数照样更新：界面上「下次几点」还得看得见。
-    if (r.idle) {
+    // 没选到账号 ⇒ **静默返回**（那不是失败，是"这条任务没配账号"）
+    if (runs.length === 0) return;
+
+    let acted = 0;
+    for (const one of runs) {
+      const r = one.result;
+      if (r === null) continue; // 这一条这一小时已经发过单
+
+      // ⚠ **离窗口还远 ⇒ 一条日志都不写**。
+      //   这一趟一个请求都没发（`idle`），写出来只是噪声 —— 用户的原话「太特么频繁了」。
+      //   老版本 `@every 10s` 一天要写 8639 行这种东西。
+      //   ⚠ 读数照样更新：界面上「下次几点」还得看得见。
+      if (r.idle) {
+        store.recordRun({
+          task: p.name,
+          runs: p.runs,
+          scheduledAt: p.scheduledAt,
+          firedAt: p.firedAt,
+          lateMs: p.lateMs,
+          ok: true,
+          note: r.note,
+        });
+        continue;
+      }
+
+      acted += 1;
+      const who = labelOf(store, one.acctId);
+      const note = runs.length > 1 ? `${who}：${r.note}` : r.note;
+
+      appendRun(store, {
+        task: 'exchange',
+        at,
+        ms: Date.now() - startedMs,
+        ok: r.ok,
+        note,
+        steps: r.steps,
+      });
+
       store.recordRun({
         task: p.name,
         runs: p.runs,
         scheduledAt: p.scheduledAt,
         firedAt: p.firedAt,
         lateMs: p.lateMs,
-        ok: true,
-        note: r.note,
+        ok: r.ok,
+        note,
       });
-      return;
+      if (r.ok) log(`兑换（${who}）：${r.note}`);
+      else warn(`兑换（${who}）：${r.note}`);
+      for (const line of r.detail) {
+        if (line.includes('失败')) warn(`  · ${line}`);
+      }
     }
-
-    appendRun(store, {
-      task: 'exchange',
-      at,
-      ms: Date.now() - startedMs,
-      ok: r.ok,
-      note: r.note,
-      steps: r.steps,
-    });
-
-    store.recordRun({
-      task: p.name,
-      runs: p.runs,
-      scheduledAt: p.scheduledAt,
-      firedAt: p.firedAt,
-      lateMs: p.lateMs,
-      ok: r.ok,
-      note: r.note,
-    });
-    if (r.ok) log(`兑换：${r.note}`);
-    else warn(`兑换：${r.note}`);
-    for (const line of r.detail) {
-      if (line.includes('失败')) warn(`  · ${line}`);
-    }
+    // 全都"这一小时已发过单 / 离窗口还远" ⇒ 这一趟什么都不用说
+    void acted;
   },
   { budget_ms: BUDGET_MS },
 );

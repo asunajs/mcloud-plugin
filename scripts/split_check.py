@@ -403,6 +403,30 @@ def main() -> int:
                     isinstance(blk.get("recent"), list),
                     f"http {code}，拿到 {type(blk.get('recent')).__name__}",
                 )
+            # ⚠ **先加一个账号**：任务现在只跑"这条任务选的账号"（多选 / 全部）。
+            #   一个账号都没有时它会**静默返回**（那不是失败，是"没配账号"）——
+            #   所以"跑完多一条记录"这件事的前置条件是**至少有一个账号**。
+            #   老版本这里不需要，因为那时任务只认"当前账号"、不看名单。
+            code, body = plugin_post(
+                base,
+                "/accounts",
+                {
+                    "op": "add",
+                    "auth": "Basic "
+                    + __import__("base64").b64encode(b"pc:13500135000:tok|1|2|" + str(int((time.time() + 30 * 86400) * 1000)).encode()).decode(),
+                    "pcPlatform": "win",
+                },
+            )
+            check("（前置）加一个账号给日常跑", code == 200, f"http {code}")
+            code, body = http(f"{base}/plugins/mcloud/api/readings")
+            d0 = json.loads(body) if code == 200 else {}
+            ta0 = (d0.get("taskAccounts") or {}).get("日常") or {}
+            check(
+                "（前置）日常的名单能展开出账号",
+                len(ta0.get("resolved") or []) >= 1,
+                str(ta0.get("resolved")),
+            )
+
             # 真跑一次日常，然后看记录里有没有它
             code, body = http(
                 f"{base}/api/tasks/mcloud-daily/%E6%97%A5%E5%B8%B8/run",
@@ -420,6 +444,10 @@ def main() -> int:
                 len(recent) >= 1,
                 f"拿到 {len(recent)} 条",
             )
+            # ⚠ 把刚才那个"前置账号"删掉：下面的断言按 `accounts[0]` 取，
+            #   留着它会把那些断言指到另一个账号上（跑一次就串一次）。
+            plugin_post(base, "/accounts", {"op": "remove", "id": "13500135000"})
+
             if recent:
                 r0 = recent[0]
                 check("摘要里有一行结论", bool(r0.get("note")), str(r0)[:120])

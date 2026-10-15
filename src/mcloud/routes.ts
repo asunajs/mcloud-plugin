@@ -178,6 +178,8 @@ import {
 import type { Store } from '../store/types.ts';
 import { rawStoreOf, scoped } from '../store/scoped.ts';
 import { setAccountDisabled, setAccountLabel } from './accounts.ts';
+import { saveTaskAccounts, taskAccountsView } from './taskAccounts.ts';
+
 import {
   APP_LOGIN_AES_KEY,
   APP_SLIDER_PUZZLE_PATH,
@@ -365,6 +367,15 @@ function buildReadings(deps: RouteDeps): Record<string, unknown> {
       current: view.current,
       accounts: view.accounts,
       session: sessionStatus(deps.store, nowIso),
+    },
+
+    // 三条任务各自"跑哪些账号"。⚠ 与上面那个 `account`（账号表）**分开给**：
+    //   一个是"有哪些号"，一个是"这条任务用哪些号"—— 界面上它们在不同页
+    //  （账号页 / 任务页）。合成一个的话，界面分不清该显示哪一个。
+    taskAccounts: {
+      日常: taskAccountsView(deps.store, '日常'),
+      兑换: taskAccountsView(deps.store, '兑换'),
+      直播: taskAccountsView(deps.store, '直播'),
     },
     // 登录会话（三种方式的进行中状态）。挂在 `account` 块里 ——
     // 界面上的「登录」那一节就是它。
@@ -923,6 +934,36 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
             ? '验证码不对（或者过期了），再看一眼短信'
             : `登录没成：${out.kind === 'other' ? out.message || `code=${out.code}` : out.kind}`;
         return json(200, { ok: false, stop: false, note });
+      },
+    },
+
+    {
+      // 写"这条任务跑哪些账号"。
+      //
+      // ⚠ 校验两件事：任务名必须是我们认识的那三个（不然键会被人拼出来乱写），
+      //   以及**选中的 id 必须真的存在** —— 存一堆不存在的 id 会让任务静默不跑，
+      //   而界面上看起来"选好了"。
+      path: `${base}/task/accounts`,
+      method: 'POST',
+      handler: (req) => {
+        const b = readBody(req) as { task?: unknown; all?: unknown; ids?: unknown };
+        const task = typeof b.task === 'string' ? b.task : '';
+        // ⚠ `TASK_NAMES` 是 `readonly ['日常', …]` 字面量元组，`.includes(string)`
+        //   在类型上过不去 —— 这里就是要问"这个任意字符串在不在里面"。
+        if (!(TASK_NAMES as readonly string[]).includes(task)) {
+          return json(400, { error: `不认识的任务：${task || '(空)'}` });
+        }
+        const all = b.all === true;
+        const known = new Set(loadAccounts(deps.store).map((a) => a.id));
+        const ids = Array.isArray(b.ids)
+          ? b.ids.filter((x): x is string => typeof x === 'string' && known.has(x))
+          : [];
+        saveTaskAccounts(deps.store, task, { all, ids }, deps.now());
+        deps.log(`任务账号（${task}）：${all ? '全部' : `${ids.length} 个`}`);
+        return json(200, {
+          ...taskAccountsView(deps.store as unknown as Store, task),
+          note: all ? `${task}：全部账号` : `${task}：${ids.length} 个账号`,
+        });
       },
     },
 
