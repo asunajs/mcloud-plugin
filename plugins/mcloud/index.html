@@ -62,98 +62,26 @@
     <main class="main">
       <!-- ══════════════ 账号 ══════════════ -->
       <section class="block is-on" id="block-account">
+        <!-- 工具栏 —— 照 mcloud 的账号页。
+             ⚠「上游状态」是我这边的，其余三个复刻。 -->
+        <div class="row toolbar">
+          <button class="btn btn-sm" id="acct-upstream">上游状态</button>
+          <button class="btn btn-sm" id="acct-config">账号配置</button>
+          <button class="btn btn-sm" id="acct-refresh-all">刷新全部凭据</button>
+          <button class="btn btn-primary" id="acct-add">添加账号</button>
+        </div>
+
         <p class="hero" id="acct-hero">…</p>
         <p class="sub" id="acct-sub"></p>
 
-        <h3 class="h3">登录</h3>
-        <p class="hint" id="login-note"></p>
-        <div class="row">
-          <button class="btn btn-primary" id="login-qr">扫码登录</button>
-          <button class="btn" id="login-sms">短信登录</button>
-          <button class="btn" id="login-pwd">账密登录</button>
-        </div>
-
-        <!-- 扫码：出码 → 用户扫 → 用户确认。推进的触发者是用户点按钮。 -->
-        <div class="pane" id="pane-qr" hidden>
-          <p class="hint" id="qr-note"></p>
-          <div class="qr" id="qr-box"></div>
-          <div class="row">
-            <button class="btn btn-primary" id="qr-poll">我扫完了 / 继续</button>
-            <button class="btn" id="qr-cancel">取消</button>
-          </div>
-        </div>
-
-        <!-- 短信：发码 → 可能被风控拦下要滑块 → 提交验证码 -->
-        <div class="pane" id="pane-sms" hidden>
-          <div class="row">
-            <input id="sms-phone" class="grow" type="tel" placeholder="13800000000" autocomplete="tel" />
-            <button class="btn" id="sms-start">下一步</button>
-          </div>
-          <p class="hint" id="sms-note"></p>
-          <div class="row">
-            <button class="btn" id="sms-send">发验证码</button>
-            <input id="sms-code" class="grow" type="text" placeholder="6 位验证码" inputmode="numeric" />
-            <button class="btn btn-primary" id="sms-submit">登录</button>
-          </div>
-          <div class="slider" id="slider-box" hidden>
-            <p class="hint" id="slider-note"></p>
-            <img id="slider-bg" alt="滑块背景" />
-          </div>
-        </div>
-
-        <!-- 账密：**没有用户交互**，所以一个请求就完成，不是状态机 -->
-        <div class="pane" id="pane-pwd" hidden>
-          <div class="row">
-            <input id="pwd-phone" class="grow" type="tel" placeholder="手机号" autocomplete="tel" />
-            <input id="pwd-pass" class="grow" type="password" placeholder="口令" autocomplete="current-password" />
-            <button class="btn btn-primary" id="pwd-submit">登录</button>
-          </div>
-          <p class="hint">口令会先按协议哈希（SHA-1，固定前缀）再发出去，不会明文上传。</p>
-        </div>
-
-        <div class="row">
-          <button class="btn btn-sm" id="paste-open">凭据</button>
-          <!-- ⚠ 与下面「本机设备指纹」那块是**同一个动作**，只是按症状命名。
-               两处都留是因为：用户的念头是"我的码扫不出来"，而他要找的东西
-               叫「换一台设备」—— 名字对不上就会来回翻。
-               ID 必须不同（`device-reset` 在下面那块），否则 `$()` 只绑到第一个。 -->
-          <button class="btn btn-sm" id="qr-reset">我的码一直扫不出来</button>
-        </div>
-
-        <!-- 凭据：直接贴一段已有的 Authorization（**不走登录链路**）。
-             ⚠ 是 **auth**，不是 cookie —— 见下面那段说明。 -->
-        <div class="pane" id="pane-paste" hidden>
-          <p class="hint">
-            贴一段已有的 <code>Authorization</code>：
-            <code>Basic &lt;base64&gt;</code>，或者只贴 base64 那段。
-            里面是 <code>&lt;平台&gt;:&lt;手机号&gt;:&lt;token&gt;</code>。
-          </p>
-          <textarea id="paste-body" rows="3" placeholder="Basic <base64>，或只粘 base64 那段"></textarea>
-          <div class="row" id="paste-pc" hidden>
-            <span class="hint">这条是 PC 端 —— 选它当初是哪一种（决定以后的请求头）：</span>
-            <button class="btn btn-sm is-on" id="paste-win">Windows</button>
-            <button class="btn btn-sm" id="paste-mac">macOS</button>
-          </div>
-          <p class="hint" id="paste-note"></p>
-          <p class="hint">
-            存下之后<b>不用再管换票</b> —— H5 那几张票是任务自己换的（约 2 小时废一次，
-            所以每次跑都会看一眼，新鲜就跳过）。
-          </p>
-          <button class="btn btn-primary" id="paste-submit">存下</button>
-        </div>
-
-
-        <h3 class="h3">已登录的账号</h3>
-        <ul class="list" id="acct-list"></ul>
+        <h3 class="h3">账号</h3>
+        <ul class="acct-cards" id="acct-list"></ul>
 
         <!-- 本机设备指纹。
              ⚠ 它**不是**用户要填的东西 —— 它是这台机器的指纹，只读。
              参考实现（`web/src/pages/accounts-page.tsx`）的原话：
              「扫码时它作为 `dID` 上报，服务端据此定位会话。它跨重启稳定；
-               换掉会让旧的扫码会话立即失效，但已登录账号不受影响。」
-             所以这里只有**一个动作**：「换一台设备」——不是输入框。
-             原来这里是个文本框 + 保存，而那个保存**后端根本不支持**
-             （`op:'device'`），也就是一次点击没反应。 -->
+               换掉会让旧的扫码会话立即失效，但已登录账号不受影响。」 -->
         <h3 class="h3">本机设备指纹</h3>
         <code class="finger" id="device-id-show">（还没生成）</code>
         <p class="hint">
@@ -162,8 +90,123 @@
         </p>
         <div class="row">
           <button class="btn btn-sm" id="device-reset">换一台设备</button>
+          <!-- ⚠ 与上面是**同一个动作**，只是按症状命名。
+               用户的念头是"我的码扫不出来"，而那个动作叫「换一台设备」——
+               名字对不上就会来回翻。ID 必须不同，否则 `$()` 只绑到第一个。 -->
+          <button class="btn btn-sm" id="qr-reset">我的码一直扫不出来</button>
         </div>
       </section>
+
+      <!-- ══════════ 添加账号（弹窗，复刻 mcloud） ══════════
+           参考实现的形状：五个页签 + **客户端形态在最上面**（对全部页签生效）
+           + 各页签自己的内容。 -->
+      <div class="modal" id="add-dialog" hidden>
+        <div class="modal-box">
+          <div class="modal-head">
+            <h3 class="h3">添加账号</h3>
+            <button class="btn btn-sm" id="add-close" aria-label="关闭">×</button>
+          </div>
+
+          <div class="tabs" id="add-tabs">
+            <button class="tab is-on" data-tab="qr">扫码</button>
+            <button class="tab" data-tab="sms">短信</button>
+            <button class="tab" data-tab="app">手机端</button>
+            <button class="tab" data-tab="pwd">账密</button>
+            <button class="tab" data-tab="auth">凭据</button>
+          </div>
+
+          <!-- 客户端形态：**在最上面，对全部页签生效**。
+               参考实现的说明照抄：「这会随账号存进 accounts.json，之后每次请求的
+               UA、设备串与渠道号都按它来。选错的话，账号以后一直用错的身份发请求。」 -->
+          <div class="field">
+            <span class="hint">客户端形态</span>
+            <div class="row">
+              <button class="btn btn-sm is-on" id="add-win">Windows</button>
+              <button class="btn btn-sm" id="add-mac">macOS</button>
+            </div>
+            <p class="hint">
+              这会随账号存下来，之后每次请求的 UA、设备串与渠道号都按它来。
+              选错的话，账号以后一直用错的身份发请求。
+            </p>
+          </div>
+
+          <!-- ── 扫码 ── -->
+          <div class="pane" data-pane="qr">
+            <p class="hint" id="qr-note">点下面的按钮生成二维码。</p>
+            <div class="qr" id="qr-box" hidden></div>
+            <div class="row">
+              <!-- ⚠ **没有**「我扫完了 / 继续」这种按钮：参考实现是**自动轮询**，
+                   扫完之后确认动作发生在**手机上**（「已扫码，请在手机上确认」）。
+                   之前那个按钮让用户以为"要在这里点一下才算数"。 -->
+              <button class="btn btn-primary" id="login-qr">生成二维码</button>
+              <button class="btn" id="qr-cancel">取消</button>
+            </div>
+            <p class="hint">用移动云盘 App 扫码，然后在手机上确认。</p>
+          </div>
+
+          <!-- ── 短信 ── -->
+          <div class="pane" data-pane="sms" hidden>
+            <div class="row">
+              <input id="sms-phone" class="grow" type="tel" placeholder="13800000000" autocomplete="tel" />
+              <button class="btn" id="sms-start">下一步</button>
+            </div>
+            <p class="hint" id="sms-note"></p>
+            <div class="row">
+              <button class="btn" id="sms-send">发验证码</button>
+              <input id="sms-code" class="grow" type="text" placeholder="6 位验证码" inputmode="numeric" />
+              <button class="btn btn-primary" id="sms-submit">登录</button>
+            </div>
+            <div class="slider" id="slider-box" hidden>
+              <p class="hint" id="slider-note"></p>
+              <img id="slider-bg" alt="滑块背景" />
+            </div>
+          </div>
+
+          <!-- ── 手机端（App 链路） ── -->
+          <!-- ── 手机端（App 链路）━━
+               ⚠ 这一路**还没接上流程**（加密层已过实拍黄金值，缺的是状态机与路由）。
+               所以这里**不放按钮** —— 放了就是"点了没反应"，而那正是这一版要消灭的东西。
+               参考实现这条路的样子（`app_login.rs`）：发码（`/user/sms/getSmsCode`，App 版）
+               → 可能要滑块 → `/user/thirdlogin`（**AES 加密体**）→ 拿到 `mobile:` 前缀的凭据。 -->
+          <div class="pane" data-pane="app" hidden>
+            <p class="hint">
+              用 App 自己的身份（<code>mobile</code> 前缀）与设备头发请求 —— 这条路拿到的凭据
+              就是 App 那套，不存在 Windows / macOS 之分。
+            </p>
+            <p class="hint">
+              <b>这一路还没接上。</b>底子已经好了（App 端的加密与请求头逐字节对过实拍值），
+              缺的是"发码 → 可能要滑块 → 换凭据"这套流程。
+              现在想加 App 账号的话，用「凭据」那一栏贴一段 <code>Basic &lt;base64&gt;</code>。
+            </p>
+          </div>
+
+          <!-- ── 账密 ── -->
+          <div class="pane" data-pane="pwd" hidden>
+            <div class="row">
+              <input id="pwd-phone" class="grow" type="tel" placeholder="手机号" autocomplete="tel" />
+              <input id="pwd-pass" class="grow" type="password" placeholder="口令" autocomplete="current-password" />
+              <button class="btn btn-primary" id="pwd-submit">登录</button>
+            </div>
+            <p class="hint">口令会先按协议哈希（SHA-1，固定前缀）再发出去，不会明文上传。</p>
+          </div>
+
+          <!-- ── 凭据 ── -->
+          <div class="pane" data-pane="auth" hidden>
+            <p class="hint">
+              贴一段已有的 <code>Authorization</code>：
+              <code>Basic &lt;base64&gt;</code>，或者只贴 base64 那段。
+              里面是 <code>&lt;平台&gt;:&lt;手机号&gt;:&lt;token&gt;</code>。
+            </p>
+            <textarea id="paste-body" rows="3" placeholder="Basic <base64>，或只粘 base64 那段"></textarea>
+            <p class="hint" id="paste-note"></p>
+            <p class="hint">
+              存下之后<b>不用再管换票</b> —— H5 那几张票是任务自己换的（约 2 小时废一次，
+              所以每次跑都会看一眼，新鲜就跳过）。
+            </p>
+            <button class="btn btn-primary" id="paste-submit">存下</button>
+          </div>
+        </div>
+      </div>
 
       <!-- ══════════════ 日常 ══════════════ -->
       <section class="block" id="block-daily">

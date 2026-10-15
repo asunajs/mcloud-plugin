@@ -40,6 +40,7 @@ function stripComments(t: string): string {
   return t.replace(/<!--[\s\S]*?-->/g, '');
 }
 
+
 /** 一个文件里出现的所有 `id="x"`（模板串里也算 —— 那是运行时会插进 DOM 的）。 */
 function idsIn(text: string): Set<string> {
   const out = new Set<string>();
@@ -194,7 +195,43 @@ test('⚠ 没有「推进一步」那种给面板用的按钮（任务是**一�
   }
 });
 
-test('打开页面就画一次，而且**不自动轮询**（不然"我点了一下"和"它自己变了"分不清）', () => {
+test('打开页面就画一次；**读数不许自动刷**（不然"我点了一下"和"它自己变了"分不清）', () => {
   assert.ok(/\nload\(\);\s*$/.test(js.trimEnd() + '\n'), '末尾要有一次 `load()`');
-  assert.ok(!/setInterval\s*\(/.test(js), '不许自动轮询 —— 读数只在动作之后刷新');
+
+  // ⚠ 这条原来写的是"**禁止** `setInterval`"。但参考实现的扫码登录**就是**
+  //   自动轮询的（`setInterval(pollOnce, 服务端给的 poll_interval_ms)`）——
+  //   它要求用户在浏览器里点"我扫完了"是**不一致**的（确认动作在**手机上**）。
+  //   所以真正的规则不是"不许有定时器"，而是这两条：
+  //
+  //     ① 定时器**不许刷读数**（那才会让"我点了一下"和"它自己变了"分不清）
+  //     ② 定时器**必须能被清掉**（否则关掉弹窗之后它还在跑，一直打接口）
+  //
+  //   把规则换成这两条，是因为原来那条会把"照参考实现做"判成错 —— 而一条
+  //   把正确做法判错的测试，最后只会被绕过。
+  // ⚠ 要先**剥注释**：注释里写 `setInterval(pollOnce, …)` 说明参考实现怎么做的，
+  //   那是文档不是代码 —— 不剥的话这条测试会被自己写的说明文案判红
+  //   （第一次跑就是这么红的：起了 2 个定时器但只清了 1 个）。
+  // ⚠ 用**按行**去注释，不用我上一版写的那个"逐字符、认字符串"的剥法 ——
+  //   那个在某个字符串上卡住了（进了"字符串态"再没出来），于是后面所有 `//`
+  //   注释都被当成代码，测试反而把注释里那句话算进了"定时器个数"。
+  //   这里只去 `//` 行注释就够（要看的是 `setInterval` 调用，不在块注释里）。
+  const code = js
+    .split('\n')
+    .filter((l) => !l.trim().startsWith('//'))
+    .join('\n');
+  const timers = code.match(/setInterval\s*\([\s\S]{0,200}?\)\s*;/g) ?? [];
+  for (const t of timers) {
+    assert.ok(
+      !/\bload\s*\(/.test(t),
+      `定时器里不许刷读数（读数只在动作之后刷新）：${t.slice(0, 80)}`,
+    );
+  }
+
+  // 每个 `setInterval` 都要有对应的 `clearInterval`（定时器不许泄漏）
+  const started = (code.match(/setInterval\s*\(/g) ?? []).length;
+  const cleared = (code.match(/clearInterval\s*\(/g) ?? []).length;
+  assert.ok(
+    cleared >= started,
+    `起了 ${started} 个定时器但只清了 ${cleared} 个 —— 关掉弹窗后它还在跑`,
+  );
 });
