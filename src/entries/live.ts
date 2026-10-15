@@ -36,6 +36,7 @@
 
 import { log, register_cron, warn, worker_hint } from 'host-api';
 import { appendRun, type RunStep } from '../mcloud/runLog.ts';
+import { labelOf } from '../mcloud/taskAccounts.ts';
 import { runLiveAuto } from '../mcloud/tasks/liveAutoTask.ts';
 import { runLiveDraw } from '../mcloud/tasks/liveDraw.ts';
 import { runLiveGate } from '../mcloud/tasks/liveGateTask.ts';
@@ -44,6 +45,7 @@ import type { ListenDeps } from '../mcloud/tasks/liveListen.ts';
 import { runLiveRoom } from '../mcloud/tasks/liveRoom.ts';
 import type { TaskDeps, TaskOutcome } from '../mcloud/tasks/base.ts';
 import {
+  forEachTaskAccount,
   LONG_REQUEST_TIMEOUT_MS,
   drain,
   makeHost,
@@ -168,33 +170,43 @@ register_cron(
   (p: TaskPayload) => {
     const startedMs = Date.now();
     const at = new Date(startedMs).toISOString();
-    const deps = taskDeps(store, transport, p);
-    const r = runLive(deps);
+    // ── 这一趟跑**这条任务选的账号**，**串行**（见 `forEachTaskAccount`）──
+    //
+    // ⚠ 听窗口是**按账号**的（房间、时长、冷却都在账号袋里）—— 所以每条各自跑。
+    const runs = forEachTaskAccount(store, '直播', p, transport, (deps) => runLive(deps));
+    // 没选到账号 ⇒ 静默返回（那不是失败，是"这条任务没配账号"）
+    if (runs.length === 0) return;
 
-    // 运行记录（留最近 N 次）—— 面板的环形日志混着所有插件，
-    // 回答不了"上一场为什么没领到"
-    appendRun(store, {
-      task: 'live',
-      at,
-      ms: Date.now() - startedMs,
-      ok: r.ok,
-      note: r.note,
-      steps: r.steps,
-    });
+    for (const one of runs) {
+      const r = one.result;
+      const who = labelOf(store, one.acctId);
+      const note = runs.length > 1 ? `${who}：${r.note}` : r.note;
 
-    store.recordRun({
-      task: p.name,
-      runs: p.runs,
-      scheduledAt: p.scheduledAt,
-      firedAt: p.firedAt,
-      lateMs: p.lateMs,
-      ok: r.ok,
-      note: r.note,
-    });
-    if (r.ok) log(`直播：${r.note}`);
-    else warn(`直播：${r.note}`);
-    for (const line of r.detail) {
-      if (line.includes('失败') || line.includes('抛异常')) warn(`  · ${line}`);
+      // 运行记录（留最近 N 次）—— 面板的环形日志混着所有插件，
+      // 回答不了"上一场为什么没领到"
+      appendRun(store, {
+        task: 'live',
+        at,
+        ms: Date.now() - startedMs,
+        ok: r.ok,
+        note,
+        steps: r.steps,
+      });
+
+      store.recordRun({
+        task: p.name,
+        runs: p.runs,
+        scheduledAt: p.scheduledAt,
+        firedAt: p.firedAt,
+        lateMs: p.lateMs,
+        ok: r.ok,
+        note,
+      });
+      if (r.ok) log(`直播（${who}）：${r.note}`);
+      else warn(`直播（${who}）：${r.note}`);
+      for (const line of r.detail) {
+        if (line.includes('失败') || line.includes('抛异常')) warn(`  · ${line}`);
+      }
     }
   },
   { budget_ms: BUDGET_MS },

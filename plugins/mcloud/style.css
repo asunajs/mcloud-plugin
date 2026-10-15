@@ -720,3 +720,71 @@ textarea:focus {
   padding: 3px 9px;
   font-size: 12px;
 }
+
+/* ══════════ 账号选择器（多选 + 全部） ══════════
+   参考实现为这个控件单独写了一个组件，理由有两条，这里都照办：
+   · 原生 `<select multiple>` 要靠"按住 + 点选"，**移动端几乎不可用**；
+   · 展开面板**不能进文档流**（那会把卡片撑高、把下面的内容顶下去），
+     所以这里是**浮层**，而且点外部要能关。 */
+.picker {
+  position: relative;
+  display: inline-block;
+  margin-bottom: 8px;
+}
+
+.picker-btn {
+  min-width: 140px;
+  justify-content: space-between;
+}
+
+.picker-panel {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px);
+  left: 0;
+  width: 280px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+  box-shadow: 0 6px 24px rgb(0 0 0 / 18%);
+}
+
+.picker-panel[hidden] {
+  display: none;
+}
+
+.picker-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.picker-row:hover {
+  background: var(--soft);
+}
+
+.picker-row input {
+  margin-top: 3px;
+}
+
+/* 「全部」那一行与下面的名单之间画一条线 —— 它是**开关**，不是名单里的一项。 */
+.picker-all {
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  margin-bottom: 4px;
+  padding-bottom: 8px;
+}
+
+.picker-list .picker-row {
+  font-size: 13px;
+}
+
+.picker-row.is-off {
+  opacity: 0.5;
+}

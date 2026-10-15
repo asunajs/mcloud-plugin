@@ -20,6 +20,26 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 const root = new URL('..', import.meta.url);
+
+/** 取一段 `从 head 开始、花括号配对到闭合` 的源码。找不到返回空串。
+ *
+ *  ⚠ 存在的理由：按缩进/换行切片在代码一重排就取错，而取错的方向通常是
+ *  "取多了" —— 那会让断言看到本不属于这一支的代码。花括号配对不受缩进影响。 */
+function braceBlock(src: string, head: string): string {
+  const at = src.indexOf(head);
+  if (at < 0) return '';
+  let i = src.indexOf('{', at);
+  if (i < 0) return '';
+  let depth = 0;
+  for (; i < src.length; i++) {
+    if (src[i] === '{') depth += 1;
+    else if (src[i] === '}') {
+      depth -= 1;
+      if (depth === 0) return src.slice(at, i + 1);
+    }
+  }
+  return '';
+}
 const read = (p: string): string => readFileSync(new URL(p, root), 'utf8');
 
 /** 一个 cron/`@every` 表达式**一天触发多少次**。
@@ -97,8 +117,12 @@ test('⚠ 离窗口还远的那些触发**一条日志都不写**', () => {
     '入口要认 `r.idle` —— 否则离窗口远的那 23 次各写一行日志',
   );
   // 而且 idle 那支**不许**调 `log(`（`recordRun` 是记数，不是日志）
-  const idleBranch = entry.slice(entry.indexOf('if (r.idle) {'));
-  const branch = idleBranch.slice(0, idleBranch.indexOf('\n    }'));
+  //
+  // ⚠ 用**花括号配对**取那一支，不按缩进切 —— 那一支挪进 `for` 循环之后缩进变了，
+  //   按 `\n    }` 切会一路取到后面的 `log(`，于是这条测试就变成"永远红"。
+  //   （一条永远红的测试最后只会被删掉，所以切片方式本身要经得起重排。）
+  const branch = braceBlock(entry, 'if (r.idle) {');
+  assert.ok(branch.length > 0, '没找到 `if (r.idle) {` 那一支');
   assert.ok(!/\blog\s*\(/.test(branch), `idle 那一支里不该有 log()：\n${branch}`);
   assert.ok(!/appendRun\s*\(/.test(branch), 'idle 那一支不该记一笔 run（它什么都没做）');
 });
