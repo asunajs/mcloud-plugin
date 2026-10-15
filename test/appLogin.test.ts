@@ -163,5 +163,8 @@ test('⚠ 请求头：**故意不发** `hcy-cool-flag`', () => {
   assert.equal(h['service_identifier_key'], 'service_identifier_userDomain');
   assert.equal(h['x-yun-user-timestamp'], '1700000000000');
   assert.equal(h['Content-Type'], 'application/json;charset=UTF-8');
-  assert.ok(h['x-yun-client-info'].startsWith(h['x-DeviceInfo']), 'client-info = device-info + 尾巴');
+  assert.ok(
+    (h['x-yun-client-info'] ?? '').startsWith(h['x-DeviceInfo'] ?? ''),
+    'client-info = device-info + 尾巴',
+  );
 });
