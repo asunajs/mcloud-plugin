@@ -16,6 +16,7 @@
 // 会话放内存的话，用户扫完码回来点「我扫完了」会得到"没有正在进行的登录" ——
 // 而那时候二维码在服务端还是有效的，只是我们这边忘了。
 
+
 import type { Store } from '../store/types.ts';
 import {
   QR_TTL_SECONDS,

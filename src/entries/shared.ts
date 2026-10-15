@@ -43,6 +43,8 @@ import type { Transport } from '../mcloud/client.ts';
 import { applyDefaultContentType, hostFetchOptions, isFetchError } from '../mcloud/client.ts';
 import type { Store } from '../store/types.ts';
 import { hostStore } from '../store/host.ts';
+import { scoped } from '../store/scoped.ts';
+import { migrateFlatKeys } from '../store/keys.ts';
 import { loadBaseUrl } from '../mcloud/session.ts';
 import {
   configuredChannels,
@@ -95,7 +97,17 @@ export function makeTransport(timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS): T
 export function makeStore(): Store {
   const store = hostStore();
   store.ensureSchema();
-  return store;
+  // ⚠ 包一层之后 `store.getState/setState` 对**按账号的键**会自动落到当前账号的袋里
+  //   （见 `store/scoped.ts`）。调用点不用知道账号的存在 —— 这是有意的：
+  //   "记得分账号"是纪律，"分不了账号"才是结构。
+  // 老扁平键 → 账号袋（一次性、幂等）。⚠ 传**裸 store**：
+  //   `migrateFlatKeys` 读写的是扁平键，传路由后的那个会把袋键当普通键读。
+  const { moved } = migrateFlatKeys(store, new Date().toISOString());
+  const s = scoped(store);
+  if (moved.length > 0) {
+    log(`状态迁移：${moved.length} 个键搬进账号袋（${moved.join(', ')}）`);
+  }
+  return s;
 }
 
 /** 长连接那一族（`ws_*`）。

@@ -50,6 +50,7 @@
 //    这里只负责"我看到了什么"，不替上游下结论 —— 判它有效/无效的唯一途径是
 //    拿去领（见 `liveDraw`），而结论由它写回池。
 
+
 import { callRawText } from '../client.ts';
 import { clearError, recordError } from './base.ts';
 import type { TaskDeps, TaskOutcome } from './base.ts';

@@ -25,6 +25,7 @@
 // · ⚠ 它与会话里的 `cookie` **不是一回事**：那份是 H5 的，这份是**原生**的。
 //   合成一份存，就会出现"以为清空了会话，原生凭据还留着"。
 
+
 import { callRawText } from './client.ts';
 import type { TaskDeps } from './tasks/base.ts';
 import { loadSession, saveSession } from '../store/types.ts';
@@ -168,7 +169,9 @@ export function authStatus(store: Pick<Store, 'getState'>): {
  *    分开放之后，"哪一页该用哪张"就是确定的；而**兜底**（见
  *    `h5session.ts` 的 `recipeFor`）仍然让不知道配方的页面有票可用。
  *
- *  ⚠ 键的形状：`mcloud.h5.jwt.<账号 id>.<配方>`。
+ *  ⚠ 键的形状：`mcloud.h5.jwt.<配方>`。
+ *  账号那一维**不在这里** —— 由 `store/scoped.ts` 的 `scoped()` 统一加
+ *  （`store.getState` 会自动落到当前账号的袋里）。
  *  没有当前账号（单账号那套）且是兜底配方 ⇒ 用**裸键**，老数据照常读得到。 */
 function scopedKey(
   base: string,
@@ -240,16 +243,12 @@ export function startExchange(
 
   const fingerprint = authFingerprint(sha256Hex(norm.value));
   store.setState(STATE_AUTH, norm.value, nowIso);
-  store.setState(
-    exchangeKey(store, recipe),
-    JSON.stringify({
+  store.setState(exchangeKey(store, recipe), JSON.stringify({
       step: 'spec-token',
       recipe,
       fingerprint,
       startedAt: nowIso,
-    } satisfies ExchangeState),
-    nowIso,
-  );
+    } satisfies ExchangeState), nowIso);
   return { ok: true, fingerprint };
 }
 

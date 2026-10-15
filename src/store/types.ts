@@ -56,61 +56,18 @@ export interface Session {
 
 export const SESSION_KEY = 'mcloud.session';
 
-// ═════════════════ 会话按账号分（F-049）═════════════════
+// ⚠ 会话**按账号分**，但这件事**不在这里做** —— 由 `store/scoped.ts` 的
+// `scoped()` 统一负责：它会把这个键自动落到当前账号的袋里。
 //
-// # 为什么必须分
+// 这里曾经有一份手工分键（`sessionKey(store)` = `mcloud.session.<账号 id>`）。
+// 那样做的问题是**每个调用点都得记得用它** —— 而"记得"是纪律，不是结构；
+// 顺手写 `store.getState(SESSION_KEY)` 就绕过去了，键又静默变回全局
+// （那就是 F-048/049/050 那一串多账号串号 bug 的成因）。
 //
-// 原来会话是**一个全局槽位**。多账号下的实际行为：
-//
-//     账号 A 换票  →  saveSession({jwt: A 的票})
-//     账号 B 换票  →  saveSession({jwt: B 的票})   ← **A 那张被覆盖**
-//     账号 A 的任务 →  读会话 ⇒ 带的是 **B 的票**
-//
-// 也就是 A 的请求以 B 的身份发出去 —— 而 `jwttoken` 恰恰是**身份**。
-//
-// # 为什么症状比 F-048 难查
-//
-// F-048（票那一层）的表现是"B 根本不换票"—— 少一次换票，看得出来。
-// 这一层的表现是"**两个账号都换了、票都对、但请求以对方的身份发出去**"，
-// 而且**只在"一趟跑两个账号"时才出现** —— 单账号测不出来。
-//
-// # 为什么在这里解析账号，而不是让 16 个调用点各传一个
-//
-// 任务读会话时"现在是哪个账号"本来就是**当时的作用域**（`currentAccount`）。
-// 让每个调用点自己传，就给了"某处传错/忘传"的机会，而那种错的表现是
-// **静默读到别人的会话** —— 看不出来。在这里解析只有一个地方会错，
-// 而且错的时候是"读到空会话"（看得出来），不是"读到别人的"。
-
-/** 把一个状态键按**当前账号**分。
- *
- *  # 什么时候该用
- *
- *  这个键装的东西**属于某一个账号**时就用它。判据是问一句：
- *
- *  > 账号 A 写进去之后，账号 B 读到它会不会做出**错的**决定？
- *
- *  · `mcloud.session`（票）—— 会（B 以 A 的身份发请求）⇒ 要分
- *  · `mcloud.daily.done_date`（今天跑完了吗）—— 会（B 被**跳过**）⇒ 要分
- *  · `mcloud.exchange.target_hour`（几点抢兑）—— 不会（是**配置**，跟账号无关）⇒ 不分
- *
- *  # 为什么做成一个函数而不是各处自己拼
- *
- *  各拼各的就会有三种写法（`.id` / `:<id>` / `_<id>`），而**键不一致**的表现是
- *  "读不到"（看起来像没数据），不是报错 —— 很难查。一处拼，形状只有一个。
- *
- *  ⚠ 没有当前账号（单账号那套）⇒ 返回**裸键**，老数据照常读得到、不用迁移。 */
-export function accountScopedKey(store: Pick<Store, 'getState'>, base: string): string {
-  const cur = currentAccount(store);
-  return cur === undefined ? base : `${base}.${cur.id}`;
-}
-
-/** 会话的**实际**存储键。 */
-export function sessionKey(store: Pick<Store, 'getState'>): string {
-  return accountScopedKey(store, SESSION_KEY);
-}
+// 现在 `store` 本身就是按账号路由的，所以这里用的是**裸键**。
 
 export function loadSession(store: Store): Session | null {
-  const raw = store.getState(sessionKey(store));
+  const raw = store.getState(SESSION_KEY);
   if (!raw) return null;
   try {
     const v = JSON.parse(raw) as Partial<Session>;
@@ -140,7 +97,8 @@ export function loadSession(store: Store): Session | null {
 }
 
 export function saveSession(store: Store, s: Session, nowIso: string): void {
-  store.setState(sessionKey(store), JSON.stringify({ ...s, savedAt: nowIso }), nowIso);
+  store.setState(SESSION_KEY, JSON.stringify({ ...s, savedAt: nowIso }), nowIso);
 }
+
 
 import { currentAccount } from '../mcloud/accounts.ts';

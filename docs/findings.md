@@ -2803,3 +2803,93 @@ writeAcct(store, key, value, nowIso): void
 3. **没有当前账号时**读按账号的键 ⇒ 必须**失败关闭**（报错或返回 undefined），
    不许回落到裸键 —— 参考实现那条"默认必须失败关闭"就是为这个
 4. 逐键负向验证：把某个键退回全局 ⇒ 测试必须红
+
+---
+
+## F-053 · 状态层重建：**账号是容器**，路由在 store 里（2026-10-15）
+
+用户说「过于乱可以重写，基础一定要牢固」，于是在 F-052 的结论上重写了状态层。
+
+### 参考实现的形状（照抄的目标）
+
+```rust
+/// 读取账号运行期状态（deviceId、jwtToken 缓存等）。
+async fn account_state(&self, id: &AccountId) -> Result<serde_json::Value>;
+async fn save_account_state(&self, id: &AccountId, state: &serde_json::Value) -> Result<()>;
+```
+
+一个账号一个 blob，**API 强制你传账号 id** ⇒ "忘了分账号"在结构上不可能。
+
+### 走错了一次，记下来
+
+我第一版做的是**显式读写**（把 182 个调用点改成 `readKey(store, k)` / `writeKey(...)`）。
+做完发现它**是失败开放的**：
+
+· 新代码顺手写成 `store.getState(K)` 就**绕过了账号袋** ⇒ 键静默变回全局 ⇒
+  F-048/049/050 那一串 bug 原样回来
+· "记得用哪个函数"是**纪律**，不是**结构**。纪律会松。
+
+所以推倒重来，改成**让 store 自己路由**：
+
+```ts
+// memStore() 与 makeStore() 都被 scoped() 包一层
+store.getState('mcloud.session')   // 自动落到当前账号的袋里
+```
+
+调用点**一行都没改**（182 处全部回退成普通的 `getState/setState`），
+而且**没有"用错函数"的机会** —— 这才是参考实现那个性质。
+
+### 现在的形状
+
+```text
+mcloud.acct.<账号 id>   →  { "mcloud.session": …, "mcloud.daily.done_date": …, … }
+                           一个账号一个袋，里面躺着这个账号**所有任务**的键
+```
+
+新增 `src/store/keys.ts`：
+
+· `KEY_SCOPE` —— **每个键登记作用域**（`account` / `global`），一处说了算；
+  没登记的键**抛错**，不静默当全局
+· `KEY_PREFIX_SCOPE` —— 前缀式键（`mcloud.last_error.<任务>`、
+  `mcloud.h5.jwt.<配方>`、`mcloud.apptaskmatrix.g.<市场>`），最长前缀优先
+· `migrateFlatKeys` —— 老扁平键搬进袋（**幂等**，不覆盖袋里更新的值）
+· `clearBag` —— 删账号时一键清干净
+
+新增 `src/store/scoped.ts`：`scoped(store)` 是**唯一路由点**，`rawStoreOf(store)`
+给迁移用（业务代码不许用）。
+
+### 三条纪律（写在 `keys.ts` 文件头）
+
+1. **每个键都必须登记**；没登记 ⇒ 抛，不静默当全局
+2. **不许有"没有作用域"的路径**：一个账号都没有时也走 `mcloud.acct.default`，
+   不是裸键 —— 留一条裸键路径就等于留一条回到全局键的路
+3. 判据一句话：**账号 A 写进去之后，账号 B 读到它会不会做出错的决定？**
+
+### 边界：只路由 `mcloud.` 命名空间
+
+第一版把**宿主自己的键**也拦了（`plugin.loaded_at`），结果**插件加载直接失败**
+（面板 501）。现在只有 `mcloud.` 下的键才查登记表，其余透传。
+
+### 迁移必须**行为不变**（踩到一次）
+
+我一度把"写空串"实现成**删字段**（看着更干净），于是读回来是 `null` 而不是 `''`
+—— 而 `x === ''` 与 `x === null` 在调用点截然不同，当场红了 26 条测试。
+改回"空串照存"。**迁移的第一要求是行为不变，不是顺便更干净。**
+
+### 验收
+
+    test/keys.test.ts  17 项（结构性：漏登记 / 两账号隔离 / 删账号清袋 /
+                        迁移幂等 / 前缀式键 / 不许包两次）
+    npm test           764 项 · split_check ✅ · e2e exit 0 / 18 ✅ · 产物一致性 ✅
+
+**负向验证**：把账号路由退掉（`acctIdOf` 恒返回 `default`）⇒ **7 条测试立刻红**，
+全是多账号那批（会话串号、"第二个账号被跳过"、删账号不清袋…）。
+
+### 覆盖了 F-051 那张表里"该分未分"的全部
+
+`exchange.order.*`(6)、`apptask.*`、`backupgift.*`、`cloudsnapshot.*`、
+`exchangelist.*`、`live.*`、`h5.auth`、`last_error.*` —— 全部按账号分了。
+而配置类（`exchange.target_hour` / `lead_ms` / `base_url` / `accounts` / `kouling.pool`…）
+明确登记为 `global`。
+
+⚠ **以后加新键必须去 `KEY_SCOPE` 登记**，否则测试会红（这是有意的守门）。

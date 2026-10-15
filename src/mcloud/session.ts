@@ -12,6 +12,7 @@
 //   - 只在 state 表里存，键名固定 `mcloud.session`
 // 这三条都有测试钉着（test/session.test.ts 的「不回显 / 不进日志」那两条）。
 
+
 import { SESSION_KEY, loadSession, saveSession } from '../store/types.ts';
 import type { Session, Store } from '../store/types.ts';
 import { callOnce } from './client.ts';
@@ -221,11 +222,7 @@ export function verifySession(deps: {
     ? `会话有效（${res.tookMs}ms）`
     : `会话可能已失效：${res.error ?? '未知失败'}`;
 
-  deps.store.setState(
-    STATE_LAST_CHECK,
-    JSON.stringify({ at: deps.nowIso, ok, note }),
-    deps.nowIso,
-  );
+  deps.store.setState(STATE_LAST_CHECK, JSON.stringify({ at: deps.nowIso, ok, note }), deps.nowIso);
   return { ok, note };
 }
 
@@ -234,11 +231,7 @@ export function importSession(store: Store, s: Session, nowIso: string): void {
   saveSession(store, s, nowIso);
   // 换了凭据就把上一次的检查结果作废 —— 否则状态会显示「上次检查通过」，
   // 而那说的是**旧**凭据
-  store.setState(
-    STATE_LAST_CHECK,
-    JSON.stringify({ at: nowIso, ok: null, note: '刚导入，还没验' }),
-    nowIso,
-  );
+  store.setState(STATE_LAST_CHECK, JSON.stringify({ at: nowIso, ok: null, note: '刚导入，还没验' }), nowIso);
 }
 
 export { SESSION_KEY };

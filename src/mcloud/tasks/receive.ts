@@ -25,6 +25,7 @@
 // 请求体逐字（`receive_v3_request`）：`{client:"app", cloudId, cloudType, deviceId}`，
 // 而且这一口是 `h5(true, …)` → **发 `isdeviceid`**。
 
+
 import { fetchInfoV3 } from './info.ts';
 import type { ReceiveItem } from './info.ts';
 import { runTask } from './base.ts';

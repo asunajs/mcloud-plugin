@@ -13,6 +13,7 @@
 // 面板从插件名推不出人话（`mcloud` 该显示成什么？）。所以标签、图标由插件自己给。
 // 页面路径沿用面板已有的约定（`plugins/<name>/index.html`），不给就默认那个。
 
+
 import {
   error,
   log,

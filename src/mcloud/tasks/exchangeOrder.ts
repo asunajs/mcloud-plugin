@@ -56,6 +56,7 @@
 // 面板的执行预算默认 2000ms，而这条链有 7 枪 + 一次 500ms 等待 ⇒ 必须能被打断、
 // 下次接着走。状态落在 SQLite 里，`step` 就是游标。
 
+
 import {
   FIRE_LEAD_MS,
   hourKey,

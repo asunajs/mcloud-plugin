@@ -12,6 +12,204 @@ import {
   register_route
 } from "host-api";
 
+// src/store/keys.ts
+var DEFAULT_ACCT = "default";
+var PLUGIN_NS = "mcloud.";
+var ACCT_PREFIX = "mcloud.acct.";
+var STATE_CURRENT_ACCOUNT = "mcloud.account.current";
+var STATE_ACCOUNTS = "mcloud.accounts";
+var KEY_SCOPE = {
+  // ── 账号运行期状态 ──────────────────────────────────────────
+  "mcloud.session": "account",
+  "mcloud.session.last_check": "account",
+  "mcloud.h5.auth": "account",
+  "mcloud.h5.exchange": "account",
+  "mcloud.h5.jwt": "account",
+  "mcloud.daily.done_date": "account",
+  "mcloud.daily.last_run": "account",
+  "mcloud.login.deviceId": "account",
+  "mcloud.login.qr": "account",
+  "mcloud.login.sms": "account",
+  "mcloud.login.base": "account",
+  "mcloud.login.userDomainId": "account",
+  "mcloud.sign.stage": "account",
+  "mcloud.sign.last": "account",
+  "mcloud.upload.state": "account",
+  "mcloud.taskexpansion.state": "account",
+  "mcloud.apptask.state": "account",
+  "mcloud.apptaskmatrix.last": "account",
+  "mcloud.apptaskmatrix.group_index": "account",
+  "mcloud.notice.can_claim": "account",
+  "mcloud.notice.info": "account",
+  "mcloud.backupgift.can_receive": "account",
+  "mcloud.backupgift.info": "account",
+  "mcloud.msgpush.can": "account",
+  "mcloud.msgpush.last": "account",
+  "mcloud.prizes.last": "account",
+  "mcloud.multiple.last": "account",
+  "mcloud.revival.last": "account",
+  "mcloud.receive.last": "account",
+  "mcloud.receive.queue": "account",
+  "mcloud.cloudsnapshot.last": "account",
+  "mcloud.exchangelist.last": "account",
+  "mcloud.exchangelist.raw": "account",
+  "mcloud.exchange.plan": "account",
+  "mcloud.exchange.order.step": "account",
+  "mcloud.exchange.order.baseline": "account",
+  "mcloud.exchange.order.plan": "account",
+  "mcloud.exchange.order.round": "account",
+  "mcloud.exchange.order.ordered_hour": "account",
+  "mcloud.exchange.order.last_wait": "account",
+  "mcloud.live.gate": "account",
+  "mcloud.live.gate.reading": "account",
+  "mcloud.live.gate_base": "account",
+  "mcloud.live.reading": "account",
+  "mcloud.live.draw": "account",
+  "mcloud.live.codes": "account",
+  "mcloud.live.listen": "account",
+  "mcloud.live.listen_room": "account",
+  "mcloud.live.listen_seconds": "account",
+  "mcloud.live.url": "account",
+  "mcloud.live.wake_plan": "account",
+  "mcloud.live.ws_base": "account",
+  "mcloud.live.ws_heartbeat_reply": "account",
+  "mcloud.live.im_base": "account",
+  "mcloud.smid.deviceId": "account",
+  "mcloud.smid.fingerprint": "account",
+  "mcloud.auth.refresh.last": "account",
+  // ── 实例级配置 / 跨账号共享 ────────────────────────────────
+  /** 账号表本身。 */
+  "mcloud.accounts": "global",
+  /** "当前选中哪个账号"。⚠ 它是**选择**，不是某个账号的状态。 */
+  "mcloud.account.current": "global",
+  /** 上游域名。 */
+  "mcloud.base_url": "global",
+  /** 登录方式偏好（扫码 / 短信 / 账密）。 */
+  "mcloud.login.pref": "global",
+  /** 几点抢兑 —— 是**配置**，跟账号无关。 */
+  "mcloud.exchange.target_hour": "global",
+  /** 提前量 —— "网络慢的人该调大"，是**这台机器**的调参，与账号无关。 */
+  "mcloud.exchange.order.lead_ms": "global",
+  /** 领小红花的开关。 */
+  "mcloud.live.claim_enabled": "global",
+  /** 推送配置（渠道 / 规则 / 事件绑到哪个渠道）。 */
+  "mcloud.push.config": "global",
+  "mcloud.push.rules": "global",
+  "mcloud.push.bindings": "global",
+  /** ⚠ 共享口令池 —— 参考实现明写"实例级：跨 mcloud 用户、跨重启"。 */
+  "mcloud.kouling.pool": "global",
+  /** 运行日志（每条记录里自己带账号）。 */
+  "mcloud.run.log": "global",
+  /** 任务清单缓存。 */
+  "mcloud.tasklist.last": "global"
+};
+var KEY_PREFIX_SCOPE = [
+  ["mcloud.last_error.", "account"],
+  // 票与换票进度：**按配方**分（`mcloud.h5.jwt.sign-in` / `.msg-push-on`）。
+  // ⚠ 账号那一维由 `scoped()` 加（袋名），所以这里只剩配方这一段。
+  //   两个维度都必要：不分账号会串身份，不分配方会用错页面的票。
+  ["mcloud.h5.jwt.", "account"],
+  ["mcloud.h5.exchange.", "account"],
+  // 矩阵按**市场**分（`mcloud.apptaskmatrix.g.sign_in_3`）—— 动态拼出来的，
+  // 静态扫描扫不到整串，所以按前缀登记。
+  ["mcloud.apptaskmatrix.g.", "account"]
+];
+function scopeOf(key) {
+  const exact = KEY_SCOPE[key];
+  if (exact !== void 0) return exact;
+  let best;
+  for (const [prefix, scope] of KEY_PREFIX_SCOPE) {
+    if (key.startsWith(prefix) && (best === void 0 || prefix.length > best.len)) {
+      best = { len: prefix.length, scope };
+    }
+  }
+  return best?.scope;
+}
+function acctIdOf(store2) {
+  const id = (store2.getState(STATE_CURRENT_ACCOUNT) ?? "").trim();
+  return id === "" ? DEFAULT_ACCT : id;
+}
+function acctBagKey(acctId) {
+  return `${ACCT_PREFIX}${acctId}`;
+}
+function readBag(store2, acctId) {
+  const raw = store2.getState(acctBagKey(acctId));
+  if (raw === void 0 || raw === null || raw === "") return {};
+  try {
+    const v = JSON.parse(raw);
+    if (typeof v !== "object" || v === null || Array.isArray(v)) return {};
+    const out = {};
+    for (const [k, val] of Object.entries(v)) {
+      if (typeof val === "string") out[k] = val;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+function writeBag(store2, acctId, bag, nowIso) {
+  store2.setState(acctBagKey(acctId), JSON.stringify(bag), nowIso);
+}
+function clearBag(store2, acctId, nowIso) {
+  store2.setState(acctBagKey(acctId), "", nowIso);
+}
+var UnregisteredKeyError = class extends Error {
+  constructor(key) {
+    super(
+      `状态键「${key}」没有在 store/keys.ts 的 KEY_SCOPE 里登记。
+⚠ 不许默认当成全局键 —— 那正是多账号串号那一串 bug 的成因（见该文件头）。
+判据：账号 A 写进去之后，账号 B 读到它会不会做出**错的**决定？会 ⇒ 'account'。`
+    );
+    this.name = "UnregisteredKeyError";
+  }
+};
+function routeGet(store2, key) {
+  if (key.startsWith(ACCT_PREFIX)) return store2.getState(key) ?? null;
+  if (!key.startsWith(PLUGIN_NS)) return store2.getState(key) ?? null;
+  const scope = scopeOf(key);
+  if (scope === void 0) throw new UnregisteredKeyError(key);
+  if (scope === "global") return store2.getState(key) ?? null;
+  const bag = readBag(store2, acctIdOf(store2));
+  return bag[key] ?? null;
+}
+function routeSet(store2, key, value, nowIso) {
+  if (key.startsWith(ACCT_PREFIX)) {
+    store2.setState(key, value, nowIso);
+    return;
+  }
+  if (!key.startsWith(PLUGIN_NS)) {
+    store2.setState(key, value, nowIso);
+    return;
+  }
+  const scope = scopeOf(key);
+  if (scope === void 0) throw new UnregisteredKeyError(key);
+  if (scope === "global") {
+    store2.setState(key, value, nowIso);
+    return;
+  }
+  const acctId = acctIdOf(store2);
+  const bag = readBag(store2, acctId);
+  bag[key] = value;
+  writeBag(store2, acctId, bag, nowIso);
+}
+function migrateFlatKeys(store2, nowIso) {
+  const acctId = acctIdOf(store2);
+  const bag = readBag(store2, acctId);
+  const moved = [];
+  for (const [key, scope] of Object.entries(KEY_SCOPE)) {
+    if (scope !== "account") continue;
+    const flat = store2.getState(key);
+    if (flat === void 0 || flat === null || flat === "") continue;
+    if (bag[key] === void 0) {
+      bag[key] = flat;
+      moved.push(key);
+    }
+    store2.setState(key, "", nowIso);
+  }
+  if (moved.length > 0) writeBag(store2, acctId, bag, nowIso);
+  return { moved };
+}
+
 // src/crypto/bytes.ts
 function utf8(s) {
   const out = [];
@@ -224,8 +422,6 @@ function parseAuth(auth) {
 }
 
 // src/mcloud/accounts.ts
-var STATE_ACCOUNTS = "mcloud.accounts";
-var STATE_CURRENT_ACCOUNT = "mcloud.account.current";
 function maskAuth(raw) {
   const phone = phoneOf(raw);
   const len = raw.length;
@@ -312,6 +508,7 @@ function removeAccount(store2, id, nowIso) {
   const list = loadAccounts(store2).filter((a) => a.id !== id);
   saveAccounts(store2, list, nowIso);
   if (store2.getState(STATE_CURRENT_ACCOUNT) === id) store2.setState(STATE_CURRENT_ACCOUNT, "", nowIso);
+  clearBag(store2, id, nowIso);
   return list;
 }
 function selectAccount(store2, id, nowIso) {
@@ -327,15 +524,8 @@ function currentAccount(store2) {
 
 // src/store/types.ts
 var SESSION_KEY = "mcloud.session";
-function accountScopedKey(store2, base) {
-  const cur = currentAccount(store2);
-  return cur === void 0 ? base : `${base}.${cur.id}`;
-}
-function sessionKey(store2) {
-  return accountScopedKey(store2, SESSION_KEY);
-}
 function loadSession(store2) {
-  const raw = store2.getState(sessionKey(store2));
+  const raw = store2.getState(SESSION_KEY);
   if (!raw) return null;
   try {
     const v = JSON.parse(raw);
@@ -354,7 +544,7 @@ function loadSession(store2) {
   }
 }
 function saveSession(store2, s, nowIso) {
-  store2.setState(sessionKey(store2), JSON.stringify({ ...s, savedAt: nowIso }), nowIso);
+  store2.setState(SESSION_KEY, JSON.stringify({ ...s, savedAt: nowIso }), nowIso);
 }
 
 // src/mcloud/envelope.ts
@@ -1125,11 +1315,7 @@ function runTask(deps, spec, judge2) {
   }
   const verdict = judge2(res.env, res);
   if (verdict.snapshot !== void 0 && spec.stateKey) {
-    deps.store.setState(
-      spec.stateKey,
-      JSON.stringify({ at: deps.nowIso, lateMs: late, value: verdict.snapshot }),
-      deps.nowIso
-    );
+    deps.store.setState(spec.stateKey, JSON.stringify({ at: deps.nowIso, lateMs: late, value: verdict.snapshot }), deps.nowIso);
   }
   if (verdict.ok) clearError(deps.store, spec.task, deps.nowIso);
   else recordError(deps.store, spec.task, verdict.note, deps.nowIso);
@@ -1265,20 +1451,12 @@ function verifySession(deps) {
   const res = callOnce(deps.transport, req);
   const ok = res.ok;
   const note2 = ok ? `会话有效（${res.tookMs}ms）` : `会话可能已失效：${res.error ?? "未知失败"}`;
-  deps.store.setState(
-    STATE_LAST_CHECK,
-    JSON.stringify({ at: deps.nowIso, ok, note: note2 }),
-    deps.nowIso
-  );
+  deps.store.setState(STATE_LAST_CHECK, JSON.stringify({ at: deps.nowIso, ok, note: note2 }), deps.nowIso);
   return { ok, note: note2 };
 }
 function importSession(store2, s, nowIso) {
   saveSession(store2, s, nowIso);
-  store2.setState(
-    STATE_LAST_CHECK,
-    JSON.stringify({ at: nowIso, ok: null, note: "刚导入，还没验" }),
-    nowIso
-  );
+  store2.setState(STATE_LAST_CHECK, JSON.stringify({ at: nowIso, ok: null, note: "刚导入，还没验" }), nowIso);
 }
 var STATE_BASE_URL = "mcloud.base_url";
 function loadBaseUrl(store2) {
@@ -3285,16 +3463,12 @@ function startExchange(store2, raw, nowIso, recipe = FALLBACK_RECIPE) {
   if (!norm.ok || norm.value === void 0) return { ok: false, error: norm.error };
   const fingerprint = authFingerprint(sha256Hex(norm.value));
   store2.setState(STATE_AUTH, norm.value, nowIso);
-  store2.setState(
-    exchangeKey(store2, recipe),
-    JSON.stringify({
-      step: "spec-token",
-      recipe,
-      fingerprint,
-      startedAt: nowIso
-    }),
-    nowIso
-  );
+  store2.setState(exchangeKey(store2, recipe), JSON.stringify({
+    step: "spec-token",
+    recipe,
+    fingerprint,
+    startedAt: nowIso
+  }), nowIso);
   return { ok: true, fingerprint };
 }
 function clearAuth(store2, nowIso) {
@@ -3629,16 +3803,12 @@ function runAuthRefresh(deps, force = false, leadDays = DEFAULT_LEAD_DAYS) {
   const usable2 = assertUsable(applied.raw);
   if (!usable2.ok) return { ok: false, note: `拒绝落库：${usable2.error}` };
   deps.store.setState(STATE_AUTH, applied.raw, deps.nowIso);
-  deps.store.setState(
-    STATE_LAST,
-    JSON.stringify({
-      at: deps.nowIso,
-      expireSeconds: parsed.result.expireSeconds ?? null,
-      oldFingerprint: seg.token.slice(-6),
-      newFingerprint: parsed.result.token.slice(-6)
-    }),
-    deps.nowIso
-  );
+  deps.store.setState(STATE_LAST, JSON.stringify({
+    at: deps.nowIso,
+    expireSeconds: parsed.result.expireSeconds ?? null,
+    oldFingerprint: seg.token.slice(-6),
+    newFingerprint: parsed.result.token.slice(-6)
+  }), deps.nowIso);
   startExchange(deps.store, applied.raw, deps.nowIso);
   const newExpire = tokenExpireMs(parsed.result.token);
   const d = daysLeft(newExpire, nowMs);
@@ -6428,14 +6598,8 @@ function readMatrix(store2) {
 // src/mcloud/dailyState.ts
 var DAILY_DONE_KEY = "mcloud.daily.done_date";
 var DAILY_LAST_KEY = "mcloud.daily.last_run";
-function dailyDoneKey(store2) {
-  return accountScopedKey(store2, DAILY_DONE_KEY);
-}
-function dailyLastKey(store2) {
-  return accountScopedKey(store2, DAILY_LAST_KEY);
-}
 function readDailyRun(store2) {
-  const raw = store2.getState(dailyLastKey(store2));
+  const raw = store2.getState(DAILY_LAST_KEY);
   if (raw === void 0 || raw === null || raw === "") return null;
   try {
     const v = JSON.parse(raw);
@@ -8771,10 +8935,10 @@ function buildReadings(deps) {
     daily: {
       // 「今天跑完了吗」看标记；「上次跑成什么样」看读数。两个都要，
       // 因为它们回答的是不同的问题（用户真正会问的是后面那个）。
-      // ⚠ 走 `dailyDoneKey(store)`，**不要**写键名字面量 —— 那处原来是硬编码的
-      //   `'mcloud.daily.done_date'`，而键一旦按账号分（F-050）它就会**永远读不到**，
-      //   表现是"界面永远显示今天没跑过"（看着像定时任务坏了）。
-      doneToday: (deps.store.getState(dailyDoneKey(deps.store)) ?? "") === nowIso.slice(0, 10),
+      // ⚠ 用常量，**不要**写键名字面量 —— 那处原来是硬编码的
+      //   `'mcloud.daily.done_date'`；改名/改分法时字面量不会跟着动。
+      //   按账号那一层由 `scoped()` 负责（store 自己路由）。
+      doneToday: (deps.store.getState(DAILY_DONE_KEY) ?? "") === nowIso.slice(0, 10),
       last: readDailyRun(deps.store),
       // 最近几次的**摘要**（只有一行一句）。步骤要按需再取 ——
       // 20 条 × 40 步全塞进来，首屏就是几百 KB 的 JSON。
@@ -10025,6 +10189,25 @@ function hostStore() {
   };
 }
 
+// src/store/scoped.ts
+var WRAPPED = Symbol.for("__mcloud_scoped_store__");
+var RAW = Symbol.for("__mcloud_raw_store__");
+function scoped(base) {
+  if (base[WRAPPED] === true) {
+    throw new Error(
+      "store 已经被 scoped() 包过一次了 —— 双重包装会让 `mcloud.acct.*` 也去查登记表然后抛错。"
+    );
+  }
+  const wrapped = {
+    ...base,
+    getState: (key) => routeGet(base, key),
+    setState: (key, value, nowIso) => routeSet(base, key, value, nowIso)
+  };
+  Object.defineProperty(wrapped, WRAPPED, { value: true, enumerable: false });
+  Object.defineProperty(wrapped, RAW, { value: base, enumerable: false });
+  return wrapped;
+}
+
 // src/entries/shared.ts
 var DEFAULT_REQUEST_TIMEOUT_MS = 1500;
 function makeTransport(timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
@@ -10036,7 +10219,12 @@ function makeTransport(timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
 function makeStore() {
   const store2 = hostStore();
   store2.ensureSchema();
-  return store2;
+  const { moved } = migrateFlatKeys(store2, (/* @__PURE__ */ new Date()).toISOString());
+  const s = scoped(store2);
+  if (moved.length > 0) {
+    log(`状态迁移：${moved.length} 个键搬进账号袋（${moved.join(", ")}）`);
+  }
+  return s;
 }
 function makeHost() {
   return {
