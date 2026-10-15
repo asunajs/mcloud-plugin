@@ -53,6 +53,8 @@ const PLAN_KEY = 'mcloud.exchange.plan';
 export function runExchange(deps: TaskDeps, opts: { dryRun?: boolean } = {}): {
   ok: boolean;
   note: string;
+  /** 这一趟**一个请求都没发**（离窗口还远 / 没账号）⇒ 入口据此不写日志。 */
+  idle?: boolean;
   detail: string[];
   steps: RunStep[];
 } {
@@ -67,9 +69,17 @@ export function runExchange(deps: TaskDeps, opts: { dryRun?: boolean } = {}): {
   // ⚠ 收尾**只有一个出口**。干跑那条说明必须挂在**每一个**出口上 ——
   //   第一版加在函数末尾，而"没设兑换目标"是**提前返回**的，
   //   于是干跑路由返回的结果里**看不出它一枪都没发**（最该说清的那句话丢了）。
-  const finish = (ok: boolean, note: string): {
+  const finish = (
+    ok: boolean,
+    note: string,
+    // ⚠ `idle` 要传到**顶层**，不能只挂在 step 上：入口是靠 `r.idle` 决定
+    //   "这一趟要不要写日志 / 记一笔 run" 的。只挂 step 的话，离窗口还远的那
+    //   23 次触发照样会各写一行「还没到抢兑时间」—— 那正是用户说的"太特么频繁"。
+    idle = false,
+  ): {
     ok: boolean;
     note: string;
+    idle?: boolean;
     detail: string[];
     steps: RunStep[];
   } => {
@@ -78,6 +88,7 @@ export function runExchange(deps: TaskDeps, opts: { dryRun?: boolean } = {}): {
     }
     return {
       ok,
+      ...(idle ? { idle: true } : {}),
       note,
       detail: steps.map((x) => `${x.name}：${x.ok ? '' : '失败 '}${x.note}`),
       steps,
@@ -105,7 +116,14 @@ export function runExchange(deps: TaskDeps, opts: { dryRun?: boolean } = {}): {
         : `不是 ${targetHour} 点那一场（还差 ${Math.round(gate.ms / 1000)}s）—— 本次零请求`,
       true,
     );
-    return finish(true, `还没到抢兑时间（还差 ${Math.round(gate.ms / 1000)}s），本次零请求`);
+    // ⚠ 标 `idle`：这一趟**一个请求都没发**，不该在日志里留一行。
+    //   留了就是每小时的 23 条噪声（老版本 `@every 10s` 是每天 8639 条）。
+    //   真正到点那一趟仍然会正常写日志 —— 那才是用户要看的。
+    return finish(
+      true,
+      `还没到抢兑时间（还差 ${Math.round(gate.ms / 1000)}s），本次零请求`,
+      true,
+    );
   }
 
   // ① 清单（只读）：顺带让用户在「数据」页看得到价格与余量

@@ -3848,7 +3848,7 @@ register_cron(
   "直播",
   // 一分钟一跳，配合 70 秒预算 ⇒ 窗口之间几乎不留缝。
   // 门关着时第一次调用就进冷却、零请求秒返回。
-  "@every 1m",
+  "*/5 * * * *",
   (p) => {
     const startedMs = Date.now();
     const at = new Date(startedMs).toISOString();

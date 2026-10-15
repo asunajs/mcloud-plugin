@@ -5559,12 +5559,13 @@ function runExchange(deps, opts = {}) {
   const add = (name, ok, note2, idle = false) => {
     steps.push({ name, ok, note: note2, idle });
   };
-  const finish3 = (ok, note2) => {
+  const finish3 = (ok, note2, idle = false) => {
     if (opts.dryRun) {
       add("干跑", true, "只看了能不能兑，**一枪都没发**（真下单走定时那一场）", true);
     }
     return {
       ok,
+      ...idle ? { idle: true } : {},
       note: note2,
       detail: steps.map((x) => `${x.name}：${x.ok ? "" : "失败 "}${x.note}`),
       steps
@@ -5579,7 +5580,11 @@ function runExchange(deps, opts = {}) {
       targetHour === null ? `还没到窗口（还差 ${Math.round(gate.ms / 1e3)}s）—— 本次零请求` : `不是 ${targetHour} 点那一场（还差 ${Math.round(gate.ms / 1e3)}s）—— 本次零请求`,
       true
     );
-    return finish3(true, `还没到抢兑时间（还差 ${Math.round(gate.ms / 1e3)}s），本次零请求`);
+    return finish3(
+      true,
+      `还没到抢兑时间（还差 ${Math.round(gate.ms / 1e3)}s），本次零请求`,
+      true
+    );
   }
   try {
     const l = runExchangeList(deps);
