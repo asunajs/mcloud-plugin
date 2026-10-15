@@ -490,8 +490,15 @@ function mergeCookieJar(existing, incoming) {
 
 // src/store/types.ts
 var SESSION_KEY = "mcloud.session";
+function accountScopedKey(store2, base) {
+  const cur = currentAccount(store2);
+  return cur === void 0 ? base : `${base}.${cur.id}`;
+}
+function sessionKey(store2) {
+  return accountScopedKey(store2, SESSION_KEY);
+}
 function loadSession(store2) {
-  const raw = store2.getState(SESSION_KEY);
+  const raw = store2.getState(sessionKey(store2));
   if (!raw) return null;
   try {
     const v = JSON.parse(raw);
@@ -510,7 +517,7 @@ function loadSession(store2) {
   }
 }
 function saveSession(store2, s, nowIso) {
-  store2.setState(SESSION_KEY, JSON.stringify({ ...s, savedAt: nowIso }), nowIso);
+  store2.setState(sessionKey(store2), JSON.stringify({ ...s, savedAt: nowIso }), nowIso);
 }
 
 // src/crypto/md5.ts
