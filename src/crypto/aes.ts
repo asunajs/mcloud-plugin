@@ -290,6 +290,29 @@ export function aes128EcbDecrypt(key: Uint8Array, ct: Uint8Array): Uint8Array {
   return out;
 }
 
+/** ECB 加密（逐块、无链接），PKCS7 填充。
+ *
+ *  ⚠ ECB 是**上游协议规定的**形态，不是我们的选择 —— 手机端登录体就是这么发的
+ *  （见 `mcloud/appLogin.ts`）。ECB 本身"相同明文块 → 相同密文块"的弱点在这里
+ *  无所谓：这个请求体只发一次，而且本来就不是保密用途，是**编码**。
+ *
+ *  加它是为了手机端登录（`Basic base64("mobile:…")` 那条链路）—— 原来这一层
+ *  只有解密，因为 PC 端登录体是明文 JSON。 */
+export function aes128EcbEncrypt(key: Uint8Array, msg: Uint8Array): Uint8Array {
+  const rk = aes128KeyExpansion(key);
+  const padded = pkcs7Pad(msg, 16);
+  const out = new Uint8Array(padded.length);
+  for (let off = 0; off < padded.length; off += 16) {
+    out.set(aes128EncryptBlock(rk, padded.subarray(off, off + 16)), off);
+  }
+  return out;
+}
+
+/** `aes128EcbEncrypt` 的 hex 形态（手机端登录体就是 hex 字符串）。 */
+export function aesEcbPkcs7EncryptHex(key: string, message: string): string {
+  return toHex(aes128EcbEncrypt(fitKey16(key), utf8(message)));
+}
+
 /** 动态 IV 加密：输出 `base64(IV ‖ 密文)`。
  *
  *  IV 在**明文里带着**，所以解密方不需要事先知道它 —— 这是协议的选择，
