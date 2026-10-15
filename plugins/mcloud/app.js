@@ -195,18 +195,27 @@ function renderLogin(l) {
   const qr = l.qr;
   const sms = l.sms;
 
+  // ⚠ 这里**不再直接改 pane 的 hidden** —— 弹窗里页签的显隐由 `showAddTab` 统一管
+  //   （原来改的是 `pane-qr`/`pane-sms`，那两个 id 现在不存在了）。
+  //   这里的职责变成"**把页签跳到有事的那一个**"：
   if (qr) {
-    $('pane-qr').hidden = false;
+    if ($('add-dialog').hidden === false) showAddTab('qr');
+    $('qr-box').hidden = false;
     // 二维码是**插件这一侧**渲染好的 SVG（浏览器里没有二维码库）
     $('qr-box').innerHTML = qr.svg || '';
     const sec = Math.ceil(qr.expiresInMs / 1000);
-    setText('qr-note', qr.scanned ? `${qr.note} · 剩 ${sec} 秒` : `${qr.note} · 剩 ${sec} 秒`);
+    // ⚠ 相位不同文案要不同：`scanned` 之后**该等的是手机**，不是"再扫一次"。
+    setText(
+      'qr-note',
+      qr.scanned ? `已扫码，请在手机上确认 · 剩 ${sec} 秒` : `${qr.note} · 剩 ${sec} 秒`,
+    );
   } else {
-    $('pane-qr').hidden = true;
+    $('qr-box').hidden = true;
+    $('qr-box').innerHTML = '';
   }
 
   if (sms) {
-    $('pane-sms').hidden = false;
+    if ($('add-dialog').hidden === false) showAddTab('sms');
     const ph = $('sms-phone');
     if (ph && document.activeElement !== ph) ph.value = sms.phone;
     setText('sms-note', sms.sent ? `${sms.note} · 看短信，填 6 位码` : sms.note);
@@ -217,7 +226,6 @@ function renderLogin(l) {
       $('slider-bg').src = `data:image/jpeg;base64,${sms.slider.backgroundB64}`;
     }
   } else {
-    $('pane-sms').hidden = true;
     $('slider-box').hidden = true;
   }
 }
@@ -245,27 +253,54 @@ function renderAccount(a, login) {
   const ses = a.session || {};
   if (n > 0 && ses.note) setText('acct-sub', ses.note);
 
-  paintList(
-    'acct-list',
-    list.map((x) => [
-      (x.current ? '✓ ' : '') + (x.label || x.masked),
-      `${x.masked}${x.addedAt ? ` · 加入于 ${when(x.addedAt)}` : ''}`,
-      x.current
-        ? '<span class="tag tag-on">正在用</span>'
-        : `<button class="btn btn-sm" data-acc-switch="${esc(x.id)}">切到这个</button>` +
-          `<button class="btn btn-sm btn-danger" data-acc-del="${esc(x.id)}">删除</button>`,
-    ]),
-    '还没有账号。上面选一种方式登录。',
-  );
+  // 账号卡 —— 照 mcloud：昵称 + 平台徽章 + `设备 … · 凭据 N 天后` + 五个动作。
+  //
+  // ⚠ 用 `innerHTML` 直接搭（原来是 `paintList` 的三列网格，形状对不上卡片）。
+  const box = $('acct-list');
+  box.innerHTML =
+    n === 0
+      ? '<li class="hint">还没有账号。点右上角「添加账号」。</li>'
+      : list
+          .map((x) => {
+            // 平台徽章：手机端 / macOS / Windows。认不出就**如实说**，不猜。
+            const badge =
+              x.platform === 'mobile'
+                ? '<span class="badge">手机端</span>'
+                : x.platform === 'pc'
+                  ? `<span class="badge badge-pc">${x.pcPlatform === 'mac' ? 'macOS' : 'Windows'}</span>`
+                  : '<span class="badge">平台未知</span>';
+            // `凭据 N 天后`：`null` 是"这条凭据里没带到期时间"，**不能画成 0**
+            //（那看起来像"已过期"，用户会去重新登录一个本来好好的账号）。
+            const exp =
+              x.expireDays === null
+                ? '凭据到期时间未知'
+                : x.expireDays >= 0
+                  ? `凭据 ${x.expireDays} 天后`
+                  : `凭据已过期 ${-x.expireDays} 天`;
+            const dev = x.deviceId ? `设备 ${x.deviceId} · ` : '';
+            return `
+              <li class="acct-card${x.current ? ' is-current' : ''}">
+                <div class="acct-main">
+                  <div class="acct-title${x.disabled ? ' is-off' : ''}">
+                    ${esc(x.label || x.masked)}${badge}${x.current ? '<span class="tag tag-on">正在用</span>' : ''}${x.disabled ? '<span class="tag">已停用</span>' : ''}
+                  </div>
+                  <div class="acct-sub">${dev}${exp}</div>
+                </div>
+                <div class="acct-acts">
+                  ${x.current ? '' : `<button class="btn btn-sm" data-acc-select="${esc(x.id)}">切到这个</button>`}
+                  <button class="btn btn-sm" data-acc-rename="${esc(x.id)}">编辑</button>
+                  <button class="btn btn-sm" data-acc-disable="${esc(x.id)}" data-on="${x.disabled ? '1' : ''}">${x.disabled ? '启用' : '停用'}</button>
+                  <button class="btn btn-sm btn-danger" data-acc-del="${esc(x.id)}">移除</button>
+                </div>
+              </li>`;
+          })
+          .join('');
 
   // 本机设备指纹：**只读显示**（它不是用户填的东西 —— 见 index.html 那段说明）。
   setText('device-id-show', login.deviceId || '（还没生成）');
 
-  // 登录方式：没做的**说清楚**，而不是留一个点了没反应的按钮
-  setText(
-    'login-note',
-    '扫码 / 短信 / 账密都能用。也可以直接贴一段已有的会话串（下面那三个小按钮）。',
-  );
+  // ⚠ 这几行原来往 `login-note` 写"扫码/短信/账密都能用…" —— 那个 id 现在是
+  //   弹窗里扫码页签的提示，写法也不对了（贴的是**凭据**不是"会话串"）。删掉。
   renderLogin(login || { qr: null, sms: null });
 }
 
@@ -798,14 +833,24 @@ async function load() {
 
 // ──────────────────────────────────────────────────────────── 区块切换
 
-$('menu').addEventListener('click', (ev) => {
-  const btn = ev.target.closest('.menu-item');
-  if (!btn) return;
-  const name = btn.dataset.block;
-  for (const b of document.querySelectorAll('.menu-item')) b.classList.toggle('is-on', b === btn);
+/** 切到某个区块（顶部菜单与账号页工具栏共用）。
+ *
+ *  ⚠ 提取出来的理由：工具栏那三个按钮（账号配置 / 上游状态）要跳到别的区块，
+ *  而原来这套逻辑**内联在菜单的事件处理里** —— 复用只能靠复制一份，
+ *  复制的那份迟早和菜单不一致。 */
+function showBlock(name) {
+  for (const b of document.querySelectorAll('.menu-item')) {
+    b.classList.toggle('is-on', b.dataset.block === name);
+  }
   for (const s of document.querySelectorAll('.block')) {
     s.classList.toggle('is-on', s.id === 'block-' + name);
   }
+}
+
+$('menu').addEventListener('click', (ev) => {
+  const btn = ev.target.closest('.menu-item');
+  if (!btn) return;
+  showBlock(btn.dataset.block);
 });
 
 // ──────────────────────────────────────────────────────────── 按钮
@@ -814,6 +859,112 @@ $('refresh').addEventListener('click', (e) => act(e.currentTarget, load, '已刷
 
 // 账号：三种登录
 //  ⚠ 推进的触发者是**用户点按钮**（状态机是用户本人：出码 → 用户扫 → 用户确认）。
+// ══════════ 添加账号弹窗（复刻 mcloud） ══════════
+//
+// 参考实现：五个页签 + **客户端形态在最上面**（对全部页签生效）。
+// 这里那个"选中的形态"是**弹窗级**状态：扫码/短信/账密/凭据四种方式都按它来。
+let addTabNow = 'qr';
+/** 弹窗里选的平台。⚠ 只对 PC 端有意义 —— 手机端（App）不存在 win/mac 之分。 */
+let addPc = 'win';
+
+function paintAddPc() {
+  $('add-win').classList.toggle('is-on', addPc === 'win');
+  $('add-mac').classList.toggle('is-on', addPc === 'mac');
+  // 手机端那一路用 App 自己的身份，选形态没有意义 ⇒ 如实说明而不是假装有用
+  const appPane = $('add-dialog').querySelector('[data-pane="app"]');
+  if (appPane) {
+    appPane.querySelectorAll('.row').forEach((r) => r.classList.toggle('is-muted', false));
+  }
+}
+
+function showAddTab(name) {
+  addTabNow = name;
+  for (const b of $('add-tabs').querySelectorAll('.tab')) {
+    b.classList.toggle('is-on', b.dataset.tab === name);
+  }
+  for (const pane of $('add-dialog').querySelectorAll('[data-pane]')) {
+    pane.hidden = pane.dataset.pane !== name;
+  }
+}
+
+$('acct-add').addEventListener('click', () => {
+  $('add-dialog').hidden = false;
+  showAddTab(addTabNow);
+  paintAddPc();
+});
+$('add-close').addEventListener('click', () => {
+  stopQrPoll();
+  $('add-dialog').hidden = true;
+});
+// 点遮罩关闭（点盒子里面不关）
+$('add-dialog').addEventListener('click', (ev) => {
+  if (ev.target === $('add-dialog')) $('add-dialog').hidden = true;
+});
+$('add-tabs').addEventListener('click', (ev) => {
+  const b = ev.target.closest('.tab');
+  if (!b) return;
+  // 换页签要把上一路"进行中"的会话清掉（否则两边同时进行，界面不知道显示哪个）
+  stopQrPoll();
+  void api('/login/cancel', { method: 'POST', write: true }).catch(() => undefined);
+  showAddTab(b.dataset.tab);
+});
+$('add-win').addEventListener('click', () => {
+  addPc = 'win';
+  paintAddPc();
+});
+$('add-mac').addEventListener('click', () => {
+  addPc = 'mac';
+  paintAddPc();
+});
+
+// 工具栏里除「上游状态」外的三个（那两个是复刻的，先如实接上已有的能力）
+$('acct-upstream').addEventListener('click', () => showBlock('data'));
+$('acct-config').addEventListener('click', () => showBlock('settings'));
+$('acct-refresh-all').addEventListener('click', (e) =>
+  act(e.currentTarget, () => api('/auth/refresh', { method: 'POST', write: true }), (r) => r.note || '已刷新'),
+);
+
+// ══════════ 扫码：自动轮询（**没有**"我扫完了"按钮） ══════════
+//
+// 参考实现：出码 → `setInterval(pollOnce, 服务端给的 poll_interval_ms)` →
+// `scanned` 时显示「已扫码，请在手机上确认」（确认动作在**手机上**）→
+// `logged_in` 时收尾。所以推进的触发者是**轮询**，不是用户点按钮。
+let qrTimer = null;
+
+function stopQrPoll() {
+  if (qrTimer !== null) {
+    clearInterval(qrTimer);
+    qrTimer = null;
+  }
+}
+
+function startQrPoll(ms) {
+  stopQrPoll();
+  qrTimer = setInterval(() => void qrPollOnce(), ms);
+}
+
+async function qrPollOnce() {
+  try {
+    const r = await api('/login/qr/poll', { method: 'POST', write: true });
+    if (r.note) setText('qr-note', r.note);
+    // ⚠ 只有 `stop` 才停。「还没扫到」是轮询期间**绝大多数**的响应，不是错误。
+    if (r.stop) {
+      stopQrPoll();
+      if (r.ok && !r.account && r.note === undefined) return;
+      if (r.ok) {
+        toast('登录成功');
+        $('add-dialog').hidden = true;
+      } else {
+        toast(r.note || '扫码登录失败', true);
+      }
+      await load();
+    }
+  } catch (err) {
+    stopQrPoll();
+    toast(err.message || '轮询失败', true);
+  }
+}
+
 $('login-qr').addEventListener('click', (e) =>
   act(
     e.currentTarget,
@@ -822,9 +973,9 @@ $('login-qr').addEventListener('click', (e) =>
       await api('/login/cancel', { method: 'POST', write: true });
       const r = await api('/login/qr/start', { method: 'POST', write: true });
       // 出码是纯本地拼接（不发上游），所以立刻把码画出来
-      $('pane-qr').hidden = false;
-      $('pane-sms').hidden = true;
-      $('pane-pwd').hidden = true;
+      // ⚠ 弹窗里页签的显隐统一由 `showAddTab` 管（原来这里是直接改
+      //   `pane-qr/pane-sms/pane-pwd` 的 `hidden` —— 那三个 id 现在不存在了）。
+      showAddTab('qr');
       $('qr-box').innerHTML = r.svg || '';
       setText('qr-note', r.note);
       return r;
@@ -832,42 +983,6 @@ $('login-qr').addEventListener('click', (e) =>
     '出码了 —— 用手机 App 扫',
   ),
 );
-
-$('qr-poll').addEventListener('click', (e) =>
-  act(
-    e.currentTarget,
-    async () => {
-      const r = await api('/login/qr/poll', { method: 'POST', write: true });
-      setText('qr-note', r.note);
-      if (r.account) toast(`登录成功：${r.account.label}`);
-      // ⚠ 只有"停"才抛出去让 act 弹提示；没扫到不是错误
-      if (r.stop && !r.ok) throw new Error(r.note);
-      return r;
-    },
-    '看到了',
-  ),
-);
-
-$('qr-cancel').addEventListener('click', (e) =>
-  act(
-    e.currentTarget,
-    async () => {
-      await api('/login/cancel', { method: 'POST', write: true });
-      $('pane-qr').hidden = true;
-      $('qr-box').innerHTML = '';
-      return null;
-    },
-    '已取消',
-  ),
-);
-
-$('login-sms').addEventListener('click', async () => {
-  await api('/login/cancel', { method: 'POST', write: true }).catch(() => {});
-  $('pane-sms').hidden = false;
-  $('pane-qr').hidden = true;
-  $('pane-pwd').hidden = true;
-  $('sms-phone').focus();
-});
 
 $('sms-start').addEventListener('click', (e) =>
   act(
@@ -914,7 +1029,6 @@ $('sms-submit').addEventListener('click', (e) =>
       });
       if (r.account) {
         $('sms-code').value = '';
-        $('pane-sms').hidden = true;
         toast(`登录成功：${r.account.label}`);
         return r;
       }
@@ -923,80 +1037,6 @@ $('sms-submit').addEventListener('click', (e) =>
     '登录成功',
   ),
 );
-
-$('login-pwd').addEventListener('click', async () => {
-  await api('/login/cancel', { method: 'POST', write: true }).catch(() => {});
-  $('pane-pwd').hidden = false;
-  $('pane-qr').hidden = true;
-  $('pane-sms').hidden = true;
-  $('pwd-phone').focus();
-});
-
-$('pwd-submit').addEventListener('click', (e) =>
-  act(
-    e.currentTarget,
-    async () => {
-      const r = await api('/login/pwd', {
-        method: 'POST',
-        write: true,
-        body: { phone: $('pwd-phone').value.trim(), password: $('pwd-pass').value },
-      });
-      if (r.account) {
-        $('pwd-pass').value = '';
-        $('pane-pwd').hidden = true;
-        toast(`登录成功：${r.account.label}`);
-        return r;
-      }
-      throw new Error(r.note || '登录没成');
-    },
-    '登录成功',
-  ),
-);
-
-$('device-reset').addEventListener('click', (e) =>
-  act(
-    e.currentTarget,
-    () => api('/login/device/reset', { method: 'POST', write: true }),
-    (r) => r.note,
-  ),
-);
-
-// 同一个动作的第二个入口（按**症状**命名 —— 见 index.html 里那段说明）。
-$('qr-reset').addEventListener('click', (e) =>
-  act(
-    e.currentTarget,
-    () => api('/login/device/reset', { method: 'POST', write: true }),
-    (r) => r.note,
-  ),
-);
-
-$('paste-open').addEventListener('click', () => {
-  $('pane-paste').hidden = !$('pane-paste').hidden;
-});
-
-// 「凭据」那一栏里选的 PC 形态（win / mac）。**只对 pc 端的凭据有意义**。
-let pastePc = 'win';
-function paintPastePc() {
-  $('paste-win').classList.toggle('is-on', pastePc === 'win');
-  $('paste-mac').classList.toggle('is-on', pastePc === 'mac');
-}
-$('paste-win').addEventListener('click', () => {
-  pastePc = 'win';
-  paintPastePc();
-});
-$('paste-mac').addEventListener('click', () => {
-  pastePc = 'mac';
-  paintPastePc();
-});
-
-// ⚠ **不在界面上重复一份解析逻辑**。
-//
-// `app.js` 是手写的静态文件（不是从 `src/` 构建的），import 不到
-// `src/mcloud/auth.ts` 的解析器。而复制一份的代价是"两份会漂移"——
-// 漂移的表现是"界面说这是手机端、后端当成了 PC 端"，很难查。
-//
-// 所以**解析只在后端做一次**：贴进来先直接提交，后端说"这条是 PC 端、
-// 要选形态"时再把那个选择显示出来。多一次点击，换来的是**一个事实一个来源**。
 
 $('paste-submit').addEventListener('click', (e) =>
   act(
@@ -1006,53 +1046,112 @@ $('paste-submit').addEventListener('click', (e) =>
       if (!raw) throw new Error('先把凭据贴进来');
       const body = { op: 'add', auth: raw };
       // PC 端才带上形态（手机端带了后端也会丢掉）
-      if (!$('paste-pc').hidden) body.pcPlatform = pastePc;
+      // ⚠ 平台是**弹窗级**的（参考实现把它放在最上面，对全部页签生效）——
+      //   所以这里不再看"凭据那一栏有没有露出形态选择"，直接带上。
+      //   ⚠ 手机端（App）不存在 win/mac 之分，后端会按凭据里的前缀丢掉它。
+      body.pcPlatform = addPc;
       let r;
       try {
         r = await api('/accounts', { method: 'POST', write: true, body });
       } catch (err) {
-        // 后端说"这条是 PC 端、要选形态" ⇒ 把那个选择露出来（**别清空输入**）
+        // ⚠ 形态选择现在是**弹窗级**的（最上面那一排），所以这里的
+        //   `needPcPlatform` 不再是"把选择露出来"，而是**提示用户去上面选**。
         if (err && err.data && err.data.needPcPlatform) {
-          $('paste-pc').hidden = false;
-          paintPastePc();
-          $('paste-note').textContent = '这条是 PC 端 —— 选一种，然后再点一次「存下」';
-          return { ok: true, note: '选了形态再点一次' };
+          $('paste-note').textContent =
+            '这条是 PC 端 —— 去上面「客户端形态」选一种（Windows / macOS），再点一次「存下」';
+          return { ok: true, note: '先去上面选形态' };
         }
         throw err;
       }
       $('paste-body').value = '';
       $('paste-note').textContent = '';
-      $('pane-paste').hidden = true;
+      $('add-dialog').hidden = true;
       return r;
     },
     '凭据已存下',
   ),
 );
 
+// ────────── 补回被误删的四个处理器（切片时把它们一起切掉了）──────────
+
+$('qr-cancel').addEventListener('click', (e) =>
+  act(
+    e.currentTarget,
+    async () => {
+      // ⚠ 轮询必须**先停** —— 否则取消之后还在轮，界面会一边"已取消"一边被旧会话改掉。
+      stopQrPoll();
+      const r = await api('/login/cancel', { method: 'POST', write: true });
+      $('qr-box').innerHTML = '';
+      $('qr-box').hidden = true;
+      return r;
+    },
+    '已取消',
+  ),
+);
+
+$('pwd-submit').addEventListener('click', (e) =>
+  act(
+    e.currentTarget,
+    () =>
+      api('/login/pwd', {
+        method: 'POST',
+        write: true,
+        body: {
+          phone: $('pwd-phone').value.trim(),
+          password: $('pwd-pass').value,
+          pcPlatform: addPc,
+        },
+      }),
+    (r) => r.note || '登录成功',
+  ),
+);
+
+// 「换一台设备」与「我的码一直扫不出来」是**同一个动作**（见 index.html 那段说明）。
+const resetDevice = (e) =>
+  act(
+    e.currentTarget,
+    () => api('/login/device/reset', { method: 'POST', write: true }),
+    (r) => r.note,
+  );
+$('device-reset').addEventListener('click', resetDevice);
+$('qr-reset').addEventListener('click', resetDevice);
+
 // 账号列表里的切换 / 删除（按钮是画出来的，用事件代理）
 $('acct-list').addEventListener('click', async (ev) => {
-  const sw = ev.target.closest('[data-acc-switch]');
-  const del = ev.target.closest('[data-acc-del]');
-  if (!sw && !del) return;
+  const pick = (name) => ev.target.closest(`[data-acc-${name}]`);
+  const sel = pick('select');
+  const ren = pick('rename');
+  const dis = pick('disable');
+  const del = pick('del');
+  if (!sel && !ren && !dis && !del) return;
+  const post = (body) => api('/accounts', { method: 'POST', write: true, body });
   try {
-    if (sw) {
-      await api('/accounts', {
-        method: 'POST',
-        write: true,
-        body: { op: 'switch', id: sw.dataset.accSwitch },
-      });
-      toast('已切到这个账号');
+    if (sel) {
+      // ⚠ 这里是 `select`，**不是** `switch` —— 原来写的是 `switch`，
+      //   而后端只认 add/select/remove ⇒ 又一个点了没反应的按钮。
+      const r = await post({ op: 'select', id: sel.dataset.accSelect });
+      toast(r.note || '已切到这个账号');
+    } else if (ren) {
+      const id = ren.dataset.accRename;
+      const cur = (last && last.account && last.account.accounts) || [];
+      const a = cur.find((x) => x.id === id) || {};
+      const label = prompt('这个账号叫什么？留空就回落成手机号。', a.label || '');
+      if (label === null) return;
+      const r = await post({ op: 'edit', id, label });
+      toast(r.note || '已改名');
+    } else if (dis) {
+      const on = dis.dataset.on !== '1'; // 当前是启用 ⇒ 这次要停用
+      const r = await post({ op: 'disable', id: dis.dataset.accDisable, disabled: on });
+      toast(r.note || (on ? '已停用' : '已启用'));
     } else {
-      await api('/accounts', {
-        method: 'POST',
-        write: true,
-        body: { op: 'remove', id: del.dataset.accDel },
-      });
-      toast('已删除');
+      const id = del.dataset.accDel;
+      if (!confirm('移除这个账号？\n⚠ 它名下的票、进度与"这一小时已下单"都会一起清掉。')) return;
+      const r = await post({ op: 'remove', id });
+      toast(r.note || '已移除');
     }
     await load();
-  } catch (e) {
-    toast(String(e && e.message ? e.message : e), true);
+  } catch (err) {
+    toast(err.message || '失败了', true);
   }
 });
 

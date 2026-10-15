@@ -118,6 +118,9 @@ import {
 } from './tasks/liveDraw.ts';
 import { loadWakePlan, planTrusted } from './tasks/liveAutoTask.ts';
 import { qrSvg } from '../crypto/qr.ts';
+
+/** 扫码轮询间隔（毫秒）。**服务端给**，界面不写死 —— 见 `/login/qr/start` 那段说明。 */
+const QR_POLL_MS = 2000;
 import { callOnce } from './client.ts';
 import { uuidV4 } from './rand.ts';
 import {
@@ -723,7 +726,11 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
           // 在那里现写一个等于把"码对不对"交给前端（见 crypto/qr.ts 的文件头）。
           svg: qrSvg(payload),
           expiresInMs: QR_TTL_SECONDS * 1000,
-          note: '用手机上的移动云盘 App 扫这个码',
+          // ⚠ 轮询间隔**由这一侧给**，界面不许自己写死一个数 ——
+          //   参考实现的注释：「客户端写死一个数会和状态机分叉」。
+          //   2 秒是"人扫完到界面看到"的延迟与上游压力的折中。
+          pollMs: QR_POLL_MS,
+          note: '用手机上的移动云盘 App 扫这个码，然后在手机上确认',
         });
       },
     },
