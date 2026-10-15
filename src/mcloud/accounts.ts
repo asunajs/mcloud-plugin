@@ -50,6 +50,12 @@ export type Account = {
    *  参考实现里也是单独一格（`Account::pc_platform`）。
    *  `platform === 'mobile'` 时这一格**没有意义**（手机端不存在 win/mac 之分）。 */
   pcPlatform?: PcPlatform | undefined;
+  /** **停用**：停用的账号不参与任务（但仍留在列表里）。
+   *
+   *  ⚠ 与"删掉"不是一回事：删掉会连它的状态袋一起清（见 `removeAccount`），
+   *  而停用**保留**状态 —— 重新启用时票、进度、`ordered_hour` 都还在。
+   *  所以不能用"删掉再重加"来模拟停用。 */
+  disabled?: boolean | undefined;
   addedAt: string;
 };
 
@@ -134,6 +140,7 @@ export function loadAccounts(store: Pick<Store, 'getState'>): Account[] {
       // 老账号没存过这两格 ⇒ 从凭据里现解一次（不用迁移）
       platform: typeof o.platform === 'string' ? o.platform : (info?.platform ?? ''),
       pcPlatform: pc === 'win' || pc === 'mac' ? pc : undefined,
+      disabled: o.disabled === true,
       addedAt: typeof o.addedAt === 'string' ? o.addedAt : '',
     });
   }
@@ -164,12 +171,53 @@ export function upsertAccount(
     // ⚠ 只在 PC 端才有意义。手机端传进来也丢掉 —— 留着会让"这个账号用哪套
     //   设备头"这件事出现两个互相矛盾的来源。
     pcPlatform: info?.platform === PC_AUTH_PREFIX ? (pcPlatform ?? list[idx]?.pcPlatform ?? 'win') : undefined,
+    // ⚠ 重加同一个号时**保留**停用状态（"刷新凭据"不该顺手把人启用回来）
+    disabled: list[idx]?.disabled === true,
     addedAt: idx >= 0 ? list[idx]!.addedAt : nowIso,
   };
   if (idx >= 0) list[idx] = account;
   else list.push(account);
   saveAccounts(store, list, nowIso);
   return { list, account, created: idx < 0 };
+}
+
+/** 停用 / 启用。返回改完之后的那一条（找不到 ⇒ `undefined`）。 */
+export function setAccountDisabled(
+  store: Store,
+  id: string,
+  disabled: boolean,
+  nowIso: string,
+): Account | undefined {
+  const list = loadAccounts(store);
+  const idx = list.findIndex((a) => a.id === id);
+  if (idx < 0) return undefined;
+  list[idx] = { ...list[idx]!, disabled };
+  saveAccounts(store, list, nowIso);
+  return list[idx];
+}
+
+/** 改昵称。空串 = 回落成手机号（与参考实现的 PATCH 语义一致）。 */
+export function setAccountLabel(
+  store: Store,
+  id: string,
+  label: string,
+  nowIso: string,
+): Account | undefined {
+  const list = loadAccounts(store);
+  const idx = list.findIndex((a) => a.id === id);
+  if (idx < 0) return undefined;
+  const auth = list[idx]!.auth;
+  list[idx] = {
+    ...list[idx]!,
+    label: label.trim() !== '' ? label.trim() : (phoneOf(auth) ?? `账号 ${idx + 1}`),
+  };
+  saveAccounts(store, list, nowIso);
+  return list[idx];
+}
+
+/** 这个账号现在能不能跑（没被停用）。 */
+export function isAccountEnabled(store: Pick<Store, 'getState'>): boolean {
+  return currentAccount(store)?.disabled !== true;
 }
 
 export function removeAccount(store: Store, id: string, nowIso: string): Account[] {

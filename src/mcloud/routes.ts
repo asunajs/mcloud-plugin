@@ -167,6 +167,9 @@ import {
   startSmsSession,
 } from './loginSession.ts';
 import type { Store } from '../store/types.ts';
+import { rawStoreOf } from '../store/scoped.ts';
+import { setAccountDisabled, setAccountLabel } from './accounts.ts';
+import { readBag } from '../store/keys.ts';
 import type { BuiltRequest } from './h5.ts';
 import type { Transport } from './client.ts';
 import type { HostWs } from './tasks/base.ts';
@@ -236,20 +239,40 @@ function accountsView(store: Pick<Store, 'getState'>): {
     platform: string;
     /** PC 端才有：`win` / `mac`。手机端恒为 `''`。 */
     pcPlatform: string;
+    /** 凭据还有几天到期（`null` = 这条凭据里没带到期时间）。
+     *
+     *  ⚠ 来源是凭据 token 的第 4 段（`|` 分隔）。**没有样本**说明它一定存在，
+     *  所以 `null` 要如实显示成"不知道"，不能画成 0（那看起来像"已过期"）。 */
+    expireDays: number | null;
+    /** 这个账号自己的设备号（`B…`/`…-ENDIN` 那种）。没上报过 ⇒ `''`。 */
+    deviceId: string;
+    /** 停用。⚠ 与"删掉"不是一回事：停用**保留**状态（见 accounts.ts）。 */
+    disabled: boolean;
   }[];
 } {
   const cur = currentAccount(store);
+  const nowMs = Date.now();
+  // ⚠ 袋是**按账号**存的，所以"每一条自己的设备号"要**按 id 逐个读**
+  //   （不能用当前账号那一格 —— 那只会读到当前这个的）。
+  const raw = rawStoreOf(store);
   return {
     current: cur?.id ?? '',
-    accounts: loadAccounts(store).map((a) => ({
-      id: a.id,
-      label: a.label,
-      masked: maskAuth(a.auth),
-      current: cur?.id === a.id,
-      addedAt: a.addedAt,
-      platform: a.platform,
-      pcPlatform: a.pcPlatform ?? '',
-    })),
+    accounts: loadAccounts(store).map((a) => {
+      const info = parseAuth(a.auth);
+      const exp = info?.expire ?? 0;
+      return {
+        id: a.id,
+        label: a.label,
+        masked: maskAuth(a.auth),
+        current: cur?.id === a.id,
+        addedAt: a.addedAt,
+        platform: a.platform,
+        pcPlatform: a.pcPlatform ?? '',
+        expireDays: exp > 0 ? Math.floor((exp - nowMs) / 86_400_000) : null,
+        deviceId: readBag(raw, a.id)['mcloud.smid.deviceId'] ?? '',
+        disabled: a.disabled === true,
+      };
+    }),
   };
 }
 
@@ -1460,6 +1483,35 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
           deps.log(`账号：${r.created ? '添加' : '更新'} ${r.account.label}`);
           if (loadAccounts(deps.store).length === 1) selectAccount(deps.store, r.account.id, now);
           return json(200, { ...accountsView(deps.store), note: `${r.created ? '已添加' : '已更新'} ${r.account.label}` });
+        }
+        // 停用 / 启用。⚠ 与"删掉"不是一回事：停用**保留**状态袋
+        //（票、进度、`ordered_hour` 都还在），所以不能用"删了重加"来模拟。
+        if (op === 'disable') {
+          const id = typeof body.id === 'string' ? body.id : '';
+          // ⚠ 第一版这里写的是 `const on = body.disabled !== true` —— **反了**：
+          //   传 `disabled:true` 实际执行的是"启用"。测试当场抓到（传 true 回
+          //   "已启用"）。命名也是坑：一个叫 `on` 的变量存的是"停用与否"，
+          //   读代码时看不出反了。这里直接用 `disabled` 这个名字。
+          const disabled = body.disabled === true;
+          const a = setAccountDisabled(deps.store, id, disabled, now);
+          if (!a) return json(400, { error: `列表里没有这个账号：${id}` });
+          deps.log(`账号：${disabled ? '停用' : '启用'} ${a.label}`);
+          return json(200, {
+            ...accountsView(deps.store as unknown as Store),
+            note: `${disabled ? '已停用' : '已启用'} ${a.label}`,
+          });
+        }
+        // 改昵称。空串 = 回落成手机号（与参考实现的 PATCH 语义一致）。
+        if (op === 'edit') {
+          const id = typeof body.id === 'string' ? body.id : '';
+          const label = typeof body.label === 'string' ? body.label : '';
+          const a = setAccountLabel(deps.store, id, label, now);
+          if (!a) return json(400, { error: `列表里没有这个账号：${id}` });
+          deps.log(`账号：改名为 ${a.label}`);
+          return json(200, {
+            ...accountsView(deps.store as unknown as Store),
+            note: `已改名为 ${a.label}`,
+          });
         }
         if (op === 'select') {
           const id = typeof body.id === 'string' ? body.id : '';
