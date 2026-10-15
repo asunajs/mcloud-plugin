@@ -13,13 +13,18 @@
 // ⚠ 凭据是**秘密**：这个模块只负责存取，**不许**把它写进日志/读数/界面
 //   （要给界面看的一律走 `maskAuth`）。
 
+import { STATE_ACCOUNTS, STATE_CURRENT_ACCOUNT, clearBag } from '../store/keys.ts';
+
 import { PC_AUTH_PREFIX, parseAuth, type PcPlatform } from './auth.ts';
 import { fromBase64, fromUtf8 } from '../crypto/bytes.ts';
 import type { Store } from '../store/types.ts';
 
-export const STATE_ACCOUNTS = 'mcloud.accounts';
+// ⚠ 键名**定义在** `store/keys.ts`（键名归键登记表所有，见那里的说明），
+//   这里只是转出给老的调用方。所以是 import + export，不是纯 re-export ——
+//   纯转出的话名字不进本地作用域，本文件自己那几处用不了。
+export { STATE_ACCOUNTS, STATE_CURRENT_ACCOUNT };
 /** 当前用哪一个（存 `id`）。没设过 = 用 `mcloud.h5.auth` 那一格（单账号那套）。 */
-export const STATE_CURRENT_ACCOUNT = 'mcloud.account.current';
+
 
 export type Account = {
   /** 稳定的短标识：能从凭据里认出手机号就用手机号，否则用凭据的短哈希。 */
@@ -172,6 +177,11 @@ export function removeAccount(store: Store, id: string, nowIso: string): Account
   saveAccounts(store, list, nowIso);
   // ⚠ 删掉的正好是"当前"那一格 ⇒ 把当前也清掉，否则会留一个指向空气的 id
   if (store.getState(STATE_CURRENT_ACCOUNT) === id) store.setState(STATE_CURRENT_ACCOUNT, '', nowIso);
+  // ⚠ **连它的状态袋一起清**。不清的话会留下一袋孤儿数据 —— 而且
+  //   "看不出是孤儿"：下次有人用同一个手机号再加账号时 id 相同，
+  //   于是**新账号会继承旧账号的状态**（票、进度、`ordered_hour`…）。
+  //   那比"留着垃圾"严重得多。
+  clearBag(store, id, nowIso);
   return list;
 }
 

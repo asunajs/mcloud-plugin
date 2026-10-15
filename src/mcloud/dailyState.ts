@@ -9,7 +9,7 @@
 // 如果 routes.ts 直接从 entries/ 里 import 这两个键，就会把 host-api 一起拖进来，
 // 于是路由层再也测不了。键名与形状放这里，两边各自 import 这个文件。
 
-import { accountScopedKey } from '../store/types.ts';
+
 import type { Store } from '../store/types.ts';
 
 /** 「今天已经整趟成功」的标记（值是 UTC 日期）的**裸键**。
@@ -29,15 +29,10 @@ export const DAILY_DONE_KEY = 'mcloud.daily.done_date';
 /** 最近一次运行的**每一步结果**（见 `DailyRun`）的裸键。 */
 export const DAILY_LAST_KEY = 'mcloud.daily.last_run';
 
-/** 「今天已经整趟成功」的标记：**按账号分**。 */
-export function dailyDoneKey(store: Pick<Store, 'getState'>): string {
-  return accountScopedKey(store, DAILY_DONE_KEY);
-}
-
-/** 最近一次运行的结果：**按账号分**（否则界面会显示**另一个账号**的上次结果）。 */
-export function dailyLastKey(store: Pick<Store, 'getState'>): string {
-  return accountScopedKey(store, DAILY_LAST_KEY);
-}
+// ⚠ 这两个键**按账号分** —— 但分法在 `store/scoped.ts`：`store` 本身就会把
+// 按账号的键落到当前账号的袋里。所以这里就是键名本身，不需要再包一层。
+// （曾经有 `dailyDoneKey(store)` 这种"拼账号 id"的助手，现在删掉了 ——
+//  留着会让"分账号"出现两个来源，而两个来源迟早不一致。）
 
 /** 一趟里的一个步骤。 */
 export interface DailyStep {
@@ -62,7 +57,7 @@ export interface DailyRun {
 /** 读最近一次运行。没有过就返回 `null`（不是空对象 —— 界面要能分清
  *  「还没跑过」和「跑了但没步骤」）。 */
 export function readDailyRun(store: Pick<Store, 'getState'>): DailyRun | null {
-  const raw = store.getState(dailyLastKey(store));
+  const raw = store.getState(DAILY_LAST_KEY);
   if (raw === undefined || raw === null || raw === '') return null;
   try {
     const v = JSON.parse(raw) as DailyRun;
