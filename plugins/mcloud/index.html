@@ -112,17 +112,27 @@
         </div>
 
         <div class="row">
-          <button class="btn btn-sm" id="paste-open">贴会话串导入</button>
+          <button class="btn btn-sm" id="paste-open">凭据</button>
           <button class="btn btn-sm" id="h5-open">H5 换票</button>
           <button class="btn btn-sm" id="device-reset">我的码一直扫不出来</button>
         </div>
 
+        <!-- 凭据：直接贴一段已有的 Authorization（**不走登录链路**）。
+             ⚠ 是 **auth**，不是 cookie —— 见下面那段说明。 -->
         <div class="pane" id="pane-paste" hidden>
           <p class="hint">
-            从浏览器里复制的那一长串 Cookie（或者一段带 cookie / jwt 的 JSON）整段贴进来。
+            贴一段已有的 <code>Authorization</code>：
+            <code>Basic &lt;base64&gt;</code>，或者只贴 base64 那段。
+            里面是 <code>&lt;平台&gt;:&lt;手机号&gt;:&lt;token&gt;</code>。
           </p>
-          <textarea id="paste-body" rows="3" placeholder="SESSIONID=…; UID=…"></textarea>
-          <button class="btn btn-primary" id="paste-submit">导入并验证</button>
+          <textarea id="paste-body" rows="3" placeholder="Basic <base64>，或只粘 base64 那段"></textarea>
+          <div class="row" id="paste-pc" hidden>
+            <span class="hint">这条是 PC 端 —— 选它当初是哪一种（决定以后的请求头）：</span>
+            <button class="btn btn-sm is-on" id="paste-win">Windows</button>
+            <button class="btn btn-sm" id="paste-mac">macOS</button>
+          </div>
+          <p class="hint" id="paste-note"></p>
+          <button class="btn btn-primary" id="paste-submit">存下</button>
         </div>
 
         <div class="pane" id="pane-h5" hidden>
