@@ -5530,7 +5530,7 @@ register_cron(
   "日常",
   // 白天每 30 分钟一跳：低配盒子不常在线时，上线之后的下一跳就能补上
   // （面板不补跑，见文件头）。整趟成功后剩下的跳是零请求的秒返回。
-  "*/30 7-22 * * *",
+  "0 8,20 * * *",
   (p) => {
     const nowIso = (/* @__PURE__ */ new Date()).toISOString();
     const startedMs = Date.parse(nowIso);

@@ -2531,12 +2531,13 @@ function runExchange(deps, opts = {}) {
   const add = (name, ok, note, idle = false) => {
     steps.push({ name, ok, note, idle });
   };
-  const finish = (ok, note) => {
+  const finish = (ok, note, idle = false) => {
     if (opts.dryRun) {
       add("干跑", true, "只看了能不能兑，**一枪都没发**（真下单走定时那一场）", true);
     }
     return {
       ok,
+      ...idle ? { idle: true } : {},
       note,
       detail: steps.map((x) => `${x.name}：${x.ok ? "" : "失败 "}${x.note}`),
       steps
@@ -2551,7 +2552,11 @@ function runExchange(deps, opts = {}) {
       targetHour === null ? `还没到窗口（还差 ${Math.round(gate.ms / 1e3)}s）—— 本次零请求` : `不是 ${targetHour} 点那一场（还差 ${Math.round(gate.ms / 1e3)}s）—— 本次零请求`,
       true
     );
-    return finish(true, `还没到抢兑时间（还差 ${Math.round(gate.ms / 1e3)}s），本次零请求`);
+    return finish(
+      true,
+      `还没到抢兑时间（还差 ${Math.round(gate.ms / 1e3)}s），本次零请求`,
+      true
+    );
   }
   try {
     const l = runExchangeList(deps);
@@ -2648,18 +2653,22 @@ var store = makeStore();
 var transport = makeTransport(LONG_REQUEST_TIMEOUT_MS);
 register_cron(
   "兑换",
-  // # 为什么是 `@every 10s` 而不是"整点前 20 秒起一次"
+  // # 为什么是「每小时 59 分」而不是 `@every 10s`
   //
-  // 抢兑要压到**整点前 10ms**，而 cron 的粒度是秒、调度器还有抖动。
-  // 所以分工是：**粗粒度等待交给调度器，细粒度交给链自己**。
+  // 第一版写的是 `@every 10s`：一天 **8640** 次触发，其中 8639 次是零请求秒返回。
+  // 逻辑上没错（每一次都便宜），但用户看到任务列表里那个表达式就说了
+  // 「太特么频繁了」—— 而用户是对的：**抢兑一天只发生一次**。
   //
-  //   · `@every 10s` 的每一次触发几乎都是**零请求秒返回**
-  //     （离窗口还远 ⇒ 如实返回 idle，见 `MAX_SPIN_MS`）
-  //   · 一旦落进"离窗口 30 秒内"，这一趟就自己自旋到 59:40、
-  //     预热、取题解滑块、再自旋到整点−10ms 发单
+  // 触发频率该由"这件事一天发生几次"决定，不是由"多久看一眼"决定。
   //
-  // 20 秒宽的窗口配 10 秒的节拍 ⇒ 窗口里至少有一次触发，通常两次。
-  "@every 10s",
+  // 现在的分工：`59 * * * *` 每小时醒一次（一天 **24** 次），正好落在
+  // **目标小时的前一分钟**；那一刻这一趟有 60 秒可用 —— 足够预热
+  //（两次 visitlog + 500ms）再自旋到整点 −10ms 发单。
+  // 剩下 23 次是**静默零请求**（离窗口远 ⇒ 标 `idle`，连日志都不写）。
+  //
+  // ⚠ 为什么"59 分那一跳"够准：调度器抖动实测是**毫秒级**（日志里那条
+  //   「调度延迟 2ms」），所以它确实落在 59:00.00x，60 秒自旋预算不会被吃掉。
+  "59 * * * *",
   (p) => {
     const startedMs = Date.now();
     const at = new Date(startedMs).toISOString();
@@ -2669,6 +2678,18 @@ register_cron(
       return;
     }
     const r = runExchange(deps);
+    if (r.idle) {
+      store.recordRun({
+        task: p.name,
+        runs: p.runs,
+        scheduledAt: p.scheduledAt,
+        firedAt: p.firedAt,
+        lateMs: p.lateMs,
+        ok: true,
+        note: r.note
+      });
+      return;
+    }
     appendRun(store, {
       task: "exchange",
       at,
@@ -2694,4 +2715,6 @@ register_cron(
   },
   { budget_ms: BUDGET_MS }
 );
-log2(`mcloud-exchange：任务「兑换」（预算 ${BUDGET_MS / 1e3}s，独占线程）—— 每 10 秒看一眼，窗口内自己压到整点`);
+log2(
+  `mcloud-exchange：任务「兑换」（预算 ${BUDGET_MS / 1e3}s，独占线程）—— 每小时 59 分醒一次，只有下一小时是目标那一场才动手`
+);
