@@ -51,6 +51,8 @@ import { aesEcbPkcs7EncryptHex, aesEcbPkcs7DecryptHex } from '../crypto/aes.ts';
  *
  *  反汇编实证：客户端里它是 `csel` 选出来的**字面量**，不是从配置取的 ——
  *  所以客户端改个变量名不影响我们，改的是这个常量本身。 */
+import type { BuiltRequest } from './h5.ts';
+
 export const APP_LOGIN_AES_KEY = 'lYzvvBMUjucw+h^R';
 
 /** 备用密钥（`isCurrentEnvironment = NO` 那一支）。
@@ -270,4 +272,64 @@ export function appHeaders(deviceId: string, timestamp: number): Record<string, 
     //   要加的话响应体会变成一段没有密钥的加密串。
     'Content-Type': 'application/json;charset=UTF-8',
   };
+}
+
+// ══════════════════════ 请求构造 ══════════════════════
+//
+// ⚠ 主机与 PC 那条**是同一个**（`user-njs.yun.139.com`）—— 参考实现里
+//   `SEND_SMS_CODE` / `THIRD_LOGIN` 都在 `endpoints.rs`，和 PC 的同一个域。
+//   差别全在**请求头**（App 那套）与**请求体**（App 的字段 + 第三枪要加密）。
+
+/** 登录服主机。与 PC 那条共用（见上面那段说明）。 */
+export const APP_LOGIN_HOST = 'https://user-njs.yun.139.com';
+
+/** App 端的一枪。
+ *
+ *  ⚠ `rawBody` 是**已经拼好的字符串**，不是对象 —— 因为 `/user/thirdlogin`
+ *  的体是**加密后的 hex 文本**（`Content-Type` 仍是
+ *  `application/json;charset=UTF-8`，抓包原样如此，别"顺手改成 text/plain"）。
+ *  收对象的话，加密这一步就会被推到调用点 —— 而"忘了加密"必须**在类型层面
+ *  不可能发生**（参考实现的原话）。 */
+export function appPost(
+  path: string,
+  rawBody: string,
+  deviceId: string,
+  timestamp: number,
+): BuiltRequest {
+  return {
+    url: `${APP_LOGIN_HOST}${path}`,
+    method: 'POST',
+    headers: appHeaders(deviceId, timestamp),
+    body: rawBody,
+  };
+}
+
+/** 发验证码（**明文体**）。`puzzleVerfycode` 是过滑块时带回来的答案，首次为空。 */
+export function appSendSmsCodeRequest(
+  deviceId: string,
+  timestamp: number,
+  phone: string,
+  puzzleVerfycode = '',
+): BuiltRequest {
+  return appPost(
+    APP_SEND_SMS_CODE_PATH,
+    JSON.stringify(sendSmsCodeBody(phone, puzzleVerfycode)),
+    deviceId,
+    timestamp,
+  );
+}
+
+/** 换凭据（**加密体**）。
+ *
+ *  ⚠ 明文进、密文出：加密在**这里**完成。调用点拿不到"忘了加密"这个选项。 */
+export function appThirdloginRequest(
+  deviceId: string,
+  timestamp: number,
+  phone: string,
+  smsCode: string,
+  random: string,
+  key: string = APP_LOGIN_AES_KEY,
+): BuiltRequest {
+  const plaintext = JSON.stringify(smsThirdloginBody(phone, smsCode, random));
+  return appPost(APP_THIRDLOGIN_PATH, encryptBody(plaintext, key), deviceId, timestamp);
 }
