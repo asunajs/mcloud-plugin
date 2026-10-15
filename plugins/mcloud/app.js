@@ -1224,7 +1224,12 @@ $('pwd-submit').addEventListener('click', (e) =>
   ),
 );
 
-// 「换一台设备」与「我的码一直扫不出来」是**同一个动作**（见 index.html 那段说明）。
+// 「换一台设备」—— 本机设备指纹那一块**唯一**的动作（参考实现也只有一个）。
+//
+// ⚠ 这里原来还绑了第二个按钮「我的码一直扫不出来」（同一个动作、按症状命名）。
+//   理由是"用户的念头是症状、而动作叫「换一台设备」，名字对不上会来回翻"。
+//   用户圈出来之后删了：**复刻就是复刻** —— 多一个按钮就多一处"点哪个"的犹豫，
+//   而那正是这一版要消灭的东西。
 const resetDevice = (e) =>
   act(
     e.currentTarget,
@@ -1232,7 +1237,6 @@ const resetDevice = (e) =>
     (r) => r.note,
   );
 $('device-reset').addEventListener('click', resetDevice);
-$('qr-reset').addEventListener('click', resetDevice);
 
 // 账号列表里的切换 / 删除（按钮是画出来的，用事件代理）
 $('acct-list').addEventListener('click', async (ev) => {

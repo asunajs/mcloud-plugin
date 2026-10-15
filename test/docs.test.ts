@@ -226,3 +226,33 @@ test('⚠ 文档里不许让人去找**已经删掉的任务**（比死链更隐
     }
   }
 });
+
+test('⚠ 长 token 的容器必须能断行（不然会把整块撑破、下面的文字也不换行）', () => {
+  // 用户圈出来的现象是"说明文字被切在'不受影'那里"。看着像文字被裁，
+  // 根因却在**上一行**：`<code class="finger">` 里那串指纹有几十个字符、
+  // 中间没有空格 —— 它把容器撑宽，撑宽之后下面那段自然也不换行了。
+  //
+  // 而 `.finger` 这个类当时**根本没有样式**（写了类名没写规则）——
+  // 静态测试钉"id 对得上"是钉不住这种事的，只有真看一眼才发现。
+  const css = readFileSync(resolve(root, 'plugins/mcloud/style.css'), 'utf8');
+  const rule = /\.finger\s*\{([^}]*)\}/.exec(css);
+  assert.ok(rule, '`style.css` 里没有 `.finger` 规则 —— 长指纹会把容器撑破');
+  assert.ok(
+    /overflow-wrap:\s*anywhere|word-break:\s*break-all/.test(rule[1] ?? ''),
+    `\`.finger\` 必须能断行（参考实现那里是 \`class="break-all"\`）：${rule[1]}`,
+  );
+
+  // 而且界面上**只有一个**「换一台设备」——参考实现就只有一个。
+  // 曾经挂过第二个「我的码一直扫不出来」（同一个动作、按症状命名），
+  // 用户圈出来之后删了。
+  const ui = readFileSync(resolve(root, 'plugins/mcloud/index.html'), 'utf8');
+  assert.equal(
+    (ui.match(/id="device-reset"/g) ?? []).length,
+    1,
+    '「换一台设备」只能有一个（参考实现只有一个按钮）',
+  );
+  // ⚠ 只看**可见文字**：那句话在 HTML 注释里还留着（说明它为什么被删），
+  //   不剥注释的话这条断言会被自己的说明文案判红。
+  const visible = ui.replace(/<!--[\s\S]*?-->/g, '');
+  assert.ok(!visible.includes('我的码一直扫不出来'), '那个按症状命名的第二个按钮已经删了');
+});

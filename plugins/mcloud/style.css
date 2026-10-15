@@ -550,6 +550,19 @@ textarea:focus {
   }
 }
 
+/* 本机设备指纹那一串。⚠ **必须能断行** —— 它是一个长到几十字符、中间没有空格的
+   token（`BF3E4AC4…-ENDIN`）。不设断行的话它会把容器撑宽，而撑宽之后**下面那段
+   说明也不换行了**（一整行冲出视口，被切在"不受影"那里）——
+   现象看起来像"文字被裁了"，而根因在上一行的那个 token 上。
+   参考实现那里也是 `<code class="break-all">`。 */
+.finger {
+  display: block;
+  overflow-wrap: anywhere;
+  padding: 2px 0 6px;
+  color: var(--fg);
+  font-size: 13px;
+}
+
 /* ══════════ 添加账号弹窗 / 账号卡（复刻 mcloud） ══════════ */
 
 .toolbar {
