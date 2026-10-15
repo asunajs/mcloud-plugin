@@ -127,12 +127,48 @@ export function authStatus(store: Pick<Store, 'getState'>): {
   return { present: true, fingerprint: authFingerprint(sha256Hex(v)), length: v.length };
 }
 
+// ══════════════ 票与换票进度：**按账号分开存** ══════════════
+//
+// # 为什么必须分开
+//
+// 原来这两样各占**一个全局槽位**。多账号下它是错的，而且是**串票**：
+//
+//     账号 A 换票  → 全局票 = A 的票
+//     账号 B 要跑  → `jwtFresh` 看到"票还新" ⇒ **B 根本不换**
+//     账号 B 发请求 → 带的是 **A 的票**
+//
+// 也就是说 B 的请求会以 A 的身份发出去 —— 而 `jwttoken` 恰恰是**身份**。
+//
+// 参考实现是按账号建会话的（`mcloud-tasks/src/beans.rs`：
+// 「会话是按账号建的（`H5Client` 按主机注入 `jwttoken`）」）。
+//
+// ⚠ 换票进度也必须一起分：只分票的话，账号 B 会**接着账号 A 的半截进度**走
+//   （`spec-token` → … 的中间态被 B 读到），表现是 B 拿 A 的指纹去换票。
+//
+// 没有当前账号（单账号那套）⇒ 用原来的**裸键**，老数据照常读得到、不用迁移。
+
+/** 票与换票进度的存储键。按当前账号分；没有当前账号就用裸键。 */
+function scopedKey(base: string, store: Pick<Store, 'getState'>): string {
+  const cur = currentAccount(store);
+  return cur === undefined ? base : `${base}.${cur.id}`;
+}
+
+/** 票的键（导出是为了让"清掉某一个账号的票"这类操作能对准）。 */
+export function jwtKey(store: Pick<Store, 'getState'>): string {
+  return scopedKey(STATE_JWT, store);
+}
+
+/** 换票进度的键。 */
+export function exchangeKey(store: Pick<Store, 'getState'>): string {
+  return scopedKey(STATE_EXCHANGE, store);
+}
+
 export function loadExchange(store: Pick<Store, 'getState'>): ExchangeState | null {
-  return parse<ExchangeState>(store.getState(STATE_EXCHANGE));
+  return parse<ExchangeState>(store.getState(exchangeKey(store)));
 }
 
 export function loadJwt(store: Pick<Store, 'getState'>): JwtRecord | null {
-  return parse<JwtRecord>(store.getState(STATE_JWT));
+  return parse<JwtRecord>(store.getState(jwtKey(store)));
 }
 
 /** 票还新吗。`nowMs` 显式传入 —— 时间在这条链上是判据，不能藏在 `Date.now()` 里。 */
@@ -158,7 +194,7 @@ export function startExchange(
   const fingerprint = authFingerprint(sha256Hex(norm.value));
   store.setState(STATE_AUTH, norm.value, nowIso);
   store.setState(
-    STATE_EXCHANGE,
+    exchangeKey(store),
     JSON.stringify({ step: 'spec-token', fingerprint, startedAt: nowIso } satisfies ExchangeState),
     nowIso,
   );
@@ -167,8 +203,10 @@ export function startExchange(
 
 export function clearAuth(store: Store, nowIso: string): void {
   store.setState(STATE_AUTH, '', nowIso);
-  store.setState(STATE_EXCHANGE, '', nowIso);
-  store.setState(STATE_JWT, '', nowIso);
+  // ⚠ 只清**当前账号**那两格 —— 全清的话会顺手把别的账号的票也删了，
+  //   表现是"清了一个账号，其余账号全部要重换一遍"。
+  store.setState(exchangeKey(store), '', nowIso);
+  store.setState(jwtKey(store), '', nowIso);
 }
 
 /** 推进一步（**一次调用最多发一个请求**）。
@@ -192,7 +230,7 @@ export function runExchangeStep(deps: TaskDeps): { ok: boolean; note: string; do
     // 留着只会让"下次也许还能用"变成一个错觉
     delete s.ssoToken;
     delete (s as ExchangeState & { ts?: string }).ts;
-    deps.store.setState(STATE_EXCHANGE, JSON.stringify(s), deps.nowIso);
+    deps.store.setState(exchangeKey(deps.store), JSON.stringify(s), deps.nowIso);
     return { ok, note, done: true };
   };
 
@@ -235,7 +273,7 @@ export function runExchangeStep(deps: TaskDeps): { ok: boolean; note: string; do
     st.ssoToken = p.value;
     st.referer = pageUrl(SIGN_IN_RECIPE, p.value);
     st.step = 'timestamp';
-    deps.store.setState(STATE_EXCHANGE, JSON.stringify(st), deps.nowIso);
+    deps.store.setState(exchangeKey(deps.store), JSON.stringify(st), deps.nowIso);
     return { ok: true, note: '① 换到 SSO token（**不缓存**，下一步立刻用）', done: false };
   }
 
@@ -249,7 +287,7 @@ export function runExchangeStep(deps: TaskDeps): { ok: boolean; note: string; do
     st.ssoToken = st.ssoToken ?? '';
     (st as ExchangeState & { ts?: string }).ts = p.value;
     st.step = 'tyrz-login';
-    deps.store.setState(STATE_EXCHANGE, JSON.stringify(st), deps.nowIso);
+    deps.store.setState(exchangeKey(deps.store), JSON.stringify(st), deps.nowIso);
     return { ok: true, note: `② 服务端时间戳 ${p.value}（**必须用它**，本地时钟偏一点就是 401）`, done: false };
   }
 
@@ -273,7 +311,7 @@ export function runExchangeStep(deps: TaskDeps): { ok: boolean; note: string; do
     mobile: p.value.mobile,
     fingerprint: st.fingerprint,
   };
-  deps.store.setState(STATE_JWT, JSON.stringify(rec), deps.nowIso);
+  deps.store.setState(jwtKey(deps.store), JSON.stringify(rec), deps.nowIso);
 
   // ⚠⚠ 拿到票之后**再走一步**：把 `deviceId` 也换回来。
   //
@@ -298,7 +336,7 @@ export function runExchangeStep(deps: TaskDeps): { ok: boolean; note: string; do
       deps.nowIso,
     );
     st.step = 'smid';
-    deps.store.setState(STATE_EXCHANGE, JSON.stringify(st), deps.nowIso);
+    deps.store.setState(exchangeKey(deps.store), JSON.stringify(st), deps.nowIso);
     return {
       ok: true,
       note:
@@ -356,7 +394,7 @@ function failStep(
   st.note = note;
   delete st.ssoToken;
   delete (st as ExchangeState & { ts?: string }).ts;
-  deps.store.setState(STATE_EXCHANGE, JSON.stringify(st), deps.nowIso);
+  deps.store.setState(exchangeKey(deps.store), JSON.stringify(st), deps.nowIso);
   return { ok: false, note, done: true };
 }
 
