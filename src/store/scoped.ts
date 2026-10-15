@@ -40,9 +40,9 @@ const RAW = Symbol.for('__mcloud_raw_store__');
  *  ⚠ 业务代码**不许**用这个函数。用了就等于绕过账号路由，而那正是
  *  `scoped()` 要根除的东西（见文件头）。这里导出是为了让"绕过"这件事
  *  有一个**显式、可搜到**的入口，而不是让各处自己去扒属性。 */
-export function rawStoreOf(s: Store): Store {
+export function rawStoreOf<S extends object>(s: S): S {
   const raw = (s as unknown as Record<symbol, unknown>)[RAW];
-  return (raw as Store | undefined) ?? s;
+  return (raw as S | undefined) ?? s;
 }
 
 /** 把 store 包成"按账号的键自动落到当前账号的袋里"的样子。
