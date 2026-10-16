@@ -300,11 +300,17 @@ function renderAccount(a, login) {
       : list
           .map((x) => {
             // 平台徽章：手机端 / macOS / Windows。认不出就**如实说**，不猜。
+            //
+            // ⚠ 用 `.badge lang`（**不带状态圆点**）—— 平台是"这是台什么设备"的
+            //   **描述**，不是状态。面板的圆点（`.badge::before`）是"状态"的视觉语言：
+            //   带圆点的「Windows」看起来像"Windows 处于某种状态"，
+            //   而旁边真状态徽章（当前账号 / 已停用）反而被混淆了。
+            //   `.badge.lang` 在面板里就是这个用途（语言标签），只去掉圆点，底色不变。
             const badge =
               x.platform === 'mobile'
-                ? '<span class="badge">手机端</span>'
+                ? '<span class="badge lang">手机端</span>'
                 : x.platform === 'pc'
-                  ? `<span class="badge">${x.pcPlatform === 'mac' ? 'macOS' : 'Windows'}</span>`
+                  ? `<span class="badge lang">${x.pcPlatform === 'mac' ? 'macOS' : 'Windows'}</span>`
                   : '<span class="badge warning">平台未知</span>';
             // `凭据 N 天后`：`null` 是"这条凭据里没带到期时间"，**不能画成 0**
             //（那看起来像"已过期"，用户会去重新登录一个本来好好的账号）。
@@ -323,7 +329,25 @@ function renderAccount(a, login) {
                   <div class="card-head-main">
                     <span class="card-title${x.disabled ? ' is-off' : ''}">${esc(x.label || x.masked)}</span>
                     ${badge}
-                    ${x.current ? '<span class="badge success">正在用</span>' : ''}
+                    ${
+                      // 「当前账号」= 后端 mcloud.account.current 那个指针指向的账号
+                      //（src/mcloud/accounts.ts 的 currentAccount）：登录成功、
+                      // 加第一个账号、显式选择、以及**任务开跑时挑的那个**都会写它，
+                      // 账号被删就清空。所以它准确的意思是
+                      // **"任务要用的就是这个账号"**，而不是"此刻正在被使用"。
+                      //
+                      // ⚠ 原来写「正在用」（从参考实现抄来的）：语义含糊 ——
+                      //   "用"的主语是谁、是"此刻"还是"被选中"，都读不出来。
+                      //   改成「当前账号」：与后端那个字段同名，也和页头
+                      //   「已登录 13800000000」对得上。
+                      // ⚠ 变体用 .badge running（accent）不是 .success（绿）：
+                      //   面板里 accent = "活动/选中"，绿 = "健康/正常"；
+                      //   这里表达的是"选中"，而且卡片本身就描了一圈 accent 强调色
+                      //   （见 style.css 的 .acct-card.is-current），同一个含义用同一个颜色。
+                      // ⚠ 这段在模板串里：注释里**一个反引号都不能有**（换了引号也一样），
+                      //   写了会把模板串截断 —— 面板有专门的检查盯这个（见 test-web-assets.mjs）。
+                      x.current ? '<span class="badge running">当前账号</span>' : ''
+                    }
                     ${x.disabled ? '<span class="badge idle">已停用</span>' : ''}
                   </div>
                   <div class="card-actions">
