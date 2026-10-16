@@ -87,7 +87,9 @@ function runTask(key) {
 function toast(msg, bad) {
   const el = $('toast');
   el.textContent = msg;
-  el.className = 'toast' + (bad ? ' toast-bad' : '');
+  // 用主面板的提示条组件（`.toast` / `.toast.bad`），不是自己画一个：
+  // 同一种"出事了"的提示在全站应该长一样。
+  el.className = 'toast' + (bad ? ' bad' : '');
   el.hidden = false;
   clearTimeout(toast._t);
   toast._t = setTimeout(
@@ -252,16 +254,35 @@ function renderAccount(a, login) {
   const n = list.length;
 
   if (n === 0) {
-    setText('acct-hero', '还没登录');
-    setText('acct-sub', '登录之后才能签到、领豆、领小红花。');
-    chip.textContent = '还没登录';
-    chip.className = 'chip chip-idle';
+    // ⚠ 「有会话、没账号」是**一种正常状态**，不能一律说成「还没登录」。
+    //
+    // 贴一条会话串（凭据页那条路）不产生账号，但会话本身能用 —— 靠它的任务照跑。
+    // 原来这里不管这一层，于是"能用的东西"在界面上长得和"什么都没配"一模一样，
+    // 用户会去重新登录一个本来好好的账号，而他没有任何线索知道自己多虑了。
+    const ses0 = a.session || {};
+    setText('acct-hero', '还没登录账号');
+    if (ses0.present) {
+      const age = Math.max(0, Math.round(Number(ses0.ageHours) || 0));
+      const when = age < 1 ? '刚存下' : `${age} 小时前存下`;
+      setText(
+        'acct-sub',
+        ses0.lastCheckOk
+          ? `你贴进来的会话还能用（${when}）。`
+          : `你贴进来的会话不通了（${ses0.lastCheckNote || '验证没过'}）—— 重新贴一条，或者扫一次码。`,
+      );
+      chip.textContent = ses0.lastCheckOk ? '会话可用' : '会话不通';
+      chip.className = ses0.lastCheckOk ? 'badge' : 'badge warning';
+    } else {
+      setText('acct-sub', '登录之后才能签到、领豆、领小红花。');
+      chip.textContent = '还没登录';
+      chip.className = 'badge idle';
+    }
   } else {
     const cur = list.find((x) => x.current) || list[0];
     setText('acct-hero', `已登录 ${cur.label || cur.masked}`);
     setText('acct-sub', n > 1 ? `一共 ${n} 个账号，任务会挨个跑。` : '任务会用这个账号跑。');
     chip.textContent = n > 1 ? `${n} 个账号` : cur.label || cur.masked;
-    chip.className = 'chip chip-ok';
+    chip.className = 'badge success';
   }
 
   // 会话体检。这一条回答「我的登录还有效吗」—— 票过期时**所有**任务一起失败，
@@ -275,7 +296,7 @@ function renderAccount(a, login) {
   const box = $('acct-list');
   box.innerHTML =
     n === 0
-      ? '<li class="hint">还没有账号。点右上角「添加账号」。</li>'
+      ? '<li class="hint">还没有账号。点上面那个「添加账号」。</li>'
       : list
           .map((x) => {
             // 平台徽章：手机端 / macOS / Windows。认不出就**如实说**，不猜。
@@ -283,8 +304,8 @@ function renderAccount(a, login) {
               x.platform === 'mobile'
                 ? '<span class="badge">手机端</span>'
                 : x.platform === 'pc'
-                  ? `<span class="badge badge-pc">${x.pcPlatform === 'mac' ? 'macOS' : 'Windows'}</span>`
-                  : '<span class="badge">平台未知</span>';
+                  ? `<span class="badge">${x.pcPlatform === 'mac' ? 'macOS' : 'Windows'}</span>`
+                  : '<span class="badge warning">平台未知</span>';
             // `凭据 N 天后`：`null` 是"这条凭据里没带到期时间"，**不能画成 0**
             //（那看起来像"已过期"，用户会去重新登录一个本来好好的账号）。
             const exp =
@@ -294,25 +315,30 @@ function renderAccount(a, login) {
                   ? `凭据 ${x.expireDays} 天后`
                   : `凭据已过期 ${-x.expireDays} 天`;
             const dev = x.deviceId ? `设备 ${x.deviceId} · ` : '';
+            // 卡片用主面板那套（`.card` + `.card-head` + `.card-title` +
+            // `.card-actions`），与面板的插件卡、任务卡同源。
             return `
-              <li class="acct-card${x.current ? ' is-current' : ''}">
-                <div class="acct-main">
-                  <div class="acct-title${x.disabled ? ' is-off' : ''}">
-                    ${esc(x.label || x.masked)}${badge}${x.current ? '<span class="tag tag-on">正在用</span>' : ''}${x.disabled ? '<span class="tag">已停用</span>' : ''}
+              <li class="card acct-card${x.current ? ' is-current' : ''}">
+                <div class="card-head">
+                  <div class="card-head-main">
+                    <span class="card-title${x.disabled ? ' is-off' : ''}">${esc(x.label || x.masked)}</span>
+                    ${badge}
+                    ${x.current ? '<span class="badge success">正在用</span>' : ''}
+                    ${x.disabled ? '<span class="badge idle">已停用</span>' : ''}
                   </div>
-                  <div class="acct-sub">${dev}${exp}</div>
+                  <div class="card-actions">
+                    <!-- ⚠ 这里原来有「切到这个」。删了 —— **切账号不是账号管理**
+                         （参考实现的口径）：账号页管的是"有哪些账号"（登录 / 改昵称 /
+                         刷新 / 停用 / 移除），而"这一趟用哪些号跑"是**任务**的属性。
+                         那个按钮让人以为"切换"是账号页的事，于是任务页上就没去找。 -->
+                    <button class="btn" data-acc-refresh="${esc(x.id)}">刷新</button>
+                    <button class="btn" data-acc-rename="${esc(x.id)}">编辑</button>
+                    <button class="btn" data-acc-settings="${esc(x.id)}">设置</button>
+                    <button class="btn" data-acc-disable="${esc(x.id)}" data-on="${x.disabled ? '1' : ''}">${x.disabled ? '启用' : '停用'}</button>
+                    <button class="btn danger" data-acc-del="${esc(x.id)}">移除</button>
+                  </div>
                 </div>
-                <div class="acct-acts">
-                  <!-- ⚠ 这里原来有「切到这个」。删了 —— **切账号不是账号管理**
-                       （参考实现的口径）：账号页管的是"有哪些账号"（登录 / 改昵称 /
-                       刷新 / 停用 / 移除），而"这一趟用哪些号跑"是**任务**的属性。
-                       那个按钮让人以为"切换"是账号页的事，于是任务页上就没去找。 -->
-                  <button class="btn btn-sm" data-acc-refresh="${esc(x.id)}">刷新</button>
-                  <button class="btn btn-sm" data-acc-rename="${esc(x.id)}">编辑</button>
-                  <button class="btn btn-sm" data-acc-settings="${esc(x.id)}">设置</button>
-                  <button class="btn btn-sm" data-acc-disable="${esc(x.id)}" data-on="${x.disabled ? '1' : ''}">${x.disabled ? '启用' : '停用'}</button>
-                  <button class="btn btn-sm btn-danger" data-acc-del="${esc(x.id)}">移除</button>
-                </div>
+                <div class="card-sub">${dev}${exp}</div>
               </li>`;
           })
           .join('');
@@ -429,7 +455,7 @@ function renderLive(l) {
     codes.map((c) => [
       c.code,
       `${c.source || ''}${c.state ? ` · ${c.state}` : ''}${c.reason ? ` · ${c.reason}` : ''}`,
-      c.kind ? `<span class="tag">${esc(c.kind)}</span>` : '',
+      c.kind ? `<span class="badge">${esc(c.kind)}</span>` : '',
     ]),
     '还没有口令。从直播弹幕里抄一条贴在上面。',
   );
@@ -504,7 +530,7 @@ function renderRecent(boxId, stepsId, recent) {
     dur.textContent = r.ms >= 1000 ? `${(r.ms / 1000).toFixed(1)}s` : `${r.ms}ms`;
     row.appendChild(dur);
 
-    const btn = el('button', 'btn btn-sm btn-ghost');
+    const btn = el('button', 'btn ghost');
     btn.type = 'button';
     btn.textContent = i === 0 ? '收起' : '看';
     btn.addEventListener('click', () => {
@@ -651,7 +677,7 @@ function renderPush(p) {
     state.textContent = on ? '已配' : '';
     row.appendChild(state);
 
-    const btn = el('button', 'btn btn-sm' + (on ? ' btn-ghost' : ''));
+    const btn = el('button', 'btn' + (on ? ' ghost' : ''));
     btn.type = 'button';
     btn.textContent = on ? '改' : '填';
     btn.addEventListener('click', () => {
@@ -713,7 +739,7 @@ function renderPush(p) {
       form.appendChild(save);
 
       if (on) {
-        const del = el('button', 'btn btn-ghost');
+        const del = el('button', 'btn ghost');
         del.type = 'button';
         del.textContent = '不用这个';
         del.addEventListener('click', () => {
@@ -779,7 +805,7 @@ function renderPush(p) {
         (n === 0 ? '全部渠道' : `${n} 个渠道`) +
         (r.minLevel === 'error' ? ' · 只在有失败时' : '');
       row.appendChild(state);
-      const del = el('button', 'btn btn-sm btn-ghost');
+      const del = el('button', 'btn ghost');
       del.type = 'button';
       del.textContent = '删';
       del.addEventListener('click', () => {

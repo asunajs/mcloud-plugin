@@ -110,6 +110,70 @@ test('⚠ 每个动作都走 `act(...)`（统一提示 + 失败可见 + 之后�
 
 // ── ③ 样式没有孤儿 id ─────────────────────────────────────────────────
 
+test('⚠ 页面用到的每个类都有定义（面板那份或自己那份）—— 删规则不留死角', (t) => {
+  // 这条是第二十九轮（界面改用主面板的设计体系）补的。
+  //
+  // 为什么必须有一条：**删掉一条类规则比删掉一条 id 规则更危险**。
+  // id 写错上面那条测试会红；类名写错/规则被删，浏览器**不报错、不白屏**，
+  // 只是那一段变成"没有样式的裸内容" —— 而"界面看着乱七八糟"正是用户的原话。
+  // 交接时最容易发生的正是这件事：别人把"和主面板重复的规则"清掉，
+  // 而某个类面板**并没有**提供（比如面板只有 `.dialog`，没有 `.modal`）。
+  //
+  // 判据：页面上出现的每个类，要么在主面板的 `theme.css` / `components.css` 里，
+  //       要么在自己的 `style.css` 里。两份都找不到 = 这个类渲染出来是裸的。
+  const panelDir = new URL('../../rust-plugin-panel/web/css/', import.meta.url);
+  let panel = '';
+  try {
+    panel = readFileSync(new URL('theme.css', panelDir), 'utf8') +
+      readFileSync(new URL('components.css', panelDir), 'utf8');
+  } catch {
+    // 插件仓库要能**单独**测。面板仓库不在旁边时跳过这一条，而不是判红 ——
+    // 判红的话，任何人克隆这一个仓库都会看到一条与他无关的失败。
+    t.skip('旁边没有 rust-plugin-panel 仓库，跳过');
+    return;
+  }
+
+  const used = new Set<string>();
+  /** 把一段 class 串拆成类名。 */
+  const addClasses = (raw: string) => {
+    for (const c of raw.split(/\s+/)) {
+      // ⚠ 模板串里的 `${…}` 要整个扔掉再拆：`class="card acct-card${x ? ' is-current' : ''}"`
+      //   直接按空白拆得到的是一堆 `':'` / `"is-current'"` 这种碎片
+      //   （第一次跑就是这么红的，五条"不存在的类"全是我自己的正则造出来的）。
+      if (!c || c.includes('$') || /['"{}():]/.test(c)) continue;
+      used.add(c);
+    }
+  };
+  const collect = (text: string) => {
+    // 注释里的类名不算：那是文档。`<!-- -->` 与 `/* */` 都剥掉。
+    const body = text.replace(/<!--[\s\S]*?-->/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+    for (const m of body.matchAll(/class="([^"]+)"/g)) {
+      addClasses((m[1] as string).replace(/\$\{[^}]*\}/g, ' '));
+    }
+    // `el('button', 'btn ghost')` / `classList.toggle('is-on', …)` 这类写法
+    for (const m of body.matchAll(/el\('[a-z]+', '([^']+)'/g)) addClasses(m[1] as string);
+    for (const m of body.matchAll(/classList\.(?:add|toggle|remove)\('([A-Za-z0-9_-]+)'/g)) {
+      used.add(m[1] as string);
+    }
+    for (const m of body.matchAll(/className = '([^']+)'/g)) addClasses(m[1] as string);
+  };
+  collect(html);
+  collect(js);
+
+  const defines = (cls: string, text: string) =>
+    new RegExp(`\\.${cls.replace(/[-]/g, '\\-')}(?![\\w-])`).test(
+      text.replace(/\/\*[\s\S]*?\*\//g, ''),
+    );
+
+  const missing = [...used].filter((c) => !defines(c, css) && !defines(c, panel)).sort();
+  assert.ok(used.size > 40, `只找到 ${used.size} 个类 —— 是不是提取正则没跟上写法？`);
+  assert.deepEqual(
+    missing,
+    [],
+    `这些类在面板的 CSS 与本页的 CSS 里都没有定义（渲染出来是裸的）：${missing.join(', ')}`,
+  );
+});
+
 test('样式表里没有指向不存在 id 的孤儿规则（改名留下的死规则）', () => {
   const declared = idsIn(html);
   const dynamic = idsIn(js);

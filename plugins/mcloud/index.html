@@ -4,7 +4,22 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>云盘</title>
+
+    <!-- 样式**复用主面板那一套**（token + 组件类），本文件只放插件特有的布局。
+         顺序不能反：面板的三份在前，自己的在后（要靠自己那份盖掉少数几条）。
+
+         ⚠ 插件页只许引 `/css/*` 和**自己的相对资源** —— 这是面板定的边界
+           （见它 `scripts/test-web-assets.mjs` 里那条断言）。所以面板 vendored
+           的第三方组件（`/vendor/puredashboard/*`）这里**引不到**：
+           弹窗用的是面板自己那套 `.dialog*`（在 `components.css` 里），
+           与面板的「运行记录」弹窗**是同一个组件**，不是另画一个。 -->
+    <link rel="stylesheet" href="/css/reset.css" />
+    <link rel="stylesheet" href="/css/theme.css" />
+    <link rel="stylesheet" href="/css/components.css" />
     <link rel="stylesheet" href="style.css" />
+
+    <!-- 主题跟随 + embed 标记，必须赶在第一帧之前（见 boot.js 的文件头） -->
+    <script src="boot.js"></script>
   </head>
   <body>
     <!--
@@ -44,8 +59,10 @@
     <header class="top">
       <h1 class="title">云盘</h1>
       <div class="top-right">
-        <span id="acct-chip" class="chip chip-idle">还没登录</span>
-        <button id="refresh" class="btn btn-sm">刷新</button>
+        <!-- 登录状态用面板的徽章（`.badge` + 变体），不是自己画一个 chip：
+             对齐全站的那一个"状态"长相，用户不用重新认。 -->
+        <span id="acct-chip" class="badge idle">还没登录</span>
+        <button id="refresh" class="btn">刷新</button>
       </div>
     </header>
 
@@ -63,79 +80,104 @@
       <!-- ══════════════ 账号 ══════════════ -->
       <section class="block is-on" id="block-account">
         <!-- 工具栏 —— 照 mcloud 的账号页。
-             ⚠「上游状态」是我这边的，其余三个复刻。 -->
+             ⚠「上游状态」是我这边的，其余三个复刻。
+             只有「添加账号」是主要动作，所以只有它用 `primary`：四个按钮一样重
+             等于没有主次，用户还是要读完四个才知道点哪个。 -->
         <div class="row toolbar">
-          <button class="btn btn-sm" id="acct-upstream">上游状态</button>
-          <button class="btn btn-sm" id="acct-config">账号配置</button>
-          <button class="btn btn-sm" id="acct-refresh-all">刷新全部凭据</button>
-          <button class="btn btn-primary" id="acct-add">添加账号</button>
+          <button class="btn" id="acct-upstream">上游状态</button>
+          <button class="btn" id="acct-config">账号配置</button>
+          <button class="btn" id="acct-refresh-all">刷新全部凭据</button>
+          <button class="btn primary" id="acct-add">添加账号</button>
         </div>
 
         <p class="hero" id="acct-hero">…</p>
         <p class="sub" id="acct-sub"></p>
 
-        <h3 class="h3">账号</h3>
-        <ul class="acct-cards" id="acct-list"></ul>
+        <div class="section">
+          <div class="section-head">
+            <span class="section-title">账号</span>
+          </div>
+          <ul class="acct-cards" id="acct-list"></ul>
+        </div>
 
         <!-- 本机设备指纹。
              ⚠ 它**不是**用户要填的东西 —— 它是这台机器的指纹，只读。
              参考实现（`web/src/pages/accounts-page.tsx`）的原话：
              「扫码时它作为 `dID` 上报，服务端据此定位会话。它跨重启稳定；
-               换掉会让旧的扫码会话立即失效，但已登录账号不受影响。」 -->
-        <h3 class="h3">本机设备指纹</h3>
-        <code class="finger" id="device-id-show">（还没生成）</code>
-        <p class="hint">
-          扫码时它作为 <code>dID</code> 上报，服务端据此定位会话。
-          它跨重启稳定；换掉会让<b>旧的扫码会话</b>立即失效，但<b>已登录的账号不受影响</b>。
-        </p>
-        <!-- ⚠ **只有一个**按钮 —— 参考实现就只有一个（`accounts-page.tsx` 里那段
-             「设备指纹」卡片）。
-             这里原来还挂了一个「我的码一直扫不出来」（同一个动作、按症状命名），
-             理由是"用户的念头是症状、动作名字对不上"。用户圈出来之后删了：
-             复刻就是复刻，多一个按钮就多一处"点哪个"的犹豫，
-             而那正是这一版要消灭的东西。 -->
-        <div class="row">
-          <button class="btn btn-sm" id="device-reset">换一台设备</button>
+               换掉会让旧的扫码会话立即失效，但已登录账号不受影响。」
+             ⚠ 上面那句是给**写代码的人**看的；页面上说人话，不提 `dID` 这种协议
+               字段名（docs/ui-wording.md：「怎么做到的」不写）。 -->
+        <div class="section">
+          <div class="section-head">
+            <span class="section-title">本机设备指纹</span>
+            <div class="card-actions">
+              <!-- ⚠ **只有一个**按钮 —— 参考实现就只有一个（`accounts-page.tsx` 里那段
+                   「设备指纹」卡片）。
+                   这里原来还挂了一个「我的码一直扫不出来」（同一个动作、按症状命名），
+                   理由是"用户的念头是症状、动作名字对不上"。用户圈出来之后删了：
+                   复刻就是复刻，多一个按钮就多一处"点哪个"的犹豫，
+                   而那正是这一版要消灭的东西。 -->
+              <button class="btn" id="device-reset">换一台设备</button>
+            </div>
+          </div>
+          <div class="card">
+            <code class="finger mono" id="device-id-show">（还没生成）</code>
+            <p class="hint">
+              这台设备登录时用的身份。换掉之后，<b>正在进行的那次扫码</b>会失效，
+              已经登录的账号不受影响。
+            </p>
+          </div>
         </div>
       </section>
 
       <!-- ══════════ 每账号设置（弹窗） ══════════
            ⚠ 这两个字段原来挂在**全局**的设置区块里，而它们是**按账号的键** ——
-           "改了哪个账号"取决于当前选中，界面却不说。搬过来之后由"点的那条"决定。 -->
-      <div class="modal" id="acct-cfg-dialog" hidden>
-        <div class="modal-box">
-          <div class="modal-head">
-            <h3 class="h3">设置 · <span id="acct-cfg-title"></span></h3>
-            <button class="btn btn-sm" id="acct-cfg-close" aria-label="关闭">×</button>
+           "改了哪个账号"取决于当前选中，界面却不说。搬过来之后由"点的那条"决定。
+           ⚠ 用面板的弹窗组件（`.dialog-back` / `.dialog` / `.dialog-head` /
+             `.dialog-body`，与面板的「运行记录」弹窗同一套）。
+             `hidden` 由面板的 reset.css 兜底（`[hidden] { display: none !important }`），
+             所以这里不需要也不许再写 `.dialog-back[hidden]` 这种规则。 -->
+      <div class="dialog-back" id="acct-cfg-dialog" hidden>
+        <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="acct-cfg-title">
+          <div class="dialog-head">
+            <span>设置 · <strong id="acct-cfg-title"></strong></span>
+            <!-- 关掉用文字而不是「×」：面板那个弹窗也是文字按钮，而且
+                 「×」在窄屏上是全页最小的可点目标。 -->
+            <button class="btn ghost" id="acct-cfg-close">关闭</button>
           </div>
-          <p class="hint">这些设置<b>只对这一个账号</b>生效。</p>
-          <label class="field">
-            <span>听窗口长度（秒）</span>
-            <input id="acct-cfg-seconds" type="number" min="10" max="3600" placeholder="10 – 3600" />
-          </label>
-          <label class="field">
-            <span>只听这间房（留空 = 自动）</span>
-            <input id="acct-cfg-room" type="number" min="0" placeholder="留空 = 自动" />
-          </label>
-          <label class="field">
-            <span>心跳回帧</span>
-            <input id="acct-cfg-heartbeat" type="text" placeholder="h" />
-          </label>
-          <p class="hint" id="acct-cfg-note"></p>
-          <p class="hint">留空的那一项<b>不改</b>（不是设成 0）。</p>
-          <button class="btn btn-primary" id="acct-cfg-save">存下</button>
+          <div class="dialog-body">
+            <p class="hint">这些设置<b>只对这一个账号</b>生效。</p>
+            <label class="field">
+              <span class="field-label">听窗口长度（秒）</span>
+              <input id="acct-cfg-seconds" type="number" min="10" max="3600" placeholder="10 – 3600" />
+            </label>
+            <label class="field">
+              <span class="field-label">只听这间房（留空 = 自动）</span>
+              <input id="acct-cfg-room" type="number" min="0" placeholder="留空 = 自动" />
+            </label>
+            <label class="field">
+              <span class="field-label">心跳回帧</span>
+              <input id="acct-cfg-heartbeat" type="text" placeholder="h" />
+            </label>
+            <p class="hint" id="acct-cfg-note"></p>
+            <p class="hint">留空的那一项<b>不改</b>（不是设成 0）。</p>
+            <div class="row">
+              <button class="btn primary" id="acct-cfg-save">存下</button>
+            </div>
+          </div>
         </div>
       </div>
 
       <!-- ══════════ 添加账号（弹窗，复刻 mcloud） ══════════
            参考实现的形状：五个页签 + **客户端形态在最上面**（对全部页签生效）
            + 各页签自己的内容。 -->
-      <div class="modal" id="add-dialog" hidden>
-        <div class="modal-box">
-          <div class="modal-head">
-            <h3 class="h3">添加账号</h3>
-            <button class="btn btn-sm" id="add-close" aria-label="关闭">×</button>
+      <div class="dialog-back" id="add-dialog" hidden>
+        <div class="dialog wide" role="dialog" aria-modal="true" aria-labelledby="add-title">
+          <div class="dialog-head">
+            <span id="add-title">添加账号</span>
+            <button class="btn ghost" id="add-close">关闭</button>
           </div>
+          <div class="dialog-body">
 
           <div class="tabs" id="add-tabs">
             <button class="tab is-on" data-tab="qr">扫码</button>
@@ -147,16 +189,19 @@
 
           <!-- 客户端形态：**在最上面，对全部页签生效**。
                参考实现的说明照抄：「这会随账号存进 accounts.json，之后每次请求的
-               UA、设备串与渠道号都按它来。选错的话，账号以后一直用错的身份发请求。」 -->
+               UA、设备串与渠道号都按它来。选错的话，账号以后一直用错的身份发请求。」
+               ⚠ 上面那句是**给写代码的人看的**；页面上不提 `UA` / 设备串 / 渠道号
+                 这些协议字段名（docs/ui-wording.md：「怎么做到的」不写）——
+                 只说用户要拿来判断的那件事：选错了会怎样。 -->
           <div class="field">
-            <span class="hint">客户端形态</span>
+            <span class="field-label">客户端形态</span>
             <div class="row">
-              <button class="btn btn-sm is-on" id="add-win">Windows</button>
-              <button class="btn btn-sm" id="add-mac">macOS</button>
+              <button class="btn is-on" id="add-win">Windows</button>
+              <button class="btn" id="add-mac">macOS</button>
             </div>
             <p class="hint">
-              这会随账号存下来，之后每次请求的 UA、设备串与渠道号都按它来。
-              选错的话，账号以后一直用错的身份发请求。
+              这个选择会连着账号一起存下来，之后这个账号的每次请求都用它。
+              <b>选错了的话，账号以后一直用错的身份发请求</b>。
             </p>
           </div>
 
@@ -168,7 +213,7 @@
               <!-- ⚠ **没有**「我扫完了 / 继续」这种按钮：参考实现是**自动轮询**，
                    扫完之后确认动作发生在**手机上**（「已扫码，请在手机上确认」）。
                    之前那个按钮让用户以为"要在这里点一下才算数"。 -->
-              <button class="btn btn-primary" id="login-qr">生成二维码</button>
+              <button class="btn primary" id="login-qr">生成二维码</button>
               <button class="btn" id="qr-cancel">取消</button>
             </div>
             <p class="hint">用移动云盘 App 扫码，然后在手机上确认。</p>
@@ -184,7 +229,7 @@
             <div class="row">
               <button class="btn" id="sms-send">发验证码</button>
               <input id="sms-code" class="grow" type="text" placeholder="6 位验证码" inputmode="numeric" />
-              <button class="btn btn-primary" id="sms-submit">登录</button>
+              <button class="btn primary" id="sms-submit">登录</button>
             </div>
             <div class="slider" id="slider-box" hidden>
               <p class="hint" id="slider-note"></p>
@@ -210,7 +255,7 @@
             <div class="row">
               <button class="btn" id="app-send">发验证码</button>
               <input id="app-code" class="grow" type="text" placeholder="6 位验证码" inputmode="numeric" />
-              <button class="btn btn-primary" id="app-submit">登录</button>
+              <button class="btn primary" id="app-submit">登录</button>
             </div>
             <!-- 滑块图只在"要过滑块"时出现 —— 它是**异常路径**（首次发码被风控拦下）。
                  ⚠ 缺口位置是这一侧解出来的，不用人眼量像素（与 PC 那条同一套）。 -->
@@ -225,7 +270,7 @@
             <div class="row">
               <input id="pwd-phone" class="grow" type="tel" placeholder="手机号" autocomplete="tel" />
               <input id="pwd-pass" class="grow" type="password" placeholder="口令" autocomplete="current-password" />
-              <button class="btn btn-primary" id="pwd-submit">登录</button>
+              <button class="btn primary" id="pwd-submit">登录</button>
             </div>
             <p class="hint">口令会先按协议哈希（SHA-1，固定前缀）再发出去，不会明文上传。</p>
           </div>
@@ -243,7 +288,8 @@
               存下之后<b>不用再管换票</b> —— H5 那几张票是任务自己换的（约 2 小时废一次，
               所以每次跑都会看一眼，新鲜就跳过）。
             </p>
-            <button class="btn btn-primary" id="paste-submit">存下</button>
+            <button class="btn primary" id="paste-submit">存下</button>
+          </div>
           </div>
         </div>
       </div>
@@ -257,7 +303,7 @@
              账号就永远进不来了（参考实现的原话：「勾每一项就锁死了当时的名单」）。
              ⚠ 切账号属于**任务**，不属于账号管理 —— 见账号页那段说明。 -->
         <div class="picker" data-picker="日常">
-          <button class="btn btn-sm picker-btn" id="daily-acct-btn" aria-expanded="false">
+          <button class="btn picker-btn" id="daily-acct-btn" aria-expanded="false">
             <span id="daily-acct-label">全部账号</span> ▾
           </button>
           <div class="picker-panel" id="daily-acct-panel" hidden>
@@ -269,7 +315,7 @@
           </div>
         </div>
 <div class="row">
-          <button class="btn btn-primary" id="daily-run">现在跑一次</button>
+          <button class="btn primary" id="daily-run">现在跑一次</button>
         </div>
         <h3 class="h3">最近几次</h3>
         <p class="hint" id="daily-when"></p>
@@ -292,14 +338,14 @@
         <h3 class="h3">什么时候抢</h3>
         <p class="hint">默认每天 10 点（抢兑是整点开抢的）。留空 = 每小时都试。</p>
         <div class="row">
-          <label class="field"><span>每天几点</span>
+          <label class="field"><span class="field-label">每天几点</span>
             <input id="ex-hour" type="number" min="0" max="23" placeholder="10" /></label>
           <button class="btn" id="ex-hour-save">保存</button>
         </div>
         <p class="hint">「提前多少毫秒发」是<b>你到云端的传输耗时</b>。网慢就调大，
           默认 10。调对了那一枪才会正好压在整点。</p>
         <div class="row">
-          <label class="field"><span>提前（毫秒）</span>
+          <label class="field"><span class="field-label">提前（毫秒）</span>
             <input id="ex-lead" type="number" min="0" max="2000" placeholder="10" /></label>
           <button class="btn" id="ex-lead-save">保存</button>
         </div>
@@ -309,7 +355,7 @@
              账号就永远进不来了（参考实现的原话：「勾每一项就锁死了当时的名单」）。
              ⚠ 切账号属于**任务**，不属于账号管理 —— 见账号页那段说明。 -->
         <div class="picker" data-picker="兑换">
-          <button class="btn btn-sm picker-btn" id="exchange-acct-btn" aria-expanded="false">
+          <button class="btn picker-btn" id="exchange-acct-btn" aria-expanded="false">
             <span id="exchange-acct-label">全部账号</span> ▾
           </button>
           <div class="picker-panel" id="exchange-acct-panel" hidden>
@@ -321,7 +367,7 @@
           </div>
         </div>
 <div class="row">
-          <button class="btn btn-primary" id="ex-run">现在试一次</button>
+          <button class="btn primary" id="ex-run">现在试一次</button>
         </div>
         <h3 class="h3">最近几次</h3>
         <div class="rows" id="ex-recent"></div>
@@ -329,7 +375,9 @@
 
         <h3 class="h3">奖品清单</h3>
         <p class="hint" id="ex-note"></p>
-        <table class="tbl" id="ex-tbl"></table>
+        <!-- 表格用面板的 `.table-wrap`（外面套一层，里面是裸 `<table>`）——
+             窄屏能横滚、表头样式与面板别处的表一致。 -->
+        <div class="table-wrap"><table id="ex-tbl"></table></div>
       </section>
 
       <!-- ══════════════ 直播 ══════════════ -->
@@ -344,7 +392,7 @@
              账号就永远进不来了（参考实现的原话：「勾每一项就锁死了当时的名单」）。
              ⚠ 切账号属于**任务**，不属于账号管理 —— 见账号页那段说明。 -->
         <div class="picker" data-picker="直播">
-          <button class="btn btn-sm picker-btn" id="live-acct-btn" aria-expanded="false">
+          <button class="btn picker-btn" id="live-acct-btn" aria-expanded="false">
             <span id="live-acct-label">全部账号</span> ▾
           </button>
           <div class="picker-panel" id="live-acct-panel" hidden>
@@ -356,7 +404,7 @@
           </div>
         </div>
 <div class="row">
-          <button class="btn btn-primary" id="live-claim">贴进去领取</button>
+          <button class="btn primary" id="live-claim">贴进去领取</button>
           <button class="btn" id="live-run">现在听一次</button>
         </div>
         <h3 class="h3">口令池</h3>
@@ -398,7 +446,7 @@
         <p class="hint">默认「全部渠道」就够了。想让某个任务只在有失败时才推，
           就再建一条规则，在这里选上。</p>
         <div class="rows" id="push-bindings"></div>
-        <button id="push-add-rule" type="button" class="btn btn-ghost">加一条规则</button>
+        <button id="push-add-rule" type="button" class="btn ghost">加一条规则</button>
         <div class="rows" id="push-rules"></div>
       </section>
 
@@ -409,16 +457,16 @@
 
         <h3 class="h3">移动云盘地址</h3>
         <p class="hint">留空 = 用真正的移动云盘。填了就打这里（自己搭的测试环境用）。</p>
-        <label class="field"><span>云盘地址</span><input id="cfg-baseUrl" type="url" placeholder="（真正的移动云盘）" /></label>
-        <label class="field"><span>口令主页</span><input id="cfg-liveUrl" type="url" placeholder="（默认主页）" /></label>
-        <label class="field"><span>直播日程主机</span><input id="cfg-gateBase" type="url" placeholder="（真主机）" /></label>
-        <label class="field"><span>弹幕 WebSocket</span><input id="cfg-wsBase" type="url" placeholder="（真主机）" /></label>
-        <label class="field"><span>进房间主机</span><input id="cfg-imBase" type="url" placeholder="（真主机）" /></label>
-        <label class="field"><span>登录主机</span><input id="cfg-loginBase" type="url" placeholder="（真主机）" /></label>
-        <label class="field"><span>登录时冒充的客户端</span>
+        <label class="field"><span class="field-label">云盘地址</span><input id="cfg-baseUrl" type="url" placeholder="（真正的移动云盘）" /></label>
+        <label class="field"><span class="field-label">口令主页</span><input id="cfg-liveUrl" type="url" placeholder="（默认主页）" /></label>
+        <label class="field"><span class="field-label">直播日程主机</span><input id="cfg-gateBase" type="url" placeholder="（真主机）" /></label>
+        <label class="field"><span class="field-label">弹幕 WebSocket</span><input id="cfg-wsBase" type="url" placeholder="（真主机）" /></label>
+        <label class="field"><span class="field-label">进房间主机</span><input id="cfg-imBase" type="url" placeholder="（真主机）" /></label>
+        <label class="field"><span class="field-label">登录主机</span><input id="cfg-loginBase" type="url" placeholder="（真主机）" /></label>
+        <label class="field"><span class="field-label">登录时冒充的客户端</span>
           <select id="cfg-loginPlatform"><option value="windows">Windows</option><option value="macos">macOS</option></select>
         </label>
-        <button class="btn btn-primary" id="cfg-save">保存</button>
+        <button class="btn primary" id="cfg-save">保存</button>
 
         <!-- ⚠ 「听窗口长度 / 只听这间房 / 心跳回帧」原来在这里，而它们都是
              **按账号的键**（`KEY_SCOPE` 里登记成 `account`）—— 挂在全局页上，
