@@ -535,7 +535,7 @@ textarea:focus {
 /* ══════════ 账号卡 ══════════ */
 
 /* 一条一张卡，卡片**表皮走主面板的 `.card`**（边框、圆角、内边距、底色都在那边）。
-   这里只留两样：列表容器的排布，和"正在用的是哪个"。
+   这里只留两样：列表容器的排布，和"哪个是当前账号"。
 
    ⚠ 这里原来还写着 `display:flex; justify-content:space-between` + 自己一份
    border/radius/padding/background —— 那是上一版「左边信息、右边五个按钮」的两栏卡片。
@@ -551,8 +551,10 @@ textarea:focus {
   list-style: none;
 }
 
-/* 正在用的那个账号：只描一圈强调色。**不做填充** —— 整卡染色的结果是一列里
-   最显眼的那张卡在喊"我"，而用户更需要一眼扫出"哪些停用了"。 */
+/* 当前账号（后端 `mcloud.account.current` 指向的那个）：只描一圈强调色。
+   **不做填充** —— 整卡染色的结果是一列里
+   最显眼的那张卡在喊"我"，而用户更需要一眼扫出"哪些停用了"。
+   徽章（`.badge running`「当前账号」）用同一个 accent，含义与颜色一一对应。 */
 .acct-card.is-current {
   border-color: var(--accent);
 }
