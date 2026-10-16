@@ -192,12 +192,22 @@ async function main() {
 
   await shot('01-account');
 
-  // 点一下「扫码登录」再截一张 —— 二维码是这一版新做的，要看它真的画出来了
+  // 添加账号那一路：**先打开弹窗，再点里面的「生成二维码」**。
+  //
+  // ⚠ 原来只有后半句。界面改成"工具栏 + 弹窗"之后，`login-qr` 住在弹窗里，
+  //   直接 `.click()` 它是能跑的（隐藏的元素也收得到程序化的 click），但**弹窗没开** ——
+  //   于是截出来的图里只有底部那句提示，看不到二维码。脚本是给"看一眼"用的，
+  //   看到的东西不对等于没截。
+  await send('Runtime.evaluate', { expression: `document.getElementById('acct-add').click()` });
+  await sleep(200);
   await send('Runtime.evaluate', {
     expression: `document.getElementById('login-qr').click()`,
   });
   await sleep(1500);
   await shot('01b-qr');
+  // 收起来，别把弹窗带进后面几张
+  await send('Runtime.evaluate', { expression: `document.getElementById('add-close').click()` });
+  await sleep(200);
 
   // 逐块切过去截
   const blocks = [
