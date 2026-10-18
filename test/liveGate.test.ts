@@ -277,7 +277,7 @@ test('人话：门开/没开/开着的不是他 —— **三种都要说得出�
   });
   const preview: LiveRoom = { ...live(KOULING_ANCHOR, 9), status: STATUS_NOT_STARTED, title: '下一场' };
 
-  assert.match(gateReadingLine([live(KOULING_ANCHOR, 1)]), /门开着/);
-  assert.match(gateReadingLine([live('福建移动', 2)]), /都不是「中国移动云盘」/);
-  assert.match(gateReadingLine([preview]), /门关着：谁都没在播/);
+  assert.match(gateReadingLine([live(KOULING_ANCHOR, 1)]), /正在听/);
+  assert.match(gateReadingLine([live('福建移动', 2)]), /不是「中国移动云盘」的/);
+  assert.match(gateReadingLine([preview]), /没在听：谁都没开播/);
 });

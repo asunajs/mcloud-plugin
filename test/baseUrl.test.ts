@@ -19,6 +19,7 @@
 //    因为它只在真上游跑的时候才出现，而那正是 e2e 打不到的地方。
 
 import { test } from 'node:test';
+import { hostBase } from '../src/mcloud/tasks/base.ts';
 import assert from 'node:assert/strict';
 
 import { userInfoRequest as flowerUserInfo } from '../src/mcloud/liveFlower.ts';
@@ -67,4 +68,15 @@ test('口子非空时**整个源被替换**（mock 就是这么接进来的）',
   assert.equal(specTokenRequest(SIGN_IN_RECIPE, 'Basic x', m).url, `${m}/user/querySpecTokenV2`);
   assert.equal(flowerUserInfo(m).url.startsWith(`${m}/ycloud/`), true, flowerUserInfo(m).url);
   assert.equal(roomBeatRequest('147868', 'jwt', m).url.startsWith(`${m}/api/`), true);
+});
+
+test('⚠ 基址是**空串**时不许拼出相对 URL（现场踩到的 `missing scheme`）', () => {
+  // 现场那句是 `bad uri: /ycloud/signin/page/taskExpansion is missing scheme` ——
+  // 它看起来像"上游坏了"，其实是 `deps.baseUrl ?? HOST` 里的 `??` 只挡 undefined，
+  // 空串拼出来的就是 `/ycloud/...`（没有主机）。
+  assert.equal(hostBase({ baseUrl: '' }, 'https://真主机'), 'https://真主机');
+  assert.equal(hostBase({ baseUrl: '   ' }, 'https://真主机'), 'https://真主机');
+  assert.equal(hostBase({}, 'https://真主机'), 'https://真主机');
+  assert.equal(hostBase({ baseUrl: 'http://127.0.0.1:9/' }, 'https://真主机'), 'http://127.0.0.1:9');
+  assert.equal(hostBase({ baseUrl: 'http://127.0.0.1:9' }, 'https://真主机'), 'http://127.0.0.1:9');
 });

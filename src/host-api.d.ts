@@ -16,9 +16,11 @@ export interface JobPayload {
   expr: string;
   /** 生命周期内第几次触发（跨重启接着数） */
   runs: number;
-  /** 原定触发时刻（ISO 字符串） */
+  /** 原定触发时刻，`YYYY-MM-DD HH:MM:SS.mmm`（**本地时、无时区**，不是 ISO-8601） */
   scheduledAt: string;
-  /** 实际触发时刻（ISO 字符串） */
+  /** 这次触发提前了多少毫秒（`lead_ms`）；老面板不发。 */
+  leadMs?: number;
+  /** 实际触发时刻，同上格式（本地时、无时区） */
   firedAt: string;
   /** 实际比原定晚多少毫秒 —— 观察调度精度就看它 */
   lateMs: number;
@@ -38,7 +40,19 @@ export interface JobPayload {
    *  "同一种子给出同一偏移"的断言会随机红 —— 三个实例同时跑，谁被负载拖得
    *  落后谁就重对齐，而重对齐是**时刻**决定的、不是种子决定的。 */
   realigned: boolean;
-  /** `register_cron(…, { params })` 给的那份参数（没给就是 `undefined`）。
+  /** 这一拍是**用户点的**（`true`）还是**调度到点的**（`false`）。
+   *
+   *  ⚠ 老面板不发这一格（`undefined`）⇒ 用 `lateMs < 0` 兜底
+   *  （手动触发时 `scheduledAt` 还是下一次理论时刻 ⇒ `lateMs` 是负数）。
+   *
+   *  ⚠ 本仓目前**没有地方读它**：daily 那个"定时跳过 / 手动照跑"的用法
+   *  已按用户口径撤掉（一天两趟都跑，第二趟是容错，见 `docs/findings.md` F-105）。
+   *  留着是因为它是宿主能力，别的插件要判"谁触发的"时用得上。 */
+  manual?: boolean;
+  /** `register_cron(…, { params })` 给的那份参数。
+   *
+   *  ⚠ **没给是 `null`，不是 `undefined`**（面板那边解析成 `serde_json::Value::Null`，
+   *  JSON 里没有 undefined 这个东西）。判"有没有参数"要写 `p.params == null`。
    *  形状由插件自己定，面板只原样存、原样交回（第二十三轮新增）。 */
   params?: unknown;
 }
@@ -56,6 +70,9 @@ export interface TaskOpts {
   /** 这条任务需要多久的执行预算（毫秒）。范围 100 ~ 600000，越界**报错**。
    *  不给就用全局 `EXEC_BUDGET_MS`（默认 2000）。 */
   budget_ms?: number;
+  /** 在 cron 目标前多久触发（毫秒）。范围 0 ~ 3600000；0/不填 = 不提前。
+   *  用户看到的仍是 cron 里的整点，调度器提前醒。 */
+  lead_ms?: number;
 }
 
 /** 侧边栏入口。`label` 面板自己推不出来（插件名不是人话），所以由插件给。 */
@@ -104,6 +121,10 @@ export interface FetchOptions {
   body?: string;
   /** 默认 10000，钳制到 [100, 60000] */
   timeout_ms?: number;
+  /** TLS 后端。`'native'` 要宿主用 `--features legacy-tls` 构建，
+   *  否则宿主会**明确报错**（不会静默降级到 rustls）。
+   *  直播那两个主机只给 CBC 套件，必须用它。 */
+  tls?: 'rustls' | 'native';
 }
 export interface FetchResult {
   status: number;

@@ -146,9 +146,7 @@ export function runLiveRoom(deps: TaskDeps): TaskOutcome {
     return {
       ok: true,
       idle: true,
-      note:
-        `口令池已有 ${validCount(pool)} 条**有效**口令 ⇒ 按口径停止抓取` +
-        '（这一场只发那么几条，继续抓只会重复撞同一批）',
+      note: `已经有 ${validCount(pool)} 条能用的口令了，不用再抓`,
     };
   }
 
@@ -158,9 +156,8 @@ export function runLiveRoom(deps: TaskDeps): TaskOutcome {
     return {
       ok: true,
       idle: true,
-      note:
-        `距上次抓主页还不到 30 分钟（还要 ${mins} 分钟）—— ` +
-        '频繁抓会被风控挡成空壳，而空壳与"这期没发"在解析层长得一样，混起来没法排查',
+      // 原因留给代码注释，日志只说"什么时候再看"
+      note: `刚看过，${mins} 分钟后再看`, 
     };
   }
 

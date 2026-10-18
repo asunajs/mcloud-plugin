@@ -49,12 +49,21 @@
 // 秒返回。这是**刻意接受**的：宁可多一次便宜的整趟，也不要漏掉一整天。
 
 
-import { log, register_cron, warn, worker_hint } from 'host-api';
+import { log, register_cron, warn } from 'host-api';
 import { runAuthRefresh } from '../mcloud/authRefresh.ts';
 import { appendRun } from '../mcloud/runLog.ts';
-import { needExchange, runExchangeStep } from '../mcloud/sessionExchange.ts';
+import {
+  loadAuthRaw,
+  loadExchange,
+  needExchange,
+  runExchangeStep,
+  startExchange,
+} from '../mcloud/sessionExchange.ts';
 import type { SessionRecipe } from '../mcloud/h5session.ts';
 import { labelOf } from '../mcloud/taskAccounts.ts';
+import { logBoth } from '../mcloud/log.ts';
+import { isPlumbing, onceHint, userLine } from '../mcloud/tasks/stepLog.ts';
+import { loadQueue } from '../mcloud/tasks/receive.ts';
 import { rawStoreOf, scoped } from '../store/scoped.ts';
 
 /** 这一趟要跑的族**分别落在哪一页** —— 一页一张票，所以按页换。
@@ -94,8 +103,8 @@ import {
 } from './shared.ts';
 import type { TaskPayload } from './shared.ts';
 
-// 独占线程：这条链一次跑几十秒，和别的插件共用线程会互相拖（见 shared.ts 文件头）
-worker_hint('exclusive');
+// 共享粗粒度 lane：日常一次跑几十秒，但不需要毫秒级；和直播排队即可。
+// 只有 exchange 和路由插件需要独占（见 shared.ts 文件头）。
 
 const store = makeStore();
 // 长预算任务用长超时：一次上游调用慢一点是正常的（见 shared.ts 的说明）
@@ -123,6 +132,7 @@ const DEADLINE_MS = BUDGET_MS - 15_000;
 const DONE_KEY = DAILY_DONE_KEY;
 const LAST_KEY = DAILY_LAST_KEY;
 
+
 /** 一步的调度：跑一次 `step`，把结果收进 `steps` 数组。
  *
  *  为什么不让每一步自己 try/catch：那会把「哪一步抛了」这件事埋进 14 个地方。
@@ -132,6 +142,8 @@ interface StepResult {
   ok: boolean;
   note: string;
   idle?: boolean;
+  /** 内部管道步骤（成功时不进用户日志）—— 见 `tasks/stepLog.ts` */
+  plumb?: boolean;
 }
 
 function once(
@@ -159,9 +171,15 @@ function runDaily(deps: TaskDeps): {
   const detail: string[] = [];
 
   const push = (r: StepResult): StepResult => {
-    steps.push(r);
-    detail.push(`${r.name}：${r.ok ? '' : '失败 '}${r.note}`);
-    return r;
+    // ⚠ 每一行都打 `plumb` 标记（管道步骤成功时界面不显示）——
+    //   只给 `shape()` 打的话，换票那两行（本函数自己 push 的）会漏掉。
+    const one: StepResult = isPlumbing(r.name) ? { ...r, plumb: true } : r;
+    steps.push(one);
+    // 一行一个用户认得的任务（`userLine` 里定了口径：成了 / 没成+原因 / 跳过）。
+    // ⚠ 管道步骤（换票）成功时不出现；「走到第 N 步」这种内部机制也不出现。
+    const line = userLine(one);
+    if (line !== null) detail.push(line);
+    return one;
   };
 
   // ① 换票（H5 的 jwttoken 约 2 小时即废）。票新鲜时 `needExchange` 直接说不用。
@@ -175,8 +193,29 @@ function runDaily(deps: TaskDeps): {
   //
   //   只换一页的表现是另一族**用错页面的票**。而那"行不行"**没有样本**
   //   （参考实现自己标的是"反向未验证"）—— 所以不赌，该换的都换。
+  //
+  // ⚠⚠ 这里必须用 `deps.store`，**不能用模块级那个 `store`**。
+  //   模块级那份是"没作用在某个账号上"的（`scopedAccountOf` 得到 undefined），
+  //   于是 `loadAuthRaw` 会回落到**当前账号**、`needExchange` 读的也是当前账号的票。
+  //   表现：多账号跑的时候，B 的票过期了，判据却在看 A 的票 —— A 刚续过就说"不用换"，
+  //   B 的票就这么一直烂着，整段任务「code=90001 未登录」。
+  //   （现场 2026-10-17：移动的票 15:33 过期，而「测试」16:31 刚续过 ⇒ 判"还新"，
+  //     移动那 8 步全废。与 F-081 同一族。）
   for (const page of DAILY_PAGES) {
-    if (needExchange(store, Date.now(), page)) {
+    if (needExchange(deps.store, Date.now(), page)) {
+      // ⚠ `runExchangeStep` 只**接着走**已有那一轮，它不会**开始**一轮 ——
+      //   参考实现里换票是任务自己做的事，没有"让用户去点某个按钮"这一步。
+      //   少了这一句，新登录的号永远是「没有会话」，而日志里只说"没有会话"、
+      //   不说为什么（因为压根没试）。
+      // ⚠ 两种情况都要**开一轮新的**：
+      //   ① 从来没换过（`null`）；
+      //   ② 上一轮已经 `done`（票过期了要再换一张）—— 只判 `null` 的话，
+      //      票过期之后 `runExchangeStep` 只会回"没有待换票的任务"，
+      //      于是整趟任务全部 `code=90001 未登录`（现场：13:30 那一趟）。
+      const st = loadExchange(deps.store, page);
+      if (st === null || st.step === 'done') {
+        startExchange(deps.store, loadAuthRaw(deps.store), deps.nowIso, page);
+      }
       // ⚠ `runExchangeStep` 返回的是 `{ok, note, done}`，不是 `TaskOutcome` ——
       //   它用 `done` 而不是 `idle` 表示「这一趟走完了」。包一层对上 drain 的契约。
       const r = drain(
@@ -189,7 +228,7 @@ function runDaily(deps: TaskDeps): {
       );
       push({ name: `换票（${PAGE_LABEL[page]}）`, ok: r.ok, note: r.note, idle: r.idle });
     } else {
-      push({ name: `换票（${PAGE_LABEL[page]}）`, ok: true, note: '票还新鲜，不用换', idle: true });
+      push({ name: `换票（${PAGE_LABEL[page]}）`, ok: true, note: '还新，不用换', idle: true });
     }
   }
 
@@ -201,7 +240,8 @@ function runDaily(deps: TaskDeps): {
   //   而提交返回的是 ok ⇒ 整趟被判成功 ⇒ 落「今天已完成」标记 ⇒ 回查再也不发生。
   //
   // 判据从状态键读，不从返回值猜：`runSign` 提交完和回查完都是 ok。
-  const signPending = () => (store.getState(SIGN_STAGE) ?? '') === 'need-verify';
+  // ⚠ 同样按账号（多账号下读模块级 store 会读到别的号那一格）
+  const signPending = () => (deps.store.getState(SIGN_STAGE) ?? '') === 'need-verify';
   push(
     (() => {
       const r = drain(runSign, deps, {
@@ -223,9 +263,12 @@ function runDaily(deps: TaskDeps): {
   ] as const) {
     const r = drain(fn, deps, {
       label: name,
-      maxSteps: 12,
+      // ⚠ 领取这一类是"队列里一条一个请求"：**队列空了就停**（`more`），
+      //   而不是靠步数上限兜 —— 靠上限兜的表现是"刚好领完"也被说成"没做完"。
+      maxSteps: 24,
       deadlineMs: 40_000,
       startedAt: started,
+      ...(name === '领取AI豆' ? { more: () => loadQueue(deps.store).length > 0 } : {}),
     });
     push({ name, ok: r.ok, note: r.note, idle: r.idle });
   }
@@ -268,9 +311,12 @@ function runDaily(deps: TaskDeps): {
       return { name: 'App 任务矩阵（只看）', ok: r.ok, note: r.note, idle: false };
     })(),
   );
-  // 没有在跑的就起一趟（起单只写字、不发请求）；起不出来说明没有待办
-  if (!store.getState('mcloud.apptask.state') && startAppTask(deps).idle) {
-    push({ name: 'App 任务', ok: true, note: '没有待办', idle: true });
+  // 没有在跑的就起一趟（起单只写字、不发请求）。
+  // ⚠ 起不出来时**用它自己的话**（「另有 4 条要在 App 里手动做」）——
+  //   这里硬写"没有待办"会和上一行「还能做 4 条」自相矛盾（用户就是这么发现的）。
+  const kick = deps.store.getState('mcloud.apptask.state') ? null : startAppTask(deps);
+  if (kick !== null && kick.idle) {
+    push({ name: 'App 任务', ok: true, note: kick.note, idle: true });
   } else {
     const r = drain(runAppTaskStep, deps, {
       label: 'App 任务',
@@ -312,6 +358,7 @@ function runDaily(deps: TaskDeps): {
     ok: r.ok,
     note: r.note,
     idle: r.idle === true,
+    ...(isPlumbing(r.name) ? { plumb: true } : {}),
   });
 
   if (failed.length === 0) {
@@ -324,7 +371,19 @@ function runDaily(deps: TaskDeps): {
   }
   return {
     ok: false,
-    note: `${failed.length}/${steps.length} 步失败：${failed.map((f) => f.name).join('、')}`,
+    // ⚠ 不再把失败的名字串成一句：那是一张表塞进一行话里，
+    //   而"哪几步"已经在 `steps` 里、日志里也一行一步了。
+    // chip 上显示的就是这一句；不提步数（用户不看那个）
+    // ⚠ 全是「未登录」的时候要说一句 —— 但那句话是**给用户下一步**，
+    //   不是解释内部机制（票多长、什么时候到期，他既管不了也不需要知道）。
+    //   正常情况下这一趟根本不该走到这里：票由任务自己续（见上面 ① 换票）。
+    //   真走到这里 = 自动续票也没成（凭据废了），这时唯一有意义的动作就是重新导入。
+    note: (() => {
+      const base = `${steps.length - failed.length} 项好了、${failed.length} 项没成`;
+      const allLogin = failed.every((x) => /未登录|没登录|90001|凭据过期|票没被认/.test(x.note));
+      if (!allLogin) return base;
+      return `${base} —— 登录状态失效了，去「账号」页重新导入会话`;
+    })(),
     detail,
     steps: steps.map(shape),
   };
@@ -350,18 +409,33 @@ register_cron(
     // ⚠ 每一条的 `DONE_KEY`（今天跑过没）**在它自己的袋里** —— 所以"今天已经
     //   成功过"要**逐条**判。放在循环外面判一次的话，A 跑完之后 B 就被跳过了
     //   （那正是 F-050 那个"B 的整趟被跳过"的老毛病）。
-    const runs = forEachTaskAccount(store, '日常', p, transport, (deps) => {
-      // ⚠ 这一步**不记 run**：记了的话面板上会看到一天 30 条「跳过」，
-      //   把真事件埋掉（老版本实机 soak 踩过这个，见 main.ts 里 lastLogged 那段）。
-      // ⚠ `getState` 返回的是**字符串本身**（不是 `{value}` 那种行对象）—— 见 store/types.ts
-      if (deps.store.getState(DONE_KEY) === today) return null; // 这一条今天跑过了
-      return runDaily(deps);
-    });
+    // ⚠⚠ **不再有"今天跑过了就跳过"那道闸**（2026-10-17 用户口径）。
+    //
+    // 原来 08:00 跑成之后，20:00 那一趟会被这道闸直接跳过。用户否了这个设计：
+    //
+    //   「定时不能第二次就不做，因为目前插件没能力确定小任务是否全部已经
+    //     达到预期，第二次跑是容错」
+    //
+    // 说得对：一趟"成功"只代表**我们以为**都做到了 —— 而"以为"和"上游的实际状态"
+    // 是两件事（上游可能把某一步判成"已经做过了"其实没做、领取可能静默失败、
+    // 某个步骤可能被判成 idle 提前停下）。插件没有能力证明所有小任务都到了预期状态，
+    // 那么一天两趟就该**都跑**：第二趟是兜底，不是重复。
+    //
+    // 反复跑安全的理由在每一**步**里，不在这道闸上：签到、领取家族都是
+    // "先问状态、已经做过就不再发请求"（`skipped` / `idle` 出口）。
+    // 所以这里放开闸不会重复领奖，只是又核对一遍。
+    //
+    // `DONE_KEY` 仍然要写（下面 writeDone 那段）：它现在是**读数**
+    // （"今天跑过几趟 / 今天有没有跑过"），不再是闸。
+
+    const runs = forEachTaskAccount(store, '日常', p, transport, (deps) => runDaily(deps));
 
     // 没选到账号 ⇒ **静默返回**。那不是失败，是"这条任务没配账号"。
     if (runs.length === 0) return;
 
     const results: typeof runs = [];
+    // 这一趟里"已经解释过的后缀"（跨账号共用，见 onceHint）
+    const onceHints = new Set<string>();
     for (const [i, one] of runs.entries()) {
       const r = one.result;
       if (r === null) continue; // 这一条今天已经跑过
@@ -384,6 +458,8 @@ register_cron(
       // 覆盖掉之后"上次明明好的"这类问题就查不了了。
       const runId = appendRun(store, {
         task: 'daily',
+        acct: one.acctId,
+        who,
         at: nowIso,
         ms: Date.now() - startedMs,
         ok: r.ok,
@@ -396,15 +472,26 @@ register_cron(
         // ⚠ 标记必须落在**这一条自己的袋里** —— `deps.store` 已经按账号路由过了，
         //   但它在闭包里，所以这里现取一个"作用在指定账号上"的 store。
         scoped(rawStoreOf(store), one.acctId).setState(DONE_KEY, today, nowIso);
-        log(`日常（${who}）：${r.note}（运行 id=${runId}）`);
-      } else {
-        // 不落标记 ⇒ 下一跳重试（这正是「一次运行 = 一个结果」该有的样子）
-        warn(`日常（${who}）：${r.note}（运行 id=${runId}）`);
       }
-      // 每一步的原话都进日志：出问题时「走到哪一步」是最要紧的信息
+      // 日志照参考实现（`mcloud` / `mcloud-sign`）的形状：
+      //   一个账号一段，段头一行，**每一步一行**，段尾一行。
+      // ⚠ 失败的那些行用 warn（面板按级别过滤时"只看提醒以上"能一眼捞出来），
+      //   其余走 info —— 不把成功也染成黄色，否则"满屏黄"就等于没有信号。
+      logBoth(store, 'info', `------【${who}】------`, nowIso);
       for (const line of r.detail) {
-        if (line.includes('失败')) warn(`  · ${line}`);
+        // 「没成」的那些行走 warn（面板按级别过滤时能一眼捞出来）
+        // ⚠ `onceHint`：跨账号的同一句解释只说一遍（见 stepLog.ts 那段）
+        logBoth(
+          store,
+          line.includes('没成') ? 'warn' : 'info',
+          onceHint(line, onceHints),
+          nowIso,
+        );
       }
+      const bad = r.steps.filter((x) => !x.ok).length;
+      // 段尾只说"几项没成"（用户要的是结论）；都成了就一句"都成了"
+      const tail = bad === 0 ? `------【${who}】都成了------` : `------【${who}】${bad} 项没成------`;
+      logBoth(store, bad > 0 ? 'warn' : 'info', tail, nowIso);
     }
 
     // 全都"今天已经跑过" ⇒ 静默返回（不推、不记）
@@ -456,4 +543,4 @@ register_cron(
   { budget_ms: BUDGET_MS },
 );
 
-log(`mcloud-daily：任务「日常」（预算 ${BUDGET_MS / 1000}s，独占线程）`);
+log(`mcloud-daily：任务「日常」（预算 ${BUDGET_MS / 1000}s，共享粗粒度 lane）`);

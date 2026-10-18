@@ -113,7 +113,8 @@ export function drain(
     if (r.idle || r.skipped) {
       // 两种「不用继续」：`idle`（没得做/已经走完）、`skipped`（条件不成立）。
       // 对 drain 来说都是「停下」。
-      return { ok: true, idle: true, steps, note: `${opts.label}：${steps} 步走完 —— ${r.note}`, notes };
+      // 用最后一步自己的话（它是具体的：「今天没有可领的」「领到了」）
+      return { ok: true, idle: true, steps, note: brief(r.note, opts.label), notes };
     }
   }
 
@@ -121,9 +122,23 @@ export function drain(
     ok: true,
     idle: false,
     steps,
-    note: `${opts.label}：走到步数上限（${opts.maxSteps} 步），下一次接着走`,
+    // ⚠ 这里**不说**"还有没做完的"。踩过的坑：领取AI豆的队列刚好在第 12 步领空，
+    //   而"到上限"和"刚好做完"从这一步看不出区别 —— 于是每一趟都说"还有没做完的"，
+    //   用户看到的是一句假话（他的原话：「领取云朵应该没有步数啊」）。
+    //   对用户只报**结论**：成了。真想看走到哪一步，运行记录里每一步都在。
+    // 同样用最后一步自己的话（跑到上限时，它刚做完的那件事就是结论），
+    // 但**截短**：这一格要进 runs 表当一行摘要，不能塞整段原话。
+    note: brief(lastNote ?? '', opts.label),
     notes,
   };
+}
+
+/** 一行摘要的长度上限。超过就不是"一句话"了（是段原话/JSON），退回一句结论。 */
+const BRIEF_MAX = 40;
+
+function brief(s: string, label: string): string {
+  const t = s.trim();
+  return t.length === 0 || t.length > BRIEF_MAX ? `${label}：好了` : t;
 }
 
 export interface DrainResult {

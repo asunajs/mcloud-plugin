@@ -32,6 +32,13 @@ import { runTask } from './base.ts';
 import type { TaskDeps, TaskOutcome } from './base.ts';
 import { loadSession } from '../../store/types.ts';
 
+/** 队列项里的云朵数（没有就是 undefined）。 */
+function numOf(raw: unknown): number | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined;
+  const n = (raw as { cloudNum?: unknown }).cloudNum;
+  return typeof n === 'number' && n > 0 ? n : undefined;
+}
+
 export const STATE_QUEUE = 'mcloud.receive.queue';
 export const STATE_RECEIVE = 'mcloud.receive.last';
 
@@ -105,12 +112,12 @@ export function explainReceiveFail(
     if (m) code = Number(m[1]);
   }
   if (code === 615) {
-    return '领取失败：这一枪**没带 `deviceId`**（上游文案说"活动太火爆啦"，但它不是在限流）。' +
+    return '领取失败：这一枪**没带 `deviceId`**（服务端文案说"活动太火爆啦"，但它不是在限流）。' +
       '领取类接口要一份 **H5 的 deviceId**，那份得靠 smid 指纹链换回来 —— 本插件还没实现那条链；' +
       '在会话 JSON 里手工带上 `deviceId`（`B` + 88 字符 base64）即可用。';
   }
   if (code === 614) {
-    return '领取失败：`deviceId` **内容无效**（上游文案说"锁定失败"，同样不是在限流）。' +
+    return '领取失败：`deviceId` **内容无效**（服务端文案说"锁定失败"，同样不是在限流）。' +
       '⚠ 登录时那个 `device_id`（32 hex + `-ENDIN`）**不是** H5 要的那一份 —— ' +
       'mcloud 实测拿它去领回的就是这个 614。H5 要的是 `B` + 88 字符 base64。';
   }
@@ -130,7 +137,7 @@ export function receiveV3Body(cloudId: string, cloudType: number | undefined, de
 export function runReceive(deps: TaskDeps): TaskOutcome {
   const session = loadSession(deps.store);
   if (!session) {
-    return { ok: false, note: '未登录：state 里没有会话（见 docs/howto-session.md）' };
+    return { ok: false, note: '还没有网页会话 —— 上面「换票」那一步说了原因' };
   }
 
   let queue = loadQueue(deps.store);
@@ -140,13 +147,13 @@ export function runReceive(deps: TaskDeps): TaskOutcome {
     const info = fetchInfoV3({ store: deps.store, transport: deps.transport, baseUrl: deps.baseUrl });
     if (!info.ok) return { ok: false, note: `查询待领清单失败：${info.error}` };
     if (info.info.receiveList.length === 0) {
-      return { ok: true, skipped: true, note: '没有待领取的东西（infoV3.receiveList 为空）' };
+      return { ok: true, skipped: true, note: '无待领取的云朵' };
     }
     // ② 抄进队列（含延期领取那条 —— 下一轮会跳过它并说明原因）
     saveQueue(deps.store, info.info.receiveList, deps.nowIso);
     return {
       ok: true,
-      note: `发现 ${info.info.receiveList.length} 条待领取，已入队（下面几次触发逐条领）`,
+      note: `待领取 ${info.info.receiveList.length} 个`,
     };
   }
 
@@ -171,13 +178,15 @@ export function runReceive(deps: TaskDeps): TaskOutcome {
       },
       (env) => ({
         ok: true,
-        note: `延期领取已完成（上游回 ${JSON.stringify(env.result ?? env.message).slice(0, 80)}）`,
+        note: `延期领取已完成（服务端回 ${JSON.stringify(env.result ?? env.message).slice(0, 80)}）`,
         snapshot: { item: item.raw, result: env.result ?? null },
       }),
     );
     saveQueue(deps.store, rest, deps.nowIso);
     const left1 = rest.length;
-    return { ...out, note: `${out.note}${left1 > 0 ? `（队列还剩 ${left1} 条）` : '（队列已清空）'}` };
+    // 队列还剩几条是内部的事，不进日志（用户只看领到几个）
+    void left1;
+    return out;
   }
 
   const out = runTask(
@@ -193,7 +202,9 @@ export function runReceive(deps: TaskDeps): TaskOutcome {
     },
     (env) => ({
       ok: true,
-      note: `已领取（cloudId=${item.recordId || '空'}；上游回 ${JSON.stringify(env.result ?? env.message).slice(0, 80)}）`,
+      // 参考实现（`task-expansion.ts`）：「领取到 N 个云朵」。
+      // 数量在队列那一条里（响应里没有）—— 取不到就说 1 个。
+      note: `领取到 ${numOf(item.raw) ?? 1} 个云朵`,
       snapshot: { item: item.raw, result: env.result ?? null },
     }),
   );
@@ -202,5 +213,7 @@ export function runReceive(deps: TaskDeps): TaskOutcome {
   // 而"逐条独立"的语义本来就允许某一条失败（下一天会重新入队再来）
   saveQueue(deps.store, rest, deps.nowIso);
   const left = rest.length;
-  return { ...out, note: `${out.note}${left > 0 ? `（队列还剩 ${left} 条）` : '（队列已清空）'}` };
+  // 队列还剩几条是内部的事，不进日志
+  void left;
+  return out;
 }

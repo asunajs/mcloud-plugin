@@ -60,7 +60,7 @@ export function runBackupGiftInfo(deps: TaskDeps): TaskOutcome {
       deps.store.setState(STATE_CAN, can ? 'yes' : `no:${JSON.stringify(raw)?.slice(0, 80)}`, deps.nowIso);
       return {
         ok: true,
-        note: can ? '备份好礼：可以领取（下一次触发会去领）' : '备份好礼：当前没有可领的',
+        note: can ? '有备份礼物可领，下一次去领' : '无备份礼物可领',
         snapshot: env.result ?? null,
       };
     },
@@ -74,7 +74,8 @@ export function runBackupGiftReceive(deps: TaskDeps): TaskOutcome {
     return {
       ok: true,
       skipped: true,
-      note: `上次问过状态是「${can ?? '没问过'}」，不发领取请求`,
+      // 参考实现：「本月已领取」/「未开启备份，请前往 APP 手动开启」
+      note: can === 'no' ? '本月已领取' : '未开启备份，请前往 APP 手动开启',
     };
   }
   const out = runTask(
@@ -88,7 +89,8 @@ export function runBackupGiftReceive(deps: TaskDeps): TaskOutcome {
     },
     (env) => ({
       ok: true,
-      note: `备份好礼已领取（上游回 ${JSON.stringify(env.result ?? env.message).slice(0, 120)}）`,
+      // 参考实现：「领取成功，获得云朵 N」
+      note: '领取成功，获得云朵',
     }),
   );
   // 领过就不再排队（下一次 `info` 会重新判断）

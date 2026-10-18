@@ -124,7 +124,7 @@ test('没有原生凭据 ⇒ 如实失败，并且**一发请求都不发**（�
 
   const out = runLiveGate(deps(store, transport));
   assert.equal(out.ok, false);
-  assert.match(out.note ?? '', /原生凭据/);
+  assert.match(out.note ?? '', /还没有原生凭据/);
   assert.equal(sent.length, 0);
 });
 
@@ -213,7 +213,7 @@ test('rooms：门开着 = 有「中国移动云盘」在播；`liveCount` 把两
   assert.equal(reading.active, true);
   // 147490「福建移动」也是 status==1 ⇒ liveCount 是 2，而 active 只认那一间
   assert.equal(reading.liveCount, 2);
-  assert.match(reading.note, /门开着/);
+  assert.match(reading.note, /正在听/);
 });
 
 test('rooms：结果落**池**（日程 + 门 + 场次），「下一场」当场可读', () => {

@@ -79,6 +79,28 @@ export interface MatrixItem {
   /** 按钮链接。⚠ 写的那半的**按钮门**要它（`beiyong1ButtonGate` 找 `uploadView`）。
    *  实拍里它在 `button.app.link` 这一层，另外两种拼法也认（旧 TS 用过）。 */
   buttonAppLink?: string;
+  /** 上游**替这一条、这一阶段写好的那句按钮话** —— 界面徽章要照抄的就是它。
+   *
+   *  ⚠ 它**不是状态词**，别拿 `enable`/`state` 造一个「待做」盖上去：
+   *  真机实拍（抓包仓 `app-task-run-account-samples.txt` §12.10 / §12.11）——
+   *  同一趟里 `state=WAIT` 的两条，1029「查看"我的账单"」是「去完成」，
+   *  「连续31天开启邮箱APP通知」是「**开启中**」；549「开启备份领好礼」是
+   *  「**下月再来**」（这个月根本做不了）；`state=FINISH` 的 607 是「**次月可领**」。
+   *  ⇒ 一刀切「待做」把"上游已经给了具体动作/具体处境"这件事盖掉了
+   *  （mcloud 同一个错：`694e35f`，用户原话「这个待做容易误导，请与原接口文案一致」）。
+   *
+   *  ⚠ 走 **V3** 时这一格**就是 App 上那个词**（§12.10 判读 1：V3 直接把当前阶段
+   *  那一档写进 `text` ✓，V2 才给三档让客户端自己挑 ✗）。 */
+  buttonOutText?: string;
+  /** `textMiddle` —— V2 那三档里的"进行中"。V3 通常不给（`text` 已经挑好）。 */
+  buttonTextMiddle?: string;
+  /** `textFinish` —— V2 三档里的"已完成"（实拍 550 是「已领取」、551 是「领AI豆」）。 */
+  buttonTextFinish?: string;
+  /** `actionMiddle` —— V2 用来判"进行到哪一档"的线索。
+   *
+   *  ⚠ 这条启发式**被实拍证伪过一次**（§12.10 判读 3）：549 的 `actionMiddle` 是空串，
+   *  按它显示「去开启」✗，而 App 是「下月再来」✓。所以只当**兜底**，别当判据。 */
+  buttonActionMiddle?: string;
 }
 
 function asInt(v: unknown): number | undefined {
@@ -98,10 +120,31 @@ function nestedLink(button: unknown): string | undefined {
   return asStr((app as Record<string, unknown>).link);
 }
 
+/** 取按钮那一格的"端形态"：`buttonProperty`/`button` 下面各挂 `email`/`app`/`out`。
+ *
+ *  顺序照 mcloud 的 `parse_item`（`app_task_list_v2.rs`）：**外层是端**
+ *  （`email` → `app` → `out`），**内层才是形状**（`buttonProperty` 先于 `button`）。
+ *  两种形状都实拍过：1029 有 `buttonProperty`、1021 只有 `button`；
+ *  550/551 只有 `app` + `out`，1021/1079 有 `email`。
+ *  ⚠ 以 **App 里看到的那一份**为准（用户口径），所以 `email`/`app` 排在 `out` 前面。 */
+function buttonEnds(o: Record<string, unknown>): Record<string, unknown> | undefined {
+  const obj = (v: unknown) => (v !== null && typeof v === 'object' ? (v as Record<string, unknown>) : undefined);
+  const shapes = [obj(o.buttonProperty), obj(o.button)];
+  for (const end of ['email', 'app', 'out']) {
+    for (const s of shapes) {
+      const hit = s === undefined ? undefined : obj(s[end]);
+      if (hit !== undefined) return hit;
+    }
+  }
+  return undefined;
+}
+
 /** 解一条。字段名两个都认（`groupid` 小写 / `groupId` 驼峰 —— 见文件头 ②）。 */
 export function parseMatrixItem(raw: unknown): MatrixItem | undefined {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
   const o = raw as Record<string, unknown>;
+  const btn = buttonEnds(o);
+  const at = (k: string) => (btn === undefined ? undefined : asStr(btn[k]));
   const it: MatrixItem = {
     taskId: asInt(o.id ?? o.taskId ?? o.task_id),
     name: asStr(o.name),
@@ -112,6 +155,10 @@ export function parseMatrixItem(raw: unknown): MatrixItem | undefined {
     enable: asInt(o.enable),
     currStep: asInt(o.currstep ?? o.currStep),
     buttonAppLink: asStr(o.buttonAppLink ?? o.button_app_link) ?? nestedLink(o.button),
+    buttonOutText: at('text'),
+    buttonTextMiddle: at('textMiddle'),
+    buttonTextFinish: at('textFinish'),
+    buttonActionMiddle: at('actionMiddle'),
   };
   const any =
     it.taskId !== undefined || it.name !== undefined || it.state !== undefined || it.enable !== undefined;
@@ -137,11 +184,16 @@ export function parseMatrix(result: unknown, group?: string): MatrixItem[] {
   return list.map(parseMatrixItem).filter((x): x is MatrixItem => !!x);
 }
 
-/** 这一条现在该怎么算。
+/** 这一条现在该怎么算 —— ⚠ 这是**"还有没有得做"那一格**（写的那半与计数吃它），
+ *  **不是界面上那个徽章的词**。
  *
  *  `done` 已完成（`state === 'FINISH'`）· `todo` 可做（`enable === 1`）·
  *  `skip` 不参与（`enable != 1`，或字段不全 —— **字段不全不算"可做"**，
- *  这条跟通知任务那边一个道理：宁可漏报"可做"，也不要报出一个不存在的活）。 */
+ *  这条跟通知任务那边一个道理：宁可漏报"可做"，也不要报出一个不存在的活）。
+ *
+ *  ⚠ 界面**不许**拿这三个桶直接印成「已完成 / 待做 / 不参与」：
+ *  上游对每一条每一阶段都写了一句话（`buttonOutText`），照抄那句才是 mcloud 的口径
+ *  （`694e35f`，见 {@link MatrixItem.buttonOutText}）。 */
 export function judgeItem(i: MatrixItem): 'done' | 'todo' | 'skip' {
   if (i.state === 'FINISH') return 'done';
   if (i.enable === 1) return 'todo';
@@ -237,12 +289,18 @@ export function runAppTaskMatrix(deps: TaskDeps): TaskOutcome {
         groupState: (env as { groupState?: unknown }).groupState,
       };
       deps.store.setState(matrixKey(market), JSON.stringify(reading), deps.nowIso);
-      const names = s.todoNames.length ? `（可做：${s.todoNames.join('、')}）` : '';
+      // 名字列表留在读数里（界面吃那个）；日志只留几条 —— 太长会被截成一句废话
+      const names = '';
       return {
         ok: true,
+        // 说人话：做了几条、还剩几条（`market=`/`[1/2]` 是给排查用的，进日志没人看）
+        idle: s.todo === 0,
         note:
-          `App 任务矩阵[${idx + 1}/${MATRIX_MARKETS.length} market=${market}]：` +
-          `已完成 ${s.done} 条、可做 ${s.todo} 条、不参与 ${s.skip} 条${names}`,
+          s.todo === 0
+            ? `已完成 ${s.done} 条，没有还能做的`
+            : // ⚠ 别说成"要在 App 里手动做"：这一桶里混着「下月再来」「次月可领」
+              //   这类**这个月做不了**的（§12.10），而"怎么做"上游是逐条写在按钮上的。
+              `已完成 ${s.done} 条，另有 ${s.todo} 条没做完（哪一条能不能做，看它自己那句）`,
         snapshot: { group: market, ...s, items: items.slice(0, 20) },
       };
     },

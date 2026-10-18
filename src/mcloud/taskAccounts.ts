@@ -23,6 +23,14 @@
 import { loadAccounts } from './accounts.ts';
 import type { ReadableState } from '../store/keys-types.ts';
 
+/** 三条**排期任务**的名字 —— 就是调度器里 `register_cron` 注册的那三个。
+ *
+ *  ⚠ 别和 `tasks/taskList.ts` 的 `TASK_NAMES` 混了：那是**内部步骤**的名字
+ *    （`sign` / `receive` / …），不是任务名。混用过的后果很具体：
+ *    `/task/accounts` 拿 `TASK_NAMES` 校验，于是**每次保存账号选择都 400**
+ *    （「不认识的任务：日常」），而界面上看起来只是"点了一下没反应"。 */
+export const SCHEDULED_TASKS = ['日常', '兑换', '直播'] as const;
+
 /** 一条任务选的账号。**按任务**存（键里带任务名），与账号袋无关。
  *
  *  ⚠ 这个键是 `global` 作用域：它说的是"日常这条任务用哪些号"，

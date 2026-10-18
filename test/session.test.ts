@@ -225,7 +225,7 @@ test('路由：状态不回显凭据、导入后立刻真验、坏输入 400、�
   assert.equal(JSON.parse(call('GET', '/plugins/mcloud/api/session').body).present, false);
 
   // 基址配置：默认真上游、坏值 400、设了立刻生效（体检会打到那个地址）
-  assert.equal(JSON.parse(call('GET', '/plugins/mcloud/api/config').body).baseUrl, '(真上游)');
+  assert.equal(JSON.parse(call('GET', '/plugins/mcloud/api/config').body).baseUrl, '(真主机)');
   const badBase = call('POST', '/plugins/mcloud/api/config', JSON.stringify({ baseUrl: 'ftp://x' }));
   assert.equal(badBase.status, 400);
   call('POST', '/plugins/mcloud/api/config', JSON.stringify({ baseUrl: 'http://127.0.0.1:9/' }));

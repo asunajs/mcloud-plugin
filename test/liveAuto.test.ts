@@ -169,7 +169,7 @@ test('`live-auto` 一个上游请求都不发（它只算时刻）', () => {
   }) as Transport;
   const out = runLiveAuto({ store, transport, nowIso: NOW }, { windowMs: 600_000 });
   assert.equal(out.ok, true);
-  assert.match(out.note, /2026-10-15 12:00:00/);
+  assert.match(out.note, /10-15 12:00/);
   assert.equal(asked, 0, '零请求是这条任务的意义（"没开播时也别去问"）');
 });
 
@@ -228,7 +228,7 @@ test('门关着时的冷却真的按计划设：睡到"下一场 + 1 小时"', (
     NOW,
   );
   const out = runLiveListen(deps);
-  assert.match(out.note, /门关着/);
+  assert.match(out.note, /没在听/);
   const after = loadListenState(store);
   assert.ok(after?.nextCheckAtMs !== undefined);
   // ⚠ 有**上限**（[`MAX_IDLE_RECHECK_MS`] = 12 小时）：这一场是明天 11 点（还差 20 小时），
@@ -237,5 +237,5 @@ test('门关着时的冷却真的按计划设：睡到"下一场 + 1 小时"', (
   const want = Math.min(at('2026-10-15 12:00:00') - NOW_MS, MAX_IDLE_RECHECK_MS);
   assert.equal(after!.nextCheckAtMs, NOW_MS + want, '冷却要正好是"到那一刻醒"（受上限约束）');
   assert.ok(want > IDLE_RECHECK_MS, '总得比默认的 5 分钟长，否则这条优化没生效');
-  assert.match(listenReadingLine(after), /这一轮结束|门关着|准备中/);
+  assert.match(listenReadingLine(after), /这一轮结束|没在听|准备中/);
 });
