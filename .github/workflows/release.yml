@@ -38,6 +38,17 @@ jobs:
 
       - run: npm ci --no-audit --no-fund
 
+      # 面板先构建出来。**两个地方要它**：`check-split`（它要起一个真面板验调度
+      # 表达式）和后面"把这个 zip 传进空面板试装"那一步。构建一次，两处复用 ——
+      # 各构建一次会多花好几分钟（这个面板是 Rust 全量编译）。
+      - uses: dtolnay/rust-toolchain@stable
+      - name: 取出面板并构建
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/asunajs/panel "$RUNNER_TEMP/panel"
+          cd "$RUNNER_TEMP/panel" && cargo build --release
+          echo "PANEL_BIN=$RUNNER_TEMP/panel/target/release/plugin-panel" >> "$GITHUB_ENV"
+
       # 发布前把该跑的跑完。**不通过就不发** —— 一个"能下载但跑不起来"的
       # 产物比没有产物更糟：用户会以为是自己的环境问题。
       - name: 类型检查
@@ -46,8 +57,8 @@ jobs:
         run: npm test
       - name: 产物与源码一致
         run: npm run check-build
-      - name: 参数/调度断言
-        run: npm run check-split
+      - name: 参数/调度断言（起一个真面板看调度表达式）
+        run: python3 scripts/split_check.py "$PANEL_BIN"
 
       # tag 与 package.json 的版本必须对得上，否则 zip 名字会骗人
       # （`mcloud-plugin-0.1.0.zip` 里装的是 0.0.0 的代码）。
@@ -72,13 +83,11 @@ jobs:
         run: |
           set -euo pipefail
           TMP=$(mktemp -d)
-          git clone --depth 1 https://github.com/asunajs/panel "$TMP/panel"
-          (cd "$TMP/panel" && cargo build --release)
           mkdir -p "$TMP/plugins" "$TMP/db"
           BIND_ADDR=127.0.0.1:18796 \
           PANEL_TOKEN=rel-token PANEL_ALLOW_PLAIN_TOKEN=1 \
           DB_PATH="$TMP/db/p.db" PLUGINS_DIR="$TMP/plugins" PANEL_LOG_DIR="$TMP/logs" \
-            "$TMP/panel/target/release/plugin-panel" > "$TMP/panel.log" 2>&1 &
+            "$PANEL_BIN" > "$TMP/panel.log" 2>&1 &
           PID=$!
           trap 'kill $PID 2>/dev/null || true' EXIT
           for i in $(seq 1 40); do
@@ -90,26 +99,23 @@ jobs:
           curl -fsS -X POST http://127.0.0.1:18796/api/plugins/upload \
             -H 'X-Panel-Token: rel-token' -H 'x-panel: 1' \
             -F "file=@$ZIP" | tee "$TMP/up.json"
-          # 等**插件与任务都真的就位**（别只等接口通 —— 这个坑踩过好几次）
+          # 等**插件与任务都真的就位**（别只等接口通 —— 这个坑踩过好几次）。
+          # 断言在 `scripts/ci_state_check.py` 里，`ready` 只管 0/1，不刷屏。
           for i in $(seq 1 60); do
-            if curl -fsS -H 'X-Panel-Token: rel-token' http://127.0.0.1:18796/api/state -o "$TMP/s.json" 2>/dev/null; then
-              if python3 - "$TMP/s.json" <<'PY'
-          import json, sys
-          s = json.load(open(sys.argv[1]))
-          names = {p["name"] for p in s.get("plugins", [])}
-          jobs = {j["name"] for j in s.get("jobs", []) if not j.get("deleted")}
-          ok = {"mcloud", "mcloud-daily", "mcloud-exchange", "mcloud-live"} <= names and {"日常", "兑换", "直播"} <= jobs
-          sys.exit(0 if ok else 1)
-          PY
-              then
-                echo "✅ zip 装进空面板：4 个插件 + 3 条任务都在"
-                exit 0
-              fi
+            if curl -fsS -H 'X-Panel-Token: rel-token' http://127.0.0.1:18796/api/state -o "$TMP/s.json" 2>/dev/null \
+               && python3 scripts/ci_state_check.py ready "$TMP/s.json"; then
+              # 再问一下自检路由：**装上了 ≠ 跑得动**（沙箱里缺 crypto 之类的错，
+              # 只有真跑一次才知道），这也是"面板能直接用"这句话的全部含义。
+              curl -fsS -H 'X-Panel-Token: rel-token' \
+                http://127.0.0.1:18796/plugins/mcloud/api/selftest -o "$TMP/st.json"
+              python3 scripts/ci_state_check.py selftest "$TMP/st.json"
+              echo "✅ zip 装进空面板：4 个插件 + 3 条任务 + 自检路由都正常"
+              exit 0
             fi
             sleep 0.5
           done
           echo "❌ 装了 30 秒还没就位，日志："
-          cat "$TMP/panel.log" | tail -50
+          tail -50 "$TMP/panel.log"
           exit 1
 
       - name: 挂到 Release
