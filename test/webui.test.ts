@@ -1219,7 +1219,11 @@ test('⚠ 跨账号的同一句解释只说一遍（领小红花那个括号）'
 
 test('CI 的 state 断言脚本：正例过、反例必须红（别让 CI 断言本身坏了没人知道）', () => {
   const dir = mkdtempSync(join(tmpdir(), 'ci-state-'));
-  const good = {
+  // 类型写明：下面几条反例会改字段（runtime / error），别让 TS 按字面量推成 null
+  const good: {
+    plugins: { name: string; runtime: string; error: string | null }[];
+    jobs: { name: string; plugin: string; schedule: string; last_error: string | null }[];
+  } = {
     plugins: [
       { name: 'mcloud', runtime: 'js', error: null },
       { name: 'mcloud-daily', runtime: 'js', error: null },
