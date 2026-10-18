@@ -479,7 +479,7 @@ export function parseCodeInput(raw: string): CodeInput {
       codes: [],
       how: '',
       matchedFormat: false,
-      error: `「${bad.slice(0, 20)}」看着是观众的提问，不是口令 —— 拿去领只会白跑一枪（上游回 200108）`,
+      error: `「${bad.slice(0, 20)}」看着是观众的提问，不是口令 —— 拿去领只会白跑一枪（服务端回 200108）`,
     };
   }
   return finish(lines, `按原文收下 ${lines.length} 条（没匹配到任何弹幕格式）`, false);

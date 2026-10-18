@@ -161,7 +161,7 @@ function handshake(deps: TaskDeps, st: GateState, base: string | undefined): Tas
   const TASK = 'live-gate';
   const auth = loadAuthRaw(deps.store);
   if (auth === '') {
-    const note = '门要**原生凭据**（`Authorization`）：先去界面贴一份（见 docs/howto-session.md）';
+    const note = '这个号还没有原生凭据 —— 先在账号页把它加上';
     recordError(deps.store, TASK, note, deps.nowIso);
     return { ok: false, note };
   }
@@ -190,7 +190,9 @@ function handshake(deps: TaskDeps, st: GateState, base: string | undefined): Tas
   clearError(deps.store, TASK, deps.nowIso);
   return {
     ok: true,
-    note: '① 换到 SSO token（**不落盘**，这一步就用掉了）+ ② 换到直播侧 JWT（≈30 天，这一轮用完就抹）',
+    // 日志里一行一步，这里只说结果（怎么换的、留不留盘是代码的事，见文件头）
+    // 这只是**第一步**（换票）；下一步才去看有没有开播 —— 说清楚，别让人以为已经看过了
+    note: '票换好了，下一步去看有没有开播',
   };
 }
 

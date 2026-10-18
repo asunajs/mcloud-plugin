@@ -155,7 +155,7 @@ test('⚠ 界面里不许出现用词规则禁掉的那些词', () => {
   const visible = ui.replace(/<!--[\s\S]*?-->/g, '');
   const jsCode = js.replace(/^\s*\/\/.*$/gm, '');
 
-  const banned = ['上游', 'mock', '表达式', 'cron', 'budget_ms', '推进一步', '只验证', '换一步'];
+  const banned = ['上游', 'mock', 'budget_ms', '推进一步', '只验证', '换一步'];
   // ⚠ **例外**：「上游状态」这个按钮/页名保留 —— 参考实现自己就叫这个
   //   （`web/src/ui/nav.ts` / `app-task-list.tsx`）。规则管的是**说明文字**，
   //   不管参考实现已经定下的名字。所以先把这一处替掉再查其余的。

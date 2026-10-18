@@ -52,13 +52,27 @@ export interface RunStep {
   note: string;
   /** 这一步什么都没做（条件不成立）—— 界面据此显示成灰色而不是绿勾 */
   idle: boolean;
+  /** 内部管道步骤（换票、凭据续期之类）—— **成了就不该出现在用户眼前**。
+   *
+   *  由后端标（`tasks/stepLog.ts` 是唯一知道"哪些算管道"的地方）：
+   *  界面那侧不该自己维护一份名字表 —— 两份名字迟早不一致，
+   *  而且界面代码里出现那些词本身就是"黑话漏进用户界面"（用词检查会拦）。 */
+  plumb?: boolean;
 }
 
 /** 一次运行。 */
 export interface RunRecord {
-  /** 标识：`<任务>-<毫秒时间戳>`。界面要能用它定位"那一次"。 */
+  /** 标识：`<任务>-<毫秒时间戳>-<账号>`。界面要能用它定位"那一次"。
+   *
+   *  ⚠ 必须带账号：一次触发会**每个号各写一条**，只按时间戳做 id 的话
+   *  它们会互相覆盖 —— 现场就是这样，"最近几次"永远只剩最后一个号
+   *  （`移动：14 成、2 失败` 连着五条，另外两个号的记录根本没留下）。 */
   id: string;
   task: RunTask;
+  /** 哪个号（账号 id / `anon-…`）。没分账号的旧记录没有这一格。 */
+  acct?: string;
+  /** 那个号在界面上叫什么（`小号` / `移动`）。 */
+  who?: string;
   /** 开始时刻（ISO） */
   at: string;
   /** 跑了多久（毫秒）。**用户判断"是不是卡住了"靠的就是它。** */
@@ -84,6 +98,9 @@ function cleanStep(s: RunStep): RunStep {
     ok: s.ok === true,
     note: clip(s.note),
     idle: s.idle === true,
+    // ⚠ 这个标记要跟着走：界面靠它把"内部管道"（换票之类）成功时藏起来。
+    //   漏掉的话，界面上会冒出「换票（签到族）：没有待换票的任务」这种话。
+    ...(s.plumb === true ? { plumb: true } : {}),
   };
 }
 
@@ -131,15 +148,21 @@ export function appendRun(
     ok: boolean;
     note: string;
     steps: RunStep[];
+    acct?: string;
+    who?: string;
   },
 ): string {
   const steps = rec.steps.slice(0, MAX_STEPS).map(cleanStep);
-  const id = `${rec.task}-${Date.parse(rec.at) || 0}`;
+  // 账号进 id：同一次触发里每个号一条，不能互相覆盖（见 `RunRecord.id` 那段）
+  const tail = rec.acct === undefined || rec.acct === '' ? '' : `-${rec.acct}`;
+  const id = `${rec.task}-${Date.parse(rec.at) || 0}${tail}`;
 
   const all = readRuns(store);
   const next: RunRecord = {
     id,
     task: rec.task,
+    ...(rec.acct === undefined ? {} : { acct: rec.acct }),
+    ...(rec.who === undefined ? {} : { who: rec.who }),
     at: rec.at,
     ms: Math.max(0, Math.round(rec.ms)),
     ok: rec.ok === true,
@@ -180,6 +203,9 @@ export function appendRun(
  *  用户点开某一次才取它的步骤（`readRun`）。 */
 export interface RunSummary {
   id: string;
+  /** 哪个号（旧记录没有） */
+  acct?: string;
+  who?: string;
   at: string;
   ms: number;
   ok: boolean;
@@ -194,6 +220,8 @@ export interface RunSummary {
 export function summarize(r: RunRecord): RunSummary {
   return {
     id: r.id,
+    ...(r.acct === undefined ? {} : { acct: r.acct }),
+    ...(r.who === undefined ? {} : { who: r.who }),
     at: r.at,
     ms: r.ms,
     ok: r.ok,

@@ -45,15 +45,32 @@ function gfMul(a: number, b: number): number {
   return r & 0xff;
 }
 
-/** 生成多项式 `(x-α^0)(x-α^1)…(x-α^(n-1))`，系数从最高次到常数项。 */
-function rsGenerator(n: number): number[] {
+/** `α^i`（GF(2^8)，本原多项式 0x11d）。
+ *
+ *  ⚠ 这里**不能**图省事写 `Math.pow(2, i) & 0xff`：`i ≥ 8` 时 `2^i` 已经超出
+ *  8 位，与 `0xff` 相与得 **0**，于是 `α^8 … α^(n-1)` 全变成 0 ——
+ *  生成多项式退化成"多带一个 x 因子"，算出来的纠错码字整段是错的。
+ *
+ *  它的表现不是报错、也不是"看着不像二维码"，而是**手机扫不出来**：
+ *  只影响纠错码字个数 > 8 的版本（v1 是 7 个，所以 v1 恰好是对的 ——
+ *  这也是它能骗过"肉眼看着像"和"自己往返自洽"的原因，见 `docs/findings.md` F-068）。 */
+function gfExp(i: number): number {
+  let r = 1;
+  for (let k = 0; k < i; k += 1) r = gfMul(r, 2);
+  return r;
+}
+
+/** 生成多项式 `(x-α^0)(x-α^1)…(x-α^(n-1))`，系数从最高次到常数项。
+ *
+ *  导出是给测试用的：它的 α 指数要逐项对上规范 Annex A 公布的那张表。 */
+export function rsGenerator(n: number): number[] {
   let poly = [1];
   for (let i = 0; i < n; i += 1) {
     const next = new Array<number>(poly.length + 1).fill(0);
     for (let j = 0; j < poly.length; j += 1) {
       const coef = poly[j]!;
       next[j] = next[j]! ^ coef;
-      next[j + 1] = next[j + 1]! ^ gfMul(coef, Math.pow(2, i) & 0xff);
+      next[j + 1] = next[j + 1]! ^ gfMul(coef, gfExp(i));
     }
     poly = next;
   }
@@ -418,19 +435,28 @@ function penalty(m: boolean[], size: number): number {
   return score;
 }
 
+/** 格式信息**第一份**（左上角那条 L 形）的坐标，`[列, 行]`，第 i 项放第 i 位
+ *  （位序 LSB 优先）。
+ *
+ *  ⚠ 这张表不能"按对称自己推"：位 0–5 在**第 8 列向下**（行 0→5），位 9–14 在
+ *  **第 8 行向左**（列 5→0）。写反（把行 8 当列 8 用）得到的是**转置**过的格式信息：
+ *  编码器自己读自己永远是对的（测试里那个解码器要是照抄同一套坐标也一样过），
+ *  但任何真实读码器读到的掩码号与纠错级都是错的 ⇒ 整张码解不出来。
+ *  坐标取自规范（同 ZXing `MatrixUtil.TYPE_INFO_COORDS`）。 */
+const FORMAT_COORDS: readonly [number, number][] = [
+  [8, 0], [8, 1], [8, 2], [8, 3], [8, 4], [8, 5], [8, 7], [8, 8],
+  [7, 8], [5, 8], [4, 8], [3, 8], [2, 8], [1, 8], [0, 8],
+];
+
 /** 把格式信息写进矩阵（在掩码之后 —— 格式信息**不参与掩码**）。 */
 function placeFormat(dark: boolean[], size: number, mask: number): void {
   const bits = FORMAT_INFO[mask]!;
   const bit = (i: number): boolean => ((bits >> i) & 1) === 1;
   for (let i = 0; i < 15; i += 1) {
     const v = bit(i);
-    // 左上角那一段（跳过定时图案那两格）
-    if (i < 6) dark[8 * size + i] = v;
-    else if (i === 6) dark[8 * size + 7] = v;
-    else if (i === 7) dark[8 * size + 8] = v;
-    else if (i === 8) dark[7 * size + 8] = v;
-    else dark[(14 - i) * size + 8] = v;
-    // 右上 / 左下那一段
+    const [c, r] = FORMAT_COORDS[i]!;
+    dark[r * size + c] = v;
+    // 第二份：右上那 8 格在第 8 行从右往左，左下那 7 格在第 8 列从下往上
     if (i < 8) dark[8 * size + (size - 1 - i)] = v;
     else dark[(size - 15 + i) * size + 8] = v;
   }

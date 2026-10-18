@@ -68,7 +68,7 @@ test('prizes：query 逐字（type=1 / 第 1 页 / 每页 10，抄自调用点�
   const { transport, sent } = recorder([[{ id: 1, state: 'UNRECEIVED' }, { id: 2, state: 'RECEIVED' }]]);
   const out = runPrizes({ store, transport, nowIso: NOW });
   assert.equal(out.ok, true);
-  assert.equal(out.note, '奖品 2 条（未领取 1 条）');
+  assert.equal(out.note, '待领取奖品 1 个（共 2 个）');
   assert.equal(sent[0]!.method, 'GET');
   assert.equal(
     sent[0]!.url,
@@ -237,6 +237,6 @@ test('底座：失败原因落盘，成功时清掉；没有会话不发请求',
     nowIso: NOW,
   });
   assert.equal(out2.ok, false);
-  assert.match(out2.note, /未登录/);
+  assert.match(out2.note, /还没有网页会话/);
   assert.equal(n, 0);
 });

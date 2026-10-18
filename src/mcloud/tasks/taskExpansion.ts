@@ -30,8 +30,8 @@
 
 
 import { callRawText } from '../client.ts';
-import { REFERER_SIGN_IN, SHOW_LOADING, buildH5Request } from '../h5.ts';
-import { sessionHeaders } from './base.ts';
+import { REFERER_SIGN_IN, SHOW_LOADING, buildH5Request, MCLOUD_HOST } from '../h5.ts';
+import { hostBase, sessionHeaders } from './base.ts';
 import { deterministicFile } from '../cloudUpload.ts';
 import { runUploadStep, startUpload, uploadDone } from './upload.ts';
 import { loadSession } from '../../store/types.ts';
@@ -233,9 +233,9 @@ export function runExpansionStep(deps: TaskDeps): TaskOutcome {
       : `${res.text.slice(0, 120)}（⚠ 这一枪**缺成功样本**，形状没被实拍验过）`;
   if (!codeOk) {
     const msg = typeof out?.msg === 'string' ? out.msg : '';
-    return { ok: false, note: `${label}：上游拒绝 —— code=${String(code)}${msg === '' ? '' : ` ${msg}`}` };
+    return { ok: false, note: `${label}：服务端拒绝 —— code=${String(code)}${msg === '' ? '' : ` ${msg}`}` };
   }
-  return { ok: true, note: `${label}：上游回 ${detail}` };
+  return { ok: true, note: `${label}：服务端回 ${detail}` };
 }
 
 /** 触发备份用的那个文件：**确定**内容（夹具与摘要都可复现）。 */
@@ -244,5 +244,6 @@ export const EXPAND_FILE_SEED = 'mcloud-panel-backup-marker-v1';
 export const EXPAND_FILE_BYTES = 256;
 
 function withBase(deps: TaskDeps, path: string): string {
-  return `${deps.baseUrl ?? 'https://m.mcloud.139.com'}${path}`;
+  // ⚠ 空串必须当成"没给"（见 `hostBase` 那段说明）
+  return `${hostBase(deps, MCLOUD_HOST)}${path}`;
 }

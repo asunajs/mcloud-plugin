@@ -2,10 +2,10 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.0.0 · 插件 `mcloud-live`
+//   mcloud-plugin 0.1.0 · 插件 `mcloud-live`
 
 // src/entries/live.ts
-import { log as log2, register_cron, warn as warn2, worker_hint } from "host-api";
+import { log as log3, register_cron } from "host-api";
 
 // src/mcloud/runLog.ts
 var RUN_LOG_KEY = "mcloud.run.log";
@@ -21,7 +21,10 @@ function cleanStep(s) {
     name: clip(s.name, 60),
     ok: s.ok === true,
     note: clip(s.note),
-    idle: s.idle === true
+    idle: s.idle === true,
+    // ⚠ 这个标记要跟着走：界面靠它把"内部管道"（换票之类）成功时藏起来。
+    //   漏掉的话，界面上会冒出「换票（签到族）：没有待换票的任务」这种话。
+    ...s.plumb === true ? { plumb: true } : {}
   };
 }
 function readRuns(store2) {
@@ -39,11 +42,14 @@ function readRuns(store2) {
 }
 function appendRun(store2, rec) {
   const steps = rec.steps.slice(0, MAX_STEPS).map(cleanStep);
-  const id = `${rec.task}-${Date.parse(rec.at) || 0}`;
+  const tail = rec.acct === void 0 || rec.acct === "" ? "" : `-${rec.acct}`;
+  const id = `${rec.task}-${Date.parse(rec.at) || 0}${tail}`;
   const all = readRuns(store2);
   const next = {
     id,
     task: rec.task,
+    ...rec.acct === void 0 ? {} : { acct: rec.acct },
+    ...rec.who === void 0 ? {} : { who: rec.who },
     at: rec.at,
     ms: Math.max(0, Math.round(rec.ms)),
     ok: rec.ok === true,
@@ -80,6 +86,9 @@ var KEY_SCOPE = {
   "mcloud.session": "account",
   "mcloud.session.last_check": "account",
   "mcloud.h5.auth": "account",
+  // 宿主"能不能用 tls:native"的探测结论（= 这个面板构建支不支持直播）。
+  // **与账号无关**，但按账号存最省事 —— 结论一样，多存几份不花钱。
+  "mcloud.host.native_tls": "account",
   "mcloud.h5.exchange": "account",
   "mcloud.h5.jwt": "account",
   "mcloud.daily.done_date": "account",
@@ -106,6 +115,10 @@ var KEY_SCOPE = {
   // 不是某个号自己的设置（放进账号袋会让 A 的名单被 B 读到）。
   // ⚠ 动态键（键里带任务名）⇒ 靠  登记，见下面那张表。
   "mcloud.task.accounts.": "global",
+  // 运行日志的**环形副本**（最近 N 行）。global —— 它记的是"这台机器上发生过什么"，
+  // 不属于某个号；而且它要能在**面板重启之后**还读得到（面板的内存日志环是重启就没的，
+  // 见 findings F-085）。写的时候按"全局"落，界面上再按插件名过滤。
+  "mcloud.log.ring": "global",
   "mcloud.login.base": "global",
   "mcloud.login.userDomainId": "global",
   "mcloud.sign.stage": "account",
@@ -129,7 +142,15 @@ var KEY_SCOPE = {
   "mcloud.cloudsnapshot.last": "account",
   "mcloud.exchangelist.last": "account",
   "mcloud.exchangelist.raw": "account",
+  // 界面上「选一件」的下拉缓存（全量清单里挑出来的四格）。
+  // **按账号** —— 清单与"能不能换"都是账号级的。日界作废，见 exchangeList.ts。
+  "mcloud.exchangelist.pick": "account",
+  // 「我关注的奖品」：按账号存（不同账号的清单不同，关注的 id 也可能不同）。
+  "mcloud.exchange.subs": "account",
   "mcloud.exchange.plan": "account",
+  // 定时抢兑每个账号已经真正发起过几次（按账号）。
+  "mcloud.exchange.schedule.runs": "account",
+  "mcloud.exchange.schedule.runs_gen": "account",
   "mcloud.exchange.order.step": "account",
   "mcloud.exchange.order.baseline": "account",
   "mcloud.exchange.order.plan": "account",
@@ -164,6 +185,16 @@ var KEY_SCOPE = {
   "mcloud.login.pref": "global",
   /** 几点抢兑 —— 是**配置**，跟账号无关。 */
   "mcloud.exchange.target_hour": "global",
+  // 「定时抢兑」的目标：与手动目标分开，避免改一个把另一个带跑。
+  // 全局 —— 定时任务按「任务账号」逐个跑，但只认这一件目标。
+  "mcloud.exchange.schedule.plan": "global",
+  "mcloud.exchange.schedule.mode": "global",
+  "mcloud.exchange.schedule.cron": "global",
+  "mcloud.exchange.schedule.until": "global",
+  "mcloud.exchange.schedule.once_date": "global",
+  "mcloud.exchange.schedule.max_runs": "global",
+  "mcloud.exchange.schedule.gen": "global",
+  "mcloud.exchange.lead_sec": "global",
   /** 提前量 —— "网络慢的人该调大"，是**这台机器**的调参，与账号无关。 */
   "mcloud.exchange.order.lead_ms": "global",
   /** 领小红花的开关。 */
@@ -499,6 +530,16 @@ function parseAuth(auth) {
 }
 
 // src/mcloud/accounts.ts
+function normalizeAuth(raw) {
+  const t = raw.replace(/\uFEFF/g, "").trim();
+  const head = t.charAt(0);
+  const unquoted = t.length >= 2 && (head === '"' || head === "'") && t.charAt(t.length - 1) === head ? t.slice(1, -1).trim() : t;
+  const m = /^basic[\s:]+([\s\S]+)$/i.exec(unquoted);
+  const b64 = (m !== null ? m[1] : unquoted).replace(/\s+/g, "");
+  if (b64 === "") return unquoted;
+  const info = parseAuth(b64);
+  return info !== void 0 && info.raw !== "" ? `Basic ${b64}` : unquoted;
+}
 function loadAccounts(store2) {
   const raw = store2.getState(STATE_ACCOUNTS);
   if (raw === null || raw === void 0 || raw.trim() === "") return [];
@@ -514,7 +555,7 @@ function loadAccounts(store2) {
     if (it === null || typeof it !== "object") continue;
     const o = it;
     if (typeof o.id !== "string" || typeof o.auth !== "string" || o.auth === "") continue;
-    const auth = o.auth;
+    const auth = normalizeAuth(o.auth);
     const info = parseAuth(auth);
     const pc = o.pcPlatform;
     out.push({
@@ -524,6 +565,7 @@ function loadAccounts(store2) {
       // 老账号没存过这两格 ⇒ 从凭据里现解一次（不用迁移）
       platform: typeof o.platform === "string" ? o.platform : info?.platform ?? "",
       pcPlatform: pc === "win" || pc === "mac" ? pc : void 0,
+      userDomainId: typeof o.userDomainId === "string" && o.userDomainId !== "" ? o.userDomainId : void 0,
       disabled: o.disabled === true,
       addedAt: typeof o.addedAt === "string" ? o.addedAt : ""
     });
@@ -563,6 +605,234 @@ function resolveTaskAccounts(store2, task) {
 function labelOf(store2, acctId) {
   const a = loadAccounts(store2).find((x) => x.id === acctId);
   return a?.label || a?.id || acctId;
+}
+
+// src/mcloud/log.ts
+import { error, log, warn } from "host-api";
+
+// src/mcloud/logRing.ts
+var RING_KEY = "mcloud.log.ring";
+var RING_MAX = 400;
+function parse(raw) {
+  if (raw === "") return [];
+  try {
+    const v = JSON.parse(raw);
+    if (!Array.isArray(v)) return [];
+    return v.filter(
+      (x) => typeof x === "object" && x !== null && typeof x.m === "string"
+    );
+  } catch {
+    return [];
+  }
+}
+function appendRing(store2, nowIso, level, msg) {
+  const all = parse(store2.getState(RING_KEY) ?? "");
+  all.push({ t: nowIso, l: level, m: msg });
+  const kept = all.length > RING_MAX ? all.slice(all.length - RING_MAX) : all;
+  store2.setState(RING_KEY, JSON.stringify(kept), nowIso);
+}
+
+// src/mcloud/log.ts
+function logBoth(store2, level, msg, nowIso) {
+  if (level === "error") error(msg);
+  else if (level === "warn") warn(msg);
+  else log(msg);
+  appendRing(store2, nowIso, level, msg);
+}
+
+// src/mcloud/tasks/stepLog.ts
+function trimNote(name, note2) {
+  let t = note2;
+  for (const n of [name, name.split("（")[0] ?? name]) {
+    const pre = `${n}：`;
+    if (t.startsWith(pre)) {
+      t = t.slice(pre.length);
+      break;
+    }
+  }
+  const lead = /^([^：]{2,12})：/.exec(t);
+  if (lead !== null && name.includes(lead[1] ?? "")) t = t.slice(lead[0].length);
+  t = t.replace(/^(第 )?\d+ 步(失败|走完) —— /, "");
+  const raw = /^code=(-?\d+)(?: msg=(.*))?$/.exec(t.trim());
+  if (raw !== null) {
+    const msg = (raw[2] ?? "").trim();
+    t = msg === "" ? `服务端没给原因（编号 ${raw[1]}）` : `服务端说：${msg}`;
+  }
+  t = t.replace(/（服务端回 \{[^）]*\}）/g, "（服务端确认了）");
+  return t.trim();
+}
+var PLUMBING = ["换票", "凭据续期"];
+function isPlumbing(name) {
+  return PLUMBING.some((p) => name.startsWith(p));
+}
+var ONCE_HINTS = ["（要先在服务端那边开启）"];
+function onceHint(line, seen) {
+  for (const h of ONCE_HINTS) {
+    if (!line.includes(h)) continue;
+    if (seen.has(h)) return line.replace(h, "");
+    seen.add(h);
+  }
+  return line;
+}
+function userLine(step) {
+  if (isPlumbing(step.name) && step.ok) return null;
+  const why = trimNote(step.name, step.note);
+  if (!step.ok) return `${step.name}：没成${why === "" ? "" : ` —— ${why}`}`;
+  return `${step.name}：${why === "" ? "好了" : why}`;
+}
+
+// src/mcloud/envelope.ts
+var isRecord = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+function parseSignInEnvelope(body) {
+  let v;
+  try {
+    v = JSON.parse(body);
+  } catch (e) {
+    throw new Error(`签到响应不是 JSON：${e instanceof Error ? e.message : String(e)}`);
+  }
+  if (!isRecord(v)) {
+    throw new Error(`签到响应不是对象：${body.slice(0, 120)}`);
+  }
+  const raw = v.code;
+  let code = -1;
+  if (typeof raw === "number") code = Number.isFinite(raw) ? raw : -1;
+  else if (typeof raw === "string" && raw.trim() !== "" && !Number.isNaN(Number(raw))) {
+    code = Number(raw);
+  }
+  const msg = v.msg ?? v.message;
+  const message = typeof msg === "string" ? msg : "";
+  return {
+    code,
+    message,
+    result: v.result,
+    ok: code === 0
+  };
+}
+
+// src/mcloud/client.ts
+var isFetchError = (v) => typeof v === "object" && v !== null && typeof v.error === "string";
+function pickError(msg) {
+  return msg.replace(/^\s*请求失败[:：]\s*/, "").trim() || msg;
+}
+function hostFetchOptions(req, timeoutMs) {
+  const opts = {
+    method: req.method,
+    headers: req.headers,
+    body: req.body,
+    timeout_ms: timeoutMs
+  };
+  if (req.tls !== void 0 && req.url.startsWith("https:")) opts.tls = req.tls;
+  return opts;
+}
+function callOnce(transport2, req) {
+  const t0 = Date.now();
+  const fail = (error3) => ({
+    status: 0,
+    tookMs: Date.now() - t0,
+    env: void 0,
+    ok: false,
+    error: error3,
+    raw: "",
+    body: "",
+    setCookies: []
+  });
+  let res;
+  try {
+    res = transport2(req);
+  } catch (e) {
+    return fail(`请求失败：${e instanceof Error ? e.message : String(e)}`);
+  }
+  if (isFetchError(res)) return fail(pickError(res.error));
+  if (typeof res !== "object" || res === null || typeof res.body !== "string") {
+    return fail(`请求返回的形状不认识：${JSON.stringify(res)?.slice(0, 200) ?? String(res)}`);
+  }
+  const tookMs = Date.now() - t0;
+  const raw = res.body.length > 500 ? `${res.body.slice(0, 500)}…` : res.body;
+  let env;
+  let error2;
+  if (res.status !== 200) {
+    error2 = `HTTP ${res.status}`;
+  } else {
+    try {
+      env = parseSignInEnvelope(res.body);
+      if (!env.ok) error2 = `code=${env.code}${env.message ? ` msg=${env.message}` : ""}`;
+    } catch (e) {
+      error2 = e instanceof Error ? e.message : String(e);
+    }
+  }
+  return {
+    status: res.status,
+    tookMs,
+    env,
+    ok: res.status === 200 && !!env?.ok,
+    error: error2,
+    raw,
+    body: res.body,
+    setCookies: extractSetCookies(res.headers)
+  };
+}
+var CONTENT_TYPE_JSON = "application/json;charset=UTF-8";
+function applyDefaultContentType(req) {
+  if (req.body === void 0) return req;
+  const declared = Object.keys(req.headers).some((k) => k.toLowerCase() === "content-type");
+  if (declared) return req;
+  return { ...req, headers: { ...req.headers, "content-type": CONTENT_TYPE_JSON } };
+}
+function callRawText(transport2, req) {
+  const t0 = Date.now();
+  const fail = (error2) => ({
+    ok: false,
+    status: 0,
+    text: "",
+    chars: 0,
+    tookMs: Date.now() - t0,
+    error: error2
+  });
+  let res;
+  try {
+    res = transport2(req);
+  } catch (e) {
+    return fail(`请求失败：${e instanceof Error ? e.message : String(e)}`);
+  }
+  const tookMs = Date.now() - t0;
+  if (isFetchError(res)) return { ...fail(pickError(res.error)), tookMs };
+  if (typeof res !== "object" || res === null || typeof res.body !== "string") {
+    return {
+      ...fail(`请求返回的形状不认识：${JSON.stringify(res)?.slice(0, 200) ?? String(res)}`),
+      tookMs
+    };
+  }
+  const chars = res.body.length;
+  if (res.status !== 200) {
+    return { ok: false, status: res.status, text: res.body, chars, tookMs, error: `HTTP ${res.status}` };
+  }
+  return { ok: true, status: 200, text: res.body, chars, tookMs, error: void 0 };
+}
+function extractSetCookies(headers) {
+  const raw = [];
+  for (const [k, v] of Object.entries(headers)) {
+    if (k.toLowerCase() === "set-cookie") raw.push(v);
+  }
+  const out = [];
+  for (const line of raw) {
+    let cur = line;
+    const parts = [];
+    let idx = 0;
+    for (; ; ) {
+      const m = /,\s*([A-Za-z0-9_.-]+)=/.exec(cur.slice(idx));
+      if (!m || m.index === void 0) break;
+      parts.push(cur.slice(idx, idx + m.index));
+      idx += m.index + 1;
+    }
+    parts.push(cur.slice(idx));
+    for (const p of parts) {
+      cur = p.trim();
+      if (!cur) continue;
+      const pair = cur.split(";")[0]?.trim() ?? "";
+      if (pair.includes("=")) out.push(pair);
+    }
+  }
+  return out;
 }
 
 // src/crypto/md5.ts
@@ -836,6 +1106,350 @@ function sha256(bytes) {
   return out;
 }
 
+// src/mcloud/h5.ts
+var MCLOUD_HOST = "https://m.mcloud.139.com";
+var REFERER_SIGN_IN = `${MCLOUD_HOST}/mcloud/sign_in/index.html`;
+function rootOrDefault(base, fallback) {
+  const t = (base ?? "").trim();
+  return t === "" ? fallback : t.replace(/\/+$/, "");
+}
+
+// src/store/types.ts
+var SESSION_KEY = "mcloud.session";
+function loadSession(store2) {
+  const raw = store2.getState(SESSION_KEY);
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw);
+    const cookie = typeof v.cookie === "string" ? v.cookie : "";
+    const jwt = typeof v.jwt === "string" ? v.jwt : "";
+    if (cookie === "" && jwt === "") return null;
+    return {
+      cookie,
+      jwt: jwt === "" ? void 0 : jwt,
+      deviceId: typeof v.deviceId === "string" ? v.deviceId : void 0,
+      userAgent: typeof v.userAgent === "string" ? v.userAgent : void 0,
+      savedAt: typeof v.savedAt === "string" ? v.savedAt : ""
+    };
+  } catch {
+    return null;
+  }
+}
+
+// src/mcloud/session.ts
+var STATE_BASE_URL = "mcloud.base_url";
+function loadBaseUrl(store2) {
+  const v = store2.getState(STATE_BASE_URL);
+  if (!v) return "";
+  const t = v.trim();
+  if (!/^https?:\/\//.test(t)) return "";
+  return t.replace(/\/+$/, "");
+}
+
+// src/mcloud/tasks/base.ts
+var ERR_PREFIX = "mcloud.last_error.";
+function recordError(store2, task, note2, nowIso) {
+  store2.setState(`${ERR_PREFIX}${task}`, `${note2} @ ${nowIso}`, nowIso);
+}
+function clearError(store2, task, nowIso) {
+  store2.setState(`${ERR_PREFIX}${task}`, "", nowIso);
+}
+
+// src/mcloud/liveFlower.ts
+var LIVE_ROOM_ORIGIN = "https://m.mcloud.139.com";
+var USER_INFO_PATH = "/ycloud/liveRoomFeedback/user/info";
+var JOURNALING_PATH = "/ycloud/visitlog/journaling";
+var FIRST_PARTICIPATE_GIVE_PATH = "/ycloud/liveRoomFeedback/firstParticipate/give";
+var DRAW_PATH = "/ycloud/liveRoomFeedback/redFlower/draw";
+var QUERY_REVIVAL_FLOWERS_PATH = "/ycloud/liveRoomFeedback/redFlower/queryRevivalFlowers";
+var LIVE_ROOM_MARKET_NAME = "National_LiveRoomFeedback";
+var LIVE_ROOM_JOURNALING_SOURCE_ID = "1007";
+var LIVE_ROOM_ACTIVITY_ID = "sign_in_3";
+var LIVE_ROOM_APP_VERSION = "12.6.0.0";
+var TO_SOURCE_ID = "001005";
+var LIVE_ROOM_USER_AGENT = "Mozilla/5.0 (iPad; CPU OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) MCloudApp/12.6.0 iPad AppLanguage/zh-CN";
+var CODE_KOULING_INVALID = 200108;
+var CODE_KOULING_ALREADY_DRAWN = 200112;
+var CODE_KOULING_EXPIRED = 200118;
+var JOURNALING_EVENTS = [
+  "National_LiveRoomFeedback_pv",
+  "National_LiveRoomFeedback_client",
+  "National_LiveRoomFeedback_client_isApp",
+  "National_LiveRoomFeedback_login",
+  "National_LiveRoomFeedback_flowerBtn"
+];
+function liveRoomPageReferer() {
+  return `${LIVE_ROOM_ORIGIN}/portal/yunClound/index.html?path=${LIVE_ROOM_MARKET_NAME}&sourceid=${LIVE_ROOM_JOURNALING_SOURCE_ID}&targetSourceId=${TO_SOURCE_ID}`;
+}
+function liveRoomHeaders() {
+  return {
+    Accept: "*/*",
+    activityid: LIVE_ROOM_ACTIVITY_ID,
+    appversion: LIVE_ROOM_APP_VERSION,
+    Origin: LIVE_ROOM_ORIGIN,
+    Referer: liveRoomPageReferer(),
+    "User-Agent": LIVE_ROOM_USER_AGENT
+  };
+}
+function liveRoomUrl(path, base) {
+  return `${rootOrDefault(base, LIVE_ROOM_ORIGIN)}${path}`;
+}
+function userInfoRequest(base) {
+  return {
+    url: liveRoomUrl(USER_INFO_PATH, base),
+    method: "POST",
+    // ⚠ 不带 content-type：真实现（`live_flower::user_info_request`）就没设它。
+    // 模块文档那张表写着 application/json，但**代码才是实际发出去的**。
+    headers: liveRoomHeaders(),
+    body: "{}"
+  };
+}
+function journalingRequest(optkeyword, base) {
+  return {
+    url: liveRoomUrl(JOURNALING_PATH, base),
+    method: "POST",
+    headers: {
+      ...liveRoomHeaders(),
+      "content-type": "application/x-www-form-urlencoded;charset=UTF-8"
+    },
+    body: `module=uservisit&optkeyword=${encodeURIComponent(optkeyword)}&sourceid=${LIVE_ROOM_JOURNALING_SOURCE_ID}&marketName=${LIVE_ROOM_MARKET_NAME}`
+  };
+}
+function firstParticipateGiveRequest(base) {
+  return {
+    url: liveRoomUrl(FIRST_PARTICIPATE_GIVE_PATH, base),
+    method: "POST",
+    headers: liveRoomHeaders(),
+    body: void 0
+  };
+}
+function drawRequest(code, base) {
+  return {
+    url: `${liveRoomUrl(DRAW_PATH, base)}?code=${encodeURIComponent(code)}`,
+    method: "POST",
+    headers: liveRoomHeaders(),
+    body: void 0
+  };
+}
+function queryRevivalFlowersRequest(base) {
+  return {
+    url: liveRoomUrl(QUERY_REVIVAL_FLOWERS_PATH, base),
+    method: "GET",
+    headers: liveRoomHeaders(),
+    body: void 0
+  };
+}
+function intAt(o, k) {
+  const v = o[k];
+  if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
+  if (typeof v === "string" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
+  return void 0;
+}
+function strAt(o, k) {
+  const v = o[k];
+  return typeof v === "string" && v !== "" ? v : void 0;
+}
+function classifyDraw(env) {
+  if (!env || env.code === void 0) {
+    return { kind: "unparsable", code: env?.code, message: env?.message ?? "响应解不出来" };
+  }
+  const base = { code: env.code, message: env.message ?? "" };
+  switch (env.code) {
+    case 0: {
+      const r = env.result;
+      if (r === null || typeof r !== "object" || Array.isArray(r)) {
+        return { ...base, kind: "unparsable" };
+      }
+      const o = r;
+      return {
+        ...base,
+        kind: "succeeded",
+        result: {
+          prizeId: intAt(o, "prizeId") ?? 0,
+          flowerNum: intAt(o, "flowerNum") ?? 0,
+          prizeName: strAt(o, "prizeName"),
+          prizeType: intAt(o, "prizeType") ?? 0
+        }
+      };
+    }
+    case CODE_KOULING_ALREADY_DRAWN:
+      return { ...base, kind: "already-drawn" };
+    case CODE_KOULING_INVALID:
+      return { ...base, kind: "invalid-kouling" };
+    case CODE_KOULING_EXPIRED:
+      return { ...base, kind: "kouling-expired" };
+    default:
+      return { ...base, kind: "other" };
+  }
+}
+function drawLine(code, out) {
+  switch (out.kind) {
+    case "succeeded":
+      return `口令「${code}」领到 ${out.result?.flowerNum ?? 0} 朵`;
+    case "already-drawn":
+      return `口令「${code}」没领到：已兑换过`;
+    case "invalid-kouling":
+      return `口令「${code}」没领到：口令无效`;
+    case "kouling-expired":
+      return `口令「${code}」没领到：本场已结束（口令是对的）`;
+    case "other":
+      return `口令「${code}」没领到：服务端回了没见过的码 ${out.code ?? "?"}${out.message ? `（${out.message}）` : ""}`;
+    default:
+      return `口令「${code}」没领到：响应解不出来`;
+  }
+}
+function parseBalance(env) {
+  const r = env?.result;
+  if (r === null || typeof r !== "object" || Array.isArray(r)) return void 0;
+  return intAt(r, "flowerCnt");
+}
+
+// src/mcloud/liveKouling.ts
+var XIAOHONGSHU_KOULING_PROFILE_URL = "https://www.xiaohongshu.com/user/profile/568caf13aed7585949773b30";
+function xiaohongshuProfileHeaders() {
+  return {
+    accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "accept-language": "zh-CN,zh;q=0.9",
+    referer: "https://www.xiaohongshu.com/",
+    "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+  };
+}
+function isKoulingHead(text) {
+  return /(?:复制)?口令\s*\d*\s*[：:]\s*$/.test(text.trim());
+}
+function hasKouling(text) {
+  return /口令|小红花/.test(text);
+}
+function isKoulingMarker(text) {
+  return /无随机/.test(text);
+}
+var TRAILING_PUNCT = /[。．.！!？?~～、,，;；:：'"]+$/;
+function trimKoulingTail(code) {
+  let out = code.trim();
+  for (; ; ) {
+    const before = out;
+    out = out.replace(TRAILING_PUNCT, "").trim();
+    out = out.replace(/\s*无随机口令$/, "");
+    out = out.replace(/(?:^|\s+)无随机$/, "");
+    out = out.replace(/(?:^|\s+)无$/, "");
+    out = out.trim();
+    if (out === before) break;
+  }
+  return out;
+}
+var TRAILING_PARTICLE = /[呀啊吧呢嘛哦]+$/;
+var QUESTION_WORDS = ["什么", "啥", "多少", "几", "哪个", "哪些"];
+function isQuestion(code) {
+  if (/[?？]/.test(code)) return true;
+  const t = code.replace(TRAILING_PARTICLE, "");
+  return QUESTION_WORDS.includes(t);
+}
+var SAME_LINE_PATTERN = /(?:复制)?口令\s*\d*\s*[：:]\s*(.*?)(?=\s+(?:复制)?口令\s*\d*\s*[：:]|无随机|$)/g;
+function extractKouling(msg) {
+  const result = [];
+  const m2 = msg.match(/小红花口令[：:]\s*(.+)/);
+  if (m2 && m2[1] !== void 0) result.push(m2[1].trim());
+  const lines = msg.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = (lines[i] ?? "").trim();
+    if (isKoulingHead(line)) {
+      const next = lines[i + 1];
+      if (next !== void 0) {
+        const content = trimKoulingTail(next.trim());
+        if (content && !/^(?:复制)?口令/.test(content)) {
+          result.push(content);
+        }
+      }
+      continue;
+    }
+    for (const match of line.matchAll(SAME_LINE_PATTERN)) {
+      const code = trimKoulingTail((match[1] ?? "").trim());
+      if (code) result.push(code);
+    }
+  }
+  const m1 = msg.match(/口令是(.+)/);
+  if (m1 && m1[1] !== void 0) result.push(m1[1].trim());
+  if (result.length === 0 && /无随机/.test(msg)) {
+    const parts = msg.replace(/无随机.*/, "").trim().split(/\s+/);
+    for (const part of parts) {
+      const v = part.match(/^\d+\s*[：:]\s*(.+)/);
+      if (v && v[1] !== void 0) {
+        const code = v[1].trim();
+        if (code) result.push(code);
+      }
+    }
+  }
+  return [...new Set(result.map(trimKoulingTail))].filter((code) => code !== "" && !isQuestion(code));
+}
+var NAMED_ENTITIES = {
+  amp: "&",
+  apos: "'",
+  gt: ">",
+  lt: "<",
+  nbsp: " ",
+  quot: '"'
+};
+function decodeHtmlEntities(text) {
+  return text.replace(/&(?:#(\d+)|#x([\da-f]+)|(\w+));/gi, (entity, decimal, hex, named) => {
+    if (typeof decimal === "string" && decimal !== "") {
+      const n = Number(decimal);
+      return safeFromCodePoint(n, entity);
+    }
+    if (typeof hex === "string" && hex !== "") {
+      return safeFromCodePoint(Number.parseInt(hex, 16), entity);
+    }
+    if (typeof named === "string") {
+      return NAMED_ENTITIES[named.toLowerCase()] ?? entity;
+    }
+    return entity;
+  });
+}
+function safeFromCodePoint(n, fallback) {
+  if (!Number.isFinite(n) || n < 0 || n > 1114111) return fallback;
+  try {
+    return String.fromCodePoint(n);
+  } catch {
+    return fallback;
+  }
+}
+function decodeJsonString(value) {
+  try {
+    return JSON.parse(`"${value}"`);
+  } catch {
+    return value.replace(/\\n/g, "\n").replace(/\\r/g, "\r").replace(/\\t/g, "	").replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+  }
+}
+function htmlToText(html) {
+  return decodeHtmlEntities(
+    html.replace(/<br\s*\/?\s*>/gi, "\n").replace(/<\/(?:a|article|div|h\d|li|p|section)>/gi, "\n").replace(/<[^>]+>/g, " ")
+  ).replace(/[ \t]+/g, " ").replace(/\n\s+/g, "\n").trim();
+}
+function collectCandidateTexts(html) {
+  const candidates = [];
+  const seen = /* @__PURE__ */ new Set();
+  const add = (value) => {
+    const text = decodeHtmlEntities(value).replace(/\s+/g, " ").trim();
+    if (!text || !hasKouling(text) || seen.has(text)) return;
+    seen.add(text);
+    candidates.push(text);
+  };
+  const jsonFieldPattern = /"(?:displayTitle|title|desc)"\s*:\s*"((?:\\.|[^"\\])*)"/g;
+  for (const match of html.matchAll(jsonFieldPattern)) add(decodeJsonString(match[1] ?? ""));
+  const elementPattern = /<(?:a|article|div|h\d|p)[^>]*>([\s\S]*?)<\/(?:a|article|div|h\d|p)>/gi;
+  for (const match of html.matchAll(elementPattern)) add(htmlToText(match[1] ?? ""));
+  const metaPattern = /<meta\b[^>]*(?:content=["']([^"']+)["'])[^>]*>/gi;
+  for (const match of html.matchAll(metaPattern)) add(match[1] ?? "");
+  for (const line of htmlToText(html).split(/\r?\n/)) add(line);
+  return candidates;
+}
+function extractKoulingFromXiaohongshuHtml(html) {
+  for (const candidate of collectCandidateTexts(html)) {
+    const codes = extractKouling(candidate);
+    if (codes.length > 0) return codes;
+  }
+  return [];
+}
+
 // src/mcloud/koulingPool.ts
 var CYCLE_TTL_MS = 5 * 60 * 60 * 1e3;
 var GATE_CLOSE_GRACE_MS = 10 * 60 * 1e3;
@@ -1040,6 +1654,11 @@ function serializePool(pool) {
 function loadPoolFrom(store2) {
   return parsePool(store2.getState(POOL_KEY));
 }
+function loadFreshPool(store2, nowMs) {
+  const got = loadPoolFrom(store2);
+  normalize(got.pool, nowMs);
+  return got;
+}
 function savePoolTo(store2, pool, nowIso) {
   store2.setState(POOL_KEY, serializePool(pool), nowIso);
 }
@@ -1125,636 +1744,36 @@ function sessionsOf(v) {
   }
   return out;
 }
-function poolSummary(pool, nowLocal, nowMs) {
-  const next = nextRoomAt(pool.schedule, nowLocal);
-  const s = {
-    cycleAtMs: pool.cycleAtMs,
-    validCount: validCount(pool),
-    stopScraping: stopScraping(pool),
-    codes: pool.codes.slice(),
-    scheduleAtMs: pool.scheduleAtMs,
-    sessions: pool.sessions.slice().reverse(),
-    xhsWaitMs: xhsWaitMs(pool, nowMs)
-  };
-  if (next !== void 0) {
-    s.nextStart = next.expectStartTime;
-    if (next.title !== "") s.nextTitle = next.title;
-    if (next.anchorNickname !== "") s.nextAnchor = next.anchorNickname;
-  }
-  return s;
-}
-function nextRoomAt(rooms, nowLocal) {
-  return earliestPreviewIn(rooms, true, nowLocal);
-}
-function earliestPreviewIn(rooms, onlyTarget, notBefore) {
-  let best;
-  for (const r of rooms) {
-    if (r.status !== 0) continue;
-    if (r.expectStartTime === "") continue;
-    if (onlyTarget && r.anchorNickname !== KOULING_ANCHOR) continue;
-    if (notBefore !== void 0 && r.expectStartTime < notBefore) continue;
-    if (best === void 0 || r.expectStartTime < best.expectStartTime) best = r;
-  }
-  return best;
-}
 
-// src/mcloud/liveAuto.ts
-var ONE_HOUR_MS = 60 * 60 * 1e3;
-var DAY_MS = 24 * ONE_HOUR_MS;
-var BEIJING_OFFSET_MS = 8 * ONE_HOUR_MS;
-function parseLocalMs(local) {
-  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/.exec(local.trim());
-  if (m === null) return void 0;
-  const [, y, mo, d, h, mi, s] = m;
-  const year = Number(y);
-  const month = Number(mo);
-  const day = Number(d);
-  const hour = Number(h);
-  const minute = Number(mi);
-  const second = Number(s ?? "0");
-  if (month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 || second > 59) {
-    return void 0;
-  }
-  const ms = Date.UTC(year, month - 1, day, hour, minute, second) - BEIJING_OFFSET_MS;
-  if (formatLocalMs(ms) !== `${y}-${mo}-${d} ${h}:${mi}:${String(second).padStart(2, "0")}`) {
-    return void 0;
-  }
-  return ms;
-}
-function formatLocalMs(ms) {
-  const t = new Date(ms + BEIJING_OFFSET_MS);
-  const p = (n, w = 2) => String(n).padStart(w, "0");
-  return `${p(t.getUTCFullYear(), 4)}-${p(t.getUTCMonth() + 1)}-${p(t.getUTCDate())} ${p(t.getUTCHours())}:${p(t.getUTCMinutes())}:${p(t.getUTCSeconds())}`;
-}
-function earliestPlusOneHour(nexts, nowMs) {
-  const candidates = nexts.map((s) => s.trim()).filter((s) => s !== "");
-  if (candidates.length === 0) return void 0;
-  const earliest = candidates.reduce((a, b) => a <= b ? a : b);
-  const ms = parseLocalMs(earliest);
-  if (ms === void 0) return void 0;
-  void nowMs;
-  return formatLocalMs(ms + ONE_HOUR_MS);
-}
-function oneShotExpr(local) {
-  const ms = parseLocalMs(local);
-  if (ms === void 0) return void 0;
-  const t = new Date(ms + BEIJING_OFFSET_MS);
-  return `${t.getUTCSeconds()} ${t.getUTCMinutes()} ${t.getUTCHours()} ${t.getUTCDate()} ${t.getUTCMonth() + 1} *`;
-}
-function planDue(plan, nowMs) {
-  return plan !== null && nowMs >= plan.wakeAtMs;
-}
-function planInWindow(plan, nowMs) {
-  return plan !== null && nowMs >= plan.wakeAtMs && nowMs < plan.wakeAtMs + plan.windowMs;
-}
-
-// src/mcloud/tasks/liveAutoTask.ts
-var STATE_WAKE_PLAN = "mcloud.live.wake_plan";
-var SCHEDULE_TRUST_MS = 6 * ONE_HOUR_MS;
-function loadWakePlan(store2) {
-  const raw = store2.getState(STATE_WAKE_PLAN);
-  if (!raw) return null;
-  try {
-    const v = JSON.parse(raw);
-    return typeof v?.wakeAtMs === "number" && typeof v?.wakeAt === "string" ? v : null;
-  } catch {
-    return null;
-  }
-}
-function saveWakePlan(store2, plan, nowIso) {
-  store2.setState(STATE_WAKE_PLAN, plan === null ? "" : JSON.stringify(plan), nowIso);
-}
-function planTrusted(scheduleAtMs, nowMs) {
-  return scheduleAtMs !== null && nowMs - scheduleAtMs <= SCHEDULE_TRUST_MS;
-}
-function refreshWakePlan(deps, opts) {
-  const nowMs = Date.parse(deps.nowIso);
-  const { pool } = loadPoolFrom(deps.store);
-  const summary = poolSummary(pool, formatLocalMs(nowMs), nowMs);
-  const trusted = planTrusted(summary.scheduleAtMs, nowMs);
-  const fromStart = summary.nextStart ?? "";
-  const wakeAt = trusted && fromStart !== "" ? earliestPlusOneHour([fromStart], nowMs) : void 0;
-  if (wakeAt === void 0) {
-    saveWakePlan(deps.store, null, deps.nowIso);
-    return {
-      plan: null,
-      why: fromStart === "" ? "池里没有「下一场」⇒ 不排定时（等门下次探到日程再说）" : "池里那份日程太旧（超过 6 小时）⇒ 不按它睡，退回默认重查"
-    };
-  }
-  const plan = {
-    wakeAt,
-    wakeAtMs: Date.parse(`${wakeAt.replace(" ", "T")}+08:00`),
-    fromStart,
-    computedAt: formatLocalMs(nowMs),
-    expr: oneShotExpr(wakeAt),
-    windowMs: opts.windowMs
-  };
-  saveWakePlan(deps.store, plan, deps.nowIso);
-  return { plan, why: `按「${fromStart}」+1 小时 ⇒ ${wakeAt}` };
-}
-function runLiveAuto(deps, opts) {
-  const nowMs = Date.parse(deps.nowIso);
-  const before = loadWakePlan(deps.store);
-  const { plan, why } = refreshWakePlan(deps, opts);
-  const changed = before?.wakeAt !== plan?.wakeAt;
-  const due = planDue(plan, nowMs);
-  return {
-    ok: true,
-    note: plan === null ? `不排定时（${why}）` : `${changed ? "排定" : "仍是"} ${plan.wakeAt} 醒（= ${plan.fromStart} +1h；等价 cron ${plan.expr ?? "?"}）${due ? " —— 已到点" : ""}`
-  };
-}
-function wakeSleepMs(store2, nowMs, windowMs) {
-  const plan = loadWakePlan(store2);
-  if (plan === null) return void 0;
-  if (!planInWindow(plan, nowMs) && planDue(plan, nowMs)) {
-    return void 0;
-  }
-  if (planDue(plan, nowMs)) return void 0;
-  void windowMs;
-  return plan.wakeAtMs - nowMs;
-}
-
-// src/mcloud/envelope.ts
-var isRecord = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
-function parseSignInEnvelope(body) {
-  let v;
-  try {
-    v = JSON.parse(body);
-  } catch (e) {
-    throw new Error(`签到响应不是 JSON：${e instanceof Error ? e.message : String(e)}`);
-  }
-  if (!isRecord(v)) {
-    throw new Error(`签到响应不是对象：${body.slice(0, 120)}`);
-  }
-  const raw = v.code;
-  let code = -1;
-  if (typeof raw === "number") code = Number.isFinite(raw) ? raw : -1;
-  else if (typeof raw === "string" && raw.trim() !== "" && !Number.isNaN(Number(raw))) {
-    code = Number(raw);
-  }
-  const msg = v.msg ?? v.message;
-  const message = typeof msg === "string" ? msg : "";
-  return {
-    code,
-    message,
-    result: v.result,
-    ok: code === 0
-  };
-}
-
-// src/mcloud/client.ts
-var isFetchError = (v) => typeof v === "object" && v !== null && typeof v.error === "string";
-function pickError(msg) {
-  return msg.replace(/^\s*请求失败[:：]\s*/, "").trim() || msg;
-}
-function hostFetchOptions(req, timeoutMs) {
-  const opts = {
-    method: req.method,
-    headers: req.headers,
-    body: req.body,
-    timeout_ms: timeoutMs
-  };
-  if (req.tls !== void 0 && req.url.startsWith("https:")) opts.tls = req.tls;
-  return opts;
-}
-function callOnce(transport2, req) {
-  const t0 = Date.now();
-  const fail = (error2) => ({
-    status: 0,
-    tookMs: Date.now() - t0,
-    env: void 0,
-    ok: false,
-    error: error2,
-    raw: "",
-    setCookies: []
-  });
-  let res;
-  try {
-    res = transport2(req);
-  } catch (e) {
-    return fail(`请求失败：${e instanceof Error ? e.message : String(e)}`);
-  }
-  if (isFetchError(res)) return fail(pickError(res.error));
-  if (typeof res !== "object" || res === null || typeof res.body !== "string") {
-    return fail(`请求返回的形状不认识：${JSON.stringify(res)?.slice(0, 200) ?? String(res)}`);
-  }
-  const tookMs = Date.now() - t0;
-  const raw = res.body.length > 500 ? `${res.body.slice(0, 500)}…` : res.body;
-  let env;
-  let error;
-  if (res.status !== 200) {
-    error = `HTTP ${res.status}`;
-  } else {
-    try {
-      env = parseSignInEnvelope(res.body);
-      if (!env.ok) error = `code=${env.code}${env.message ? ` msg=${env.message}` : ""}`;
-    } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
-    }
-  }
-  return {
-    status: res.status,
-    tookMs,
-    env,
-    ok: res.status === 200 && !!env?.ok,
-    error,
-    raw,
-    setCookies: extractSetCookies(res.headers)
-  };
-}
-var CONTENT_TYPE_JSON = "application/json;charset=UTF-8";
-function applyDefaultContentType(req) {
-  if (req.body === void 0) return req;
-  const declared = Object.keys(req.headers).some((k) => k.toLowerCase() === "content-type");
-  if (declared) return req;
-  return { ...req, headers: { ...req.headers, "content-type": CONTENT_TYPE_JSON } };
-}
-function callRawText(transport2, req) {
-  const t0 = Date.now();
-  const fail = (error) => ({
-    ok: false,
-    status: 0,
-    text: "",
-    chars: 0,
-    tookMs: Date.now() - t0,
-    error
-  });
-  let res;
-  try {
-    res = transport2(req);
-  } catch (e) {
-    return fail(`请求失败：${e instanceof Error ? e.message : String(e)}`);
-  }
-  const tookMs = Date.now() - t0;
-  if (isFetchError(res)) return { ...fail(pickError(res.error)), tookMs };
-  if (typeof res !== "object" || res === null || typeof res.body !== "string") {
-    return {
-      ...fail(`请求返回的形状不认识：${JSON.stringify(res)?.slice(0, 200) ?? String(res)}`),
-      tookMs
-    };
-  }
-  const chars = res.body.length;
-  if (res.status !== 200) {
-    return { ok: false, status: res.status, text: res.body, chars, tookMs, error: `HTTP ${res.status}` };
-  }
-  return { ok: true, status: 200, text: res.body, chars, tookMs, error: void 0 };
-}
-function extractSetCookies(headers) {
-  const raw = [];
-  for (const [k, v] of Object.entries(headers)) {
-    if (k.toLowerCase() === "set-cookie") raw.push(v);
-  }
-  const out = [];
-  for (const line of raw) {
-    let cur = line;
-    const parts = [];
-    let idx = 0;
-    for (; ; ) {
-      const m = /,\s*([A-Za-z0-9_.-]+)=/.exec(cur.slice(idx));
-      if (!m || m.index === void 0) break;
-      parts.push(cur.slice(idx, idx + m.index));
-      idx += m.index + 1;
-    }
-    parts.push(cur.slice(idx));
-    for (const p of parts) {
-      cur = p.trim();
-      if (!cur) continue;
-      const pair = cur.split(";")[0]?.trim() ?? "";
-      if (pair.includes("=")) out.push(pair);
-    }
-  }
-  return out;
-}
-
-// src/mcloud/h5.ts
-var MCLOUD_HOST = "https://m.mcloud.139.com";
-var REFERER_SIGN_IN = `${MCLOUD_HOST}/mcloud/sign_in/index.html`;
-function rootOrDefault(base, fallback) {
-  const t = (base ?? "").trim();
-  return t === "" ? fallback : t.replace(/\/+$/, "");
-}
-
-// src/store/types.ts
-var SESSION_KEY = "mcloud.session";
-function loadSession(store2) {
-  const raw = store2.getState(SESSION_KEY);
-  if (!raw) return null;
-  try {
-    const v = JSON.parse(raw);
-    const cookie = typeof v.cookie === "string" ? v.cookie : "";
-    const jwt = typeof v.jwt === "string" ? v.jwt : "";
-    if (cookie === "" && jwt === "") return null;
-    return {
-      cookie,
-      jwt: jwt === "" ? void 0 : jwt,
-      deviceId: typeof v.deviceId === "string" ? v.deviceId : void 0,
-      userAgent: typeof v.userAgent === "string" ? v.userAgent : void 0,
-      savedAt: typeof v.savedAt === "string" ? v.savedAt : ""
-    };
-  } catch {
-    return null;
-  }
-}
-
-// src/mcloud/tasks/base.ts
-var ERR_PREFIX = "mcloud.last_error.";
-function recordError(store2, task, note2, nowIso) {
-  store2.setState(`${ERR_PREFIX}${task}`, `${note2} @ ${nowIso}`, nowIso);
-}
-function clearError(store2, task, nowIso) {
-  store2.setState(`${ERR_PREFIX}${task}`, "", nowIso);
-}
-
-// src/mcloud/liveFlower.ts
-var LIVE_ROOM_ORIGIN = "https://m.mcloud.139.com";
-var USER_INFO_PATH = "/ycloud/liveRoomFeedback/user/info";
-var JOURNALING_PATH = "/ycloud/visitlog/journaling";
-var FIRST_PARTICIPATE_GIVE_PATH = "/ycloud/liveRoomFeedback/firstParticipate/give";
-var DRAW_PATH = "/ycloud/liveRoomFeedback/redFlower/draw";
-var QUERY_REVIVAL_FLOWERS_PATH = "/ycloud/liveRoomFeedback/redFlower/queryRevivalFlowers";
-var LIVE_ROOM_MARKET_NAME = "National_LiveRoomFeedback";
-var LIVE_ROOM_JOURNALING_SOURCE_ID = "1007";
-var LIVE_ROOM_ACTIVITY_ID = "sign_in_3";
-var LIVE_ROOM_APP_VERSION = "12.6.0.0";
-var TO_SOURCE_ID = "001005";
-var LIVE_ROOM_USER_AGENT = "Mozilla/5.0 (iPad; CPU OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) MCloudApp/12.6.0 iPad AppLanguage/zh-CN";
-var CODE_KOULING_INVALID = 200108;
-var CODE_KOULING_ALREADY_DRAWN = 200112;
-var CODE_KOULING_EXPIRED = 200118;
-var JOURNALING_EVENTS = [
-  "National_LiveRoomFeedback_pv",
-  "National_LiveRoomFeedback_client",
-  "National_LiveRoomFeedback_client_isApp",
-  "National_LiveRoomFeedback_login",
-  "National_LiveRoomFeedback_flowerBtn"
-];
-function liveRoomPageReferer() {
-  return `${LIVE_ROOM_ORIGIN}/portal/yunClound/index.html?path=${LIVE_ROOM_MARKET_NAME}&sourceid=${LIVE_ROOM_JOURNALING_SOURCE_ID}&targetSourceId=${TO_SOURCE_ID}`;
-}
-function liveRoomHeaders() {
-  return {
-    Accept: "*/*",
-    activityid: LIVE_ROOM_ACTIVITY_ID,
-    appversion: LIVE_ROOM_APP_VERSION,
-    Origin: LIVE_ROOM_ORIGIN,
-    Referer: liveRoomPageReferer(),
-    "User-Agent": LIVE_ROOM_USER_AGENT
-  };
-}
-function liveRoomUrl(path, base) {
-  return `${rootOrDefault(base, LIVE_ROOM_ORIGIN)}${path}`;
-}
-function userInfoRequest(base) {
-  return {
-    url: liveRoomUrl(USER_INFO_PATH, base),
-    method: "POST",
-    // ⚠ 不带 content-type：真实现（`live_flower::user_info_request`）就没设它。
-    // 模块文档那张表写着 application/json，但**代码才是实际发出去的**。
-    headers: liveRoomHeaders(),
-    body: "{}"
-  };
-}
-function journalingRequest(optkeyword, base) {
-  return {
-    url: liveRoomUrl(JOURNALING_PATH, base),
-    method: "POST",
-    headers: {
-      ...liveRoomHeaders(),
-      "content-type": "application/x-www-form-urlencoded;charset=UTF-8"
-    },
-    body: `module=uservisit&optkeyword=${encodeURIComponent(optkeyword)}&sourceid=${LIVE_ROOM_JOURNALING_SOURCE_ID}&marketName=${LIVE_ROOM_MARKET_NAME}`
-  };
-}
-function firstParticipateGiveRequest(base) {
-  return {
-    url: liveRoomUrl(FIRST_PARTICIPATE_GIVE_PATH, base),
-    method: "POST",
-    headers: liveRoomHeaders(),
-    body: void 0
-  };
-}
-function drawRequest(code, base) {
-  return {
-    url: `${liveRoomUrl(DRAW_PATH, base)}?code=${encodeURIComponent(code)}`,
-    method: "POST",
-    headers: liveRoomHeaders(),
-    body: void 0
-  };
-}
-function queryRevivalFlowersRequest(base) {
-  return {
-    url: liveRoomUrl(QUERY_REVIVAL_FLOWERS_PATH, base),
-    method: "GET",
-    headers: liveRoomHeaders(),
-    body: void 0
-  };
-}
-function intAt(o, k) {
-  const v = o[k];
-  if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
-  if (typeof v === "string" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
-  return void 0;
-}
-function strAt(o, k) {
-  const v = o[k];
+// src/store/scoped.ts
+var WRAPPED = Symbol.for("__mcloud_scoped_store__");
+var RAW = Symbol.for("__mcloud_raw_store__");
+var ACCT = Symbol.for("__mcloud_scoped_account__");
+function scopedAccountOf(store2) {
+  const v = store2[ACCT];
   return typeof v === "string" && v !== "" ? v : void 0;
 }
-function classifyDraw(env) {
-  if (!env || env.code === void 0) {
-    return { kind: "unparsable", code: env?.code, message: env?.message ?? "响应解不出来" };
-  }
-  const base = { code: env.code, message: env.message ?? "" };
-  switch (env.code) {
-    case 0: {
-      const r = env.result;
-      if (r === null || typeof r !== "object" || Array.isArray(r)) {
-        return { ...base, kind: "unparsable" };
-      }
-      const o = r;
-      return {
-        ...base,
-        kind: "succeeded",
-        result: {
-          prizeId: intAt(o, "prizeId") ?? 0,
-          flowerNum: intAt(o, "flowerNum") ?? 0,
-          prizeName: strAt(o, "prizeName"),
-          prizeType: intAt(o, "prizeType") ?? 0
-        }
-      };
-    }
-    case CODE_KOULING_ALREADY_DRAWN:
-      return { ...base, kind: "already-drawn" };
-    case CODE_KOULING_INVALID:
-      return { ...base, kind: "invalid-kouling" };
-    case CODE_KOULING_EXPIRED:
-      return { ...base, kind: "kouling-expired" };
-    default:
-      return { ...base, kind: "other" };
-  }
+function rawStoreOf(s) {
+  const raw = s[RAW];
+  return raw ?? s;
 }
-function drawLine(code, out) {
-  switch (out.kind) {
-    case "succeeded":
-      return `口令「${code}」领到 ${out.result?.flowerNum ?? 0} 朵`;
-    case "already-drawn":
-      return `口令「${code}」没领到：已兑换过`;
-    case "invalid-kouling":
-      return `口令「${code}」没领到：口令无效`;
-    case "kouling-expired":
-      return `口令「${code}」没领到：本场已结束（口令是对的）`;
-    case "other":
-      return `口令「${code}」没领到：上游回了未分类的码 ${out.code ?? "?"}${out.message ? `（${out.message}）` : ""}`;
-    default:
-      return `口令「${code}」没领到：响应解不出来`;
+function scoped(base, acctId) {
+  if (base[WRAPPED] === true) {
+    throw new Error(
+      "store 已经被 scoped() 包过一次了 —— 双重包装会让 `mcloud.acct.*` 也去查登记表然后抛错。"
+    );
   }
-}
-function parseBalance(env) {
-  const r = env?.result;
-  if (r === null || typeof r !== "object" || Array.isArray(r)) return void 0;
-  return intAt(r, "flowerCnt");
-}
-
-// src/mcloud/liveKouling.ts
-var XIAOHONGSHU_KOULING_PROFILE_URL = "https://www.xiaohongshu.com/user/profile/568caf13aed7585949773b30";
-function xiaohongshuProfileHeaders() {
-  return {
-    accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "accept-language": "zh-CN,zh;q=0.9",
-    referer: "https://www.xiaohongshu.com/",
-    "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+  const wrapped = {
+    ...base,
+    getState: (key) => routeGet(base, key, acctId),
+    setState: (key, value, nowIso) => routeSet(base, key, value, nowIso, acctId)
   };
-}
-function isKoulingHead(text) {
-  return /(?:复制)?口令\s*\d*\s*[：:]\s*$/.test(text.trim());
-}
-function hasKouling(text) {
-  return /口令|小红花/.test(text);
-}
-var TRAILING_PUNCT = /[。．.！!？?~～、,，;；:：'"]+$/;
-function trimKoulingTail(code) {
-  let out = code.trim();
-  for (; ; ) {
-    const before = out;
-    out = out.replace(TRAILING_PUNCT, "").trim();
-    out = out.replace(/\s*无随机口令$/, "");
-    out = out.replace(/(?:^|\s+)无随机$/, "");
-    out = out.replace(/(?:^|\s+)无$/, "");
-    out = out.trim();
-    if (out === before) break;
+  Object.defineProperty(wrapped, WRAPPED, { value: true, enumerable: false });
+  if (acctId !== void 0 && acctId !== "") {
+    Object.defineProperty(wrapped, ACCT, { value: acctId, enumerable: false });
   }
-  return out;
-}
-var TRAILING_PARTICLE = /[呀啊吧呢嘛哦]+$/;
-var QUESTION_WORDS = ["什么", "啥", "多少", "几", "哪个", "哪些"];
-function isQuestion(code) {
-  if (/[?？]/.test(code)) return true;
-  const t = code.replace(TRAILING_PARTICLE, "");
-  return QUESTION_WORDS.includes(t);
-}
-var SAME_LINE_PATTERN = /(?:复制)?口令\s*\d*\s*[：:]\s*(.*?)(?=\s+(?:复制)?口令\s*\d*\s*[：:]|无随机|$)/g;
-function extractKouling(msg) {
-  const result = [];
-  const m2 = msg.match(/小红花口令[：:]\s*(.+)/);
-  if (m2 && m2[1] !== void 0) result.push(m2[1].trim());
-  const lines = msg.split(/\r?\n/);
-  for (let i = 0; i < lines.length; i += 1) {
-    const line = (lines[i] ?? "").trim();
-    if (isKoulingHead(line)) {
-      const next = lines[i + 1];
-      if (next !== void 0) {
-        const content = trimKoulingTail(next.trim());
-        if (content && !/^(?:复制)?口令/.test(content)) {
-          result.push(content);
-        }
-      }
-      continue;
-    }
-    for (const match of line.matchAll(SAME_LINE_PATTERN)) {
-      const code = trimKoulingTail((match[1] ?? "").trim());
-      if (code) result.push(code);
-    }
-  }
-  const m1 = msg.match(/口令是(.+)/);
-  if (m1 && m1[1] !== void 0) result.push(m1[1].trim());
-  if (result.length === 0 && /无随机/.test(msg)) {
-    const parts = msg.replace(/无随机.*/, "").trim().split(/\s+/);
-    for (const part of parts) {
-      const v = part.match(/^\d+\s*[：:]\s*(.+)/);
-      if (v && v[1] !== void 0) {
-        const code = v[1].trim();
-        if (code) result.push(code);
-      }
-    }
-  }
-  return [...new Set(result.map(trimKoulingTail))].filter((code) => code !== "" && !isQuestion(code));
-}
-var NAMED_ENTITIES = {
-  amp: "&",
-  apos: "'",
-  gt: ">",
-  lt: "<",
-  nbsp: " ",
-  quot: '"'
-};
-function decodeHtmlEntities(text) {
-  return text.replace(/&(?:#(\d+)|#x([\da-f]+)|(\w+));/gi, (entity, decimal, hex, named) => {
-    if (typeof decimal === "string" && decimal !== "") {
-      const n = Number(decimal);
-      return safeFromCodePoint(n, entity);
-    }
-    if (typeof hex === "string" && hex !== "") {
-      return safeFromCodePoint(Number.parseInt(hex, 16), entity);
-    }
-    if (typeof named === "string") {
-      return NAMED_ENTITIES[named.toLowerCase()] ?? entity;
-    }
-    return entity;
-  });
-}
-function safeFromCodePoint(n, fallback) {
-  if (!Number.isFinite(n) || n < 0 || n > 1114111) return fallback;
-  try {
-    return String.fromCodePoint(n);
-  } catch {
-    return fallback;
-  }
-}
-function decodeJsonString(value) {
-  try {
-    return JSON.parse(`"${value}"`);
-  } catch {
-    return value.replace(/\\n/g, "\n").replace(/\\r/g, "\r").replace(/\\t/g, "	").replace(/\\"/g, '"').replace(/\\\\/g, "\\");
-  }
-}
-function htmlToText(html) {
-  return decodeHtmlEntities(
-    html.replace(/<br\s*\/?\s*>/gi, "\n").replace(/<\/(?:a|article|div|h\d|li|p|section)>/gi, "\n").replace(/<[^>]+>/g, " ")
-  ).replace(/[ \t]+/g, " ").replace(/\n\s+/g, "\n").trim();
-}
-function collectCandidateTexts(html) {
-  const candidates = [];
-  const seen = /* @__PURE__ */ new Set();
-  const add = (value) => {
-    const text = decodeHtmlEntities(value).replace(/\s+/g, " ").trim();
-    if (!text || !hasKouling(text) || seen.has(text)) return;
-    seen.add(text);
-    candidates.push(text);
-  };
-  const jsonFieldPattern = /"(?:displayTitle|title|desc)"\s*:\s*"((?:\\.|[^"\\])*)"/g;
-  for (const match of html.matchAll(jsonFieldPattern)) add(decodeJsonString(match[1] ?? ""));
-  const elementPattern = /<(?:a|article|div|h\d|p)[^>]*>([\s\S]*?)<\/(?:a|article|div|h\d|p)>/gi;
-  for (const match of html.matchAll(elementPattern)) add(htmlToText(match[1] ?? ""));
-  const metaPattern = /<meta\b[^>]*(?:content=["']([^"']+)["'])[^>]*>/gi;
-  for (const match of html.matchAll(metaPattern)) add(match[1] ?? "");
-  for (const line of htmlToText(html).split(/\r?\n/)) add(line);
-  return candidates;
-}
-function extractKoulingFromXiaohongshuHtml(html) {
-  for (const candidate of collectCandidateTexts(html)) {
-    const codes = extractKouling(candidate);
-    if (codes.length > 0) return codes;
-  }
-  return [];
+  Object.defineProperty(wrapped, RAW, { value: base, enumerable: false });
+  return wrapped;
 }
 
 // src/crypto/aes.ts
@@ -1865,6 +1884,11 @@ function parseSsoToken(body) {
 // src/mcloud/sessionExchange.ts
 var STATE_AUTH = "mcloud.h5.auth";
 function loadAuthRaw(store2) {
+  const scopedId = scopedAccountOf(store2);
+  if (scopedId !== void 0) {
+    const one = loadAccounts(store2).find((a) => a.id === scopedId);
+    if (one !== void 0) return one.auth;
+  }
   const cur = currentAccount(store2);
   if (cur !== void 0) return cur.auth;
   return store2.getState(STATE_AUTH) ?? "";
@@ -1951,7 +1975,7 @@ function runLiveRoom(deps) {
     return {
       ok: true,
       idle: true,
-      note: `口令池已有 ${validCount(pool)} 条**有效**口令 ⇒ 按口径停止抓取（这一场只发那么几条，继续抓只会重复撞同一批）`
+      note: `已经有 ${validCount(pool)} 条能用的口令了，不用再抓`
     };
   }
   if (!xhsReady(pool, nowMs)) {
@@ -1959,7 +1983,8 @@ function runLiveRoom(deps) {
     return {
       ok: true,
       idle: true,
-      note: `距上次抓主页还不到 30 分钟（还要 ${mins} 分钟）—— 频繁抓会被风控挡成空壳，而空壳与"这期没发"在解析层长得一样，混起来没法排查`
+      // 原因留给代码注释，日志只说"什么时候再看"
+      note: `刚看过，${mins} 分钟后再看`
     };
   }
   noteXhs(pool, nowMs);
@@ -2009,9 +2034,9 @@ function parseJson(raw) {
 // src/mcloud/tasks/liveDraw.ts
 var STATE_DRAW = "mcloud.live.draw";
 var STATE_CLAIM_ENABLED = "mcloud.live.claim_enabled";
-function collectCodes(store2) {
+function collectCodes(store2, nowMs = Date.now()) {
   const human = loadLiveCodes(store2)?.codes ?? [];
-  const { pool } = loadPoolFrom(store2);
+  const { pool } = loadFreshPool(store2, nowMs);
   return planDrawCodes(pool, accountOf(store2), human);
 }
 function loadDrawState(store2) {
@@ -2057,13 +2082,13 @@ function stepRequest(s, base) {
 function runLiveDraw(deps, opts = {}) {
   const TASK = "live-room";
   if (!opts.force && !claimEnabled(deps.store)) {
-    return { ok: true, idle: true, note: "领小红花未开启（界面上那个开关）" };
+    return { ok: true, idle: true, note: "领小红花没开（要先在服务端那边开启）" };
   }
   let s = loadDrawState(deps.store);
-  const codes = collectCodes(deps.store);
+  const codes = collectCodes(deps.store, Date.parse(deps.nowIso));
   if (!s || s.step === "done") {
     const done = s?.codes ?? [];
-    const { pool } = loadPoolFrom(deps.store);
+    const { pool } = loadFreshPool(deps.store, Date.parse(deps.nowIso));
     const account = accountOf(deps.store);
     const allClaimed = done.length > 0 && done.every((c) => accountClaimed(pool, account, c));
     if (codes.length === 0) {
@@ -2085,7 +2110,7 @@ function runLiveDraw(deps, opts = {}) {
   }
   const session = loadSession(deps.store);
   if (!session || !session.jwt) {
-    const note2 = "未登录：领小红花要 jwttoken（见 docs/howto-session.md）";
+    const note2 = "领小红花要先有票 —— 上面「换票」那一步说了原因";
     recordError(deps.store, TASK, note2, deps.nowIso);
     return { ok: false, note: note2 };
   }
@@ -2102,7 +2127,7 @@ function runLiveDraw(deps, opts = {}) {
   if (s.step === "draw" && advance.state.results.length > before) {
     const row = advance.state.results[advance.state.results.length - 1];
     if (row !== void 0) {
-      const loaded = loadPoolFrom(deps.store);
+      const loaded = loadFreshPool(deps.store, Date.parse(deps.nowIso));
       noteClaim(loaded.pool, accountOf(deps.store), row.code, claimVerdictOf(row.kind), Date.parse(deps.nowIso));
       savePoolTo(deps.store, loaded.pool, deps.nowIso);
     }
@@ -2126,7 +2151,7 @@ function judge(s, label, res, nowIso) {
     const why = res.error ?? "未知失败";
     return { state: st, ok: false, note: `${label} 失败：${why}` };
   }
-  const biz = () => `${label}：上游回 ${res.env?.code ?? "?"}${res.env?.message ? `（${res.env.message}）` : ""}`;
+  const biz = () => `${label}：服务端回 ${res.env?.code ?? "?"}${res.env?.message ? `（${res.env.message}）` : ""}`;
   switch (s.step) {
     case "balance-before": {
       if (res.env.code !== 0) return { state: st, ok: false, note: biz() };
@@ -2149,7 +2174,7 @@ function judge(s, label, res, nowIso) {
     }
     case "first-participate": {
       const code = res.env.code;
-      st.firstParticipate = code === 0 ? "领到首次参与惊喜奖" : code === 200110 ? "已参与过（正常）" : `上游回 ${code ?? "?"}`;
+      st.firstParticipate = code === 0 ? "领到首次参与惊喜奖" : code === 200110 ? "已参与过（正常）" : `服务端回 ${code ?? "?"}`;
       st.step = "draw";
       return { state: st, ok: true, note: `${label}：${st.firstParticipate}` };
     }
@@ -2219,7 +2244,7 @@ function parseCmlive(body) {
   if (typeof code !== "string") {
     return {
       ok: false,
-      error: `直播侧的 rtnCode 应当是**字符串**，实际是 ${code === void 0 ? "缺字段" : typeof code}（这一族用字符串码；上游若真改成了数字码，这里必须报出来而不是兼容掉）`
+      error: `直播侧的 rtnCode 应当是**字符串**，实际是 ${code === void 0 ? "缺字段" : typeof code}（这一族用字符串码；服务端若真改成了数字码，这里必须报出来而不是兼容掉）`
     };
   }
   const msg = typeof v["rtnMsg"] === "string" ? v["rtnMsg"] : void 0;
@@ -2407,10 +2432,10 @@ function gateReadingLine(rooms) {
   const live = rooms.filter((r) => r.status === STATUS_LIVE);
   const hit = koulingRooms(rooms);
   if (hit.length > 0) {
-    return `门开着：${hit.length} 间在播（${KOULING_ANCHOR}）—— ${hit.map((r) => r.title || `#${r.id}`).join("、")}`;
+    return `正在听：${KOULING_ANCHOR} 开播了（${hit.map((r) => r.title || `#${r.id}`).join("、")}）`;
   }
-  if (live.length === 0) return `门关着：谁都没在播（这一趟看到 ${rooms.length} 间房，全是预告/回放）`;
-  return `门关着：有 ${live.length} 间在播，但都不是「${KOULING_ANCHOR}」（${live.map((r) => r.anchorNickname || "无名").join("、")}）`;
+  if (live.length === 0) return `现在没在听：谁都没开播（看到 ${rooms.length} 间房，全是预告/回放）`;
+  return `现在没在听：有 ${live.length} 间在播，但不是「${KOULING_ANCHOR}」的（${live.map((r) => r.anchorNickname || "无名").join("、")}）`;
 }
 function intAt2(o, k) {
   const v = o[k];
@@ -2434,6 +2459,9 @@ function loadGateBase(store2) {
 function loadGateState(store2) {
   return parseJson2(store2.getState(STATE_GATE));
 }
+function readGateReading(store2) {
+  return parseJson2(store2.getState(STATE_READING2));
+}
 function runLiveGate(deps) {
   const base = loadGateBase(deps.store);
   const nowMs = Date.parse(deps.nowIso);
@@ -2446,7 +2474,7 @@ function handshake(deps, st, base) {
   const TASK = "live-gate";
   const auth = loadAuthRaw(deps.store);
   if (auth === "") {
-    const note2 = "门要**原生凭据**（`Authorization`）：先去界面贴一份（见 docs/howto-session.md）";
+    const note2 = "这个号还没有原生凭据 —— 先在账号页把它加上";
     recordError(deps.store, TASK, note2, deps.nowIso);
     return { ok: false, note: note2 };
   }
@@ -2472,7 +2500,9 @@ function handshake(deps, st, base) {
   clearError(deps.store, TASK, deps.nowIso);
   return {
     ok: true,
-    note: "① 换到 SSO token（**不落盘**，这一步就用掉了）+ ② 换到直播侧 JWT（≈30 天，这一轮用完就抹）"
+    // 日志里一行一步，这里只说结果（怎么换的、留不留盘是代码的事，见文件头）
+    // 这只是**第一步**（换票）；下一步才去看有没有开播 —— 说清楚，别让人以为已经看过了
+    note: "票换好了，下一步去看有没有开播"
   };
 }
 function roomsStep(deps, st, base, nowMs) {
@@ -2890,6 +2920,41 @@ function parseApplyRoom(body) {
   };
 }
 
+// src/mcloud/liveAuto.ts
+var ONE_HOUR_MS = 60 * 60 * 1e3;
+var DAY_MS = 24 * ONE_HOUR_MS;
+var BEIJING_OFFSET_MS = 8 * ONE_HOUR_MS;
+function planDue(plan, nowMs) {
+  return plan !== null && nowMs >= plan.wakeAtMs;
+}
+function planInWindow(plan, nowMs) {
+  return plan !== null && nowMs >= plan.wakeAtMs && nowMs < plan.wakeAtMs + plan.windowMs;
+}
+
+// src/mcloud/tasks/liveAutoTask.ts
+var STATE_WAKE_PLAN = "mcloud.live.wake_plan";
+var SCHEDULE_TRUST_MS = 6 * ONE_HOUR_MS;
+function loadWakePlan(store2) {
+  const raw = store2.getState(STATE_WAKE_PLAN);
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw);
+    return typeof v?.wakeAtMs === "number" && typeof v?.wakeAt === "string" ? v : null;
+  } catch {
+    return null;
+  }
+}
+function wakeSleepMs(store2, nowMs, windowMs) {
+  const plan = loadWakePlan(store2);
+  if (plan === null) return void 0;
+  if (!planInWindow(plan, nowMs) && planDue(plan, nowMs)) {
+    return void 0;
+  }
+  if (planDue(plan, nowMs)) return void 0;
+  void windowMs;
+  return plan.wakeAtMs - nowMs;
+}
+
 // src/mcloud/liveWs.ts
 var SOCKJS_OPEN = "o";
 var SOCKJS_HEARTBEAT = "h";
@@ -3146,8 +3211,10 @@ function wsHandshakeHeaders() {
 }
 function listenerIdle(st, nowMs) {
   if (st.nextCheckAtMs !== void 0 && nowMs < st.nextCheckAtMs) {
-    const at = new Date(st.nextCheckAtMs).toISOString().slice(11, 19);
-    return `门关着，等下一次检查（${at}Z 之后）`;
+    const d = new Date(st.nextCheckAtMs);
+    const pad = (n) => String(n).padStart(2, "0");
+    const at = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    return `现在没在听，${at} 之后再去看`;
   }
   return void 0;
 }
@@ -3261,7 +3328,7 @@ function handshakeStep(deps, st) {
   st.step = "rooms";
   persist(deps, st);
   clearError(deps.store, "live-listen", deps.nowIso);
-  return { ok: true, note: "① SSO + ② 直播侧 JWT 都换到了（JWT 只在这一个窗口里活）" };
+  return { ok: true, note: "开始听了" };
 }
 function roomsStep2(deps, st, nowMs) {
   const base = loadGateBaseOf(deps.store);
@@ -3292,9 +3359,9 @@ function roomsStep2(deps, st, nowMs) {
     st.closedReason = "那个主播没在播";
     st.finishedAt = deps.nowIso;
     st.probedAt = deps.nowIso;
-    st.note = forced !== void 0 ? `指定的房间 ${forced} 不在这次探到的 ${merged.length} 间房里（诊断口子）` : coolMs > IDLE_RECHECK_MS ? `门关着（合并后 ${merged.length} 间房）—— 按日程睡到下一场之后（${Math.round(coolMs / 6e4)} 分钟）` : `门关着（合并后 ${merged.length} 间房）—— 隔 ${Math.round(coolMs / 6e4)} 分钟再看（上次真探 ${deps.nowIso.slice(11, 19)}）`;
+    st.note = forced !== void 0 ? `指定的房间 ${forced} 不在这次探到的 ${merged.length} 间房里（诊断口子）` : coolMs > IDLE_RECHECK_MS ? `现在没在听（看到 ${merged.length} 间房，都不是它）—— 到下一场之后再去看（${hours(coolMs)}）` : `现在没在听（看到 ${merged.length} 间房，都不是它）—— 隔 ${hours(coolMs)}再看（上次真探 ${deps.nowIso.slice(11, 19)}）`;
     persist(deps, st);
-    return { ok: true, note: st.note };
+    return { ok: true, note: humanNote(st.note) };
   }
   st.roomId = chosen;
   st.step = "userToken";
@@ -3302,8 +3369,17 @@ function roomsStep2(deps, st, nowMs) {
   persist(deps, st);
   return {
     ok: true,
-    note: forced === void 0 ? `门开着：房间 ${st.roomId}，接着取 WS 凭据` : `诊断口子：直接听指定的房间 ${st.roomId}，接着取 WS 凭据`
+    note: forced === void 0 ? `找到了：房间 ${st.roomId} 在播，接着去听` : `诊断口子：直接听指定的房间 ${st.roomId}，接着取 WS 凭据`
   };
+}
+function humanNote(note2) {
+  return note2.replace(/门关着（合并后 (\d+) 间房）/g, "现在没在听（看到 $1 间房）").replace(/门关着/g, "现在没在听").replace(/门开着/g, "正在听").replace(/（(\d+) 分钟）/g, (_m, n) => `（${hours(Number(n) * 6e4)}）`);
+}
+function hours(ms) {
+  const min = Math.round(ms / 6e4);
+  if (min < 90) return `${min} 分钟`;
+  const h = Math.round(min / 60);
+  return `${h} 小时`;
 }
 function userTokenStep(deps, st) {
   const base = loadGateBaseOf(deps.store);
@@ -3499,9 +3575,17 @@ function listenStep(deps, st, nowMs, windowMs) {
     if (actions.texts.length > 0) {
       st.danmakuFrames += 1;
       for (const text of actions.texts) {
-        if (!hasKouling(text)) continue;
-        const codes = extractKouling(text);
-        for (const code of codes) found.push(code);
+        if (st.pendingHead === true) {
+          const t = text.trim();
+          if (t !== "" && !isKoulingHead(t) && !isKoulingMarker(t)) {
+            found.push(t);
+          }
+          st.pendingHead = false;
+        }
+        if (hasKouling(text)) {
+          for (const code of extractKouling(text)) found.push(code);
+        }
+        if (isKoulingHead(text)) st.pendingHead = true;
       }
     }
     if (actions.closed !== void 0) {
@@ -3511,7 +3595,7 @@ function listenStep(deps, st, nowMs, windowMs) {
     }
   }
   if (found.length > 0) {
-    const { pool } = loadPoolFrom(deps.store);
+    const { pool } = loadFreshPool(deps.store, Date.now());
     note(pool, found, "danmaku", Date.now());
     savePoolTo(deps.store, pool, deps.nowIso);
     for (const code of found) if (!st.codes.includes(code)) st.codes.push(code);
@@ -3553,7 +3637,8 @@ function listenStep(deps, st, nowMs, windowMs) {
   const got = found.length > 0 ? `，本轮口令 ${found.join(" / ")}` : "";
   return {
     ok: true,
-    note: `听着（帧 ${st.frames}、弹幕 ${st.danmakuFrames}、口令 ${st.codes.length}${got}）`
+    // 与 `listenReadingLine` 同一套说法：只报弹幕/口令，帧数是排查用的
+    note: `正在听（收到 ${st.danmakuFrames} 条弹幕，捡到 ${st.codes.length} 条口令${got}）`
   };
 }
 function flush(deps, handle, outbound) {
@@ -3593,12 +3678,51 @@ function loadGateBaseOf(store2) {
   return v && v.trim() ? v.trim().replace(/\/+$/, "") : void 0;
 }
 
+// src/mcloud/hostCap.ts
+var STATE_CAP = "mcloud.host.native_tls";
+var CAP_TTL_MS = 60 * 60 * 1e3;
+function probeNativeTls(transport2) {
+  const r = transport2({
+    url: "https://127.0.0.1:9/",
+    method: "GET",
+    headers: {},
+    body: void 0,
+    tls: "native"
+  });
+  if (isFetchError(r)) {
+    const msg = r.error ?? "";
+    return { verdict: /legacy-tls/.test(msg) ? "no" : "yes", why: msg };
+  }
+  return { verdict: "yes", why: "" };
+}
+function hostNativeTls(store2, nowIso, transport2) {
+  const raw = store2.getState(STATE_CAP);
+  if (raw !== null && raw !== "") {
+    try {
+      const c = JSON.parse(raw);
+      const at = Date.parse(c.at);
+      const now = Date.parse(nowIso);
+      if ((c.verdict === "yes" || c.verdict === "no") && Number.isFinite(at) && Number.isFinite(now) && now - at < CAP_TTL_MS) {
+        return { verdict: c.verdict, why: typeof c.why === "string" ? c.why : "", fresh: true };
+      }
+    } catch {
+    }
+  }
+  const p = probeNativeTls(transport2);
+  const v = { at: nowIso, verdict: p.verdict, why: p.why };
+  store2.setState(STATE_CAP, JSON.stringify(v), nowIso);
+  return { ...p, fresh: false };
+}
+function capNote(verdict) {
+  return verdict === "yes" ? "" : "这个面板二进制缺直播要的 TLS 支持（构建漏了 `legacy-tls`，它本该是默认带的）—— 这是构建缺陷，不是配置问题；换一个正常的面板构建。";
+}
+
 // src/entries/shared.ts
 import {
   http_fetch,
-  log,
+  log as log2,
   smtp_send,
-  warn,
+  warn as warn2,
   ws_close,
   ws_open,
   ws_recv,
@@ -3644,27 +3768,52 @@ function drain(step, deps, opts) {
       return { ok: false, idle: false, steps, note: `${opts.label}：第 ${steps} 步失败 —— ${r.note}`, notes };
     }
     if (r.idle || r.skipped) {
-      return { ok: true, idle: true, steps, note: `${opts.label}：${steps} 步走完 —— ${r.note}`, notes };
+      return { ok: true, idle: true, steps, note: brief(r.note, opts.label), notes };
     }
   }
   return {
     ok: true,
     idle: false,
     steps,
-    note: `${opts.label}：走到步数上限（${opts.maxSteps} 步），下一次接着走`,
+    // ⚠ 这里**不说**"还有没做完的"。踩过的坑：领取AI豆的队列刚好在第 12 步领空，
+    //   而"到上限"和"刚好做完"从这一步看不出区别 —— 于是每一趟都说"还有没做完的"，
+    //   用户看到的是一句假话（他的原话：「领取云朵应该没有步数啊」）。
+    //   对用户只报**结论**：成了。真想看走到哪一步，运行记录里每一步都在。
+    // 同样用最后一步自己的话（跑到上限时，它刚做完的那件事就是结论），
+    // 但**截短**：这一格要进 runs 表当一行摘要，不能塞整段原话。
+    note: brief(lastNote ?? "", opts.label),
     notes
   };
+}
+var BRIEF_MAX = 40;
+function brief(s, label) {
+  const t = s.trim();
+  return t.length === 0 || t.length > BRIEF_MAX ? `${label}：好了` : t;
 }
 
 // src/store/host.ts
 import { sqlite_exec, sqlite_query } from "host-api";
+function sqlQ(sql, params) {
+  const rows = sqlite_query(sql, params);
+  if (!Array.isArray(rows)) {
+    throw new Error(`sqlite_query 失败：${rows.error ?? "未知错误"}`);
+  }
+  return rows;
+}
+function sqlX(sql, params) {
+  const r = sqlite_exec(sql, params);
+  if (typeof r?.error === "string" && r.error !== "") {
+    throw new Error(`sqlite_exec 失败：${r.error}`);
+  }
+  return { changes: Number(r?.changes ?? 0), lastInsertRowid: Number(r?.lastInsertRowid ?? 0) };
+}
 function hostStore() {
   let schemaReady = false;
   return {
     ensureSchema: () => {
       if (schemaReady) return;
-      sqlite_exec(
-        `CREATE TABLE IF NOT EXISTS runs (
+      sqlX(
+        `CREATE TABLE IF NOT EXISTS mcloud_runs (
            id           INTEGER PRIMARY KEY AUTOINCREMENT,
            task         TEXT    NOT NULL,
            runs         INTEGER NOT NULL,
@@ -3673,33 +3822,38 @@ function hostStore() {
            late_ms      INTEGER NOT NULL,
            ok           INTEGER NOT NULL,
            note         TEXT
-         )`
+         )`,
+        []
       );
-      sqlite_exec(`CREATE INDEX IF NOT EXISTS idx_runs_task_fired ON runs (task, fired_at)`);
-      sqlite_exec(
+      sqlX(
+        `CREATE INDEX IF NOT EXISTS idx_mcloud_runs_task_fired ON mcloud_runs (task, fired_at)`,
+        []
+      );
+      sqlX(
         `CREATE TABLE IF NOT EXISTS state (
            key   TEXT PRIMARY KEY,
            value TEXT NOT NULL,
            updated_at TEXT NOT NULL
-         )`
+         )`,
+        []
       );
       schemaReady = true;
     },
     getState: (key) => {
-      const rows = sqlite_query(`SELECT value FROM state WHERE key = ?1`, [key]);
+      const rows = sqlQ(`SELECT value FROM state WHERE key = ?1`, [key]);
       const row = rows[0];
       return row ? String(row.value) : null;
     },
     setState: (key, value, nowIso) => {
-      sqlite_exec(
+      sqlX(
         `INSERT INTO state (key, value, updated_at) VALUES (?1, ?2, ?3)
          ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = ?3`,
         [key, value, nowIso]
       );
     },
     recordRun: (r) => {
-      const res = sqlite_exec(
-        `INSERT INTO runs (task, runs, scheduled_at, fired_at, late_ms, ok, note)
+      const res = sqlX(
+        `INSERT INTO mcloud_runs (task, runs, scheduled_at, fired_at, late_ms, ok, note)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`,
         [r.task, r.runs, r.scheduledAt, r.firedAt, Math.round(r.lateMs), r.ok ? 1 : 0, r.note ?? null]
       );
@@ -3709,25 +3863,25 @@ function hostStore() {
     // 跑到几万次触发之后「拉回来再算」会静默丢数据 —— 那种错很难发现（数字看着还合理）。
     // 另外两点和内存实现必须同口径：**排除负延迟**（F-001）、**按值排序取分位**（不是按 id）。
     lateStats: (task, lastN = 500) => {
-      const agg = sqlite_query(
+      const agg = sqlQ(
         `SELECT COUNT(*) AS n, MAX(late_ms) AS mx FROM (
-           SELECT late_ms FROM runs WHERE task = ?1 AND late_ms >= 0 ORDER BY id DESC LIMIT ?2
+           SELECT late_ms FROM mcloud_runs WHERE task = ?1 AND late_ms >= 0 ORDER BY id DESC LIMIT ?2
          )`,
         [task, lastN]
       );
       const n = Number(agg[0]?.n ?? 0);
-      const neg = sqlite_query(
+      const neg = sqlQ(
         `SELECT COUNT(*) AS c FROM (
-           SELECT late_ms FROM runs WHERE task = ?1 ORDER BY id DESC LIMIT ?2
+           SELECT late_ms FROM mcloud_runs WHERE task = ?1 ORDER BY id DESC LIMIT ?2
          ) WHERE late_ms < 0`,
         [task, lastN]
       );
       const pick = (q) => {
         if (n === 0) return 0;
         const offset = Math.min(n - 1, Math.max(0, Math.ceil(n * q) - 1));
-        const rows = sqlite_query(
+        const rows = sqlQ(
           `SELECT late_ms AS v FROM (
-             SELECT late_ms FROM runs WHERE task = ?1 AND late_ms >= 0 ORDER BY id DESC LIMIT ?2
+             SELECT late_ms FROM mcloud_runs WHERE task = ?1 AND late_ms >= 0 ORDER BY id DESC LIMIT ?2
            ) ORDER BY late_ms ASC LIMIT 1 OFFSET ?3`,
           [task, lastN, offset]
         );
@@ -3743,44 +3897,11 @@ function hostStore() {
         excluded: Number(neg[0]?.c ?? 0)
       };
     },
-    recentRuns: (limit = 20) => sqlite_query(
-      `SELECT task, runs, fired_at, late_ms, ok, note FROM runs ORDER BY id DESC LIMIT ?1`,
+    recentRuns: (limit = 20) => sqlQ(
+      `SELECT task, runs, fired_at, late_ms, ok, note FROM mcloud_runs ORDER BY id DESC LIMIT ?1`,
       [Math.min(limit, 1e3)]
     )
   };
-}
-
-// src/store/scoped.ts
-var WRAPPED = Symbol.for("__mcloud_scoped_store__");
-var RAW = Symbol.for("__mcloud_raw_store__");
-function rawStoreOf(s) {
-  const raw = s[RAW];
-  return raw ?? s;
-}
-function scoped(base, acctId) {
-  if (base[WRAPPED] === true) {
-    throw new Error(
-      "store 已经被 scoped() 包过一次了 —— 双重包装会让 `mcloud.acct.*` 也去查登记表然后抛错。"
-    );
-  }
-  const wrapped = {
-    ...base,
-    getState: (key) => routeGet(base, key, acctId),
-    setState: (key, value, nowIso) => routeSet(base, key, value, nowIso, acctId)
-  };
-  Object.defineProperty(wrapped, WRAPPED, { value: true, enumerable: false });
-  Object.defineProperty(wrapped, RAW, { value: base, enumerable: false });
-  return wrapped;
-}
-
-// src/mcloud/session.ts
-var STATE_BASE_URL = "mcloud.base_url";
-function loadBaseUrl(store2) {
-  const v = store2.getState(STATE_BASE_URL);
-  if (!v) return "";
-  const t = v.trim();
-  if (!/^https?:\/\//.test(t)) return "";
-  return t.replace(/\/+$/, "");
 }
 
 // src/entries/shared.ts
@@ -3798,7 +3919,7 @@ function makeStore() {
   const { moved } = migrateFlatKeys(store2, (/* @__PURE__ */ new Date()).toISOString());
   const s = scoped(store2);
   if (moved.length > 0) {
-    log(`状态迁移：${moved.length} 个键搬进账号袋（${moved.join(", ")}）`);
+    log2(`状态迁移：${moved.length} 个键搬进账号袋（${moved.join(", ")}）`);
   }
   return s;
 }
@@ -3833,89 +3954,155 @@ function taskDeps(store2, transport2, payload) {
 }
 
 // src/entries/live.ts
-worker_hint("exclusive");
 var store = makeStore();
 var transport = makeTransport(LONG_REQUEST_TIMEOUT_MS);
 var host = makeHost();
-var BUDGET_MS = 7e4;
-var LISTEN_DEADLINE_MS = BUDGET_MS - 15e3;
+var BUDGET_MS = 3e5;
 function listenDeps(deps) {
   return { ...deps, host };
 }
-function runLive(deps) {
-  const started = Date.now();
+function collectOnce(deps, runStartMs) {
   const steps = [];
   const step = (name, fn) => {
     try {
-      const r2 = fn();
-      steps.push({ name, ok: r2.ok, note: r2.note, idle: r2.idle === true });
-      return r2;
+      const r = fn();
+      steps.push({ name, ok: r.ok, note: r.note, idle: r.idle === true });
+      return r;
     } catch (e) {
       const note2 = `抛异常 ${e instanceof Error ? e.message : String(e)}`;
       steps.push({ name, ok: false, note: note2, idle: false });
       return { ok: false, note: note2 };
     }
   };
-  step(
-    "自动定时",
-    () => runLiveAuto(deps, { windowMs: loadListenSeconds(store) * 1e3 })
-  );
-  step("日程门", () => runLiveGate(deps));
-  step("口令笔记", () => runLiveRoom(deps));
+  const done = (ok, note2, stopped = false) => ({
+    steps,
+    detail: steps.map((s) => userLine(s)).filter((x) => x !== null),
+    ok,
+    note: note2,
+    stopped
+  });
+  const cap = hostNativeTls(deps.store, deps.nowIso, deps.transport);
+  if (cap.verdict === "no") {
+    steps.push({ name: "这个面板能不能直播", ok: false, note: capNote(cap.verdict), idle: false });
+    return done(false, capNote(cap.verdict), true);
+  }
+  const gateOut = drain(runLiveGate, deps, {
+    label: "有没有开播",
+    maxSteps: 3,
+    deadlineMs: 4e4,
+    startedAt: runStartMs
+  });
+  const gate = readGateReading(store);
+  const liveCount = gate === null ? 0 : gate.liveCount;
+  if (!gateOut.ok) {
+    steps.push({ name: "有没有开播", ok: false, note: `${gateOut.note}（继续试一次）`, idle: false });
+  } else if (gate === null || gate.active !== true) {
+    steps.push({
+      name: "有没有开播",
+      ok: true,
+      idle: true,
+      note: liveCount === 0 ? "今天没有直播（谁都没在播）" : `有 ${liveCount} 间在播，但没有一间是「${KOULING_ANCHOR}」的`
+    });
+    return done(true, "没在播 —— 不听，也不看小红书", true);
+  } else {
+    steps.push({
+      name: "有没有开播",
+      ok: true,
+      idle: false,
+      note: `「${KOULING_ANCHOR}」开播了（${liveCount} 间在播）`
+    });
+  }
+  step("主播发口令没有", () => runLiveRoom(deps));
+  const poolNow = loadPoolFrom(store).pool;
+  const enough = stopScraping(poolNow);
+  if (enough) {
+    steps.push({
+      name: "听弹幕",
+      ok: true,
+      idle: true,
+      note: `手里已经有 ${validCount(poolNow)} 条能用的口令，不用再听`
+    });
+    return done(true, "口令够了，没再听");
+  }
   let frames = 0;
   let listenNote = "";
   const ld = listenDeps(deps);
-  while (Date.now() - started < LISTEN_DEADLINE_MS) {
-    const r2 = step("听弹幕", () => runLiveListen(ld));
-    listenNote = r2.note;
-    if (!r2.ok || r2.idle) break;
+  const listenDeadline = runStartMs + BUDGET_MS - 2e4;
+  while (Date.now() < listenDeadline) {
+    const r = step("听弹幕", () => runLiveListen(ld));
+    listenNote = r.note;
+    if (!r.ok || r.idle) break;
     frames++;
     if (frames > 60) break;
   }
   if (frames > 0) {
-    steps.push({ name: "听弹幕", ok: true, note: `共读 ${frames} 轮`, idle: false });
+    steps.push({ name: "听弹幕", ok: true, note: listenNote || `听了 ${frames} 轮`, idle: false });
   }
+  const after = loadPoolFrom(store).pool;
+  return done(true, `池里现在有 ${validCount(after)} 条能用的口令`);
+}
+function drawOnce(deps, runStartMs) {
   const r = drain(runLiveDraw, deps, {
     label: "领小红花",
     maxSteps: 12,
-    deadlineMs: BUDGET_MS - (Date.now() - started) - 3e3,
-    startedAt: started
+    deadlineMs: Math.max(15e3, runStartMs + BUDGET_MS - Date.now() - 3e3),
+    startedAt: runStartMs
   });
-  steps.push({ name: "领小红花", ok: r.ok, note: r.note, idle: false });
-  const detail = steps.map((s) => `${s.name}：${s.ok ? "" : "失败 "}${s.note}`);
-  const failed = steps.filter((s) => !s.ok);
-  const elapsed = ((Date.now() - started) / 1e3).toFixed(1);
-  if (failed.length > 0) {
-    return {
-      ok: false,
-      note: `${failed.length} 步有问题：${failed[0].name}：${failed[0].note}`,
-      detail,
-      steps
-    };
-  }
+  const steps = [{ name: "领小红花", ok: r.ok, note: r.note, idle: false }];
   return {
-    ok: true,
-    note: `${listenNote || "未进入听窗口"}（用时 ${elapsed}s）`,
-    detail,
-    steps
+    steps,
+    detail: steps.map((s) => userLine(s)).filter((x) => x !== null),
+    ok: r.ok,
+    note: r.note
   };
 }
 register_cron(
   "直播",
-  // 一分钟一跳，配合 70 秒预算 ⇒ 窗口之间几乎不留缝。
-  // 门关着时第一次调用就进冷却、零请求秒返回。
-  "*/5 * * * *",
+  // 用户口径（2026-10-17）：「太频繁了，每天上午 10:30 / 下午 15:30 两次」。
+  // 每 5 分钟一跳太密 —— 而开播时刻是整点粒度，两次足够；没在播时第一次
+  // 调用就早退（零请求），见下面的「先验开播再决定要不要听」。
+  "30 10,15 * * *",
   (p) => {
     const startedMs = Date.now();
     const at = new Date(startedMs).toISOString();
-    const runs = forEachTaskAccount(store, "直播", p, transport, (deps) => runLive(deps));
+    const manual = collectCodes(store, startedMs).length > 0;
+    let collected = null;
+    const runs = forEachTaskAccount(store, "直播", p, transport, (deps, _acct, index) => {
+      if (index === 0 && !manual) collected = collectOnce(deps, startedMs);
+      return drawOnce(deps, startedMs);
+    });
     if (runs.length === 0) return;
+    const onceHints = /* @__PURE__ */ new Set();
+    const c = collected;
+    if (c !== null && c.detail.length > 0) {
+      const capOnly = c.steps.length === 1 && !c.ok && c.steps[0]?.name === "这个面板能不能直播";
+      if (capOnly) {
+        logBoth(store, "error", c.detail[0] ?? c.note, at);
+      } else {
+        logBoth(store, "info", "------【口令】------", at);
+        let prev = "";
+        for (const line of c.detail) {
+          if (line === prev) continue;
+          prev = line;
+          logBoth(store, line.includes("没成") ? "warn" : "info", line, at);
+        }
+        const cBad = c.steps.filter((x) => !x.ok).length;
+        logBoth(
+          store,
+          cBad > 0 ? "warn" : "info",
+          `------【口令】${c.note}------`,
+          at
+        );
+      }
+    }
     for (const one of runs) {
       const r = one.result;
       const who = labelOf(store, one.acctId);
       const note2 = runs.length > 1 ? `${who}：${r.note}` : r.note;
       appendRun(store, {
         task: "live",
+        acct: one.acctId,
+        who,
         at,
         ms: Date.now() - startedMs,
         ok: r.ok,
@@ -3931,13 +4118,19 @@ register_cron(
         ok: r.ok,
         note: note2
       });
-      if (r.ok) log2(`直播（${who}）：${r.note}`);
-      else warn2(`直播（${who}）：${r.note}`);
+      logBoth(store, "info", `------【${who}】------`, at);
+      let prev = "";
       for (const line of r.detail) {
-        if (line.includes("失败") || line.includes("抛异常")) warn2(`  · ${line}`);
+        const shown = onceHint(line, onceHints);
+        if (shown === prev) continue;
+        prev = shown;
+        logBoth(store, shown.includes("没成") ? "warn" : "info", shown, at);
       }
+      const bad = r.steps.filter((x) => !x.ok).length;
+      const tail = bad === 0 ? `------【${who}】都成了------` : `------【${who}】${bad} 项没成------`;
+      logBoth(store, bad > 0 ? "warn" : "info", tail, at);
     }
   },
   { budget_ms: BUDGET_MS }
 );
-log2(`mcloud-live：任务「直播」（预算 ${BUDGET_MS / 1e3}s，独占线程）`);
+log3(`mcloud-live：任务「直播」（预算 ${BUDGET_MS / 1e3}s，共享粗粒度 lane）`);

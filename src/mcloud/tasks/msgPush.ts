@@ -162,7 +162,7 @@ export function runMsgPushObtain(deps: TaskDeps): TaskOutcome {
       if (code === 0) return { ok: true, note: '消息推送奖励：已领取' };
       return {
         ok: false,
-        note: `消息推送奖励：没领到（obtainCode=${code ?? '缺字段'}；上游回 ${JSON.stringify(env.result ?? env.message).slice(0, 120)}）`,
+        note: `消息推送奖励：没领到（obtainCode=${code ?? '缺字段'}；服务端回 ${JSON.stringify(env.result ?? env.message).slice(0, 120)}）`,
       };
     },
   );

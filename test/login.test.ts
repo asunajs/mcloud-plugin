@@ -351,6 +351,16 @@ test('⚠ `code` 可能是数字也可能是字符串，两种都要归一', () 
   assert.equal(parseLoginEnvelope('{"code":"0000"}').rawCode, '0000');
 });
 
+test('⚠ 空响应要单独说 —— 它不是"JSON 解析失败"', () => {
+  // 上游不肯给东西时就是**一个字都不回**。报成 `Unexpected end of JSON input` 的话，
+  // 界面与日志里留的是内部术语，排障会往"我们解析错了"上找（真发生的事是上游没回应）。
+  for (const body of ['', '   ', '\n']) {
+    assert.throws(() => parseLoginEnvelope(body), /空响应/, JSON.stringify(body));
+  }
+  // 真·坏 JSON 仍然走原来那条（两者不能混成一句）
+  assert.throws(() => parseLoginEnvelope('{oops'), /不是 JSON/);
+});
+
 test('`message` 与 `msg` 两个键名都认', () => {
   assert.equal(parseLoginEnvelope('{"code":1,"message":"甲"}').message, '甲');
   assert.equal(parseLoginEnvelope('{"code":1,"msg":"乙"}').message, '乙');
@@ -433,6 +443,24 @@ test('已扫码 ⇒ 提示用户去手机上确认（唯一值得对外提示进
   assert.equal(r.stop, false);
   assert.equal(r.session.scanned, true);
   assert.ok(r.note.includes('确认'), r.note);
+});
+
+test('⚠ 上游从"已扫码"**回退**成"没扫到"：不许把话改回"等手机扫码"', () => {
+  // 真机实测（2026-10-17）：手机扫到之后不到一分钟，上游又回了 200059541。
+  // 这一支原来的写法把 note 改回"等手机扫码"，而界面上那一行显示的就是 note ——
+  // 用户看到的变成「我明明扫了，它还在让我扫」，整件事的表现就是"没用"。
+  const scanned = applyPoll(newQrSession(WIN.deviceId, 1000), { kind: 'scanned' }, 2000);
+  const back = applyPoll(scanned.session, { kind: 'not-scanned' }, 4000);
+  assert.equal(back.ok, true, '回退不是登录失败');
+  assert.equal(back.stop, false, '还要接着轮');
+  assert.equal(back.session.scanned, true, '"扫到过"这件事不许被后来的响应抹掉');
+  assert.ok(!back.note.includes('等手机扫码'), `不该退回原话：${back.note}`);
+  assert.ok(back.note.includes('再扫'), `要说清下一步：${back.note}`);
+});
+
+test('⚠ 还没扫过时，"没扫到"仍然是"等手机扫码"（别把回退文案套到第一次）', () => {
+  const r = applyPoll(newQrSession(WIN.deviceId, 1000), { kind: 'not-scanned' }, 2000);
+  assert.equal(r.note, '等手机扫码');
 });
 
 test('成功 ⇒ 停，并把密文带出来', () => {
@@ -602,4 +630,20 @@ test('`phoneOf` 对旧的 H5 凭据（明文手机号）照旧工作', () => {
   // 畸形 base64 不许抛（这个函数只用来做标签与 id，不该把流程带崩）
   assert.equal(phoneOf('Basic !!!not-base64!!!'), undefined);
   assert.equal(phoneOf('Basic'), undefined);
+});
+
+test('⚠ 登录那一族要**明确要 identity**（宿主会替我们要 gzip 却不给解压）', () => {
+  // F-072：宿主的 HTTP 层会发 `accept-encoding: gzip`，但**不解压** ——
+  // 而移动云盘只在响应够大时才压：登录成功那个 1–2 KB 的响应正好在阈值以上。
+  // 所以这一条不是优化，是"能不能登录"的一部分。
+  const win = WIN;
+  for (const req of [
+    thirdloginRequest(win, 'TID', {}),
+    sendSmsCodeRequest(win, 'TID', {}),
+    sliderPuzzleRequest(win, 'TID', {}),
+  ]) {
+    assert.equal(req.headers['accept-encoding'], 'identity', `${req.url} 没要 identity`);
+  }
+  // ⚠ 但不能顺手塞进 `pcHeaders`：那里是"冒充哪台设备"的 5 个头，有测试钉死就这 5 个
+  assert.ok(!('accept-encoding' in pcHeaders(win)), 'pcHeaders 只该有那 5 个设备头');
 });

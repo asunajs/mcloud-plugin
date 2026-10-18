@@ -285,8 +285,8 @@ test('⚠ 两次抓主页之间至少隔 30 分钟（抓太勤会被风控挡成
   const second = runLiveRoom({ store, transport, nowIso: NOW });
   assert.equal(second.idle, true, '同一分钟内第二次 ⇒ **不是失败**，是按口径不抓');
   assert.equal(sent.length, 1, '一个请求都不发');
-  assert.match(second.note, /30 分钟/);
-  assert.match(second.note, /风控/, '要说清为什么慢：抓太勤的代价是"空壳与没发分不开"');
+  // 原因写在代码注释里；日志只说"什么时候再看"
+  assert.match(second.note, /分钟后再看/);
 
   // 30 分钟之后照抓（用同一份读数覆盖：这里只验"窗口过了就放行"）
   const later = new Date(Date.parse(NOW) + 31 * 60 * 1000).toISOString();
@@ -308,7 +308,7 @@ test('⚠ 够 2 条**有效** ⇒ 停止抓取（这一场只发那么几条，�
   const out = runLiveRoom({ store, transport, nowIso: NOW });
   assert.equal(out.idle, true);
   assert.equal(sent.length, 0, '够了两条就不再抓');
-  assert.match(out.note, /停止抓取/);
+  assert.match(out.note, /不用再抓/);
 });
 
 test('抓到的口令**进池**（状态是"未知"：抓到了 ≠ 验过了）', () => {

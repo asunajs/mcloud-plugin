@@ -95,7 +95,7 @@ test('默认**关**：一个请求都不发，而且标成 idle（否则每 5 �
   assert.equal(out.idle, true);
   assert.equal(sent.length, 0);
   assert.equal(store.getState(STATE_DRAW), null, '关着时连状态都不该起');
-  assert.match(out.note, /未开启/);
+  assert.match(out.note, /没开/);
 });
 
 test('没有口令 ⇒ idle、不发请求（cron 每 5 分钟跑一次，不能刷噪声）', () => {
@@ -112,7 +112,7 @@ test('没有 jwt ⇒ 如实失败，且**一个请求都不发**（这一族要�
   const out = runLiveDraw({ store, transport, nowIso: NOW });
   assert.equal(out.ok, false);
   assert.equal(sent.length, 0, '没凭据就别打上游');
-  assert.match(out.note, /未登录/);
+  assert.match(out.note, /还没换到票|还没连上网页版|要先有票/);
 });
 
 test('全链推进：一次调用一个请求，顺序与形状都对', () => {
@@ -242,7 +242,7 @@ test('口令来源：人给的在前、池里该投的在后，去重', () => {
   note(pool, ['乙', '甲'], 'xiaohongshu', Date.parse(NOW));
   savePoolTo(store, pool, NOW);
 
-  assert.deepEqual(collectCodes(store), ['甲', '乙'], '人给的那份在前（那是他确认过的）');
+  assert.deepEqual(collectCodes(store, Date.parse(NOW)), ['甲', '乙'], '人给的那份在前（那是他确认过的）');
 });
 
 test('池里判过无效的口令**不再投**（否则每轮白跑一枪 200108）', () => {
@@ -252,7 +252,7 @@ test('池里判过无效的口令**不再投**（否则每轮白跑一枪 200108
   noteClaim(pool, accountOf(store), '乙', 'invalid', Date.parse(NOW));
   savePoolTo(store, pool, NOW);
 
-  assert.deepEqual(collectCodes(store), ['甲'], '乙 已判无效 ⇒ 不再进这一轮');
+  assert.deepEqual(collectCodes(store, Date.parse(NOW)), ['甲'], '乙 已判无效 ⇒ 不再进这一轮');
 });
 
 test('这个账号领过的口令**不再投**（回 200112 不是新结果，却会把归因搅浑）', () => {
@@ -262,7 +262,7 @@ test('这个账号领过的口令**不再投**（回 200112 不是新结果，�
   noteClaim(pool, accountOf(store), '乙', 'claimed', Date.parse(NOW));
   savePoolTo(store, pool, NOW);
 
-  assert.deepEqual(collectCodes(store), ['甲'], '乙 这个账号领过 ⇒ 不再进这一轮');
+  assert.deepEqual(collectCodes(store, Date.parse(NOW)), ['甲'], '乙 这个账号领过 ⇒ 不再进这一轮');
   // 但**别的账号**仍然该投它 —— 口令是全实例共享的，领没领过是按账号算的
   assert.deepEqual(pickFor(pool, '另一个账号'), ['甲', '乙']);
 });
@@ -324,7 +324,7 @@ test('200108 ⇒ 池里**无效**（下一轮不再投它）', () => {
   const { pool } = loadPoolFrom(store);
   assert.equal(codeState(pool, '甲'), 'invalid');
   assert.equal(pool.codes.find((c) => c.value === '甲')?.reason, '口令无效');
-  assert.deepEqual(collectCodes(store), [], '判过无效 ⇒ 不再进下一轮');
+  assert.deepEqual(collectCodes(store, Date.parse(NOW)), [], '判过无效 ⇒ 不再进下一轮');
 });
 
 test('200118 ⇒ 池里**无效**，但原因留成"已过期"（界面上要能看出是哪一种）', () => {
@@ -361,7 +361,7 @@ test('别的码（未分类）**不改池里的状态**，但这条口令对这�
   assert.equal(pool.claims[account]?.['甲'], 'other', '但账号级的结论如实记下');
   // ② 这个账号**不再被投**这条口令 —— 这是 mcloud `pick_for` 的口径：
   //    它按"这个账号对这条口令有没有过结论"筛，**不是**按结论的内容筛。
-  assert.deepEqual(collectCodes(store), [], '有过结论（哪怕是未分类）⇒ 这个账号不再投它');
+  assert.deepEqual(collectCodes(store, Date.parse(NOW)), [], '有过结论（哪怕是未分类）⇒ 这个账号不再投它');
   // ③ 而**别的账号**照样投 —— 池里的状态没变，口令本身没被判定为坏
   assert.deepEqual(pickFor(pool, '另一个账号'), []);
   note(pool, ['甲'], 'xiaohongshu', Date.parse(NOW));

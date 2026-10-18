@@ -64,7 +64,7 @@ import {
   planWindowWait,
 } from '../exchangeTiming.ts';
 import type { Store } from '../../store/types.ts';
-import { depsNowMs } from './base.ts';
+import { depsNowMs, hostBase } from './base.ts';
 import { callRawText } from '../client.ts';
 import { REFERER_SIGN_IN, SHOW_LOADING, buildH5Request, MCLOUD_HOST } from '../h5.ts';
 import { sessionHeaders } from './base.ts';
@@ -360,7 +360,7 @@ export function runOrderStep(deps: TaskDeps): TaskOutcome {
     const res = callRawText(
       deps.transport,
       signedReq(deps, {
-        url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/signin/page/exchangeList?client=app&clientVersion=${encodeURIComponent(EXCHANGE_CLIENT_VERSION)}`,
+        url: `${hostBase(deps, MCLOUD_HOST)}/ycloud/signin/page/exchangeList?client=app&clientVersion=${encodeURIComponent(EXCHANGE_CLIENT_VERSION)}`,
         method: 'GET',
       }),
     );
@@ -398,7 +398,7 @@ export function runOrderStep(deps: TaskDeps): TaskOutcome {
   if (step === 'balance') {
     const res = callRawText(
       deps.transport,
-      signedReq(deps, { url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/signin/page/infoV3?client=app`, method: 'GET' }),
+      signedReq(deps, { url: `${hostBase(deps, MCLOUD_HOST)}/ycloud/signin/page/infoV3?client=app`, method: 'GET' }),
     );
     if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? '未知失败'}` };
     let balance: number | undefined;
@@ -448,7 +448,7 @@ export function runOrderStep(deps: TaskDeps): TaskOutcome {
     const res = callRawText(
       deps.transport,
       signedReq(deps, {
-        url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/visitlog/journaling?module=uservisit&optkeyword=${encodeURIComponent(keyword)}&sourceid=1002&marketName=${encodeURIComponent(VISIT_LOG_MARKET_NAME)}`,
+        url: `${hostBase(deps, MCLOUD_HOST)}/ycloud/visitlog/journaling?module=uservisit&optkeyword=${encodeURIComponent(keyword)}&sourceid=1002&marketName=${encodeURIComponent(VISIT_LOG_MARKET_NAME)}`,
         method: 'POST',
         body: '',
       }),
@@ -468,7 +468,7 @@ export function runOrderStep(deps: TaskDeps): TaskOutcome {
     const res = callRawText(
       deps.transport,
       signedReq(deps, {
-        url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/auth-service/slide/getSlide`,
+        url: `${hostBase(deps, MCLOUD_HOST)}/ycloud/auth-service/slide/getSlide`,
         method: 'POST',
         // ⚠ 这一条用 **form** content-type（不是 JSON）—— 逐接口的，不是一刀切
         contentType: SLIDE_FORM_CONTENT_TYPE,
@@ -543,7 +543,7 @@ export function runOrderStep(deps: TaskDeps): TaskOutcome {
     if (st.offset === undefined) return done('内部状态缺 offset，这一单作废（不发一个没算出来的数）', false);
     const body = `{"prizeId":${plan.prizeId},"client":"app","clientVersion":"${EXCHANGE_CLIENT_VERSION}","puzzleOffset":${st.offset},"smsCode":"","deviceId":"${deviceId}"}`;
     const req = signedReq(deps, {
-      url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/signin/page/exchangeV3`,
+      url: `${hostBase(deps, MCLOUD_HOST)}/ycloud/signin/page/exchangeV3`,
       method: 'POST',
       body,
       isDeviceId: true, // 这条**要** isdeviceid，而取滑块那条不要
@@ -574,7 +574,7 @@ export function runOrderStep(deps: TaskDeps): TaskOutcome {
     // ⚠ 不管成没成，**这一小时记下"发过了"** —— 见 `STATE_ORDERED_HOUR`
     deps.store.setState(STATE_ORDERED_HOUR, hourKey(depsNowMs(deps)), deps.nowIso);
     saveState(deps, { ...st, step: 'verify' });
-    return { ok: true, note: `${label}：上游回 ${JSON.stringify(env0(res.text)).slice(0, 140)} —— 下一步查余额差（**那句话不算数**）` };
+    return { ok: true, note: `${label}：服务端回 ${JSON.stringify(env0(res.text)).slice(0, 140)} —— 下一步查余额差（**那句话不算数**）` };
   }
 
   // ⑥ 复查余额差 —— 这才是"成交"的判据
@@ -582,7 +582,7 @@ export function runOrderStep(deps: TaskDeps): TaskOutcome {
     const before = deps.store.getState(STATE_BASE);
     const res = callRawText(
       deps.transport,
-      signedReq(deps, { url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/signin/page/infoV3?client=app`, method: 'GET' }),
+      signedReq(deps, { url: `${hostBase(deps, MCLOUD_HOST)}/ycloud/signin/page/infoV3?client=app`, method: 'GET' }),
     );
     if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? '未知失败'}` };
     let after: number | undefined;
@@ -602,7 +602,7 @@ export function runOrderStep(deps: TaskDeps): TaskOutcome {
     }
     const delta = Number(before) - after;
     if (delta > 0) return done(`${label}：✅ 成交（余额 ${before} → ${after}，扣了 ${delta} 豆）`);
-    return done(`${label}：❌ 没成交（余额 ${before} → ${after}，没扣豆）—— 上游那句话不算数，只有余额差算数`, false);
+    return done(`${label}：❌ 没成交（余额 ${before} → ${after}，没扣豆）—— 服务端那句话不算数，只有余额差算数`, false);
   }
 
   return { ok: false, note: `不认识的步骤「${step}」` };

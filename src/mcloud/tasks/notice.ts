@@ -5,9 +5,9 @@
 // 不是猜的：
 //
 // ① **判据字段缺任何一个都不参与判断**。
-//    上游没给 `cloudStatus` / `taskStatus` 时，读数是"没说"，不是"说了没完成"。
+//    服务端没给 `cloudStatus` / `taskStatus` 时，读数是"没说"，不是"说了没完成"。
 //    把 `None` 当成 `Some(0)` 会让这条链**静默漏领** —— 所以缺字段时
-//    我们**不发写请求**，并且把"上游没给全"这句话原样报出来。
+//    我们**不发写请求**，并且把"服务端没给全"这句话原样报出来。
 //
 // ② **`reward` 报不出到账数**。实拍响应是 `{"code":0,"msg":"success"}` ——
 //    连 `result` 都没有。所以"到底领没领上"只能靠**回查**。本插件的做法是：
@@ -135,8 +135,9 @@ export function noticePlan(info: NoticeInfo): NoticePlan {
   const parts: string[] = [];
   if (claimable.length) parts.push(`${claimable.join('/')}可领`);
   if (unjudged.length) parts.push(`${unjudged.join('/')}判据字段不全（不参与判断，避免静默漏领）`);
-  if (missing.length) parts.push(`${missing.join('/')}上游没给`);
-  if (!parts.length) parts.push('两槽都已入账或无可领');
+  if (missing.length) parts.push(`${missing.join('/')}服务端没给`);
+  // 参考实现：「领取短信通知奖励成功」/「短信通知已开启 N 天」；两槽都没事就说这一句
+  if (!parts.length) parts.push('通知奖励都领过了');
 
   return {
     claimable: claimable.length > 0,
@@ -164,8 +165,8 @@ export function runNoticeInfo(deps: TaskDeps): TaskOutcome {
       return {
         ok: true,
         note: plan.claimable
-          ? `通知任务：${plan.detail}（下一次触发会去领）`
-          : `通知任务：${plan.detail}`,
+          ? `${plan.detail}（下一次触发会去领）`
+          : plan.detail,
         snapshot: { one: info.one ?? null, two: info.two ?? null },
       };
     },
@@ -193,7 +194,7 @@ export function runNoticeReward(deps: TaskDeps): TaskOutcome {
     (env) => ({
       ok: true,
       // 上游不报到账数 —— 这句必须说，否则下一个人会以为这里能看到领了多少
-      note: `通知任务：已发领取请求（上游不报到账数，下一次触发回查 ${JSON.stringify(
+      note: `通知任务：已发领取请求（服务端不报到账数，下一次触发回查 ${JSON.stringify(
         env.message ?? 'success',
       ).slice(0, 40)}）`,
     }),
