@@ -627,6 +627,21 @@ export function loadPoolFrom(store: Pick<Store, 'getState'>): PoolLoad {
   return parsePool(store.getState(POOL_KEY));
 }
 
+/** 读一份**当期**的池：过期就翻篇。
+ *
+ *  用户口径（2026-10-17）：「**只记录当期，不要一直保存** —— 后面说的记录都是
+ *  只在当期直播期间记录」。所以每个**用池**的地方都该走这里，而不是直接
+ *  `loadPoolFrom`：拿上一场的口令去投，等于每轮白跑几枪（`200108`/`200118`），
+ *  而且"这个账号领过"那张表也会指向上一场的口令。
+ *
+ *  ⚠ 翻篇会清 `codes` 与 `claims`（见 [`startCycle`]），但**不动**小红书限速与
+ *    抓取间隔 —— 那两条是防封的节流，与场次无关。 */
+export function loadFreshPool(store: Pick<Store, 'getState'>, nowMs: number): PoolLoad {
+  const got = loadPoolFrom(store);
+  normalize(got.pool, nowMs);
+  return got;
+}
+
 /** 写回 state 表。 */
 export function savePoolTo(store: Pick<Store, 'setState'>, pool: KoulingPool, nowIso: string): void {
   store.setState(POOL_KEY, serializePool(pool), nowIso);

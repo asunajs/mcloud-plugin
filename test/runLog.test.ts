@@ -205,3 +205,29 @@ test('耗时是**非负整数**（时钟回拨也不能给个负数）', () => {
   });
   assert.equal(readRun(s, id)!.ms, 0);
 });
+
+test('⚠ 同一次触发里**每个号各一条**记录（只按时间戳做 id 会互相覆盖）', () => {
+  // 现场：`recent` 连着五条都是「移动：14 成、2 失败」，另外两个号的记录没了 ——
+  // 因为 id 是 `<任务>-<毫秒>`，三个号写的是同一个 id，后写的覆盖前面的。
+  const store = memStore();
+  const at = '2026-10-17T03:52:26.951Z';
+  for (const [id, who] of [['a1', '小号'], ['a2', '测试'], ['a3', '移动']]) {
+    appendRun(store, {
+      task: 'daily',
+      acct: id,
+      who,
+      at,
+      ms: 1000,
+      ok: false,
+      note: `${who}：9 成、2 失败（共 16 步）`,
+      steps: [{ name: '签到', ok: false, note: '没签上', idle: false }],
+    });
+  }
+  const list = recentRuns(store, 'daily');
+  assert.equal(list.length, 3, '三个号三条，不许互相覆盖');
+  assert.deepEqual(list.map((x) => x.who), ['小号', '测试', '移动']);
+  assert.equal(list[0]!.acct, 'a1', '摘要里要带账号');
+  // 同一个号**同一毫秒**跑两次才该覆盖
+  appendRun(store, { task: 'daily', acct: 'a1', who: '小号', at, ms: 5, ok: true, note: '重跑', steps: [] });
+  assert.equal(recentRuns(store, 'daily').length, 3, '同一个号重跑 = 覆盖它自己那条');
+});

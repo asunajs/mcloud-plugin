@@ -38,6 +38,7 @@
 import { resultObject } from '../envelope.ts';
 import { runTask } from './base.ts';
 import type { TaskDeps, TaskOutcome } from './base.ts';
+import type { Store } from '../../store/types.ts';
 
 export const STATE_LIST = 'mcloud.exchangelist.last';
 /** `runTask` 会把"这次响应的快照"写进 `stateKey` —— 所以**必须用另一个键**，
@@ -64,6 +65,10 @@ export interface ExchangePrize {
   count?: number;
   totalCount?: number;
   dailyRemainderCount?: number;
+  dailyCount?: number;
+  /** H5 判「奖品被抢光啦」的那一格：`== 0` 就是这一档/今天的份额没了。
+   *  ⚠ 它和 `count`（池子现量）是两件事：池子里可能还有货，但今天抢不到了。 */
+  minRemainderCount?: number;
   onLine?: number;
   startTime?: string;
   endTime?: string;
@@ -75,6 +80,10 @@ export type Verdict =
   | 'tomorrow' // 明日再来
   | 'exchanged' // 这一件本月已兑
   | 'group-exchanged' // 这一组本月已兑
+  | 'limit-missing' // 上游没给 `limit` —— 判不了，不是"多半能兑"
+  | 'min-remainder-zero' // H5 的「奖品被抢光啦」：份额阈值是 0
+  | 'sold-out' // 池子现量 ≤ 0
+  | 'daily-empty' // 今日余量 ≤ 0
   | 'offline' // 明确下架
   | 'month-limit' // 本月额度**可能**已用完 —— 不说可兑
   | 'unknown'; // 判不了（字段缺 / 没见过的档位）—— **不说可兑**
@@ -86,7 +95,15 @@ export function verdictOf(p: ExchangePrize): Verdict {
   if (p.monthLimit !== undefined && p.received !== undefined && p.received >= p.monthLimit) {
     return 'month-limit';
   }
-  if (p.limit === undefined) return 'unknown';
+  if (p.limit === undefined) return 'limit-missing';
+  // 以下三条与 Rust mcloud 的 `plan_exchange` 同序：余量阈值 → 总余量 → 今日余量。
+  // ⚠ 它们排在 `limit` 之后（`limit` 先告诉用户"明天再来/本月已兑"），
+  //   但在"可兑"这一档里必须继续判 —— 否则会报一个注定被上游挡下的"可兑"。
+  if (p.limit === LIMIT_AVAILABLE) {
+    if (p.minRemainderCount === 0) return 'min-remainder-zero';
+    if (p.count !== undefined && p.count <= 0) return 'sold-out';
+    if (p.dailyRemainderCount !== undefined && p.dailyRemainderCount <= 0) return 'daily-empty';
+  }
   switch (p.limit) {
     case LIMIT_AVAILABLE:
       return 'ok';
@@ -105,10 +122,14 @@ export const VERDICT_TEXT: Record<Verdict, string> = {
   ok: '可兑',
   tomorrow: '明日再来',
   exchanged: '本件本月已兑',
-  'group-exchanged': '本组本月已兑',
+  'group-exchanged': '这一组本月兑过了',
+  'limit-missing': '移动云盘没给可兑状态',
+  'min-remainder-zero': '已抢光',
+  'sold-out': '池子已兑完',
+  'daily-empty': '今日已抢完',
   offline: '已下架',
   'month-limit': '本月额度可能已用完',
-  unknown: '判不了',
+  unknown: '移动云盘没给可兑状态',
 };
 
 function asInt(v: unknown): number | undefined {
@@ -154,6 +175,8 @@ export function parsePrize(raw: unknown): ExchangePrize | undefined {
     count: asInt(o.count),
     totalCount: asInt(o.totalCount ?? o.total_count),
     dailyRemainderCount: asInt(o.dailyRemainderCount ?? o.daily_remainder_count),
+    dailyCount: asInt(o.dailyCount ?? o.daily_count),
+    minRemainderCount: asInt(o.minRemainderCount ?? o.min_remainder_count),
     onLine: asInt(o.onLine ?? o.on_line),
     startTime: asStr(o.startTime ?? o.start_time),
     endTime: asStr(o.endTime ?? o.end_time),
@@ -223,6 +246,8 @@ export function runExchangeList(deps: TaskDeps): TaskOutcome {
       const s = summarizeList(prizes);
       const reading: ExchangeReading = { at: deps.nowIso, groups: groups.length, ...s };
       deps.store.setState(STATE_LIST, JSON.stringify(reading), deps.nowIso);
+      // 界面上「选一件」的下拉读这一份（全量，摘要里只有可兑的前 20 件）
+      savePickCache(deps.store, prizes, deps.nowIso);
       // ⚠ 价格**只在有值时才写**。2026-10-14 真机实测：这个端点**一件都不带价格字段**
       // （51/51 都没有），所以原先那版会输出 `移动云盘100G云空间月卡(?豆)` ——
       // 那个 `?` 会被读成"这里有个数没解析出来"，而真相是"这个端根本不报价格"。
@@ -251,4 +276,176 @@ export function readExchangeList(store: { getState(k: string): string | null | u
   } catch {
     return null;
   }
+}
+
+// ══════════════════════ 「选一件」那份缓存 ══════════════════════
+//
+// # 为什么要单独一份，不复用上面那个读数
+//
+// {@link ExchangeReading} 是**摘要**：`ok` 只留可兑的前 20 件，界面上要搜的
+// 那件（"明日再来"的、已经兑过的、下架的）根本不在里面。
+// 而下拉要能搜到**每一件** —— 所以存的是全量，但只留下拉用得上的四格。
+//
+// # 为什么"缓存"而不是"每次开界面去打一枪"
+//
+// 用户要的（2026-10-17）：名字**不该自己写**，从下拉里选。
+// 那就得有一份清单随时拿得出来；而这一屏打开的频率远高于清单变化的频率。
+// 代价是**可能读到昨天的名字** ⇒ 每天作废一次（见 {@link readPickCache}）。
+
+/** 缓存键（**按账号**：清单与判据都是账号级的）。 */
+export const STATE_PICK = 'mcloud.exchangelist.pick';
+
+export interface PickItem {
+  /** 上游的 `prizeId`（界面上当"编号"用，也是搜数字时的命中项） */
+  id?: number;
+  /** 分组。界面上按它分组（组名上游没给，就显示「第 N 组」）。 */
+  groupId?: number;
+  /** **上游那句名字，一字不改** —— 保存目标时发回去的就是这一串。
+   *  ⇒ "名字要写完整（「月卡」不会命中「季卡」）"那个坑从源头上没了。 */
+  name: string;
+  /** 要多少豆。⚠ 这个端点**经常一件都不带价格**（见文件头），缺就是缺，不补 0。 */
+  price?: number;
+  verdict: Verdict;
+  /** 今天还剩几件（`dailyRemainderCount`；没给就 `undefined`，**不当 0**）。 */
+  remain?: number;
+  /** 池子现量 / 总量。界面把「池子」与「今天份额」分开说。 */
+  count?: number;
+  totalCount?: number;
+  /** 今日已发 / 今日总量（上游字段名就是 daily*）。 */
+  dailyRemainderCount?: number;
+  dailyCount?: number;
+  minRemainderCount?: number;
+  /** 活动窗口（同组通常相同；界面只在组头显示）。 */
+  startTime?: string;
+  endTime?: string;
+  /** 本月限领次数 / 已领次数（用于显示"本月额度"）。 */
+  monthLimit?: number;
+  received?: number;
+}
+
+export interface PickCache {
+  /** 这份缓存是**哪天**建的（与 `nowIso.slice(0,10)` 同一种日界）。 */
+  date: string;
+  items: PickItem[];
+}
+
+/** 挑出下拉用得上的那几格。**没有名字的跳过** —— 界面上没法标它，
+ *  而发回上游的查询串要么靠名字、要么靠编号，两者都没有就没法选。 */
+export function toPickItems(prizes: readonly ExchangePrize[]): PickItem[] {
+  const out: PickItem[] = [];
+  for (const p of prizes) {
+    const name = p.name?.trim();
+    if (name === undefined || name === '') continue;
+    const item: PickItem = { name, verdict: verdictOf(p) };
+    if (p.prizeId !== undefined) item.id = p.prizeId;
+    if (p.groupId !== undefined) item.groupId = p.groupId;
+    if (p.price !== undefined) item.price = p.price;
+    if (p.dailyRemainderCount !== undefined) item.remain = p.dailyRemainderCount;
+    if (p.count !== undefined) item.count = p.count;
+    if (p.totalCount !== undefined) item.totalCount = p.totalCount;
+    if (p.dailyRemainderCount !== undefined) item.dailyRemainderCount = p.dailyRemainderCount;
+    if (p.dailyCount !== undefined) item.dailyCount = p.dailyCount;
+    if (p.minRemainderCount !== undefined) item.minRemainderCount = p.minRemainderCount;
+    if (p.startTime !== undefined) item.startTime = p.startTime;
+    if (p.endTime !== undefined) item.endTime = p.endTime;
+    if (p.monthLimit !== undefined) item.monthLimit = p.monthLimit;
+    if (p.received !== undefined) item.received = p.received;
+    out.push(item);
+  }
+  return out;
+}
+
+/** 建/覆盖缓存。**只在清单读成功时调用** —— 读失败不许顺手把上一次的清掉，
+ *  否则"上游抖一下"就把这一屏的下拉清空了（而下拉里昨天的名字也比没有强）。 */
+export function savePickCache(
+  store: Pick<Store, 'setState'>,
+  prizes: readonly ExchangePrize[],
+  nowIso: string,
+): void {
+  const cache: PickCache = { date: nowIso.slice(0, 10), items: toPickItems(prizes) };
+  store.setState(STATE_PICK, JSON.stringify(cache), nowIso);
+}
+
+/** 读缓存。⚠ **过期即清**：日界不是今天 ⇒ 写空、回 `null`。
+ *
+ *  清理点在**用户点开那一屏**的时候（`/exchange` 视图与 `/exchange/picks` 都走这里），
+ *  所以不用挂定时器 —— 没人看的时候这份数据无所谓新不新。 */
+export function readPickCache(
+  store: Pick<Store, 'getState' | 'setState'>,
+  nowIso: string,
+): PickCache | null {
+  const raw = store.getState(STATE_PICK);
+  if (raw === null || raw === undefined || raw === '') return null;
+  const today = nowIso.slice(0, 10);
+  let c: PickCache | null = null;
+  try {
+    const v = JSON.parse(raw) as Partial<PickCache>;
+    if (Array.isArray(v.items)) {
+      c = { date: typeof v.date === 'string' ? v.date : '', items: v.items as PickItem[] };
+    }
+  } catch {
+    c = null;
+  }
+  if (c === null || c.date !== today) {
+    // 过期/坏数据：就地清掉（回 `null` 让界面知道"该去读一次"）
+    store.setState(STATE_PICK, '', nowIso);
+    return null;
+  }
+  return c;
+}
+
+
+// ══════════════════════ 订阅（「我关注的奖品」） ══════════════════════
+//
+// 原 Rust mcloud 的订阅是服务端列表；这里按账号存在插件自己的库里。
+// 目的不是"同步到所有设备"，而是让用户把常抢的几件固定到兑换页顶部 ——
+// 清单每天变，关注的 id/名字不变。
+
+export const STATE_SUBS = 'mcloud.exchange.subs';
+
+export interface ExchangeSub {
+  id?: number;
+  name: string;
+}
+
+export function readSubscriptions(store: {
+  getState(k: string): string | null | undefined;
+}): ExchangeSub[] {
+  const raw = store.getState(STATE_SUBS);
+  if (!raw) return [];
+  try {
+    const v = JSON.parse(raw) as unknown;
+    if (!Array.isArray(v)) return [];
+    const out: ExchangeSub[] = [];
+    for (const x of v) {
+      if (x === null || typeof x !== 'object') continue;
+      const o = x as Record<string, unknown>;
+      const name = typeof o.name === 'string' ? o.name.trim() : '';
+      if (name === '') continue;
+      const id = typeof o.id === 'number' && Number.isFinite(o.id) ? Math.trunc(o.id) : undefined;
+      out.push(id === undefined ? { name } : { id, name });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/** 开/关关注。`on=false` 时按 id（有）或名字（没有）移除。 */
+export function toggleSubscription(
+  store: { getState(k: string): string | null | undefined; setState(k: string, v: string, at: string): void },
+  sub: ExchangeSub,
+  on: boolean,
+  nowIso: string,
+): ExchangeSub[] {
+  const name = sub.name.trim();
+  if (name === '') return readSubscriptions(store);
+  const same = (x: ExchangeSub): boolean =>
+    sub.id !== undefined ? x.id === sub.id : x.name === name;
+  const cur = readSubscriptions(store).filter((x) => !same(x));
+  if (on) {
+    cur.push(sub.id === undefined ? { name } : { id: sub.id, name });
+  }
+  store.setState(STATE_SUBS, JSON.stringify(cur), nowIso);
+  return cur;
 }

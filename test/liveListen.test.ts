@@ -301,13 +301,13 @@ test('门关着 ⇒ 记一次冷却，冷却期内**一发请求都不发**', ()
   const a = runLiveListen(deps(store, up.transport, f.host));
   assert.equal(a.ok, true);
   const b = runLiveListen(deps(store, up.transport, f.host));
-  assert.match(b.note, /门关着/);
+  assert.match(b.note, /没在听/);
   const afterCheck = up.sent.length;
   assert.ok(afterCheck >= 3, `检查一次至少三发（SSO/JWT/页签），实际 ${afterCheck}`);
 
   // 之后一分钟内的每一次触发：**零请求**
   const c = runLiveListen(deps(store, up.transport, f.host, LATER));
-  assert.match(c.note, /等下一次检查/);
+  assert.match(c.note, /之后再去看/);
   assert.equal(up.sent.length, afterCheck, '冷却期里不许再打上游');
 
   const st = loadListenState(store);
@@ -328,7 +328,7 @@ test('冷却到点之后会重新检查（不是永远不看了）', () => {
   const laterIso = new Date(Date.parse(NOW) + IDLE_RECHECK_MS + 1000).toISOString();
   const out = runLiveListen(deps(store, up.transport, f.host, laterIso));
   assert.ok(up.sent.length > afterCheck, `该重新检查了：${out.note}`);
-  assert.doesNotMatch(out.note, /等下一次检查/);
+  assert.doesNotMatch(out.note, /之后再去看/);
 });
 
 // ── ② 没有聊天室就不开 WS ───────────────────────────────────────────────

@@ -209,14 +209,13 @@ async function main() {
   await send('Runtime.evaluate', { expression: `document.getElementById('add-close').click()` });
   await sleep(200);
 
-  // 逐块切过去截
+  // 逐块切过去截（⚠「设置」那一块已经删了 —— 见 findings F-068）
   const blocks = [
     ['daily', '02-daily'],
     ['exchange', '03-exchange'],
     ['live', '04-live'],
     ['data', '05-data'],
     ['push', '06-push'],
-    ['settings', '07-settings'],
   ];
   for (const [block, name] of blocks) {
     await send('Runtime.evaluate', {

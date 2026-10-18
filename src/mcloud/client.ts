@@ -84,8 +84,16 @@ export interface CallResult {
   ok: boolean;
   /** 失败原因（人话，带上游原话） */
   error: string | undefined;
-  /** 原始响应体（截断到 500 字符，进日志用） */
+  /** 原始响应体（**截断到 500 字符**，只给日志/报错用）。
+   *
+   *  ⚠⚠ **不要拿它去 `JSON.parse`**：登录成功那类响应有 1–2 KB，截断之后就
+   *  只剩前半段，`JSON.parse` 报的是 "Unexpected end of JSON input" ——
+   *  看起来像"响应是空的/不是 JSON"，实际是我们自己剪掉的（F-072：
+   *  扫码登录从上线起就一直这样，任何超过 500 字节的登录响应都解不开）。
+   *  要解析请用 [`CallResult.body`]。 */
   raw: string;
+  /** 原始响应体（**完整**，不截断）—— 要解析就用它。 */
+  body: string;
   /** 响应里的 set-cookie（已解析成 k=v 列表） */
   setCookies: string[];
 }
@@ -105,6 +113,7 @@ export function callOnce(transport: Transport, req: BuiltRequest): CallResult {
     ok: false,
     error,
     raw: '',
+    body: '',
     setCookies: [],
   });
 
@@ -149,6 +158,7 @@ export function callOnce(transport: Transport, req: BuiltRequest): CallResult {
     ok: res.status === 200 && !!env?.ok,
     error,
     raw,
+    body: res.body,
     setCookies: extractSetCookies(res.headers),
   };
 }

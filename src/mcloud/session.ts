@@ -15,6 +15,7 @@
 
 import { SESSION_KEY, loadSession, saveSession } from '../store/types.ts';
 import type { Session, Store } from '../store/types.ts';
+import { fromBase64, fromUtf8 } from '../crypto/index.ts';
 import { callOnce } from './client.ts';
 import type { Transport } from './client.ts';
 import { CLIENT_QUERY, EP_METHOD, REFERER_SIGN_IN, SHOW_LOADING, buildH5Request, resolveUrl } from './h5.ts';
@@ -142,9 +143,51 @@ export interface SessionStatus {
   lastCheck: string;
   lastCheckOk: boolean | null;
   lastCheckNote: string;
+  /** 手机端凭据的到期时刻（JWT 的 `exp`）。`null` = 解不出来（不是"不会过期"）。 */
+  jwtExpiry: { atIso: string; expired: boolean } | null;
 }
 
 export const STATE_LAST_CHECK = 'mcloud.session.last_check';
+
+/** 手机端凭据（JWT）**会不会过期**。
+ *
+ *  为什么值得单独算：JWT 的 `exp` 就在 payload 里，解一下就知道 —— 而"过期了"
+ *  与"被上游踢了"对用户是两件事（前者重新导入就行，后者要看别的）。
+ *  没有它的时候，凭据过期在任务里只表现为一串「未登录」，等于什么都没说。
+ *
+ *  ⚠ 只解 payload，**不验签**（我们不是签发方；这里只想知道时间）。
+ *  解不出来就回 `null` —— 猜一个时间比不猜更糟。 */
+/** 从一串 JWT 直接算到期（给"按账号逐个看"的地方用 —— 那时手里只有那一格的串）。 */
+export function jwtExpiryOf(raw: string, nowIso: string): { atIso: string; expired: boolean } | null {
+  const parts = raw.split('.');
+  if (parts.length < 2) return null;
+  let payload: string;
+  try {
+    // base64url → base64，再解成 UTF-8 字符串（`fromBase64` 是仓库里那份，不依赖 atob）
+    payload = fromUtf8(fromBase64(parts[1]!.replace(/-/g, '+').replace(/_/g, '/')));
+  } catch {
+    return null;
+  }
+  let exp: unknown;
+  try {
+    exp = (JSON.parse(payload) as { exp?: unknown }).exp;
+  } catch {
+    return null;
+  }
+  if (typeof exp !== 'number' || !Number.isFinite(exp)) return null;
+  const atMs = exp * 1000;
+  const now = Date.parse(nowIso);
+  return {
+    atIso: new Date(atMs).toISOString(),
+    // `now` 坏了就当没过期（宁可不吓人）
+    expired: Number.isNaN(now) ? false : now >= atMs,
+  };
+}
+
+/** 当前账号（作用域内那格）的凭据到期。 */
+export function jwtExpiry(store: Store, nowIso: string): { atIso: string; expired: boolean } | null {
+  return jwtExpiryOf(loadSession(store)?.jwt ?? '', nowIso);
+}
 
 export function sessionStatus(store: Store, nowIso: string): SessionStatus {
   const s = loadSession(store);
@@ -183,6 +226,7 @@ export function sessionStatus(store: Store, nowIso: string): SessionStatus {
     lastCheck,
     lastCheckOk,
     lastCheckNote,
+    jwtExpiry: jwtExpiry(store, nowIso),
   };
 }
 

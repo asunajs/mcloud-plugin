@@ -25,7 +25,7 @@ export function runMultiple(deps: TaskDeps): TaskOutcome {
     return { ok: true, skipped: true, note: '本月没有翻倍机会（infoV3.curMonthBackup=false）' };
   }
   if (curMonthBackupSignAccept) {
-    return { ok: true, skipped: true, note: '本月翻倍机会已用过（infoV3.curMonthBackupSignAccept=true）' };
+    return { ok: true, skipped: true, note: '这个月已经翻倍过了' };
   }
 
   return runTask(
@@ -39,7 +39,7 @@ export function runMultiple(deps: TaskDeps): TaskOutcome {
     },
     (env) => ({
       ok: true,
-      note: `已领取翻倍（上游回 ${JSON.stringify(env.result ?? env.message).slice(0, 100)}）`,
+      note: `已领取翻倍（服务端回 ${JSON.stringify(env.result ?? env.message).slice(0, 100)}）`,
       snapshot: env.result ?? null,
     }),
   );

@@ -17,16 +17,18 @@
 import {
   STATE_BASE_URL,
   importSession,
+  jwtExpiryOf,
   loadBaseUrl,
   parseSessionInput,
   sessionStatus,
   verifySession,
 } from './session.ts';
 import { TASK_NAMES, STATE_LAST_TASKLIST } from './tasks/taskList.ts';
+import { SCHEDULED_TASKS } from './taskAccounts.ts';
 import { groupView } from './groups.ts';
 import { hasBigInt, sandboxCaps } from './caps.ts';
 import { runAuthRefresh } from './authRefresh.ts';
-import { clearOrder, runOrderStep, startOrder } from './tasks/exchangeOrder.ts';
+import { STATE_STEP, clearOrder, runOrderStep, startOrder } from './tasks/exchangeOrder.ts';
 import {
   CHANNELS,
   configuredChannels,
@@ -43,17 +45,40 @@ import {
   savePushRules,
   type PushRule,
 } from './pushConfig.ts';
-import { hourKey, planTargetWait, timingReading } from './exchangeTiming.ts';
+import { hourKey, timingReading } from './exchangeTiming.ts';
 import { parseQuery } from './query.ts';
+import { parseCron } from './scheduleCron.ts';
 import { readRun, recentRuns } from './runLog.ts';
+import { readRing } from './logRing.ts';
 import { STATE_LEAD_MS, STATE_ORDERED_HOUR, exchangeLeadMs } from './tasks/exchangeOrder.ts';
-import { runExchange } from './tasks/exchangeRun.ts';
+import {
+  STATE_LEAD_SEC,
+  STATE_SCHEDULE_GEN,
+  STATE_SCHEDULE_MAX_RUNS,
+  STATE_SCHEDULE_CRON,
+  STATE_SCHEDULE_MODE,
+  STATE_SCHEDULE_ONCE_DATE,
+  STATE_SCHEDULE_PLAN,
+  STATE_SCHEDULE_UNTIL,
+  runExchange,
+  scheduleLeadSec,
+  scheduleMaxRuns,
+  scheduleRuns,
+  scheduleNextTargetMs,
+} from './tasks/exchangeRun.ts';
 import { STATE_TARGET_HOUR, targetHourOf } from './exchangeTiming.ts';
 import { APP_AUTH_PREFIX, parseAuth } from './auth.ts';
 import { drawReport } from './tasks/liveDraw.ts';
 import { MATRIX_MARKETS, readMatrix } from './tasks/appTaskMatrix.ts';
 import { DAILY_DONE_KEY, readDailyRun } from './dailyState.ts';
-import { VERDICT_TEXT, readExchangeList } from './tasks/exchangeList.ts';
+import {
+  VERDICT_TEXT,
+  readExchangeList,
+  readPickCache,
+  readSubscriptions,
+  runExchangeList,
+  toggleSubscription,
+} from './tasks/exchangeList.ts';
 import {
   EMPTY_SHELL_HINT_CHARS,
   clearLiveCodes,
@@ -105,6 +130,8 @@ import {
   loadJwt,
   maskMobile,
   runExchangeStep,
+  loadAuthRaw,
+  needExchange,
   startExchange,
   jwtFresh,
 } from './sessionExchange.ts';
@@ -118,15 +145,14 @@ import {
 } from './tasks/liveDraw.ts';
 import { loadWakePlan, planTrusted } from './tasks/liveAutoTask.ts';
 import { qrSvg } from '../crypto/qr.ts';
-
-/** 扫码轮询间隔（毫秒）。**服务端给**，界面不写死 —— 见 `/login/qr/start` 那段说明。 */
-const QR_POLL_MS = 2000;
 import { callOnce } from './client.ts';
 import { uuidV4 } from './rand.ts';
 import {
   CODES,
+  DEFAULT_PC_PLATFORM,
   PC_AUTH_PREFIX,
   QR_TTL_SECONDS,
+  accountForm,
   applyPoll,
   authFromUserInfo,
   classifyPoll,
@@ -134,6 +160,7 @@ import {
   decryptUserInfo,
   isSuccessCode,
   parseLoginEnvelope,
+  parsePcPlatform,
   LOGIN_AES_KEY,
   parseSliderPuzzle,
   puzzleVerfycodeEncrypt,
@@ -141,6 +168,7 @@ import {
   pcClient,
   qrExpired,
   qrPayload,
+  qrRemainingMs,
   qrThirdloginBody,
   sendSmsCodeBody,
   sendSmsCodeBodyWithSlider,
@@ -157,6 +185,7 @@ import {
   type PcPlatform,
 } from './login.ts';
 import {
+  QR_POLL_MS,
   STATE_LOGIN_BASE,
   STATE_LOGIN_DOMAIN,
   STATE_LOGIN_PREF,
@@ -177,7 +206,7 @@ import {
 } from './loginSession.ts';
 import type { Store } from '../store/types.ts';
 import { rawStoreOf, scoped } from '../store/scoped.ts';
-import { setAccountDisabled, setAccountLabel } from './accounts.ts';
+import { currentAccountDomain, setAccountDisabled, setAccountLabel } from './accounts.ts';
 import { saveTaskAccounts, taskAccountsView } from './taskAccounts.ts';
 
 import {
@@ -193,6 +222,7 @@ import { readBag } from '../store/keys.ts';
 import type { BuiltRequest } from './h5.ts';
 import type { Transport } from './client.ts';
 import type { HostWs } from './tasks/base.ts';
+import { normalizeDays, readDayForAccount, readRecordsForAccount } from './beansRead.ts';
 
 /** 插件名（= 文件名去掉扩展名）。路由路径要用它。 */
 export const PLUGIN = 'mcloud';
@@ -216,6 +246,14 @@ export interface RouteEntry {
   path: string;
   method: string;
   handler: (req: RouteRequest) => RouteResponse;
+  /** 这条路由的执行预算（毫秒）。不给就用面板的全局值（2000ms）。
+   *
+   *  ⚠ 面板的看门狗到点会把 handler **强制打断**并回一个 500（"路由处理超过预算 …
+   *    被强制中断"）。默认那一档只够一两次上游往返；像「今日AI豆」那样
+   *    **逐账号 × 翻页**的只读链，一发 `cloudRecordV2` 的超时就有 1500ms，
+   *    两个账号各读两页就顶到 2 秒了 —— 所以它必须自己声明预算。
+   *    见 `entries/mcloud.ts` 把这一格透给 `register_route`。 */
+  budget_ms?: number;
 }
 
 export interface RouteDeps {
@@ -264,6 +302,14 @@ function accountsView(store: Pick<Store, 'getState'>): {
      *  ⚠ 来源是凭据 token 的第 4 段（`|` 分隔）。**没有样本**说明它一定存在，
      *  所以 `null` 要如实显示成"不知道"，不能画成 0（那看起来像"已过期"）。 */
     expireDays: number | null;
+    /** 手机端凭据（JWT）什么时候到期 —— `''` = 这一格没有 JWT（只看得到 PC 端凭据）。
+     *
+     *  ⚠ 它与 `expireDays` **不是同一个凭据**：那个来自 PC 端 token 的第 4 段（29 天），
+     *  这个来自手机端 JWT（通常只有 2 小时）。只看前者会漏掉"手机端今天就过期了"——
+     *  而那正是所有 App 侧任务一起回「未登录」的原因。 */
+    jwtExpiresAt: string;
+    /** 手机端凭据已经过期了（按现在算）。 */
+    jwtExpired: boolean;
     /** 这个账号自己的设备号（`B…`/`…-ENDIN` 那种）。没上报过 ⇒ `''`。 */
     deviceId: string;
     /** 停用。⚠ 与"删掉"不是一回事：停用**保留**状态（见 accounts.ts）。 */
@@ -295,6 +341,17 @@ function accountsView(store: Pick<Store, 'getState'>): {
         platform: a.platform,
         pcPlatform: a.pcPlatform ?? '',
         expireDays: exp > 0 ? Math.floor((exp - nowMs) / 86_400_000) : null,
+        ...(() => {
+          const bag = readBag(raw, a.id);
+          let jwt = '';
+          try {
+            jwt = (JSON.parse(bag['mcloud.session'] ?? '{}') as { jwt?: string }).jwt ?? '';
+          } catch {
+            jwt = '';
+          }
+          const e = jwtExpiryOf(jwt, new Date(nowMs).toISOString());
+          return { jwtExpiresAt: e?.atIso ?? '', jwtExpired: e?.expired ?? false };
+        })(),
         deviceId: readBag(raw, a.id)['mcloud.smid.deviceId'] ?? '',
         disabled: a.disabled === true,
         // ⚠ 这两个键**是按账号的**（`KEY_SCOPE` 里登记成 `account`）。
@@ -386,12 +443,14 @@ function buildReadings(deps: RouteDeps): Record<string, unknown> {
     //   表现是"点了扫码登录，二维码框是空的"。
     login: (() => {
       const r = loginReading(deps.store, nowMs, (sid, did) =>
-        qrPayload(pcClient(loginPlatform(deps.store), did), sid),
+        qrPayload(pcClient(sessionPlatform(deps.store), did), sid),
       );
       return { ...r, qr: r.qr === null ? null : { ...r.qr, svg: qrSvg(r.qr.payload) } };
     })(),
     daily: {
-      // 「今天跑完了吗」看标记；「上次跑成什么样」看读数。两个都要，
+      // ⚠ `doneToday` 是**读数**，不是闸 —— 日常一天两趟都照跑（第二趟兜底，
+      //   见 `entries/daily.ts` 里那段）。界面上别把它说成"今天已完成（不会再跑）"。
+      // 「今天跑过没」看标记；「上次跑成什么样」看读数。两个都要，
       // 因为它们回答的是不同的问题（用户真正会问的是后面那个）。
       // ⚠ 用常量，**不要**写键名字面量 —— 那处原来是硬编码的
       //   `'mcloud.daily.done_date'`；改名/改分法时字面量不会跟着动。
@@ -409,14 +468,29 @@ function buildReadings(deps: RouteDeps): Record<string, unknown> {
       // 这个读数就是回答那个问题的。
       timing: timingReading(nowMs, exchangeLeadMs(deps.store)),
       // 到目标时刻那一场还有多久（界面第一行用）
-      toTargetMs: planTargetWait(nowMs, targetHourOf(deps.store)).ms,
+      toTargetMs: Math.max(0, (scheduleNextTargetMs(deps.store, nowMs) ?? nowMs) - nowMs),
       // 这一小时已经发过单了吗（那道防重复花豆的闸）
-      orderedThisHour: deps.store.getState(STATE_ORDERED_HOUR) === hourKey(nowMs),
+      orderedThisHour:
+        deps.store.getState(STATE_ORDERED_HOUR) ===
+        hourKey(scheduleNextTargetMs(deps.store, nowMs) ?? nowMs),
       // 目标时刻（几点抢）。`null` = 每小时都试。
       targetHour: targetHourOf(deps.store),
       leadMs: exchangeLeadMs(deps.store),
       plan: deps.store.getState('mcloud.exchange.plan') ?? '',
+      // 定时目标与手动目标分开存：页面上的「手动兑换」和「定时抢兑」不再互相改。
+      schedulePlan: deps.store.getState(STATE_SCHEDULE_PLAN) ?? '',
+      scheduleCron: deps.store.getState(STATE_SCHEDULE_CRON) ?? '',
+      scheduleMode: deps.store.getState(STATE_SCHEDULE_MODE) ?? 'daily',
+      scheduleUntil: deps.store.getState(STATE_SCHEDULE_UNTIL) ?? '',
+      scheduleOnceDate: deps.store.getState(STATE_SCHEDULE_ONCE_DATE) ?? '',
+      scheduleMaxRuns: scheduleMaxRuns(deps.store),
+      scheduleRuns: scheduleRuns(deps.store),
+      leadSec: scheduleLeadSec(deps.store),
       reading: readExchangeList(deps.store),
+      // 「选一件」那份缓存。**过期即清**发生在读的时候（本地写一格，不打上游）——
+      // 用户点开这一屏就是"今天第一次看"，那一份昨天的清单在这一刻作废。
+      picks: readPickCache(deps.store, nowIso),
+      subs: readSubscriptions(deps.store),
       verdictText: VERDICT_TEXT,
     },
     live: {
@@ -447,7 +521,13 @@ function buildReadings(deps: RouteDeps): Record<string, unknown> {
           enabled: claimEnabled(deps.store),
           step: st?.step ?? '',
           report: r,
-          line: r === null ? (claimEnabled(deps.store) ? '还没领过' : '领小红花没开启') : r.line,
+          // 这个开关只是"允许插件去领"；功能本身要服务端那边开（用户口径 2026-10-17）
+          line:
+            r === null
+              ? claimEnabled(deps.store)
+                ? '还没领过'
+                : '领小红花没开 —— 要先在服务端那边开启（这里的开关只是允许插件去领）'
+              : r.line,
         };
       })(),
     },
@@ -484,7 +564,8 @@ function buildReadings(deps: RouteDeps): Record<string, unknown> {
       // 与云盘业务主机不是同一台。混用的话指到 mock 之后登录仍然打真上游。
       loginBase: loadLoginBase(deps.store),
       loginPlatform: loginPlatform(deps.store),
-      loginDomain: deps.store.getState(STATE_LOGIN_DOMAIN) ?? '',
+      // ⚠ 现在是**当前账号**的域（账号级那一格），不是全局那格 —— 见 F-075
+      loginDomain: currentAccountDomain(deps.store) ?? '',
     },
   };
 }
@@ -515,18 +596,82 @@ function loadLoginBase(store: Pick<Store, 'getState'>): string {
   return store.getState(STATE_LOGIN_BASE) ?? '';
 }
 
-/** 一次登录请求：发出去 → 解析信封。**不抛**（把失败当读数带回来）。 */
+/** 一次登录请求：发出去 → 解析信封。**不抛**（把失败当读数带回来）。
+ *
+ *  ⚠⚠ `ok` 的含义是「**拿到了上游的信封**」，**不是**「登录成功」。
+ *
+ *  这里原来是 `if (!res.ok) return { env: null, … }`，而 `callOnce.ok` 只对
+ *  `code === 0` 成立 —— 于是登录这一族的**每一种**正常回答（`200059541`
+ *  未找到设备的二维码信息 = 还没扫到、验证码不对、登录失败…）都被压成
+ *  `env: null`，调用方每一处又都写 `if (r.env === null) → "没问到"`，
+ *  结果是**真上游永远显示"移动云盘没回应"**，而码好好地在那儿等着（F-068）。
+ *
+ *  判据只能是「**解析出信封没有**」（`res.env === undefined` 才是真没问到：
+ *  网络层失败、HTTP 非 200、或响应不是 JSON）。 */
 function loginCall(
   deps: RouteDeps,
   req: BuiltRequest,
 ): { ok: boolean; env: LoginEnvelope | null; error: string; tookMs: number } {
   const res = callOnce(deps.transport, req);
-  if (!res.ok) return { ok: false, env: null, error: res.error ?? `http ${res.status}`, tookMs: res.tookMs };
+  if (res.env === undefined) {
+    return { ok: false, env: null, error: res.error ?? `http ${res.status}`, tookMs: res.tookMs };
+  }
   try {
-    return { ok: true, env: parseLoginEnvelope(res.raw), error: '', tookMs: res.tookMs };
+    // ⚠ 用 `res.body`（完整），**不是** `res.raw`（截断到 500 字符，给日志用）。
+    //   登录成功的响应有 1–2 KB，拿截断过的去解析必然报
+    //   "Unexpected end of JSON input" —— 而那句话看着像"上游回了个空响应"（F-072）。
+    return { ok: true, env: parseLoginEnvelope(res.body), error: '', tookMs: res.tookMs };
   } catch (e) {
     return { ok: false, env: null, error: e instanceof Error ? e.message : String(e), tookMs: res.tookMs };
   }
+}
+
+// ══════════════════════ 自动过滑块（PC 与手机端共用）══════════════════════
+
+/** 滑块最多自动重试几轮。
+ *
+ *  ⚠ 这个接口**计失败次数**（`200059553` = 这一道题的尝试次数用完）—— 无限重试
+ *  会把配额烧光，然后真的要等。两轮够用：第一轮正常过，第二轮对付"题面取到就被
+ *  判作废"那种时序问题。 */
+const SLIDER_MAX_ATTEMPTS = 2;
+
+/** 带答案发一次的结果（两条登录路共用这一套语义）。 */
+type SliderSendResult =
+  | { kind: 'sent'; remainGetTimes: number | null }
+  | { kind: 'need-slider' }
+  | { kind: 'exhausted' }
+  | { kind: 'other'; note: string };
+
+/** **自动过滑块**：取新题 → 解坐标 → 带答案重发，最多两轮。
+ *
+ *  ⚠ 为什么要它（用户的原话：「你这是让我肉眼看像素吗」）：
+ *  参考实现是**全自动**的 —— `AppSmsNeedCaptcha` 之后自动取图、解坐标、带答案重发，
+ *  人只负责等短信（`mcloud-capture/docs/upstream/app-sms-login.md` §7.2：
+ *  「协议优先、H5 兜底」）。这一侧原来是"取图 → 界面摆一张图 → 提示用户再点一次
+ *  「发验证码」"，而**坐标本来就是解出来的**（`puzzleLeft` 里就是答案，
+ *  见 `sliderAnswer`），那张图对人没有任何用处。
+ *
+ *  ⚠ 每轮都取**新**题：失败之后旧挑战已经作废，拿旧答案再试只会一直失败。
+ *  ⚠ 失败不抛异常、也不谎报成功：把最后一轮的原话带回去。 */
+function autoPassSlider(
+  deps: RouteDeps,
+  logTag: string,
+  fetchAnswer: () => { answer: string } | { error: string },
+  sendWith: (answer: string) => SliderSendResult,
+): { ok: true; remainGetTimes: number | null } | { ok: false; error: string } {
+  for (let attempt = 1; attempt <= SLIDER_MAX_ATTEMPTS; attempt += 1) {
+    const got = fetchAnswer();
+    if ('error' in got) return { ok: false, error: got.error };
+    const r = sendWith(got.answer);
+    if (r.kind === 'sent') {
+      deps.log(`${logTag}：滑块过了（第 ${attempt} 轮），验证码已发出`);
+      return { ok: true, remainGetTimes: r.remainGetTimes };
+    }
+    if (r.kind === 'other') return { ok: false, error: r.note };
+    // need-slider / exhausted ⇒ 换一道新题再试（旧题已作废）
+    deps.log(`${logTag}：滑块没过（${r.kind}），换一道新题再试`);
+  }
+  return { ok: false, error: '滑块连着两轮没过 —— 过一会儿再点一次' };
 }
 
 /** 一次链路追踪 id（`x-yun-tid`）。每次请求新生成一个。 */
@@ -534,10 +679,20 @@ function newTid(): string {
   return uuidV4();
 }
 
-/** 平台：跟着当前账号的记忆走，没有就用 windows（版本号更"主流"）。 */
+/** **默认**形态（上次选过的那个），给弹窗预填与"还没选就先出码"用。
+ *
+ *  ⚠ 它**不是身份来源**。一次登录用哪种形态，是那一趟出码时冻进会话的那个值
+ *  （`sessionPlatform`）—— 这一格只回答"上次用的是哪种"。 */
 function loginPlatform(store: Pick<Store, 'getState'>): PcPlatform {
-  const pref = store.getState(STATE_LOGIN_PREF);
-  return pref === 'macos' ? 'macos' : 'windows';
+  return parsePcPlatform(store.getState(STATE_LOGIN_PREF)) ?? DEFAULT_PC_PLATFORM;
+}
+
+/** 这一趟登录真正用的形态：**会话里冻着的那一个**优先，没有会话才用默认。
+ *
+ *  ⚠ 出码 / 轮询 / 读数重画码都走这里，不许各写各的：码里的 `ver` 与轮询请求体的
+ *  `version` 必须出自同一个值，否则就是"码说 4.2.1、请求说 8.8.6"。 */
+function sessionPlatform(store: Pick<Store, 'getState'>): PcPlatform {
+  return loadQrSession(store)?.platform ?? loginPlatform(store);
 }
 
 /** 登录成功之后：解 `userInfo` → 拼凭据 → 落账号。
@@ -557,6 +712,10 @@ function adoptLoginResult(
   // 而"前缀不对"在任务里表现为"身份用错了"，离现场很远。
   prefix: string = PC_AUTH_PREFIX,
   key: string = LOGIN_AES_KEY,
+  // ⚠ 登录**这一趟用的形态**要跟着凭据一起落盘：凭据里那一格恒是 `pc`
+  //  （Windows 与 macOS 都是它），分不出 win/mac。不传的话账号卡上只能瞎标一个，
+  //  而"这条凭据当初是按哪种客户端登的"就永远丢了（见 `Account.pcPlatform`）。
+  pcPlatform?: PcPlatform,
 ): { ok: boolean; note: string; account?: { id: string; label: string } } {
   let info: Record<string, unknown>;
   try {
@@ -572,12 +731,24 @@ function adoptLoginResult(
   }
 
   const phone = typeof info['account'] === 'string' ? info['account'] : '';
-  const up = upsertAccount(deps.store, auth, deps.now(), phone === '' ? undefined : maskPhone(phone));
+  // ⚠ `userDomainId` **只有登录响应里才有** ⇒ 落到**这个账号**上（F-075 之前是全局一格，
+  //   换账号登录一次就把上一号的域盖掉）。
+  const domain = userDomainIdFrom(info);
+  const up = upsertAccount(
+    deps.store,
+    auth,
+    deps.now(),
+    phone === '' ? undefined : maskPhone(phone),
+    // ⚠ 词表在这里换一次（`windows` → `win`）—— 见 `accountForm` 的注释
+    pcPlatform === undefined ? undefined : accountForm(pcPlatform),
+    domain === '' ? undefined : domain,
+  );
   // 新登录的账号一律**启用**，并且**切成当前账号** —— 用户刚扫码进来，
   // 想的就是"用这个号"，还要他再去列表里点一次是把动作做两遍。
   selectAccount(deps.store, up.account.id, deps.now());
-  const domain = userDomainIdFrom(info);
-  if (domain !== '') deps.store.setState(STATE_LOGIN_DOMAIN, domain, deps.now());
+  // 全局那格已经不用了 —— 顺手清掉（老库里可能还留着上一版写进去的值，
+  // 而"两个地方都能读到域"正是这个结构问题本身）
+  deps.store.setState(STATE_LOGIN_DOMAIN, '', deps.now());
 
   clearLogin(deps.store);
   deps.log(`登录成功：${up.account.label}${up.created ? '（新账号）' : '（已有账号，凭据已更新）'}`);
@@ -623,6 +794,29 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
         // （运行记录只留最近 N 次，用户手上那个 id 可能已经被挤掉了）
         if (r === null) return json(404, { error: `没有这次运行（可能已经被新记录挤掉了）：${id}` });
         return json(200, r);
+      },
+    },
+
+    {
+      // 运行日志的**历史**（最近 N 行）。
+      //
+      // 终端面板平时靠面板的日志流（SSE），可那条流的底子是内存环 ——
+      // **面板一重启就空**。所以插件自己留了一份副本（`logRing.ts`），
+      // 界面首屏先读这一份，再接流看新的。
+      //
+      // ⚠ 这是"上一次跑到哪"的答案，不是日志系统本身：没有级别过滤、没有续传，
+      //   只留最近 400 行。别拿它当审计。
+      path: `${base}/log/tail`,
+      method: 'GET',
+      handler: (req) => {
+        const q = parseQuery(req.query);
+        const want = Number(q.limit ?? '200');
+        const limit = Number.isFinite(want) ? Math.min(Math.max(Math.trunc(want), 1), 400) : 200;
+        const all = readRing(deps.store);
+        return json(200, {
+          lines: all.slice(Math.max(0, all.length - limit)),
+          total: all.length,
+        });
       },
     },
 
@@ -742,12 +936,12 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
         json(200, {
           ...(() => {
             const r = loginReading(deps.store, Date.parse(deps.now()), (sid, did) =>
-              qrPayload(pcClient(loginPlatform(deps.store), did), sid),
+              qrPayload(pcClient(sessionPlatform(deps.store), did), sid),
             );
             // 二维码由**插件这一侧**渲染成 SVG（浏览器里没有二维码库）
             return { ...r, qr: r.qr === null ? null : { ...r.qr, svg: qrSvg(r.qr.payload) } };
           })(),
-          platform: loginPlatform(deps.store),
+          platform: sessionPlatform(deps.store),
         }),
     },
 
@@ -757,15 +951,20 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
       // 实测 1622 个 body 文件里也没有对应的取码接口。
       path: `${base}/login/qr/start`,
       method: 'POST',
-      handler: () => {
+      handler: (req) => {
+        const b = readBody(req) as { pcPlatform?: unknown };
+        // ⚠ 形态**在这一刻定下来**（用户出码前选的那个），冻进会话；
+        //   之后改界面上的选择也不会改到这张码 —— 想换就重新出码。
+        const platform = parsePcPlatform(b.pcPlatform) ?? loginPlatform(deps.store);
         const nowMs = Date.parse(deps.now());
-        const s = startQrSession(deps.store, nowMs, deps.now());
-        const c = pcClient(loginPlatform(deps.store), s.deviceId);
+        const s = startQrSession(deps.store, nowMs, deps.now(), platform);
+        const c = pcClient(s.platform, s.deviceId);
         const payload = qrPayload(c, s.sessionId);
-        deps.log('扫码登录：已出码，等手机扫');
+        deps.log(`扫码登录：已出码（${s.platform === 'macos' ? 'macOS' : 'Windows'}），等手机扫`);
         return json(200, {
           sessionId: s.sessionId,
           payload,
+          platform: s.platform,
           // **在插件这一侧编码**、界面只画格子：浏览器里没有二维码库，
           // 在那里现写一个等于把"码对不对"交给前端（见 crypto/qr.ts 的文件头）。
           svg: qrSvg(payload),
@@ -786,85 +985,189 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
         const s = loadQrSession(deps.store);
         if (s === null) return json(400, { error: '没有正在进行的扫码登录（先点「扫码登录」）' });
         const nowMs = Date.parse(deps.now());
+        // ⚠ 每一次回应都带上"这张码还剩多少毫秒"：界面上那一行要显示倒计时，
+        //   而轮询每 2 秒就会把那行重写一次 —— 不带这个数的话，第一次轮询之后
+        //   倒计时就消失了（用户判断"码还活着吗"全靠它）。
+        const remain = qrRemainingMs(s, nowMs);
         if (qrExpired(s, nowMs)) {
-          return json(200, { stop: true, ok: false, note: '二维码过期了，点「扫码登录」重新出码' });
+          return json(200, {
+            stop: true,
+            ok: false,
+            note: '二维码过期了，点「扫码登录」重新出码',
+            expiresInMs: 0,
+            pollMs: QR_POLL_MS,
+          });
         }
-        const c = pcClient(loginPlatform(deps.store), s.deviceId);
+        const c = pcClient(s.platform, s.deviceId);
         const r = loginCall(
           deps,
-          thirdloginRequest(c, newTid(), qrThirdloginBody(c, s.sessionId), loadLoginBase(deps.store)),
+          // ⚠ 用**会话里那一个** `x-yun-tid`（整趟复用），不要每轮新生成 ——
+          //   参考实现的会话表存的就是 `(qr, tid, owner)`（F-071）。
+          thirdloginRequest(c, s.tid, qrThirdloginBody(c, s.sessionId), loadLoginBase(deps.store)),
         );
-        if (!r.ok || r.env === null) {
-          // ⚠ 网络失败**不当作登录失败**：会话还在，用户再点一次就好。
-          return json(200, { stop: false, ok: true, note: `还没问到上游（${r.error}），再点一次`, retry: true });
+        // ⚠⚠ 判据是「**有没有拿到信封**」（`r.env === null`），**不是** `r.ok`。
+        //
+        //  `callOnce` 的 `ok` 只对 `code === 0` 成立，而扫码登录轮询里绝大多数响应
+        //  是 `code=200059541`（未找到设备的二维码信息 = **还没扫到**）—— 那是个
+        //  **正常状态**，不是失败。写成 `!r.ok` 的后果：真上游一直在这一支里，
+        //  界面上永远显示"移动云盘没回应（200）"，而码其实好好地在那儿等着。
+        //  （这个洞和 F-067 那个"没人轮询"是叠在一起的：轮询从来没跑过 ⇒ 这一支
+        //   也就从来没被真上游走到过。清空设置页、真的去打上游之后当场露出来。）
+        if (r.env === null) {
+          // ⚠ 到这儿才算"没问到"：网络失败**不当作登录失败**，会话还在，再点一次就好。
+          //
+          // ⚠ 这句话是**给用户看的**（它显示在二维码下面那一行）：
+          //   写「移动云盘」而不是「上游」；原始错误压一下 —— 能抠出状态码就
+          //   写「（404）」，抠不出来才原样带上（docs/ui-wording.md：
+          //   「HTTP 502 不算说明」，但也要求留下原始文本，别只回一个数字）。
+          //   ⚠ 只认 `HTTP 502` / `http status: 404` 这两种写法里的数字：
+          //   宽松地抓"头三位数字"会把上游的 `code=200059541` 抓成「200」，
+          //   于是界面上一句"移动云盘没回应（200）"看着像上游好好的（F-068）。
+          //   ⚠ **空响应**单独说（F-070）：真机上实测到移动云盘偶尔回一个空体，
+          //   而 `Unexpected end of JSON input` 这种解析器原话贴在二维码下面
+          //   只会让人以为是自己哪里填错了。原文进日志。
+          //   ⚠ **连不上**也单独说（F-071）：`io: Connection refused (os error 61)`
+          //   是宿主那一层的话，用户看了只会以为是自己弄坏了什么。
+          const err = r.error ?? '没有回应';
+          deps.log(`扫码登录：问服务端没成（${err}）`);
+          const empty = /不是 JSON/.test(err);
+          const offline = /Connection refused|connection reset|io: |dns error|timed out|timeout/i.test(err);
+          const code = /\b(?:HTTP|status:)\s*(\d{3})\b/.exec(err)?.[1];
+          const why = empty
+            ? '移动云盘回了个空响应 —— 过一会儿再点一次'
+            : offline
+              ? '连不上移动云盘 —— 过一会儿再点一次'
+              : `移动云盘没回应（${code ?? err}），过一会儿再点一次`;
+          return json(200, {
+            stop: false,
+            ok: true,
+            note: why,
+            retry: true,
+            expiresInMs: remain,
+            pollMs: QR_POLL_MS,
+          });
         }
         const out = classifyPoll(r.env);
         const applied = applyPoll(s, out, nowMs);
         saveQrSession(deps.store, applied.session, deps.now());
         if (applied.encrypted !== undefined) {
-          const adopted = adoptLoginResult(deps, applied.encrypted, '扫码登录成功');
+          const adopted = adoptLoginResult(
+            deps,
+            applied.encrypted,
+            '扫码登录成功',
+            PC_AUTH_PREFIX,
+            LOGIN_AES_KEY,
+            s.platform,
+          );
           return json(200, { ...applied, ...adopted, stop: true });
         }
-        if (applied.stop) deps.log(`扫码登录：${applied.note}`);
-        return json(200, { stop: applied.stop, ok: applied.ok, note: applied.note, scanned: applied.session.scanned });
+        // ⚠ 记日志的判据是「**结论变了**」，并且要带上上游的原话（`code`）。
+        //
+        //   原来只在 `applied.stop` 时记一条：于是"手机扫到了"这一步在日志里**没有痕迹**，
+        //   真机上出问题只能靠猜（2026-10-17 排"扫了没用"就卡在这里：日志里只有出码
+        //   与超时，中间那几十次轮询到底说了什么，一个字都没留下）。
+        //   按"结论变了"记既补上了这条链，又不会每 2 秒刷一行。
+        if (applied.note !== s.lastNote) {
+          const raw = `${r.env.code ?? '无 code'}${r.env.message ? ` ${r.env.message}` : ''}`;
+          deps.log(`扫码登录：${applied.note}（服务端 code=${raw}）`);
+        }
+        return json(200, {
+          stop: applied.stop,
+          ok: applied.ok,
+          note: applied.note,
+          scanned: applied.session.scanned,
+          // ⚠ 终态（过期 / 会话对不上 / 限流）时剩余时间必须给 0：
+          //   否则界面上会出现「二维码过期了 · 剩 119 秒」这种自相矛盾的一行
+          //   （实测到过：出码后第一次轮询恰好撞上上游回 `200059542`）。
+          expiresInMs: applied.stop ? 0 : remain,
+          pollMs: QR_POLL_MS,
+        });
       },
     },
+
 
     // ── 登录：短信 ──────────────────────────────────────────────────
     {
       path: `${base}/login/sms/start`,
       method: 'POST',
       handler: (req) => {
-        const b = readBody(req) as { phone?: unknown };
+        const b = readBody(req) as { phone?: unknown; pcPlatform?: unknown };
         const phone = typeof b.phone === 'string' ? b.phone.trim() : '';
         if (!/^1\d{10}$/.test(phone)) return json(400, { error: '手机号要 11 位、以 1 开头' });
-        const s = startSmsSession(deps.store, phone, Date.parse(deps.now()), deps.now());
-        return json(200, { phone: s.phone, note: '点「发验证码」' });
+        // 形态同样在这一刻冻进会话（发码 / 取滑块 / 提交三步同一套档案）
+        const platform = parsePcPlatform(b.pcPlatform) ?? loginPlatform(deps.store);
+        const s = startSmsSession(deps.store, phone, Date.parse(deps.now()), deps.now(), platform);
+        return json(200, { phone: s.phone, platform: s.platform, note: '点「发验证码」' });
       },
     },
     {
-      // 发码。**可能被风控拦下** ⇒ 回 `need-slider`，那时界面要去取图。
+      // 发码。**可能被风控拦下** ⇒ 这一侧**自己去过滑块**，人只负责等短信。
       path: `${base}/login/sms/send`,
       method: 'POST',
       handler: () => {
         const s = loadSmsSession(deps.store);
         if (s === null) return json(400, { error: '没有正在进行的短信登录（先填手机号）' });
-        const c = pcClient(loginPlatform(deps.store), loadDeviceId(deps.store, deps.now()));
-        // 已经有滑块挑战 ⇒ 带上去（这是**异常路径**，首次发码被拦下才走）
-        let body: Record<string, unknown>;
-        if (s.slider !== null) {
-          let answer: string;
-          try {
-            answer = sliderAnswer(s.slider);
-          } catch (e) {
-            return json(400, { error: `滑块图解不开：${e instanceof Error ? e.message : String(e)}` });
+        const c = pcClient(s.platform, loadDeviceId(deps.store, deps.now()));
+        const base = loadLoginBase(deps.store);
+
+        // 发一次（`answer` 为空 = 不带滑块答案）
+        const attempt = (answer?: string): SliderSendResult => {
+          const body =
+            answer === undefined
+              ? sendSmsCodeBody(c, s.phone, s.random)
+              : sendSmsCodeBodyWithSlider(c, s.phone, s.random, answer);
+          const r = loginCall(deps, sendSmsCodeRequest(c, newTid(), body, base));
+          // ⚠ 判据是「**有没有拿到信封**」（`r.env === null`）：非零 `code` 是
+          //   **上游的回答**，要交给分类去说人话（"要过滑块" / "验证码不对"），
+          //   不是网络故障。写成 `!r.ok` 的话，真上游的每一种回答都会被压成一句
+          //   "发码请求没成功"，而那几句人话（分类）就成了永远走不到的死代码。
+          if (r.env === null) return { kind: 'other', note: `发码请求没成功：${r.error}` };
+          const out = classifySendSms(r.env);
+          if (out.kind === 'sent') return { kind: 'sent', remainGetTimes: out.remainGetTimes };
+          if (out.kind === 'need-slider') return { kind: 'need-slider' };
+          if (out.kind === 'slider-exhausted') return { kind: 'exhausted' };
+          return { kind: 'other', note: `发码没成：${out.message || `code=${out.code}`}` };
+        };
+
+        // 取一道**新**题并解出坐标（缺口坐标是解出来的，不是量出来的）
+        const fetchAnswer = (): { answer: string } | { error: string } => {
+          const pr = loginCall(deps, sliderPuzzleRequest(c, newTid(), sliderPuzzleBody(s.phone), base));
+          if (pr.env === null) return { error: `取滑块没成功：${pr.error}` };
+          if (!isSuccessCode(pr.env.code)) {
+            return { error: `取滑块被拒：${pr.env.message || `code=${pr.env.code}`}` };
           }
-          body = sendSmsCodeBodyWithSlider(c, s.phone, s.random, answer);
+          try {
+            const puzzle = parseSliderPuzzle(pr.env);
+            // 会话里留一份：界面上不画它，但排障时能对得上"这一轮用的哪道题"
+            saveSmsSession(deps.store, { ...s, slider: puzzle }, deps.now());
+            return { answer: sliderAnswer(puzzle) };
+          } catch (e) {
+            return { error: `滑块图解不开：${e instanceof Error ? e.message : String(e)}` };
+          }
+        };
+
+        let sent: { remainGetTimes: number | null } | null = null;
+        const first = attempt();
+        if (first.kind === 'sent') {
+          sent = { remainGetTimes: first.remainGetTimes };
+        } else if (first.kind === 'other') {
+          return json(200, { ok: false, note: first.note });
         } else {
-          body = sendSmsCodeBody(c, s.phone, s.random);
+          // 要过滑块（或旧题作废）⇒ **自动**取新题、解坐标、带答案重发
+          deps.log(`短信登录：要过滑块（${first.kind === 'exhausted' ? '旧图已作废' : '首次发码被拦'}），自动过`);
+          const passed = autoPassSlider(deps, '短信登录', fetchAnswer, attempt);
+          if (!passed.ok) return json(200, { ok: false, note: passed.error });
+          sent = { remainGetTimes: passed.remainGetTimes };
         }
-        const r = loginCall(deps, sendSmsCodeRequest(c, newTid(), body, loadLoginBase(deps.store)));
-        if (!r.ok || r.env === null) return json(502, { error: `发码请求没成功：${r.error}` });
-        const out = classifySendSms(r.env);
-        if (out.kind === 'sent') {
-          const next = { ...s, sent: true, lastNote: '验证码已发出' };
-          saveSmsSession(deps.store, next, deps.now());
-          deps.log('短信登录：验证码已发出');
-          return json(200, { sent: true, remainGetTimes: out.remainGetTimes, note: '看手机短信，把 6 位验证码填进来' });
-        }
-        if (out.kind === 'need-slider' || out.kind === 'slider-exhausted') {
-          // ⚠ 两种都要**重新取图**：`slider-exhausted` 是"同一张图校验失败次数超限"，
-          //   旧挑战已经作废，复用它只会一直失败到把配额烧光。
-          const next = setSmsSlider(deps.store, s, null, deps.now());
-          saveSmsSession(deps.store, next, deps.now());
-          deps.log(`短信登录：要过滑块（${out.kind === 'slider-exhausted' ? '旧图已作废，' : ''}去取新图）`);
-          return json(200, {
-            needSlider: true,
-            exhausted: out.kind === 'slider-exhausted',
-            note: out.kind === 'slider-exhausted' ? '这张滑块图作废了，重新取一张' : '要先过滑块，去取图',
-          });
-        }
-        return json(200, { ok: false, note: `发码没成：${out.message || `code=${out.code}`}`, code: out.code });
+
+        const next = { ...s, sent: true, lastNote: '验证码已发出' };
+        saveSmsSession(deps.store, next, deps.now());
+        deps.log('短信登录：验证码已发出');
+        return json(200, {
+          sent: true,
+          remainGetTimes: sent.remainGetTimes,
+          note: '看手机短信，把 6 位验证码填进来',
+        });
       },
     },
     {
@@ -874,12 +1177,12 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
       handler: () => {
         const s = loadSmsSession(deps.store);
         if (s === null) return json(400, { error: '没有正在进行的短信登录（先填手机号）' });
-        const c = pcClient(loginPlatform(deps.store), loadDeviceId(deps.store, deps.now()));
+        const c = pcClient(s.platform, loadDeviceId(deps.store, deps.now()));
         const r = loginCall(
           deps,
           sliderPuzzleRequest(c, newTid(), sliderPuzzleBody(s.phone), loadLoginBase(deps.store)),
         );
-        if (!r.ok || r.env === null) return json(502, { error: `取滑块失败：${r.error}` });
+        if (r.env === null) return json(502, { error: `取滑块失败：${r.error}` });
         if (!isSuccessCode(r.env.code)) {
           return json(200, { ok: false, note: `取滑块被拒：${r.env.message || `code=${r.env.code}`}` });
         }
@@ -894,7 +1197,7 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
         try {
           answer = sliderAnswer(puzzle);
         } catch (e) {
-          return json(502, { error: `滑块缺口解不开（上游换字段了？）：${e instanceof Error ? e.message : String(e)}` });
+          return json(502, { error: `滑块缺口解不开（服务端换字段了？）：${e instanceof Error ? e.message : String(e)}` });
         }
         setSmsSlider(deps.store, s, puzzle, deps.now());
         return json(200, {
@@ -918,15 +1221,22 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
         if (!/^\d{4,8}$/.test(code)) return json(400, { error: '验证码要 4–8 位数字' });
         const s = loadSmsSession(deps.store);
         if (s === null) return json(400, { error: '没有正在进行的短信登录（先填手机号）' });
-        const c = pcClient(loginPlatform(deps.store), loadDeviceId(deps.store, deps.now()));
+        const c = pcClient(s.platform, loadDeviceId(deps.store, deps.now()));
         const r = loginCall(
           deps,
           thirdloginRequest(c, newTid(), smsThirdloginBody(c, s.phone, code), loadLoginBase(deps.store)),
         );
-        if (!r.ok || r.env === null) return json(502, { error: `提交请求没成功：${r.error}` });
+        if (r.env === null) return json(502, { error: `提交请求没成功：${r.error}` });
         const out = classifyPoll(r.env);
         if (out.kind === 'success') {
-          const adopted = adoptLoginResult(deps, out.encrypted, '短信登录成功');
+          const adopted = adoptLoginResult(
+            deps,
+            out.encrypted,
+            '短信登录成功',
+            PC_AUTH_PREFIX,
+            LOGIN_AES_KEY,
+            s.platform,
+          );
           return json(200, { ...adopted, stop: true });
         }
         const note =
@@ -948,9 +1258,10 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
       handler: (req) => {
         const b = readBody(req) as { task?: unknown; all?: unknown; ids?: unknown };
         const task = typeof b.task === 'string' ? b.task : '';
-        // ⚠ `TASK_NAMES` 是 `readonly ['日常', …]` 字面量元组，`.includes(string)`
-        //   在类型上过不去 —— 这里就是要问"这个任意字符串在不在里面"。
-        if (!(TASK_NAMES as readonly string[]).includes(task)) {
+        // ⚠ 校验的是**排期任务名**（`日常`/`兑换`/`直播`），不是内部步骤名。
+        //   这里曾经误用 `TASK_NAMES`（那是 `sign`/`receive` 那一套）⇒ 保存账号选择
+        //   每次都回「不认识的任务：日常」，而界面上只看到"点了没反应"。
+        if (!(SCHEDULED_TASKS as readonly string[]).includes(task)) {
           return json(400, { error: `不认识的任务：${task || '(空)'}` });
         }
         const all = b.all === true;
@@ -995,38 +1306,73 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
         if (a === null) return json(400, { error: '没有正在进行的手机端登录（先填手机号）' });
         const deviceId = loadDeviceId(deps.store, deps.now());
         const nowMs = Date.parse(deps.now());
-        // 已经有题面 ⇒ 带答案重发（首次发码被风控拦下才走这条）
-        let puzzle = '';
-        if (a.slider !== null) {
-          try {
-            puzzle = puzzleVerfycodeEncrypt(sliderAnswer(a.slider));
-          } catch (e) {
-            return json(400, { error: `滑块图解不开：${e instanceof Error ? e.message : String(e)}` });
-          }
-        }
-        const r = loginCall(deps, appSendSmsCodeRequest(deviceId, nowMs, a.phone, puzzle));
-        if (!r.ok || r.env === null) return json(502, { error: `发码请求没成功：${r.error}` });
 
-        const out = classifyAppSendSms(r.env);
-        if (out.kind === 'sent') {
-          saveAppSession(deps.store, { ...a, sent: true, lastNote: '验证码已发出' }, deps.now());
-          return json(200, {
-            ok: true,
-            sent: true,
-            remainGetTimes: out.remainGetTimes,
-            note:
-              out.remainGetTimes === null
-                ? '验证码已发出'
-                : `验证码已发出（今天还能发 ${out.remainGetTimes} 次）`,
-          });
+        // 发一次（`answer` 为空 = 不带滑块答案）
+        const attempt = (answer?: string): SliderSendResult => {
+          const puzzle = answer === undefined ? '' : puzzleVerfycodeEncrypt(answer);
+          const r = loginCall(
+            deps,
+            appSendSmsCodeRequest(deviceId, nowMs, a.phone, puzzle, loadLoginBase(deps.store)),
+          );
+          if (r.env === null) return { kind: 'other', note: `发码请求没成功：${r.error}` };
+          const out = classifyAppSendSms(r.env);
+          if (out.kind === 'sent') return { kind: 'sent', remainGetTimes: out.remainGetTimes };
+          if (out.kind === 'need-captcha') return { kind: 'need-slider' };
+          if (out.kind === 'slider-exhausted') return { kind: 'exhausted' };
+          return { kind: 'other', note: out.note };
+        };
+
+        // 取一道**新**题并解出坐标（App 那条路径与 PC 同一个 `/user/verfycode`）
+        const fetchAnswer = (): { answer: string } | { error: string } => {
+          const pr = loginCall(
+            deps,
+            appPost(
+              APP_SLIDER_PUZZLE_PATH,
+              JSON.stringify(sliderPuzzleBody(a.phone)),
+              deviceId,
+              nowMs,
+              loadLoginBase(deps.store),
+            ),
+          );
+          if (pr.env === null) return { error: `取滑块没成功：${pr.error}` };
+          if (!isSuccessCode(pr.env.code)) {
+            return { error: `取滑块被拒：${pr.env.message || `code=${pr.env.code}`}` };
+          }
+          try {
+            const puzzle = parseSliderPuzzle(pr.env);
+            saveAppSession(deps.store, { ...a, slider: puzzle }, deps.now());
+            return { answer: sliderAnswer(puzzle) };
+          } catch (e) {
+            return { error: `滑块图解不开：${e instanceof Error ? e.message : String(e)}` };
+          }
+        };
+
+        let sent: { remainGetTimes: number | null } | null = null;
+        const first = attempt();
+        if (first.kind === 'sent') {
+          sent = { remainGetTimes: first.remainGetTimes };
+        } else if (first.kind === 'other') {
+          return json(200, { ok: false, sent: false, note: first.note });
+        } else {
+          // ⚠ `exhausted` **不是**"账号被限流了"，而是"这一道题的尝试次数用完了"
+          //   ⇒ 换一道新题。这一侧**自己去过**，不让用户拖。
+          deps.log(`手机端登录：要过滑块（${first.kind === 'exhausted' ? '旧图已作废' : '首次发码被拦'}），自动过`);
+          const passed = autoPassSlider(deps, '手机端登录', fetchAnswer, attempt);
+          if (!passed.ok) return json(200, { ok: false, sent: false, note: passed.error });
+          sent = { remainGetTimes: passed.remainGetTimes };
         }
-        if (out.kind === 'need-captcha' || out.kind === 'slider-exhausted') {
-          // ⚠ `slider-exhausted` **不是**"账号被限流了"，而是"这一道题的尝试次数
-          //   用完了" ⇒ 正确的反应是**重取一道新题**，不是拿旧答案再试。
-          saveAppSession(deps.store, { ...a, slider: null, lastNote: out.note }, deps.now());
-          return json(200, { ok: false, needSlider: true, note: out.note });
-        }
-        return json(200, { ok: false, sent: false, note: out.note });
+
+        saveAppSession(deps.store, { ...a, sent: true, lastNote: '验证码已发出' }, deps.now());
+        deps.log('手机端登录：验证码已发出');
+        return json(200, {
+          ok: true,
+          sent: true,
+          remainGetTimes: sent.remainGetTimes,
+          note:
+            sent.remainGetTimes === null
+              ? '验证码已发出'
+              : `验证码已发出（今天还能发 ${sent.remainGetTimes} 次）`,
+        });
       },
     },
     {
@@ -1040,9 +1386,15 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
         //（`/user/verfycode`）。差别只在**请求头**是 App 那套。
         const r = loginCall(
           deps,
-          appPost(APP_SLIDER_PUZZLE_PATH, JSON.stringify(sliderPuzzleBody(a.phone)), deviceId, Date.parse(deps.now())),
+          appPost(
+            APP_SLIDER_PUZZLE_PATH,
+            JSON.stringify(sliderPuzzleBody(a.phone)),
+            deviceId,
+            Date.parse(deps.now()),
+            loadLoginBase(deps.store),
+          ),
         );
-        if (!r.ok || r.env === null) return json(502, { error: `取题面没成功：${r.error}` });
+        if (r.env === null) return json(502, { error: `取题面没成功：${r.error}` });
         let p: SliderPuzzle;
         try {
           p = parseSliderPuzzle(r.env);
@@ -1069,9 +1421,17 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
         const deviceId = loadDeviceId(deps.store, deps.now());
         const r = loginCall(
           deps,
-          appThirdloginRequest(deviceId, Date.parse(deps.now()), a.phone, code, a.random),
+          appThirdloginRequest(
+            deviceId,
+            Date.parse(deps.now()),
+            a.phone,
+            code,
+            a.random,
+            undefined,
+            loadLoginBase(deps.store),
+          ),
         );
-        if (!r.ok || r.env === null) return json(502, { error: `提交请求没成功：${r.error}` });
+        if (r.env === null) return json(502, { error: `提交请求没成功：${r.error}` });
 
         const out = classifyAppLogin(r.env);
         if (out.kind === 'success') {
@@ -1089,26 +1449,36 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
       path: `${base}/login/pwd`,
       method: 'POST',
       handler: (req) => {
-        const b = readBody(req) as { phone?: unknown; password?: unknown };
+        const b = readBody(req) as { phone?: unknown; password?: unknown; pcPlatform?: unknown };
         const phone = typeof b.phone === 'string' ? b.phone.trim() : '';
         const password = typeof b.password === 'string' ? b.password : '';
         if (phone === '') return json(400, { error: '要填手机号' });
         if (password === '') return json(400, { error: '要填口令' });
-        const c = pcClient(loginPlatform(deps.store), loadDeviceId(deps.store, deps.now()));
+        // ⚠ 这里原来**没读** `pcPlatform`（界面一直在发它）—— 于是"选了 macOS"
+        //   在账密这一路上静默变成 Windows。形态是**请求里带的那一个**。
+        const platform = parsePcPlatform(b.pcPlatform) ?? loginPlatform(deps.store);
+        const c = pcClient(platform, loadDeviceId(deps.store, deps.now()));
         const r = loginCall(
           deps,
           thirdloginRequest(c, newTid(), passwordThirdloginBody(c, phone, password), loadLoginBase(deps.store)),
         );
-        if (!r.ok || r.env === null) return json(502, { error: `登录请求没成功：${r.error}` });
+        if (r.env === null) return json(502, { error: `登录请求没成功：${r.error}` });
         const out = classifyPoll(r.env);
         if (out.kind === 'success') {
-          const adopted = adoptLoginResult(deps, out.encrypted, '账密登录成功');
+          const adopted = adoptLoginResult(
+            deps,
+            out.encrypted,
+            '账密登录成功',
+            PC_AUTH_PREFIX,
+            LOGIN_AES_KEY,
+            platform,
+          );
           return json(200, { ...adopted, stop: true });
         }
         // ⚠ 错误信息里**不许回显口令**（日志与响应都不行）
         const note =
           r.env.code === CODES.LOGIN_FAILED
-            ? '上游说登录失败 —— 手机号或口令不对（也可能是设备头被拒）'
+            ? '服务端说登录失败 —— 手机号或口令不对（也可能是设备头被拒）'
             : `登录没成：${out.kind === 'other' ? out.message || `code=${out.code}` : out.kind}`;
         return json(200, { ok: false, stop: true, note });
       },
@@ -1195,7 +1565,7 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
       method: 'GET',
       handler: () =>
         json(200, {
-          baseUrl: loadBaseUrl(deps.store) || '(真上游)',
+          baseUrl: loadBaseUrl(deps.store) || '(真主机)',
           liveUrl: loadLiveUrl(deps.store),
           liveUrlDefault: XIAOHONGSHU_KOULING_PROFILE_URL,
           // 门的两个主机（user-njs / v.cmcc-cs.cn）—— 一个口子，见 liveGateTask.loadGateBase
@@ -1231,8 +1601,8 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
             return json(400, { error: 'baseUrl 要以 http:// 或 https:// 开头（清空就传空串）' });
           }
           deps.store.setState(STATE_BASE_URL, v.replace(/\/+$/, ''), deps.now());
-          deps.log(v ? `上游基址已改为 ${v}` : '上游基址已恢复为真上游');
-          out.baseUrl = v || '(真上游)';
+          deps.log(v ? `接口基址已改为 ${v}` : '接口基址已恢复成真主机');
+          out.baseUrl = v || '(真主机)';
         }
 
         // ── 兑换的两个时间参数（③-3）───────────────────────────────
@@ -1288,8 +1658,10 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
           out.loginBase = v || '(真主机)';
         }
 
+        // 形态的**记忆**（"上次用的是哪种"）。写它的只有添加账号弹窗那两个按钮 ——
+        // 它是预填值，不是身份来源：一次登录用哪种形态，是出码时冻进会话的那一个。
         if ('loginPlatform' in body) {
-          const v = body.loginPlatform === 'macos' ? 'macos' : 'windows';
+          const v = parsePcPlatform(body.loginPlatform) ?? DEFAULT_PC_PLATFORM;
           deps.store.setState(STATE_LOGIN_PREF, v, deps.now());
           out.loginPlatform = v;
         }
@@ -1300,7 +1672,7 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
             return json(400, { error: 'gateBase 要以 http:// 或 https:// 开头（清空 = 用真主机）' });
           }
           saveGateBase(deps.store, v, deps.now());
-          deps.log(v ? `直播日程的上游已改为 ${v}` : '直播日程的上游已恢复为真主机');
+          deps.log(v ? `直播日程的接口基址已改为 ${v}` : '直播日程的接口基址已恢复成真主机');
           out.gateBase = v || '(真主机)';
         }
 
@@ -1455,7 +1827,7 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
           // 写那半（领小红花）：默认关，开关在这里
           claim: {
             enabled: claimEnabled(deps.store),
-            codes: collectCodes(deps.store),
+            codes: collectCodes(deps.store, Date.parse(deps.now())),
             state: loadDrawState(deps.store),
           },
         }),
@@ -1532,15 +1904,32 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
       // **推进一步**（一次调用一个上游请求）。界面上的按钮循环调这里直到 done。
       path: `${base}/h5/step`,
       method: 'POST',
-      handler: () => {
+      handler: (req) => {
+        // ⚠ 可以**指定账号**（`{id}`）：卡片上那个「连接」是给**那一条**连的，
+        //   而默认那条路用的是"当前账号"。不指定时行为与以前完全一样。
+        const b = readBody(req) as { id?: unknown };
+        const id = typeof b.id === 'string' ? b.id : '';
+        const one = id === '' ? deps.store : scoped(rawStoreOf(deps.store), id);
+        // ⚠ `runExchangeStep` 只**接着走**已有那一轮，它不会**开始**一轮 ——
+        //   开始是 `startExchange`。少了这一句，"连接"永远回"没有待换票的任务"。
+        // ⚠ 上一轮 `done`（票过期要再换一张）时也要开新的 —— 只判 `null` 的话，
+        //   票一过期这里就永远回"没有待换票的任务"。
+        // ⚠ 只有"真需要换"时才开新一轮（`needExchange` 会看票新不新鲜）——
+        //   否则每点一次都会白换一张票。
+        if (needExchange(one, Date.now())) {
+          const st0 = loadExchange(one);
+          if (st0 === null || st0.step === 'done') {
+            startExchange(one, loadAuthRaw(one), deps.now());
+          }
+        }
         const r = runExchangeStep({
-          store: deps.store,
+          store: one,
           transport: deps.transport,
           nowIso: deps.now(),
           baseUrl: loadBaseUrl(deps.store),
         });
-        deps.log(`换票：${r.note}`);
-        return json(200, { ...r, exchange: loadExchange(deps.store) });
+        deps.log(`换票${id === '' ? '' : `（${id}）`}：${r.note}`);
+        return json(200, { ...r, exchange: loadExchange(one) });
       },
     },
     {
@@ -1550,7 +1939,7 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
       // ⚠ 为什么不做成"现在就发一枪"：下单**不可逆**（没有幂等键，发出去就扣真豆）。
       //   用户点这个按钮想知道的是「**现在能不能兑**」—— 判据过不过、余额够不够、
       //   滑块算不算得出来。这些**不需要发那一枪**就能答。
-      //   真下单只走定时那一场（`@every 10s` + 时间闸 + 压整点）。
+      //   真下单走界面上的「立即兑换」（会二次确认）或定时那一场（时间闸 + 压整点）。
       path: `${base}/exchange/try`,
       method: 'POST',
       handler: () => {
@@ -1569,23 +1958,146 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
       },
     },
     {
+      // 刷新「选一件」那份缓存 —— 界面上那颗「刷新清单」，以及"今天还没读到过"时自动打一次。
+      //
+      // ⚠ 只发**清单那一枪**（只读）：不碰余额、不碰滑块、更不下单。
+      // 与 `/exchange/try` 的区别就在这个"轻"字上 —— 干跑是把整条链走到"只差发枪"，
+      // 而这一条只是把清单重新拿一遍（用户点开界面不该惊动整条链）。
+      path: `${base}/exchange/picks`,
+      method: 'POST',
+      handler: () => {
+        const d = {
+          store: deps.store,
+          transport: deps.transport,
+          nowIso: deps.now(),
+          baseUrl: loadBaseUrl(deps.store),
+        };
+        const r = runExchangeList(d);
+        deps.log(`兑换清单：${r.note}`);
+        return json(200, { ...r, picks: readPickCache(d.store, d.nowIso) });
+      },
+    },
+    {
+      // 「我关注的奖品」—— 读。
+      path: `${base}/exchange/subs`,
+      method: 'GET',
+      handler: () => json(200, { ok: true, subs: readSubscriptions(deps.store) }),
+    },
+    {
+      // 「我关注的奖品」—— 开/关。按 id（有）或名字（没有）定位。
+      path: `${base}/exchange/subs`,
+      method: 'POST',
+      handler: (req) => {
+        const b = readBody(req) as { id?: unknown; name?: unknown; on?: unknown };
+        const name = typeof b.name === 'string' ? b.name.trim() : '';
+        if (name === '') return json(400, { error: '要传奖品名字（name）' });
+        const id =
+          typeof b.id === 'number' && Number.isFinite(b.id)
+            ? Math.trunc(b.id)
+            : typeof b.id === 'string' && /^\d+$/.test(b.id.trim())
+              ? Number(b.id.trim())
+              : undefined;
+        const on = b.on !== false;
+        const subs = toggleSubscription(
+          deps.store,
+          id === undefined ? { name } : { id, name },
+          on,
+          deps.now(),
+        );
+        deps.log(`兑换关注：${on ? '关注' : '取消关注'}「${name}」`);
+        return json(200, {
+          ok: true,
+          subs,
+          note: on ? `已关注「${name}」` : `已取消关注「${name}」`,
+        });
+      },
+    },
+    {
       // 兑换下单 —— **不可逆**（真扣豆）。起单只是写字（**不发请求**），
       // 后面每次 `step` 走一步、发一枪。见 tasks/exchangeOrder.ts 的枪序。
       path: `${base}/exchange/order`,
       method: 'POST',
       handler: (req) => {
-        const b = readBody(req) as { query?: unknown; action?: unknown };
+        const b = readBody(req) as {
+          query?: unknown;
+          action?: unknown;
+          mode?: unknown;
+          until?: unknown;
+          onceDate?: unknown;
+          maxRuns?: unknown;
+          leadSec?: unknown;
+          cron?: unknown;
+        };
         const d = { store: deps.store, transport: deps.transport, nowIso: deps.now(), baseUrl: loadBaseUrl(deps.store) };
         if (b.action === 'clear') {
           clearOrder(d);
           return json(200, { ok: true, note: '这一单已清掉' });
         }
+        // 只写「手动目标」，不起单。手动区的「保存手动目标」用它；
+        // 「立即兑换」仍走下面的 `query`（会 startOrder）。
+        if (b.action === 'manual-plan') {
+          const query = typeof b.query === 'string' ? b.query.trim() : '';
+          if (query === '') return json(400, { ok: false, error: '手动目标不能为空' });
+          deps.store.setState('mcloud.exchange.plan', query, d.nowIso);
+          deps.log(`手动目标：${query}`);
+          return json(200, { ok: true, note: `手动目标已设为「${query}」` });
+        }
+        // 只写「定时目标」，**不**起单、不发请求。定时弹窗用它；
+        // 手动兑换那条仍走下面的 `query`（会 startOrder）。
+        if (b.action === 'plan') {
+          const query = typeof b.query === 'string' ? b.query.trim() : '';
+          if (query === '') return json(400, { ok: false, error: '定时目标不能为空' });
+          const cron = typeof b.cron === 'string' ? b.cron.trim() : '';
+          if (cron === '') return json(400, { ok: false, error: 'cron 表达式不能为空' });
+          try {
+            parseCron(cron);
+          } catch (e) {
+            return json(400, { ok: false, error: `cron 不对：${(e as Error).message}` });
+          }
+          const until = typeof b.until === 'string' ? b.until.trim() : '';
+          if (until !== '' && !/^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2})?$/.test(until)) {
+            return json(400, { ok: false, error: '截止时间要写成 YYYY-MM-DD 或 YYYY-MM-DDTHH:mm' });
+          }
+          const maxRunsRaw = Number(b.maxRuns ?? 0);
+          if (!Number.isInteger(maxRunsRaw) || maxRunsRaw < 0 || maxRunsRaw > 999) {
+            return json(400, { ok: false, error: '次数要是 0~999 的整数（0 = 不限）' });
+          }
+          const leadRaw = Number(b.leadSec ?? 120);
+          if (!Number.isFinite(leadRaw) || leadRaw < 60 || leadRaw > 300) {
+            return json(400, { ok: false, error: '提前触发要在 60~300 秒之间' });
+          }
+          const gen = String(Date.now());
+          deps.store.setState(STATE_SCHEDULE_PLAN, query, d.nowIso);
+          deps.store.setState(STATE_SCHEDULE_CRON, cron, d.nowIso);
+          deps.store.setState(STATE_SCHEDULE_UNTIL, until, d.nowIso);
+          deps.store.setState(STATE_SCHEDULE_MAX_RUNS, String(maxRunsRaw), d.nowIso);
+          deps.store.setState(STATE_LEAD_SEC, String(Math.round(leadRaw)), d.nowIso);
+          // 换一版定时 = 每个账号的已跑次数从头算。
+          deps.store.setState(STATE_SCHEDULE_GEN, gen, d.nowIso);
+          deps.log(
+            `定时目标：${query}（cron ${cron}，提前 ${Math.round(leadRaw)}s，` +
+              `每号最多 ${maxRunsRaw || '不限'} 次）`,
+          );
+          return json(200, {
+            ok: true,
+            note: `定时已保存：${query}（提前 ${Math.round(leadRaw)}s）`,
+          });
+        }
         if (b.action === 'step') {
           const r = runOrderStep(d);
+          const step = d.store.getState(STATE_STEP) ?? '';
           deps.log(`兑换：${r.note}`);
-          return json(200, r);
+          return json(200, { ...r, step, done: step === 'done' });
         }
-        const r = startOrder(d, typeof b.query === 'string' ? b.query : '');
+        // ⚠ 保存**手动目标**要同时写两格，少一格这条链就断：
+        //   · `mcloud.exchange.plan` = 手动要换的那一句（旧版本的定时链也会回退读它）。
+        //   · `mcloud.exchange.order.plan` = **这一单**在排队时用的那一句（`startOrder` 写，
+        //     `runOrderStep` 读）。
+        //   定时目标另存 `mcloud.exchange.schedule.plan`，见上面 `action: 'plan'`；
+        //   两条线分开之后，改手动目标不会把定时目标带跑。
+        const query = typeof b.query === 'string' ? b.query.trim() : '';
+        if (query !== '') deps.store.setState('mcloud.exchange.plan', query, d.nowIso);
+        const r = startOrder(d, query);
         deps.log(`兑换起单：${r.note}`);
         return json(200, { ...r, queue: deps.store.getState('mcloud.exchange.order.step') ?? '' });
       },
@@ -1599,10 +2111,13 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
         const b = readBody(req) as { force?: unknown; leadDays?: unknown };
         const force = b.force === true;
         const leadDays = typeof b.leadDays === 'number' ? b.leadDays : undefined;
+        const cur = currentAccount(deps.store);
         const r = runAuthRefresh(
           { store: deps.store, transport: deps.transport, nowIso: deps.now(), baseUrl: loadBaseUrl(deps.store) },
           force,
           leadDays,
+          // 明确"刷当前这一条、写回这一条"（没有账号时才是单账号那格）
+          cur === undefined ? {} : { auth: cur.auth, accountId: cur.id },
         );
         deps.log(`凭据续期：${r.note}`);
         return json(200, { ...r, auth: authStatus(deps.store) });
@@ -1721,15 +2236,20 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
           const id = typeof body.id === 'string' ? body.id : '';
           const found = loadAccounts(deps.store).find((a) => a.id === id);
           if (!found) return json(400, { error: `列表里没有这个账号：${id}` });
-          const one = scoped(rawStoreOf(deps.store), id);
+          // ⚠ **不要**用 `scoped(store, id)` 来"指定账号"：`loadAuthRaw` 先看
+          //   `currentAccount()`，而"当前是谁"是**全局**键（`mcloud.account.current`）
+          //   ⇒ 刷的是当前账号、提示写的却是被点的那条，新串还落进被点那条的袋里
+          //   （谁都不读）。这里把"刷哪串、写回哪条"显式传下去（F-077）。
           const r = runAuthRefresh(
             {
-              store: one,
+              store: deps.store,
               transport: deps.transport,
               nowIso: deps.now(),
-              baseUrl: loadBaseUrl(one),
+              baseUrl: loadBaseUrl(deps.store),
             },
             true,
+            undefined,
+            { auth: found.auth, accountId: found.id },
           );
           deps.log(`凭据续期（${found.label}）：${r.note}`);
           return json(200, {
@@ -1942,6 +2462,114 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
           lastErrorByTask,
           recent: deps.store.recentRuns(20),
         });
+      },
+    },
+    {
+      // 「今日AI豆」—— **只读**，一枪 `cloudRecordV2` 翻到底再按**东八区自然日**汇总。
+      //
+      // 照参考实现（`mcloud-tasks/src/beans.rs` + 路由 `GET /api/beans/today`）：
+      //   · **按账号一列**，**没有 `total` / `net` 这种跨账号字段** ——
+      //     豆是每个账号各一本账，加出来的总数哪个账号都花不了。
+      //   · **失败按账号隔离**：某个账号读不到（无会话 / 网络 / 上游码 /
+      //     翻不到底 / 解不出 `insertTime`）只让它那一行进 `failed[]`，
+      //     其余账号照常出数。这一条**不返回错误状态** —— 一个账号挂了不该
+      //     把整张卡打成"服务挂了"。
+      //   · **点了才取**：界面上那一格不做自动刷新；这一条路由每次点都真打上游。
+      path: `${base}/beans/today`,
+      method: 'GET',
+      // 逐账号 × 翻页 + **当场续票**的只读链：一发上游的超时就有 1500ms，
+      // 面板默认 2 秒撑不到"把所有账号读一遍"。现在票过期还会**内联换票**
+      // （`withTokenGate`：到期主动一轮 + `90001` 被动最多两轮，每轮四步 × 1500ms）。
+      // 按最坏一档留预算：几个账号各可能"读失败→换票→再读"若干轮。健康路径秒回，
+      // 这一档只在票全烂时才顶到。
+      budget_ms: 60_000,
+      handler: () => {
+        const raw = rawStoreOf(deps.store);
+        const nowIso = deps.now();
+        const nowMs = Date.parse(nowIso);
+        // 同一趟**所有账号共用同一个 `nowMs`**：不然跨零点那一瞬间两个账号会按
+        //   不同的日界算（照参考实现 `BeansEnv::clock` 那一条）。
+        const baseUrl = loadBaseUrl(deps.store);
+        const rows: {
+          id: string;
+          label: string;
+          net: number;
+          gained: number;
+          spent: number;
+          count: number;
+        }[] = [];
+        const failed: { id: string; label: string; reason: string }[] = [];
+        for (const a of loadAccounts(deps.store)) {
+          // ⚠ **跳停用的账号** —— 停用就是"别拿它跑"（见 `accounts.ts::disabled`
+          //   与 `resolveTaskAccounts`），读账也一样：它都停用了还去点它上游，
+          //   用户看到一行"停用里的账号读失败"就是纯噪声。
+          if (a.disabled === true) continue;
+          const one = scoped(raw, a.id);
+          try {
+            const day = readDayForAccount(
+              { store: one, transport: deps.transport, baseUrl, nowIso },
+              nowMs,
+            );
+            rows.push({ id: a.id, label: a.label, ...day });
+          } catch (e) {
+            failed.push({
+              id: a.id,
+              label: a.label,
+              reason: e instanceof Error ? e.message : String(e),
+            });
+          }
+        }
+        return json(200, { nowMs, accounts: rows, failed });
+      },
+    },
+    {
+      // 「查看明细」—— 一个账号的流水，**不限于今日**。窗口 `days ∈ 1/7/30/0`
+      // （`0` = 全部）；`MAX_DETAIL_RECORDS` 撞上时 `hasMore=true`，界面写一句
+      // "还有更多没列出来"，**不静默截断**。
+      //
+      // ⚠ 数据源与 `/beans/today` **同一条**：还是上游 `cloudRecordV2`。
+      //   **不是**本仓的运行记录 / 明细账本 —— 那是"我们做过什么"，
+      //   流水是"上游账上发生了什么"，两者对不上是常态（重试、手动操作、别的端）。
+      //   这一条要回答的是后者。
+      path: `${base}/beans/records`,
+      method: 'GET',
+      // 「全部」那一档要把这个账号的流水**翻到底**（最多 `MAX_PAGES`=20 页）才能
+      // 如实说"有没有更多"，一页一发 ⇒ 最坏 20 发 × 1500ms = 30s；再叠上"当场续票"
+      // （到期主动一轮 + `90001` 被动最多两轮，每轮四步）⇒ 比今日那条再宽一档。
+      budget_ms: 90_000,
+      handler: (req) => {
+        const q = parseQuery(req.query ?? '');
+        const id = q['id'] ?? '';
+        const days = normalizeDays(q['days']);
+        const found = loadAccounts(deps.store).find((a) => a.id === id);
+        if (!found) return json(400, { error: `列表里没有这个账号：${id || '（没给 id）'}` });
+        const raw = rawStoreOf(deps.store);
+        const nowIso = deps.now();
+        const nowMs = Date.parse(nowIso);
+        const baseUrl = loadBaseUrl(deps.store);
+        const one = scoped(raw, id);
+        try {
+          const data = readRecordsForAccount(
+            { store: one, transport: deps.transport, baseUrl, nowIso },
+            nowMs,
+            days,
+          );
+          return json(200, {
+            account: found.label,
+            days,
+            nowMs,
+            records: data.records,
+            undated: data.undated,
+            hasMore: data.hasMore,
+          });
+        } catch (e) {
+          return json(200, {
+            account: found.label,
+            days,
+            nowMs,
+            error: e instanceof Error ? e.message : String(e),
+          });
+        }
       },
     },
   ];

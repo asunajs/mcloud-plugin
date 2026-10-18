@@ -96,6 +96,9 @@ export const KEY_SCOPE: Readonly<Record<string, KeyScope>> = {
   'mcloud.session': 'account',
   'mcloud.session.last_check': 'account',
   'mcloud.h5.auth': 'account',
+  // 宿主"能不能用 tls:native"的探测结论（= 这个面板构建支不支持直播）。
+  // **与账号无关**，但按账号存最省事 —— 结论一样，多存几份不花钱。
+  'mcloud.host.native_tls': 'account',
   'mcloud.h5.exchange': 'account',
   'mcloud.h5.jwt': 'account',
   'mcloud.daily.done_date': 'account',
@@ -122,6 +125,10 @@ export const KEY_SCOPE: Readonly<Record<string, KeyScope>> = {
   // 不是某个号自己的设置（放进账号袋会让 A 的名单被 B 读到）。
   // ⚠ 动态键（键里带任务名）⇒ 靠  登记，见下面那张表。
   'mcloud.task.accounts.': 'global',
+  // 运行日志的**环形副本**（最近 N 行）。global —— 它记的是"这台机器上发生过什么"，
+  // 不属于某个号；而且它要能在**面板重启之后**还读得到（面板的内存日志环是重启就没的，
+  // 见 findings F-085）。写的时候按"全局"落，界面上再按插件名过滤。
+  'mcloud.log.ring': 'global',
   'mcloud.login.base': 'global',
   'mcloud.login.userDomainId': 'global',
   'mcloud.sign.stage': 'account',
@@ -145,7 +152,15 @@ export const KEY_SCOPE: Readonly<Record<string, KeyScope>> = {
   'mcloud.cloudsnapshot.last': 'account',
   'mcloud.exchangelist.last': 'account',
   'mcloud.exchangelist.raw': 'account',
+  // 界面上「选一件」的下拉缓存（全量清单里挑出来的四格）。
+  // **按账号** —— 清单与"能不能换"都是账号级的。日界作废，见 exchangeList.ts。
+  'mcloud.exchangelist.pick': 'account',
+  // 「我关注的奖品」：按账号存（不同账号的清单不同，关注的 id 也可能不同）。
+  'mcloud.exchange.subs': 'account',
   'mcloud.exchange.plan': 'account',
+  // 定时抢兑每个账号已经真正发起过几次（按账号）。
+  'mcloud.exchange.schedule.runs': 'account',
+  'mcloud.exchange.schedule.runs_gen': 'account',
   'mcloud.exchange.order.step': 'account',
   'mcloud.exchange.order.baseline': 'account',
   'mcloud.exchange.order.plan': 'account',
@@ -181,6 +196,16 @@ export const KEY_SCOPE: Readonly<Record<string, KeyScope>> = {
   'mcloud.login.pref': 'global',
   /** 几点抢兑 —— 是**配置**，跟账号无关。 */
   'mcloud.exchange.target_hour': 'global',
+  // 「定时抢兑」的目标：与手动目标分开，避免改一个把另一个带跑。
+  // 全局 —— 定时任务按「任务账号」逐个跑，但只认这一件目标。
+  'mcloud.exchange.schedule.plan': 'global',
+  'mcloud.exchange.schedule.mode': 'global',
+  'mcloud.exchange.schedule.cron': 'global',
+  'mcloud.exchange.schedule.until': 'global',
+  'mcloud.exchange.schedule.once_date': 'global',
+  'mcloud.exchange.schedule.max_runs': 'global',
+  'mcloud.exchange.schedule.gen': 'global',
+  'mcloud.exchange.lead_sec': 'global',
   /** 提前量 —— "网络慢的人该调大"，是**这台机器**的调参，与账号无关。 */
   'mcloud.exchange.order.lead_ms': 'global',
   /** 领小红花的开关。 */
