@@ -60,11 +60,16 @@ for _ in $(seq 1 20); do
 done
 
 echo "② 起面板（:$PANEL_PORT，PLUGINS_DIR=$HERE/plugins）"
+# ⚠ `HOST_API_ALLOW_PRIVATE=1` 是必须的：这一趟的"上游"是**本机的 mock**
+#   （127.0.0.1），而面板的出站防护默认拒绝回环 —— 少了它会回
+#   「出站目标被 SSRF 防护拒绝：127.0.0.1」。只有真去请求 mock 才会暴露，
+#   "面板起来了、插件也加载了"的时候看起来一切正常。
 BIND_ADDR="127.0.0.1:$PANEL_PORT" \
 DB_PATH="$TMP/panel.db" \
 PLUGINS_DIR="$HERE/plugins" \
 PANEL_TOKEN="$TOKEN" \
 PANEL_ALLOW_PLAIN_TOKEN=1 \
+HOST_API_ALLOW_PRIVATE=1 \
   "$PANEL_BIN" > "$TMP/panel.log" 2>&1 &
 PANEL_PID=$!
 
