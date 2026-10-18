@@ -24,7 +24,14 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 const dir = new URL('../plugins/mcloud/', import.meta.url);
 const html = readFileSync(new URL('index.html', dir), 'utf8');
@@ -1208,4 +1215,58 @@ test('⚠ 跨账号的同一句解释只说一遍（领小红花那个括号）'
   assert.ok(/onceHint\(line, onceHints\)/.test(d), 'daily 记日志时过一遍');
   const l = srcOf('src/entries/live.ts');
   assert.ok(/onceHint\(line, onceHints\)/.test(l), '直播那条链也一样');
+});
+
+test('CI 的 state 断言脚本：正例过、反例必须红（别让 CI 断言本身坏了没人知道）', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ci-state-'));
+  const good = {
+    plugins: [
+      { name: 'mcloud', runtime: 'js', error: null },
+      { name: 'mcloud-daily', runtime: 'js', error: null },
+      { name: 'mcloud-exchange', runtime: 'js', error: null },
+      { name: 'mcloud-live', runtime: 'js', error: null },
+    ],
+    jobs: [
+      { name: '日常', plugin: 'mcloud-daily', schedule: '0 8,20 * * *', last_error: null },
+      { name: '兑换', plugin: 'mcloud-exchange', schedule: '0 10 * * *', last_error: null },
+      { name: '直播', plugin: 'mcloud-live', schedule: '30 10,15 * * *', last_error: null },
+    ],
+  };
+  const run = (cmd: string, obj: unknown) => {
+    const p = join(dir, `${cmd}.json`);
+    writeFileSync(p, JSON.stringify(obj));
+    return spawnSync('python3', [join(ROOT, 'scripts/ci_state_check.py'), cmd, p], { encoding: 'utf8' });
+  };
+
+  assert.equal(run('ready', good).status, 0, '正例：ready 应为 0');
+  assert.equal(run('loaded', good).status, 0, '正例：loaded 应为 0');
+  assert.equal(
+    run('selftest', { ok: true, detail: '7/7 通过', checks: [{ name: 'md5', ok: true }] }).status,
+    0,
+    '正例：自检过',
+  );
+
+  // 反例：这些正是"CI 应该拦住"的形态，一个都不能放过
+  const missingJob = structuredClone(good);
+  missingJob.jobs = missingJob.jobs.filter((j) => j.name !== '兑换');
+  assert.equal(run('ready', missingJob).status, 1, '少一条任务：ready 必须 1');
+  assert.equal(run('loaded', missingJob).status, 1, '少一条任务：loaded 必须 1');
+
+  const jobBack = structuredClone(good);
+  jobBack.jobs.push({ name: 'selftest', plugin: 'mcloud', schedule: '*/5 * * * *', last_error: null });
+  assert.equal(run('loaded', jobBack).status, 1, 'selftest 又变回任务了：必须红（防回归）');
+
+  const badRuntime = structuredClone(good);
+  badRuntime.plugins[0]!.runtime = 'py';
+  assert.equal(run('loaded', badRuntime).status, 1, 'runtime 不对：必须红');
+
+  const err = structuredClone(good);
+  err.plugins[1]!.error = 'boom';
+  assert.equal(run('loaded', err).status, 1, '插件报错：必须红');
+
+  assert.equal(
+    run('selftest', { ok: false, detail: '6/7 通过', checks: [{ name: 'md5', ok: false }] }).status,
+    1,
+    '自检没过：必须红',
+  );
 });
