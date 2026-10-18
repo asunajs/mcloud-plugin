@@ -6,14 +6,15 @@
 // 一个插件里的所有任务跑在**同一条线程**上。所以「日常」那种一次跑几分钟的链
 // 和「直播」那种 10 秒一拍的监听放在同一个插件里，前者会把后者拖住。
 //
-// 拆开之后每个插件独占一条线程（`worker_hint('exclusive')`），互不干扰。
+// 拆开之后：路由插件和抢兑独占，日常/直播共享一条粗粒度 lane。
+// 大部分 cron 不要求毫秒级，互相排队即可；抢兑不能被长任务挡住。
 //
 // | 插件 | 线程 | 有 cron 吗 | 干什么 |
 // |---|---|---|---|
-// | `mcloud` | 共享 | 否 | 路由 / 登录 / 设置 / 读数 / 侧边栏入口 |
-// | `mcloud-daily` | 独占 | 是 | 「日常」—— 一个函数从头跑到尾 |
+// | `mcloud` | 独占 | 否 | 路由 / 登录 / 设置 / 读数 / 侧边栏入口（长只读路由） |
+// | `mcloud-daily` | 共享 | 是 | 「日常」—— 一个函数从头跑到尾 |
 // | `mcloud-exchange` | 独占 | 是 | 「兑换」—— 毫秒级开抢 |
-// | `mcloud-live` | 独占 | 是 | 「直播」—— 听口令 + 领小红花 |
+// | `mcloud-live` | 共享 | 是 | 「直播」—— 听口令 + 领小红花 |
 //
 // `mcloud` **故意不声明 cron**：它只提供 HTTP 路由（登录、读数、设置）。
 // 这样面板上的任务列表就只有 3 条用户看得懂的任务，而不是 25 条。
@@ -186,8 +187,18 @@ export interface TaskPayload {
   expr: string;
   runs: number;
   scheduledAt: string;
+  /** 调度器提前量（毫秒）；老面板不发。 */
+  leadMs?: number;
   firedAt: string;
   lateMs: number;
+  /** 这一拍是**用户点的**（`true`）还是**调度到点的**（`false`）。
+   *
+   *  ⚠ 老面板不发这一格（`undefined`）⇒ 用 `lateMs < 0` 兜底
+   *  （手动触发时 `scheduledAt` 还是下一次理论时刻 ⇒ 负数）。
+   *
+   *  ⚠ 本仓现在**没有消费者**：daily 里那个"定时跳过"的闸已按用户口径撤掉
+   *  （一天两趟都跑，第二趟是容错，见 `docs/findings.md` F-105）。留着的是宿主能力。 */
+  manual?: boolean;
   /** 这一拍相对**理论**时刻抖了多少毫秒（没写抖动规则时恒为 0）。
    *
    *  ⚠ 它在 `docs/redesign-plan.md` 里是 ①-4 那个能力的一部分，但**类型里
@@ -205,7 +216,9 @@ export interface TaskPayload {
    *  从下一拍重新对齐"），所以链上那道时间闸会照常把它挡掉 —— 不会因为
    *  重对齐而误发一枪。 */
   realigned: boolean;
-  /** `register_cron(…, { params })` 给的那份参数（没给就是 undefined）。 */
+  /** `register_cron(…, { params })` 给的那份参数。
+   *
+   *  ⚠ **没给是 `null`，不是 `undefined`** —— JSON 里没有 undefined。 */
   params?: unknown;
 }
 

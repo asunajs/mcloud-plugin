@@ -82,7 +82,7 @@ export interface TaskMeta {
   hidden: boolean;
   /** **本插件实现到哪了**（见文件头） */
   implemented: boolean;
-  /** 上游证据到哪一步 —— 决定"现在**能不能**忠实实现"。
+  /** 服务端证据到哪一步 —— 决定"现在**能不能**忠实实现"。
    *
    *  **可选**，而且是故意的：只在我们真去源码里核对过的地方才填。
    *  没填 = 没核对过（不是我估了个值）—— 要查就看 mcloud 的 `docs/task-inventory.md`。 */
@@ -91,7 +91,7 @@ export interface TaskMeta {
   note?: string;
 }
 
-/** 上游证据状态。这一列区分的是「能照实写」与「只能照旧项目的口径猜」。
+/** 服务端证据状态。这一列区分的是「能照实写」与「只能照旧项目的口径猜」。
  *
  *  `captured` —— 有实拍：路径/方法/字段名都逐字见过
  *  `partial`  —— 只实拍到"成功那一枪"，失败形态还没样本
@@ -153,8 +153,8 @@ export const GROUPS: GroupMeta[] = [
     id: 'cloud-write',
     title: '要用网盘',
     // ⚠ 措辞改过（2026-10-14）：原先写的是"会往你的网盘里写文件……想清楚再点"，
-    //    把**任务的目的**说成了风险。可任务的定义就是改上游状态 ——
-    //    "上传任务不上传文件"根本不是完成任务，"做任务"不落到上游那也不叫做过。
+    //    把**任务的目的**说成了风险。可任务的定义就是改服务端状态 ——
+    //    "上传任务不上传文件"根本不是完成任务，"做任务"不落到服务端那也不叫做过。
     //    写文件不是副作用，**它就是这一组任务本身**。要提醒的只是"它会占用你的网盘"。
     why: '这一组任务**本身就是往网盘写**（上传文件 / 建外链 / 发邮件）—— 不是副作用，是它的内容。会在你的网盘里留下东西',
     order: 5,
@@ -176,7 +176,7 @@ export const TASK_META: TaskMeta[] = [
   // ── 插件自身 ──
   { name: 'selftest', title: '沙箱自检', group: 'plugin', kind: 'Query', risk: 'none', missed: 'catch-up', deps: [], batch: false, hidden: false, implemented: true, note: '密码学/UTF-8/base64/SQLite 都跑一遍' },
   { name: 'diag', title: '调度健康', group: 'plugin', kind: 'Query', risk: 'none', missed: 'catch-up', deps: [], batch: false, hidden: false, implemented: true, note: '记录每次触发的调度延迟（面板 F-001 的那条测量）' },
-  { name: 'session-check', title: '会话体检', group: 'plugin', kind: 'Query', risk: 'none', missed: 'catch-up', deps: [], batch: false, hidden: false, implemented: true, note: '每天 7:50 先问一次上游还认不认这份凭据' },
+  { name: 'session-check', title: '会话体检', group: 'plugin', kind: 'Query', risk: 'none', missed: 'catch-up', deps: [], batch: false, hidden: false, implemented: true, note: '每天 7:50 先问一次服务端还认不认这份凭据' },
   // H5 换票（三步）：原生凭据 → `jwttoken`。**这是插件能不能用的前提** ——
   // 之前只能靠人手从浏览器抄票，而票 2 小时即废（过期时所有任务一起回 90001，
   // 看起来像"账号被踢了"）。现在自己换、自己续，鉴权细节见 mcloud/h5session.ts。
@@ -208,7 +208,7 @@ export const TASK_META: TaskMeta[] = [
   { name: 'fun-ai', title: '趣玩AI抽奖', group: 'activity', kind: 'Action', risk: 'ledger', missed: 'catch-up', deps: ['activity-token'], batch: true, hidden: false, implemented: false, evidence: 'no-ticket', note: '换票那步没抓到 ⇒ 做不了' },
   // 更正：整条链在 `/ycloud/msgPushOn/` 下、要**另一张票**（marketName=msgpushon /
   // sourceId=1062）。`task/status` 有实拍，`task/obtain` **零样本** ——
-  // "什么值该做什么"仍是旧项目口径，一条都没被上游证实过。
+  // "什么值该做什么"仍是旧项目口径，一条都没被服务端证实过。
     // ⚠️ 2026-10-14 修正认知：这一族与 `notice` **不是同一件事**（域/配方/端点全不同，
   //    见 tasks/msgPush.ts 的文件头对照表）。两步：问状态（只读）+ 领（写）。
   { name: 'msg-push', title: '消息推送奖励', group: 'activity', kind: 'Action', risk: 'ledger', missed: 'catch-up', deps: ['jwt'], batch: false, hidden: false, implemented: true, evidence: 'captured', note: '两步：问状态 + 领（`secondTaskStatus===2` 才领）。⚠ `pushOn===0` 与首次奖励都要用户去 App 手动' },
@@ -230,7 +230,7 @@ export const TASK_META: TaskMeta[] = [
   // 抓主页走的是原项目 `xiaohongshu.ts` 的公开 GET + 逐字移植的提取器（41 条黄金向量守着）。
   // 领小红花那一步（写、会入群足迹）**仍然没做** —— 所以 risk 维持 `ledger` 不变。
   { name: 'live-room', title: '直播口令（只看）', group: 'activity', kind: 'Query', risk: 'none', missed: 'catch-up', deps: [], batch: false, hidden: false, implemented: true, evidence: 'partial', note: '抓口令发布方的**公开**主页 + 列出口令（**不需要凭据**）；口令要人给（那边无法鉴权）' },
-  // 门（直播日程）：只读地问上游「今天开播了吗 / 下一场几点」。
+  // 门（直播日程）：只读地问服务端「今天开播了吗 / 下一场几点」。
   // ⚠ 它**不需要**会话（云盘那套），要的是**原生凭据**（换直播侧 JWT 用）——
   //   所以 deps 是 ['auth'] 而不是 ['jwt']。缺凭据时它如实失败并说清缺什么。
   // 证据等级 `captured`：mcloud 那边这一段是**实证**的（只读探针主动走过一遍，
@@ -240,10 +240,10 @@ export const TASK_META: TaskMeta[] = [
   // 它虽然记账，但**基本幂等**：同一条口令再领一次回 `200112`（已兑换过），不会重复发奖。
   // 所以 risk 是 `ledger` 而不是 `irreversible`。
   { name: 'live-listen', title: '听弹幕口令（只读）', group: 'activity', kind: 'Query', risk: 'none', missed: 'catch-up', deps: ['basic'], batch: false, hidden: false, implemented: true, evidence: 'captured', note: '真机验过：SockJS 握手 + PROVISION + 心跳（15s 一拍）+ ack + 弹幕文本进池（来源 danmaku）。一次调用读 ~1.6 秒（面板预算 2000ms），窗口默认 10 分钟；门关着时**一个请求都不发**' },
-  // 定时器：**只算时刻、零上游请求**（mcloud 的 `live_auto`）。
+  // 定时器：**只算时刻、零服务端请求**（mcloud 的 `live_auto`）。
   // 它和听弹幕那条链的分工写在 liveAuto.ts 模块头：定时器负责**叫醒**，
   // 链自己负责"窗口到点 → 收尾 → 下一拍重走门"。
-  { name: 'live-auto', title: '直播自动定时', group: 'activity', kind: 'Query', risk: 'none', missed: 'skip', deps: ['basic'], batch: false, hidden: false, implemented: true, evidence: 'captured', note: '照 mcloud 的 `live_auto`：时刻 = **最早的「下一场」+ 1 小时**（那一小时留给主播发口令）；每 5 分钟重算一次、**一个上游请求都不发**。听弹幕那条链被判"门关着"时就睡到那一刻（原来固定 5 分钟 ⇒ 一天白问 288 次门）。⚠ 面板的 cron 不能在运行时改表达式 ⇒ 精度最坏晚 5 分钟' },
+  { name: 'live-auto', title: '直播自动定时', group: 'activity', kind: 'Query', risk: 'none', missed: 'skip', deps: ['basic'], batch: false, hidden: false, implemented: true, evidence: 'captured', note: '照 mcloud 的 `live_auto`：时刻 = **最早的「下一场」+ 1 小时**（那一小时留给主播发口令）；每 5 分钟重算一次、**一个服务端请求都不发**。听弹幕那条链被判"门关着"时就睡到那一刻（原来固定 5 分钟 ⇒ 一天白问 288 次门）。⚠ 面板的 cron 不能在运行时改表达式 ⇒ 精度最坏晚 5 分钟' },
   { name: 'live-draw', title: '领小红花（写）', group: 'activity', kind: 'Action', risk: 'ledger', missed: 'skip', deps: ['jwt'], batch: false, hidden: false, implemented: true, evidence: 'partial', note: '六步链 9+N 个请求，一次调用一步；**默认关**。同口令重领回 200112 ⇒ 基本幂等。⚠ 请求头形状未在真账号上验过' },
 
   // ── 要用网盘（未实现；原因见各条的 note，**不是**"它会写网盘"）──
@@ -280,14 +280,14 @@ export const TASK_META: TaskMeta[] = [
   { name: 'ai-avatar', title: 'AI 头像生成与抽奖', group: 'activity', kind: 'Action', risk: 'write-cloud', missed: 'skip', deps: ['basic+jwt'], batch: false, hidden: true, implemented: false, evidence: 'dead', note: '八口全在 `/market/rabactive/*`，今天真机 404/405（已排除签名与 marketName）⇒ 默认关。恢复条件与读数见 F-022' },
 
   // ── 高风险（未实现）──
-  // ✅ 2026-10-14 实现并**真机跑通**（50 豆换到「移动云盘100G云空间月卡」，上游回 oid，
+  // ✅ 2026-10-14 实现并**真机跑通**（50 豆换到「移动云盘100G云空间月卡」，服务端回 oid，
   //    余额 9238 → 9188 正好少 50）。
   //
   // 口径（用户定的）：**优先发出去** —— 清单判据说不能兑、余额看着不够，都**照样发**
-  // （那两处是本地估算，上游仍可能放行；失败不扣豆）。
+  // （那两处是本地估算，服务端仍可能放行；失败不扣豆）。
   // ⚠ 但**滑块**不属这一类：offset 算错那一枪**不可能成功**（回 514、不成交也不扣豆），
   //    所以算不出就不发 —— 那不是"少一次机会"，是"多一次白打"。
-  { name: 'exchange', title: '兑换奖品', group: 'risky', kind: 'Action', risk: 'spend', missed: 'skip', deps: ['jwt', 'slider'], batch: false, hidden: false, implemented: true, evidence: 'captured', note: '枪序：清单 → 余额 → 预热×2 → 取滑块本地解 → 下单 → 查余额差。**成交判据是余额差**（上游没有幂等，那句话不算数）；滑块算不出就不发' },
+  { name: 'exchange', title: '兑换奖品', group: 'risky', kind: 'Action', risk: 'spend', missed: 'skip', deps: ['jwt', 'slider'], batch: false, hidden: false, implemented: true, evidence: 'captured', note: '枪序：清单 → 余额 → 预热×2 → 取滑块本地解 → 下单 → 查余额差。**成交判据是余额差**（服务端没有幂等，那句话不算数）；滑块算不出就不发' },
   // ⚠️ 2026-10-14 更正一处**我口头说过的错话**：我曾讲这条"会换掉现有授权"——
   //    那句话**没有出处**。`auth_refresh.rs` 的叙述是「**续期**」：刷新返回一个自带
   //    30 天有效期的新 token，并被编进后续请求的 `Authorization`；而**旧凭据会不会被

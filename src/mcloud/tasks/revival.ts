@@ -54,7 +54,7 @@ export function runRevival(deps: TaskDeps): TaskOutcome {
     },
     (env) => ({
       ok: true,
-      note: `已用掉一张卡（上游回 ${JSON.stringify(env.result ?? env.message).slice(0, 100)}）`,
+      note: `已用掉一张卡（服务端回 ${JSON.stringify(env.result ?? env.message).slice(0, 100)}）`,
       snapshot: env.result ?? null,
     }),
   );

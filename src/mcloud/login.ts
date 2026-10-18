@@ -37,6 +37,7 @@ import { aesEcbPkcs7DecryptHex, decryptWithDynamicIv, encryptWithDynamicIv } fro
 import { sha1, toHex } from '../crypto/index.ts';
 import { toBase64, utf8 } from '../crypto/bytes.ts';
 import type { BuiltRequest } from './h5.ts';
+import { uuidV4 } from './rand.ts';
 
 // ══════════════════════════════ 上游主机 ══════════════════════════════
 
@@ -55,6 +56,34 @@ export const LOGOUT_PATH = '/user/logout';
 // ══════════════════════════════ 平台档案 ══════════════════════════════
 
 export type PcPlatform = 'windows' | 'macos';
+
+/** 没明确选过时的形态。Windows 的版本号更"主流"（见 `appVersion`）。 */
+export const DEFAULT_PC_PLATFORM: PcPlatform = 'windows';
+
+/** 把界面传来的形态归一。
+ *
+ *  ⚠ 界面用 `win` / `mac`（复刻参考实现的按钮名），后端用 `windows` / `macos`
+ *  （档案名）—— 两个词表各管一层，所以**只在这里收口**，不许各处自己 `===` 判断：
+ *  那种写法的表现是"某个口子漏了归一，于是 mac 被当成 win 发出去"，
+ *  而上游对此的回应是一个看不出原因的失败。
+ *
+ *  认不出 ⇒ `null`。**不在这里回落默认**：只有调用方知道这是"用户填错了"
+ *  还是"这次调用根本没带"。 */
+export function parsePcPlatform(raw: unknown): PcPlatform | null {
+  if (raw === 'win' || raw === 'windows') return 'windows';
+  if (raw === 'mac' || raw === 'macos') return 'macos';
+  return null;
+}
+
+/** 登录档案的形态 → **账号里存的那一个**（`Account.pcPlatform`）。
+ *
+ *  ⚠ 两个词表是历史：登录这一族（从客户端源码抄来）说 `windows` / `macos`，
+ *  而账号里存的是参考实现界面上的 `win` / `mac`（`auth.ts` 的 `PcPlatform`）。
+ *  转换只在这一处做 —— 散着写的话，迟早有一个口子把 `'windows'` 存进账号，
+ *  而表现是账号卡上永远显示 Windows。 */
+export function accountForm(platform: PcPlatform): 'win' | 'mac' {
+  return platform === 'macos' ? 'mac' : 'win';
+}
 
 /** 冒充成 PC 客户端的档案：平台 + 设备指纹。
  *
@@ -474,6 +503,11 @@ export interface LoginEnvelope {
 }
 
 export function parseLoginEnvelope(body: string): LoginEnvelope {
+  // ⚠ 空响应单列一条：上游"不肯给我们东西"时就是**一个字都不回**（宿主侧那条注释
+  //   写过同一件事：非常规 UA 会被回一个空壳页）。把它当成"JSON 解析失败"报出去，
+  //   用户看到的是 `Unexpected end of JSON input` 这种内部术语，而真正发生的事是
+  //   **上游没回应** —— 这两件事要分开说，不然排障时会往"我们解析错了"上找。
+  if (body.trim() === '') throw new Error('空响应');
   let v: Record<string, unknown>;
   try {
     v = JSON.parse(body) as Record<string, unknown>;
@@ -660,11 +694,43 @@ function withClientHeaders(
   return { ...req, headers: { ...req.headers, ...pcHeaders(c), 'x-yun-tid': tid } };
 }
 
+/** 登录那一族的 URL：把"口子"归一 —— **空串与空白都等于"没有覆盖"**（用真主机）。
+ *
+ *  ⚠ 这一条是踩过才写的：原来是 `base ?? LOGIN_HOST`，而 `??` **只挡 `undefined`**。
+ *  界面上那格写的是「留空 = 用真主机」，给的正是**空串** —— 空串一路穿到底，
+ *  拼出**相对 URL** `/user/thirdlogin`，宿主报
+ *  `bad uri: /user/thirdlogin is missing scheme`，而界面上只显示"移动云盘没回应"。
+ *  同一个坑在业务主机上踩过一次（见 `h5.ts` 的文件头，那里的写法是 `base ? …`）；
+ *  这一处一直藏着，因为 e2e 全程把基址指向 mock（永远不是空串）——
+ *  直到把设置页清掉、真上游那条路第一次被跑到（F-068）。
+ *
+ *  ⚠ 空白也算没有覆盖：用户清空那一格时可能留一个空格。 */
+export function loginUrl(path: string, base?: string | undefined): string {
+  const b = (base ?? '').trim().replace(/\/+$/, '');
+  return `${b === '' ? LOGIN_HOST : b}${path}`;
+}
+
 function postJson(path: string, body: Record<string, unknown>, base?: string): BuiltRequest {
   return {
-    url: `${(base ?? LOGIN_HOST).replace(/\/+$/, '')}${path}`,
+    url: loginUrl(path, base),
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: {
+      'content-type': 'application/json',
+      // ⚠⚠ `accept-encoding: identity` 是**必须**的，不是优化（F-072）。
+      //
+      //   宿主（面板）会替我们发 `accept-encoding: gzip`，**但它不解压** ——
+      //   压缩过的响应体到了插件这边是一串二进制，`JSON.parse` 必然失败。
+      //   而移动云盘只在响应**够大**时才压：错误响应 94 字节（不压），
+      //   登录成功那个带 `data` 密文的响应 1–2 KB（压）——
+      //   于是表现成"扫码确认之后什么也没发生"。
+      //
+      //   实测：登录基址指向一个"你要 gzip 我就压"的本地服务器时，
+      //   `accept-encoding: gzip` 拿回来的是乱码；改口要 identity 就拿到完整 JSON。
+      //
+      //   ⚠ 放在这里而不是 `pcHeaders`：那里是**冒充哪台设备**的 5 个头
+      //   （有测试钉死"就是这 5 个"），而这一条是传输层的事。
+      'accept-encoding': 'identity',
+    },
     body: JSON.stringify(body),
   };
 }
@@ -752,7 +818,26 @@ export const QR_POLL_INTERVAL_MS = 1000;
 export interface QrSession {
   sessionId: string;
   deviceId: string;
+  /** 这一趟冒充的是哪种 PC 客户端。**出码时冻结**，之后轮询照它发请求。
+   *
+   *  ⚠ 为什么必须冻在会话里，而不是每次现读一个全局值：码里的 `ver` 就是它
+   *  （`qrPayload`），而轮询请求体的 `version` / `clientType` / `cpid` / 渠道号
+   *  也全是它 —— 两个来源的话就会出现「码说 4.2.1、请求说 8.8.6」这种
+   *  上游一眼可辨的矛盾组合，而失败原因离现场很远。 */
+  platform: PcPlatform;
   startedAtMs: number;
+  /** 这一趟的链路追踪 id（`x-yun-tid`）。**出码时生成一次，整趟复用。**
+   *
+   *  ⚠ 参考实现就是这么做的：它的会话表存的是 `(qr, tid, owner)`，CLI 也是
+   *  `let tid = new_tid()` 之后每一轮都用同一个（`crates/mcloud-server/src/cli/login.rs`、
+   *  `routes/login.rs` 的 `poll_qr`）。
+   *  这一侧原来**每轮都新生成一个** —— 而真机上看到的现象是：
+   *  `200059548 已扫码` 之后紧接着一次空响应、然后 `200059541 未找到设备`，
+   *  成功那一枪永远抓不到（F-071）。扫码会话在服务端是按 `dID + sID` 定位的，
+   *  而"这一枪是谁在问"就是 `x-yun-tid` —— 每轮换一个等于每轮换一个问话的人。
+   *
+   *  ⚠ 老会话（升级前存的）没有这一格：`loadQrSession` 会补一个并落盘。 */
+  tid: string;
   /** 已经看到"已扫码，等确认" —— 界面据此提示用户去手机上点确认。 */
   scanned: boolean;
   /** 已经拿到凭据（凭据本身不在这里，在会话库里）。 */
@@ -761,11 +846,18 @@ export interface QrSession {
   lastNote: string;
 }
 
-export function newQrSession(deviceId: string, nowMs: number): QrSession {
+export function newQrSession(
+  deviceId: string,
+  nowMs: number,
+  platform: PcPlatform = DEFAULT_PC_PLATFORM,
+): QrSession {
   return {
     sessionId: newSessionId(),
     deviceId,
+    platform,
     startedAtMs: nowMs,
+    // ⚠ 整趟一个 `x-yun-tid`（参考实现也是这么做的，见 `QrSession.tid`）
+    tid: uuidV4(),
     scanned: false,
     done: false,
     lastNote: '等手机扫码',
@@ -781,6 +873,15 @@ export function qrExpired(s: QrSession, nowMs: number): boolean {
   return nowMs >= qrExpiresAt(s);
 }
 
+/** 这张码还剩多少毫秒（0 = 已经过期）。
+ *
+ *  ⚠ 两个地方要用同一个数：**读数**（画码那一刻）与**轮询的回应**（每 2 秒刷一次
+ *  那一行）。轮询的回应里不带它的话，界面上那句「· 剩 N 秒」会在第一次轮询之后
+ *  就消失 —— 而那一行是用户判断"码还活着吗"的唯一依据（F-068）。 */
+export function qrRemainingMs(s: QrSession, nowMs: number): number {
+  return Math.max(0, qrExpiresAt(s) - nowMs);
+}
+
 /** 把一次轮询结果并进会话，返回给界面的读数 + 要不要继续轮询。
  *
  *  ⚠ **不把"未扫码"当错误**（见 `PollOutcome` 的注释）：它返回
@@ -794,6 +895,19 @@ export function applyPoll(
 ): { session: QrSession; stop: boolean; ok: boolean; note: string; encrypted?: string } {
   switch (out.kind) {
     case 'not-scanned':
+      // ⚠ 上游会**回退**：手机扫到过（`scanned` 已经置上），后面某一次轮询又说"没扫到"
+      //   （2026-10-17 在真机上实测到：`200059548 二维码信息未授权`（= 已扫、等确认）
+      //   之后不到一分钟又回到 `200059541`）。
+      //   这一支要是把话改回"等手机扫码"，用户看到的就是「我明明扫了，它还在让我扫」——
+      //   于是整件事的表现就是"没用"。所以：**"扫到过"这件事不许被后来的响应盖掉**，
+      //   回退也如实说出来（它是个真状态：手机上那个确认框没了 / 扫的不是当前这张码）。
+      //
+      //   ⚠ 这句话是**给用户看的**：不写「上游」（用词规则：界面上叫「移动云盘」），
+      //   也不解释"我们记录过什么" —— 只说清"发生了什么 + 现在该做什么"。
+      if (s.scanned) {
+        const note = '扫到了，但手机上没确认 —— 再扫一次，扫完就点「确认登录」';
+        return { session: { ...s, lastNote: note }, stop: false, ok: true, note };
+      }
       return { session: { ...s, lastNote: '等手机扫码' }, stop: false, ok: true, note: '等手机扫码' };
     case 'scanned':
       return {
@@ -836,7 +950,7 @@ export function applyPoll(
       };
     default:
       return {
-        session: { ...s, lastNote: `上游说：${out.message || `code=${out.code}`}` },
+        session: { ...s, lastNote: `服务端说：${out.message || `code=${out.code}`}` },
         stop: true,
         ok: false,
         note: `登录没成：${out.message || `code=${out.code}`}`,
@@ -848,6 +962,9 @@ export function applyPoll(
 export interface SmsSession {
   phone: string;
   random: string;
+  /** 形态。理由同 `QrSession.platform` —— 发码、取滑块、提交验证码这三步
+   *  必须用同一套档案，中途换形态就是"同一趟登录换了台设备"。 */
+  platform: PcPlatform;
   startedAtMs: number;
   /** 已经发过码。 */
   sent: boolean;
@@ -856,10 +973,15 @@ export interface SmsSession {
   lastNote: string;
 }
 
-export function newSmsSession(phone: string, nowMs: number): SmsSession {
+export function newSmsSession(
+  phone: string,
+  nowMs: number,
+  platform: PcPlatform = DEFAULT_PC_PLATFORM,
+): SmsSession {
   return {
     phone,
     random: newSmsRandom(),
+    platform,
     startedAtMs: nowMs,
     sent: false,
     slider: null,

@@ -76,6 +76,88 @@ async function call(url, { method = 'GET', body, write = false } = {}) {
 const api = (path, opts) => call(API + path, opts);
 
 /** 跑一条任务（面板的任务接口）。 */
+
+// ══════════ 跑一次（触发 → **等它真跑完** → 说结果） ══════════
+//
+// 面板那个 `…/run` 接口是**异步触发**：它回 `{ok:true}` 只表示"已经交给它了"，
+// 任务还要跑几十秒。原来这里立刻弹「跑完了」并重画读数 —— 那两句都是假的：
+// 用户看到"跑完了"、读数却还是上一次的。
+//
+// 所以：触发之后**盯着面板的运行记录**（`/api/runs?plugin=&task=&limit=1`），
+// 直到这一次的 `finished_at` 有了值；期间按钮上写着秒数（**证明它还活着**），
+// 而日志面板那边本来就是一行一行往下走的。
+const RUN_WAIT_MAX_MS = 180_000;
+
+/** 这一次运行完了吗？返回那条记录，或 `null`（还没完 / 记录还没写）。 */
+async function runRecordOf(plugin, task, sinceMs) {
+  try {
+    const r = await fetch(
+      `/api/runs?plugin=${encodeURIComponent(plugin)}&task=${encodeURIComponent(task)}&limit=1`,
+      { headers: { 'x-panel': '1' } },
+    );
+    if (!r.ok) return null;
+    const j = await r.json();
+    const one = (j.runs || [])[0];
+    if (!one || !one.finished_at) return null;
+    // 只认**这一次**（上一次的记录会一直躺在那儿，不判时间就会立刻"完成"）
+    if (Date.parse(String(one.started_at).replace(' ', 'T')) < sinceMs - 2000) return null;
+    return one;
+  } catch {
+    return null;
+  }
+}
+
+/** 等这一次跑完。`onTick` 每秒叫一次（按钮拿它写秒数）。
+ *
+ *  返回那条运行记录；超时返回 `null`（**别假装成功**）。 */
+async function waitRun(plugin, task, sinceMs, onTick) {
+  for (;;) {
+    const ms = Date.now() - sinceMs;
+    if (onTick) onTick(ms);
+    const one = await runRecordOf(plugin, task, sinceMs);
+    if (one !== null) return one;
+    if (ms > RUN_WAIT_MAX_MS) return null;
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+}
+
+/** 触发一条任务，等它跑完，再把真结果说出来。 */
+async function runTaskAndWait(key, btn) {
+  const pair = TASK[key];
+  // ⚠ 筛在「提醒以上」时，一次跑完界面上一行都没有 —— 用户的原话就是
+  //   「没看到任何日志」。**提示要跟在结果那句里**：单发一条 toast 会被
+  //   0.4 秒后的「跑完了」直接覆盖掉，等于没说。
+  // ⚠ `level` 在 `el()` **里面**（`TERMS[k].level` 是 undefined，踩过）
+  const lv = TERMS[key] ? TERMS[key].el().level.value : 'info';
+  const only = lv === 'info' ? '' : lv === 'warn' ? '提醒以上' : '只看错误';
+  const hidden = only === '' ? '' : ` · 日志只显示「${only}」，这趟的行大多被挡掉了`;
+  const label = btn.textContent;
+  btn.disabled = true;
+  const t0 = Date.now();
+  try {
+    await call(`/api/tasks/${encodeURIComponent(pair[0])}/${encodeURIComponent(pair[1])}/run`, {
+      method: 'POST',
+      write: true,
+    });
+    const one = await waitRun(pair[0], pair[1], t0, (ms) => {
+      btn.textContent = `跑着呢 ${Math.round(ms / 1000)}s`;
+    });
+    if (one === null) {
+      toast('还没跑完 —— 日志里能看到它走到哪了', true);
+      return;
+    }
+    const secs = one.duration_ms ? `${(one.duration_ms / 1000).toFixed(1)}s` : '';
+    if (one.ok === true) toast(`跑完了${secs === '' ? '' : ` · 用时 ${secs}`}${hidden}`);
+    else toast(`跑完了，但有失败${secs === '' ? '' : ` · 用时 ${secs}`} —— 看日志里是哪几步${hidden}`, true);
+  } catch (e) {
+    toast(String(e && e.message ? e.message : e), true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+    await load();
+  }
+}
+
 function runTask(key) {
   const pair = TASK[key];
   return call(
@@ -106,9 +188,12 @@ function toast(msg, bad) {
  *  于是有的忘了刷新（点了没反应）、有的忘了提示（不知道成没成）、
  *  有的错误只 `console.log`（用户看不见）。 */
 async function act(btn, fn, okMsg) {
+  // ⚠ 被重发倒计时**接管**的按钮（见 `startResend` 的 `dataset.resend`）连
+  //   "转圈"都不该画：倒计时的文字是它自己的状态，`act` 插进去只会闪一下 `…`。
+  const owned = btn.dataset.resend === '1';
   const old = btn.textContent;
   btn.disabled = true;
-  btn.textContent = '…';
+  if (!owned) btn.textContent = '…';
   try {
     const r = await fn();
     toast(typeof okMsg === 'function' ? okMsg(r) : okMsg);
@@ -116,8 +201,11 @@ async function act(btn, fn, okMsg) {
   } catch (e) {
     toast(String(e && e.message ? e.message : e), true);
   } finally {
-    btn.disabled = false;
-    btn.textContent = old;
+    // ⚠ 同理，收尾也不还原它：否则会把「重新获取（N 秒）」改回去、还会把它重新点亮。
+    if (btn.dataset.resend !== '1') {
+      btn.disabled = false;
+      btn.textContent = old;
+    }
   }
 }
 
@@ -163,8 +251,11 @@ const post = (path, body) => api(`/${path}`, { method: 'POST', body, write: true
 function fmtMs(ms) {
   const s = Math.max(0, Math.round(ms / 1000));
   if (s < 60) return `${s} 秒`;
-  const m = Math.floor(s / 60);
-  return `${m} 分 ${s % 60} 秒`;
+  if (s < 3600) return `${Math.floor(s / 60)} 分 ${s % 60} 秒`;
+  // ⚠ 一小时后要进位：`1278 分 34 秒` 没人算得出那是多久
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  return m === 0 ? `${h} 小时` : `${h} 小时 ${m} 分`;
 }
 
 const setText = (id, v) => {
@@ -202,50 +293,178 @@ function renderLogin(l) {
   //   这里的职责变成"**把页签跳到有事的那一个**"：
   if (qr) {
     if ($('add-dialog').hidden === false) showAddTab('qr');
-    $('qr-box').hidden = false;
-    // 二维码是**插件这一侧**渲染好的 SVG（浏览器里没有二维码库）
-    $('qr-box').innerHTML = qr.svg || '';
-    const sec = Math.ceil(qr.expiresInMs / 1000);
-    // ⚠ 相位不同文案要不同：`scanned` 之后**该等的是手机**，不是"再扫一次"。
-    setText(
-      'qr-note',
-      qr.scanned ? `已扫码，请在手机上确认 · 剩 ${sec} 秒` : `${qr.note} · 剩 ${sec} 秒`,
-    );
+    if (qr.expired) {
+      // ⚠ 过期的码**不许画得像还活着**：它扫了也白扫（手机上会回"二维码已失效"），
+      //   而"等手机扫码 · 剩 0 秒"看着完全像还能扫 —— 用户会一直对着它试。
+      //   所以把码撤掉、直说下一步，并停掉轮询（再轮也只是问一个已经死掉的 sID）。
+      $('qr-box').hidden = true;
+      $('qr-box').innerHTML = '';
+      setText('qr-note', '二维码过期了 —— 点「生成二维码」重新出码');
+    } else {
+      $('qr-box').hidden = false;
+      // 二维码是**插件这一侧**渲染好的 SVG（浏览器里没有二维码库）
+      $('qr-box').innerHTML = qr.svg || '';
+      const sec = Math.ceil(qr.expiresInMs / 1000);
+      // ⚠ 相位不同文案要不同：`scanned` 之后**该等的是手机**，不是"再扫一次"。
+      setText(
+        'qr-note',
+        qr.scanned ? `已扫码，请在手机上确认 · 剩 ${sec} 秒` : `${qr.note} · 剩 ${sec} 秒`,
+      );
+    }
+    // 刷新页面 / 重开弹窗之后**接着轮**（会话是落盘的，手机扫的时候我们得在问上游）
+    syncQrPoll(qr);
   } else {
+    stopQrPoll();
     $('qr-box').hidden = true;
     $('qr-box').innerHTML = '';
   }
 
+  // ⚠ 滑块**不画在界面上**（F-073）：坐标是这一侧从 `puzzleLeft` 解出来的
+  //   （`sliderAnswer`），发码那一路会自动取题、解坐标、带答案重发 ——
+  //   人只负责等短信。摆一张图反而像在要人肉眼看缺口。
   if (sms) {
     if ($('add-dialog').hidden === false) showAddTab('sms');
-    const ph = $('sms-phone');
-    if (ph && document.activeElement !== ph) ph.value = sms.phone;
-    setText('sms-note', sms.sent ? `${sms.note} · 看短信，填 6 位码` : sms.note);
-    // 滑块图只在"要过滑块"时出现 —— 它是**异常路径**（首次发码被风控拦下）
-    $('slider-box').hidden = !sms.hasSlider;
-    if (sms.hasSlider && sms.slider) {
-      setText('slider-note', '移动云盘要滑块：下面这张图已经解出缺口位置，点「发验证码」会带着答案发。');
-      $('slider-bg').src = `data:image/jpeg;base64,${sms.slider.backgroundB64}`;
-    }
+    paintCodePane('sms', sms);
   } else {
-    $('slider-box').hidden = true;
+    paintCodePane('sms', null);
   }
 
   // 手机端那一格（形状与 `sms` 一样，见 `loginReading` 里那段说明）
   const app = l.app;
   if (app) {
     if ($('add-dialog').hidden === false) showAddTab('app');
-    const ph = $('app-phone');
-    if (ph && document.activeElement !== ph) ph.value = app.phone;
-    setText('app-note', app.sent ? `${app.note} · 看短信，填 6 位码` : app.note);
-    $('app-slider-box').hidden = !app.hasSlider;
-    if (app.hasSlider && app.slider) {
-      setText('app-slider-note', '移动云盘要滑块：下面这张图已经解出缺口位置，点「发验证码」会带着答案发。');
-      $('app-slider-bg').src = `data:image/jpeg;base64,${app.slider.backgroundB64}`;
-    }
+    paintCodePane('app', app);
   } else {
-    $('app-slider-box').hidden = true;
+    paintCodePane('app', null);
   }
+}
+
+// ──────────────────────────────────────────────────────────── 手机号 + 验证码：一屏
+
+/** 手机号打码：`13800000000` → `138****0000`。
+ *
+ *  ⚠ 只用在**说明文字**里（"验证码已发到 138****0000"）：输入框本身就是号码的
+ *  显示位置，而它会一直留在屏幕上。 */
+function maskPhone(p) {
+  const s = String(p || '');
+  return /^\d{11}$/.test(s) ? `${s.slice(0, 3)}****${s.slice(7)}` : s;
+}
+
+/** 主按钮的可用性：**只按"还差几个字符"**，不问服务端。
+ *
+ *  ⚠ 这是提前告知，不是替用户做判断 —— 点了才报错的写法，用户要先失败一次
+ *  才知道规则（而这里唯一的规则就是位数）。
+ *  ⚠ 被重发倒计时接管的按钮**不由位数决定**（它由倒计时决定）：每次动作之后都会
+ *  `load()` → 重画 → 走到这里，不排掉的话「重新获取（N 秒）」会被重新点亮，
+ *  用户就能在倒计时里再点一次（连点正是要防的那件事）。 */
+function gate(btnId, value, need) {
+  const el = $(btnId);
+  if (el && el.dataset.resend !== '1') {
+    el.disabled = String(value || '').trim().length !== need;
+  }
+}
+
+/** 两个页签各一份倒计时状态（发码之后 60 秒内不许再点）。 */
+const resendTimers = { sms: null, app: null };
+
+/** 停掉某个页签的重发倒计时，按钮回到「获取验证码」。 */
+function stopResend(kind) {
+  if (resendTimers[kind] !== null) {
+    clearInterval(resendTimers[kind]);
+    resendTimers[kind] = null;
+  }
+  const btn = $(`${kind}-send`);
+  if (btn) {
+    delete btn.dataset.resend;
+    btn.textContent = '获取验证码';
+    btn.disabled = false;
+  }
+}
+
+/** 发码成功之后开始倒计时。**这是界面节奏，不是权威** ——
+ *  能不能发、还剩几次，最终是服务端说了算（`remainGetTimes`）。
+ *  它的用处是别让用户连点：连点只会喂限流。 */
+function startResend(kind, seconds = 60) {
+  const btn = $(`${kind}-send`);
+  let left = seconds;
+  if (resendTimers[kind] !== null) clearInterval(resendTimers[kind]);
+  // ⚠ `dataset.resend` 是给 `act` 看的：倒计时接管了这个按钮之后，
+  //   `act` 的收尾**不许**把它改回「获取验证码」、也不许把它重新点亮。
+  if (btn) btn.dataset.resend = '1';
+  const tick = () => {
+    if (left <= 0) {
+      stopResend(kind);
+      return;
+    }
+    if (btn) {
+      btn.textContent = `重新获取（${left} 秒）`;
+      btn.disabled = true;
+    }
+    left -= 1;
+  };
+  tick();
+  resendTimers[kind] = setInterval(tick, 1000);
+}
+
+/** 画这一屏的状态（两条路共用）。`s === null` ⇒ 还没开始这一趟。
+ *
+ *  ⚠ **一屏**，排布照参考实现自己的登录页：手机号（右端嵌「获取验证码」）→ 验证码
+ *  → 整宽「登录」。第一版我做成了"两步"（下一步 → 登录），用户把参考发过来之后
+ *  改成了一屏 —— 别让用户先点一次「下一步」才看到验证码那一格。 */
+function paintCodePane(kind, s) {
+  const phone = $(`${kind}-phone`);
+  if (s) {
+    if (phone && document.activeElement !== phone) phone.value = s.phone;
+    // 一句人话回答"现在该干什么"：没发码 ⇒ 点获取；发了 ⇒ 去看短信
+    const left = Math.max(0, Math.round(Number(s.expiresInMs) / 60000));
+    setText(
+      `${kind}-note`,
+      s.sent
+        ? `验证码已发到 ${maskPhone(s.phone)}${left > 0 ? ` · ${left} 分钟内有效` : ''}。没收到就点「重新获取」。`
+        : '点「获取验证码」，码会发到上面这个号。',
+    );
+  }
+  gate(`${kind}-send`, phone.value, 11);
+  gate(`${kind}-submit`, $(`${kind}-code`).value, 6);
+}
+
+/** 输入框的实时反应：只留数字、按位数开关按钮、回车等于点那个主按钮。
+ *
+ *  ⚠ 两个输入框**当参数传进来**（而不是在函数里用 `${kind}-phone` 拼）：
+ *  界面测试按字面 id 检查"每个控件都真的被取用过"，拼出来的字符串它看不见。 */
+function wireCodeForm(kind, phone, code) {
+  phone.addEventListener('input', () => {
+    phone.value = phone.value.replace(/\D/g, '').slice(0, 11);
+    gate(`${kind}-send`, phone.value, 11);
+  });
+  phone.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter' && !$(`${kind}-send`).disabled) $(`${kind}-send`).click();
+  });
+  code.addEventListener('input', () => {
+    code.value = code.value.replace(/\D/g, '').slice(0, 6);
+    gate(`${kind}-submit`, code.value, 6);
+    // 填满了就把焦点交给「登录」：手机上少按一次（**不自动提交** —— 点了才算）
+    if (code.value.length === 6) $(`${kind}-submit`).focus();
+  });
+  code.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter' && !$(`${kind}-submit`).disabled) $(`${kind}-submit`).click();
+  });
+}
+
+/** 点「获取验证码」：**先把会话开起来再发**。
+ *
+ *  ⚠ 参考实现是一屏（手机号旁边就是「获取验证码」），而这一侧的后端要先有会话
+ *  才肯发码（`/login/sms/start` 校验号码、并把"用哪种客户端形态"冻进会话）。
+ *  所以这里**串一下**：先 start（纯本地，不发请求），再 send。用户看到的仍然是一屏。
+ *  ⚠ 每次点都重新 start：形态可能刚被改过，而"界面上的选择"必须就是这一趟用的档案。 */
+async function requestCode(kind) {
+  const phone = $(`${kind}-phone`).value.trim();
+  if (kind === 'sms') {
+    await api('/login/sms/start', { method: 'POST', write: true, body: { phone, pcPlatform: addPc } });
+    return api('/login/sms/send', { method: 'POST', write: true });
+  }
+  await api('/login/app/start', { method: 'POST', write: true, body: { phone } });
+  return api('/login/app/send', { method: 'POST', write: true });
 }
 
 function renderAccount(a, login) {
@@ -278,10 +497,13 @@ function renderAccount(a, login) {
       chip.className = 'badge idle';
     }
   } else {
-    const cur = list.find((x) => x.current) || list[0];
-    setText('acct-hero', `已登录 ${cur.label || cur.masked}`);
+    // ⚠ 原来这里挑「当前账号」那一个报名字（`list.find((x) => x.current)`）。
+    //   删徽章（F-106）时这一处一起改：多个号时按那个指针点名 = 在瞎指，
+    //   而它会被兑换任务停在**最后遍历的那个号**上。
+    const one = list[0];
+    setText('acct-hero', n > 1 ? `已登录 ${n} 个账号` : `已登录 ${one.label || one.masked}`);
     setText('acct-sub', n > 1 ? `一共 ${n} 个账号，任务会挨个跑。` : '任务会用这个账号跑。');
-    chip.textContent = n > 1 ? `${n} 个账号` : cur.label || cur.masked;
+    chip.textContent = n > 1 ? `${n} 个账号` : one.label || one.masked;
     chip.className = 'badge success';
   }
 
@@ -304,7 +526,7 @@ function renderAccount(a, login) {
             // ⚠ 用 `.badge lang`（**不带状态圆点**）—— 平台是"这是台什么设备"的
             //   **描述**，不是状态。面板的圆点（`.badge::before`）是"状态"的视觉语言：
             //   带圆点的「Windows」看起来像"Windows 处于某种状态"，
-            //   而旁边真状态徽章（当前账号 / 已停用）反而被混淆了。
+            //   而旁边真状态徽章（「已停用」）反而被混淆了。
             //   `.badge.lang` 在面板里就是这个用途（语言标签），只去掉圆点，底色不变。
             const badge =
               x.platform === 'mobile'
@@ -314,47 +536,35 @@ function renderAccount(a, login) {
                   : '<span class="badge warning">平台未知</span>';
             // `凭据 N 天后`：`null` 是"这条凭据里没带到期时间"，**不能画成 0**
             //（那看起来像"已过期"，用户会去重新登录一个本来好好的账号）。
+            // ⚠ 这里**故意不提**票的到期时刻。
+            //   那是插件自己的内部机制（票很短命、任务会自己续），
+            //   用户既管不了也不需要知道 —— 摆出来只会让人以为要动手做什么。
+            //   真续不上时，跑单那句会说「重新导入会话」，那时才需要他。
             const exp =
               x.expireDays === null
-                ? '凭据到期时间未知'
+                ? '不知道什么时候过期'
                 : x.expireDays >= 0
-                  ? `凭据 ${x.expireDays} 天后`
-                  : `凭据已过期 ${-x.expireDays} 天`;
-            const dev = x.deviceId ? `设备 ${x.deviceId} · ` : '';
+                  ? `${x.expireDays} 天后过期`
+                  : `已经过期 ${-x.expireDays} 天`;
+            const dev = x.deviceId ? `设备 ${esc(String(x.deviceId).slice(0, 10))}… · ` : '';
             // 卡片用主面板那套（`.card` + `.card-head` + `.card-title` +
             // `.card-actions`），与面板的插件卡、任务卡同源。
             return `
-              <li class="card acct-card${x.current ? ' is-current' : ''}">
+              <li class="card acct-card">
                 <div class="card-head">
                   <div class="card-head-main">
                     <span class="card-title${x.disabled ? ' is-off' : ''}">${esc(x.label || x.masked)}</span>
                     ${badge}
-                    ${
-                      // 「当前账号」= 后端 mcloud.account.current 那个指针指向的账号
-                      //（src/mcloud/accounts.ts 的 currentAccount）：登录成功、
-                      // 加第一个账号、显式选择、以及**任务开跑时挑的那个**都会写它，
-                      // 账号被删就清空。所以它准确的意思是
-                      // **"任务要用的就是这个账号"**，而不是"此刻正在被使用"。
-                      //
-                      // ⚠ 原来写「正在用」（从参考实现抄来的）：语义含糊 ——
-                      //   "用"的主语是谁、是"此刻"还是"被选中"，都读不出来。
-                      //   改成「当前账号」：与后端那个字段同名，也和页头
-                      //   「已登录 13800000000」对得上。
-                      // ⚠ 变体用 .badge running（accent）不是 .success（绿）：
-                      //   面板里 accent = "活动/选中"，绿 = "健康/正常"；
-                      //   这里表达的是"选中"，而且卡片本身就描了一圈 accent 强调色
-                      //   （见 style.css 的 .acct-card.is-current），同一个含义用同一个颜色。
-                      // ⚠ 这段在模板串里：注释里**一个反引号都不能有**（换了引号也一样），
-                      //   写了会把模板串截断 —— 面板有专门的检查盯这个（见 test-web-assets.mjs）。
-                      x.current ? '<span class="badge running">当前账号</span>' : ''
-                    }
                     ${x.disabled ? '<span class="badge idle">已停用</span>' : ''}
                   </div>
                   <div class="card-actions">
-                    <!-- ⚠ 这里原来有「切到这个」。删了 —— **切账号不是账号管理**
-                         （参考实现的口径）：账号页管的是"有哪些账号"（登录 / 改昵称 /
-                         刷新 / 停用 / 移除），而"这一趟用哪些号跑"是**任务**的属性。
-                         那个按钮让人以为"切换"是账号页的事，于是任务页上就没去找。 -->
+                    <!-- ⚠ 这里原来有「切到这个」，卡片标题旁有徽章「当前账号」
+                         （+ 一圈 accent 描边）。两个都删了 —— 它们说的是后端那个
+                         指针 mcloud.account.current，而它在界面上**没有主人**：
+                         切账号是任务页的事（F-062），兑换任务跑完还会把那个指针
+                         停在最后遍历的那个号上。留着就是"看起来有个号被选中了"，
+                         而任务实际用哪些号只在任务页那三个勾选里。
+                         指针本身仍要留（按账号的键靠它兜底），只是不再摆给用户看。 -->
                     <button class="btn" data-acc-refresh="${esc(x.id)}">刷新</button>
                     <button class="btn" data-acc-rename="${esc(x.id)}">编辑</button>
                     <button class="btn" data-acc-settings="${esc(x.id)}">设置</button>
@@ -378,90 +588,903 @@ function renderAccount(a, login) {
   renderLogin(login || { qr: null, sms: null });
 }
 
+
+// ══════════ 任务排期（来自**面板**，不是写死的文案） ══════════
+//
+// 界面上那句「它自己什么时候跑」必须是**真的**：原来写死成「白天每 30 分钟跑一次」，
+// 而排期早改成 `0 8,20 * * *`（一天两次）—— 用户看到的就是一句错话。
+// 真值在面板的 `GET /api/state` 里（`jobs[].schedule` / `next_run` / `paused`）。
+//
+// ⚠ 这是**面板**的接口（同源、同一套 cookie），不是插件的 —— 插件的路由不该
+//   替面板转述排期（那样两份数据迟早不一致）。
+let JOBS = [];
+
+/** 取某条任务的 job（`plugin` + 任务名）。 */
+function jobOf(plugin, name) {
+  return JOBS.find((j) => j.plugin === plugin && j.name === name) || null;
+}
+
+/** 把面板里的排期串说成人话。
+ *
+ *  只认我们真用到的这几种形状；**认不出就说"按面板里设的时间跑"** ——
+ *  把一串星号糊到用户脸上比说不知道更糟，而编一句"每天几点"出来更糟。 */
+function scheduleText(job) {
+  const expr = String(job.schedule || '').trim();
+  const next = job.next_run ? when(String(job.next_run).replace(' ', 'T')) : '';
+  const tail = next === '' ? '' : `，下次 ${next}`;
+  const at = (h, m) => `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+  let m = /^(\d{1,2})\s+(\d{1,2}(?:,\d{1,2})*)\s+\*\s+\*\s+\*$/.exec(expr);
+  if (m !== null) {
+    const mins = Number(m[1]);
+    const hours = m[2].split(',').map((h) => at(Number(h), mins)).join('、');
+    return `每天 ${hours} 各跑一次${tail}`;
+  }
+  m = /^(\d{1,2})\s+\*\s+\*\s+\*\s+\*$/.exec(expr);
+  if (m !== null) return `每小时的第 ${Number(m[1])} 分跑一次${tail}`;
+  m = /^\*\/(\d{1,2})\s+\*\s+\*\s+\*\s+\*$/.exec(expr);
+  if (m !== null) return `每 ${Number(m[1])} 分钟跑一次${tail}`;
+  return `按面板里设的时间跑${tail}`;
+}
+
+/** 拉一次面板的任务表（失败就安静：那只是第二行文案，不该弹错误）。 */
+async function loadJobs() {
+  try {
+    const r = await fetch('/api/state', { headers: { 'x-panel': '1' } });
+    if (!r.ok) return;
+    const j = await r.json();
+    JOBS = Array.isArray(j.jobs) ? j.jobs.filter((x) => x.deleted !== true) : [];
+  } catch {
+    JOBS = [];
+  }
+}
+
 function renderDaily(d) {
-  renderRecent('daily-recent', 'daily-steps', d.recent);
   const run = d.last;
+  // ⚠ 这里**不能**写「今天已完成」—— 那读起来像"今天不会再跑了"。
+  //   一天两趟都是**照跑**的：第二趟是兜底（插件没法证明所有小任务都到了预期，
+  //   见 `src/entries/daily.ts` 里那段）。所以这里说"跑过几趟"。
+  const localDay = (iso) => {
+    const t = new Date(String(iso || ''));
+    return Number.isNaN(t.getTime()) ? '' : t.toLocaleDateString('sv');
+  };
+  const todayKey = new Date().toLocaleDateString('sv');
+  const todayRuns = (d.recent || []).filter((x) => localDay(x.at) === todayKey).length;
   if (!run) {
     setText('daily-hero', '还没跑过');
-    setText('daily-sub', '点下面的按钮跑一次。之后它自己在白天每 30 分钟跑一次。');
-  } else if (d.doneToday) {
-    setText('daily-hero', '今天已完成');
-    setText('daily-sub', run.note);
-  } else if (run.ok) {
-    setText('daily-hero', '今天还没跑完');
-    setText('daily-sub', run.note);
-  } else {
+  } else if (!run.ok) {
     setText('daily-hero', '上次有失败');
-    setText('daily-sub', run.note);
+  } else if (todayRuns > 0) {
+    setText('daily-hero', `今天跑过 ${todayRuns} 趟`);
+  } else {
+    setText('daily-hero', '今天还没跑完');
   }
+  // 第二行只放**两件事**：它什么时候自己跑（来自面板那条任务的排期）+
+  // 上一次的结果摘要。细节在下面的日志里 —— 用户的原话：
+  // 「这一块没必要了，用户看不懂」（指的是那一长串"未登录：state 里没有会话"）。
+  const bits = [];
+  const job = jobOf('mcloud-daily', '日常');
+  if (job) {
+    bits.push(scheduleText(job));
+    if (job.paused) bits.push('现在**暂停着**（去面板的任务页恢复）');
+  }
+  if (run) {
+    const cnt = [];
+    if (run.badCount > 0) cnt.push(`${run.badCount} 步失败`);
+    if (run.okCount > 0) cnt.push(`${run.okCount} 步完成`);
+    if (run.idleCount > 0) cnt.push(`${run.idleCount} 步跳过`);
+    bits.push(`上次 ${when(run.at)}${cnt.length ? `：${cnt.join('、')}` : ''}`);
+  } else {
+    bits.push('点「现在跑一次」看看它怎么走');
+  }
+  setText('daily-sub', bits.join(' · '));
+  renderAcctChips('daily-accounts', 'daily-account-detail', d.recent);
+}
 
-  setText('daily-when', '点「看」展开某一次的每一步。');
-  // ⚠ 这里**不再**直接画 `daily-steps` —— 那个容器现在归「最近几次」的详情面板
-  //   （`renderRecent` 管它，默认展开最近一次）。两处都画就会叠两层，
-  //   而第一版就是这样：列表下面又冒出一份一模一样的步骤。
+/** 上一次**每个号**的结果，一行 chips；点一个展开那个号的每一步。
+ *
+ *  ⚠ 数据源是读数里那些"一次一条"的运行记录：同一次触发写下的几条**共用一个 `at`**
+ *   （id 里带账号，所以 id 各不相同 —— 见 `runLog.ts` 的 `RunRecord.id`）。
+ *  ⚠ 名字用记录里的 `who`；只有旧记录没那一格时才去 `note` 的「名字：」里取。
+ *  ⚠ 每一步的明细**点开才拉**（`/runs?id=`）—— 一次 16 步 × 3 个号全塞进读数
+ *   就是几百 KB 的首屏。 */
+function renderAcctChips(boxId, detailId, recent) {
+  const box = $(boxId);
+  if (!box) return;
+  const detail = $(detailId);
+  box.textContent = '';
+  if (detail) detail.innerHTML = '';
+  const list = recent || [];
+  if (list.length === 0) return;
+  const runAt = list[0].at;
+  const sameRun = list.filter((x) => x.at === runAt);
+  // ⚠ 三个账号说**同一句话**的时候，三枚一模一样的 chip 只是噪声 ——
+  //   而且会让人以为"每个号各出了一件事"。合成一枚：「3 个账号」+ 那句话。
+  //   （现场：领小红花没开时，三个号都是「领小红花没开（要先在服务端那边开启）」。）
+  const restOf = (one) => {
+    const note = String(one.note || '');
+    const cut = note.indexOf('：');
+    return (cut > 0 ? note.slice(cut + 1) : note) || (one.ok ? '都好了' : '有没成的');
+  };
+  if (sameRun.length > 1 && new Set(sameRun.map(restOf)).size === 1) {
+    const one = sameRun[0];
+    const chip = el('button', 'acct-chip' + (one.ok ? ' is-good' : ' is-bad'));
+    chip.type = 'button';
+    chip.dataset.runId = one.id;
+    const name = el('b');
+    name.textContent = `${sameRun.length} 个账号`;
+    const rest = el('span');
+    rest.textContent = restOf(one);
+    chip.append(name, rest);
+    if (detail) chip.addEventListener('click', () => toggleRunDetail(detail, one.id, chip));
+    box.appendChild(chip);
+    return;
+  }
+  for (const one of sameRun) {
+    const note = String(one.note || '');
+    const cut = note.indexOf('：');
+    const who = one.who || (cut > 0 ? note.slice(0, cut) : '这个号');
+    const chip = el('button', 'acct-chip' + (one.ok ? ' is-good' : ' is-bad'));
+    chip.type = 'button';
+    chip.dataset.runId = one.id;
+    const name = el('b');
+    name.textContent = who;
+    const rest = el('span');
+    rest.textContent =
+      (cut > 0 ? note.slice(cut + 1) : note) || (one.ok ? '都好了' : '有没成的');
+    chip.append(name, rest);
+    if (detail) chip.addEventListener('click', () => toggleRunDetail(detail, one.id, chip));
+    box.appendChild(chip);
+  }
+}
+
+/** 一行一个用户认得的任务 —— 与后端 `tasks/stepLog.ts::userLine` 同一套口径。
+ *
+ *  用户只要两件事：成了没有、没成是什么原因。所以：
+ *   `签到：成了` / `签到：没成 —— <原因>` / `备份好礼：跳过`
+ *  内部管道步骤（后端在运行记录里标了 `plumb`）成功时不出现（`null`）——
+ *  界面这侧**不维护名字表**：两份名字迟早不一致，而且那些词本身就是黑话。
+ */
+function stepLine(step) {
+  const name = String(step.name || '');
+  if (step.plumb === true && step.ok) return null;
+  let why = String(step.note || '');
+  for (const n of [name, name.split('（')[0] || name]) {
+    if (why.startsWith(n + '：')) {
+      why = why.slice(n.length + 1);
+      break;
+    }
+  }
+  why = why.replace(/^(第 )?\d+ 步(失败|走完) —— /, '');
+  // 同后端 `trimNote`：`note` 的前缀是名字的一部分（`消息推送：…` vs `消息推送奖励（问状态）`）
+  const lead = /^([^：]{2,12})：/.exec(why);
+  if (lead !== null && name.includes(lead[1])) why = why.slice(lead[0].length);
+  const raw = /^code=(-?\d+)(?: msg=(.*))?$/.exec(why.trim());
+  if (raw !== null) {
+    const msg = String(raw[2] || '').trim();
+    why = msg === '' ? `服务端没给原因（编号 ${raw[1]}）` : `服务端说：${msg}`;
+  }
+  why = why.replace(/（服务端回 \{[^）]*\}）/g, '（服务端确认了）').trim();
+  // ⚠ 与后端 `userLine` 同一套：不写"成了/成功/跳过"这种抽象词，
+  //   直接把这一步**发生了什么**说出来（用户的原话：「成了是啥啊」）。
+  if (!step.ok) return `${name}：没成${why === '' ? '' : ` —— ${why}`}`;
+  return `${name}：${why === '' ? '好了' : why}`;
+}
+
+/** 展开/收起某个号那一次的每一步。 */
+async function toggleRunDetail(box, runId, chip) {
+  const open = box.dataset.run === runId;
+  box.innerHTML = '';
+  for (const c of box.parentElement.querySelectorAll('.acct-chip')) c.classList.remove('is-open');
+  if (open) {
+    delete box.dataset.run;
+    return;
+  }
+  box.dataset.run = runId;
+  chip.classList.add('is-open');
+  const li = el('li', 'hint');
+  li.textContent = '正在读那一次的每一步…';
+  box.appendChild(li);
+  try {
+    const r = await api('/runs?id=' + encodeURIComponent(runId));
+    box.innerHTML = '';
+    // 失败的在前面：点开就是为了看它
+    const steps = (r.steps || []).slice().sort((a, b) => Number(a.ok) - Number(b.ok));
+    let shown = 0;
+    for (const step of steps) {
+      const line = stepLine(step);
+      if (line === null) continue; // 管道步骤成了就不提
+      const row = el('li', step.ok ? '' : 'is-bad');
+      row.textContent = line;
+      box.appendChild(row);
+      shown += 1;
+    }
+    if (shown === 0) {
+      const none = el('li', 'hint');
+      none.textContent = steps.length === 0 ? '这一次没有记下每一步。' : '这一次没有要报的事。';
+      box.appendChild(none);
+    }
+  } catch (e) {
+    box.innerHTML = '';
+    const bad = el('li', 'hint');
+    bad.textContent = `读不到那一次：${e && e.message ? e.message : e}`;
+    box.appendChild(bad);
+  }
+}
+
+
+// ══════════════ 兑换页（对齐原 Rust mcloud 的兑换页）══════════════
+//
+// 原页面有：关注、按组看清单、状态/库存、二次确认、立即兑换、定时。
+// 插件这一侧保留自己的多账号任务模型；下面这些是**能搬过来的行为**：
+//   · 关注（按账号存，见 exchangeList.ts 的 STATE_SUBS）
+//   · 按 groupId 分组、搜名字/编号、只看可兑
+//   · 每件显示价格 / 池子 / 今日份额 / 判据，被挡住的不给「立即兑换」
+//   · 「立即兑换」先确认（可在页面关掉），然后逐步推进后端 order 状态机
+//   · 「定时」写定时链读的那一格（不直接下单；真正几点抢在下面选）
+const EX_CONFIRM_KEY = 'mcloud-exchange-confirm';
+const EX_LOCAL_JUDGE_KEY = 'mcloud-exchange-local-judge';
+let exBusy = false;
+
+function exConfirmFirst() {
+  try {
+    return localStorage.getItem(EX_CONFIRM_KEY) !== '0';
+  } catch {
+    return true;
+  }
+}
+
+function exSetConfirmFirst(on) {
+  try {
+    localStorage.setItem(EX_CONFIRM_KEY, on ? '1' : '0');
+  } catch {
+    /* 存不进去只影响下次记不记得，不影响这次 */
+  }
+}
+
+/** 本地判定：开着就按判据挡住；关掉 = 被挡的档也真发单（原页面同一个语义）。 */
+function exLocalJudge() {
+  try {
+    return localStorage.getItem(EX_LOCAL_JUDGE_KEY) !== '0';
+  } catch {
+    return true;
+  }
+}
+
+function exSetLocalJudge(on) {
+  try {
+    localStorage.setItem(EX_LOCAL_JUDGE_KEY, on ? '1' : '0');
+  } catch {
+    /* 同上 */
+  }
+}
+
+/** 判据 → 人话。表头/行内共用一份（`e.verdictText` 由后端给）。 */
+function exSay(v) {
+  const t = last && last.exchange && last.exchange.verdictText;
+  return (t && t[v]) || v || '';
+}
+
+function exSubs() {
+  const v = last && last.exchange && last.exchange.subs;
+  return Array.isArray(v) ? v : [];
+}
+
+function exSamePrize(a, b) {
+  if (a && b && a.id !== undefined && b.id !== undefined) return a.id === b.id;
+  return !!a && !!b && a.name === b.name;
+}
+
+function exIsSub(p) {
+  return exSubs().some((s) => exSamePrize(s, p));
+}
+
+/** 清单缓存：表格 / 关注 / 定时弹窗共用一份。 */
+let exPicks = [];
+
+function exFindPick(name, id) {
+  return exPicks.find((p) => (id !== undefined && p.id === id) || p.name === name);
+}
+
+/** 价格 / 池子 / 今日份额 —— 各自标清，不混成一句。 */
+function exStockText(p) {
+  const bits = [];
+  if (p.count !== undefined) {
+    bits.push(p.totalCount !== undefined ? `现量 ${p.count} / 共 ${p.totalCount}` : `现量 ${p.count}`);
+  }
+  if (p.dailyRemainderCount !== undefined) {
+    bits.push(
+      p.dailyCount !== undefined
+        ? `今日 ${p.dailyRemainderCount}/${p.dailyCount}`
+        : `今日还剩 ${p.dailyRemainderCount}`,
+    );
+  }
+  if (p.monthLimit !== undefined) bits.push(`本月 ${p.received ?? 0}/${p.monthLimit}`);
+  return bits.join(' · ');
+}
+
+/** 这一件值不值得「定时」：时间会改变结论的档才给（对齐原页面的 `canSchedule`）。 */
+function exCanSchedule(p) {
+  if (p.verdict === 'ok') return true;
+  return (
+    p.verdict === 'tomorrow' ||
+    p.verdict === 'min-remainder-zero' ||
+    p.verdict === 'sold-out' ||
+    p.verdict === 'daily-empty'
+  );
+}
+
+function exGroupId(p) {
+  return p.groupId === undefined || p.groupId === null ? 'none' : String(p.groupId);
+}
+
+// 组字典（上游静态文件 `sign_in_3/prizeGroup.json`）里的组名。
+// 上游清单只给 groupId，不给组名；这里按 2026-10-18 实拍把常用组名钉下来。
+// 没列到的组不硬编数字：显示「其他奖品」，宁可少一点信息也不要再出现「第 N 组」。
+const EX_GROUP_TITLES = {
+  '0': '其他权益奖品',
+  '1': '视频类会员',
+  '2': '音乐类会员',
+  '3': '山西专属流量奖品',
+  '4': '限时抢兑',
+  '5': '外卖美食权益',
+  '6': '交通出行类',
+  '7': '快递寄件券',
+  '8': '云盘转存券',
+  '9': '实用工具类',
+  '11': '美食饮品权益',
+  '12': '西藏用户专属',
+  '13': '咖啡饮品权益',
+  '14': '游戏礼包权益',
+  '15': '限时福利',
+};
+
+// 组规则也来自同一份 prizeGroup.json 的 subTitle；空串 = 这一组没有额外规则。
+const EX_GROUP_RULES = {
+  '1': '(月卡每月多选一限兑)',
+  '2': '(月卡每月多选一限兑)',
+  '3': '(每月多选一限兑)',
+  '5': '(每月多选一限兑)',
+  '6': '（每月多选一限兑）',
+  '7': '（每月多选一限兑）',
+  '11': '(每月多选一限兑)',
+  '12': '(每月多选一限兑)',
+  '13': '(每月多选一限兑)',
+  '14': '(每月多选一限兑)',
+};
+
+function exGroupTitle(key) {
+  if (key === 'none') return '未分组';
+  return EX_GROUP_TITLES[key] || '其他奖品';
+}
+
+function exGroupRule(key) {
+  return EX_GROUP_RULES[key] || '';
+}
+
+/** 展开中的组。默认空 = 全部折叠；点组头才展开，重绘后仍保持。 */
+const exOpenGroups = new Set();
+
+function exToggleGroup(key) {
+  if (exOpenGroups.has(key)) exOpenGroups.delete(key);
+  else exOpenGroups.add(key);
+  repaintExchange();
+}
+
+function exGroupWindow(items) {
+  const s = items.find((p) => p.startTime)?.startTime;
+  const e = items.find((p) => p.endTime)?.endTime;
+  if (!s && !e) return '';
+  const fmt = (v) => (typeof shortWhen === 'function' ? shortWhen(v) : v);
+  return `${s ? fmt(s) : '?'} ~ ${e ? fmt(e) : '?'}`;
+}
+
+/** 当前账号下拉。切账号会改「当前账号」，任务也会跟着用这个号。 */
+function renderExchangeAccount() {
+  const sel = $('ex-account');
+  if (!sel) return;
+  const acc = (last && last.account) || {};
+  const list = Array.isArray(acc.accounts) ? acc.accounts : [];
+  if (document.activeElement === sel) return;
+  sel.innerHTML = list.length
+    ? list
+        .map(
+          (a) =>
+            `<option value="${esc(a.id)}"${a.current ? ' selected' : ''}>${esc(a.label || a.id)}</option>`,
+        )
+        .join('')
+    : '<option value="">还没有账号</option>';
+  sel.disabled = list.length === 0;
+}
+
+/** 我关注的：固定在上面，和下面清单里的星星是同一份数据。 */
+function renderExchangeSubs() {
+  const box = $('ex-subs');
+  const subLine = $('ex-subs-sub');
+  if (!box) return;
+  const subs = exSubs();
+  if (subLine) subLine.textContent = subs.length ? `${subs.length} 件` : '';
+  if (!subs.length) {
+    box.innerHTML =
+      '<p class="hint">在下面清单里点 ☆ 关注一件，它会固定到这一块 —— 以后不用每次翻组找它。</p>';
+    return;
+  }
+  box.innerHTML = subs
+    .map((s) => {
+      const live = exFindPick(s.name, s.id);
+      const status = live ? exSay(live.verdict) : '不在今天的清单里';
+      const stock = live ? exStockText(live) : '';
+      const price = live && live.price !== undefined ? `${live.price} 豆` : '';
+      const bits = [price, stock].filter(Boolean).join(' · ');
+      return (
+        `<div class="ex-sub-row">` +
+        `<span class="ex-sub-name">${esc(s.name)}</span>` +
+        `<span class="badge ${live && live.verdict === 'ok' ? 'success' : 'idle'}">${esc(status)}</span>` +
+        `<span class="hint grow">${esc(bits)}</span>` +
+        `<button class="btn btn-sm ex-star is-on" data-unsub-name="${esc(s.name)}" title="取消关注">★</button>` +
+        (live
+          ? (exCanSchedule(live)
+              ? `<button class="btn btn-sm" data-plan-name="${esc(s.name)}" title="打开定时抢兑弹窗">定时</button>`
+              : '') +
+            (live.verdict === 'ok' || !exLocalJudge()
+              ? `<button class="btn btn-sm primary" data-buy-name="${esc(s.name)}"${exBusy ? ' disabled' : ''}>立即兑换</button>`
+              : '')
+          : '') +
+        `</div>`
+      );
+    })
+    .join('');
+}
+
+/** 清单表：按 groupId 分组；被挡住的件不给「立即兑换」，时间会变的仍给「定时」。 */
+function renderExchangeTable(e, say) {
+  const tbl = $('ex-tbl');
+  if (!tbl) return;
+  const q = (($('ex-filter') && $('ex-filter').value) || '').trim().toLowerCase();
+  const only = ($('ex-verdict') && $('ex-verdict').value) || '';
+  const showBlocked = !!($('ex-show-blocked') && $('ex-show-blocked').checked);
+  const blocked = exPicks.filter((p) => p.verdict !== 'ok').length;
+  const blockedCount = $('ex-blocked-count');
+  if (blockedCount) blockedCount.textContent = String(blocked);
+  const shown = exPicks.filter((p) => {
+    if (q && !(p.name.toLowerCase().includes(q) || String(p.id ?? '').includes(q))) return false;
+    if (only === 'ok' && p.verdict !== 'ok') return false;
+    if (only === 'sub' && !exIsSub(p)) return false;
+    // 原页面把"不可兑"折进一行；这里默认也折起来 —— 一份 50 件全判不了的清单
+    // 逐件铺 50 个"判不了"的徽章，读的人只会看到一堵墙。
+    if (!showBlocked && p.verdict !== 'ok') return false;
+    return true;
+  });
+  const count = $('ex-count');
+  if (count) {
+    count.textContent = exPicks.length
+      ? `显示 ${shown.length} / ${exPicks.length} 件 · 可兑 ${exPicks.filter((p) => p.verdict === 'ok').length} 件 · 不可兑 ${blocked} 件`
+      : '';
+  }
+  if (!exPicks.length) {
+    tbl.innerHTML = '<tr><td class="empty">还没有清单 —— 点旁边那颗「读一次」。</td></tr>';
+    return;
+  }
+  if (!shown.length) {
+    const why = [
+      ...new Set(exPicks.filter((p) => p.verdict !== 'ok').map((p) => say(p.verdict))),
+    ].join('、');
+    tbl.innerHTML =
+      '<tr><td class="empty">' +
+      (blocked > 0 && !showBlocked
+        ? `现在没有可兑的；另有 ${blocked} 件不可兑${why ? `（${why}）` : ''}。勾上面的「显示不可兑」查看每一件。`
+        : '没有匹配的奖品。') +
+      '</td></tr>';
+    return;
+  }
+  const groups = new Map();
+  for (const p of shown) {
+    const k = exGroupId(p);
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(p);
+  }
+  const sorted = [...groups.entries()].sort((a, b) => {
+    const ao = a[1].some((p) => p.verdict === 'ok') ? 0 : 1;
+    const bo = b[1].some((p) => p.verdict === 'ok') ? 0 : 1;
+    if (ao !== bo) return ao - bo;
+    return (Number(a[0]) || 0) - (Number(b[0]) || 0);
+  });
+  const rows = [
+    '<thead><tr><th>奖品</th><th>编号</th><th>价格</th><th>池子 / 今日</th><th>能不能换</th><th>操作</th></tr></thead><tbody>',
+  ];
+  for (const [key, items] of sorted) {
+    const win = exGroupWindow(items);
+    const ok = items.filter((p) => p.verdict === 'ok').length;
+    const open = exOpenGroups.has(key);
+    rows.push(
+      `<tr class="ex-group-row"><td colspan="6">` +
+        `<button type="button" class="ex-group-toggle" data-group-toggle="${esc(key)}" aria-expanded="${open}">` +
+        `<span class="ex-group-caret" aria-hidden="true"></span>` +
+        `<span class="ex-group-name">${esc(exGroupTitle(key))}</span>` +
+        (exGroupRule(key) ? `<span class="ex-group-rule">${esc(exGroupRule(key))}</span>` : '') +
+        `<span class="hint"> · ${items.length} 件 · 可兑 ${ok} 件${win ? ` · ${esc(win)}` : ''}</span>` +
+        `</button></td></tr>`,
+    );
+    for (const p of items) {
+      const idx = exPicks.indexOf(p);
+      const isSub = exIsSub(p);
+      const stock = exStockText(p) || '——';
+      rows.push(
+        `<tr data-group-key="${esc(key)}"${open ? '' : ' hidden'}>` +
+          `<td data-label="奖品">${esc(p.name)}</td>` +
+          `<td data-label="编号" class="mono dim">${esc(p.id ?? '——')}</td>` +
+          `<td data-label="价格">${p.price === undefined ? '——' : `${esc(p.price)} 豆`}</td>` +
+          `<td data-label="池子 / 今日" class="hint">${esc(stock)}</td>` +
+          `<td data-label="能不能换"><span class="badge ${p.verdict === 'ok' ? 'success' : p.verdict === 'unknown' ? 'warning' : 'idle'}">${esc(say(p.verdict))}</span></td>` +
+          `<td data-label="操作"><span class="ex-row-actions">` +
+          `<button class="btn btn-sm ex-star ${isSub ? 'is-on' : ''}" data-sub-idx="${idx}" title="${isSub ? '取消关注' : '关注'}">${isSub ? '★' : '☆'}</button>` +
+          (exCanSchedule(p)
+            ? `<button class="btn btn-sm" data-plan-idx="${idx}" title="打开定时抢兑弹窗">定时</button>`
+            : '') +
+          (p.verdict === 'ok' || !exLocalJudge()
+            ? `<button class="btn btn-sm primary" data-buy-idx="${idx}"${exBusy ? ' disabled' : ''}>立即兑换</button>`
+            : '') +
+          `</span></td>` +
+          `</tr>`,
+      );
+    }
+  }
+  rows.push('</tbody>');
+  tbl.innerHTML = rows.join('');
+}
+
+/** 结果区：一次手动兑换的每一步。 */
+function exResult(text, ok = true) {
+  const box = $('ex-result');
+  if (!box) return;
+  const p = el('p', ok ? 'hint' : 'hint is-bad');
+  p.textContent = text;
+  box.appendChild(p);
+}
+
+/** 定时弹窗当前给哪一件排定时（不是手动兑换）。 */
+let planDialogQuery = '';
+
+/** 把读数灌进定时弹窗（打开时 / 轮询重绘时）。 */
+function syncPlanFields(e) {
+  const setVal = (id, v) => {
+    const el = $(id);
+    if (el && document.activeElement !== el) el.value = v;
+  };
+  const cron =
+    e.scheduleCron || (e.targetHour === null || e.targetHour === undefined ? '0 * * * *' : `0 ${e.targetHour} * * *`);
+  setVal('ex-plan-cron', cron);
+  const until = e.scheduleUntil || '';
+  setVal('ex-plan-until', /^\d{4}-\d{2}-\d{2}$/.test(until) ? `${until}T23:59` : until);
+  setVal('ex-plan-lead-sec', String(e.leadSec ?? 120));
+  setVal('ex-plan-max', String(e.scheduleMaxRuns ?? 0));
+  setText(
+    'ex-plan-note',
+    e.scheduleRuns ? `当前账号这一版定时已经跑过 ${e.scheduleRuns} 次` : '',
+  );
+  updatePlanPreview();
+}
+
+function updatePlanPreview() {
+  const cron = ($('ex-plan-cron') && $('ex-plan-cron').value.trim()) || '（未填 cron）';
+  const l = ($('ex-plan-lead') && $('ex-plan-lead').value.trim()) || '10';
+  const leadSec = ($('ex-plan-lead-sec') && $('ex-plan-lead-sec').value.trim()) || '120';
+  const max = ($('ex-plan-max') && $('ex-plan-max').value.trim()) || '0';
+  const until = ($('ex-plan-until') && $('ex-plan-until').value) || '';
+  setText(
+    'ex-plan-preview',
+    `cron ${cron} · 提前 ${leadSec}s 启动 · 每号 ${max === '0' ? '不限' : max} 次` +
+      (until ? ` · 截止 ${until.replace('T', ' ')}` : '') +
+      ` · 整点前 ${l}ms 发`,
+  );
+}
+
+/** 打开「定时抢兑」弹窗。`p` 是清单/关注里点的那一件。 */
+function openPlanDialog(p) {
+  const e = (last && last.exchange) || {};
+  planDialogQuery = (p && p.name) || e.schedulePlan || e.plan || '';
+  setText('ex-plan-prize', planDialogQuery || '还没选目标');
+  setText('ex-plan-price', p && p.price !== undefined ? `（${p.price} 豆）` : '');
+  const lead = $('ex-plan-lead');
+  if (lead) lead.value = String(e.leadMs ?? 10);
+  syncPlanFields(e);
+  $('ex-plan-dialog').hidden = false;
+  $('ex-plan-cron').focus();
+}
+
+/** 保存定时：写时刻/提前量 + 只写定时目标（不 startsOrder、不发请求）。 */
+async function savePlanDialog() {
+  const query = planDialogQuery.trim();
+  if (query === '') throw new Error('先从清单里选一件，再保存定时');
+  const cron = $('ex-plan-cron').value.trim();
+  if (cron === '') throw new Error('cron 表达式不能为空');
+  const lead = $('ex-plan-lead').value.trim() || '10';
+  const until = $('ex-plan-until').value.trim();
+  const leadSec = $('ex-plan-lead-sec').value.trim() || '120';
+  const maxRuns = $('ex-plan-max').value.trim() || '0';
+  await post('config', { leadMs: lead });
+  const r = await api('/exchange/order', {
+    method: 'POST',
+    write: true,
+    body: { action: 'plan', query, cron, until, maxRuns: Number(maxRuns), leadSec: Number(leadSec) },
+  });
+  if (!r.ok) throw new Error(r.note || '定时目标没存上');
+  // 面板任务才是调度的权威：把用户 cron 和提前量同步给父页面（面板）。
+  // 插件页跑在另一个 origin，拿不到面板会话，所以只发消息、不直接调 /api/jobs。
+  try {
+    if (window.parent && window.parent !== window) {
+      window.parent.postMessage(
+        {
+          type: 'panel:edit-job',
+          plugin: 'mcloud-exchange',
+          name: '兑换',
+          expr: cron,
+          lead_ms: Number(leadSec) * 1000,
+        },
+        '*',
+      );
+    }
+  } catch {
+    /* 独立打开时没有父页面；设置本身已经存到插件里 */
+  }
+  $('ex-plan-dialog').hidden = true;
+  await load();
+  return r;
+}
+
+/** 立即兑换：先确认，再逐步推进后端 order 状态机（一次一个请求）。 */
+async function exBuyNow(p, btn) {
+  if (exBusy) {
+    toast('上一单还在走，等它结束', true);
+    return;
+  }
+  const price = p.price === undefined ? '' : `价格 ${p.price} 豆；`;
+  const stock = exStockText(p);
+  const blocked = p.verdict === 'ok' ? '' : `当前状态：${exSay(p.verdict)}；`;
+  if (
+    exConfirmFirst() &&
+    !confirm(
+      `立即兑换「${p.name}」？\n\n${blocked}${price}${stock ? stock + '；' : ''}\n` +
+        '这是真下单，会扣 AI 豆；同组名额会被占掉。',
+    )
+  ) {
+    return;
+  }
+  exBusy = true;
+  for (const b of document.querySelectorAll('#ex-tbl [data-buy-idx], #ex-subs [data-buy-name]')) {
+    b.disabled = true;
+    b.textContent = '兑换中…';
+  }
+  const box = $('ex-result');
+  if (box) box.innerHTML = '';
+  exResult(`开始兑换「${p.name}」…`, true);
+  try {
+    if (!(await ensureH5Session())) {
+      throw new Error('网页会话没续上 —— 登录凭据可能过期了，去「账号」页重新登录一次');
+    }
+    let r = await api('/exchange/order', {
+      method: 'POST',
+      write: true,
+      body: { query: p.name },
+    });
+    exResult(r.note || '已起单', !!r.ok);
+    if (!r.ok) throw new Error(r.note || '起单失败');
+    for (let i = 0; i < 12; i += 1) {
+      r = await api('/exchange/order', {
+        method: 'POST',
+        write: true,
+        body: { action: 'step' },
+      });
+      exResult(r.note || '继续下一步', !!r.ok);
+      if (r.done || r.idle || !r.ok) break;
+    }
+    toast(r && r.ok ? '兑换流程结束' : '兑换没成，看结果', r && r.ok ? '' : true);
+  } catch (e) {
+    exResult(String(e && e.message ? e.message : e), false);
+    toast(String(e && e.message ? e.message : e), true);
+  } finally {
+    exBusy = false;
+    await load();
+  }
+}
+
+async function exToggleSub(p, on, btn) {
+  await act(
+    btn,
+    () =>
+      api('/exchange/subs', {
+        method: 'POST',
+        write: true,
+        body: { id: p.id, name: p.name, on },
+      }),
+    (r) => (r && r.note) || (on ? '已关注' : '已取消关注'),
+  );
 }
 
 function renderExchange(e) {
-  renderRecent('ex-recent', 'ex-steps', e.recent);
-  setText('ex-hero', e.plan ? `要换：${e.plan}` : '还没设兑换目标');
-  // 第二行回答"现在是什么状态" —— 抢兑这条链大部分时间在**等**，
-  // 而"界面不动"和"卡住了"看起来一模一样，所以要说出来。
-  const t = e.timing || {};
-  const bits = [];
-  if (e.orderedThisHour) bits.push('这一场已经试过了');
-  else if (t.inWindow) bits.push('正在抢兑窗口里');
-  else if (e.toTargetMs > 0) bits.push(`离这一场还有 ${fmtMs(e.toTargetMs)}`);
-  bits.push(e.targetHour === null ? '每小时都试' : `每天 ${e.targetHour} 点`);
-  bits.push(`压整点前 ${e.leadMs ?? 10}ms 发`);
-  setText('ex-sub', e.plan ? bits.join(' · ') : '设一个之后它才会去下单。');
-  // 两个输入框回填当前值（**它们不是秘密**，可以回填）
-  const hourEl = $('ex-hour');
-  if (hourEl && document.activeElement !== hourEl) {
-    hourEl.value = e.targetHour === null ? '' : String(e.targetHour);
+  setText('ex-hero', '兑换');
+  renderAcctChips('exchange-accounts', 'exchange-account-detail', e.recent);
+  // 定时弹窗回填当前值（**它们不是秘密**，可以回填）
+  const leadEl = $('ex-plan-lead');
+  if (leadEl && document.activeElement !== leadEl && $('ex-plan-dialog').hidden) {
+    leadEl.value = String(e.leadMs ?? 10);
   }
-  const leadEl = $('ex-lead');
-  if (leadEl && document.activeElement !== leadEl) leadEl.value = String(e.leadMs ?? 10);
+  if ($('ex-plan-dialog').hidden) syncPlanFields(e);
 
-  const plan = $('ex-plan');
-  if (plan && document.activeElement !== plan) plan.value = e.plan || '';
-
-  const r = e.reading;
-  setText('ex-note', r ? e.verdictText || '' : '还没有清单读数 —— 点「现在试一次」去读一次。');
-
-  const rows = (r && r.prizes) || [];
-  const tbl = $('ex-tbl');
-  if (!rows.length) {
-    tbl.innerHTML = '<tr><td class="empty">还没有清单读数。</td></tr>';
-  } else {
-    tbl.innerHTML =
-      '<tr><th>奖品</th><th>要多少豆</th><th>还剩</th><th>能不能换</th></tr>' +
-      rows
-        .map(
-          (p) =>
-            `<tr><td>${esc(p.name)}</td><td>${esc(p.price)}</td><td>${esc(p.stock)}</td>` +
-            `<td>${esc(p.verdict || '')}</td></tr>`,
-        )
-        .join('');
+  setText('ex-meta', e.reading && e.reading.at ? `清单读取于 ${when(e.reading.at)}` : '还没读过清单');
+  // ⚠ `jwtExpired` 是**两小时那张票**过期 —— 它由 `ensureH5Session()` 无感续，
+  //   不是"要用户处理"的事。只有**原生登录凭据**（auth）过期才需要人重新登录。
+  const warn = $('ex-session-warn');
+  if (warn) {
+    const cur = ((last && last.account && last.account.accounts) || []).find((a) => a.current);
+    const authExpired =
+      !!cur && typeof cur.expireDays === 'number' && Number.isFinite(cur.expireDays) && cur.expireDays <= 0;
+    warn.hidden = !authExpired;
+    warn.textContent = authExpired
+      ? `当前账号「${cur.label || cur.id}」的登录凭据已过期（不是两小时那张票）—— 先刷新登录凭据，或重新登录。`
+      : '';
+    const refresh = $('ex-session-refresh');
+    if (refresh) refresh.hidden = !authExpired;
   }
+
+  // 清单表读**缓存**（`picks`，全量、按天作废），不是摘要读数。
+  exPicks = (e.picks && e.picks.items) || [];
+  const can = exPicks.filter((p) => p.verdict === 'ok').length;
+  // ⚠ 不报"哪天那份"：缓存**只有今天那份**能读回来（过期即清），
+  //   所以这一格恒等于"今天"，写上只会有两个坏处 —— 多一串日期要读，
+  //   而且它像一个"可能不是今天"的暗示。
+  setText(
+    'ex-note',
+    exPicks.length === 0
+      ? '还没读到清单 —— 点旁边那颗「读一次」读一遍。'
+      : can > 0
+        ? `今天读到 ${exPicks.length} 件，其中 ${can} 件现在能换`
+        : `今天读到 ${exPicks.length} 件，现在都换不了`,
+  );
+  // 每一行的"能不能换"要走那张表翻成人话（原来直接印 `ok`/`tomorrow` 这种码）
+  const say = (v) => (e.verdictText && e.verdictText[v]) || v || '';
+  // 原 Rust mcloud 的兑换页：关注在最上面，清单按组展开。
+  // 这里沿用同一份 `picks`，只是把「表格」换成「按组 + 行内动作」。
+  renderExchangeAccount();
+  renderExchangeSubs();
+  renderExchangeTable(e, say);
+  // 二次确认的偏好跟着开关变：关掉之后还写"点下去会先问"就是骗人。
+  const cf = $('ex-confirm-first');
+  if (cf && document.activeElement !== cf) cf.checked = exConfirmFirst();
+  const lj = $('ex-local-judge');
+  if (lj && document.activeElement !== lj) lj.checked = exLocalJudge();
+  setText(
+    'ex-intro',
+    (exConfirmFirst()
+      ? '挑一件兑换。下单会真的扣 AI 豆，所以点下去要再确认一次；抢不到的可以先「定时」等那一场。'
+      : '挑一件兑换。下单会真的扣 AI 豆 —— 你已经关掉二次确认，点「立即兑换」就直接扣。') +
+      (exLocalJudge() ? '' : ' 本地判定已关：抢光/未开始/已兑过也会真发单。'),
+  );
+}
+
+/** 两小时那张 `jwttoken` 过期时**无感续**：调 `/h5/step` 把四步续票走完。
+ *
+ *  参考 Rust mcloud 的 `H5Client`：票过期不该让用户看到"未登录"，
+ *  只有**原生登录凭据**（auth）过期才需要人重新登录。
+ *  `force` 用于移动云盘明确回 `90001`（票没被认）时强制续一轮。 */
+let h5Refreshing = null;
+async function ensureH5Session(force = false) {
+  const cur = ((last && last.account && last.account.accounts) || []).find((a) => a.current);
+  if (!force && !(cur && cur.jwtExpired)) return true;
+  if (h5Refreshing) return h5Refreshing;
+  h5Refreshing = (async () => {
+    for (let i = 0; i < 6; i += 1) {
+      const r = await post('h5/step', {});
+      if (r.done) return r.ok !== false;
+    }
+    return false;
+  })().finally(() => {
+    h5Refreshing = null;
+  });
+  return h5Refreshing;
+}
+
+/** 读一次清单。**先保证票新鲜**（到期主动换），再只发清单那一枪。 */
+async function refreshPicks() {
+  if (!(await ensureH5Session())) {
+    throw new Error('网页会话没续上 —— 登录凭据可能过期了，去「账号」页重新登录一次');
+  }
+  let r = await api('/exchange/picks', { method: 'POST', write: true });
+  // 票没过期、但被移动云盘拒了（90001）：强制续一轮再重试**一次**。
+  if (r && r.ok === false && /90001|未登录|票没被认|会话/.test(String(r.note || ''))) {
+    await ensureH5Session(true);
+    r = await api('/exchange/picks', { method: 'POST', write: true });
+  }
+  return r;
+}
+
+/** 点开这一屏时补一枪，**只补一次**。
+ *
+ *  ⚠ 判据是"今天这份缓存有没有"，不是"我有没有点过"：昨天那份已经被服务端
+ *  作废清掉了，所以这里读到空 ⇒ 才去打。已经有今天的 ⇒ 一个字都不发。 */
+let exPicksAutoFetched = false;
+function autoFetchPicksOnce() {
+  if (exPicksAutoFetched) return;
+  exPicksAutoFetched = true;
+  const e = (last && last.exchange) || {};
+  const cur = ((last && last.account && last.account.accounts) || []).find((a) => a.current);
+  const jwtExpired = !!(cur && cur.jwtExpired);
+  const have = ((e.picks && e.picks.items) || []).length > 0;
+  // 有今天的缓存、且两小时那张票还没过期 ⇒ 一个字都不发。
+  // 票过期则**自动续票并重读**（mcloud 的 H5Client 语义：票过期无感，不是让用户点）。
+  if (have && !jwtExpired) return;
+  // `act` 自己 toast 失败原因、也自己 `load()`（见 `autoFetchBeansOnce` 同一条理由）
+  void act($('ex-read'), refreshPicks, (r) => (r && r.note) || '清单已刷新');
+}
+
+/** `2026-10-20 14:30:00` → `10-20 14:30`；今天/明天就直说。 */
+function shortWhen(v) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(String(v || ''));
+  if (m === null) return String(v || '');
+  const now = new Date();
+  const day = `${m[2]}-${m[3]}`;
+  const today = `${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  const tmr = new Date(now.getTime() + 86400000);
+  const tomorrow = `${String(tmr.getMonth() + 1).padStart(2, '0')}-${String(tmr.getDate()).padStart(2, '0')}`;
+  const hm = `${m[4]}:${m[5]}`;
+  if (day === today) return `今天 ${hm}`;
+  if (day === tomorrow) return `明天 ${hm}`;
+  return `${day} ${hm}`;
 }
 
 function renderLive(l) {
-  renderRecent('live-recent', 'live-steps', l.recent);
   const pool = l.pool || {};
   const codes = (l.codes || []).filter((c) => c && c.code);
   const valid = pool.validCount || 0;
 
-  setText('live-hero', valid > 0 ? `口令池里有 ${valid} 条能用` : '口令池是空的');
+  // ⚠ 第一行要回答"它现在在干什么"，不是"池子里有几条口令"（用户的原话：
+  //   这两件事接不上）。顺序：正在听 > 下一场几点 > 还没探到。
+  const listening = !!(l.listen && l.listen.reading && l.listen.reading.step === 'listen');
+  const next = shortWhen(pool.nextStart || (l.auto && l.auto.nextStart) || '');
+  setText(
+    'live-hero',
+    listening ? `正在听${next ? ` ${next} 那场` : ''}` : next ? `下一场 ${next}` : '还没探到下一场',
+  );
+  // 第二行只回答两件事：**下次什么时候跑**、**现在在不在听（为什么）**。
+  //
+  // ⚠ 原来这里还有一段「还没有能用的口令（主播发的时候要人贴进来）」。三个毛病：
+  //   ① 它是"功能说明"，不是状态 —— 状态行该报"现在怎么样"；
+  //   ② 和刚定的口径打架：**没在播就不听、不看小红书**，那就不该在同一行里
+  //      提醒用户"记得贴口令"（等于暗示"我们会去拿"）；
+  //   ③ 位置错：口令有几条是**口令池**那一块的属性，那一块就在下面。
+  //   所以条数移到口令池那行去说，这里只留"在不在听 + 为什么"。
   const bits = [];
-  if (pool.nextStart) bits.push(`下一场 ${pool.nextStart}`);
-  if (l.auto && l.auto.wakeAt) bits.push(`下一次自动听 ${when(l.auto.wakeAt)}`);
-  if (l.listen && l.listen.line) bits.push(l.listen.line);
-  setText('live-sub', bits.join(' · ') || '没有日程 —— 等它探到下一场。');
+  const job = jobOf('mcloud-live', '直播');
+  if (job) bits.push(scheduleText(job));
+  if (listening) {
+    bits.push(next ? `正在听 ${next} 那场` : '正在听');
+  } else {
+    const g = l.gate || {};
+    const why =
+      g.at === undefined || g.at === null
+        ? ''
+        : g.active === true
+          ? '它正在播'
+          : (g.liveCount || 0) === 0
+            ? '谁都没开播'
+            : `有 ${g.liveCount} 间在播，但都不是它`;
+    bits.push(why === '' ? '现在没在听' : `现在没在听：${why}`);
+  }
+  setText('live-sub', bits.join(' · ') || '还没有日程 —— 它探到下一场就会自己开始听。');
+  // ⚠ 「领小红花没开」是**全局开关**的状态，不是某个账号跑出来的结果。
+  //   口令池那一行已经把它说全了（还带"这里的开关只是允许插件去领"），
+  //   再在账号 chip 上重复一次就是同一句话说两遍 —— 而且会让人以为每个号各出了一件事。
+  //   一个控件只留一处说法。
+  const liveRecent = (l.recent || []).filter(
+    (x) => !/领小红花没开/.test(String(x.note || '')),
+  );
+  renderAcctChips('live-accounts', 'live-account-detail', liveRecent);
 
   // 领小红花的结论（四栏 + 进账）。这是「直播」这一块第二重要的读数 ——
   // 它回答「上一轮到底领到没有、没领到是为什么」。
   const draw = l.draw || {};
   const rep = draw.report;
+  // 口令池那行先说"手里有几条"（条数是这一块的属性，不是上面那行的）
+  const poolHead = valid > 0 ? `手里有 ${valid} 条能用的口令` : '还没有能用的口令';
   if (rep) {
     const bits2 = [];
     if (rep.expired.length > 0) bits2.push(`${rep.expired.length} 条本场已结束（不是口令抄错）`);
@@ -470,9 +1493,19 @@ function renderLive(l) {
     if (rep.other.length + rep.unparsable.length > 0) {
       bits2.push(`${rep.other.length + rep.unparsable.length} 条回了没见过的结果`);
     }
-    setText('live-pool-line', rep.line + (bits2.length > 0 ? ' · ' + bits2.join(' · ') : ''));
+    setText('live-pool-line', `${poolHead} · ${rep.line}${bits2.length > 0 ? ' · ' + bits2.join(' · ') : ''}`);
   } else {
-    setText('live-pool-line', draw.line || pool.line || pool.note || '');
+    setText('live-pool-line', `${poolHead} · ${draw.line || pool.line || pool.note || ''}`);
+  }
+  // 用户口径（2026-10-17）：「领小红花需要服务端开启才能用」——
+  // 这里那个开关只是**允许插件去领**，功能本身得服务端那边开。
+  if (l.claim && l.claim.enabled === false) {
+    const cur = $('live-pool-line');
+    if (cur && !/服务端/.test(cur.textContent || '')) {
+      cur.textContent = `领小红花没开 —— 要先在服务端那边开启（这里的开关只是允许插件去领）。${
+        cur.textContent || ''
+      }`;
+    }
   }
   paintList(
     'live-codes',
@@ -485,25 +1518,356 @@ function renderLive(l) {
   );
 }
 
+/** 市场的名字。界面上不摆 `sign_in_3` 这种内部 id —— 那是给排查看的。 */
+const MARKET_LABEL = { sign_in_3: '签到', newsign_139mail: '邮箱' };
+
+/** 一条 App 任务的**桶**：判据与写的那半（`judgeItem`）**必须是同一条** ——
+ *  `FINISH` ⇒ done；`enable === 1` ⇒ todo；其余 ⇒ skip。
+ *  ⚠ 它只管**排序与折叠**，不管徽章上那个词（词见 `appTaskView`）。 */
+function appTaskBucket(it) {
+  if (it.state === 'FINISH') return 'done';
+  if (it.enable === 1) return 'todo';
+  return 'skip';
+}
+
+/** 徽章上那句话 —— **照抄移动云盘给这一条、这一阶段写的那一句**（`buttonOutText` 那一族）。
+ *
+ *  ⚠ 不许一刀切印成「待做」：这是 mcloud 犯过又改掉的错（`694e35f`，用户原话
+ *  「提示只有已完成和待做，这个**待做容易误导**，请与原接口文案一致」）。
+ *  真机实拍（抓包仓 `app-task-run-account-samples.txt` §12.10 / §12.11）：
+ *  同一趟里 `state=WAIT` 的两条，1029 是「**去完成**」、1021 是「**开启中**」；
+ *  549 是「**下月再来**」（这个月压根做不了）、`FINISH` 的 607 是「**次月可领**」。
+ *  ⇒ 一刀切那个词把"移动云盘已经给了具体处境"这件事盖掉了。
+ *
+ *  ⚠ 我们只走 **V3**，而 V3 把**当前阶段那一档**直接写进 `text` ✓ ——
+ *  所以 `buttonOutText` 就是 App 上那个词。`textMiddle`/`textFinish` 与
+ *  `actionMiddle` 那套三档判断是 V2 形状的兜底；而 `actionMiddle` 判阶段
+ *  **被实拍证伪过一次**（549 它是空串 ⇒ 会显示「去开启」✗，App 是「下月再来」✓），
+ *  所以这里只拿它决定"两份文案先看哪一个"，**不当**"能不能做"的判据。
+ *  读不出移动云盘那边的文案就回落状态词（已完成 / 未完成），**不猜**。 */
+function appTaskView(it) {
+  const pick = (...vs) => {
+    for (const v of vs) {
+      const t = String(v ?? '').trim();
+      if (t !== '') return t;
+    }
+    return '';
+  };
+  if (appTaskBucket(it) === 'skip') return { label: '不参与', badge: 'idle' };
+  const state = String(it.state ?? '').trim();
+  const middle = String(it.buttonActionMiddle ?? '').trim();
+  if (state === 'FINISH') {
+    return { label: pick(it.buttonTextFinish, it.buttonOutText) || '已完成', badge: 'success' };
+  }
+  if (state === 'DOING') return { label: '进行中', badge: 'running' };
+  if (state === 'WAIT') {
+    const t =
+      middle === ''
+        ? pick(it.buttonOutText, it.buttonTextMiddle)
+        : pick(it.buttonTextMiddle, it.buttonOutText);
+    return { label: t || '未完成', badge: 'warning' };
+  }
+  // 认不出的状态：有那边的文案就照抄，没有就**把那一格原样摆出来**（不另造词）
+  return { label: pick(it.buttonOutText) || state || '未完成', badge: 'idle' };
+}
+
+/** 面板的徽章只有 idle / running / success / failed / warning 这几档 —— 写别的
+ *  会落到"没有修饰"的基础款（就是一个小灰点），看起来像没做完的样式。 */
+
+/** 任务名里会带**字面 HTML**（真机实拍：`分享文件领好礼<span id='share_title'>7/7</span>`）。
+ *  那是移动云盘给 App 内嵌文本用的，直接画出来就是一堆尖括号。
+ *  这里只做"剥标签 + 还原几个常见实体"，不做 DOM 解析：我们**不执行**它，
+ *  也不把 HTML 拼进页面（一律走文本节点/`esc`），剥干净就够了。 */
+function plainText(raw) {
+  return String(raw ?? '')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** App 任务：**逐条列出来**，不是只给"已完成 12 · 可做 4"。
+ *
+ *  ⚠ 只给计数的话，"可做 4 条"到底是哪 4 条、叫什么、奖励是什么，用户一个都看不见 ——
+ *  那一格就只能看个热闹（用户原话：「app任务看不了具体事项」）。
+ *  所以按市场分两段，段里逐条：名字 + 奖励文案 + 状态。
+ *  ⚠ 顺序是**没做完的在前**：这一页是读数页，用户来这儿是想知道"还有什么没做"。 */
+function paintAppTasks(groups) {
+  const ul = $('matrix-list');
+  if (!ul) return;
+  const rows = [];
+  for (const g of groups || []) {
+    const r = g.reading;
+    if (!r) {
+      rows.push(
+        `<li class="item"><div class="item-main"><span class="item-t">${esc(MARKET_LABEL[g.group] || g.group)}</span>` +
+          `<span class="item-s">还没读到（日常跑一次就有了）</span></div></li>`,
+      );
+      continue;
+    }
+    const items = Array.isArray(r.items) ? r.items.slice() : [];
+    const order = { todo: 0, done: 1, skip: 2 };
+    items.sort((a, b) => order[appTaskBucket(a)] - order[appTaskBucket(b)]);
+    rows.push(
+      `<li class="item"><div class="item-main"><span class="item-t">${esc(MARKET_LABEL[g.group] || g.group)}</span>` +
+        `<span class="item-s">已完成 ${r.done} · 未完成 ${r.todo} · 不参与 ${r.skip} · ${when(r.at)}</span></div></li>`,
+    );
+    // 已完成的那些**默认收起来**：这一页是给"还有什么没做"看的，
+    // 十几条"已完成"铺在前面会把真正的重点挤到屏幕外。点一下还能看全。
+    //
+    // ⚠ 折叠行摆在**没做完那几条之后**：它是"下面这一坨"的标题，
+    //   放在最前面的话，展开之后它就把最该先看的几条挤到下面去了。
+    const line = (it, foldedRow) => {
+      const view = appTaskView(it);
+      const name = plainText(it.name) || plainText(it.description) || `#${it.taskId ?? '?'}`;
+      const desc = plainText(it.description);
+      // 名字与描述常常是"任务 + 奖励"两截（实拍：`永葆童心 领38云朵`）——
+      // 名字里已经含了描述就不重复画。
+      const sub = desc && !name.includes(desc) ? desc : '';
+      // ⚠ 徽章上那个词是**上游给的**，照样要 `esc`（它进过我们的 DOM 字符串）
+      return (
+        `<li class="item is-sub"${foldedRow ? ` hidden data-folded="1" data-g="${esc(g.group)}"` : ''}>` +
+        `<div class="item-main"><span class="item-t">${esc(name)}</span>` +
+        (sub ? `<span class="item-s">${esc(sub)}</span>` : '') +
+        `</div><div class="item-r"><span class="badge ${view.badge}">${esc(view.label)}</span></div></li>`
+      );
+    };
+    const todoItems = items.filter((it) => appTaskBucket(it) === 'todo');
+    const restItems = items.filter((it) => appTaskBucket(it) !== 'todo');
+    for (const it of todoItems) rows.push(line(it, false));
+    if (restItems.length > 0) {
+      rows.push(
+        `<li class="item is-sub is-more" data-more="1" data-g="${esc(g.group)}" data-n="${restItems.length}"><div class="item-main">` +
+          `<span class="item-t">其余 ${restItems.length} 条（已完成 / 不参与）—— 点一下展开</span>` +
+          `</div></li>`,
+      );
+      for (const it of restItems) rows.push(line(it, true));
+    }
+    if (items.length === 0) {
+      rows.push(
+        `<li class="item is-sub"><div class="item-main"><span class="item-s">这一组没有条目（移动云盘这次没给）</span></div></li>`,
+      );
+    }
+  }
+  if (rows.length === 0) {
+    ul.innerHTML = '<li class="empty">还没有读数（日常跑一次就有了）。</li>';
+    return;
+  }
+  ul.innerHTML = rows.join('');
+}
+
 function renderData(d) {
   const m = d.matrix || {};
   setText('data-hero', `读了 ${m.read || 0}/${m.total || 0} 个市场`);
-  setText('data-sub', '纯读数 —— 这一页没有任何动作。');
+  // ⚠ 别再写"这一页没有任何动作"：豆那一格现在是**进来就取一次**的（见 autoFetchBeansOnce）
+  setText('data-sub', '读数都在这儿 —— 豆那一格进这一页就取一次，要新的点它右上角「刷新」。');
   setText('matrix-line', (m.read || 0) === 0 ? '还没有读数（日常跑一次就有了）。' : '');
-  paintList(
-    'matrix-list',
-    (m.groups || []).map((g) => {
-      const r = g.reading;
-      return [
-        g.group,
-        r ? `已完成 ${r.done} · 可做 ${r.todo} · 不参与 ${r.skip} · ${when(r.at)}` : '还没读到',
-        '',
-      ];
-    }),
-    '还没有矩阵读数。',
-  );
+  paintAppTasks(m.groups);
   setText('caps-line', d.caps || '');
 }
+
+// ══════════════ 今日AI豆（**点了才取**，照参考实现 `upstream-page.tsx::CloudCell`）══════════════
+//
+// # 为什么不在 `/readings` 里
+//
+// 这一格每次点都要打上游 `cloudRecordV2`（而且**要翻到短页为止**，不是"读本地状态"）。
+// 把它塞首屏聚合等于**替每个账号发一枪**才能打开页面 —— 而"豆是每账号一本账、
+// 只读、点了才取"这三条一起是参考实现那一格的口径。这里照做。
+//
+// # 数据流
+//
+//   ·「取一次」 → `GET /beans/today` → 每账号一行（净/收/支/笔 + 「查看明细」）
+//   · 行右侧「查看明细」 → 打开弹窗 + `GET /beans/records?id=&days=1`
+//   · 弹窗里换窗口（1/7/30/0）→ 重取（照参考：档位与拉取**一次点完**）
+
+/** `beans/today` 那一趟的读数（null = 还没取）。 */
+let beansToday = null;
+/** 弹窗当前打开的账号 id（换窗口时要用它重取）。 */
+let beansDialogId = '';
+
+/** 把 `beansToday` 画进 `#beans-list`：成功行在左，失败行也照样占一行。 */
+function paintBeansList() {
+  const ul = $('beans-list');
+  if (!ul) return;
+  if (beansToday === null) {
+    // 打开这一页就会自己取一次，所以这里不是"快去点一下"，而是"还没到/没取到"
+    ul.innerHTML =
+      '<li class="empty">正在取…（取不到的话点右上角「刷新」再试一次）</li>';
+    return;
+  }
+  const ok = beansToday.accounts || [];
+  const bad = beansToday.failed || [];
+  if (ok.length === 0 && bad.length === 0) {
+    ul.innerHTML = '<li class="empty">这个插件里还没有账号（或都停用了）。</li>';
+    return;
+  }
+  const rows = [];
+  for (const a of ok) {
+    const sign = a.net > 0 ? `+${a.net}` : String(a.net);
+    const sub = `收 ${a.gained} · 支 ${a.spent} · ${a.count} 笔`;
+    rows.push(
+      `<li class="item"><div class="item-main">` +
+        `<span class="item-t">${esc(a.label)} · <b>${esc(sign)}</b></span>` +
+        `<span class="item-s">${esc(sub)}</span>` +
+        `</div><div class="item-r">` +
+        `<button class="btn ghost" type="button" data-beans-detail="${esc(a.id)}">查看明细</button>` +
+        `</div></li>`,
+    );
+  }
+  for (const f of bad) {
+    // 失败那一行：**不给「查看明细」** —— 点开也没数据可给；
+    // 那句"读不到"就是全部信息（照 F-062 那条"失败要说清是哪一个"的口径）。
+    rows.push(
+      `<li class="item"><div class="item-main">` +
+        `<span class="item-t">${esc(f.label)}</span>` +
+        `<span class="item-s">读不到 —— ${esc(f.reason)}</span>` +
+        `</div></li>`,
+    );
+  }
+  ul.innerHTML = rows.join('');
+}
+
+/** 把"取于 …"那句写进 `#beans-line`。 */
+function paintBeansLine() {
+  if (beansToday === null) return;
+  const iso = new Date(beansToday.nowMs).toISOString();
+  setText(
+    'beans-line',
+    `取于 ${when(iso)} · 每个账号各一本账，不给跨账号合计（豆不能跨账号花）`,
+  );
+}
+
+/** 取一次今日AI豆（画完就返回）。**自动取**与「刷新」共用这一条路。 */
+async function fetchBeans() {
+  beansToday = await api('/beans/today');
+  paintBeansList();
+  paintBeansLine();
+}
+
+$('beans-refresh').addEventListener('click', (ev) => act(ev.currentTarget, fetchBeans, () => ''));
+
+/** 这一页**打开时自己取**，不用先点一下。
+ *
+ *  ⚠ 只在这一份页面**第一次**进「数据」时取：再点回来不重取（`cloudRecordV2`
+ *  是按账号一枪的，来回切标签就重打一轮属于白花配额）。要新的就点「刷新」。
+ *  ⚠ 失败了也不拦着用户 —— 把错误画在那一格下面，他点「刷新」能重试。 */
+let beansAutoFetched = false;
+function autoFetchBeansOnce() {
+  if (beansAutoFetched) return;
+  beansAutoFetched = true;
+  // ⚠ `act` 自己会 toast 失败原因（它不 rethrow），所以这里不用再接一层 catch；
+  //   它还会顺手 `load()` 一把，把这一页其余读数一起刷新 —— 正好。
+  void act($('beans-refresh'), fetchBeans, () => '').then(() => {
+    // 取不到时说清"下一步点哪里"，别留一句"正在取…"在那儿装作还在跑
+    if (beansToday === null) {
+      const ul = $('beans-list');
+      if (ul) ul.innerHTML = '<li class="empty">还没取到 —— 点右上角「刷新」再试一次。</li>';
+    }
+  });
+}
+
+/** 打开/切换"明细"弹窗。**每次都真去移动云盘重取**（照参考实现那一格）。
+ *
+ *  ⚠ `days` 不在 `1/7/30/0` 里的值，后端会当"全部"（`beansRead::normalizeDays`）。
+ *  ⚠ 窗口 + 拉取**一次点完** —— 换档位本来就要重取。 */
+async function openBeansDetail(id, days) {
+  beansDialogId = id;
+  $('beans-dialog').hidden = false;
+  for (const b of $('beans-windows').querySelectorAll('[data-days]')) {
+    b.classList.toggle('is-on', Number(b.dataset.days) === days);
+  }
+  const known =
+    beansToday !== null
+      ? [...(beansToday.accounts || []), ...(beansToday.failed || [])].find((x) => x.id === id)
+      : undefined;
+  setText('beans-title', known ? known.label : id);
+  setText('beans-sub', '正在取…');
+  $('beans-detail').innerHTML = '';
+  try {
+    const r = await api(`/beans/records?id=${encodeURIComponent(id)}&days=${days}`);
+    if (r.error !== undefined) {
+      // 后端**没用非 200 报失败**（那一格参考实现就是"红了但不炸别账号"的语义）：
+      // 拿 `error` 字段判读不到。
+      setText('beans-sub', `读不到 —— ${r.error}`);
+      return;
+    }
+    const bits = [`共 ${(r.records || []).length} 笔`];
+    if (r.hasMore === true) bits.push('这一份不全（撞了翻页或条数上限）');
+    if (r.undated > 0) bits.push(`其中 ${r.undated} 笔时间读不出`);
+    bits.push(`取于 ${when(new Date(r.nowMs).toISOString())}`);
+    setText('beans-sub', bits.join(' · '));
+    const ul = $('beans-detail');
+    if ((r.records || []).length === 0) {
+      ul.innerHTML = '<li class="empty">这个窗口里没有流水。</li>';
+      return;
+    }
+    ul.innerHTML = (r.records || [])
+      .map((x) => {
+        const sign = x.num > 0 ? `+${x.num}` : String(x.num);
+        const time =
+          typeof x.atMs === 'number'
+            ? when(new Date(x.atMs).toISOString())
+            : x.rawTime || '时间读不出';
+        const mark = x.mark ? ` · ${esc(x.mark)}` : '';
+        return (
+          `<li class="item"><div class="item-main">` +
+          `<span class="item-t">${esc(x.summary || '')}</span>` +
+          `<span class="item-s">${esc(time)}${mark}</span>` +
+          `</div><div class="item-r"><b>${esc(sign)}</b></div></li>`
+        );
+      })
+      .join('');
+  } catch (e) {
+    setText('beans-sub', `读不到 —— ${e.message || String(e)}`);
+  }
+}
+
+$('beans-close').addEventListener('click', () => {
+  $('beans-dialog').hidden = true;
+});
+$('beans-dialog').addEventListener('click', (ev) => {
+  if (ev.target === $('beans-dialog')) $('beans-dialog').hidden = true;
+});
+$('beans-windows').addEventListener('click', (ev) => {
+  const b = ev.target.closest('[data-days]');
+  if (b === null) return;
+  void openBeansDetail(beansDialogId, Number(b.dataset.days));
+});
+
+// App 任务的「其余 N 条」那一行：点开/收起同一组里被折叠的行。
+// ⚠ 委派（这一格每次 load 都重画）。
+$('matrix-list').addEventListener('click', (ev) => {
+  const more = ev.target.closest('[data-more]');
+  if (!more) return;
+  const open = more.dataset.open === '1';
+  more.dataset.open = open ? '0' : '1';
+  const label = more.querySelector('.item-t');
+  // ⚠ 按**组**找，不是按父节点：两个市场共用一个 `<ul>`，
+  //   用 `parentElement` 一收就把另一组的行也收掉了（点「签到」的展开，「邮箱」跟着动）。
+  const g = more.dataset.g || '';
+  for (const li of $('matrix-list').querySelectorAll('[data-folded]')) {
+    if ((li.dataset.g || '') !== g) continue;
+    li.hidden = open;
+  }
+  if (label) {
+    // ⚠ 条数从 `data-n` 拿，**不要**从当前文字里 re 出来：展开之后那句话是
+    //   「收起这些 —— 点一下」，里面没有数字，re 出来就是「其余 几条」。
+    const n = more.dataset.n || '';
+    label.textContent = open
+      ? `其余 ${n} 条（已完成 / 不参与）—— 点一下展开`
+      : '收起这些 —— 点一下';
+  }
+});
+
+// 「查看明细」按钮在 `#beans-list` 里，是每次点「取一次」重新画的 —— 所以用委派。
+$('beans-list').addEventListener('click', (ev) => {
+  const det = ev.target.closest('[data-beans-detail]');
+  if (det === null) return;
+  void openBeansDetail(det.dataset.beansDetail, 1);
+});
 
 // ── 运行记录（三块共用） ──
 //
@@ -520,68 +1884,6 @@ function renderData(d) {
  *
  *  ⚠ **最近一次默认展开**。全折起来虽然"干净"，但页面一打开什么都没有 ——
  *  用户得先点一下才知道跑成什么样，而"要点哪个"正是这一版要解决的问题。 */
-function renderRecent(boxId, stepsId, recent) {
-  const box = $(boxId);
-  if (!box) return;
-  box.innerHTML = '';
-  const list = recent || [];
-  if (list.length === 0) {
-    const empty = el('p', 'hint');
-    empty.textContent = '还没跑过。';
-    box.appendChild(empty);
-    const ul = $(stepsId);
-    if (ul) ul.innerHTML = '';
-    return;
-  }
-
-  list.forEach((r, i) => {
-    const row = el('div', 'row' + (r.ok ? ' is-on' : ''));
-    const name = el('span', 'row-name');
-    name.textContent = when(r.at);
-    row.appendChild(name);
-
-    const state = el('span', 'row-state');
-    // 「几步失败 · 几步成了 · 几步没做事」—— 失败那一栏只在真有失败时出现，
-    // 否则每行都挂着「0 步失败」，看着像在报警
-    const bits = [];
-    if (r.badCount > 0) bits.push(`${r.badCount} 失败`);
-    if (r.okCount > 0) bits.push(`${r.okCount} 成了`);
-    if (r.idleCount > 0) bits.push(`${r.idleCount} 跳过`);
-    state.textContent = bits.join(' · ') || '没有步骤';
-    row.appendChild(state);
-
-    const dur = el('span', 'row-dur');
-    dur.textContent = r.ms >= 1000 ? `${(r.ms / 1000).toFixed(1)}s` : `${r.ms}ms`;
-    row.appendChild(dur);
-
-    const btn = el('button', 'btn ghost');
-    btn.type = 'button';
-    btn.textContent = i === 0 ? '收起' : '看';
-    btn.addEventListener('click', () => {
-      const ul = $(stepsId);
-      const open = ul && ul.dataset.run === r.id;
-      // 再点一次 = 收起
-      if (open) {
-        ul.innerHTML = '';
-        delete ul.dataset.run;
-        btn.textContent = '看';
-        return;
-      }
-      btn.textContent = '收起';
-      loadRunDetail(stepsId, r.id);
-    });
-    row.appendChild(btn);
-    box.appendChild(row);
-
-    // 摘要那一句也显示出来（它才是"成没成"的答案）
-    const note = el('div', 'row-note');
-    note.textContent = r.note + (r.truncated ? '（步骤太多，只留了前面一部分）' : '');
-    box.appendChild(note);
-  });
-
-  // 默认展开最近一次
-  loadRunDetail(stepsId, list[0].id);
-}
 
 /** 取某一次运行的步骤并画出来。
  *
@@ -864,21 +2166,16 @@ function CH_LABEL(id) {
 //   所以保存走的是 `{set, remove}` 增量形状。曾经想缓存一份再整份发回去，
 //   但那要么要求界面持有秘密、要么在保存时把别的渠道**清空**。
 
-function renderSettings(s) {
-  const fill = (id, v) => {
-    const el = $(id);
-    if (el && document.activeElement !== el) el.value = v === undefined || v === null ? '' : v;
-  };
-  fill('cfg-baseUrl', s.baseUrl);
-  fill('cfg-liveUrl', s.liveUrl === s.liveUrlDefault ? '' : s.liveUrl);
-  fill('cfg-gateBase', s.gateBase);
-  fill('cfg-wsBase', s.wsBase);
-  fill('cfg-imBase', s.imBase);
-  // ⚠ 这三格搬去账号卡片的「设置」弹窗了（它们按账号，见 index.html 那段说明）。
-  fill('cfg-loginBase', s.loginBase);
-  const plat = $('cfg-loginPlatform');
-  if (plat && document.activeElement !== plat && s.loginPlatform) plat.value = s.loginPlatform;
-}
+// ⚠ **「设置」那一页整个删掉了**（`renderSettings` 与那六个地址口子一起）。
+//
+// 为什么删：那一页是**给搭测试环境的人看的**（云盘地址 / 口令主页 / 直播日程主机 /
+// 弹幕 WebSocket / 进房间主机 / 登录主机 / 自检），而它出现在**给用户看的界面**上。
+// 用户的判断很直接：「这些 mock 内容压根不能交给用户使用，用户看不懂，还会导致
+// 一堆问题」—— 而且真的导致了：面板的「登录主机」被指到 mock 上，扫码登录永远
+// 走不完（F-067 的那条尾巴）。
+//
+// 口子本身**没有删**：`/config` 那条路由还在（e2e 脚本靠它把基址指到 mock，
+// 见 `scripts/e2e-mock.sh`），只是**不再从界面上暴露**。开发要改就调接口。
 
 function render(r) {
   renderAccount(r.account || {}, r.login || {});
@@ -887,14 +2184,15 @@ function render(r) {
   renderLive(r.live || {});
   renderData(r.data || {});
   renderPush(r.push || {});
-  renderSettings(r.settings || {});
 }
 
 // ──────────────────────────────────────────────────────────── 加载
 
 async function load() {
   try {
-    last = await api('/readings');
+    // 排期与读数一起拉：第二行那句「它自己什么时候跑」要真值（见 `scheduleText`）
+    const [r] = await Promise.all([api('/readings'), loadJobs()]);
+    last = r;
     render(last);
   } catch (e) {
     // 读不到 = 界面全是空的。这时候必须**说出来**，否则用户看到的是
@@ -910,13 +2208,330 @@ async function load() {
  *  ⚠ 提取出来的理由：工具栏那三个按钮（账号配置 / 上游状态）要跳到别的区块，
  *  而原来这套逻辑**内联在菜单的事件处理里** —— 复用只能靠复制一份，
  *  复制的那份迟早和菜单不一致。 */
+
+// ══════════ 运行日志（终端样式，SSE） ══════════
+//
+// 数据源是**面板自己的日志流**：`GET /api/logs/stream?channel=plugin&plugin=<名字>`。
+// 插件里每一句 `log(...)` 都在那儿，带时间、级别、插件名。
+//
+// ⚠ 为什么不用插件自己那套"运行记录"画终端：那是**一次一条**的摘要
+//   （`mcloud.run.log`：时间 / 成败 / 每步结果），适合「最近几次」那种列表；
+//   而"看着它跑"需要的是**行**。
+// ⚠ 只在**这一块显示时**才连（`showBlock` 里开关）：三块各连一条流没必要，
+//   而且浏览器对同域 SSE 的并发连接有上限（HTTP/1.1 是 6 条）。
+// ⚠ 级别切换要**重连**：过滤发生在服务端（1MB 缓冲里有几 MB 文本，
+//   全量推给前端再丢是白烧带宽 —— 面板的注释原话）。
+const TERMS = {
+  daily: {
+    plugin: 'mcloud-daily',
+    el: () => ({
+      body: $('daily-term-body'),
+      meta: $('daily-term-meta'),
+      follow: $('daily-term-follow'),
+      level: $('daily-term-level'),
+      clear: $('daily-term-clear'),
+    }),
+  },
+  exchange: {
+    plugin: 'mcloud-exchange',
+    el: () => ({
+      body: $('exchange-term-body'),
+      meta: $('exchange-term-meta'),
+      follow: $('exchange-term-follow'),
+      level: $('exchange-term-level'),
+      clear: $('exchange-term-clear'),
+    }),
+  },
+  live: {
+    plugin: 'mcloud-live',
+    el: () => ({
+      body: $('live-term-body'),
+      meta: $('live-term-meta'),
+      follow: $('live-term-follow'),
+      level: $('live-term-level'),
+      clear: $('live-term-clear'),
+    }),
+  },
+};
+
+/** 级别下拉**每次进页面都回「全部」**。
+ *
+ *  ⚠ 浏览器会"恢复"上次的 `<select>` 值（刷新/前进后退都算）—— 于是用户
+ *  可能在某次刷新后停在「提醒以上」，而一次跑完界面上一行都没有：
+ *  那是 F-091 那张截图（「没看到任何日志」）。
+ *  `autocomplete="off"` 在 HTML 里不是好办法（MDN 明确不建议，项目里也有用例禁它），
+ *  所以在这里**显式写回默认值**：加载时一次，`pageshow` 再一次（恢复发生在它之前）。
+ */
+function resetTermLevels() {
+  for (const k of Object.keys(TERMS)) {
+    const el = TERMS[k].el();
+    if (el && el.level) el.level.value = 'info';
+  }
+}
+resetTermLevels();
+window.addEventListener('pageshow', resetTermLevels);
+
+/** 每块最多留多少行。再多也不给人看，只会让滚动条变细。 */
+const TERM_MAX_LINES = 400;
+
+/** 建一个终端面板实例。`key` 是 DOM 前缀（`daily-term-body` 那套）。 */
+function makeTerm(plugin, el) {
+  const { body, meta, follow, level, clear } = el;
+  let es = null;
+  let lines = 0;
+  /** **屏上摆着几行**（只数 `.term-line`，不含分界线与空态那句）。
+   *  页头那个数报的是它 —— 跟着级别筛选、也跟着 400 行上限。 */
+  let shown = 0;
+
+  /** 把一行日志画上去。⚠ 一律走 `textContent`（日志里有用户可控的字符串）。 */
+  function paint(ev) {
+    let d;
+    try {
+      d = JSON.parse(ev.data);
+    } catch {
+      return;
+    }
+    const empty = body.querySelector('.term-empty');
+    if (empty) empty.remove();
+    const el = document.createElement('span');
+    el.className = `term-line term-line-${d.level || 'info'}`;
+    const ts = document.createElement('span');
+    ts.className = 'term-ts';
+    // 面板给的是 `2026-10-17 10:50:42.498`；我们铺历史时给的是已经切好的 `10:50:42.498`。
+    // 两种都要能吃（`slice(11)` 对后者会把时分秒切掉）。
+    const raw = String(d.ts || '');
+    ts.textContent = (/^\d{4}-\d{2}-\d{2}/.test(raw) ? raw.slice(11) : raw) + ' ';
+    const lv = document.createElement('span');
+    lv.className = `term-lv term-lv-${d.level || 'info'}`;
+    lv.textContent = String(d.level || 'info').padEnd(5);
+    const msg = document.createElement('span');
+    msg.className = 'term-msg';
+    msg.textContent = String(d.msg || d.line || '');
+    el.append(ts, lv, msg);
+    body.appendChild(el);
+    lines += 1;
+    shown += 1;
+    // 超了就从**上面**砍（终端只看最近的）
+    while (lines > TERM_MAX_LINES && body.firstElementChild) {
+      const cut = body.firstElementChild;
+      if (cut.classList.contains('term-line')) shown -= 1;
+      cut.remove();
+      lines -= 1;
+    }
+    setMeta('');
+    if (follow.checked) body.scrollTop = body.scrollHeight;
+  }
+
+  /** 页头那句：`插件名 · 显示 N 行 · （状态） · 只显示「筛选」`。
+   *
+   *  ⚠ 那个数原来是**服务端环**的行数（`notice` 里的 `p.lines`），叫「缓冲」。
+   *  筛在「提醒以上」时它照旧报全量 ⇒ 页头与屏幕对不上（用户圈的同一类毛病）。
+   *  现在报屏上的行数（跟着筛选走），环的口径只在**真丢了东西**时出场：
+   *  「环里淘汰了 N 行」—— 那才是"日志少了一段"需要的解释。 */
+  function setMeta(tail) {
+    if (!meta) return;
+    const only = levelNote();
+    const parts = [plugin, `显示 ${shown} 行`];
+    if (tail !== '' && tail !== undefined && tail !== null) parts.push(String(tail));
+    if (only !== '') parts.push(`只显示「${only}」`);
+    const text = parts.join(' · ');
+    // 每画一行都会走到这里（`paint` 末尾）—— 文本没变就不碰 DOM
+    if (meta.textContent !== text) meta.textContent = text;
+  }
+
+  /** 这一行的级别过不过当前那道门槛。口径与下拉那三个值一致：
+   *  `info`=全部、`warn`=提醒以上、`error`=只看错误。
+   *  认不出的级别（比如面板哪天加个 `debug`）⇒ 当作最低档，
+   *  选了「全部」还在，选了「只看错误」就没了 —— **不猜它是高的**。 */
+  const LEVEL_RANK = { info: 0, warn: 1, error: 2 };
+  function levelPasses(lv) {
+    const want = LEVEL_RANK[level.value] ?? 0;
+    return (LEVEL_RANK[lv] ?? 0) >= want;
+  }
+
+  /** 先铺历史：插件自己留了一份（`/log/tail`），**面板重启之后也还在**。
+   *
+   *  ⚠ 历史要**在这里自己滤一遍**：`level` 那个下拉是发给服务端的参数，
+   *  而服务端只滤**实时流** —— 历史是本地从 `/log/tail` 铺的，不经那道闸。
+   *  不滤的话，选着「只看错误」下面照样一排 `info`，而同一行页头还写着
+   *  「只显示「只看错误」」（用户圈的正是这个自相矛盾）。 */
+  async function seed() {
+    try {
+      const r = await api('/log/tail?limit=' + TERM_MAX_LINES);
+      const history = r.lines || [];
+      if (history.length === 0) return;
+      body.textContent = '';
+      lines = 0;
+      shown = 0;
+      let painted = 0;
+      for (const one of history) {
+        if (!levelPasses(one.l)) continue;
+        // ⚠ 环里存的是 ISO（UTC）；面板日志流给的是**本地**时间。
+        //   直接 slice 会让历史显示成凌晨 —— 两边必须同一种时间。
+        const d = new Date(one.t);
+        const pad = (n, w) => String(n).padStart(w, '0');
+        const ts = Number.isNaN(d.getTime())
+          ? ''
+          : `${pad(d.getHours(), 2)}:${pad(d.getMinutes(), 2)}:${pad(d.getSeconds(), 2)}.${pad(d.getMilliseconds(), 3)}`;
+        paint({ data: JSON.stringify({ ts, level: one.l, msg: one.m }) });
+        painted += 1;
+      }
+      // 一行都没滤出来：别写那句分界（它上面是空的），也**别留白屏** ——
+      // "界面上一行都没有"就是 F-091 那张截图，当时查出来是被筛选挡掉的。
+      if (painted === 0) {
+        const only = levelNote();
+        const gap = document.createElement('span');
+        gap.className = 'term-empty';
+        gap.textContent =
+          `（上次留下的 ${history.length} 行里没有过这道门槛的` +
+          (only === '' ? '' : ` —— 现在只显示「${only}」，想看全部就把上面那个下拉切回「全部」`) +
+          `）`;
+        body.appendChild(gap);
+        lines += 1;
+        setMeta('');
+        return;
+      }
+      // ⚠ 不能复用 `.term-empty`：`paint()` 每画一行都会把 `.term-empty` 删掉
+      //   （那是"还没有日志"的占位），分界线用同一个类就会被第一行新日志吃掉。
+      const gap = document.createElement('span');
+      gap.className = 'term-gap';
+      gap.textContent = '—— 上面是上次留下的，下面是新的 ——';
+      body.appendChild(gap);
+      lines += 1;
+      setMeta('');
+    } catch {
+      // 读不到就当没有历史（那只是首屏少几行，不该弹错误）
+    }
+  }
+
+  function open() {
+    if (es !== null || typeof EventSource === 'undefined') return;
+    const q = new URLSearchParams({ channel: 'plugin', plugin, level: level.value });
+    setMeta('连接中…');
+    // ⚠ 顺序：先历史、后实时。反过来的话历史会把新到的几行盖掉。
+    void seed().then(() => {
+      if (es !== null) return;
+      connect(q);
+    });
+  }
+
+  function connect(q) {
+    es = new EventSource('/api/logs/stream?' + q.toString());
+    es.addEventListener('notice', (ev) => {
+      // 面板会先发一条概况（环里多少行 / 淘汰了多少）。⚠ 这里**只取"淘汰"那一格**：
+      // 环的容量是全量口径，报在页头上就和筛选后的屏面对不上（F-109 末段）。
+      try {
+        const d = JSON.parse(ev.data);
+        const p = d.plugin || {};
+        setMeta(p.dropped ? `环里淘汰了 ${p.dropped} 行` : '已连上');
+      } catch {
+        setMeta('');
+      }
+    });
+    es.addEventListener('log', paint);
+    es.onerror = () => setMeta('断了 —— 正在重连（浏览器会自己接）');
+    es.onopen = () => setMeta('已连上');
+  }
+
+  function close() {
+    if (es !== null) {
+      es.close();
+      es = null;
+    }
+  }
+
+  /** 级别筛选的**人话**（`info` = 全部，不提示）。 */
+  function levelNote() {
+    const v = level && level.value;
+    if (!v || v === 'info') return '';
+    return v === 'warn' ? '提醒以上' : '只看错误';
+  }
+
+  /** 清空（只清屏，不断流 —— 断了就看不到接下来那几行了）。
+   *
+   *  ⚠ 空态必须**把级别筛选说出来**：筛在「提醒以上」时，一次跑完
+   *  界面上一行都没有 —— 用户的原话就是「没看到任何日志」。
+   *  那不是没日志，是**被自己设的筛选挡掉了**，而屏幕上没有任何线索。 */
+  function clearNow() {
+    body.textContent = '';
+    lines = 0;
+    shown = 0;
+    const el = document.createElement('span');
+    el.className = 'term-empty';
+    const only = levelNote();
+    el.textContent =
+      only === ''
+        ? '（已清空）'
+        : `（已清空 · 只显示「${only}」—— 这次跑的行大多是 info，想看全部就把上面那个下拉切回「全部」）`;
+    body.appendChild(el);
+    setMeta('');
+  }
+
+  /** 换级别 = **重连**（过滤在服务端，见 `TERMS` 那段说明）。 */
+  function reload() {
+    const wasOpen = es !== null;
+    close();
+    body.textContent = '';
+    lines = 0;
+    shown = 0;
+    setMeta('');
+    if (wasOpen) open();
+  }
+
+  if (body && body.childElementCount === 0) {
+    const el = document.createElement('span');
+    el.className = 'term-empty';
+    const only = levelNote();
+    el.textContent =
+      only === ''
+        ? '（还没有日志。点「现在跑一次」之后这里会一行一行往下走）'
+        : `（还没有日志 · 现在只显示「${only}」—— 想看全部就把上面那个下拉切回「全部」）`;
+    body.appendChild(el);
+  }
+  return { open, close, clearNow, reload, get isOpen() { return es !== null; } };
+}
+
+// 三个终端的「清空」「级别」—— 写成**字面量**（`$('…')`），
+// 因为界面测试会逐个核对"HTML 里的按钮都真的挂了处理器"。
+$('daily-term-clear').addEventListener('click', () => termHandle('daily').clearNow());
+$('daily-term-level').addEventListener('change', () => termHandle('daily').reload());
+$('exchange-term-clear').addEventListener('click', () => termHandle('exchange').clearNow());
+$('exchange-term-level').addEventListener('change', () => termHandle('exchange').reload());
+$('live-term-clear').addEventListener('click', () => termHandle('live').clearNow());
+$('live-term-level').addEventListener('change', () => termHandle('live').reload());
+
+/** 三块各自的终端实例（懒建：第一次显示那一块时才建）。 */
+const termOf = {};
+/** 取（必要时先建）某一块的终端实例。 */
+function termHandle(key) {
+  if (termOf[key] === undefined) termOf[key] = makeTerm(TERMS[key].plugin, TERMS[key].el());
+  return termOf[key];
+}
+
+function syncTerms(blockName) {
+  for (const key of Object.keys(TERMS)) {
+    if (key === blockName) termHandle(key).open();
+    else termHandle(key).close();
+  }
+}
+
 function showBlock(name) {
   for (const b of document.querySelectorAll('.menu-item')) {
-    b.classList.toggle('is-on', b.dataset.block === name);
+    const on = b.dataset.block === name;
+    b.classList.toggle('is-on', on);
+    // 下划线对屏幕阅读器不可见；补 aria-current 让它知道"现在在哪一块"。
+    if (on) b.setAttribute('aria-current', 'page');
+    else b.removeAttribute('aria-current');
   }
   for (const s of document.querySelectorAll('.block')) {
     s.classList.toggle('is-on', s.id === 'block-' + name);
   }
+  // 日志流跟着"这一块是不是显示着"开关（见 TERMS 那段说明）
+  syncTerms(name);
+  // 「数据」页的第一格是**主动请求**的：开这一页就去取，不用先点一下。
+  if (name === 'data') autoFetchBeansOnce();
+  // 兑换页同理：今天还没读到清单就补一枪（清单是下拉的唯一来源）。
+  if (name === 'exchange') autoFetchPicksOnce();
 }
 
 $('menu').addEventListener('click', (ev) => {
@@ -933,20 +2548,58 @@ $('refresh').addEventListener('click', (e) => act(e.currentTarget, load, '已刷
 //  ⚠ 推进的触发者是**用户点按钮**（状态机是用户本人：出码 → 用户扫 → 用户确认）。
 // ══════════ 添加账号弹窗（复刻 mcloud） ══════════
 //
-// 参考实现：五个页签 + **客户端形态在最上面**（对全部页签生效）。
+// 参考实现：五个页签 + **客户端形态在最上面**。
 // 这里那个"选中的形态"是**弹窗级**状态：扫码/短信/账密/凭据四种方式都按它来。
+// ⚠ **「手机端」页签下那一块整块收起来** —— 那一路走 App 自己的身份，没有
+//   Windows / macOS 之分。用户的问法很直白：「手机端哪来的 macOS 和 Windows」。
 let addTabNow = 'qr';
-/** 弹窗里选的平台。⚠ 只对 PC 端有意义 —— 手机端（App）不存在 win/mac 之分。 */
+/** 弹窗里选的形态。⚠ 只对 PC 端有意义 —— 手机端（App）不存在 win/mac 之分。
+ *
+ *  它是**唯一**的形态入口（设置页那个下拉框已删）。值用参考实现的词表
+ *  （`win` / `mac`），后端收口时归一成 `windows` / `macos`。 */
 let addPc = 'win';
 
 function paintAddPc() {
   $('add-win').classList.toggle('is-on', addPc === 'win');
   $('add-mac').classList.toggle('is-on', addPc === 'mac');
-  // 手机端那一路用 App 自己的身份，选形态没有意义 ⇒ 如实说明而不是假装有用
-  const appPane = $('add-dialog').querySelector('[data-pane="app"]');
-  if (appPane) {
-    appPane.querySelectorAll('.row').forEach((r) => r.classList.toggle('is-muted', false));
+}
+
+/** 把 `addPc` 摆到"跟正在进行的这一趟一致"的位置。
+ *
+ *  ⚠ 进行中的会话是**出码那一刻冻住**的（`QrSession.platform`）：用户开弹窗时
+ *  看到的按钮必须与屏幕上那张码一致 —— 否则他会看到"选了 macOS、码却是
+ *  Windows 的"界面，而两个都不算错，只是没人说清楚哪个算数。 */
+function syncAddPcFromReading() {
+  const live = (last && last.login && (last.login.qr || last.login.sms)) || null;
+  const from = live ? live.platform : last && last.settings ? last.settings.loginPlatform : '';
+  if (from === 'macos') addPc = 'mac';
+  else if (from === 'windows') addPc = 'win';
+}
+
+/** 换形态。**三件事一起做**，少一件就出现"界面说一套、请求发另一套"：
+ *  ① 记住这次选择（下次开弹窗预填，`/config` 那格只是预填值，不是身份来源）；
+ *  ② 进行中的会话**作废** —— 码里的版本号与轮询请求体必须出自同一套档案；
+ *  ③ 重画按钮。 */
+async function setAddPc(v) {
+  if (addPc === v) return { ok: true, note: '没变' };
+  addPc = v;
+  paintAddPc();
+  await api('/config', {
+    method: 'POST',
+    write: true,
+    body: { loginPlatform: v === 'mac' ? 'macos' : 'windows' },
+  });
+  const qrShowing = !$('add-dialog').hidden && !$('qr-box').hidden;
+  const smsRunning = !!(last && last.login && last.login.sms && last.login.sms.active);
+  if (qrShowing || smsRunning) {
+    stopQrPoll();
+    await api('/login/cancel', { method: 'POST', write: true }).catch(() => undefined);
+    $('qr-box').innerHTML = '';
+    $('qr-box').hidden = true;
+    setText('qr-note', '形态换了 —— 点「生成二维码」重新出码');
+    return { ok: true, note: '形态换了，重新出一次码' };
   }
+  return { ok: true, note: v === 'mac' ? '已切成 macOS' : '已切成 Windows' };
 }
 
 function showAddTab(name) {
@@ -957,12 +2610,39 @@ function showAddTab(name) {
   for (const pane of $('add-dialog').querySelectorAll('[data-pane]')) {
     pane.hidden = pane.dataset.pane !== name;
   }
+  // ⚠ 「手机端」这一路走的是 App 自己的身份，**没有** Windows / macOS 之分 ——
+  //   所以形态那一块在这个页签下收起来，而不是摆着让人问"手机端哪来的这两个按钮"。
+  //   （用户就是这么问的。）其余四个页签照旧在顶部，它是弹窗级的。
+  $('add-form').hidden = name === 'app';
+}
+
+/** 登录成功之后**收尾**：把「添加账号」弹窗关掉（用户的原话：「登录成功弹窗不自动关闭」）。
+ *
+ *  ⚠ 四条进账号的路（扫码 / 短信 / 手机端 / 贴凭据）都必须走这一个。原来只有扫码
+ *  与贴凭据顺手关了，短信与手机端登进去之后弹窗**还杵在那儿** —— 用户只能自己点「关闭」，
+ *  而那一刻他已经在等别的东西了。
+ *
+ *  ⚠ 关之前把定时器与轮询停掉：弹窗看不见了，后台还在问接口是最难查的一类问题。
+ *  ⚠ 两个验证码框清空：里面的码属于刚才那一趟会话，留着只会让人以为没登进去。 */
+function closeAddDialog() {
+  stopQrPoll();
+  stopResend('sms');
+  stopResend('app');
+  for (const id of ['sms-code', 'app-code']) {
+    const el = $(id);
+    if (el) el.value = '';
+  }
+  $('add-dialog').hidden = true;
 }
 
 $('acct-add').addEventListener('click', () => {
+  // 开弹窗先跟读数对齐：进行中的会话优先，其次才是"上次用的那种"
+  syncAddPcFromReading();
   $('add-dialog').hidden = false;
   showAddTab(addTabNow);
   paintAddPc();
+  // 关弹窗时轮询停了（不留偷偷打接口的定时器）⇒ 重开时如果那张码还活着，接着轮
+  syncQrPoll(last && last.login ? last.login.qr : null);
 });
 $('add-close').addEventListener('click', () => {
   stopQrPoll();
@@ -980,18 +2660,16 @@ $('add-tabs').addEventListener('click', (ev) => {
   void api('/login/cancel', { method: 'POST', write: true }).catch(() => undefined);
   showAddTab(b.dataset.tab);
 });
-$('add-win').addEventListener('click', () => {
-  addPc = 'win';
-  paintAddPc();
-});
-$('add-mac').addEventListener('click', () => {
-  addPc = 'mac';
-  paintAddPc();
-});
+$('add-win').addEventListener('click', (e) =>
+  act(e.currentTarget, () => setAddPc('win'), (r) => (r && r.note) || '已切成 Windows'),
+);
+$('add-mac').addEventListener('click', (e) =>
+  act(e.currentTarget, () => setAddPc('mac'), (r) => (r && r.note) || '已切成 macOS'),
+);
 
-// 工具栏里除「上游状态」外的三个（那两个是复刻的，先如实接上已有的能力）
+// 工具栏剩下的两个（「上游状态」是跳读数，另一个是真动作）。
+// ⚠ 「账号配置」那个跳「设置」页的按钮跟着那一页一起删了 —— 见 index.html 那段说明。
 $('acct-upstream').addEventListener('click', () => showBlock('data'));
-$('acct-config').addEventListener('click', () => showBlock('settings'));
 $('acct-refresh-all').addEventListener('click', (e) =>
   act(e.currentTarget, () => api('/auth/refresh', { method: 'POST', write: true }), (r) => r.note || '已刷新'),
 );
@@ -1029,6 +2707,7 @@ function renderPicker(cfg) {
   const all = (last && last.taskAccounts && last.taskAccounts[cfg.task]) || null;
   const v = all || { all: true, picked: [], accounts: [] };
   setText(`${cfg.key}-acct-label`, pickerLabel(v));
+  if (cfg.key === 'exchange') setText('ex-plan-acct-label', pickerLabel(v));
   $(`${cfg.key}-acct-all`).checked = v.all === true;
 
   // 名单。⚠ 「全部」勾着时下面那些**不禁用** —— 用户可以先挑几个，
@@ -1076,16 +2755,23 @@ function pickerToggleAll(cfg, checked) {
   );
 }
 
-/** 名单里勾一项。 */
+/** 名单里勾一项。
+ *
+ *  ⚠ **以"点完之后 DOM 里哪些是勾着的"为准**，不要自己推。
+ *
+ *  推的版本踩过一个很实的坑：`all: true` 时每一格都是勾着的，用户**取消**
+ *  一格（比如「移动」），代码却按"他勾了移动"处理 ⇒ 存下 `ids:['移动']`，
+ *  于是界面从"全部账号"变成"只有移动"，正好反了。
+ *  按 DOM 读就没有这个歧义：取消一格 ⇒ 存的是剩下那两个。 */
 function pickerPick(cfg, ev) {
   const box = ev.target.closest('[data-pick]');
   if (!box) return;
-  const cur = (last && last.taskAccounts && last.taskAccounts[cfg.task]) || { all: true, picked: [] };
-  const id = box.dataset.pick;
-  const has = (cur.picked || []).includes(id);
-  const ids = has ? (cur.picked || []).filter((x) => x !== id) : [...(cur.picked || []), id];
-  // ⚠ 手动勾一项 = **取消「全部」**：用户的意思很清楚（"不是全部，是这几个"）。
-  //   留着「全部」的话勾选会被忽略 —— 那看起来像"点了没反应"。
+  const panel = $(cfg.panel);
+  const ids = [...panel.querySelectorAll('input[data-pick]')]
+    .filter((b) => b.checked && !b.disabled)
+    .map((b) => b.dataset.pick);
+  // 手动动一格 = **取消「全部」**：用户的意思很清楚（"不是全部，是这几个"）。
+  // 留着「全部」的话勾选会被忽略 —— 那看起来像"点了没反应"。
   void savePicker(cfg, false, ids).catch((e) => toast(e.message || '没存上', true));
 }
 
@@ -1170,7 +2856,19 @@ $('acct-cfg-save').addEventListener('click', (e) =>
 // 参考实现：出码 → `setInterval(pollOnce, 服务端给的 poll_interval_ms)` →
 // `scanned` 时显示「已扫码，请在手机上确认」（确认动作在**手机上**）→
 // `logged_in` 时收尾。所以推进的触发者是**轮询**，不是用户点按钮。
+//
+// ⚠⚠ F-067：这一段从写下来那天起**就没人调用过** —— `startQrPoll` 定义了、
+// 注释也写了"出码后 setInterval"，但没有任何一处真的调它。后果是：
+// 出码之后面板**从来不问上游**，手机扫了、在手机上点了确认，而这边永远不知道 ——
+// 用户看到的就是「这二维码扫不了」。所以下面两个调用点是这一段的**关键部分**，
+// 不是可选装饰：① 出码之后；② 读数里还有一张活的码时（刷新页面 / 重开弹窗）。
 let qrTimer = null;
+
+/** 当前这一轮用的间隔（毫秒）。0 = 还没起过。 */
+let qrPollMs = 0;
+
+/** 间隔的上限：失败退避最多退到这儿。 */
+const QR_POLL_MAX_MS = 6000;
 
 function stopQrPoll() {
   if (qrTimer !== null) {
@@ -1181,24 +2879,94 @@ function stopQrPoll() {
 
 function startQrPoll(ms) {
   stopQrPoll();
+  qrPollMs = ms;
   qrTimer = setInterval(() => void qrPollOnce(), ms);
 }
 
+/** 轮询**没问成**之后：先**立刻重问一次**，连着两次没问成才退一步。
+ *
+ *  ⚠ 为什么第一次不退避（F-071）：扫码成功那一枪**只出现一次**（拿到就没了）。
+ *  真机上就撞见过——`200059548 已扫码` 之后紧接着一次空响应，然后就是
+ *  `200059541 未找到设备`：那次空响应很可能正是要交付的成功响应。此时等 4 秒
+ *  再问，等于把机会让掉。退避只用来对付"真的连不上"（连着两次没问成）。
+ *
+ *  ⚠ 间隔上限 6 秒：退到用户以为卡死之前就该停住。 */
+function backoffQrPoll(base) {
+  startQrPoll(Math.min((qrPollMs || base || 2000) * 2, QR_POLL_MAX_MS));
+}
+
+/** 问成了 ⇒ 回到服务端给的间隔（退避只是"问不到时"的事）。 */
+function resetQrPoll(base) {
+  if (base && qrPollMs !== base) startQrPoll(base);
+}
+
+/** 连着几次没问成。成功一次就清零。 */
+let qrFailStreak = 0;
+
+/** 立刻重问一次（不走定时器）。 */
+function retryQrNow() {
+  stopQrPoll();
+  setTimeout(() => void qrPollOnce(), 0);
+}
+
+/** 让轮询跟着"现在屏幕上有没有一张**活的**码"走。
+ *
+ *  - 没有码 / 码过期 / 弹窗关着 ⇒ 停（不留一个偷偷打接口的定时器）；
+ *  - 有活的码而定时器没跑 ⇒ 起（页面刷新、面板重启之后接着轮：
+ *    会话是**落盘**的，手机扫的时候我们得在问服务端）。
+ *
+ *  ⚠ 间隔用读数给的那个（`qr.pollMs`）—— 界面不许自己写死一个数。 */
+function syncQrPoll(qr) {
+  const live = !!qr && !qr.expired && !$('add-dialog').hidden;
+  if (!live) {
+    stopQrPoll();
+    return;
+  }
+  if (qrTimer === null) startQrPoll(qr.pollMs);
+}
+
+/** 轮询回来那一行字：**带倒计时**（剩余毫秒是服务端给的）。
+ *
+ *  ⚠ 没有倒计时的话，第一次轮询之后那句「· 剩 N 秒」就消失了 —— 而那一行是
+ *  用户判断"这张码还活着吗"的唯一依据（画码时是 `renderLogin` 拼的同一句话，
+ *  两处必须长得一样）。 */
+function qrNoteText(r) {
+  const note = r.note || '等手机扫码';
+  if (typeof r.expiresInMs !== 'number') return note;
+  return `${note} · 剩 ${Math.ceil(r.expiresInMs / 1000)} 秒`;
+}
+
 async function qrPollOnce() {
+  // 弹窗关了就一次都不该再问（挂着的"立刻重问"也走这条）
+  if ($('add-dialog').hidden) {
+    stopQrPoll();
+    return;
+  }
   try {
     const r = await api('/login/qr/poll', { method: 'POST', write: true });
-    if (r.note) setText('qr-note', r.note);
+    if (r.note || typeof r.expiresInMs === 'number') setText('qr-note', qrNoteText(r));
     // ⚠ 只有 `stop` 才停。「还没扫到」是轮询期间**绝大多数**的响应，不是错误。
     if (r.stop) {
       stopQrPoll();
       if (r.ok && !r.account && r.note === undefined) return;
       if (r.ok) {
+        closeAddDialog();
         toast('登录成功');
-        $('add-dialog').hidden = true;
       } else {
         toast(r.note || '扫码登录失败', true);
       }
       await load();
+      return;
+    }
+    // 没问成（空响应 / 网络）：第一次立刻重问，连着两次才退避；
+    // 问成了 ⇒ 清零 + 回到服务端给的间隔
+    if (r.retry) {
+      qrFailStreak += 1;
+      if (qrFailStreak === 1) retryQrNow();
+      else backoffQrPoll(r.pollMs);
+    } else {
+      qrFailStreak = 0;
+      resetQrPoll(r.pollMs);
     }
   } catch (err) {
     stopQrPoll();
@@ -1212,50 +2980,47 @@ $('login-qr').addEventListener('click', (e) =>
     async () => {
       // 换方式要把另一种的会话清掉（否则两边同时"进行中"，界面不知道该显示哪个）
       await api('/login/cancel', { method: 'POST', write: true });
-      const r = await api('/login/qr/start', { method: 'POST', write: true });
+      // ⚠ 形态**必须跟着这一次出码走**：它进码里的 `ver`，也决定后面轮询的请求头。
+      //   后端把它冻进会话，所以之后改界面上的选择动不到这张码（要换就重新出码）。
+      const r = await api('/login/qr/start', {
+        method: 'POST',
+        write: true,
+        body: { pcPlatform: addPc },
+      });
       // 出码是纯本地拼接（不发上游），所以立刻把码画出来
       // ⚠ 弹窗里页签的显隐统一由 `showAddTab` 管（原来这里是直接改
       //   `pane-qr/pane-sms/pane-pwd` 的 `hidden` —— 那三个 id 现在不存在了）。
       showAddTab('qr');
       $('qr-box').innerHTML = r.svg || '';
+      $('qr-box').hidden = false;
       setText('qr-note', r.note);
+      // ⚠ 出码之后**必须开始轮询**：手机扫码 → 在手机上确认 → 上游才把凭据给出来，
+      //   而"上游给出来了没有"只能靠我们自己去问。少了这一行，扫了也白扫（F-067）。
+      //   间隔用这一侧给的那个（`pollMs`），界面不写死。
+      startQrPoll(r.pollMs);
       return r;
     },
     '出码了 —— 用手机 App 扫',
   ),
 );
 
-$('sms-start').addEventListener('click', (e) =>
-  act(
-    e.currentTarget,
-    () =>
-      api('/login/sms/start', {
-        method: 'POST',
-        write: true,
-        body: { phone: $('sms-phone').value.trim() },
-      }),
-    '手机号记下了 —— 点「发验证码」',
-  ),
-);
-
+// ⚠ 「获取验证码」这一个按钮干两件事：**开会话**（`/login/sms/start`，纯本地）
+//   然后**发码**。用户看到的是一屏一个动作 —— 见 `requestCode` 的说明。
 $('sms-send').addEventListener('click', (e) =>
   act(
     e.currentTarget,
     async () => {
-      const r = await api('/login/sms/send', { method: 'POST', write: true });
-      if (r.sent) return r;
-      if (r.needSlider) {
-        // 被风控拦下 ⇒ 去取图。**缺口坐标是解出来的**，不用人眼量像素。
-        const p = await api('/login/sms/slider', { method: 'POST', write: true });
-        if (!p.ok) throw new Error(p.note || '取滑块失败');
-        $('slider-box').hidden = false;
-        setText('slider-note', p.note);
-        $('slider-bg').src = `data:image/jpeg;base64,${p.background}`;
-        return p;
+      const r = await requestCode('sms');
+      // ⚠ 滑块由**后端**自动过（取新题 → 解坐标 → 带答案重发，见 `autoPassSlider`）：
+      //   界面这一层只可能拿到 `sent` 或一句人话，没有"再点一次"这种中间态。
+      if (r.sent) {
+        // 发出去了 ⇒ 开始重发倒计时（**界面节奏**：连点只会喂限流）
+        startResend('sms');
+        return r;
       }
       throw new Error(r.note || '发码没成');
     },
-    (r) => (r && r.needSlider ? '移动云盘要滑块 —— 图已取到，再点一次「发验证码」' : '验证码已发出'),
+    '验证码已发出',
   ),
 );
 
@@ -1269,7 +3034,8 @@ $('sms-submit').addEventListener('click', (e) =>
         body: { code: $('sms-code').value.trim() },
       });
       if (r.account) {
-        $('sms-code').value = '';
+        // ⚠ 先关弹窗再提示：弹窗还开着的话，用户会以为"这一步还要我做什么"
+        closeAddDialog();
         toast(`登录成功：${r.account.label}`);
         return r;
       }
@@ -1306,7 +3072,7 @@ $('paste-submit').addEventListener('click', (e) =>
       }
       $('paste-body').value = '';
       $('paste-note').textContent = '';
-      $('add-dialog').hidden = true;
+      closeAddDialog();
       return r;
     },
     '凭据已存下',
@@ -1322,52 +3088,46 @@ $('paste-submit').addEventListener('click', (e) =>
 //   形状不同**：App 的 `data` 是密文字符串、要用**另一把钥匙**解。
 //   所以这里是三条独立的路由，不是把 PC 那套换个头。
 
-$('app-start').addEventListener('click', (e) =>
-  act(
-    e.currentTarget,
-    () =>
-      api('/login/app/start', {
-        method: 'POST',
-        write: true,
-        body: { phone: $('app-phone').value.trim() },
-      }),
-    (r) => r.note || '手机号记下了',
-  ),
-);
-
 $('app-send').addEventListener('click', (e) =>
   act(
     e.currentTarget,
     async () => {
-      const r = await api('/login/app/send', { method: 'POST', write: true });
-      if (r.sent) return r;
-      if (r.needSlider) {
-        // 被风控拦下 ⇒ 去取题面。**缺口坐标是解出来的**，不用人眼量像素。
-        const p = await api('/login/app/slider', { method: 'POST', write: true });
-        if (!p.ok) throw new Error(p.note || '取题面失败');
-        $('app-slider-box').hidden = false;
-        setText('app-slider-note', p.note);
-        $('app-slider-bg').src = `data:image/jpeg;base64,${p.background}`;
-        return p;
+      const r = await requestCode('app');
+      // 同 PC：滑块由后端自动过，界面只认 `sent` 或一句人话
+      if (r.sent) {
+        startResend('app');
+        return r;
       }
       throw new Error(r.note || '发码没成');
     },
-    (r) => (r && r.needSlider ? '移动云盘要滑块 —— 题面已取到，再点一次「发验证码」' : '验证码已发出'),
+    '验证码已发出',
   ),
 );
 
 $('app-submit').addEventListener('click', (e) =>
   act(
     e.currentTarget,
-    () =>
-      api('/login/app/submit', {
+    async () => {
+      const r = await api('/login/app/submit', {
         method: 'POST',
         write: true,
         body: { code: $('app-code').value.trim() },
-      }),
-    (r) => r.note || '登录成功',
+      });
+      if (r.account) {
+        closeAddDialog();
+        toast(`登录成功：${r.account.label}`);
+        return r;
+      }
+      throw new Error(r.note || '登录没成');
+    },
+    '登录成功',
   ),
 );
+
+// ⚠ 两个页签的输入框要接上"实时反应"（只留数字 / 按位数开关主按钮 / 回车提交）。
+//   放在处理器都挂完之后：`wireCodeForm` 里会 `$()` 那几个按钮。
+wireCodeForm('sms', $('sms-phone'), $('sms-code'));
+wireCodeForm('app', $('app-phone'), $('app-code'));
 
 // ────────── 补回被误删的四个处理器（切片时把它们一起切掉了）──────────
 
@@ -1461,33 +3221,109 @@ $('acct-list').addEventListener('click', async (ev) => {
 });
 
 // 日常
-$('daily-run').addEventListener('click', (e) =>
-  act(e.currentTarget, () => runTask('daily'), '跑完了 —— 看下面的每一步'),
-);
+// ⚠ 不走 `act`：它会在触发后**立刻**说"跑完了"（面板那个接口是异步的）
+$('daily-run').addEventListener('click', (e) => runTaskAndWait('daily', e.currentTarget));
 
 // 兑换
-$('ex-plan-save').addEventListener('click', (e) =>
+// 当前账号（手动兑换用）。切号会改全局「当前账号」—— 原页面也是这个语义。
+$('ex-account').addEventListener('change', async (ev) => {
+  const id = ev.target.value;
+  if (!id) return;
+  try {
+    const r = await api('/accounts', { method: 'POST', write: true, body: { op: 'select', id } });
+    toast(r.note || '已切换账号');
+    await load();
+  } catch (e) {
+    toast(String(e && e.message ? e.message : e), true);
+  }
+});
+
+// 二次确认偏好（localStorage：这台浏览器的事，不是账号属性）。
+$('ex-confirm-first').addEventListener('change', (ev) => {
+  exSetConfirmFirst(ev.target.checked);
+  setText(
+    'ex-intro',
+    (ev.target.checked
+      ? '挑一件兑换。下单会真的扣 AI 豆，所以点下去要再确认一次；抢不到的可以先「定时」等那一场。'
+      : '挑一件兑换。下单会真的扣 AI 豆 —— 你已经关掉二次确认，点「立即兑换」就直接扣。') +
+      (exLocalJudge() ? '' : ' 本地判定已关：抢光/未开始/已兑过也会真发单。'),
+  );
+});
+
+$('ex-local-judge').addEventListener('change', (ev) => {
+  exSetLocalJudge(ev.target.checked);
+  setText(
+    'ex-intro',
+    (exConfirmFirst()
+      ? '挑一件兑换。下单会真的扣 AI 豆，所以点下去要再确认一次；抢不到的可以先「定时」等那一场。'
+      : '挑一件兑换。下单会真的扣 AI 豆 —— 你已经关掉二次确认，点「立即兑换」就直接扣。') +
+      (ev.target.checked ? '' : ' 本地判定已关：抢光/未开始/已兑过也会真发单。'),
+  );
+  repaintExchange();
+});
+
+// 清单筛选：名字/编号 + 只看可兑/关注。
+const repaintExchange = () => {
+  if (last && last.exchange) renderExchangeTable(last.exchange, exSay);
+};
+$('ex-filter').addEventListener('input', repaintExchange);
+$('ex-verdict').addEventListener('change', repaintExchange);
+$('ex-show-blocked').addEventListener('change', repaintExchange);
+$('ex-session-refresh').addEventListener('click', (e) =>
   act(
     e.currentTarget,
-    () =>
-      api('/exchange/order', {
-        method: 'POST',
-        write: true,
-        body: { query: $('ex-plan').value.trim() },
-      }),
-    '兑换目标已保存',
+    () => post('auth/refresh', { force: true }),
+    (r) => (r && r.note) || '登录凭据已刷新',
   ),
 );
-// 「现在试一次」走**干跑**路由，不是"真跑一次任务"：
-//   干跑做完清单/余额/预热/取题，到"只差下单"就停 —— **一枪都不发**。
-//   按钮的标签是"试一次"，用户想知道的是「现在能不能兑」，而那一枪发出去
-//   是真扣豆且不可逆的。真下单只走定时那一场。
-$('ex-run').addEventListener('click', (e) =>
-  act(
-    e.currentTarget,
-    () => post('exchange/try', {}),
-    '试完了 —— 一枪都没发，看下面这次的结果',
-  ),
+
+/** 表格/关注区里的动作。`data-*-idx` 指 `exPicks` 的下标（清单里的一件）。 */
+async function exchangeRowAction(ev) {
+  const star = ev.target.closest('[data-sub-idx]');
+  const planBtn = ev.target.closest('[data-plan-idx]');
+  const buyBtn = ev.target.closest('[data-buy-idx]');
+  const unsub = ev.target.closest('[data-unsub-name]');
+  const planName = ev.target.closest('[data-plan-name]');
+  const buyName = ev.target.closest('[data-buy-name]');
+  if (!star && !planBtn && !buyBtn && !unsub && !planName && !buyName) return;
+  try {
+    if (star) {
+      const p = exPicks[Number(star.dataset.subIdx)];
+      if (p) await exToggleSub(p, !exIsSub(p), star);
+      return;
+    }
+    if (unsub) {
+      const p = exFindPick(unsub.dataset.unsubName, undefined) || { name: unsub.dataset.unsubName };
+      await exToggleSub(p, false, unsub);
+      return;
+    }
+    if (planBtn || planName) {
+      const p = planBtn ? exPicks[Number(planBtn.dataset.planIdx)] : exFindPick(planName.dataset.planName, undefined);
+      if (!p) throw new Error('清单里找不到这一件');
+      openPlanDialog(p);
+      return;
+    }
+    const p = buyBtn ? exPicks[Number(buyBtn.dataset.buyIdx)] : exFindPick(buyName.dataset.buyName, undefined);
+    if (!p) throw new Error('清单里找不到这一件');
+    await exBuyNow(p, buyBtn || buyName);
+  } catch (e) {
+    toast(String(e && e.message ? e.message : e), true);
+  }
+}
+
+$('ex-tbl').addEventListener('click', (ev) => {
+  const toggle = ev.target.closest('[data-group-toggle]');
+  if (toggle) {
+    ev.preventDefault();
+    exToggleGroup(toggle.dataset.groupToggle);
+    return;
+  }
+  exchangeRowAction(ev);
+});
+$('ex-subs').addEventListener('click', exchangeRowAction);
+// 「读一次」= 上面「刷新清单」**同一枪**（只读清单，不发余额/预热/取题那几枪）
+$('ex-read').addEventListener('click', (e) =>
+  act(e.currentTarget, refreshPicks, (r) => (r && r.note) || '清单已刷新'),
 );
 
 // 直播
@@ -1499,71 +3335,62 @@ $('live-claim').addEventListener('click', (e) =>
       if (!raw) throw new Error('先把口令贴进来');
       await api('/live/codes', { method: 'POST', write: true, body: { codes: raw } });
       $('live-paste').value = '';
+      const t0 = Date.now();
       await runTask('live');
+      toast('口令收下了 —— 它正在领');
+      await waitRun('mcloud-live', '直播', t0, null);
       return null;
     },
-    '口令已收下并跑了一轮',
+    '这一轮领完了 —— 结果看下面的日志',
   ),
 );
-$('live-run').addEventListener('click', (e) =>
-  act(e.currentTarget, () => runTask('live'), '听了一轮'),
-);
+// 同「日常」：这个也是异步触发的任务，要说真话就得等它跑完
+$('live-run').addEventListener('click', (e) => runTaskAndWait('live', e.currentTarget));
 
-// 设置
-$('cfg-save').addEventListener('click', (e) =>
-  act(
-    e.currentTarget,
-    () =>
-      api('/config', {
-        method: 'POST',
-        write: true,
-        body: {
-          baseUrl: $('cfg-baseUrl').value.trim(),
-          liveUrl: $('cfg-liveUrl').value.trim(),
-          gateBase: $('cfg-gateBase').value.trim(),
-          wsBase: $('cfg-wsBase').value.trim(),
-          imBase: $('cfg-imBase').value.trim(),
-          loginBase: $('cfg-loginBase').value.trim(),
-          loginPlatform: $('cfg-loginPlatform').value,
-        },
-      }),
-    '设置已保存',
-  ),
-);
-
-$('selftest-run').addEventListener('click', (e) =>
-  act(
-    e.currentTarget,
-    async () => {
-      const r = await api('/selftest');
-      paintList(
-        'selftest-list',
-        (r.checks || []).map((c) => [(c.ok ? '✓ ' : '✗ ') + c.name, '', '']),
-        '',
-      );
-      setText('caps-line', r.caps || '');
-      if (!r.ok) throw new Error(r.detail);
-      return r;
-    },
-    (r) => r.detail,
-  ),
-);
+// ⚠ 「设置」那一页的保存按钮（`cfg-save`）与「跑自检」（`selftest-run`）跟着那一页
+//   一起删了。自检那条**路由**还在（`/selftest`，e2e 与 `scripts/split_check.py`
+//   都在用它），只是不再有界面入口 —— 那是装机器的人该看的，不是用户。
 
 // ── 兑换的两个时间参数 ──
-$('ex-hour-save').addEventListener('click', (ev) =>
-  act(
-    ev.currentTarget,
-    () => post('config', { targetHour: $('ex-hour').value.trim() }),
-    '兑换时刻已保存',
-  ),
+/** 数字框左右加减：空值不猜（点减号保持空），点加号才从默认值开始。 */
+function stepNumber(btn) {
+  const input = $(btn.dataset.stepFor);
+  if (!input) return;
+  const min = input.min === '' ? 0 : Number(input.min);
+  const max = input.max === '' ? Number.POSITIVE_INFINITY : Number(input.max);
+  const delta = Number(btn.dataset.delta) || 0;
+  let v = input.value.trim();
+  if (v === '') {
+    if (delta < 0) return;
+    v = input.dataset.default || String(min);
+  }
+  const n = Number(v);
+  if (!Number.isFinite(n)) return;
+  input.value = String(Math.min(max, Math.max(min, n + delta)));
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  input.focus();
+}
+
+for (const b of document.querySelectorAll('[data-step-for]')) {
+  b.addEventListener('click', () => stepNumber(b));
+}
+
+// 定时抢兑弹窗：入口是清单/关注行的「定时」。
+$('ex-plan-close').addEventListener('click', () => {
+  $('ex-plan-dialog').hidden = true;
+});
+$('ex-plan-cancel').addEventListener('click', () => {
+  $('ex-plan-dialog').hidden = true;
+});
+$('ex-plan-dialog').addEventListener('click', (ev) => {
+  if (ev.target === $('ex-plan-dialog')) $('ex-plan-dialog').hidden = true;
+});
+$('ex-plan-submit').addEventListener('click', (ev) =>
+  act(ev.currentTarget, savePlanDialog, (r) => (r && r.note) || '定时已保存'),
 );
-$('ex-lead-save').addEventListener('click', (ev) =>
-  act(
-    ev.currentTarget,
-    () => post('config', { leadMs: $('ex-lead').value.trim() }),
-    '提前量已保存',
-  ),
-);
+for (const id of ['ex-plan-cron', 'ex-plan-lead', 'ex-plan-lead-sec', 'ex-plan-max', 'ex-plan-until']) {
+  $(id).addEventListener('input', updatePlanPreview);
+}
 
 // ── 推送：试发一条 ──
 $('push-test').addEventListener('click', (ev) =>
@@ -1602,4 +3429,8 @@ $('push-add-rule').addEventListener('click', (ev) => {
 // 打开页面先画一次。⚠ **不自动轮询** —— 读数只在动作之后刷新。
 // 自动轮询会让「我点了一下」和「它自己变了」分不清，而且这个页面在 iframe 里，
 // 没人看的时候不该一直打接口。
+//
+// 「今日AI豆」那一格**不塞进 `load()`** —— 它每次点都要打移动云盘，见上面 `renderData`
+// 之后那一节的模块头。这里只画"还没取"那一行占位。
+paintBeansList();
 load();

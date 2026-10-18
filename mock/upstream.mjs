@@ -65,13 +65,45 @@ const json = (res, status, obj) => {
 /** 默认夹具：形状照抄 mcloud 文档里记的实拍。 */
 export const FIXTURES = {
   // taskListV3 的 result 是**数组**
+  //
+  // ⚠ `state` 只有 **`FINISH` / `WAIT` / `DOING`** 三种（mcloud 逐条扫过实拍，
+  //   没有 `UNFINISH` 这种值）。
+  // ⚠ `buttonProperty`/`button` 下面按端分（`email`/`app`/`out`），里面那句 `text`
+  //   是**上游替这一条、这一阶段写好的话** —— 界面徽章照抄它，别自己造「待做」。
+  //   值取自真机实拍（抓包仓 §12.10 / §12.11）：进行中的那条是「开启中」并带
+  //   `day`/`total`（App 上那个「完成进度 (1/31)」），完成的那条是「次月可领」。
   taskListV3: {
     code: 0,
     msg: 'success',
     result: [
-      { id: 596, name: '签到', state: 'FINISH', enable: 1, process: 0, currstep: 4 },
-      { id: 597, name: '分享', state: 'UNFINISH', enable: 1, process: 0, currstep: 6 },
-      { id: 598, name: '固定入口', state: 'FINISH', enable: 1, process: 0, currstep: 8 },
+      {
+        id: 596,
+        name: '签到',
+        state: 'FINISH',
+        enable: 1,
+        process: 0,
+        currstep: 4,
+        buttonProperty: { app: { text: '已完成', canReceive: 0 } },
+      },
+      {
+        id: 597,
+        name: '分享',
+        state: 'WAIT',
+        enable: 1,
+        process: 0,
+        currstep: 6,
+        buttonProperty: { app: { text: '去完成', canReceive: 0 } },
+      },
+      {
+        id: 598,
+        name: '固定入口',
+        state: 'WAIT',
+        enable: 1,
+        process: 0,
+        currstep: 8,
+        // 只有 `button`、没有 `buttonProperty` 的那种（实拍 1021 就是这样）
+        button: { out: { text: '开启中', day: '5', total: 31, canReceive: 0 } },
+      },
     ],
   },
   // taskListV2 的 result 是**以 group 为键的对象**（与 V3 形状不同，故意保留）
@@ -82,11 +114,71 @@ export const FIXTURES = {
   receiveV3: { code: 0, msg: 'success', result: { bean: 10 } },
   multiple: { code: 0, msg: 'success', result: { multiple: 2 } },
   receiveRevivalReward: { code: 0, msg: 'success', result: { bean: 5 } },
-  cloudRecordV2: { code: 0, msg: 'success', result: [{ date: '2026-10-13', bean: 123 }] },
+  // `cloudRecordV2` 的 result 是**对象**、里面才是 `records` 数组（照参考实现
+  // `parse_cloud_records`）。字段名照实拍：`num` 是带符号的整数、`summary` 摘要、
+  // `mark` 备注、`insertTime` 是 ISO 带显式偏移。
+  // ⚠ 具体数值由下面 `cloudRecordsMock()` **按今天现算**（这里只是给一个不会
+  //   被别的 case 意外吃到的占位形状）。
+  cloudRecordV2: { code: 0, msg: 'success', result: { records: [] } },
   prizeRecord: { code: 0, msg: 'success', result: [{ id: 1, name: 'AI豆', state: 'UNRECEIVED' }] },
   backupGiftInfo: { code: 0, msg: 'success', result: { canReceive: true } },
   backupGiftReceive: { code: 0, msg: 'success', result: {} },
 };
+
+/** `cloudRecordV2` 的 mock：**按"现在"现算**，让预览里"今日"真的有数。
+ *
+ *  # 为什么不是静态夹具
+ *
+ *  插件那边判"是不是今天"用的是**东八区日界**（`beans.ts::dayStartMs`）—— 一个
+ *  固定日期的静态夹具过一天就对不上"今天"。这里按 `Date.now()` 生成三笔：
+ *    · 今天 08:00（东八区）一笔 +
+ *    · 昨天 20:00（东八区）一笔（**验窗口过滤**：明细"近 7 天"要看得见，"今日"要看不见）
+ *    · 一条没有 `insertTime` 的（**验 undated 那一档**：明细照样列出来，只是排在最后）
+ *  每笔都带**显式偏移** `+08:00` —— 与实拍里 `2026-09-16T11:12:54.000+00:00` 同族格式。
+ *
+ *  # 只有一页
+ *
+ *  参考实现那边翻到短页为止。这里返回 3 条（< `PAGE_SIZE=100`）⇒ 插件那边第一页就停，
+ *  不撞 `MAX_PAGES`。要测翻页与 `hasMore`，改这里返回 `PAGE_SIZE` 满页 ×N 次即可。 */
+function cloudRecordsPage(pageNumber) {
+  if (pageNumber > 1) return { code: 0, msg: 'success', result: { records: [] } };
+  const pad = (n, w = 2) => String(n).padStart(w, '0');
+  // 东八区"今天 00:00"是 epoch 毫秒的那个点：
+  //   把"现在"平移到东八区墙钟看，取那天的 UTC 零点，再减 8 小时回 UTC。
+  const bjOffsetMs = 8 * 3_600_000;
+  const nowMs = Date.now();
+  const asBj = new Date(nowMs + bjOffsetMs);
+  const dayStartUtcMs =
+    Date.UTC(asBj.getUTCFullYear(), asBj.getUTCMonth(), asBj.getUTCDate()) - bjOffsetMs;
+  const iso = (utcMs) => {
+    // 写东八区墙钟 + `+08:00` 偏移，两种信息都给全（预览看的是墙钟串）。
+    const bj = new Date(utcMs + bjOffsetMs);
+    return (
+      `${bj.getUTCFullYear()}-${pad(bj.getUTCMonth() + 1)}-${pad(bj.getUTCDate())}` +
+      `T${pad(bj.getUTCHours())}:${pad(bj.getUTCMinutes())}:${pad(bj.getUTCSeconds())}` +
+      `.${pad(bj.getUTCMilliseconds(), 3)}+08:00`
+    );
+  };
+  return {
+    code: 0,
+    msg: 'success',
+    result: {
+      records: [
+        // 今日两笔：一进一出 —— 卡上"净增 = 收 − 支"要看得出。
+        { num: 10, summary: '每日签到', mark: 'MOCK-sign', insertTime: iso(dayStartUtcMs + 8 * 3_600_000) },
+        { num: -3, summary: '兑换扣减', mark: 'MOCK-spend', insertTime: iso(dayStartUtcMs + 9 * 3_600_000) },
+        // 昨天一笔：**验窗口过滤** —— "今日"看不见，"近 7 天"看得见。
+        { num: 5, summary: '昨日签到（对照）', mark: 'MOCK-yest', insertTime: iso(dayStartUtcMs - 4 * 3_600_000) },
+        // 没有 `insertTime` 那一笔：**验 undated** —— 明细照样列（排最后），今日汇总里
+        //   让**该账号进 failed**（照参考实现：解不出就如实报错，不静默丢）。
+        // ⚠ 这一条会让 `/beans/today` 走"解不出 insertTime ⇒ 抛"的分支。
+        //   要"今日有数"预览的话把它注释掉；要"失败隔离 + undated"预览的话留着。
+        //   默认**注释掉** —— 用户预览要看的是"卡上有数"，不是"卡说读不出"。
+        // { num: 7, summary: '时间读不出（对照）', mark: 'MOCK-undated' },
+      ],
+    },
+  };
+}
 
 /**
  * 起一个 mock 上游。
@@ -495,6 +587,12 @@ export async function startMock(options = {}) {
         }
         if (behavior === 'biz-fail') return json(res, 200, { code: 1001, msg: '今天已经签过了' });
 
+        // `cloudRecordV2` 走**分页 + 按今天现算**的分支（见下面 `cloudRecordsPage`）。
+        if (url.pathname === '/ycloud/signin/public/cloudRecordV2') {
+          const pageNumber = Number(url.searchParams.get('pageNumber') ?? '1') || 1;
+          return json(res, 200, cloudRecordsPage(pageNumber));
+        }
+
         const map = {
           '/ycloud/signin/task/taskListV3': FIXTURES.taskListV3,
           '/ycloud/signin/task/taskListV2': FIXTURES.taskListV2,
@@ -503,7 +601,6 @@ export async function startMock(options = {}) {
           '/ycloud/signin/page/receiveV3': FIXTURES.receiveV3,
           '/ycloud/signin/page/multiple': FIXTURES.multiple,
           '/ycloud/signin/page/receiveRevivalReward': FIXTURES.receiveRevivalReward,
-          '/ycloud/signin/public/cloudRecordV2': FIXTURES.cloudRecordV2,
           '/ycloud/signin/public/record': FIXTURES.prizeRecord,
           '/market/backupgift/info': FIXTURES.backupGiftInfo,
           '/market/backupgift/receive': FIXTURES.backupGiftReceive,

@@ -41,7 +41,7 @@
 //
 // ⚠ 诚实标注：**这一族没有在真账号上验过**（CI 全程只打 mock，而 mock 验的是
 // "我发出去的形状"不是"上游接受它"）。所以首次真机跑要盯着看：
-// 如果上游回 `90001`（凭据都在却过不去），第一个要怀疑的就是这里少了什么头。
+// 如果服务端回 `90001`（凭据都在却过不去），第一个要怀疑的就是这里少了什么头。
 
 
 import { callOnce } from '../client.ts';
@@ -65,7 +65,7 @@ import {
 } from '../liveFlower.ts';
 import { loadLiveCodes } from './liveRoom.ts';
 import { accountOf, claimVerdictOf, planDrawCodes } from './liveRoomRules.ts';
-import { accountClaimed, loadPoolFrom, noteClaim, savePoolTo } from '../koulingPool.ts';
+import { accountClaimed, loadFreshPool, noteClaim, savePoolTo } from '../koulingPool.ts';
 import type { DrawKind } from '../liveFlower.ts';
 
 /** 步骤机状态。 */
@@ -138,9 +138,9 @@ export interface DrawState {
  *
  *  ⚠ 顺序是**人给的在前**（界面上会把这一列先显示出来，所以不是暗箱）：
  *  那一份是**他确认过的**。 */
-export function collectCodes(store: Pick<Store, 'getState'>): string[] {
+export function collectCodes(store: Pick<Store, 'getState'>, nowMs: number = Date.now()): string[] {
   const human = loadLiveCodes(store)?.codes ?? [];
-  const { pool } = loadPoolFrom(store);
+  const { pool } = loadFreshPool(store, nowMs);
   return planDrawCodes(pool, accountOf(store), human);
 }
 
@@ -176,7 +176,7 @@ export function setClaimEnabled(store: Store, on: boolean, nowIso: string): void
 export function probeLiveRoom(deps: TaskDeps): { ok: boolean; note: string; balance?: number } {
   const session = loadSession(deps.store);
   if (!session || !session.jwt) {
-    return { ok: false, note: '未登录：这一族要 jwttoken（见 docs/howto-session.md）' };
+    return { ok: false, note: '这个号还没换到票 —— 上面「换票」那一步说了原因' };
   }
   const res = callOnce(deps.transport, withSession(userInfoRequest(deps.baseUrl), session.jwt));
   if (res.env === undefined) {
@@ -192,11 +192,11 @@ export function probeLiveRoom(deps: TaskDeps): { ok: boolean; note: string; bala
     // 这一支最值钱：它说明"凭据都在、却过不去" ⇒ 头形状不对（见文件头）
     return {
       ok: false,
-      note: '上游回 90001（未登录）—— 凭据是有的，所以问题在**请求头形状**：' +
+      note: '服务端回 90001（未登录）—— 凭据是有的，所以问题在**请求头形状**：' +
         '先怀疑少了 `jwttoken` / `showloading`，或多了签到族那套头（见 liveDraw.ts 文件头）',
     };
   }
-  return { ok: false, note: `上游回 ${code}${res.env.message ? `（${res.env.message}）` : ''}` };
+  return { ok: false, note: `服务端回 ${code}${res.env.message ? `（${res.env.message}）` : ''}` };
 }
 
 /** 步骤 → 这一步要发的请求 + 一行人话。**纯函数**（不推进状态、不发请求）。 */
@@ -237,11 +237,12 @@ export function runLiveDraw(deps: TaskDeps, opts: { force?: boolean } = {}): Tas
 
   if (!opts.force && !claimEnabled(deps.store)) {
     // 关着的时候**一个请求都不发**，而且不写失败 —— 这不是错误状态
-    return { ok: true, idle: true, note: '领小红花未开启（界面上那个开关）' };
+    // 这个开关只是允许插件去领；功能本身要服务端那边开
+    return { ok: true, idle: true, note: '领小红花没开（要先在服务端那边开启）' };
   }
 
   let s = loadDrawState(deps.store);
-  const codes = collectCodes(deps.store);
+  const codes = collectCodes(deps.store, Date.parse(deps.nowIso));
 
   if (!s || s.step === 'done') {
     // 跑完了、或还没开始 ⇒ 看要不要起一轮新的。
@@ -251,7 +252,7 @@ export function runLiveDraw(deps: TaskDeps, opts: { force?: boolean } = {}): Tas
     // ⇒ 一轮跑完之后 `codes` 通常是**空的**（都领过了），而那不是"没有口令可领"。
     // 判据要按"上一轮那批口令是不是都已经被这个账号领过"来分，不能按长度分 ——
     // 否则界面上会写着"没有口令可领（先抓主页…）"，而人明明刚领完一轮。
-    const { pool } = loadPoolFrom(deps.store);
+    const { pool } = loadFreshPool(deps.store, Date.parse(deps.nowIso));
     const account = accountOf(deps.store);
     const allClaimed = done.length > 0 && done.every((c) => accountClaimed(pool, account, c));
     if (codes.length === 0) {
@@ -282,7 +283,7 @@ export function runLiveDraw(deps: TaskDeps, opts: { force?: boolean } = {}): Tas
   // 没有会话就别打上游 —— 这一族**要凭据**（与只读那半不同）
   const session = loadSession(deps.store);
   if (!session || !session.jwt) {
-    const note = '未登录：领小红花要 jwttoken（见 docs/howto-session.md）';
+    const note = '领小红花要先有票 —— 上面「换票」那一步说了原因';
     recordError(deps.store, TASK, note, deps.nowIso);
     return { ok: false, note };
   }
@@ -318,7 +319,7 @@ export function runLiveDraw(deps: TaskDeps, opts: { force?: boolean } = {}): Tas
   if (s.step === 'draw' && advance.state.results.length > before) {
     const row = advance.state.results[advance.state.results.length - 1];
     if (row !== undefined) {
-      const loaded = loadPoolFrom(deps.store);
+      const loaded = loadFreshPool(deps.store, Date.parse(deps.nowIso));
       noteClaim(loaded.pool, accountOf(deps.store), row.code, claimVerdictOf(row.kind), Date.parse(deps.nowIso));
       savePoolTo(deps.store, loaded.pool, deps.nowIso);
     }
@@ -362,7 +363,7 @@ function judge(s: DrawState, label: string, res: CallResult, nowIso: string): Ad
     return { state: st, ok: false, note: `${label} 失败：${why}` };
   }
   const biz = (): string =>
-    `${label}：上游回 ${res.env?.code ?? '?'}${res.env?.message ? `（${res.env.message}）` : ''}`;
+    `${label}：服务端回 ${res.env?.code ?? '?'}${res.env?.message ? `（${res.env.message}）` : ''}`;
 
   switch (s.step) {
     case 'balance-before': {
@@ -389,7 +390,7 @@ function judge(s: DrawState, label: string, res: CallResult, nowIso: string): Ad
       // ⚠ `200110`（已参与过）是**正常**的一支，不是失败
       const code = res.env.code;
       st.firstParticipate =
-        code === 0 ? '领到首次参与惊喜奖' : code === 200110 ? '已参与过（正常）' : `上游回 ${code ?? '?'}`;
+        code === 0 ? '领到首次参与惊喜奖' : code === 200110 ? '已参与过（正常）' : `服务端回 ${code ?? '?'}`;
       st.step = 'draw';
       return { state: st, ok: true, note: `${label}：${st.firstParticipate}` };
     }
@@ -484,7 +485,7 @@ export interface DrawReport {
   invalid: string[];
   /** 本场已结束的（`200118`）—— 口令是对的，别让人去重抄。 */
   expired: string[];
-  /** 上游回了别的码的 —— 单独一栏，排查方向与上面两栏都不同。 */
+  /** 服务端回了别的码的 —— 单独一栏，排查方向与上面两栏都不同。 */
   other: string[];
   /** 解不出来的（响应形状变了）。 */
   unparsable: string[];

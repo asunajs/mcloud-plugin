@@ -94,7 +94,7 @@ test('判据：两个字段缺任何一个都**不参与判断**（不是"不满
 
   // 槽整个没有：也要说出来
   const p2 = noticePlan({});
-  assert.ok(p2.detail.includes('上游没给'), p2.detail);
+  assert.ok(p2.detail.includes('服务端没给'), p2.detail);
 });
 
 test('"通知未开启"那一档判不出来 —— 钉住这个声明，别让它悄悄变成"能用"', () => {
@@ -132,7 +132,7 @@ test('两步推进：先查、能领才领；领完下一轮**回查**（reward 
   const s3 = runNotice(deps);
   assert.equal(r.sent.length, 3);
   assert.ok(INFO_RE.test(r.sent[2]!), r.sent[2]);
-  assert.ok(s3.note.includes('已入账') || s3.note.includes('无可领'), s3.note);
+  assert.ok(s3.note.includes('领过了') || s3.note.includes('已入账'), s3.note);
 });
 
 test('上次说不能领 ⇒ 一个写请求都不发（reward 会真入账）', () => {

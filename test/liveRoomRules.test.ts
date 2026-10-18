@@ -53,13 +53,13 @@ test('⚠ 门那两种"没有"必须分得开（它们的下一步完全不同�
   const nobody = judgeKoulingGate([gateRoom({ status: 2 }), gateRoom({ status: 0 })]);
   assert.equal(nobody.active, false);
   assert.equal(nobody.liveCount, 0);
-  assert.match(gateLine(nobody), /谁都没在播/);
+  assert.match(gateLine(nobody), /谁都没开播/);
 
   const others = judgeKoulingGate([gateRoom({ id: 147490, anchorNickname: '福建移动' })]);
   assert.equal(others.active, false);
   assert.equal(others.liveCount, 1);
-  assert.match(gateLine(others), /都不是/);
-  assert.ok(!/谁都没在播/.test(gateLine(others)), '别把"别人在播"说成"没有直播"');
+  assert.match(gateLine(others), /不是「中国移动云盘」的/);
+  assert.ok(!/谁都没开播/.test(gateLine(others)), '别把"别人在播"说成"没有直播"');
 });
 
 test('门里的房间按 id 去重（同一间房可能因分页/多频道出现两次）', () => {

@@ -16,14 +16,18 @@
 
 | 插件 | 是什么 |
 |---|---|
-| `mcloud` | 界面 + 所有路由（读数 / 登录 / 设置）。**没有定时任务。** |
+| `mcloud` | 界面 + 所有路由（读数 / 登录 / 配置）。**没有定时任务。** |
 | `mcloud-daily` | **日常** —— 一次触发从头跑到尾 |
 | `mcloud-exchange` | **兑换** |
 | `mcloud-live` | **直播** |
 
-界面是**菜单栏 + 一次一块**，七块：账号 / 日常 / 兑换 / 直播 / 数据 / 推送 / 设置。
+界面是**菜单栏 + 一次一块**，六块：账号 / 日常 / 兑换 / 直播 / 数据 / 推送。
 每块第一行回答那个块的核心问题（「登录了吗」「今天跑了吗」「口令池里有几条能用」），
 **读数直接显示**，按钮说人话（「现在跑一次」「贴进去领取」「扫码登录」）。
+
+⚠ 界面上**没有「设置」页**（原来那一页是六个地址口子 + 自检）。那些口子是
+**搭测试环境**用的，用户看不懂、还会把面板指到错的地方去。要改基址请直接调
+`/plugins/mcloud/api/config`（`scripts/e2e-mock.sh` 就是这么做的）。
 
 截图在 [`docs/shots/`](docs/shots/README.md)。
 
@@ -42,8 +46,8 @@
 用户说得很清楚：**2 秒不是他的需求**。所以解法换成两条面板侧的能力
 （见下「面板为此补了什么」）：
 
-- **长任务独立线程**：一个插件固定活在一条线程上（`worker_hint('exclusive')`），
-  面板自动为它抬线程数
+- **长任务隔离 + 粗粒度共享**：抢兑与路由插件 `worker_hint('exclusive')`；
+  日常/直播共享一条粗粒度 lane，面板自动抬到 4 条线程
 - **按任务声明执行预算**：`register_cron(name, expr, handler, { budget_ms })`
 
 有了这两条，「日常」就能是一条**从换票一路跑到快照**的函数（15 步、几十个请求），
@@ -91,8 +95,23 @@ npm ci && npm run all
 
 ```bash
 # 面板的插件目录指向本仓库的 plugins/（一个静态二进制 + 一个目录，没有依赖）
-PLUGINS_DIR=/path/to/mcloud-plugin/plugins PANEL_TOKEN=<你的令牌> <面板二进制>
+#
+# ⚠ 新一点的面板**默认不认明文令牌**（`PANEL_TOKEN=<明文>` 会直接退出）。
+#   要么用摘要形态（推荐，口令不离开浏览器）：
+PANEL_TOKEN_HASH="$(printf '%s' '<你的令牌>' | <面板二进制> hash-token)" \
+  PLUGINS_DIR=/path/to/mcloud-plugin/plugins <面板二进制>
+#   要么本机临时开一次开发口子：
+# PANEL_ALLOW_PLAIN_TOKEN=1 PANEL_TOKEN=<你的令牌> PLUGINS_DIR=… <面板二进制>
+#
+# ⚠ 直播那条链要面板能谈 CBC 套件（上游只给 CBC，rustls 不实现任何一个）。
+#   面板从 2026-10-17 起**默认就编进去了**（`default = ["legacy-tls"]`），
+#   所以直接 `cargo build --release` 出来的二进制就能直播 —— 不用加参数。
+#   自己精简过（`--no-default-features`）才需要补回来；「自检」有一条
+#   「宿主支持 native TLS」替你盯着，红了就是编漏了。
 ```
+
+登录页面会把口令先在浏览器里算成 `sha256("plugin-panel/v1:"+口令)` 再提交；
+走接口的话，`{"token": "<那个摘要>"}`。
 
 装好后：
 
@@ -112,7 +131,7 @@ PLUGINS_DIR=/path/to/mcloud-plugin/plugins PANEL_TOKEN=<你的令牌> <面板二
 
 | # | 能力 | 为什么这个插件非要 |
 |---|---|---|
-| ①-1 | **worker 隔离**（`worker_hint('exclusive')`） | 一条 15 步的链跑起来时，别的插件不能跟着一起卡 |
+| ①-1 | **worker 隔离**（`worker_hint('exclusive')`） | 抢兑和长路由不能被 15 步的日常/直播拖住；日常/直播共享粗粒度 lane |
 | ①-2 | **任务参数**（`register_cron(..., { params })`） | 兑换要"一个账号一条任务"并行跑 |
 | ①-3 | **侧边栏入口**（`register_nav`） | 插件得在面板上有个门 |
 | ①-4 | **随机表达式**（`@every 5s -200ms` / cron 抖动） | 定时不该齐步走 |
@@ -145,6 +164,7 @@ mcloud-plugin/
 | [`docs/findings.md`](docs/findings.md) | 压出来的面板边界：怎么测的、什么数、改了什么 |
 | [`docs/howto-session.md`](docs/howto-session.md) | 使用者手册：怎么拿会话、怎么导入、失败了怎么看 |
 | [`docs/ui-wording.md`](docs/ui-wording.md) | 界面用词规则（**对用户不许说"上游"**） |
+| [`docs/live-spec.md`](docs/live-spec.md) | **直播（小红花）业务规格**：两条路、共享口令池、领取结果分类、哪些环节还没被证实 |
 | [`docs/smid-chain.md`](docs/smid-chain.md) · [`docs/upload-chain.md`](docs/upload-chain.md) | 两条比较绕的链路的实测记录 |
 | [`docs/shots/`](docs/shots/README.md) | 界面截图（七个区块各一张 + 扫码） |
 | [`docs/design-history.md`](docs/design-history.md) | **开工前的设计稿**（历史；有些判断后来被推翻了，为什么留着见文件头） |
@@ -173,3 +193,5 @@ QuickJS 沙箱里没有 Node（没有 `fs` / `net` / `crypto` / npm 包），
 - 兑换会**花真 AI豆**（上游无幂等键）⇒ 界面上的「现在试一次」是显式动作，不自动跑
 - 登录的**口令**先按协议哈希再发出去（`SHA1("fetion.com.cn:" + 口令)`，大写 hex），
   不上传明文；日志与错误信息里都不回显口令
+
+> 面板里怎么装：[docs/install.md](docs/install.md)

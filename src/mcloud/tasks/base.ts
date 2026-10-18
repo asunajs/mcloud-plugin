@@ -25,6 +25,7 @@ import { CLIENT_QUERY, EP_METHOD, REFERER_SIGN_IN, SHOW_LOADING, buildH5Request,
 import type { EndpointName } from '../h5.ts';
 import { SESSION_KEY, loadSession, saveSession } from '../../store/types.ts';
 import type { Session, Store } from '../../store/types.ts';
+import { jwtExpiry } from '../session.ts';
 
 /** 宿主的长连接那一族（`ws_*`）。**注入式**的理由与 `transport` 一样：
  *  插件里注入真的（`host-api` 的 `ws_open` 等），Node 测试里注入桩 ——
@@ -40,6 +41,17 @@ export interface HostWs {
   wsSend(id: number, text: string): true;
   wsRecv(id: number, timeout_ms?: number): WsFrame;
   wsClose(id: number): true;
+}
+
+/** 业务主机的基址（`baseUrl` 空串 / 全空白 = 用真主机）。
+ *
+ *  ⚠ 不能写 `` `${deps.baseUrl ?? HOST}/ycloud/…` ``：`??` 只挡 `undefined`，
+ *  **空串会拼出相对 URL**，宿主那边报 `bad uri: /ycloud/… is missing scheme` ——
+ *  而这句话在界面上看起来像"上游坏了"，其实是我们自己没给主机（F-081 现场）。
+ *  `h5.ts::resolveUrl` 早就是 `base ? … : …`，这里只是把同一条口径收成一处。 */
+export function hostBase(deps: { baseUrl?: string | undefined }, fallback: string): string {
+  const b = (deps.baseUrl ?? '').trim();
+  return b === '' ? fallback : b.replace(/\/+$/, '');
 }
 
 export interface TaskDeps {
@@ -151,7 +163,7 @@ export function runTask(
   // ② 没有会话就别打上游
   const session = loadSession(deps.store);
   if (!session) {
-    const note = '未登录：state 里没有会话（见 docs/howto-session.md）';
+    const note = '还没有网页会话 —— 上面「换票」那一步说了原因';
     recordError(deps.store, spec.task, note, deps.nowIso);
     return { ok: false, note };
   }
@@ -194,11 +206,33 @@ export function runTask(
       recordError(deps.store, spec.task, explained, deps.nowIso);
       return { ok: false, note: explained };
     }
-    const note = res.error ?? '未知失败';
+    var note = res.error ?? '未知失败';
+    // ⚠ `90001` 在所有任务里长一个样（「未登录」），而它有两种完全不同的原因：
+    //   ① 手机端凭据（JWT）真的过期了 ⇒ 重新导入会话就好；
+    //   ② 这一环要的那张票过期了（H5 的 `jwttoken`）⇒ 同一句话，但重新拿票即可。
+    //   不区分的话，用户看到的是"8 项没成 · 未登录"，只能猜。
+    if (res.env?.code === 90001) {
+      const exp = jwtExpiry(deps.store, deps.nowIso);
+      // ISO → 本地 `H:MM`（只给人看，别把整串 ISO 糊到日志里）
+      const clock = (iso: string): string => {
+        const d = new Date(iso);
+        if (Number.isNaN(d.getTime())) return '刚才';
+        return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+      };
+      note =
+        exp !== null && exp.expired
+          ? `凭据过期了（今天 ${clock(exp.atIso)} 就到期）—— 去「账号」页重新导入会话`
+          : '这一环要的票没被认（不是账号被踢）—— 重新导入会话最快';
+    }
     // 「上游说失败，其实是已经做过了」这一类：算完成，但把上游原话留在 note 里
     if (spec.okWhenError?.(note)) {
       clearError(deps.store, spec.task, deps.nowIso);
-      return { ok: true, note: `上游说「${note}」—— 按"已经完成"处理（见 okWhenError）` };
+      // ⚠ 这句话是给**用户**看的：不写 `okWhenError` 这种代码里的名字，
+      //   也不把 `code=500 msg=…` 原样糊上去（那是传输层的形状）。
+      const plain = note.replace(/^code=(-?\d+)(?: msg=(.*))?$/, (_m, _c, msg: string | undefined) =>
+        msg === undefined || msg.trim() === '' ? '' : msg.trim(),
+      );
+      return { ok: true, note: plain === '' ? '已经做过了' : `已经做过了（服务端说：${plain}）` };
     }
     recordError(deps.store, spec.task, note, deps.nowIso);
     return { ok: false, note };

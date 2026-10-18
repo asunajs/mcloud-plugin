@@ -149,9 +149,10 @@ export function judgeKoulingGate(rooms: readonly GateRoom[]): KoulingGate {
 
 /** 门那两种"没有"说成人话（**不许混成一句"没有直播"**，理由见 [`KoulingGate.liveCount`]）。 */
 export function gateLine(g: KoulingGate): string {
-  if (g.active) return `门开着：${g.rooms.length} 间在播（${KOULING_ANCHOR}）`;
-  if (g.liveCount === 0) return '门关着：谁都没在播（今天没有直播）';
-  return `门关着：有 ${g.liveCount} 间在播，但都不是「${KOULING_ANCHOR}」`;
+  // 「门」是内部说法（指"有没有我们等的那个直播间"）—— 用户看到的是"在不在听"
+  if (g.active) return `正在听：${KOULING_ANCHOR} 开播了（${g.rooms.length} 间在播）`;
+  if (g.liveCount === 0) return '现在没在听：谁都没开播';
+  return `现在没在听：有 ${g.liveCount} 间在播，但不是「${KOULING_ANCHOR}」的`;
 }
 
 // ══════════════════════════ 参数组合的判据 ══════════════════════════

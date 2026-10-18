@@ -1,49 +1,58 @@
 // 插件 `mcloud-live` —— 用户可见任务「直播」。
 //
-// # 一个函数从头跑到尾
+// # 一句话：**口令只收一次，领取按账号各领一次**
 //
-// 老版本这里是 5 条 cron（`live-room` / `live-gate` / `live-listen` /
-// `live-auto` / `live-draw`），各自一个节奏：30 分钟 / 10 分钟 / 10 秒 /
-// 5 分钟 / 30 秒。在面板上就是 5 行任务，名字分别是「直播口令（只看）」
-// 「直播日程（门）」「听弹幕口令」「直播自动定时」「领小红花」——
-// 用户要自己拼出「它们是同一件事的五个零件」。
+// 口令是**共享资源**：一个账号从弹幕里听到，所有账号都能拿去领小红花。
+// 所以「听」不能按账号分（分着听 = 3 倍请求、3 倍时间，还重复撞同一批弹幕），
+// 而「领」必须按账号分（"这个号领过哪条"要分开记，不然会白跑一枪 `200112`）。
 //
-// 现在是一条任务、**一个听窗口**：一次触发里判门 → 读口令 → 听弹幕 → 领小红花。
+// 于是这一趟是两段：
 //
-// # 「听窗口」是这条任务的核心
+// ```text
+//   ① 收口令（整趟一次，用第一个账号的凭据）
+//       开门（房间列表）
+//         ├─ 没开播 / 开播的不是「中国移动云盘」 ⇒ 到此为止（零请求）
+//         └─ 开播 ⇒ 看小红书 → 听弹幕
+//   ② 领（每个账号各一次，用共享池里的口令）
+// ```
 //
-// 口令只在**开播那一小时**有效，而弹幕是**实时**的 —— 所以「听」这件事必须
-// 在一段**连续时间**里反复读。老版本用 `@every 10s` 的 cron 来近似，
-// 但那让「听」变成了「每 10 秒看一眼」，两帧之间漏掉的东西只能靠宿主的
-// 无界队列补 —— 补不补得上取决于队列有多深。
-//
-// 现在预算够长，可以在一**次**触发里连听几十秒：`*/5 * * * *` + 70 秒预算，
-//
-// ⚠ 老版本是 `@every 1m`（一天 1440 次）。改粗的依据：**开播时刻本身是整点粒度**
-//   （`earliestPlusOneHour`，见 `liveAutoTask.ts`）—— 既然目标只落在整点，
-//   就没必要每分钟去问一次；5 分钟一跳最坏晚 5 分钟进场，而窗口是按小时算的。
-// 窗口内循环读帧直到快到上限。门关着时第一次调用就进冷却、返回 `idle`，
-// 循环立刻停下 —— **零请求**，和以前一样便宜。
+// 日志也照这个结构分两段：`------【口令】------` 一段（不属于任何账号），
+// 然后每个账号一段。业务口径（为什么这么切、四条共享池规则、领取结果怎么分类）
+// 在 [`docs/live-spec.md`](../../docs/live-spec.md)。
 //
 // # 两种模式
 //
-//   ① **手动**：用户在界面上贴一条口令 → 直接进「领」那一段（听窗口跳过）
-//   ② **自动**：预先设好时段 → 到点自动起听窗口 → 听到口令自动领
+//   ① **手动**：用户在开播期间把口令贴进来（一条或多条）⇒ **直接领**：
+//      不开门、不看小红书、不听弹幕（口令已经在手里了，那些都是白跑；
+//      而且门偶发失败会把一趟本来能跑完的领取拖黄）。
+//   ② **自动**：开播**时间**固定、**日期**不固定 ⇒ 每天两次碰运气
+//      （`30 10,15 * * *` = 10:30 / 15:30）。碰上了才去小红书和弹幕里捡。
 //
-// 两种模式共用同一个 `runLiveDraw`（它有 `force` 口子，见 liveDraw.ts）。
-// 模式 ② 的「到点」由 `runLiveAuto` 算（**只算时刻，一个上游请求都不发**），
-// 听窗口的冷却会睡到那一刻。
+// 两种模式共用同一个 `runLiveDraw`。旧版本那五条 cron（口令/日程/听/定时/领）
+// 已经并成这一条 —— 那五行的名字看不出"它们是同一件事的零件"。
+//
+// # 为什么预算要到分钟级
+//
+// 弹幕是**实时**的，而"听"要在**连续时间**里反复读帧。一次触发连听 5 分钟，
+// 比"每 10 秒看一眼"稳：两帧之间漏掉的东西只能靠宿主的无界队列补，
+// 补不补得上取决于队列有多深。门关着时第一次调用就 `idle` 停下 —— 零请求。
+//
+// ⚠ 面板对 `budget_ms` 的上限是 10 分钟（`rust-plugin-panel/src/hostapi.rs`
+//   的 `MAX_DECLARED_BUDGET_MS`），5 分钟留足了余量。
 
-import { log, register_cron, warn, worker_hint } from 'host-api';
+import { log, register_cron, warn } from 'host-api';
 import { appendRun, type RunStep } from '../mcloud/runLog.ts';
 import { labelOf } from '../mcloud/taskAccounts.ts';
-import { runLiveAuto } from '../mcloud/tasks/liveAutoTask.ts';
-import { runLiveDraw } from '../mcloud/tasks/liveDraw.ts';
-import { runLiveGate } from '../mcloud/tasks/liveGateTask.ts';
-import { loadListenSeconds, runLiveListen } from '../mcloud/tasks/liveListen.ts';
+import { logBoth } from '../mcloud/log.ts';
+import { onceHint, userLine } from '../mcloud/tasks/stepLog.ts';
+import { collectCodes, runLiveDraw } from '../mcloud/tasks/liveDraw.ts';
+import { readGateReading, runLiveGate } from '../mcloud/tasks/liveGateTask.ts';
+import { KOULING_ANCHOR, loadPoolFrom, stopScraping, validCount } from '../mcloud/koulingPool.ts';
+import { runLiveListen } from '../mcloud/tasks/liveListen.ts';
 import type { ListenDeps } from '../mcloud/tasks/liveListen.ts';
 import { runLiveRoom } from '../mcloud/tasks/liveRoom.ts';
 import type { TaskDeps, TaskOutcome } from '../mcloud/tasks/base.ts';
+import { capNote, hostNativeTls } from '../mcloud/hostCap.ts';
 import {
   forEachTaskAccount,
   LONG_REQUEST_TIMEOUT_MS,
@@ -55,34 +64,35 @@ import {
 } from './shared.ts';
 import type { TaskPayload } from './shared.ts';
 
-// 独占线程：听窗口是**连续几十秒**的占用，和别的插件共用线程会把它们全拖住
-// （见 shared.ts 文件头）
-worker_hint('exclusive');
+// 共享粗粒度 lane：听窗口是连续几十秒的占用，但不需要毫秒级；
+// 和日常排队即可。只有 exchange 和路由插件需要独占（见 shared.ts 文件头）。
 
 const store = makeStore();
 const transport = makeTransport(LONG_REQUEST_TIMEOUT_MS);
 const host = makeHost();
 
-/** 听窗口预算。70 秒 = 一分钟的 cron 周期 + 10 秒余量，
- *  这样窗口之间几乎不留缝（口令是当场有效的东西，缝就是漏）。 */
-const BUDGET_MS = 70_000;
-/** 主动收手的时刻：留 15 秒给「领小红花」那一段（它要发好几个请求）。 */
-const LISTEN_DEADLINE_MS = BUDGET_MS - 15_000;
+/** 听窗口预算。一天只来两次（10:30 / 15:30），所以每次听久一点：
+ *  5 分钟。面板对预算的上限是 10 分钟（`MAX_DECLARED_BUDGET_MS`）。 */
+const BUDGET_MS = 300_000;
 
 function listenDeps(deps: TaskDeps): ListenDeps {
   return { ...deps, host };
 }
 
 /** 一趟直播。 */
-function runLive(deps: TaskDeps): {
-  ok: boolean;
-  note: string;
-  detail: string[];
-  steps: RunStep[];
-} {
-  const started = Date.now();
+/** 整趟**只跑一次**：收口令（门 → 小红书 → 听弹幕）。
+ *
+ *  ⚠⚠ **口令是共享的**：一个账号听到，所有账号都能拿去领（用户口径 2026-10-17：
+ *  「一个听到其他人就能用了」）。所以这一支**不按账号分**，也不该把听窗口的
+ *  预算按账号摊 —— 那样 3 个账号就是 3 倍请求、3 倍时间，还会重复撞同一批弹幕。
+ *
+ *  用**第一个账号**的凭据（换票/门/WS 都要一张票，随便哪张都行）。
+ */
+function collectOnce(
+  deps: TaskDeps,
+  runStartMs: number,
+): { steps: RunStep[]; detail: string[]; ok: boolean; note: string; stopped: boolean } {
   const steps: RunStep[] = [];
-
   const step = (name: string, fn: () => TaskOutcome): TaskOutcome => {
     try {
       const r = fn();
@@ -94,98 +104,184 @@ function runLive(deps: TaskDeps): {
       return { ok: false, note };
     }
   };
+  const done = (ok: boolean, note: string, stopped = false) => ({
+    steps,
+    detail: steps.map((s) => userLine(s)).filter((x): x is string => x !== null),
+    ok,
+    note,
+    stopped,
+  });
 
-  // ① 算下一次窗口（只算时刻，零请求）。听窗口的冷却会睡到那一刻。
-  step('自动定时', () =>
-    runLiveAuto(deps, { windowMs: loadListenSeconds(store) * 1000 }),
-  );
-
-  // ② 门：今天开播了吗 / 下一场几点（只读）
-  step('日程门', () => runLiveGate(deps));
-
-  // ③ 口令笔记（公开 GET，**不需要凭据** —— 所以凭据失效时它照样有产出）
-  step('口令笔记', () => runLiveRoom(deps));
-
-  // ④ 听窗口：在一次触发里连听几十秒。
+  // ⓪ 先问一次**这个面板构建支不支持直播**。
   //
-  //    循环的出口有两个，都是**正常**出口：
-  //      · `idle` —— 门关着（冷却里）或者窗口结束。这时候立刻停，零请求。
-  //      · 时间上限 —— 窗口还没完但预算快到了，下一次触发接着听。
-  //
-  //    ⚠ 这里**不用 `drain`**：`drain` 的语义是「状态机走完」，
-  //      而听是一个**持续的**动作（读帧 → 读帧 → …），`idle` 在这里的意思是
-  //      「现在不用听」而不是「听完了」。混用会让日志说错话。
+  //   为什么放在最前面：不支持的时候，后面每一条（门、小红书、弹幕）都会
+  //   以同一条 TLS 报错收场，而那条报错用户改不了、也看不懂。
+  //   问一次、记住、然后**什么都不做** —— 一天两次的机会不该花在注定失败的路上。
+  const cap = hostNativeTls(deps.store, deps.nowIso, deps.transport);
+  if (cap.verdict === 'no') {
+    // ⚠ 这里不再单独 `error()` 一次：这一段会由下面的段尾统一印成**一行** error
+    //   （同一句话说三遍比说一遍糟 —— 见 F-097 的同一条口径）。
+    steps.push({ name: '这个面板能不能直播', ok: false, note: capNote(cap.verdict), idle: false });
+    return done(false, capNote(cap.verdict), true);
+  }
+
+  // ① 先验开播 —— 没开播时抓到的口令一定是无效的，所以"先验开播"是判据，不是限制。
+  const gateOut = drain(runLiveGate, deps, {
+    label: '有没有开播',
+    maxSteps: 3,
+    deadlineMs: 40_000,
+    startedAt: runStartMs,
+  });
+  const gate = readGateReading(store);
+  const liveCount = gate === null ? 0 : gate.liveCount;
+
+  // ⚠ **门自己失败 ≠ 今天没直播**（"我们凭据坏了"与"今天没开播"是两件事）。
+  //   参考实现这一支的做法是"警告一句、继续试"（`hasActiveLiveRoom`：验证失败返回 true，
+  //   避免因临时故障漏掉口令）。一天只有两次机会，为一次偶发失败丢掉整场不值。
+  if (!gateOut.ok) {
+    steps.push({ name: '有没有开播', ok: false, note: `${gateOut.note}（继续试一次）`, idle: false });
+  } else if (gate === null || gate.active !== true) {
+    steps.push({
+      name: '有没有开播',
+      ok: true,
+      idle: true,
+      note:
+        liveCount === 0
+          ? '今天没有直播（谁都没在播）'
+          : `有 ${liveCount} 间在播，但没有一间是「${KOULING_ANCHOR}」的`,
+    });
+    return done(true, '没在播 —— 不听，也不看小红书', true);
+  } else {
+    steps.push({
+      name: '有没有开播',
+      ok: true,
+      idle: false,
+      note: `「${KOULING_ANCHOR}」开播了（${liveCount} 间在播）`,
+    });
+  }
+
+  // ② 小红书（公开 GET，封控要求 ≥30 分钟一次）
+  step('主播发口令没有', () => runLiveRoom(deps));
+
+  // ③ 听弹幕 —— 池里够 2 条有效就不听了（再听只是重复撞同一批）
+  const poolNow = loadPoolFrom(store).pool;
+  const enough = stopScraping(poolNow);
+  if (enough) {
+    steps.push({
+      name: '听弹幕',
+      ok: true,
+      idle: true,
+      note: `手里已经有 ${validCount(poolNow)} 条能用的口令，不用再听`,
+    });
+    return done(true, '口令够了，没再听');
+  }
+
   let frames = 0;
   let listenNote = '';
   const ld = listenDeps(deps);
-  while (Date.now() - started < LISTEN_DEADLINE_MS) {
+  const listenDeadline = runStartMs + BUDGET_MS - 20_000;
+  while (Date.now() < listenDeadline) {
     const r = step('听弹幕', () => runLiveListen(ld));
     listenNote = r.note;
     if (!r.ok || r.idle) break;
     frames++;
-    // 一次调用读一轮帧（~1.6 秒），所以循环天然有节奏；
-    // 这里不再 sleep —— 沙箱里没有 timers（见 docs/host-api.md）。
-    if (frames > 60) break; // 兜底：调用方每轮只读一次，60 轮足够覆盖 55 秒
+    if (frames > 60) break;
   }
   if (frames > 0) {
-    steps.push({ name: '听弹幕', ok: true, note: `共读 ${frames} 轮`, idle: false });
+    steps.push({ name: '听弹幕', ok: true, note: listenNote || `听了 ${frames} 轮`, idle: false });
   }
+  const after = loadPoolFrom(store).pool;
+  return done(true, `池里现在有 ${validCount(after)} 条能用的口令`);
+}
 
-  // ⑤ 领小红花（有口令才动；六步链，drain 到走完）
+/** 每个账号：拿**共享池**里的口令去领。
+ *
+ *  ⚠ 这一支才是"按账号"的 —— 因为"哪个账号领过哪条"必须分开记（`claims`）。
+ *  口令本身不按账号分：同一张口令，每个账号都能领一次。 */
+function drawOnce(
+  deps: TaskDeps,
+  runStartMs: number,
+): { steps: RunStep[]; detail: string[]; ok: boolean; note: string } {
   const r = drain(runLiveDraw, deps, {
     label: '领小红花',
     maxSteps: 12,
-    deadlineMs: BUDGET_MS - (Date.now() - started) - 3_000,
-    startedAt: started,
+    deadlineMs: Math.max(15_000, runStartMs + BUDGET_MS - Date.now() - 3_000),
+    startedAt: runStartMs,
   });
-  steps.push({ name: '领小红花', ok: r.ok, note: r.note, idle: false });
-
-  // `detail` 从 `steps` **推出来**（不是另写一份）—— 两份就会走岔，
-  // 而走岔的表现是"日志说成功、界面说失败"，最难查的一类不一致。
-  const detail = steps.map((s) => `${s.name}：${s.ok ? '' : '失败 '}${s.note}`);
-
-  const failed = steps.filter((s) => !s.ok);
-  const elapsed = ((Date.now() - started) / 1000).toFixed(1);
-  if (failed.length > 0) {
-    return {
-      ok: false,
-      note: `${failed.length} 步有问题：${failed[0]!.name}：${failed[0]!.note}`,
-      detail,
-      steps,
-    };
-  }
+  const steps: RunStep[] = [{ name: '领小红花', ok: r.ok, note: r.note, idle: false }];
   return {
-    ok: true,
-    note: `${listenNote || '未进入听窗口'}（用时 ${elapsed}s）`,
-    detail,
     steps,
+    detail: steps.map((s) => userLine(s)).filter((x): x is string => x !== null),
+    ok: r.ok,
+    note: r.note,
   };
 }
 
 register_cron(
   '直播',
-  // 一分钟一跳，配合 70 秒预算 ⇒ 窗口之间几乎不留缝。
-  // 门关着时第一次调用就进冷却、零请求秒返回。
-  '*/5 * * * *',
+  // 用户口径（2026-10-17）：「太频繁了，每天上午 10:30 / 下午 15:30 两次」。
+  // 每 5 分钟一跳太密 —— 而开播时刻是整点粒度，两次足够；没在播时第一次
+  // 调用就早退（零请求），见下面的「先验开播再决定要不要听」。
+  '30 10,15 * * *',
   (p: TaskPayload) => {
     const startedMs = Date.now();
     const at = new Date(startedMs).toISOString();
-    // ── 这一趟跑**这条任务选的账号**，**串行**（见 `forEachTaskAccount`）──
+    // ── ① 先收口令：**整趟只跑一次**，用第一个账号的凭据 ──────────────
     //
-    // ⚠ 听窗口是**按账号**的（房间、时长、冷却都在账号袋里）—— 所以每条各自跑。
-    const runs = forEachTaskAccount(store, '直播', p, transport, (deps) => runLive(deps));
+    // ⚠ 口令是**共享**的（一个账号听到，所有账号都能用），所以"听"这件事
+    //   不能按账号分：分着跑就是 3 倍请求、3 倍时间，还会重复撞同一批弹幕。
+    // ⚠ **手里有口令（人贴的）就不收** —— 省两个请求，且避免门偶发失败把一趟
+    //   本来能跑完的领取拖黄（参考实现 `task-inventory.md:354`）。
+    const manual = collectCodes(store, startedMs).length > 0;
+    let collected: { steps: RunStep[]; detail: string[]; ok: boolean; note: string; stopped: boolean } | null =
+      null;
+    const runs = forEachTaskAccount(store, '直播', p, transport, (deps, _acct, index) => {
+      if (index === 0 && !manual) collected = collectOnce(deps, startedMs);
+      return drawOnce(deps, startedMs);
+    });
     // 没选到账号 ⇒ 静默返回（那不是失败，是"这条任务没配账号"）
     if (runs.length === 0) return;
 
+    // 这一趟里"已经解释过的后缀"（跨账号共用，见 stepLog.ts 的 onceHint）
+    const onceHints = new Set<string>();
+
+    // 收口令那一段：**一次**，标成「口令」而不是某个账号 —— 它不属于任何账号
+    const c = collected as null | { steps: RunStep[]; detail: string[]; ok: boolean; note: string; stopped: boolean };
+    if (c !== null && c.detail.length > 0) {
+      // ⚠ 只有一步、且那一步是「这个面板能不能直播」= **构建缺陷**：
+      //   · 用 error（warn 会被当成"偶发，下次再看看"，而这件事不会自己好）；
+      //   · 只印**一行**（段头 + 步骤 + 段尾说的是同一句话，印三遍纯噪声）。
+      const capOnly = c.steps.length === 1 && !c.ok && c.steps[0]?.name === '这个面板能不能直播';
+      if (capOnly) {
+        logBoth(store, 'error', c.detail[0] ?? c.note, at);
+      } else {
+        logBoth(store, 'info', '------【口令】------', at);
+        let prev = '';
+        for (const line of c.detail) {
+          if (line === prev) continue;
+          prev = line;
+          logBoth(store, line.includes('没成') ? 'warn' : 'info', line, at);
+        }
+        const cBad = c.steps.filter((x) => !x.ok).length;
+        logBoth(
+          store,
+          cBad > 0 ? 'warn' : 'info',
+          `------【口令】${c.note}------`,
+          at,
+        );
+      }
+    }
+
+    // ── ② 每个账号：拿共享池里的口令去领 ─────────────────────────────
     for (const one of runs) {
       const r = one.result;
       const who = labelOf(store, one.acctId);
       const note = runs.length > 1 ? `${who}：${r.note}` : r.note;
 
-      // 运行记录（留最近 N 次）—— 面板的环形日志混着所有插件，
-      // 回答不了"上一场为什么没领到"
       appendRun(store, {
         task: 'live',
+        acct: one.acctId,
+        who,
         at,
         ms: Date.now() - startedMs,
         ok: r.ok,
@@ -202,14 +298,23 @@ register_cron(
         ok: r.ok,
         note,
       });
-      if (r.ok) log(`直播（${who}）：${r.note}`);
-      else warn(`直播（${who}）：${r.note}`);
+      logBoth(store, 'info', `------【${who}】------`, at);
+      let prev = '';
       for (const line of r.detail) {
-        if (line.includes('失败') || line.includes('抛异常')) warn(`  · ${line}`);
+        // 同一行连着出现（同一账号里的重复步骤）不必重画；
+        // `onceHint` 管的是**跨账号**的同一句解释（见 stepLog.ts 那段）
+        const shown = onceHint(line, onceHints);
+        if (shown === prev) continue;
+        prev = shown;
+        logBoth(store, shown.includes('没成') ? 'warn' : 'info', shown, at);
       }
+      const bad = r.steps.filter((x) => !x.ok).length;
+      const tail =
+        bad === 0 ? `------【${who}】都成了------` : `------【${who}】${bad} 项没成------`;
+      logBoth(store, bad > 0 ? 'warn' : 'info', tail, at);
     }
   },
   { budget_ms: BUDGET_MS },
 );
 
-log(`mcloud-live：任务「直播」（预算 ${BUDGET_MS / 1000}s，独占线程）`);
+log(`mcloud-live：任务「直播」（预算 ${BUDGET_MS / 1000}s，共享粗粒度 lane）`);

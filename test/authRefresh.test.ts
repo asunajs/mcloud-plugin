@@ -28,6 +28,7 @@ import {
   tokenExpireMs,
 } from '../src/mcloud/authRefresh.ts';
 import { STATE_AUTH } from '../src/mcloud/sessionExchange.ts';
+import { loadAccounts, selectAccount, upsertAccount } from '../src/mcloud/accounts.ts';
 import { memStore } from '../src/store/memory.ts';
 import { fromBase64, fromUtf8, toBase64, utf8 } from '../src/crypto/bytes.ts';
 import type { BuiltRequest } from '../src/mcloud/h5.ts';
@@ -159,6 +160,19 @@ test('剩余天数只给文案用；过期段缺失时不给数字（不编）',
 
 // ───────────────────────── 执行体 ─────────────────────────
 
+/** 一个"永远回成功"的上游（续期那一枪就够用）。 */
+function okTransport() {
+  return ((_req: unknown) => ({
+    status: 200,
+    headers: {},
+    body: JSON.stringify({
+      success: true,
+      code: '0000',
+      data: { token: `NEW|1|RCS|${NOW_MS + 30 * DAY}|x`, expireTime: 2592000 },
+    }),
+  })) as never;
+}
+
 function mkStore(raw: string) {
   const store = memStore();
   store.ensureSchema();
@@ -197,25 +211,44 @@ test('⚠ `manual-only`：凭据解不开时**也不打上游**，而且说"要�
   });
   assert.equal(sent, 0);
   assert.equal(out.skipped, true);
-  assert.match(out.note, /重新贴/);
+  assert.match(out.note, /重新登录/);
   assert.equal(out.ok, true, '这一档不是"任务失败"，是"这事得你做"');
 });
 
-test('该刷但手里没有 jwttoken ⇒ 如实失败，且**一个请求都不发**', () => {
-  const store = mkStore(cred('mobile', '19100002716', `a|b|c|${NOW_MS + 1 * DAY}`));
-  let sent = 0;
+test('⚠ 该刷但手里没有用户域 ⇒ **照样刷**（上游不要求它）', () => {
+  // 用户的原话：「据我所知，刷新不需要这个 id，或者如果需要这个 id 的唯一源也不是 jwt」。
+  // 2026-10-17 真机实测：只发 `{"clientType":"414"}` 一样回
+  // `{"success":true,"code":"0000","data":{"token":…}}`。
+  // 原来这里写成"拿不到 ⇒ 直接失败、先跑一次换票"，而换票又要求凭据能用 ——
+  // 于是刚登录进来还没换过票的账号，第一次续期必然失败。
+  const raw = cred('mobile', '19100002716', `a|b|c|${NOW_MS + 1 * DAY}`);
+  const store = mkStore(raw);
+  const seen: { body?: string | undefined }[] = [];
   const out = runAuthRefresh({
     store,
-    transport: (() => {
-      sent += 1;
-      return { status: 200, headers: {}, body: '{}' };
+    transport: ((req: { body?: string | undefined }) => {
+      seen.push(req);
+      return {
+        status: 200,
+        headers: {},
+        body: JSON.stringify({
+          success: true,
+          code: '0000',
+          data: { token: `NEW|1|RCS|${NOW_MS + 30 * DAY}|x`, expireTime: 2592000 },
+        }),
+      };
     }) as never,
     nowIso: NOW_ISO,
     baseUrl: undefined,
   });
-  assert.equal(sent, 0);
-  assert.equal(out.ok, false);
-  assert.match(out.note, /jwttoken/);
+  assert.equal(seen.length, 1, '该发的那一枪要发出去');
+  assert.equal(out.ok, true, `续期该成功：${out.note}`);
+  assert.ok(!/userDomainId/.test(seen[0]!.body ?? ''), `没域就不该写这一格：${seen[0]!.body}`);
+  // ⚠ 文案是**给用户看**的：不许出现 旧尾/新尾/用户域/换票/上游/凭据 这类黑话
+  assert.equal(out.note, '已续期，还能用 30 天', `提示要说人话：${out.note}`);
+  for (const jargon of ['旧尾', '新尾', '用户域', '换票', '上游', '凭据']) {
+    assert.ok(!out.note.includes(jargon), `提示里有黑话「${jargon}」：${out.note}`);
+  }
 });
 
 test('拿掉凭据：不刷（先贴一份）', () => {
@@ -228,7 +261,7 @@ test('拿掉凭据：不刷（先贴一份）', () => {
     baseUrl: undefined,
   });
   assert.equal(out.skipped, true);
-  assert.match(out.note, /先贴/);
+  assert.match(out.note, /先加/);
 });
 
 test('真刷一枪：请求形状对、新凭据落库、且**拒绝落库**路径有效', () => {
@@ -291,4 +324,145 @@ test('上游回失败 ⇒ 不落库（旧凭据原样留着）', () => {
   assert.equal(out.ok, false);
   assert.match(out.note, /没戏/);
   assert.equal(store.getState(STATE_AUTH), raw, '失败了就不该动库里的凭据');
+});
+
+test('⚠ 有用户域时仍然带上（照实拍形状：`userDomainId` 在前）', () => {
+  const raw = cred('mobile', '19100002716', `a|b|c|${NOW_MS + 1 * DAY}`);
+  const store = mkStore(raw);
+  // ⚠ 域现在在**账号**上（登录响应写进去的），不是全局一格 —— 见 F-076
+  const up = upsertAccount(store, raw, NOW_ISO, undefined, undefined, '1125330776486986478');
+  selectAccount(store, up.account.id, NOW_ISO);
+  const seen: { body?: string | undefined }[] = [];
+  const out = runAuthRefresh({
+    store,
+    transport: ((req: { body?: string | undefined }) => {
+      seen.push(req);
+      return {
+        status: 200,
+        headers: {},
+        body: JSON.stringify({
+          success: true,
+          code: '0000',
+          data: { token: `NEW|1|RCS|${NOW_MS + 30 * DAY}|x`, expireTime: 2592000 },
+        }),
+      };
+    }) as never,
+    nowIso: NOW_ISO,
+    baseUrl: undefined,
+  });
+  assert.equal(out.ok, true);
+  const body = seen[0]!.body ?? '';
+  assert.equal(body, '{"userDomainId":"1125330776486986478","clientType":"412"}', `请求体：${body}`);
+  assert.ok(body.indexOf('userDomainId') < body.indexOf('clientType'), '键序要照实拍');
+  assert.ok(!/没带用户域/.test(out.note), '带上了就不该说"没带"');
+});
+
+// ─────────────── 刷完要**落到账号记录上**（F-077） ───────────────
+//
+// 用户的原话：「点了没变化啊，然后不要提示黑话啊」。
+// 根因：`loadAuthRaw` 读的是 `Account.auth`（账号列表那一格），而续期把新串写进
+// `STATE_AUTH`（或 `scoped()` 路由到的账号袋）—— 卡片读列表 ⇒ 天数永远不变。
+
+test('⚠ 刷完把新串写回**账号记录**（卡片上的天数才会变）', () => {
+  const raw = cred('pc', '19100002716', `a|b|c|${NOW_MS + 1 * DAY}`);
+  const store = memStore();
+  store.ensureSchema();
+  const up = upsertAccount(store, raw, NOW_ISO, '测试', 'win');
+  selectAccount(store, up.account.id, NOW_ISO);
+
+  const out = runAuthRefresh(
+    { store, transport: okTransport(), nowIso: NOW_ISO, baseUrl: undefined },
+    true,
+  );
+  assert.equal(out.ok, true, `续期该成功：${out.note}`);
+  // 账号列表里那串必须是**新的**
+  const after = loadAccounts(store).find((a) => a.id === up.account.id)!;
+  assert.notEqual(after.auth, raw, '账号记录里的凭据没换 ⇒ 卡片永远不变');
+  assert.equal(
+    credentialExpireMs(after.auth),
+    NOW_MS + 30 * DAY,
+    `账号里那串还是旧的（过期时刻没变成 30 天后）：${after.auth.slice(0, 20)}…`,
+  );
+  // 天数要跟着变（卡片就是读这个）
+  assert.ok(
+    daysLeft(credentialExpireMs(after.auth), NOW_MS)! > 20,
+    `续期之后天数没变：${daysLeft(credentialExpireMs(after.auth), NOW_MS)}`,
+  );
+  assert.equal(out.note, '已续期，还能用 30 天');
+});
+
+test('⚠ 点哪一条就刷哪一条：**不许**刷成当前账号', () => {
+  const a = cred('pc', '19100000001', `A|1|RCS|${NOW_MS + 1 * DAY}|a`);
+  const b = cred('pc', '19100000002', `B|1|RCS|${NOW_MS + 1 * DAY}|b`);
+  const store = memStore();
+  store.ensureSchema();
+  const ua = upsertAccount(store, a, NOW_ISO, '甲', 'win');
+  const ub = upsertAccount(store, b, NOW_ISO, '乙', 'win');
+  selectAccount(store, ua.account.id, NOW_ISO); // 当前是「甲」
+
+  const seen: string[] = [];
+  const out = runAuthRefresh(
+    {
+      store,
+      transport: ((req: { headers?: Record<string, string> }) => {
+        seen.push(req.headers?.['Authorization'] ?? '');
+        return {
+          status: 200,
+          headers: {},
+          body: JSON.stringify({
+            success: true,
+            code: '0000',
+            data: { token: `NEW|1|RCS|${NOW_MS + 30 * DAY}|x`, expireTime: 2592000 },
+          }),
+        };
+      }) as never,
+      nowIso: NOW_ISO,
+      baseUrl: undefined,
+    },
+    true,
+    undefined,
+    // 用户点的是「乙」
+    { auth: ub.account.auth, accountId: ub.account.id },
+  );
+  assert.equal(out.ok, true);
+  assert.equal(seen[0], b, '拿去刷的必须是**被点那条**的凭据');
+  const list = loadAccounts(store);
+  assert.equal(list.find((x) => x.id === ub.account.id)!.auth.startsWith('Basic '), true);
+  assert.notEqual(list.find((x) => x.id === ub.account.id)!.auth, b, '「乙」要换成新串');
+  assert.equal(list.find((x) => x.id === ua.account.id)!.auth, a, '「甲」不许被顺手刷掉');
+});
+
+test('⚠ 刷的那一枪必须带 `Basic ` 前缀（缺了上游回 05050009，是假线索）', () => {
+  // 用户从 mcloud 复制过来的那串**没有** `Basic `（288 vs 294 字符），
+  // `parseAuth` 容忍缺前缀 ⇒ 账号看着正常，但请求头是坏的。
+  const b64 = Buffer.from(`pc:17823734979:C6l6qV71|1|RCS|${NOW_MS + 17 * DAY}|x`, 'utf8').toString('base64');
+  const store = memStore();
+  store.ensureSchema();
+  // 故意塞"坏形状"：没有前缀
+  const up = upsertAccount(store, b64, NOW_ISO, '移动', 'win');
+  selectAccount(store, up.account.id, NOW_ISO);
+  const seen: string[] = [];
+  const out = runAuthRefresh(
+    {
+      store,
+      transport: ((req: { headers?: Record<string, string> }) => {
+        seen.push(req.headers?.['Authorization'] ?? '');
+        return {
+          status: 200,
+          headers: {},
+          body: JSON.stringify({
+            success: true,
+            code: '0000',
+            data: { token: `NEW|1|RCS|${NOW_MS + 30 * DAY}|x`, expireTime: 2592000 },
+          }),
+        };
+      }) as never,
+      nowIso: NOW_ISO,
+      baseUrl: undefined,
+    },
+    true,
+  );
+  assert.equal(out.ok, true, out.note);
+  assert.ok(seen[0]!.startsWith('Basic '), `请求头缺前缀：${seen[0]!.slice(0, 20)}…`);
+  assert.ok(seen[0]!.endsWith(b64), '前缀之后必须是原来那段 base64');
 });

@@ -319,7 +319,7 @@ export function drawLine(code: string, out: DrawOutcome): string {
     case 'kouling-expired':
       return `口令「${code}」没领到：本场已结束（口令是对的）`;
     case 'other':
-      return `口令「${code}」没领到：上游回了未分类的码 ${out.code ?? '?'}${out.message ? `（${out.message}）` : ''}`;
+      return `口令「${code}」没领到：服务端回了没见过的码 ${out.code ?? '?'}${out.message ? `（${out.message}）` : ''}`;
     default:
       return `口令「${code}」没领到：响应解不出来`;
   }

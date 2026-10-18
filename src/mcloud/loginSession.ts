@@ -19,16 +19,22 @@
 
 import type { Store } from '../store/types.ts';
 import {
+  DEFAULT_PC_PLATFORM,
   QR_TTL_SECONDS,
   newPcDeviceId,
   newQrSession,
   newSmsSession,
+  parsePcPlatform,
   qrExpired,
+  qrRemainingMs,
+  type PcPlatform,
   type QrSession,
   type SmsSession,
   type SliderPuzzle,
 } from './login.ts';
 import { newLoginRandom, type AppSession } from './appLogin.ts';
+import { sha1, toHex } from '../crypto/index.ts';
+import { utf8 } from '../crypto/bytes.ts';
 
 /** 设备指纹（PC 客户端形态的 `dID`）。**持久化，见文件头。** */
 export const STATE_DEVICE_ID = 'mcloud.login.deviceId';
@@ -46,7 +52,11 @@ export const STATE_SMS_SESSION = 'mcloud.login.sms';
  *  共用一格的话，"进行中的是哪一端"就得靠猜。 */
 export const STATE_APP_SESSION = 'mcloud.login.app';
 
-/** 登录方式与平台的记忆（下一次开界面时预填）。值是 `windows` / `macos`。 */
+/** 登录方式与平台的记忆（下一次开界面时预填）。值是 `windows` / `macos`。
+ *
+ *  ⚠ **它不是身份来源**：身份是每次登录时冻结进会话的那一个（`QrSession.platform`）。
+ *  这一格只回答"上次用的是哪种形态"，给弹窗预填用 —— 出码那一刻用户选了什么，
+ *  这一趟就用什么，哪怕之后再改这一格也影响不到进行中的会话。 */
 export const STATE_LOGIN_PREF = 'mcloud.login.pref';
 
 /** 登录那一族接口的主机（空 = 真上游）。**与云盘业务基址不是同一个口子。** */
@@ -94,12 +104,34 @@ function parseJson<T>(raw: string | null | undefined): T | null {
   }
 }
 
+/** 老会话没有 `tid` 时的补法：**从 `sessionId` 推出来**，不随机。
+ *
+ *  ⚠ 随机会让"每次读都换一个"—— 那等于没补（同一趟轮询里两次读到不同的 tid，
+ *  就又回到"每轮换一个问话的人"那个毛病上）。推出来的这个天然稳定，
+ *  跨请求、跨面板重启都一样。
+ *
+ *  ⚠ 只对**升级前存下的**会话有意义（新会话出码时就带着随机 tid）。这类会话
+ *  最长也只活 120 秒，所以推出来的值不需要"不可预测"—— 它只是这一次问话的名字。 */
+function derivedTid(sessionId: string): string {
+  const h = toHex(sha1(utf8(`mcloud-qr-tid:${sessionId}`)));
+  // 拼成 UUID 的样子（版本 4 / variant a）：上游与日志都按这个形态认
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-a${h.slice(17, 20)}-${h.slice(20, 32)}`;
+}
+
 export function loadQrSession(store: Pick<Store, 'getState'>): QrSession | null {
   const s = parseJson<QrSession>(store.getState(STATE_QR_SESSION));
   if (s === null) return null;
   // 形状自检：缺字段的老数据当没有（`sessionId` 丢了就没法继续轮）
   if (typeof s.sessionId !== 'string' || typeof s.deviceId !== 'string') return null;
-  return s;
+  // ⚠ `platform` 是后加的格子：老会话没有它 ⇒ 按默认形态继续轮，**不要把会话判死**
+  //   （判死的表现是"面板升级后，正在进行的那张码突然变成没有会话"）。
+  // ⚠ `tid` 同理：升级前存的会话没有它 ⇒ 补一个。补出来的这个从此**固定**，
+  //   不能每轮再换（见 `QrSession.tid` 的说明）。
+  return {
+    ...s,
+    platform: parsePcPlatform(s.platform) ?? DEFAULT_PC_PLATFORM,
+    tid: typeof s.tid === 'string' && s.tid !== '' ? s.tid : derivedTid(s.sessionId),
+  };
 }
 
 export function saveQrSession(store: Store, s: QrSession, nowIso: string): void {
@@ -110,7 +142,7 @@ export function loadSmsSession(store: Pick<Store, 'getState'>): SmsSession | nul
   const s = parseJson<SmsSession>(store.getState(STATE_SMS_SESSION));
   if (s === null) return null;
   if (typeof s.phone !== 'string' || typeof s.random !== 'string') return null;
-  return s;
+  return { ...s, platform: parsePcPlatform(s.platform) ?? DEFAULT_PC_PLATFORM };
 }
 
 export function saveSmsSession(store: Store, s: SmsSession, nowIso: string): void {
@@ -147,17 +179,31 @@ export function clearLogin(store: Store): void {
   store.setState(STATE_APP_SESSION, '', new Date().toISOString());
 }
 
-/** 开一次扫码登录：**用已有的设备指纹**，不要新生成。 */
-export function startQrSession(store: Store, nowMs: number, nowIso: string): QrSession {
+/** 开一次扫码登录：**用已有的设备指纹**，不要新生成。
+ *
+ *  `platform` 由调用方给（用户在这一趟出码前选的那一个）—— 它会被**冻结进会话**，
+ *  之后轮询照它发请求，见 `QrSession.platform`。 */
+export function startQrSession(
+  store: Store,
+  nowMs: number,
+  nowIso: string,
+  platform: PcPlatform = DEFAULT_PC_PLATFORM,
+): QrSession {
   const deviceId = loadDeviceId(store, nowIso);
-  const s = newQrSession(deviceId, nowMs);
+  const s = newQrSession(deviceId, nowMs, platform);
   saveQrSession(store, s, nowIso);
   return s;
 }
 
-/** 开一次短信登录。 */
-export function startSmsSession(store: Store, phone: string, nowMs: number, nowIso: string): SmsSession {
-  const s = newSmsSession(phone, nowMs);
+/** 开一次短信登录。形态同样**冻进会话**（发码 / 取滑块 / 提交三步同一套档案）。 */
+export function startSmsSession(
+  store: Store,
+  phone: string,
+  nowMs: number,
+  nowIso: string,
+  platform: PcPlatform = DEFAULT_PC_PLATFORM,
+): SmsSession {
+  const s = newSmsSession(phone, nowMs, platform);
   saveSmsSession(store, s, nowIso);
   return s;
 }
@@ -173,6 +219,20 @@ export function setSmsSlider(
   return next;
 }
 
+/** 扫码轮询间隔（毫秒）。**由插件这一侧给**，界面不许自己写死一个数。
+ *
+ *  ⚠ 这条规矩有来处：参考实现的注释写着「客户端写死一个数会和状态机分叉」。
+ *
+ *  ⚠ **1000ms，照参考实现**：客户端源码是 `setInterval(…, 1000)`，
+ *  `mcloud` 那边是 `QR_POLL_INTERVAL_MS: u64 = 1000`。这一侧原来写 2000 ——
+ *  而真机上扫码成功那一枪**只出现一次**（拿到就没了），2 秒一档等于一半的
+ *  机会直接跳过它（F-071）。慢一点省的那点上游压力，换不回一次白扫。
+ *
+ *  ⚠ 为什么放在这里（而不是路由那一层）：界面**不只在出码那一次**需要它 ——
+ *  页面刷新 / 面板重启之后，会话还活着（它是落盘的），那时界面得**接着轮**，
+ *  而它手上只有读数。所以间隔必须跟着读数一起下去。 */
+export const QR_POLL_MS = 1000;
+
 /** 登录页要的读数（一次给全，界面只调一个接口）。
  *
  *  ⚠ 凭据**不进这里**（见 accounts.ts 的文件头：只给界面看掩码过的形状）。 */
@@ -182,6 +242,12 @@ export interface LoginReading {
     active: boolean;
     sessionId: string;
     payload: string;
+    /** 这张码是按哪种形态出的。界面据此把「客户端形态」那两个按钮摆到
+     *  **跟这张码一致**的位置 —— 否则用户会看到一个"选了 macOS、码却是
+     *  Windows 的"界面，而两个都不是错的。 */
+    platform: PcPlatform;
+    /** 接着轮的时候用这个间隔（见 `QR_POLL_MS`）。 */
+    pollMs: number;
     scanned: boolean;
     expiresInMs: number;
     expired: boolean;
@@ -190,6 +256,8 @@ export interface LoginReading {
   sms: {
     active: boolean;
     phone: string;
+    /** 这一趟短信登录用的形态。理由同 `qr.platform`。 */
+    platform: PcPlatform;
     sent: boolean;
     hasSlider: boolean;
     /** 滑块图（base64）—— 要渲染给人看，所以必须给界面。 */
@@ -225,8 +293,10 @@ export function loginReading(
             active: true,
             sessionId: qr.sessionId,
             payload: qrPayloadOf(qr.sessionId, qr.deviceId),
+            platform: qr.platform,
+            pollMs: QR_POLL_MS,
             scanned: qr.scanned,
-            expiresInMs: Math.max(0, qr.startedAtMs + QR_TTL_SECONDS * 1000 - nowMs),
+            expiresInMs: qrRemainingMs(qr, nowMs),
             expired: qrExpired(qr, nowMs),
             note: qr.lastNote,
           },
@@ -236,6 +306,7 @@ export function loginReading(
         : {
             active: true,
             phone: sms.phone,
+            platform: sms.platform,
             sent: sms.sent,
             hasSlider: sms.slider !== null,
             slider: sms.slider,

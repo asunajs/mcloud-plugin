@@ -101,7 +101,7 @@ export function fetchInfoV3(deps: {
   baseUrl?: string | undefined;
 }): { ok: true; info: InfoV3; tookMs: number } | { ok: false; error: string } {
   const session: Session | null = loadSession(deps.store);
-  if (!session) return { ok: false, error: '未登录：state 里没有会话' };
+  if (!session) return { ok: false, error: '还没有网页会话 —— 上面「换票」那一步说了原因' };
 
   const req = buildH5Request({
     url: `${resolveUrl('infoV3', deps.baseUrl)}?${CLIENT_QUERY}`,

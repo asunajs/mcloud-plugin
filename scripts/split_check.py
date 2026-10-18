@@ -89,6 +89,66 @@ def wait_ready(base, proc, timeout=30.0):
     return False
 
 
+def _cron_field_count(field: str, lo: int, hi: int):
+    """数 cron 某个字段**取几个值**（只认 `*` / 逗号列表 / `a-b` / 单个数字）。"""
+    if field == "*":
+        return hi - lo + 1
+    n = 0
+    for piece in field.split(","):
+        if "-" in piece:
+            a, b = piece.split("-", 1)
+            try:
+                n += int(b) - int(a) + 1
+            except ValueError:
+                return None
+        elif "/" in piece:
+            return None
+        else:
+            try:
+                int(piece)
+            except ValueError:
+                return None
+            n += 1
+    return n
+
+
+def _cron_per_day(expr: str):
+    """粗算"一天触发几次" = 分钟取值数 × 小时取值数；认不出返回 None。
+
+    ⚠ 故意**不**做完整的 cron 解析：这条用例要守的是"别回到秒级轮询"，
+      判个量级够用；真实调度器在 Rust 那边，已有自己的用例。
+    """
+    parts = expr.split()
+    if len(parts) != 5:
+        return None
+    m = _cron_field_count(parts[0], 0, 59)
+    h = _cron_field_count(parts[1], 0, 23)
+    if m is None or h is None:
+        return None
+    return m * h
+
+
+def _lead_shift_min(expr: str, lead_ms: int):
+    """`0 10,20 * * *` + 60000ms ⇒ `0 10,20` 里那些时刻各提前一分钟 ⇒ 分钟 59。
+
+    只处理"**分钟是单个数字、小时是列表**"这种形状（兑换就是），
+    其它形状返回 None（跳过断言，不猜）。
+    """
+    parts = expr.split()
+    if len(parts) != 5:
+        return None
+    if "-" in parts[0] or "," in parts[0] or parts[0] == "*":
+        return None
+    try:
+        minute = int(parts[0])
+    except ValueError:
+        return None
+    if lead_ms % 60_000 != 0:
+        return None  # 不是整分钟 ⇒ 不猜（秒级的提前量也能生效，只是这条断言比不了）
+    shift_min = lead_ms // 60_000
+    return int((minute - shift_min) % 60)
+
+
 def main() -> int:
     if not Path(BIN).exists():
         print(f"环境问题：找不到面板 {BIN}")
@@ -115,6 +175,9 @@ def main() -> int:
                 "PLUGINS_DIR": str(PLUGINS),
                 "DB_PATH": str(Path(td) / "db.sqlite"),
                 "PANEL_TOKEN": TOKEN,
+                # 面板新版本默认拒明文口令（要求 `PANEL_TOKEN_HASH`）；
+                # 这个自检只在本机起临时实例，显式开这个口子。
+                "PANEL_ALLOW_PLAIN_TOKEN": "1",
             }
         )
         logpath = Path(td) / "panel.log"
@@ -191,17 +254,26 @@ def main() -> int:
                     ok = json.loads(body).get("ok") is True
                 except json.JSONDecodeError:
                     pass
+            if not ok and "legacy-tls" in detail:
+                # ⚠ 这条几乎只有一种原因：面板被普通 `cargo build --release` 重编过
+                #   （没带 `--features legacy-tls`）。直播那条链要它。
+                #   不说这一句的话，只看到一条红，和插件八竿子打不着。
+                detail += (
+                    "\n  ⇒ 面板缺 native TLS：用 `cargo build --release --features legacy-tls` 重编"
+                )
             check("沙箱自检路由返回 ok（说明密码学 + SQLite 在沙箱里都对）", ok, detail)
 
             # ---- ⑦ 界面真的能加载 ----
             print("\n界面（脚本断言）")
             code, page = http(f"{base}/plugins/mcloud/index.html")
             check("插件页面能取到", code == 200 and "<html" in page.lower(), f"http {code}")
-            for word in ["账号", "日常", "兑换", "直播", "数据", "推送", "设置"]:
+            for word in ["账号", "日常", "兑换", "直播", "数据", "推送"]:
                 check(f"菜单栏有「{word}」", f'>{word}</button>' in page, "菜单里找不到这个词")
+            # ⚠ 原来是 7 项（含「设置」）。那一页整个删掉了（六个地址口子 + 自检
+            #   都是搭测试环境用的，用户看不懂还会把面板指到错的地方 —— 见 F-068）。
             check(
-                "菜单栏恰好 7 项",
-                page.count('class="menu-item') == 7,
+                "菜单栏恰好 6 项（「设置」那一页已删）",
+                page.count('class="menu-item') == 6,
                 f"实际 {page.count('class=\"menu-item')} 项",
             )
             check("没有「高级」开关", "adv-toggle" not in page)
@@ -506,22 +578,56 @@ def main() -> int:
                 isinstance(ex.get("orderedThisHour"), bool),
                 str(ex.get("orderedThisHour")),
             )
-            # ⚠ 兑换挂的是「每小时 59 分」——**不是** `@every 10s`。
+            # ⚠ 兑换挂的是**分钟级 cron**，不是 `@every 10s`（一天 8640 次）。
             #
-            #   第一版是 10 秒节拍（一天 8640 次）。逻辑上没错，但用户看到任务列表
-            #   里那个表达式就说了「太特么频繁了」。判据是：
-            #   **触发频率该由"这件事一天发生几次"决定，不是由"多久看一眼"决定**。
+            #   第一版是 10 秒节拍，用户看到任务列表里那个表达式就说了
+            #   「太特么频繁了」。判据是：**触发频率该由"这件事一天发生几次"决定，
+            #   不是由"多久看一眼"决定**。而抢兑一天只发生一次。
             #
-            #   `59 * * * *` 落在**目标小时的前一分钟**，那一刻这一趟有 60 秒可用 ——
-            #   足够预热再自旋到整点−10ms 发单；剩下 23 次是静默零请求。
+            #   ⚠ 这里**不要**钉死某一个表达式（原来是 `59 * * * *`）：
+            #     提前量从 60 秒放宽到 300 秒之后，就变成 `55-59 * * * *`
+            #     （每小时醒 5 次、一天 120 次）—— 钉死字面量等于"改一次设计红一次"，
+            #     而这条用例想守的是"别回到秒级轮询"。所以判**粒度和量级**：
+            #     分钟字段的取值个数 ≤ 10 ⇒ 一天 ≤ 240 次。
             code, body = http(f"{base}/api/state")
             state = json.loads(body) if code == 200 else {}
             row = next((j for j in (state.get("jobs") or []) if j.get("name") == "兑换"), None)
+            sched = (row or {}).get("schedule") or ""
             check(
-                "⚠ 兑换挂的是「每小时 59 分」（一天 24 次，不是 8640 次）",
-                row is not None and row.get("schedule") == "59 * * * *",
-                str(row.get("schedule") if row else "没找到「兑换」这条任务"),
+                "⚠ 兑换挂的是分钟级 cron（不是 `@every …`）",
+                sched != "" and not sched.startswith("@every"),
+                sched or "没找到「兑换」这条任务",
             )
+            per_day = _cron_per_day(sched)
+            check(
+                "⚠ 兑换一天触发次数在""几十次""这个量级（≤ 240，不是 8640）",
+                per_day is not None and per_day <= 240,
+                f"{sched} ⇒ {per_day}/天",
+            )
+
+            # ⚠ 提前量：**任务列表显示用户设的整点**，但实际唤醒更早。
+            #   以前是靠把 cron 写成 `55-59 * * * *` 来凑提前；现在插件声明
+            #   `lead_ms`，调度器把「下次触发」提前，用户看到的表达式仍干净
+            #   （`0 10,20 * * *`）。这两件事要分开验，否则很容易"改了写法但没生效"。
+            lead = (row or {}).get("lead_ms")
+            nxt = str((row or {}).get("next_run") or "")
+            check(
+                "提前量 `lead_ms` 是 0~3600000 的整数（或没有）",
+                lead is None or (isinstance(lead, int) and 0 <= lead <= 3_600_000),
+                str(lead),
+            )
+            if isinstance(lead, int) and lead > 0 and nxt:
+                want = _lead_shift_min(sched, lead)
+                got = None
+                try:
+                    got = int(nxt.split(" ")[1].split(":")[1])
+                except (IndexError, ValueError):
+                    got = None
+                check(
+                    "有提前量时「下次」比表达式那一刻早（列表仍显示原表达式）",
+                    want is None or got == want,
+                    f"lead={lead}ms next={nxt} 期望分钟={want}",
+                )
 
             # ---- ⑫ 兑换的时间可配（③-3）----
             print("\n兑换时间可配（脚本断言）")

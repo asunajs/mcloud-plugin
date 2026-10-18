@@ -127,7 +127,7 @@ test('sign：三段式（问 → 提交 → 回查），判据是 infoV3 不是�
   r.sent.length = 0;
   const s3 = runSign({ store, transport, nowIso: NOW, lateMs: 0 });
   assert.equal(s3.ok, true);
-  assert.match(s3.note, /今日已签到/);
+  assert.match(s3.note, /网盘今日已签到/);
   assert.equal(r.sent.length, 1);
   assert.match(r.sent[0]!, /infoV3/);
 });
@@ -210,7 +210,9 @@ test('revival：不可逆 —— 晚太久不发；「已领取」算完成不�
     lateMs: 0,
   });
   assert.equal(outDone.ok, true, '「已领取」是完成，不是失败');
-  assert.match(outDone.note, /已经完成/);
+  // 文案换了：不写 `okWhenError` 这种代码里的名字，也不糊 `code=… msg=…`
+  assert.match(outDone.note, /已经做过了/);
+  assert.ok(!/okWhenError/.test(outDone.note), '不许把代码里的名字给用户看');
   assert.equal(done.getState('mcloud.last_error.revival'), '', '不该留下失败记录');
 
   // 其它错误仍算失败
@@ -248,7 +250,7 @@ test('receive：清单入队 → 逐条领（一次一条，两种 cloudType 各
   // ① 队列空 → 只是去问清单，入队（不领）
   const r1 = runReceive({ store, transport, nowIso: NOW, lateMs: 0 });
   assert.equal(r1.ok, true);
-  assert.match(r1.note, /已入队/);
+  assert.match(r1.note, /待领取 2 个/);
   assert.equal(received.length, 0, '入队这一步不该领任何东西');
   assert.equal(JSON.parse(store.getState(STATE_QUEUE)!).length, 2);
 
@@ -257,7 +259,7 @@ test('receive：清单入队 → 逐条领（一次一条，两种 cloudType 各
   assert.equal(r2.ok, true);
   assert.equal(received.length, 1);
   assert.equal(received[0], 'r1');
-  assert.match(r2.note, /还剩 1 条/);
+  assert.match(r2.note, /领取到 1 个云朵/);
 
   // ③ 第二条是延期领取 → 走另一口端点（不是跳过）
   const r3 = runReceive({ store, transport, nowIso: NOW, lateMs: 0 });
@@ -271,7 +273,7 @@ test('receive：清单入队 → 逐条领（一次一条，两种 cloudType 各
   list = [];
   const r4 = runReceive({ store, transport, nowIso: NOW, lateMs: 0 });
   assert.equal(r4.ok, true);
-  assert.match(r4.note, /没有待领取/);
+  assert.match(r4.note, /无待领取的云朵/);
 });
 
 test('延期领取：裸 GET（绝不发出 ?acceptDate=），且 dig 掉队列里那一条', () => {
@@ -320,4 +322,24 @@ test('receiveV3 的请求体：cloudType 缺省是**空串**而不是 0', () => 
     receiveV3Body('cid', 0, 'dev'),
     '{"client":"app","cloudId":"cid","cloudType":0,"deviceId":"dev"}',
   );
+});
+
+test('⚠ 动作响应明确说「今天已签」时，别死等 infoV3（现场：App 已签、日志每趟报失败）', () => {
+  // 2026-10-17 现场：`startSignIn` 回 `{"todaySignIn":true,"signInPoints":3,…}`，
+  // 紧接着 `infoV3` 还是 `false`，用户手机上打开 App 一看**确实签上了**。
+  // 只认 infoV3 的结果是 `need-verify` 卡死、每一趟报一次失败。
+  const store = seeded();
+  const { transport } = router([
+    [/infoV3/, () => infoOk({ signed: false })],
+    [
+      /startSignIn/,
+      () =>
+        JSON.stringify({ code: 0, msg: 'success', result: { todaySignIn: true, signInPoints: 3, signCount: 17 } }),
+    ],
+  ]);
+  const out = runSign({ store, transport, nowIso: NOW } as never);
+  assert.equal(out.ok, true, '响应说签上了就是成了');
+  assert.match(out.note, /网盘签到成功/);
+  // 不再挂"待回查"（挂着就会下一趟再回查、再报失败）
+  assert.equal(store.getState(STATE_STAGE) ?? '', '', '不该留 need-verify');
 });

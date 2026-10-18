@@ -56,7 +56,7 @@ export interface UploadState {
 const STEP_TEXT: Record<UploadStep, string> = {
   create: '① 声明要传一个文件',
   put: '② 传字节（预签名直传）',
-  complete: '③ 告诉上游传完了',
+  complete: '③ 告诉服务端传完了',
   done: '完成',
 };
 

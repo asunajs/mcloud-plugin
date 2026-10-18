@@ -19,14 +19,23 @@ import {
   log,
   register_nav,
   register_route,
+  worker_hint,
 } from 'host-api';
 import { mcloudRoutes } from '../mcloud/routes.ts';
 import type { RouteEntry } from '../mcloud/routes.ts';
 import { makeHost, makePushDeps, makeStore, makeTransport } from './shared.ts';
 import { selftest } from '../selftest.ts';
 
+// `mcloud` 是服务型插件，但 /beans/today 与 /beans/records 是逐账号 × 翻页的
+// 长只读链，声明了 >2s 的预算；没有独占线程会把同线程上其它插件一起拖住。
+worker_hint('exclusive');
+
 const store = makeStore();
-// 路由是「用户点一下」触发的，不是长链 —— 用默认的短超时（预算 2 秒那一档）
+// transport 的 `timeoutMs` 是**每一发请求**的超时（1500ms），与路由的**执行预算**
+// 是两件事：预算是"这一条 handler 从头跑到尾能占多久"，面板默认 2 秒。
+// 大多数路由（点一下读一格）用默认档就够；像「今日AI豆」那样逐账号 × 翻页的
+// 只读链，2 秒撑不到读完 —— 它在 `routes.ts` 里自己声明 `budget_ms`，
+// 下面注册时透给 `register_route`。
 const transport = makeTransport();
 const host = makeHost();
 
@@ -48,7 +57,7 @@ try {
     ws: host,
     pushDeps: makePushDeps(transport),
   })) {
-    register_route(r.path, r.method, r.handler);
+    register_route(r.path, r.method, r.handler, r.budget_ms === undefined ? undefined : { budget_ms: r.budget_ms });
     registered++;
   }
 } catch (e) {

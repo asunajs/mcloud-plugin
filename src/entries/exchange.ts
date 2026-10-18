@@ -24,11 +24,7 @@
 
 
 import { log, register_cron, warn, worker_hint } from 'host-api';
-import {
-  hourKey,
-  planTargetWait,
-  targetHourOf,
-} from '../mcloud/exchangeTiming.ts';
+import { hourKey } from '../mcloud/exchangeTiming.ts';
 import { loadAccounts, maskAuth, selectAccount } from '../mcloud/accounts.ts';
 import { loadAuthRaw } from '../mcloud/sessionExchange.ts';
 import { appendRun, type RunStep } from '../mcloud/runLog.ts';
@@ -55,8 +51,20 @@ import {
   taskDeps,
 } from './shared.ts';
 import { labelOf } from '../mcloud/taskAccounts.ts';
+import { logBoth } from '../mcloud/log.ts';
 import type { TaskPayload } from './shared.ts';
-import { BUDGET_MS, runExchange } from '../mcloud/tasks/exchangeRun.ts';
+import {
+  BUDGET_MS,
+  DEFAULT_SCHEDULE_CRON,
+  bumpScheduleRuns,
+  runExchange,
+  scheduleLeadReady,
+  scheduleLeadSec,
+  scheduleUntilAllowed,
+  STATE_SCHEDULE_CRON,
+  scheduleMaxRuns,
+  scheduleRuns,
+} from '../mcloud/tasks/exchangeRun.ts';
 
 // 独占线程：开抢那一下不能被别的任务拖住（见 shared.ts 文件头）
 worker_hint('exclusive');
@@ -64,28 +72,31 @@ worker_hint('exclusive');
 const store = makeStore();
 const transport = makeTransport(LONG_REQUEST_TIMEOUT_MS);
 
+// 插件给一个**默认时间**（每天 10:00），并把它注册成面板任务。
+// 用户可以在任务列表里把 cron 改成 `0 10,20 * * *` 之类的，面板会覆盖默认值；
+// `lead_ms` 让调度器提前醒，任务列表显示的仍是用户设的整点。
+const defaultCron = (store.getState(STATE_SCHEDULE_CRON) ?? '').trim() || DEFAULT_SCHEDULE_CRON;
+const defaultLeadMs = scheduleLeadSec(store) * 1000;
 register_cron(
   '兑换',
-  // # 为什么是「每小时 59 分」而不是 `@every 10s`
-  //
-  // 第一版写的是 `@every 10s`：一天 **8640** 次触发，其中 8639 次是零请求秒返回。
-  // 逻辑上没错（每一次都便宜），但用户看到任务列表里那个表达式就说了
-  // 「太特么频繁了」—— 而用户是对的：**抢兑一天只发生一次**。
-  //
-  // 触发频率该由"这件事一天发生几次"决定，不是由"多久看一眼"决定。
-  //
-  // 现在的分工：`59 * * * *` 每小时醒一次（一天 **24** 次），正好落在
-  // **目标小时的前一分钟**；那一刻这一趟有 60 秒可用 —— 足够预热
-  //（两次 visitlog + 500ms）再自旋到整点 −10ms 发单。
-  // 剩下 23 次是**静默零请求**（离窗口远 ⇒ 标 `idle`，连日志都不写）。
-  //
-  // ⚠ 为什么"59 分那一跳"够准：调度器抖动实测是**毫秒级**（日志里那条
-  //   「调度延迟 2ms」），所以它确实落在 59:00.00x，60 秒自旋预算不会被吃掉。
-  '59 * * * *',
+  defaultCron,
   (p: TaskPayload) => {
     const startedMs = Date.now();
     const at = new Date(startedMs).toISOString();
-    const thisHour = hourKey(startedMs);
+    // 任务自己的 cron 是权威：`scheduledAt` 是**目标整点**（不是提前后的触发时刻），
+    // 所以用户在任务列表里把 `0 10` 改成 `0 20` 后，这里直接跟着走。
+    const targetMs = Date.parse(p.scheduledAt);
+    if (!Number.isFinite(targetMs)) return;
+    const untilGate = scheduleUntilAllowed(store, targetMs);
+    if (!untilGate.ok) return;
+    const targetHour = new Date(targetMs).getHours();
+    // 小时闸按**目标那一场**算：9:58 那一跳如果跑到 10:00 才下单，
+    // 9:59 的排队触发不能又发一枪。
+    const thisHour = hourKey(targetMs);
+    // 提前量也以任务为准；老面板没有 leadMs 时退回插件设置。
+    const leadSec = p.leadMs !== undefined ? p.leadMs / 1000 : scheduleLeadSec(store);
+    if (!p.manual && !scheduleLeadReady(startedMs, targetMs, leadSec)) return;
+    const maxRuns = scheduleMaxRuns(store);
 
     // ── 这一趟跑**这条任务选的账号**，**串行**（见 `forEachTaskAccount`）──
     const runs = forEachTaskAccount(store, '兑换', p, transport, (deps) => {
@@ -96,11 +107,21 @@ register_cron(
       //   ⚠ 闸是**按账号**的（键在账号袋里）—— 所以它在循环**里面**判。
       //     放外面的话 A 发过单之后 B 就不发了（而 B 那一小时还没发过）。
       if (deps.store.getState(STATE_ORDERED_HOUR) === thisHour) return null;
-      return runExchange(deps);
+      const done = scheduleRuns(deps.store);
+      const cap = maxRuns;
+      if (cap > 0 && done >= cap) return null;
+      const r = runExchange(deps, { maxWaitMs: BUDGET_MS - 10_000, targetHour });
+      // 真正发起了一次（不是离窗口还远）⇒ 计数；失败也算，按账号各算。
+      if (r && !r.idle) bumpScheduleRuns(deps.store, deps.nowIso);
+      return r;
     });
 
-    // 没选到账号 ⇒ **静默返回**（那不是失败，是"这条任务没配账号"）
-    if (runs.length === 0) return;
+    // 没选到账号 ⇒ 不是失败，但**必须说一句**：不然终端里一片安静，
+    // 用户只会觉得"这条任务坏了"（选账号在界面上那个「全部账号」下拉里）。
+    if (runs.length === 0) {
+      log('这一趟没跑 —— 「兑换」还没选账号（界面上那个「全部账号」下拉）');
+      return;
+    }
 
     let acted = 0;
     for (const one of runs) {
@@ -130,6 +151,8 @@ register_cron(
 
       appendRun(store, {
         task: 'exchange',
+        acct: one.acctId,
+        who,
         at,
         ms: Date.now() - startedMs,
         ok: r.ok,
@@ -146,18 +169,29 @@ register_cron(
         ok: r.ok,
         note,
       });
-      if (r.ok) log(`兑换（${who}）：${r.note}`);
-      else warn(`兑换（${who}）：${r.note}`);
+      // 日志形状照参考实现（`mcloud` / `mcloud-sign`）：一个账号一段，
+      // 段头一行、**每一步一行**、段尾一行。失败的行走 warn，其余走 info。
+      logBoth(store, 'info', `------【${who}】------`, at);
       for (const line of r.detail) {
-        if (line.includes('失败')) warn(`  · ${line}`);
+        logBoth(store, line.includes('没成') ? 'warn' : 'info', line, at);
       }
+      const bad = r.steps.filter((x) => !x.ok).length;
+      const tail = bad === 0 ? `------【${who}】都成了------` : `------【${who}】${bad} 项没成------`;
+      logBoth(store, bad > 0 ? 'warn' : 'info', tail, at);
     }
-    // 全都"这一小时已发过单 / 离窗口还远" ⇒ 这一趟什么都不用说
-    void acted;
+    // 全都"这一小时已发过单 / 离窗口还远" ⇒ 没动手。**也要说一句** ——
+    // 否则终端里一片安静，用户分不清"它没动手"和"它没跑"（参考实现每趟都有行）。
+    if (!acted) {
+      log(
+        runs.length === 1
+          ? '这一趟没动手 —— 还没到该抢的时候（或这一场已经试过了）'
+          : `这一趟没动手 —— ${runs.length} 个号都还没到该抢的时候（或这一场已经试过了）`,
+      );
+    }
   },
-  { budget_ms: BUDGET_MS },
+  { budget_ms: BUDGET_MS, lead_ms: defaultLeadMs },
 );
 
 log(
-  `mcloud-exchange：任务「兑换」（预算 ${BUDGET_MS / 1000}s，独占线程）—— 每小时 59 分醒一次，只有下一小时是目标那一场才动手`,
+  `mcloud-exchange：任务「兑换」（预算 ${BUDGET_MS / 1000}s，独占线程）—— 默认 ${defaultCron}，提前 ${defaultLeadMs / 1000}s 醒`,
 );

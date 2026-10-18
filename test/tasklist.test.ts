@@ -177,7 +177,7 @@ test('② 逻辑层：没有会话时**一个请求都不发**', () => {
     nowIso: '2026-10-13T01:00:00.000Z',
   });
   assert.equal(out.ok, false);
-  assert.match(out.note, /未登录/);
+  assert.match(out.note, /还没有网页会话/);
   assert.equal(called, 0, '没有会话就不该打上游');
 });
 

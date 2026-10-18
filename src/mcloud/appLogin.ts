@@ -254,6 +254,9 @@ export function appClientInfo(deviceId: string): string {
  */
 export function appHeaders(deviceId: string, timestamp: number): Record<string, string> {
   return {
+    // ⚠ 与 `pcHeaders` 同一个理由（F-072）：宿主替我们发 `accept-encoding: gzip`
+    //   但**不解压**，而登录成功的响应体是压过的 ⇒ 明确要 identity。
+    'accept-encoding': 'identity',
     Pragma: 'no-cache',
     'x-yun-user-timestamp': String(timestamp),
     'x-yun-app-channel': APP_CHANNEL,
@@ -313,9 +316,13 @@ export function appPost(
   rawBody: string,
   deviceId: string,
   timestamp: number,
+  /** 覆盖主机（空/不传 = 真主机）。与 PC 那条同一个口子 ——
+   *  否则手机端这条路**没法指到本地夹具**，也就没法在真面板上验它（F-073）。 */
+  base?: string,
 ): BuiltRequest {
+  const host = base === undefined || base.trim() === '' ? APP_LOGIN_HOST : base.trim().replace(/\/+$/, '');
   return {
-    url: `${APP_LOGIN_HOST}${path}`,
+    url: `${host}${path}`,
     method: 'POST',
     headers: appHeaders(deviceId, timestamp),
     body: rawBody,
@@ -328,12 +335,14 @@ export function appSendSmsCodeRequest(
   timestamp: number,
   phone: string,
   puzzleVerfycode = '',
+  base?: string,
 ): BuiltRequest {
   return appPost(
     APP_SEND_SMS_CODE_PATH,
     JSON.stringify(sendSmsCodeBody(phone, puzzleVerfycode)),
     deviceId,
     timestamp,
+    base,
   );
 }
 
@@ -347,9 +356,10 @@ export function appThirdloginRequest(
   smsCode: string,
   random: string,
   key: string = APP_LOGIN_AES_KEY,
+  base?: string,
 ): BuiltRequest {
   const plaintext = JSON.stringify(smsThirdloginBody(phone, smsCode, random));
-  return appPost(APP_THIRDLOGIN_PATH, encryptBody(plaintext, key), deviceId, timestamp);
+  return appPost(APP_THIRDLOGIN_PATH, encryptBody(plaintext, key), deviceId, timestamp, base);
 }
 
 // ══════════════════════ 响应分类 ══════════════════════

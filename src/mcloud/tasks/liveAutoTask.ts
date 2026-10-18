@@ -107,13 +107,18 @@ export function runLiveAuto(deps: TaskDeps, opts: { windowMs: number }): TaskOut
   const due = planDue(plan, nowMs);
   return {
     ok: true,
+    // 用户只需要知道"下一次几点自己去看"；`cron`/`+1h` 是实现细节
     note:
       plan === null
-        ? `不排定时（${why}）`
-        : `${changed ? '排定' : '仍是'} ${plan.wakeAt} 醒（= ${plan.fromStart} +1h；等价 cron ${plan.expr ?? '?'}）${
-            due ? ' —— 已到点' : ''
-          }`,
+        ? `现在不排时间（${why}）`
+        : `${shortStamp(plan.wakeAt)}${due ? '（已经到点了）' : ''}`,
   };
+}
+
+/** `2026-10-20 15:30:00` → `10-20 15:30`（日志里不要秒，也不要年份）。 */
+function shortStamp(v: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(v);
+  return m === null ? v : `${m[2]}-${m[3]} ${m[4]}:${m[5]}`;
 }
 
 /** 给听弹幕那条链用：**现在该不该按计划睡**。

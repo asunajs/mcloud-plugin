@@ -17,11 +17,20 @@
 //
 // 单靠往返只能证明"我的编码与我的解码自洽"（两边一起错就测不出来），
 // 所以那两条不能省。
+//
+// # ⑥ 那一节是干什么的（F-068 之后补的）
+//
+// 上面那两条仍然不够：**数据位的走法**（从右下角开始、两列一组、蛇形上下）在
+// 编码器与这个解码器里是同一段代码的两种写法 —— 走法错了，两边一起错、一起过。
+// 所以 ⑥ 拿**别的实现**（python-qrcode）对同一条真机载荷吐出来的字节来比：
+// 黄金值不来自本仓，任何"自洽的错"都过不去。
+
+import { readFileSync } from 'node:fs';
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { MAX_VERSION, byteCapacity, encodeQr, qrSvg, type QrMatrix } from '../src/crypto/qr.ts';
+import { MAX_VERSION, byteCapacity, encodeQr, qrSvg, rsGenerator, type QrMatrix } from '../src/crypto/qr.ts';
 
 // ══════════════════════════════ 独立常量（规范公布的表） ══════════════════════════════
 
@@ -63,20 +72,35 @@ const MASKS: ((r: number, c: number) => boolean)[] = [
   (r, c) => (((r + c) % 2) + ((r * c) % 3)) % 2 === 0,
 ];
 
+/** 格式信息**第一份**（左上角那条 L 形）的坐标，`[列, 行]`，第 i 项放第 i 位（LSB 优先）。
+ *
+ *  ⚠ 这张表是**照规范另抄的一份**（同 ZXing `MatrixUtil.TYPE_INFO_COORDS`），
+ *  故意不 import 源里的那张 —— 两边共用一个常量的话，"写反了"就永远测不出来。
+ *  位 0–5 在**第 8 列向下**（行 0→5），位 9–14 在**第 8 行向左**（列 5→0）。
+ *  写成转置（把行 8 当列 8）的话，编码器与解码器会一起错、一起"自洽"，
+ *  而任何真实读码器读到的掩码号与纠错级都是错的 ⇒ **手机扫不出来**。 */
+const FORMAT_COORDS_SPEC: readonly [number, number][] = [
+  [8, 0], [8, 1], [8, 2], [8, 3], [8, 4], [8, 5], [8, 7], [8, 8],
+  [7, 8], [5, 8], [4, 8], [3, 8], [2, 8], [1, 8], [0, 8],
+];
+
 /** 从矩阵里读格式信息（两处副本，都读、都要一致）。 */
 function readFormat(m: QrMatrix): { mask: number; ecc: string; raw: string } {
   const { dark, size } = m;
-  const bits: number[] = [];
-  // 第一份：左上角那条 L 形（按规范的读取顺序）
-  for (let i = 0; i < 15; i += 1) {
-    let v: boolean;
-    if (i < 6) v = dark[8 * size + i]!;
-    else if (i === 6) v = dark[8 * size + 7]!;
-    else if (i === 7) v = dark[8 * size + 8]!;
-    else if (i === 8) v = dark[7 * size + 8]!;
-    else v = dark[(14 - i) * size + 8]!;
-    bits.push(v ? 1 : 0);
-  }
+  const at = (col: number, row: number): number => (dark[row * size + col]! ? 1 : 0);
+
+  // 第一份：左上角那条 L 形（按规范的读取顺序，LSB 优先）
+  const bits = FORMAT_COORDS_SPEC.map(([c, r]) => at(c, r));
+
+  // 第二份：右上角横着 8 位（自右往左）+ 左下角竖着 7 位（自下往上）。
+  // **两份必须一模一样** —— 只写一份的码，有的读码器能读、有的不能
+  // （表现是"同一个码换台手机就不行"）。坐标取自规范 §8.9（同 ZXing 的写法）。
+  const second = [
+    ...Array.from({ length: 8 }, (_, i) => at(size - 1 - i, 8)), // 位 0–7：第 8 行，自右往左
+    ...Array.from({ length: 7 }, (_, i) => at(8, size - 7 + i)), // 位 8–14：第 8 列，自下往上
+  ];
+  assert.deepEqual(second, bits, '格式信息的两份副本不一致');
+
   // ⚠ 位序：`placeFormat` 把 bit i 写到第 i 个位置（i=0 是**最低位**），
   //   所以拼出来的串是 LSB 优先；而规范公布的表是 MSB 优先 ⇒ 要反过来。
   const raw = bits.slice().reverse().join('');
@@ -138,7 +162,7 @@ function deinterleave(cw: number[], version: number): { data: number[]; rsOk: bo
     const all = [...d, ...eccs[i]!];
     for (let k = 0; k < cap.ecc; k += 1) {
       let acc = 0;
-      for (const byte of all) acc = gfMul(acc, Math.pow(2, k) & 0xff) ^ byte;
+      for (const byte of all) acc = gfMul(acc, gfExp(k)) ^ byte;
       if (acc !== 0) return false;
     }
     return true;
@@ -160,6 +184,17 @@ function gfMul(a: number, b: number): number {
     y >>= 1;
   }
   return r & 0xff;
+}
+
+/** `α^i`（α = 2，本原多项式 0x11d）—— 逐次乘出来的，**不是** `Math.pow(2, i) & 0xff`。
+ *
+ *  ⚠ 后者在 `i ≥ 8` 时得 0（`2^i` 超出 8 位，与 `0xff` 相与为 0），于是校验子
+ *  从 α^8 起全按 0 算 —— 解码器会**跟着编码器的同一个错**一起自洽，
+ *  测出来"都对"，而真机扫不出来。这正是源里那个 bug 能活到今天的原因。 */
+function gfExp(i: number): number {
+  let r = 1;
+  for (let k = 0; k < i; k += 1) r = gfMul(r, 2);
+  return r;
 }
 
 /** 把码字解成原文（字节模式）。 */
@@ -361,4 +396,92 @@ test('SVG 的深色模块数与矩阵一致（没多画也没少画）', () => {
   const drawn = (svg.match(/h6v6h-6z/g) ?? []).length;
   const expected = m.dark.filter(Boolean).length;
   assert.equal(drawn, expected, `画了 ${drawn} 个模块，矩阵里有 ${expected} 个`);
+});
+
+// ══════════════════════════════ ⑥ 黄金值（对着**别的实现**验） ══════════════════════════════
+//
+// 载荷取**真机那条**（移动云盘扫码登录的链接，140 字节 ⇒ 版本 7、掩码 2）。
+
+const GOLDEN = JSON.parse(
+  readFileSync(new URL('./fixtures/qr-golden.json', import.meta.url), 'utf8'),
+) as {
+  payload: string;
+  version: number;
+  size: number;
+  mask: number;
+  codewords: number[];
+  matrix: string[];
+};
+
+/** 规范 Annex A 公布的生成多项式（系数写成 α 指数，最高次到常数项）。 */
+const GEN_ANNEX_A: Record<number, number[]> = {
+  7: [0, 87, 229, 146, 149, 238, 102, 21],
+  10: [0, 251, 67, 46, 61, 118, 70, 64, 94, 32, 45],
+  15: [0, 8, 183, 61, 91, 202, 37, 51, 58, 58, 237, 140, 124, 5, 99, 105],
+  18: [0, 215, 234, 158, 94, 184, 97, 118, 170, 79, 187, 152, 148, 252, 179, 5, 98, 96, 153],
+  20: [
+    0, 17, 60, 79, 50, 61, 163, 26, 187, 202, 180, 221, 225, 83, 239, 156, 164, 212, 212, 188,
+    190,
+  ],
+  24: [
+    0, 229, 121, 135, 48, 211, 117, 251, 126, 159, 180, 169, 152, 192, 226, 228, 218, 111, 0, 117,
+    232, 87, 96, 227, 21,
+  ],
+  26: [
+    0, 173, 125, 158, 2, 103, 182, 118, 17, 145, 201, 111, 28, 165, 53, 161, 21, 245, 142, 13,
+    102, 48, 227, 153, 145, 218, 70,
+  ],
+  30: [
+    0, 41, 173, 145, 152, 216, 31, 179, 182, 50, 48, 110, 86, 239, 96, 222, 125, 42, 173, 226,
+    193, 224, 130, 156, 37, 251, 216, 238, 40, 192, 180,
+  ],
+};
+
+/** `α^i → i` 的反查表（把生成多项式的系数写成规范那种"α 指数"）。 */
+const GF_LOG: number[] = (() => {
+  const log = new Array<number>(256).fill(-1);
+  let x = 1;
+  for (let i = 0; i < 255; i += 1) {
+    log[x] = i;
+    x = gfMul(x, 2);
+  }
+  return log;
+})();
+
+test('⚠ 生成多项式对上规范 Annex A 的 α 指数表（纠错码字 > 8 个才算真检验）', () => {
+  // ⚠ 这条不能用"自己往返"代替：把 `Math.pow(2, i) & 0xff` 当 α^i 用时，i ≥ 8 全变 0。
+  //   而 n ≤ 8 的生成多项式根本用不到 α^8 —— v1（7 个纠错码字）一直是**对的**，
+  //   正是它让那个 bug 看起来"没问题"（F-068）。
+  for (const [n, expected] of Object.entries(GEN_ANNEX_A)) {
+    const got = rsGenerator(Number(n)).map((c) => GF_LOG[c]!);
+    assert.deepEqual(got, expected, `${n} 个纠错码字的生成多项式与规范 Annex A 不符`);
+  }
+});
+
+test('⚠ 黄金码字：真机载荷的 196 个码字逐字节命中**参考实现**', () => {
+  const m = encodeQr(GOLDEN.payload);
+  assert.equal(m.version, GOLDEN.version, '版本选错了（真机载荷 140 字节 ⇒ 版本 7）');
+  const cw = readCodewords(m);
+  assert.equal(cw.length, GOLDEN.codewords.length, '码字个数不对');
+  const bad = cw.findIndex((b, i) => b !== GOLDEN.codewords[i]);
+  assert.equal(
+    bad,
+    -1,
+    `第 ${bad} 个码字是 0x${(cw[bad] ?? 0).toString(16)}，参考实现给的是 ` +
+      `0x${(GOLDEN.codewords[bad] ?? 0).toString(16)}`,
+  );
+});
+
+test('⚠ 黄金矩阵：整张码逐格命中参考实现（数据位的**走法**只能这样验）', () => {
+  const m = encodeQr(GOLDEN.payload);
+  assert.equal(m.size, GOLDEN.size);
+  // ⚠ 掩码是黄金值的一部分：惩罚函数一改，这里就会红 —— 先确认那是**有意**的改动，
+  //   再按参考实现重出一份 fixture（生成方式见 fixtures/qr-golden.json 的 `$note`）。
+  assert.equal(m.mask, GOLDEN.mask, '选中的掩码变了 —— 黄金矩阵是按这个掩码存的');
+  for (let r = 0; r < m.size; r += 1) {
+    const got = Array.from({ length: m.size }, (_, c) => (m.dark[r * m.size + c] ? '1' : '0')).join(
+      '',
+    );
+    assert.equal(got, GOLDEN.matrix[r], `第 ${r} 行与参考实现不一致`);
+  }
 });

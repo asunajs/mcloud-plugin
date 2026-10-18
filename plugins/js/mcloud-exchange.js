@@ -2,10 +2,10 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.0.0 · 插件 `mcloud-exchange`
+//   mcloud-plugin 0.1.0 · 插件 `mcloud-exchange`
 
 // src/entries/exchange.ts
-import { log as log2, register_cron, warn as warn2, worker_hint } from "host-api";
+import { log as log3, register_cron, worker_hint } from "host-api";
 
 // src/mcloud/exchangeTiming.ts
 var WINDOW_SECOND = 40;
@@ -27,15 +27,15 @@ function planWindowWait(nowMs) {
   const into = mod(nowMs, HOUR_MS);
   const startMs = (59 * 60 + WINDOW_SECOND) * 1e3;
   if (into >= startMs || into < WINDOW_TAIL_MS) return NO_WAIT;
-  const untilMs = hourStartMs(nowMs) + startMs;
-  return { needed: true, untilMs, ms: untilMs - nowMs };
+  const untilMs2 = hourStartMs(nowMs) + startMs;
+  return { needed: true, untilMs: untilMs2, ms: untilMs2 - nowMs };
 }
 function planFireWait(nowMs, leadMs = FIRE_LEAD_MS) {
   const into = mod(nowMs, HOUR_MS);
   if (into < WINDOW_LEAD_MS) return NO_WAIT;
-  const untilMs = hourStartMs(nowMs) + HOUR_MS - leadMs;
-  if (untilMs <= nowMs) return NO_WAIT;
-  return { needed: true, untilMs, ms: untilMs - nowMs };
+  const untilMs2 = hourStartMs(nowMs) + HOUR_MS - leadMs;
+  if (untilMs2 <= nowMs) return NO_WAIT;
+  return { needed: true, untilMs: untilMs2, ms: untilMs2 - nowMs };
 }
 var DEFAULT_TARGET_HOUR = 10;
 var STATE_TARGET_HOUR = "mcloud.exchange.target_hour";
@@ -80,6 +80,9 @@ var KEY_SCOPE = {
   "mcloud.session": "account",
   "mcloud.session.last_check": "account",
   "mcloud.h5.auth": "account",
+  // 宿主"能不能用 tls:native"的探测结论（= 这个面板构建支不支持直播）。
+  // **与账号无关**，但按账号存最省事 —— 结论一样，多存几份不花钱。
+  "mcloud.host.native_tls": "account",
   "mcloud.h5.exchange": "account",
   "mcloud.h5.jwt": "account",
   "mcloud.daily.done_date": "account",
@@ -106,6 +109,10 @@ var KEY_SCOPE = {
   // 不是某个号自己的设置（放进账号袋会让 A 的名单被 B 读到）。
   // ⚠ 动态键（键里带任务名）⇒ 靠  登记，见下面那张表。
   "mcloud.task.accounts.": "global",
+  // 运行日志的**环形副本**（最近 N 行）。global —— 它记的是"这台机器上发生过什么"，
+  // 不属于某个号；而且它要能在**面板重启之后**还读得到（面板的内存日志环是重启就没的，
+  // 见 findings F-085）。写的时候按"全局"落，界面上再按插件名过滤。
+  "mcloud.log.ring": "global",
   "mcloud.login.base": "global",
   "mcloud.login.userDomainId": "global",
   "mcloud.sign.stage": "account",
@@ -129,7 +136,15 @@ var KEY_SCOPE = {
   "mcloud.cloudsnapshot.last": "account",
   "mcloud.exchangelist.last": "account",
   "mcloud.exchangelist.raw": "account",
+  // 界面上「选一件」的下拉缓存（全量清单里挑出来的四格）。
+  // **按账号** —— 清单与"能不能换"都是账号级的。日界作废，见 exchangeList.ts。
+  "mcloud.exchangelist.pick": "account",
+  // 「我关注的奖品」：按账号存（不同账号的清单不同，关注的 id 也可能不同）。
+  "mcloud.exchange.subs": "account",
   "mcloud.exchange.plan": "account",
+  // 定时抢兑每个账号已经真正发起过几次（按账号）。
+  "mcloud.exchange.schedule.runs": "account",
+  "mcloud.exchange.schedule.runs_gen": "account",
   "mcloud.exchange.order.step": "account",
   "mcloud.exchange.order.baseline": "account",
   "mcloud.exchange.order.plan": "account",
@@ -164,6 +179,16 @@ var KEY_SCOPE = {
   "mcloud.login.pref": "global",
   /** 几点抢兑 —— 是**配置**，跟账号无关。 */
   "mcloud.exchange.target_hour": "global",
+  // 「定时抢兑」的目标：与手动目标分开，避免改一个把另一个带跑。
+  // 全局 —— 定时任务按「任务账号」逐个跑，但只认这一件目标。
+  "mcloud.exchange.schedule.plan": "global",
+  "mcloud.exchange.schedule.mode": "global",
+  "mcloud.exchange.schedule.cron": "global",
+  "mcloud.exchange.schedule.until": "global",
+  "mcloud.exchange.schedule.once_date": "global",
+  "mcloud.exchange.schedule.max_runs": "global",
+  "mcloud.exchange.schedule.gen": "global",
+  "mcloud.exchange.lead_sec": "global",
   /** 提前量 —— "网络慢的人该调大"，是**这台机器**的调参，与账号无关。 */
   "mcloud.exchange.order.lead_ms": "global",
   /** 领小红花的开关。 */
@@ -395,6 +420,16 @@ function toHex(b) {
   return s;
 }
 var B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+function toBase64(b) {
+  let s = "";
+  for (let i = 0; i < b.length; i += 3) {
+    const n = b[i] << 16 | (b[i + 1] ?? 0) << 8 | (b[i + 2] ?? 0);
+    s += B64[n >> 18 & 63] + B64[n >> 12 & 63];
+    s += i + 1 < b.length ? B64[n >> 6 & 63] : "=";
+    s += i + 2 < b.length ? B64[n & 63] : "=";
+  }
+  return s;
+}
 function fromBase64(s) {
   const clean = s.replace(/[^A-Za-z0-9+/]/g, "");
   const out = new Uint8Array(Math.floor(clean.length * 6 / 8));
@@ -414,11 +449,20 @@ function fromBase64(s) {
   }
   return out.subarray(0, o);
 }
+function writeU32BE(out, off, v) {
+  out[off] = v >>> 24 & 255;
+  out[off + 1] = v >>> 16 & 255;
+  out[off + 2] = v >>> 8 & 255;
+  out[off + 3] = v & 255;
+}
 function writeU32LE(out, off, v) {
   out[off] = v & 255;
   out[off + 1] = v >>> 8 & 255;
   out[off + 2] = v >>> 16 & 255;
   out[off + 3] = v >>> 24 & 255;
+}
+function readU32BE(b, off) {
+  return (b[off] << 24 | b[off + 1] << 16 | b[off + 2] << 8 | b[off + 3]) >>> 0;
 }
 function readU32LE(b, off) {
   return (b[off + 3] << 24 | b[off + 2] << 16 | b[off + 1] << 8 | b[off]) >>> 0;
@@ -491,6 +535,16 @@ function phoneOf(raw) {
     return void 0;
   }
 }
+function normalizeAuth(raw) {
+  const t = raw.replace(/\uFEFF/g, "").trim();
+  const head = t.charAt(0);
+  const unquoted = t.length >= 2 && (head === '"' || head === "'") && t.charAt(t.length - 1) === head ? t.slice(1, -1).trim() : t;
+  const m = /^basic[\s:]+([\s\S]+)$/i.exec(unquoted);
+  const b64 = (m !== null ? m[1] : unquoted).replace(/\s+/g, "");
+  if (b64 === "") return unquoted;
+  const info = parseAuth(b64);
+  return info !== void 0 && info.raw !== "" ? `Basic ${b64}` : unquoted;
+}
 function loadAccounts(store2) {
   const raw = store2.getState(STATE_ACCOUNTS);
   if (raw === null || raw === void 0 || raw.trim() === "") return [];
@@ -506,7 +560,7 @@ function loadAccounts(store2) {
     if (it === null || typeof it !== "object") continue;
     const o = it;
     if (typeof o.id !== "string" || typeof o.auth !== "string" || o.auth === "") continue;
-    const auth = o.auth;
+    const auth = normalizeAuth(o.auth);
     const info = parseAuth(auth);
     const pc = o.pcPlatform;
     out.push({
@@ -516,16 +570,30 @@ function loadAccounts(store2) {
       // 老账号没存过这两格 ⇒ 从凭据里现解一次（不用迁移）
       platform: typeof o.platform === "string" ? o.platform : info?.platform ?? "",
       pcPlatform: pc === "win" || pc === "mac" ? pc : void 0,
+      userDomainId: typeof o.userDomainId === "string" && o.userDomainId !== "" ? o.userDomainId : void 0,
       disabled: o.disabled === true,
       addedAt: typeof o.addedAt === "string" ? o.addedAt : ""
     });
   }
   return out;
 }
+function saveAccounts(store2, list, nowIso) {
+  store2.setState(STATE_ACCOUNTS, JSON.stringify(list), nowIso);
+}
 function selectAccount(store2, id, nowIso) {
   if (id !== "" && !loadAccounts(store2).some((a) => a.id === id)) return false;
   store2.setState(STATE_CURRENT_ACCOUNT, id, nowIso);
   return true;
+}
+function setAccountDomain(store2, id, domain, nowIso) {
+  if (domain === "") return void 0;
+  const list = loadAccounts(store2);
+  const idx = list.findIndex((a) => a.id === id);
+  if (idx < 0) return void 0;
+  if (list[idx].userDomainId === domain) return list[idx];
+  list[idx] = { ...list[idx], userDomainId: domain };
+  saveAccounts(store2, list, nowIso);
+  return list[idx];
 }
 function currentAccount(store2) {
   const id = (store2.getState(STATE_CURRENT_ACCOUNT) ?? "").trim();
@@ -581,13 +649,14 @@ function hostFetchOptions(req, timeoutMs) {
 }
 function callOnce(transport2, req) {
   const t0 = Date.now();
-  const fail = (error2) => ({
+  const fail = (error3) => ({
     status: 0,
     tookMs: Date.now() - t0,
     env: void 0,
     ok: false,
-    error: error2,
+    error: error3,
     raw: "",
+    body: "",
     setCookies: []
   });
   let res;
@@ -603,15 +672,15 @@ function callOnce(transport2, req) {
   const tookMs = Date.now() - t0;
   const raw = res.body.length > 500 ? `${res.body.slice(0, 500)}…` : res.body;
   let env;
-  let error;
+  let error2;
   if (res.status !== 200) {
-    error = `HTTP ${res.status}`;
+    error2 = `HTTP ${res.status}`;
   } else {
     try {
       env = parseSignInEnvelope(res.body);
-      if (!env.ok) error = `code=${env.code}${env.message ? ` msg=${env.message}` : ""}`;
+      if (!env.ok) error2 = `code=${env.code}${env.message ? ` msg=${env.message}` : ""}`;
     } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
+      error2 = e instanceof Error ? e.message : String(e);
     }
   }
   return {
@@ -619,8 +688,9 @@ function callOnce(transport2, req) {
     tookMs,
     env,
     ok: res.status === 200 && !!env?.ok,
-    error,
+    error: error2,
     raw,
+    body: res.body,
     setCookies: extractSetCookies(res.headers)
   };
 }
@@ -633,13 +703,13 @@ function applyDefaultContentType(req) {
 }
 function callRawText(transport2, req) {
   const t0 = Date.now();
-  const fail = (error) => ({
+  const fail = (error2) => ({
     ok: false,
     status: 0,
     text: "",
     chars: 0,
     tookMs: Date.now() - t0,
-    error
+    error: error2
   });
   let res;
   try {
@@ -729,6 +799,37 @@ function loadSession(store2) {
 }
 function saveSession(store2, s, nowIso) {
   store2.setState(SESSION_KEY, JSON.stringify({ ...s, savedAt: nowIso }), nowIso);
+}
+
+// src/store/scoped.ts
+var WRAPPED = Symbol.for("__mcloud_scoped_store__");
+var RAW = Symbol.for("__mcloud_raw_store__");
+var ACCT = Symbol.for("__mcloud_scoped_account__");
+function scopedAccountOf(store2) {
+  const v = store2[ACCT];
+  return typeof v === "string" && v !== "" ? v : void 0;
+}
+function rawStoreOf(s) {
+  const raw = s[RAW];
+  return raw ?? s;
+}
+function scoped(base, acctId) {
+  if (base[WRAPPED] === true) {
+    throw new Error(
+      "store 已经被 scoped() 包过一次了 —— 双重包装会让 `mcloud.acct.*` 也去查登记表然后抛错。"
+    );
+  }
+  const wrapped = {
+    ...base,
+    getState: (key) => routeGet(base, key, acctId),
+    setState: (key, value, nowIso) => routeSet(base, key, value, nowIso, acctId)
+  };
+  Object.defineProperty(wrapped, WRAPPED, { value: true, enumerable: false });
+  if (acctId !== void 0 && acctId !== "") {
+    Object.defineProperty(wrapped, ACCT, { value: acctId, enumerable: false });
+  }
+  Object.defineProperty(wrapped, RAW, { value: base, enumerable: false });
+  return wrapped;
 }
 
 // src/crypto/md5.ts
@@ -863,8 +964,148 @@ function md5(bytes) {
   return out;
 }
 
+// src/crypto/tables.ts
+var SHA256_K = [
+  1116352408,
+  1899447441,
+  3049323471,
+  3921009573,
+  961987163,
+  1508970993,
+  2453635748,
+  2870763221,
+  3624381080,
+  310598401,
+  607225278,
+  1426881987,
+  1925078388,
+  2162078206,
+  2614888103,
+  3248222580,
+  3835390401,
+  4022224774,
+  264347078,
+  604807628,
+  770255983,
+  1249150122,
+  1555081692,
+  1996064986,
+  2554220882,
+  2821834349,
+  2952996808,
+  3210313671,
+  3336571891,
+  3584528711,
+  113926993,
+  338241895,
+  666307205,
+  773529912,
+  1294757372,
+  1396182291,
+  1695183700,
+  1986661051,
+  2177026350,
+  2456956037,
+  2730485921,
+  2820302411,
+  3259730800,
+  3345764771,
+  3516065817,
+  3600352804,
+  4094571909,
+  275423344,
+  430227734,
+  506948616,
+  659060556,
+  883997877,
+  958139571,
+  1322822218,
+  1537002063,
+  1747873779,
+  1955562222,
+  2024104815,
+  2227730452,
+  2361852424,
+  2428436474,
+  2756734187,
+  3204031479,
+  3329325298
+];
+var SHA256_H = [
+  1779033703,
+  3144134277,
+  1013904242,
+  2773480762,
+  1359893119,
+  2600822924,
+  528734635,
+  1541459225
+];
+
+// src/crypto/sha256.ts
+function rotr(x, n) {
+  return (x >>> n | x << 32 - n) >>> 0;
+}
+function sha256(bytes) {
+  const h = Uint32Array.from(SHA256_H);
+  const { hi, lo } = lengthBits(bytes.length);
+  const total = (bytes.length + 8 >> 6) + 1 << 6;
+  const padded = new Uint8Array(total);
+  padded.set(bytes);
+  padded[bytes.length] = 128;
+  writeU32BE(padded, total - 8, hi);
+  writeU32BE(padded, total - 4, lo);
+  const w = new Uint32Array(64);
+  for (let off = 0; off < padded.length; off += 64) {
+    for (let i = 0; i < 16; i += 1) w[i] = readU32BE(padded, off + i * 4);
+    for (let i = 16; i < 64; i += 1) {
+      const x = w[i - 15];
+      const y = w[i - 2];
+      const s0 = (rotr(x, 7) ^ rotr(x, 18) ^ x >>> 3) >>> 0;
+      const s1 = (rotr(y, 17) ^ rotr(y, 19) ^ y >>> 10) >>> 0;
+      w[i] = w[i - 16] + s0 + w[i - 7] + s1 >>> 0;
+    }
+    let a = h[0];
+    let b = h[1];
+    let c = h[2];
+    let d = h[3];
+    let e = h[4];
+    let f = h[5];
+    let g = h[6];
+    let hh = h[7];
+    for (let i = 0; i < 64; i += 1) {
+      const S1 = (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) >>> 0;
+      const ch = (e & f ^ ~e & g) >>> 0;
+      const t1 = hh + S1 + ch + SHA256_K[i] + w[i] >>> 0;
+      const S0 = (rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) >>> 0;
+      const maj = (a & b ^ a & c ^ b & c) >>> 0;
+      const t2 = S0 + maj >>> 0;
+      hh = g;
+      g = f;
+      f = e;
+      e = d + t1 >>> 0;
+      d = c;
+      c = b;
+      b = a;
+      a = t1 + t2 >>> 0;
+    }
+    h[0] = h[0] + a >>> 0;
+    h[1] = h[1] + b >>> 0;
+    h[2] = h[2] + c >>> 0;
+    h[3] = h[3] + d >>> 0;
+    h[4] = h[4] + e >>> 0;
+    h[5] = h[5] + f >>> 0;
+    h[6] = h[6] + g >>> 0;
+    h[7] = h[7] + hh >>> 0;
+  }
+  const out = new Uint8Array(32);
+  for (let i = 0; i < 8; i += 1) writeU32BE(out, i * 4, h[i]);
+  return out;
+}
+
 // src/crypto/hmac.ts
 var md5Hex = (d) => toHex(md5(anyBytes(d)));
+var sha256Hex = (d) => toHex(sha256(anyBytes(d)));
 function anyBytes(d) {
   return typeof d === "string" ? utf8(d) : d;
 }
@@ -910,13 +1151,872 @@ var INV_SBOX = (() => {
   for (let a = 0; a < 256; a += 1) inv[SBOX[a]] = a;
   return inv;
 })();
+function fitKey16(key) {
+  const out = new Uint8Array(16);
+  const src = utf8(key);
+  out.set(src.subarray(0, 16));
+  return out;
+}
+function aes128KeyExpansion(key) {
+  if (key.length !== 16) throw new Error(`AES: 密钥必须是 16 字节（得到 ${key.length}）`);
+  const RCON = [1, 2, 4, 8, 16, 32, 64, 128, 27, 54];
+  const w = new Uint8Array(176);
+  w.set(key);
+  for (let i = 4; i < 44; i += 1) {
+    let t0 = w[(i - 1) * 4];
+    let t1 = w[(i - 1) * 4 + 1];
+    let t2 = w[(i - 1) * 4 + 2];
+    let t3 = w[(i - 1) * 4 + 3];
+    if (i % 4 === 0) {
+      const tmp = t0;
+      t0 = SBOX[t1] ^ RCON[i / 4 - 1];
+      t1 = SBOX[t2];
+      t2 = SBOX[t3];
+      t3 = SBOX[tmp];
+    }
+    const p = (i - 4) * 4;
+    w[i * 4] = w[p] ^ t0;
+    w[i * 4 + 1] = w[p + 1] ^ t1;
+    w[i * 4 + 2] = w[p + 2] ^ t2;
+    w[i * 4 + 3] = w[p + 3] ^ t3;
+  }
+  return w;
+}
+function aes128EncryptBlock(rk, block) {
+  if (block.length !== 16) throw new Error(`AES: 块必须是 16 字节（得到 ${block.length}）`);
+  const s = new Uint8Array(block);
+  const addRoundKey = (round) => {
+    for (let i = 0; i < 16; i += 1) s[i] = s[i] ^ rk[round * 16 + i];
+  };
+  const subBytes = () => {
+    for (let i = 0; i < 16; i += 1) s[i] = SBOX[s[i]];
+  };
+  const shiftRows = () => {
+    for (let r = 1; r < 4; r += 1) {
+      const row = [s[r], s[r + 4], s[r + 8], s[r + 12]];
+      for (let c = 0; c < 4; c += 1) s[r + 4 * c] = row[(c + r) % 4];
+    }
+  };
+  const mixColumns = () => {
+    for (let c = 0; c < 4; c += 1) {
+      const i = 4 * c;
+      const a0 = s[i];
+      const a1 = s[i + 1];
+      const a2 = s[i + 2];
+      const a3 = s[i + 3];
+      s[i] = gfMul(a0, 2) ^ gfMul(a1, 3) ^ a2 ^ a3;
+      s[i + 1] = a0 ^ gfMul(a1, 2) ^ gfMul(a2, 3) ^ a3;
+      s[i + 2] = a0 ^ a1 ^ gfMul(a2, 2) ^ gfMul(a3, 3);
+      s[i + 3] = gfMul(a0, 3) ^ a1 ^ a2 ^ gfMul(a3, 2);
+    }
+  };
+  addRoundKey(0);
+  for (let round = 1; round <= 9; round += 1) {
+    subBytes();
+    shiftRows();
+    mixColumns();
+    addRoundKey(round);
+  }
+  subBytes();
+  shiftRows();
+  addRoundKey(10);
+  return s;
+}
+function pkcs7Pad(msg, blockSize) {
+  const pad = blockSize - msg.length % blockSize;
+  const out = new Uint8Array(msg.length + pad);
+  out.set(msg);
+  out.fill(pad, msg.length);
+  return out;
+}
+function aes128CbcEncrypt(key, iv, msg) {
+  if (iv.length !== 16) throw new Error("AES: IV 必须是 16 字节");
+  if (msg.length % 16 !== 0) throw new Error(`AES: 明文必须是 16 的整数倍（得到 ${msg.length}）`);
+  const rk = aes128KeyExpansion(key);
+  const out = new Uint8Array(msg.length);
+  let prev = new Uint8Array(iv);
+  for (let off = 0; off < msg.length; off += 16) {
+    const blk = new Uint8Array(16);
+    for (let i = 0; i < 16; i += 1) blk[i] = msg[off + i] ^ prev[i];
+    prev = aes128EncryptBlock(rk, blk);
+    out.set(prev, off);
+  }
+  return out;
+}
 var AES_FIXED_IV = (() => {
   const out = new Uint8Array(16);
   for (let i = 0; i < 16; i += 1) out[i] = "0102030405060708".charCodeAt(i);
   return out;
 })();
+function aesEncryptCompatHex(key, message) {
+  const padded = pkcs7Pad(utf8(message), 16);
+  return toHex(aes128CbcEncrypt(fitKey16(key), AES_FIXED_IV, padded));
+}
+
+// src/crypto/desTables.ts
+var PC1 = [
+  57,
+  49,
+  41,
+  33,
+  25,
+  17,
+  9,
+  1,
+  58,
+  50,
+  42,
+  34,
+  26,
+  18,
+  10,
+  2,
+  59,
+  51,
+  43,
+  35,
+  27,
+  19,
+  11,
+  3,
+  60,
+  52,
+  44,
+  36,
+  63,
+  55,
+  47,
+  39,
+  31,
+  23,
+  15,
+  7,
+  62,
+  54,
+  46,
+  38,
+  30,
+  22,
+  14,
+  6,
+  61,
+  53,
+  45,
+  37,
+  29,
+  21,
+  13,
+  5,
+  28,
+  20,
+  12,
+  4
+];
+var PC2 = [
+  14,
+  17,
+  11,
+  24,
+  1,
+  5,
+  3,
+  28,
+  15,
+  6,
+  21,
+  10,
+  23,
+  19,
+  12,
+  4,
+  26,
+  8,
+  16,
+  7,
+  27,
+  20,
+  13,
+  2,
+  41,
+  52,
+  31,
+  37,
+  47,
+  55,
+  30,
+  40,
+  51,
+  45,
+  33,
+  48,
+  44,
+  49,
+  39,
+  56,
+  34,
+  53,
+  46,
+  42,
+  50,
+  36,
+  29,
+  32
+];
+var BIT_SHIFTS = [1, 2, 4, 6, 8, 10, 12, 14, 15, 17, 19, 21, 23, 25, 27, 28];
+var SBOX_P = [
+  {
+    0: 8421888,
+    268435456: 32768,
+    536870912: 8421378,
+    805306368: 2,
+    1073741824: 512,
+    1342177280: 8421890,
+    1610612736: 8389122,
+    1879048192: 8388608,
+    2147483648: 514,
+    2415919104: 8389120,
+    2684354560: 33280,
+    2952790016: 8421376,
+    3221225472: 32770,
+    3489660928: 8388610,
+    3758096384: 0,
+    4026531840: 33282,
+    134217728: 0,
+    402653184: 8421890,
+    671088640: 33282,
+    939524096: 32768,
+    1207959552: 8421888,
+    1476395008: 512,
+    1744830464: 8421378,
+    2013265920: 2,
+    2281701376: 8389120,
+    2550136832: 33280,
+    2818572288: 8421376,
+    3087007744: 8389122,
+    3355443200: 8388610,
+    3623878656: 32770,
+    3892314112: 514,
+    4160749568: 8388608,
+    1: 32768,
+    268435457: 2,
+    536870913: 8421888,
+    805306369: 8388608,
+    1073741825: 8421378,
+    1342177281: 33280,
+    1610612737: 512,
+    1879048193: 8389122,
+    2147483649: 8421890,
+    2415919105: 8421376,
+    2684354561: 8388610,
+    2952790017: 33282,
+    3221225473: 514,
+    3489660929: 8389120,
+    3758096385: 32770,
+    4026531841: 0,
+    134217729: 8421890,
+    402653185: 8421376,
+    671088641: 8388608,
+    939524097: 512,
+    1207959553: 32768,
+    1476395009: 8388610,
+    1744830465: 2,
+    2013265921: 33282,
+    2281701377: 32770,
+    2550136833: 8389122,
+    2818572289: 514,
+    3087007745: 8421888,
+    3355443201: 8389120,
+    3623878657: 0,
+    3892314113: 33280,
+    4160749569: 8421378
+  },
+  {
+    0: 1074282512,
+    16777216: 16384,
+    33554432: 524288,
+    50331648: 1074266128,
+    67108864: 1073741840,
+    83886080: 1074282496,
+    100663296: 1073758208,
+    117440512: 16,
+    134217728: 540672,
+    150994944: 1073758224,
+    167772160: 1073741824,
+    184549376: 540688,
+    201326592: 524304,
+    218103808: 0,
+    234881024: 16400,
+    251658240: 1074266112,
+    8388608: 1073758208,
+    25165824: 540688,
+    41943040: 16,
+    58720256: 1073758224,
+    75497472: 1074282512,
+    92274688: 1073741824,
+    109051904: 524288,
+    125829120: 1074266128,
+    142606336: 524304,
+    159383552: 0,
+    176160768: 16384,
+    192937984: 1074266112,
+    209715200: 1073741840,
+    226492416: 540672,
+    243269632: 1074282496,
+    260046848: 16400,
+    268435456: 0,
+    285212672: 1074266128,
+    301989888: 1073758224,
+    318767104: 1074282496,
+    335544320: 1074266112,
+    352321536: 16,
+    369098752: 540688,
+    385875968: 16384,
+    402653184: 16400,
+    419430400: 524288,
+    436207616: 524304,
+    452984832: 1073741840,
+    469762048: 540672,
+    486539264: 1073758208,
+    503316480: 1073741824,
+    520093696: 1074282512,
+    276824064: 540688,
+    293601280: 524288,
+    310378496: 1074266112,
+    327155712: 16384,
+    343932928: 1073758208,
+    360710144: 1074282512,
+    377487360: 16,
+    394264576: 1073741824,
+    411041792: 1074282496,
+    427819008: 1073741840,
+    444596224: 1073758224,
+    461373440: 524304,
+    478150656: 0,
+    494927872: 16400,
+    511705088: 1074266128,
+    528482304: 540672
+  },
+  {
+    0: 260,
+    1048576: 0,
+    2097152: 67109120,
+    3145728: 65796,
+    4194304: 65540,
+    5242880: 67108868,
+    6291456: 67174660,
+    7340032: 67174400,
+    8388608: 67108864,
+    9437184: 67174656,
+    10485760: 65792,
+    11534336: 67174404,
+    12582912: 67109124,
+    13631488: 65536,
+    14680064: 4,
+    15728640: 256,
+    524288: 67174656,
+    1572864: 67174404,
+    2621440: 0,
+    3670016: 67109120,
+    4718592: 67108868,
+    5767168: 65536,
+    6815744: 65540,
+    7864320: 260,
+    8912896: 4,
+    9961472: 256,
+    11010048: 67174400,
+    12058624: 65796,
+    13107200: 65792,
+    14155776: 67109124,
+    15204352: 67174660,
+    16252928: 67108864,
+    16777216: 67174656,
+    17825792: 65540,
+    18874368: 65536,
+    19922944: 67109120,
+    20971520: 256,
+    22020096: 67174660,
+    23068672: 67108868,
+    24117248: 0,
+    25165824: 67109124,
+    26214400: 67108864,
+    27262976: 4,
+    28311552: 65792,
+    29360128: 67174400,
+    30408704: 260,
+    31457280: 65796,
+    32505856: 67174404,
+    17301504: 67108864,
+    18350080: 260,
+    19398656: 67174656,
+    20447232: 0,
+    21495808: 65540,
+    22544384: 67109120,
+    23592960: 256,
+    24641536: 67174404,
+    25690112: 65536,
+    26738688: 67174660,
+    27787264: 65796,
+    28835840: 67108868,
+    29884416: 67109124,
+    30932992: 67174400,
+    31981568: 4,
+    33030144: 65792
+  },
+  {
+    0: 2151682048,
+    65536: 2147487808,
+    131072: 4198464,
+    196608: 2151677952,
+    262144: 0,
+    327680: 4198400,
+    393216: 2147483712,
+    458752: 4194368,
+    524288: 2147483648,
+    589824: 4194304,
+    655360: 64,
+    720896: 2147487744,
+    786432: 2151678016,
+    851968: 4160,
+    917504: 4096,
+    983040: 2151682112,
+    32768: 2147487808,
+    98304: 64,
+    163840: 2151678016,
+    229376: 2147487744,
+    294912: 4198400,
+    360448: 2151682112,
+    425984: 0,
+    491520: 2151677952,
+    557056: 4096,
+    622592: 2151682048,
+    688128: 4194304,
+    753664: 4160,
+    819200: 2147483648,
+    884736: 4194368,
+    950272: 4198464,
+    1015808: 2147483712,
+    1048576: 4194368,
+    1114112: 4198400,
+    1179648: 2147483712,
+    1245184: 0,
+    1310720: 4160,
+    1376256: 2151678016,
+    1441792: 2151682048,
+    1507328: 2147487808,
+    1572864: 2151682112,
+    1638400: 2147483648,
+    1703936: 2151677952,
+    1769472: 4198464,
+    1835008: 2147487744,
+    1900544: 4194304,
+    1966080: 64,
+    2031616: 4096,
+    1081344: 2151677952,
+    1146880: 2151682112,
+    1212416: 0,
+    1277952: 4198400,
+    1343488: 4194368,
+    1409024: 2147483648,
+    1474560: 2147487808,
+    1540096: 64,
+    1605632: 2147483712,
+    1671168: 4096,
+    1736704: 2147487744,
+    1802240: 2151678016,
+    1867776: 4160,
+    1933312: 2151682048,
+    1998848: 4194304,
+    2064384: 4198464
+  },
+  {
+    0: 128,
+    4096: 17039360,
+    8192: 262144,
+    12288: 536870912,
+    16384: 537133184,
+    20480: 16777344,
+    24576: 553648256,
+    28672: 262272,
+    32768: 16777216,
+    36864: 537133056,
+    40960: 536871040,
+    45056: 553910400,
+    49152: 553910272,
+    53248: 0,
+    57344: 17039488,
+    61440: 553648128,
+    2048: 17039488,
+    6144: 553648256,
+    10240: 128,
+    14336: 17039360,
+    18432: 262144,
+    22528: 537133184,
+    26624: 553910272,
+    30720: 536870912,
+    34816: 537133056,
+    38912: 0,
+    43008: 553910400,
+    47104: 16777344,
+    51200: 536871040,
+    55296: 553648128,
+    59392: 16777216,
+    63488: 262272,
+    65536: 262144,
+    69632: 128,
+    73728: 536870912,
+    77824: 553648256,
+    81920: 16777344,
+    86016: 553910272,
+    90112: 537133184,
+    94208: 16777216,
+    98304: 553910400,
+    102400: 553648128,
+    106496: 17039360,
+    110592: 537133056,
+    114688: 262272,
+    118784: 536871040,
+    122880: 0,
+    126976: 17039488,
+    67584: 553648256,
+    71680: 16777216,
+    75776: 17039360,
+    79872: 537133184,
+    83968: 536870912,
+    88064: 17039488,
+    92160: 128,
+    96256: 553910272,
+    100352: 262272,
+    104448: 553910400,
+    108544: 0,
+    112640: 553648128,
+    116736: 16777344,
+    120832: 262144,
+    124928: 537133056,
+    129024: 536871040
+  },
+  {
+    0: 268435464,
+    256: 8192,
+    512: 270532608,
+    768: 270540808,
+    1024: 268443648,
+    1280: 2097152,
+    1536: 2097160,
+    1792: 268435456,
+    2048: 0,
+    2304: 268443656,
+    2560: 2105344,
+    2816: 8,
+    3072: 270532616,
+    3328: 2105352,
+    3584: 8200,
+    3840: 270540800,
+    128: 270532608,
+    384: 270540808,
+    640: 8,
+    896: 2097152,
+    1152: 2105352,
+    1408: 268435464,
+    1664: 268443648,
+    1920: 8200,
+    2176: 2097160,
+    2432: 8192,
+    2688: 268443656,
+    2944: 270532616,
+    3200: 0,
+    3456: 270540800,
+    3712: 2105344,
+    3968: 268435456,
+    4096: 268443648,
+    4352: 270532616,
+    4608: 270540808,
+    4864: 8200,
+    5120: 2097152,
+    5376: 268435456,
+    5632: 268435464,
+    5888: 2105344,
+    6144: 2105352,
+    6400: 0,
+    6656: 8,
+    6912: 270532608,
+    7168: 8192,
+    7424: 268443656,
+    7680: 270540800,
+    7936: 2097160,
+    4224: 8,
+    4480: 2105344,
+    4736: 2097152,
+    4992: 268435464,
+    5248: 268443648,
+    5504: 8200,
+    5760: 270540808,
+    6016: 270532608,
+    6272: 270540800,
+    6528: 270532616,
+    6784: 8192,
+    7040: 2105352,
+    7296: 2097160,
+    7552: 0,
+    7808: 268435456,
+    8064: 268443656
+  },
+  {
+    0: 1048576,
+    16: 33555457,
+    32: 1024,
+    48: 1049601,
+    64: 34604033,
+    80: 0,
+    96: 1,
+    112: 34603009,
+    128: 33555456,
+    144: 1048577,
+    160: 33554433,
+    176: 34604032,
+    192: 34603008,
+    208: 1025,
+    224: 1049600,
+    240: 33554432,
+    8: 34603009,
+    24: 0,
+    40: 33555457,
+    56: 34604032,
+    72: 1048576,
+    88: 33554433,
+    104: 33554432,
+    120: 1025,
+    136: 1049601,
+    152: 33555456,
+    168: 34603008,
+    184: 1048577,
+    200: 1024,
+    216: 34604033,
+    232: 1,
+    248: 1049600,
+    256: 33554432,
+    272: 1048576,
+    288: 33555457,
+    304: 34603009,
+    320: 1048577,
+    336: 33555456,
+    352: 34604032,
+    368: 1049601,
+    384: 1025,
+    400: 34604033,
+    416: 1049600,
+    432: 1,
+    448: 0,
+    464: 34603008,
+    480: 33554433,
+    496: 1024,
+    264: 1049600,
+    280: 33555457,
+    296: 34603009,
+    312: 1,
+    328: 33554432,
+    344: 1048576,
+    360: 1025,
+    376: 34604032,
+    392: 33554433,
+    408: 34603008,
+    424: 0,
+    440: 34604033,
+    456: 1049601,
+    472: 1024,
+    488: 33555456,
+    504: 1048577
+  },
+  {
+    0: 134219808,
+    1: 131072,
+    2: 134217728,
+    3: 32,
+    4: 131104,
+    5: 134350880,
+    6: 134350848,
+    7: 2048,
+    8: 134348800,
+    9: 134219776,
+    10: 133120,
+    11: 134348832,
+    12: 2080,
+    13: 0,
+    14: 134217760,
+    15: 133152,
+    2147483648: 2048,
+    2147483649: 134350880,
+    2147483650: 134219808,
+    2147483651: 134217728,
+    2147483652: 134348800,
+    2147483653: 133120,
+    2147483654: 133152,
+    2147483655: 32,
+    2147483656: 134217760,
+    2147483657: 2080,
+    2147483658: 131104,
+    2147483659: 134350848,
+    2147483660: 0,
+    2147483661: 134348832,
+    2147483662: 134219776,
+    2147483663: 131072,
+    16: 133152,
+    17: 134350848,
+    18: 32,
+    19: 2048,
+    20: 134219776,
+    21: 134217760,
+    22: 134348832,
+    23: 131072,
+    24: 0,
+    25: 131104,
+    26: 134348800,
+    27: 134219808,
+    28: 134350880,
+    29: 133120,
+    30: 2080,
+    31: 134217728,
+    2147483664: 131072,
+    2147483665: 2048,
+    2147483666: 134348832,
+    2147483667: 133152,
+    2147483668: 32,
+    2147483669: 134348800,
+    2147483670: 134217728,
+    2147483671: 134219808,
+    2147483672: 134350880,
+    2147483673: 134217760,
+    2147483674: 134219776,
+    2147483675: 0,
+    2147483676: 133120,
+    2147483677: 2080,
+    2147483678: 131104,
+    2147483679: 134350848
+  }
+];
+var SBOX_MASK = [
+  4160749569,
+  528482304,
+  33030144,
+  2064384,
+  129024,
+  8064,
+  504,
+  2147483679
+];
+
+// src/crypto/des.ts
+function fitKey8(key) {
+  const out = new Uint8Array(8);
+  const src = utf8(key);
+  out.set(src.subarray(0, 8));
+  return out;
+}
+function zeroPadToBlock(msg, blockSize) {
+  const rem = msg.length % blockSize;
+  if (rem === 0) return msg;
+  const out = new Uint8Array(msg.length + (blockSize - rem));
+  out.set(msg);
+  return out;
+}
+function keyWords(key) {
+  const be = (o) => (key[o] << 24 | key[o + 1] << 16 | key[o + 2] << 8 | key[o + 3]) >>> 0;
+  return [be(0), be(4)];
+}
+function desSubKeys(key) {
+  const [w0, w1] = keyWords(key);
+  const words = [w0, w1];
+  const keyBits = [];
+  for (let i = 0; i < 56; i += 1) {
+    const p = PC1[i] - 1;
+    keyBits[i] = words[p >>> 5] >>> 31 - p % 32 & 1;
+  }
+  const subKeys = [];
+  for (let n = 0; n < 16; n += 1) {
+    const subKey = [];
+    const bitShift = BIT_SHIFTS[n];
+    for (let i = 0; i < 24; i += 1) {
+      const left = keyBits[(PC2[i] - 1 + bitShift) % 28] << 31 - i % 6;
+      const right = keyBits[28 + (PC2[i + 24] - 1 + bitShift) % 28] << 31 - i % 6;
+      const a = i / 6 | 0;
+      subKey[a] = (subKey[a] ?? 0) | left;
+      subKey[4 + a] = (subKey[4 + a] ?? 0) | right;
+    }
+    subKey[0] = (subKey[0] << 1 | subKey[0] >>> 31) >>> 0;
+    for (let i = 1; i < 7; i += 1) subKey[i] = subKey[i] >>> (i - 1) * 4 + 3;
+    subKey[7] = (subKey[7] << 5 | subKey[7] >>> 27) >>> 0;
+    subKeys.push(subKey);
+  }
+  return subKeys;
+}
+function desCryptBlock(l, r, subKeys) {
+  let L = l >>> 0;
+  let R = r >>> 0;
+  const exLR = (off, mask) => {
+    const t2 = (L >>> off ^ R) & mask;
+    R = (R ^ t2) >>> 0;
+    L = (L ^ t2 << off) >>> 0;
+  };
+  const exRL = (off, mask) => {
+    const t2 = (R >>> off ^ L) & mask;
+    L = (L ^ t2) >>> 0;
+    R = (R ^ t2 << off) >>> 0;
+  };
+  exLR(4, 252645135);
+  exLR(16, 65535);
+  exRL(2, 858993459);
+  exRL(8, 16711935);
+  exLR(1, 1431655765);
+  for (let round = 0; round < 16; round += 1) {
+    const sk = subKeys[round];
+    let f = 0;
+    for (let i = 0; i < 8; i += 1) {
+      const idx = ((R ^ sk[i]) & SBOX_MASK[i]) >>> 0;
+      f |= SBOX_P[i][idx] ?? 0;
+    }
+    const nl = R;
+    const nr = (L ^ f) >>> 0;
+    L = nl;
+    R = nr;
+  }
+  const t = L;
+  L = R;
+  R = t;
+  exLR(1, 1431655765);
+  exRL(8, 16711935);
+  exRL(2, 858993459);
+  exLR(16, 65535);
+  exLR(4, 252645135);
+  return [L >>> 0, R >>> 0];
+}
+function desEcbEncrypt(key, msg) {
+  if (key.length !== 8) throw new Error(`DES: 密钥必须是 8 字节（得到 ${key.length}）`);
+  const padded = zeroPadToBlock(msg, 8);
+  if (padded.length === 0) return new Uint8Array(0);
+  const subKeys = desSubKeys(key);
+  const out = new Uint8Array(padded.length);
+  for (let off = 0; off < padded.length; off += 8) {
+    const l = (padded[off] << 24 | padded[off + 1] << 16 | padded[off + 2] << 8 | padded[off + 3]) >>> 0;
+    const r = (padded[off + 4] << 24 | padded[off + 5] << 16 | padded[off + 6] << 8 | padded[off + 7]) >>> 0;
+    const [cl, cr] = desCryptBlock(l, r, subKeys);
+    out[off] = cl >>> 24 & 255;
+    out[off + 1] = cl >>> 16 & 255;
+    out[off + 2] = cl >>> 8 & 255;
+    out[off + 3] = cl & 255;
+    out[off + 4] = cr >>> 24 & 255;
+    out[off + 5] = cr >>> 16 & 255;
+    out[off + 6] = cr >>> 8 & 255;
+    out[off + 7] = cr & 255;
+  }
+  return out;
+}
+function desEncryptBase64(message, key) {
+  const padded = zeroPadToBlock(utf8(message), 8);
+  if (padded.length === 0) return "";
+  return toBase64(desEcbEncrypt(fitKey8(key), padded));
+}
 
 // src/crypto/gzip.ts
+var GZIP_OS = 19;
 var CRC_TABLE = (() => {
   const t = new Uint32Array(256);
   for (let n = 0; n < 256; n += 1) {
@@ -926,6 +2026,166 @@ var CRC_TABLE = (() => {
   }
   return t;
 })();
+function crc32(data) {
+  let c = 4294967295;
+  for (let i = 0; i < data.length; i += 1) {
+    c = CRC_TABLE[(c ^ data[i]) & 255] ^ c >>> 8;
+  }
+  return (c ^ 4294967295) >>> 0;
+}
+function deflateStored(data) {
+  const MAX = 65535;
+  const chunks = data.length === 0 ? [data.subarray(0, 0)] : [];
+  for (let off = 0; off < data.length; off += MAX) {
+    chunks.push(data.subarray(off, Math.min(off + MAX, data.length)));
+  }
+  let total = 0;
+  for (const c of chunks) total += 5 + c.length;
+  const out = new Uint8Array(total);
+  let p = 0;
+  chunks.forEach((c, i) => {
+    const last = i === chunks.length - 1;
+    out[p++] = last ? 1 : 0;
+    const len = c.length;
+    out[p++] = len & 255;
+    out[p++] = len >>> 8 & 255;
+    out[p++] = ~len & 255;
+    out[p++] = ~len >>> 8 & 255;
+    out.set(c, p);
+    p += len;
+  });
+  return out;
+}
+function gzipWithOs19(data) {
+  const body = deflateStored(data);
+  const out = new Uint8Array(10 + body.length + 8);
+  out[0] = 31;
+  out[1] = 139;
+  out[2] = 8;
+  out[3] = 0;
+  out[4] = 0;
+  out[5] = 0;
+  out[6] = 0;
+  out[7] = 0;
+  out[8] = 0;
+  out[9] = GZIP_OS;
+  out.set(body, 10);
+  const crc = crc32(data);
+  const n = data.length >>> 0;
+  const tail = 10 + body.length;
+  out[tail] = crc & 255;
+  out[tail + 1] = crc >>> 8 & 255;
+  out[tail + 2] = crc >>> 16 & 255;
+  out[tail + 3] = crc >>> 24 & 255;
+  out[tail + 4] = n & 255;
+  out[tail + 5] = n >>> 8 & 255;
+  out[tail + 6] = n >>> 16 & 255;
+  out[tail + 7] = n >>> 24 & 255;
+  return out;
+}
+function gzipWithOs19Base64(data) {
+  return toBase64(gzipWithOs19(data));
+}
+
+// src/crypto/rsa.ts
+function derRead(buf, at) {
+  const tag = buf[at];
+  let p = at + 1;
+  let len = buf[p];
+  p += 1;
+  if ((len & 128) !== 0) {
+    const nLenBytes = len & 127;
+    if (nLenBytes === 0 || nLenBytes > 4) {
+      throw new Error(`RSA: 不支持的长度形式（0x80|${nLenBytes}）`);
+    }
+    len = 0;
+    for (let i = 0; i < nLenBytes; i += 1) len = len * 256 + buf[p + i];
+    p += nLenBytes;
+  }
+  return { tag, start: p, end: p + len };
+}
+function parseSpkiRsaPublicKey(b64) {
+  const der = fromBase64(b64);
+  const outer = derRead(der, 0);
+  if (outer.tag !== 48) throw new Error("RSA: SPKI 不是 SEQUENCE");
+  const algo = derRead(der, outer.start);
+  if (algo.tag !== 48) throw new Error("RSA: AlgorithmIdentifier 缺失");
+  const bits2 = derRead(der, algo.end);
+  if (bits2.tag !== 3) throw new Error("RSA: BIT STRING 缺失");
+  if (der[bits2.start] !== 0) throw new Error("RSA: BIT STRING 有未用位");
+  const inner = derRead(der, bits2.start + 1);
+  if (inner.tag !== 48) throw new Error("RSA: 公钥不是 SEQUENCE");
+  const intAt = (p) => {
+    const it = derRead(der, p);
+    if (it.tag !== 2) throw new Error("RSA: 期望 INTEGER");
+    let v = 0n;
+    for (let i = it.start; i < it.end; i += 1) v = v << 8n | BigInt(der[i]);
+    return { v, next: it.end };
+  };
+  const nn = intAt(inner.start);
+  const ee = intAt(nn.next);
+  if (nn.v <= 0n || ee.v <= 0n) throw new Error("RSA: 公钥分量非正数");
+  return { n: nn.v, e: ee.v };
+}
+function modPow(base, exp, m) {
+  let result = 1n;
+  let b = base % m;
+  let e = exp;
+  while (e > 0n) {
+    if (e & 1n) result = result * b % m;
+    b = b * b % m;
+    e >>= 1n;
+  }
+  return result;
+}
+function bytesToBig(bytes) {
+  let v = 0n;
+  for (let i = 0; i < bytes.length; i += 1) v = v << 8n | BigInt(bytes[i]);
+  return v;
+}
+function bigToBytes(v, len) {
+  const out = new Uint8Array(len);
+  let x = v;
+  for (let i = len - 1; i >= 0; i -= 1) {
+    out[i] = Number(x & 0xffn);
+    x >>= 8n;
+  }
+  if (x !== 0n) throw new Error(`RSA: 模幂结果装不进 ${len} 字节`);
+  return out;
+}
+function rsaEncryptPkcs1v15(key, message, rng) {
+  const k = Math.ceil(key.n.toString(16).length / 2);
+  if (message.length > k - 11) {
+    throw new Error(`RSA: 明文太长（${message.length} > ${k - 11}）`);
+  }
+  const psLen = k - message.length - 3;
+  const ps = new Uint8Array(psLen);
+  let filled = 0;
+  let rounds = 0;
+  while (filled < psLen) {
+    if ((rounds += 1) > 64) {
+      throw new Error("RSA: 随机源像是坏了（连取 64 轮都填不满 PS，取到的几乎全是 0）");
+    }
+    const chunk = rng(Math.max(8, psLen - filled));
+    for (let i = 0; i < chunk.length && filled < psLen; i += 1) {
+      if (chunk[i] !== 0) {
+        ps[filled] = chunk[i];
+        filled += 1;
+      }
+    }
+  }
+  const em = new Uint8Array(k);
+  em[0] = 0;
+  em[1] = 2;
+  em.set(ps, 2);
+  em[2 + psLen] = 0;
+  em.set(message, 3 + psLen);
+  const c = modPow(bytesToBig(em), key.e, key.n);
+  return bigToBytes(c, k);
+}
+function rsaEncryptBase64(publicKeyB64, message, rng) {
+  return toBase64(rsaEncryptPkcs1v15(parseSpkiRsaPublicKey(publicKeyB64), message, rng));
+}
 
 // src/mcloud/sign.ts
 var SALT_MAP = [
@@ -1082,6 +2342,10 @@ var EP_METHOD = {
   msgPushObtain: "POST"
   // 这一族用 POST，body `{"type":2}`
 };
+function rootOrDefault(base, fallback) {
+  const t = (base ?? "").trim();
+  return t === "" ? fallback : t.replace(/\/+$/, "");
+}
 
 // src/mcloud/smidRules.ts
 var SKLAND_SM_CONFIG = {
@@ -1092,20 +2356,758 @@ var SKLAND_SM_CONFIG = {
   apiHost: "slw.h5cmpassport.com:9090",
   apiPath: "/deviceprofile/v4"
 };
+var DES_RULE = {
+  appId: {
+    cipher: "DES",
+    is_encrypt: 1,
+    key: "a9kbown8",
+    obfuscated_name: "um"
+  },
+  box: {
+    is_encrypt: 0,
+    obfuscated_name: "aw"
+  },
+  canvas: {
+    cipher: "DES",
+    is_encrypt: 1,
+    key: "ultuhs59",
+    obfuscated_name: "iu"
+  },
+  clientSize: {
+    cipher: "DES",
+    is_encrypt: 1,
+    key: "7s9eixjh",
+    obfuscated_name: "na"
+  },
+  organization: {
+    cipher: "DES",
+    is_encrypt: 1,
+    key: "14e30pp1",
+    obfuscated_name: "nl"
+  },
+  os: {
+    cipher: "DES",
+    is_encrypt: 1,
+    key: "j862vr1f",
+    obfuscated_name: "lz"
+  },
+  platform: {
+    cipher: "DES",
+    is_encrypt: 1,
+    key: "pgutfbo7",
+    obfuscated_name: "lm"
+  },
+  plugins: {
+    cipher: "DES",
+    is_encrypt: 1,
+    key: "x98c92bm",
+    obfuscated_name: "hy"
+  },
+  pmf: {
+    cipher: "DES",
+    is_encrypt: 1,
+    key: "gwvvsmr4",
+    obfuscated_name: "yu"
+  },
+  protocol: {
+    is_encrypt: 0,
+    obfuscated_name: "protocol"
+  },
+  referer: {
+    cipher: "DES",
+    is_encrypt: 1,
+    key: "gka1ljjt",
+    obfuscated_name: "mf"
+  },
+  res: {
+    cipher: "DES",
+    is_encrypt: 1,
+    key: "ht2n6dwf",
+    obfuscated_name: "ut"
+  },
+  rtype: {
+    cipher: "DES",
+    is_encrypt: 1,
+    key: "k2p9ifij",
+    obfuscated_name: "fm"
+  },
+  sdkver: {
+    cipher: "DES",
+    is_encrypt: 1,
+    key: "q4ij0mv5",
+    obfuscated_name: "ir"
+  },
+  status: {
+    cipher: "DES",
+    is_encrypt: 1,
+    key: "moyspi7i",
+    obfuscated_name: "kp"
+  },
+  subVersion: {
+    cipher: "DES",
+    is_encrypt: 1,
+    key: "egsyl21v",
+    obfuscated_name: "dk"
+  },
+  svm: {
+    cipher: "DES",
+    is_encrypt: 1,
+    key: "yf780e9w",
+    obfuscated_name: "ee"
+  },
+  time: {
+    cipher: "DES",
+    is_encrypt: 1,
+    key: "btb17oag",
+    obfuscated_name: "jt"
+  },
+  timezone: {
+    cipher: "DES",
+    is_encrypt: 1,
+    key: "l94h8clc",
+    obfuscated_name: "bl"
+  },
+  tn: {
+    cipher: "DES",
+    is_encrypt: 1,
+    key: "crnw0x7e",
+    obfuscated_name: "as"
+  },
+  trees: {
+    cipher: "DES",
+    is_encrypt: 1,
+    key: "x6the9nq",
+    obfuscated_name: "ij"
+  },
+  ua: {
+    cipher: "DES",
+    is_encrypt: 1,
+    key: "bewicpxu",
+    obfuscated_name: "pu"
+  },
+  url: {
+    cipher: "DES",
+    is_encrypt: 1,
+    key: "llj8yd1x",
+    obfuscated_name: "sb"
+  },
+  version: {
+    is_encrypt: 0,
+    obfuscated_name: "version"
+  },
+  vpw: {
+    cipher: "DES",
+    is_encrypt: 1,
+    key: "f1zlae4b",
+    obfuscated_name: "qb"
+  }
+};
 
 // src/mcloud/smid.ts
 var SMID_HOST = `${SKLAND_SM_CONFIG.protocol}://${SKLAND_SM_CONFIG.apiHost}`;
 var SMID_PATH = SKLAND_SM_CONFIG.apiPath;
+var SMID_OK_CODE = 1100;
+var DEVICE_ID_PREFIX = "B";
+var SMID_UA = "Mozilla/5.0 (Linux; Android 14; 22041216C Build/TP1A.220624.014; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/128.0.6613.88 Mobile Safari/537.36";
+var SMID_ORIGIN = "https://m.mcloud.139.com";
+var SMID_REFERER = "https://m.mcloud.139.com/portal/mobilecloud/index.html";
+var SMID_PAGE_URL = "https://m.mcloud.139.com/portal/mobilecloud/index.html?path=newsignin&sourceid=1002&token=";
+var SMID_PLUGINS = "ChromePDFViewerPortableDocumentFormatinternal-pdf-viewer2,ChromiumPDFViewerPortableDocumentFormatinternal-pdf-viewer2,MicrosoftEdgePDFViewerPortableDocumentFormatinternal-pdf-viewer2,PDFViewerPortableDocumentFormatinternal-pdf-viewer2,WebKitbuilt-inPDFPortableDocumentFormatinternal-pdf-viewer2";
+var SCREENS = [
+  [375, 667],
+  [390, 844],
+  [414, 896],
+  [360, 640],
+  [360, 740],
+  [412, 915],
+  [1920, 1080],
+  [1366, 768]
+];
+var PLATFORMS = ["Linux armv8l", "Linux aarch64"];
+var DPRS = [2, 3];
+var TOUCH_POINTS = [1, 5];
+var CONNECTION_RTTS = [50, 100, 150];
+var CPU_COUNTS = [4, 6, 8, 10, 12];
+function pick(arr, rnd) {
+  return arr[Math.floor(rnd() * arr.length)];
+}
+function newFingerprint(rnd = Math.random) {
+  const s = pick(SCREENS, rnd);
+  return {
+    screenWidth: s[0],
+    screenHeight: s[1],
+    dpr: pick(DPRS, rnd),
+    platform: pick(PLATFORMS, rnd),
+    maxTouchPoints: pick(TOUCH_POINTS, rnd),
+    connectionRtt: pick(CONNECTION_RTTS, rnd),
+    cpucount: pick(CPU_COUNTS, rnd),
+    // canvas 是一个 8 位 hex 摘要 —— 它也是"这台设备"的特征，所以同样只掷一次
+    canvas: md5Hex(uuidV4()).slice(0, 8)
+  };
+}
+var STATE_FINGERPRINT = "mcloud.smid.fingerprint";
+function loadFingerprint(store2) {
+  const raw = store2.getState(STATE_FINGERPRINT);
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw);
+    if (typeof v.screenWidth !== "number" || typeof v.canvas !== "string") return null;
+    return {
+      screenWidth: v.screenWidth,
+      screenHeight: v.screenHeight ?? v.screenWidth,
+      dpr: v.dpr ?? 2,
+      platform: v.platform ?? "Linux armv8l",
+      maxTouchPoints: v.maxTouchPoints ?? 1,
+      connectionRtt: v.connectionRtt ?? 50,
+      cpucount: v.cpucount ?? 4,
+      canvas: v.canvas
+    };
+  } catch {
+    return null;
+  }
+}
+function ensureFingerprint(store2, nowIso, rnd = Math.random) {
+  const had = loadFingerprint(store2);
+  if (had) return had;
+  const fp = newFingerprint(rnd);
+  store2.setState(STATE_FINGERPRINT, JSON.stringify(fp), nowIso);
+  return fp;
+}
+function getTn(obj) {
+  const out = [];
+  for (const key of Object.keys(obj).sort()) {
+    const v = obj[key];
+    if (typeof v === "number") {
+      out.push(String(Number.isInteger(v) ? v * 1e4 : Math.floor(v * 1e4)));
+    } else if (typeof v === "object" && v !== null) {
+      out.push(getTn(v));
+    } else {
+      out.push(String(v));
+    }
+  }
+  return out.join("");
+}
+function buildSmid(d, uid) {
+  const p = (n, w) => String(n).padStart(w, "0");
+  const timeStr = p(d.getFullYear(), 4) + p(d.getMonth() + 1, 2) + p(d.getDate(), 2) + p(d.getHours(), 2) + p(d.getMinutes(), 2) + p(d.getSeconds(), 2);
+  const v = `${timeStr}${md5Hex(uid)}00`;
+  return `${v}${md5Hex(`smsk_web_${v}`).slice(0, 14)}0`;
+}
+function buildSmBody(fp, box, now, rnd = Math.random) {
+  const level = Math.round(rnd() * 100) / 100;
+  const body = {
+    protocol: 4,
+    organization: SKLAND_SM_CONFIG.organization,
+    appId: SKLAND_SM_CONFIG.appId,
+    os: "web",
+    version: "3.0.0",
+    sdkver: "3.0.0",
+    box,
+    rtype: "all",
+    smid: buildSmid(now, uuidV4()),
+    subVersion: "1.0.0",
+    time: 7,
+    platform: fp.platform,
+    clientSize: `0_0_0_0_${fp.screenWidth}_${fp.screenHeight}_${fp.screenWidth}_${fp.screenHeight}`,
+    res: `${fp.screenWidth}_${fp.screenHeight}_${fp.dpr}_2`,
+    status: "0010",
+    timezone: -480,
+    vpw: uuidV4(),
+    svm: now.getTime(),
+    trees: uuidV4(),
+    pmf: now.getTime(),
+    cdp: 0,
+    maxTouchPoints: fp.maxTouchPoints,
+    connectionRtt: fp.connectionRtt,
+    cpucount: fp.cpucount,
+    battery: { charging: pick([0, 1], rnd), level },
+    canvas: fp.canvas,
+    plugins: SMID_PLUGINS,
+    referer: "",
+    ua: SMID_UA,
+    url: SMID_PAGE_URL,
+    tn: ""
+  };
+  body.tn = md5Hex(getTn(body));
+  return body;
+}
+function encryptByDesRules(obj, rules = DES_RULE) {
+  const out = {};
+  for (const [key, value] of Object.entries(obj)) {
+    const rule = rules[key];
+    if (!rule) {
+      out[key] = value;
+      continue;
+    }
+    if (rule.is_encrypt === 1) {
+      out[rule.obfuscated_name] = desEncryptBase64(String(value), rule.key ?? "");
+    } else {
+      out[rule.obfuscated_name] = value;
+    }
+  }
+  return out;
+}
+function encryptSmBody(body, priId, rules = DES_RULE) {
+  const gz = gzipWithOs19Base64(utf8(JSON.stringify(encryptByDesRules(body, rules))));
+  return aesEncryptCompatHex(priId, gz);
+}
+function smidUploadRequest(fp, box, now, rnd = Math.random, base) {
+  const uid = uuidV4();
+  const priId = md5Hex(uid).slice(0, 16);
+  const ep = rsaEncryptBase64(
+    SKLAND_SM_CONFIG.publicKey,
+    utf8(uid),
+    (n) => {
+      const b = new Uint8Array(n);
+      for (let i = 0; i < n; i += 1) b[i] = Math.floor(rnd() * 256) & 255;
+      return b;
+    }
+  );
+  const data = encryptSmBody(buildSmBody(fp, box, now, rnd), priId);
+  return {
+    // ⚠ `base` 覆盖**必须**有：这台主机是第三方（cmpassport 风控），
+    // 而"CI 全程只打 mock"是本仓的硬规则。少了这个口子，E2E 会真去打那个域 ——
+    // 那不是"测试不严"，是**把 CI 变成对外发流量**。
+    url: `${rootOrDefault(base, SMID_HOST)}${SMID_PATH}`,
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      origin: SMID_ORIGIN,
+      referer: SMID_REFERER,
+      "user-agent": SMID_UA
+    },
+    body: JSON.stringify({
+      appId: SKLAND_SM_CONFIG.appId,
+      organization: SKLAND_SM_CONFIG.organization,
+      ep,
+      data,
+      os: "web",
+      encode: 5,
+      compress: 2
+    })
+  };
+}
+function parseDeviceId(body) {
+  let v;
+  try {
+    v = JSON.parse(body);
+  } catch (e) {
+    return { ok: false, error: `smid 响应不是 JSON：${e instanceof Error ? e.message : String(e)}` };
+  }
+  if (v.code !== SMID_OK_CODE) {
+    return { ok: false, error: `smid 上报失败：code=${String(v.code ?? "?")}（期望 ${SMID_OK_CODE}）` };
+  }
+  const detail = v.detail;
+  const raw = detail && typeof detail === "object" ? detail.deviceId : void 0;
+  if (typeof raw !== "string" || raw === "") {
+    return { ok: false, error: "smid 响应没有 detail.deviceId" };
+  }
+  return { ok: true, deviceId: DEVICE_ID_PREFIX + raw };
+}
+
+// src/mcloud/h5session.ts
+var BASE_USER_YUN = "https://user-njs.yun.139.com";
+var BASE_MCLOUD = "https://m.mcloud.139.com";
+var H5_SALT_KEY = 2;
+var H5_CONTENT_TYPE = "application/json;charset=UTF-8";
+var H5_APP_VERSION2 = "12.6.0.0";
+var SPEC_TOKEN_PATH = "/user/querySpecTokenV2";
+var TIMESTAMP_PATH = "/ycloud/api/timestamp";
+var TYRZ_LOGIN_PATH = "/ycloud/auth-service/auth/tyrzLogin";
+var SIGN_IN_RECIPE = {
+  toSourceId: "001005",
+  marketName: "sign_in_3",
+  sourceId: "1002",
+  h5AppId: "cy62d5a5e8373a272aeca467accad61722c51cfd48",
+  pagePath: "newsignin",
+  portalPage: "mobilecloud",
+  targetSourceId: "001005"
+};
+var MSG_PUSH_ON_RECIPE = {
+  toSourceId: "001005",
+  marketName: "msgpushon",
+  sourceId: "1062",
+  h5AppId: void 0,
+  pagePath: "openNoticeGift",
+  portalPage: "hcyview",
+  targetSourceId: void 0
+};
+var FALLBACK_RECIPE = "sign-in";
+function recipeParams(recipe) {
+  return recipe === "msg-push-on" ? MSG_PUSH_ON_RECIPE : SIGN_IN_RECIPE;
+}
+function pageUrl(p, ssoToken) {
+  let url = `${BASE_MCLOUD}/portal/${p.portalPage}/index.html?path=${p.pagePath}&sourceid=${p.sourceId}`;
+  if (p.h5AppId !== void 0) url += `&enableShare=1&appID=${p.h5AppId}`;
+  url += `&token=${ssoToken}`;
+  if (p.targetSourceId !== void 0) url += `&targetSourceId=${p.targetSourceId}`;
+  if (p.h5AppId === void 0) url += "&enableShare=1";
+  return url;
+}
+function h5Headers(params, referer, jwt, showLoading) {
+  const h = {
+    Accept: "*/*",
+    activityid: params.marketName,
+    appversion: H5_APP_VERSION2,
+    Referer: referer,
+    showloading: showLoading
+  };
+  if (jwt !== void 0) h.jwttoken = jwt;
+  return h;
+}
+function specTokenRequest(params, authorization, base) {
+  return {
+    url: `${rootOrDefault(base, BASE_USER_YUN)}${SPEC_TOKEN_PATH}`,
+    method: "POST",
+    headers: { "Content-Type": H5_CONTENT_TYPE, Authorization: authorization },
+    body: JSON.stringify({ toSourceId: params.toSourceId })
+  };
+}
+function timestampRequest(params, referer, base) {
+  return {
+    url: `${rootOrDefault(base, BASE_MCLOUD)}${TIMESTAMP_PATH}`,
+    method: "GET",
+    headers: h5Headers(params, referer, void 0, "true"),
+    body: void 0
+  };
+}
+function tyrzLoginRequest(params, ssoToken, sign, referer, base) {
+  const body = JSON.stringify({
+    marketName: params.marketName,
+    openAccount: 0,
+    sourceId: params.sourceId,
+    token: ssoToken
+  });
+  return {
+    url: `${rootOrDefault(base, BASE_MCLOUD)}${TYRZ_LOGIN_PATH}`,
+    method: "POST",
+    headers: {
+      ...h5Headers(params, referer, void 0, "true"),
+      Origin: BASE_MCLOUD,
+      "x-request-id": sign["x-request-id"],
+      "x-timestamp": sign["x-timestamp"],
+      "x-nonce": sign["x-nonce"],
+      "x-signature": sign["x-signature"]
+    },
+    body
+  };
+}
+function makeSign(serverTimestamp) {
+  return signHeadersWith(uuidV4(), nonce(), serverTimestamp, H5_SALT_KEY, "");
+}
+function parseSsoToken(body) {
+  let v;
+  try {
+    v = JSON.parse(body);
+  } catch (e) {
+    return { ok: false, error: `querySpecTokenV2 响应不是 JSON：${e instanceof Error ? e.message : String(e)}` };
+  }
+  if (v.success !== true) {
+    return {
+      ok: false,
+      error: `querySpecTokenV2 失败：code=${String(v.code ?? "?")} message=${String(v.message ?? "")}`
+    };
+  }
+  const data = v.data;
+  const token = data && typeof data === "object" ? data.token : void 0;
+  if (typeof token !== "string" || token === "") {
+    return { ok: false, error: "querySpecTokenV2 响应没有 data.token" };
+  }
+  return { ok: true, value: token };
+}
+function parseServerTimestamp(body) {
+  let v;
+  try {
+    v = JSON.parse(body);
+  } catch (e) {
+    return { ok: false, error: `api/timestamp 响应不是 JSON：${e instanceof Error ? e.message : String(e)}` };
+  }
+  const r = v.result;
+  if (typeof r === "number" && Number.isFinite(r)) return { ok: true, value: String(r) };
+  if (typeof r === "string" && r !== "") return { ok: true, value: r };
+  if (r === void 0) return { ok: false, error: "api/timestamp 响应没有 result" };
+  return { ok: false, error: `api/timestamp 的 result 不是整数：${JSON.stringify(r)}` };
+}
+function parseJwtToken(body) {
+  let v;
+  try {
+    v = JSON.parse(body);
+  } catch (e) {
+    return { ok: false, error: `tyrzLogin 响应不是 JSON：${e instanceof Error ? e.message : String(e)}` };
+  }
+  const code = v.code;
+  let codeOk;
+  if (typeof code === "number") codeOk = code === 0;
+  else if (typeof code === "string") codeOk = code === "0" || code === "0000";
+  else if (code === null || code === void 0) codeOk = v.success === true;
+  else return { ok: false, error: `tyrzLogin 的 code 类型意外：${JSON.stringify(code)}` };
+  if (!codeOk) {
+    const msg = typeof v.msg === "string" ? v.msg : typeof v.message === "string" ? v.message : "(无消息)";
+    return { ok: false, error: `tyrzLogin 失败：code=${JSON.stringify(code ?? null)} msg=${msg}` };
+  }
+  const result = v.result;
+  if (!result || typeof result !== "object") return { ok: false, error: "tyrzLogin 响应没有 result" };
+  const r = result;
+  if (typeof r.token !== "string" || r.token === "") {
+    return { ok: false, error: "tyrzLogin 响应没有 result.token" };
+  }
+  return {
+    ok: true,
+    // `mobile` 可能缺失 —— 它是"确认签的是哪个账号"的回显，不是凭据的一部分，
+    // 缺了不该让整次登录失败
+    value: { jwt: r.token, mobile: typeof r.mobile === "string" ? r.mobile : void 0 }
+  };
+}
+function normalizeAuthorization(raw) {
+  const v = raw.trim();
+  if (v === "") return { ok: false, error: "凭据是空的" };
+  if (/^(basic|bearer)\s/i.test(v)) return { ok: true, value: v };
+  if (/\s/.test(v)) {
+    return {
+      ok: false,
+      error: '这个值里有空格但又不是 Basic/Bearer 开头 —— 像是抄断了。正确形状是 `Basic base64("mobile:手机号:token")`（整串一个空格）'
+    };
+  }
+  return { ok: true, value: `Basic ${v}` };
+}
+function authFingerprint(sha256hex) {
+  return sha256hex.slice(0, 16);
+}
 
 // src/mcloud/sessionExchange.ts
 var STATE_AUTH = "mcloud.h5.auth";
 function loadAuthRaw(store2) {
+  const scopedId = scopedAccountOf(store2);
+  if (scopedId !== void 0) {
+    const one = loadAccounts(store2).find((a) => a.id === scopedId);
+    if (one !== void 0) return one.auth;
+  }
   const cur = currentAccount(store2);
   if (cur !== void 0) return cur.auth;
   return store2.getState(STATE_AUTH) ?? "";
 }
+var STATE_EXCHANGE = "mcloud.h5.exchange";
+var STATE_JWT = "mcloud.h5.jwt";
+var STATE_DEVICE_ID = "mcloud.smid.deviceId";
 var JWT_TTL_MS = 100 * 60 * 1e3;
+function parse(raw) {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+function scopedKey(base, store2, recipe) {
+  const acct = scopedAccountOf(store2) ?? currentAccount(store2)?.id;
+  if (acct === void 0 && recipe === FALLBACK_RECIPE) return base;
+  return `${base}.${acct ?? "default"}.${recipe}`;
+}
+function jwtUserDomainId(jwt) {
+  const parts = jwt.split(".");
+  if (parts.length < 2) return null;
+  let payload;
+  try {
+    const b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const padded = b64 + "=".repeat((4 - b64.length % 4) % 4);
+    payload = JSON.parse(fromUtf8(fromBase64(padded)));
+  } catch {
+    return null;
+  }
+  const top = payload["userDomainId"];
+  if (typeof top === "string" && top !== "") return top;
+  const sub = payload["sub"];
+  if (typeof sub === "string" && sub.trim().startsWith("{")) {
+    try {
+      const inner = JSON.parse(sub);
+      const v = inner["userDomainId"];
+      if (typeof v === "string" && v !== "") return v;
+    } catch {
+    }
+  }
+  return null;
+}
+function backfillDomainFromJwt(store2, jwt, nowIso) {
+  const cur = currentAccount(store2);
+  if (cur === void 0 || (cur.userDomainId ?? "") !== "") return null;
+  const dom = jwtUserDomainId(jwt);
+  if (dom === null) return null;
+  setAccountDomain(store2, cur.id, dom, nowIso);
+  return dom;
+}
+function jwtKey(store2, recipe = FALLBACK_RECIPE) {
+  return scopedKey(STATE_JWT, store2, recipe);
+}
+function exchangeKey(store2, recipe = FALLBACK_RECIPE) {
+  return scopedKey(STATE_EXCHANGE, store2, recipe);
+}
+function loadExchange(store2, recipe = FALLBACK_RECIPE) {
+  return parse(store2.getState(exchangeKey(store2, recipe)));
+}
+function loadJwt(store2, recipe = FALLBACK_RECIPE) {
+  return parse(store2.getState(jwtKey(store2, recipe)));
+}
+function jwtFresh(store2, nowMs, recipe = FALLBACK_RECIPE) {
+  const r = loadJwt(store2, recipe);
+  if (!r) return false;
+  const at = Date.parse(r.at);
+  return Number.isFinite(at) && nowMs - at < JWT_TTL_MS;
+}
+function startExchange(store2, raw, nowIso, recipe = FALLBACK_RECIPE) {
+  const norm = normalizeAuthorization(raw);
+  if (!norm.ok || norm.value === void 0) return { ok: false, error: norm.error };
+  const fingerprint = authFingerprint(sha256Hex(norm.value));
+  store2.setState(STATE_AUTH, norm.value, nowIso);
+  store2.setState(exchangeKey(store2, recipe), JSON.stringify({
+    step: "spec-token",
+    recipe,
+    fingerprint,
+    startedAt: nowIso
+  }), nowIso);
+  return { ok: true, fingerprint };
+}
+function runExchangeStep(deps, recipe = FALLBACK_RECIPE) {
+  const st = loadExchange(deps.store, recipe);
+  const auth = loadAuthRaw(deps.store) || null;
+  if (!st || st.step === "done" || !auth) {
+    return { ok: true, note: "今天不用换票", done: true };
+  }
+  const rp = recipeParams(st.recipe ?? recipe);
+  const finish = (s, ok, note) => {
+    s.step = "done";
+    s.finishedAt = deps.nowIso;
+    s.ok = ok;
+    s.note = note;
+    delete s.ssoToken;
+    delete s.ts;
+    deps.store.setState(exchangeKey(deps.store, recipe), JSON.stringify(s), deps.nowIso);
+    return { ok, note, done: true };
+  };
+  if (st.step === "smid") {
+    const fp = ensureFingerprint(deps.store, deps.nowIso);
+    const req = smidUploadRequest(
+      fp,
+      deps.store.getState(STATE_DEVICE_ID) ?? "",
+      new Date(deps.nowIso),
+      Math.random,
+      deps.baseUrl
+    );
+    const res2 = callRawText(deps.transport, req);
+    if (!res2.ok) return failStep(deps, st, `④ 换 deviceId 失败：${res2.error ?? "未知失败"}`);
+    const got = parseDeviceId(res2.text);
+    if (!got.ok || got.deviceId === void 0) return failStep(deps, st, `④ ${got.error}`);
+    deps.store.setState(STATE_DEVICE_ID, got.deviceId, deps.nowIso);
+    const cur = loadSession(deps.store);
+    saveSession(
+      deps.store,
+      {
+        cookie: cur?.cookie ?? "",
+        jwt: cur?.jwt ?? "",
+        deviceId: got.deviceId,
+        userAgent: cur?.userAgent,
+        savedAt: ""
+      },
+      deps.nowIso
+    );
+    return finish(st, true, `④ 换到 deviceId（${got.deviceId.length} 字符，B 开头）—— 领取类接口现在能用了`);
+  }
+  if (st.step === "spec-token") {
+    const res2 = callRawText(deps.transport, specTokenRequest(rp, auth, deps.baseUrl));
+    if (!res2.ok) return failStep(deps, st, `① 换 SSO token 失败：${res2.error ?? "未知失败"}`);
+    const p2 = parseSsoToken(res2.text);
+    if (!p2.ok || p2.value === void 0) return failStep(deps, st, `① ${p2.error}`);
+    st.ssoToken = p2.value;
+    st.referer = pageUrl(rp, p2.value);
+    st.step = "timestamp";
+    deps.store.setState(exchangeKey(deps.store, recipe), JSON.stringify(st), deps.nowIso);
+    return { ok: true, note: "① 换到 SSO token（**不缓存**，下一步立刻用）", done: false };
+  }
+  if (st.step === "timestamp") {
+    const res2 = callRawText(deps.transport, timestampRequest(rp, st.referer ?? "", deps.baseUrl));
+    if (!res2.ok) return failStep(deps, st, `② 取时间戳失败：${res2.error ?? "未知失败"}`);
+    const p2 = parseServerTimestamp(res2.text);
+    if (!p2.ok || p2.value === void 0) return failStep(deps, st, `② ${p2.error}`);
+    st.ssoToken = st.ssoToken ?? "";
+    st.ts = p2.value;
+    st.step = "tyrz-login";
+    deps.store.setState(exchangeKey(deps.store, recipe), JSON.stringify(st), deps.nowIso);
+    return { ok: true, note: `② 服务端时间戳 ${p2.value}（**必须用它**，本地时钟偏一点就是 401）`, done: false };
+  }
+  const ts = st.ts;
+  if (ts === void 0 || !st.ssoToken) {
+    return finish(st, false, "③ 前置状态丢了（SSO token 或时间戳）—— SSO token 不缓存，得从头再来");
+  }
+  const res = callRawText(
+    deps.transport,
+    tyrzLoginRequest(rp, st.ssoToken, makeSign(ts), st.referer ?? "", deps.baseUrl)
+  );
+  if (!res.ok) return failStep(deps, st, `③ 换 jwttoken 失败：${res.error ?? "未知失败"}`);
+  const p = parseJwtToken(res.text);
+  if (!p.ok || p.value === void 0) return failStep(deps, st, `③ ${p.error}`);
+  const rec = {
+    at: deps.nowIso,
+    jwt: p.value.jwt,
+    referer: st.referer ?? "",
+    mobile: p.value.mobile,
+    fingerprint: st.fingerprint
+  };
+  deps.store.setState(jwtKey(deps.store, recipe), JSON.stringify(rec), deps.nowIso);
+  backfillDomainFromJwt(deps.store, p.value.jwt, deps.nowIso);
+  const sess = loadSession(deps.store);
+  const needDevice = (sess?.deviceId ?? "") === "";
+  if (needDevice) {
+    saveSession(
+      deps.store,
+      {
+        cookie: sess?.cookie ?? "",
+        jwt: p.value.jwt,
+        deviceId: sess?.deviceId,
+        userAgent: sess?.userAgent,
+        savedAt: ""
+      },
+      deps.nowIso
+    );
+    st.step = "smid";
+    deps.store.setState(exchangeKey(deps.store, recipe), JSON.stringify(st), deps.nowIso);
+    return {
+      ok: true,
+      note: `③ 换到 jwttoken（${p.value.jwt.length} 字符）—— 再走一步换 \`deviceId\`（领取类接口要它）`,
+      done: false
+    };
+  }
+  saveSession(
+    deps.store,
+    {
+      cookie: sess?.cookie ?? "",
+      jwt: p.value.jwt,
+      deviceId: sess?.deviceId,
+      userAgent: sess?.userAgent,
+      savedAt: ""
+    },
+    deps.nowIso
+  );
+  return finish(
+    st,
+    true,
+    `③ 换到 jwttoken（${p.value.jwt.length} 字符${p.value.mobile ? `，回显 ${maskMobile(p.value.mobile)}` : ""}）—— 约 ${Math.round(JWT_TTL_MS / 6e4)} 分钟后该续` + // ⚠ 主动说出"缺 deviceId"：不说的话，用户第一次用 `receive` 会看到
+    // 「活动太火爆啦」，然后以为过会儿就好 —— 而它其实永远不会好（是参数问题）。
+    ((sess?.deviceId ?? "") === "" && (loadSession(deps.store)?.deviceId ?? "") === "" ? "。⚠ 这份会话**没有 `deviceId`**：领取类接口（receive）会回 615，而它的文案是「活动太火爆啦」—— 那不是在限流，是缺参数。要修：在会话 JSON 里带上 `deviceId`（H5 那一份是 `B` + 88 字符 base64）" : "")
+  );
+}
+function failStep(deps, st, note) {
+  st.step = "done";
+  st.finishedAt = deps.nowIso;
+  st.ok = false;
+  st.note = note;
+  delete st.ssoToken;
+  delete st.ts;
+  deps.store.setState(exchangeKey(deps.store, st.recipe ?? FALLBACK_RECIPE), JSON.stringify(st), deps.nowIso);
+  return { ok: false, note, done: true };
+}
 var RETRY_AFTER_MS = 30 * 60 * 1e3;
+function maskMobile(m) {
+  return m.length >= 7 ? `${m.slice(0, 3)}****${m.slice(-4)}` : "***";
+}
 
 // src/mcloud/runLog.ts
 var RUN_LOG_KEY = "mcloud.run.log";
@@ -1121,7 +3123,10 @@ function cleanStep(s) {
     name: clip(s.name, 60),
     ok: s.ok === true,
     note: clip(s.note),
-    idle: s.idle === true
+    idle: s.idle === true,
+    // ⚠ 这个标记要跟着走：界面靠它把"内部管道"（换票之类）成功时藏起来。
+    //   漏掉的话，界面上会冒出「换票（签到族）：没有待换票的任务」这种话。
+    ...s.plumb === true ? { plumb: true } : {}
   };
 }
 function readRuns(store2) {
@@ -1139,11 +3144,14 @@ function readRuns(store2) {
 }
 function appendRun(store2, rec) {
   const steps = rec.steps.slice(0, MAX_STEPS).map(cleanStep);
-  const id = `${rec.task}-${Date.parse(rec.at) || 0}`;
+  const tail = rec.acct === void 0 || rec.acct === "" ? "" : `-${rec.acct}`;
+  const id = `${rec.task}-${Date.parse(rec.at) || 0}${tail}`;
   const all = readRuns(store2);
   const next = {
     id,
     task: rec.task,
+    ...rec.acct === void 0 ? {} : { acct: rec.acct },
+    ...rec.who === void 0 ? {} : { who: rec.who },
     at: rec.at,
     ms: Math.max(0, Math.round(rec.ms)),
     ok: rec.ok === true,
@@ -1169,7 +3177,48 @@ function appendRun(store2, rec) {
   return id;
 }
 
+// src/mcloud/session.ts
+function jwtExpiryOf(raw, nowIso) {
+  const parts = raw.split(".");
+  if (parts.length < 2) return null;
+  let payload;
+  try {
+    payload = fromUtf8(fromBase64(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
+  } catch {
+    return null;
+  }
+  let exp;
+  try {
+    exp = JSON.parse(payload).exp;
+  } catch {
+    return null;
+  }
+  if (typeof exp !== "number" || !Number.isFinite(exp)) return null;
+  const atMs = exp * 1e3;
+  const now = Date.parse(nowIso);
+  return {
+    atIso: new Date(atMs).toISOString(),
+    // `now` 坏了就当没过期（宁可不吓人）
+    expired: Number.isNaN(now) ? false : now >= atMs
+  };
+}
+function jwtExpiry(store2, nowIso) {
+  return jwtExpiryOf(loadSession(store2)?.jwt ?? "", nowIso);
+}
+var STATE_BASE_URL = "mcloud.base_url";
+function loadBaseUrl(store2) {
+  const v = store2.getState(STATE_BASE_URL);
+  if (!v) return "";
+  const t = v.trim();
+  if (!/^https?:\/\//.test(t)) return "";
+  return t.replace(/\/+$/, "");
+}
+
 // src/mcloud/tasks/base.ts
+function hostBase(deps, fallback) {
+  const b = (deps.baseUrl ?? "").trim();
+  return b === "" ? fallback : b.replace(/\/+$/, "");
+}
 function depsNowMs(deps) {
   return (deps.nowMs ?? Date.now)();
 }
@@ -1187,15 +3236,15 @@ function runTask(deps, spec, judge) {
   const late = deps.lateMs ?? 0;
   if (spec.skipIfLaterThanMs !== void 0 && late > spec.skipIfLaterThanMs) {
     const mins = Math.round(late / 6e4);
-    const note = `错过太久（晚了 ${mins} 分钟，阈值 ${Math.round(spec.skipIfLaterThanMs / 6e4)} 分钟）→ 主动跳过`;
-    recordError(deps.store, spec.task, note, deps.nowIso);
-    return { ok: true, skipped: true, note };
+    const note2 = `错过太久（晚了 ${mins} 分钟，阈值 ${Math.round(spec.skipIfLaterThanMs / 6e4)} 分钟）→ 主动跳过`;
+    recordError(deps.store, spec.task, note2, deps.nowIso);
+    return { ok: true, skipped: true, note: note2 };
   }
   const session = loadSession(deps.store);
   if (!session) {
-    const note = "未登录：state 里没有会话（见 docs/howto-session.md）";
-    recordError(deps.store, spec.task, note, deps.nowIso);
-    return { ok: false, note };
+    const note2 = "还没有网页会话 —— 上面「换票」那一步说了原因";
+    recordError(deps.store, spec.task, note2, deps.nowIso);
+    return { ok: false, note: note2 };
   }
   const method = spec.method ?? EP_METHOD[spec.endpoint] ?? "GET";
   const url = resolveUrl(spec.endpoint, deps.baseUrl) + (spec.query ? `?${spec.query}` : "");
@@ -1225,10 +3274,23 @@ function runTask(deps, spec, judge) {
       recordError(deps.store, spec.task, explained, deps.nowIso);
       return { ok: false, note: explained };
     }
-    const note = res.error ?? "未知失败";
+    var note = res.error ?? "未知失败";
+    if (res.env?.code === 90001) {
+      const exp = jwtExpiry(deps.store, deps.nowIso);
+      const clock = (iso) => {
+        const d = new Date(iso);
+        if (Number.isNaN(d.getTime())) return "刚才";
+        return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+      };
+      note = exp !== null && exp.expired ? `凭据过期了（今天 ${clock(exp.atIso)} 就到期）—— 去「账号」页重新导入会话` : "这一环要的票没被认（不是账号被踢）—— 重新导入会话最快";
+    }
     if (spec.okWhenError?.(note)) {
       clearError(deps.store, spec.task, deps.nowIso);
-      return { ok: true, note: `上游说「${note}」—— 按"已经完成"处理（见 okWhenError）` };
+      const plain = note.replace(
+        /^code=(-?\d+)(?: msg=(.*))?$/,
+        (_m, _c, msg) => msg === void 0 || msg.trim() === "" ? "" : msg.trim()
+      );
+      return { ok: true, note: plain === "" ? "已经做过了" : `已经做过了（服务端说：${plain}）` };
     }
     recordError(deps.store, spec.task, note, deps.nowIso);
     return { ok: false, note };
@@ -1858,7 +3920,12 @@ function verdictOf(p) {
   if (p.monthLimit !== void 0 && p.received !== void 0 && p.received >= p.monthLimit) {
     return "month-limit";
   }
-  if (p.limit === void 0) return "unknown";
+  if (p.limit === void 0) return "limit-missing";
+  if (p.limit === LIMIT_AVAILABLE) {
+    if (p.minRemainderCount === 0) return "min-remainder-zero";
+    if (p.count !== void 0 && p.count <= 0) return "sold-out";
+    if (p.dailyRemainderCount !== void 0 && p.dailyRemainderCount <= 0) return "daily-empty";
+  }
   switch (p.limit) {
     case LIMIT_AVAILABLE:
       return "ok";
@@ -1913,6 +3980,8 @@ function parsePrize(raw) {
     count: asInt(o.count),
     totalCount: asInt(o.totalCount ?? o.total_count),
     dailyRemainderCount: asInt(o.dailyRemainderCount ?? o.daily_remainder_count),
+    dailyCount: asInt(o.dailyCount ?? o.daily_count),
+    minRemainderCount: asInt(o.minRemainderCount ?? o.min_remainder_count),
     onLine: asInt(o.onLine ?? o.on_line),
     startTime: asStr(o.startTime ?? o.start_time),
     endTime: asStr(o.endTime ?? o.end_time)
@@ -1965,6 +4034,7 @@ function runExchangeList(deps) {
       const s = summarizeList(prizes);
       const reading = { at: deps.nowIso, groups: groups.length, ...s };
       deps.store.setState(STATE_LIST, JSON.stringify(reading), deps.nowIso);
+      savePickCache(deps.store, prizes, deps.nowIso);
       const names = s.ok.slice(0, 3).map(
         (x) => x.price === void 0 ? x.name ?? "#" + x.prizeId : `${x.name ?? "#" + x.prizeId}(${x.price}豆)`
       );
@@ -1975,6 +4045,34 @@ function runExchangeList(deps) {
       };
     }
   );
+}
+var STATE_PICK = "mcloud.exchangelist.pick";
+function toPickItems(prizes) {
+  const out = [];
+  for (const p of prizes) {
+    const name = p.name?.trim();
+    if (name === void 0 || name === "") continue;
+    const item = { name, verdict: verdictOf(p) };
+    if (p.prizeId !== void 0) item.id = p.prizeId;
+    if (p.groupId !== void 0) item.groupId = p.groupId;
+    if (p.price !== void 0) item.price = p.price;
+    if (p.dailyRemainderCount !== void 0) item.remain = p.dailyRemainderCount;
+    if (p.count !== void 0) item.count = p.count;
+    if (p.totalCount !== void 0) item.totalCount = p.totalCount;
+    if (p.dailyRemainderCount !== void 0) item.dailyRemainderCount = p.dailyRemainderCount;
+    if (p.dailyCount !== void 0) item.dailyCount = p.dailyCount;
+    if (p.minRemainderCount !== void 0) item.minRemainderCount = p.minRemainderCount;
+    if (p.startTime !== void 0) item.startTime = p.startTime;
+    if (p.endTime !== void 0) item.endTime = p.endTime;
+    if (p.monthLimit !== void 0) item.monthLimit = p.monthLimit;
+    if (p.received !== void 0) item.received = p.received;
+    out.push(item);
+  }
+  return out;
+}
+function savePickCache(store2, prizes, nowIso) {
+  const cache = { date: nowIso.slice(0, 10), items: toPickItems(prizes) };
+  store2.setState(STATE_PICK, JSON.stringify(cache), nowIso);
 }
 
 // src/mcloud/tasks/exchangeOrder.ts
@@ -2127,7 +4225,7 @@ function runOrderStep(deps) {
     const res = callRawText(
       deps.transport,
       signedReq(deps, {
-        url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/signin/page/exchangeList?client=app&clientVersion=${encodeURIComponent(EXCHANGE_CLIENT_VERSION)}`,
+        url: `${hostBase(deps, MCLOUD_HOST)}/ycloud/signin/page/exchangeList?client=app&clientVersion=${encodeURIComponent(EXCHANGE_CLIENT_VERSION)}`,
         method: "GET"
       })
     );
@@ -2146,7 +4244,7 @@ function runOrderStep(deps) {
   if (step === "balance") {
     const res = callRawText(
       deps.transport,
-      signedReq(deps, { url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/signin/page/infoV3?client=app`, method: "GET" })
+      signedReq(deps, { url: `${hostBase(deps, MCLOUD_HOST)}/ycloud/signin/page/infoV3?client=app`, method: "GET" })
     );
     if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? "未知失败"}` };
     let balance;
@@ -2181,24 +4279,24 @@ function runOrderStep(deps) {
     const res = callRawText(
       deps.transport,
       signedReq(deps, {
-        url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/visitlog/journaling?module=uservisit&optkeyword=${encodeURIComponent(keyword)}&sourceid=1002&marketName=${encodeURIComponent(VISIT_LOG_MARKET_NAME)}`,
+        url: `${hostBase(deps, MCLOUD_HOST)}/ycloud/visitlog/journaling?module=uservisit&optkeyword=${encodeURIComponent(keyword)}&sourceid=1002&marketName=${encodeURIComponent(VISIT_LOG_MARKET_NAME)}`,
         method: "POST",
         body: ""
       })
     );
-    const warn3 = res.ok ? "" : `（埋点失败但不挡路：${res.error ?? "未知"}）`;
+    const warn4 = res.ok ? "" : `（埋点失败但不挡路：${res.error ?? "未知"}）`;
     if (step === "warm-1") {
       saveState(deps, { ...st, step: "warm-2" });
-      return { ok: true, note: `${label}：${keyword}${warn3} —— 下一步第二枪（中间那 500ms 由面板的下一次触发承担）` };
+      return { ok: true, note: `${label}：${keyword}${warn4} —— 下一步第二枪（中间那 500ms 由面板的下一次触发承担）` };
     }
     saveState(deps, { ...st, step: "slide" });
-    return { ok: true, note: `${label}：${keyword}${warn3} —— 下一步取滑块题面` };
+    return { ok: true, note: `${label}：${keyword}${warn4} —— 下一步取滑块题面` };
   }
   if (step === "slide") {
     const res = callRawText(
       deps.transport,
       signedReq(deps, {
-        url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/auth-service/slide/getSlide`,
+        url: `${hostBase(deps, MCLOUD_HOST)}/ycloud/auth-service/slide/getSlide`,
         method: "POST",
         // ⚠ 这一条用 **form** content-type（不是 JSON）—— 逐接口的，不是一刀切
         contentType: SLIDE_FORM_CONTENT_TYPE,
@@ -2261,7 +4359,7 @@ function runOrderStep(deps) {
     if (st.offset === void 0) return done("内部状态缺 offset，这一单作废（不发一个没算出来的数）", false);
     const body = `{"prizeId":${plan.prizeId},"client":"app","clientVersion":"${EXCHANGE_CLIENT_VERSION}","puzzleOffset":${st.offset},"smsCode":"","deviceId":"${deviceId}"}`;
     const req = signedReq(deps, {
-      url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/signin/page/exchangeV3`,
+      url: `${hostBase(deps, MCLOUD_HOST)}/ycloud/signin/page/exchangeV3`,
       method: "POST",
       body,
       isDeviceId: true
@@ -2287,13 +4385,13 @@ function runOrderStep(deps) {
     }
     deps.store.setState(STATE_ORDERED_HOUR, hourKey(depsNowMs(deps)), deps.nowIso);
     saveState(deps, { ...st, step: "verify" });
-    return { ok: true, note: `${label}：上游回 ${JSON.stringify(env0(res.text)).slice(0, 140)} —— 下一步查余额差（**那句话不算数**）` };
+    return { ok: true, note: `${label}：服务端回 ${JSON.stringify(env0(res.text)).slice(0, 140)} —— 下一步查余额差（**那句话不算数**）` };
   }
   if (step === "verify") {
     const before = deps.store.getState(STATE_BASE);
     const res = callRawText(
       deps.transport,
-      signedReq(deps, { url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/signin/page/infoV3?client=app`, method: "GET" })
+      signedReq(deps, { url: `${hostBase(deps, MCLOUD_HOST)}/ycloud/signin/page/infoV3?client=app`, method: "GET" })
     );
     if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? "未知失败"}` };
     let after;
@@ -2308,7 +4406,7 @@ function runOrderStep(deps) {
     }
     const delta = Number(before) - after;
     if (delta > 0) return done(`${label}：✅ 成交（余额 ${before} → ${after}，扣了 ${delta} 豆）`);
-    return done(`${label}：❌ 没成交（余额 ${before} → ${after}，没扣豆）—— 上游那句话不算数，只有余额差算数`, false);
+    return done(`${label}：❌ 没成交（余额 ${before} → ${after}，没扣豆）—— 服务端那句话不算数，只有余额差算数`, false);
   }
   return { ok: false, note: `不认识的步骤「${step}」` };
 }
@@ -2368,27 +4466,52 @@ function drain(step, deps, opts) {
       return { ok: false, idle: false, steps, note: `${opts.label}：第 ${steps} 步失败 —— ${r.note}`, notes };
     }
     if (r.idle || r.skipped) {
-      return { ok: true, idle: true, steps, note: `${opts.label}：${steps} 步走完 —— ${r.note}`, notes };
+      return { ok: true, idle: true, steps, note: brief(r.note, opts.label), notes };
     }
   }
   return {
     ok: true,
     idle: false,
     steps,
-    note: `${opts.label}：走到步数上限（${opts.maxSteps} 步），下一次接着走`,
+    // ⚠ 这里**不说**"还有没做完的"。踩过的坑：领取AI豆的队列刚好在第 12 步领空，
+    //   而"到上限"和"刚好做完"从这一步看不出区别 —— 于是每一趟都说"还有没做完的"，
+    //   用户看到的是一句假话（他的原话：「领取云朵应该没有步数啊」）。
+    //   对用户只报**结论**：成了。真想看走到哪一步，运行记录里每一步都在。
+    // 同样用最后一步自己的话（跑到上限时，它刚做完的那件事就是结论），
+    // 但**截短**：这一格要进 runs 表当一行摘要，不能塞整段原话。
+    note: brief(lastNote ?? "", opts.label),
     notes
   };
+}
+var BRIEF_MAX = 40;
+function brief(s, label) {
+  const t = s.trim();
+  return t.length === 0 || t.length > BRIEF_MAX ? `${label}：好了` : t;
 }
 
 // src/store/host.ts
 import { sqlite_exec, sqlite_query } from "host-api";
+function sqlQ(sql, params) {
+  const rows = sqlite_query(sql, params);
+  if (!Array.isArray(rows)) {
+    throw new Error(`sqlite_query 失败：${rows.error ?? "未知错误"}`);
+  }
+  return rows;
+}
+function sqlX(sql, params) {
+  const r = sqlite_exec(sql, params);
+  if (typeof r?.error === "string" && r.error !== "") {
+    throw new Error(`sqlite_exec 失败：${r.error}`);
+  }
+  return { changes: Number(r?.changes ?? 0), lastInsertRowid: Number(r?.lastInsertRowid ?? 0) };
+}
 function hostStore() {
   let schemaReady = false;
   return {
     ensureSchema: () => {
       if (schemaReady) return;
-      sqlite_exec(
-        `CREATE TABLE IF NOT EXISTS runs (
+      sqlX(
+        `CREATE TABLE IF NOT EXISTS mcloud_runs (
            id           INTEGER PRIMARY KEY AUTOINCREMENT,
            task         TEXT    NOT NULL,
            runs         INTEGER NOT NULL,
@@ -2397,33 +4520,38 @@ function hostStore() {
            late_ms      INTEGER NOT NULL,
            ok           INTEGER NOT NULL,
            note         TEXT
-         )`
+         )`,
+        []
       );
-      sqlite_exec(`CREATE INDEX IF NOT EXISTS idx_runs_task_fired ON runs (task, fired_at)`);
-      sqlite_exec(
+      sqlX(
+        `CREATE INDEX IF NOT EXISTS idx_mcloud_runs_task_fired ON mcloud_runs (task, fired_at)`,
+        []
+      );
+      sqlX(
         `CREATE TABLE IF NOT EXISTS state (
            key   TEXT PRIMARY KEY,
            value TEXT NOT NULL,
            updated_at TEXT NOT NULL
-         )`
+         )`,
+        []
       );
       schemaReady = true;
     },
     getState: (key) => {
-      const rows = sqlite_query(`SELECT value FROM state WHERE key = ?1`, [key]);
+      const rows = sqlQ(`SELECT value FROM state WHERE key = ?1`, [key]);
       const row = rows[0];
       return row ? String(row.value) : null;
     },
     setState: (key, value, nowIso) => {
-      sqlite_exec(
+      sqlX(
         `INSERT INTO state (key, value, updated_at) VALUES (?1, ?2, ?3)
          ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = ?3`,
         [key, value, nowIso]
       );
     },
     recordRun: (r) => {
-      const res = sqlite_exec(
-        `INSERT INTO runs (task, runs, scheduled_at, fired_at, late_ms, ok, note)
+      const res = sqlX(
+        `INSERT INTO mcloud_runs (task, runs, scheduled_at, fired_at, late_ms, ok, note)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`,
         [r.task, r.runs, r.scheduledAt, r.firedAt, Math.round(r.lateMs), r.ok ? 1 : 0, r.note ?? null]
       );
@@ -2433,25 +4561,25 @@ function hostStore() {
     // 跑到几万次触发之后「拉回来再算」会静默丢数据 —— 那种错很难发现（数字看着还合理）。
     // 另外两点和内存实现必须同口径：**排除负延迟**（F-001）、**按值排序取分位**（不是按 id）。
     lateStats: (task, lastN = 500) => {
-      const agg = sqlite_query(
+      const agg = sqlQ(
         `SELECT COUNT(*) AS n, MAX(late_ms) AS mx FROM (
-           SELECT late_ms FROM runs WHERE task = ?1 AND late_ms >= 0 ORDER BY id DESC LIMIT ?2
+           SELECT late_ms FROM mcloud_runs WHERE task = ?1 AND late_ms >= 0 ORDER BY id DESC LIMIT ?2
          )`,
         [task, lastN]
       );
       const n = Number(agg[0]?.n ?? 0);
-      const neg = sqlite_query(
+      const neg = sqlQ(
         `SELECT COUNT(*) AS c FROM (
-           SELECT late_ms FROM runs WHERE task = ?1 ORDER BY id DESC LIMIT ?2
+           SELECT late_ms FROM mcloud_runs WHERE task = ?1 ORDER BY id DESC LIMIT ?2
          ) WHERE late_ms < 0`,
         [task, lastN]
       );
-      const pick = (q) => {
+      const pick2 = (q) => {
         if (n === 0) return 0;
         const offset = Math.min(n - 1, Math.max(0, Math.ceil(n * q) - 1));
-        const rows = sqlite_query(
+        const rows = sqlQ(
           `SELECT late_ms AS v FROM (
-             SELECT late_ms FROM runs WHERE task = ?1 AND late_ms >= 0 ORDER BY id DESC LIMIT ?2
+             SELECT late_ms FROM mcloud_runs WHERE task = ?1 AND late_ms >= 0 ORDER BY id DESC LIMIT ?2
            ) ORDER BY late_ms ASC LIMIT 1 OFFSET ?3`,
           [task, lastN, offset]
         );
@@ -2461,40 +4589,17 @@ function hostStore() {
       return {
         task,
         n,
-        lateP50: pick(0.5),
-        lateP99: pick(0.99),
+        lateP50: pick2(0.5),
+        lateP99: pick2(0.99),
         lateMax: Number(agg[0]?.mx ?? 0),
         excluded: Number(neg[0]?.c ?? 0)
       };
     },
-    recentRuns: (limit = 20) => sqlite_query(
-      `SELECT task, runs, fired_at, late_ms, ok, note FROM runs ORDER BY id DESC LIMIT ?1`,
+    recentRuns: (limit = 20) => sqlQ(
+      `SELECT task, runs, fired_at, late_ms, ok, note FROM mcloud_runs ORDER BY id DESC LIMIT ?1`,
       [Math.min(limit, 1e3)]
     )
   };
-}
-
-// src/store/scoped.ts
-var WRAPPED = Symbol.for("__mcloud_scoped_store__");
-var RAW = Symbol.for("__mcloud_raw_store__");
-function rawStoreOf(s) {
-  const raw = s[RAW];
-  return raw ?? s;
-}
-function scoped(base, acctId) {
-  if (base[WRAPPED] === true) {
-    throw new Error(
-      "store 已经被 scoped() 包过一次了 —— 双重包装会让 `mcloud.acct.*` 也去查登记表然后抛错。"
-    );
-  }
-  const wrapped = {
-    ...base,
-    getState: (key) => routeGet(base, key, acctId),
-    setState: (key, value, nowIso) => routeSet(base, key, value, nowIso, acctId)
-  };
-  Object.defineProperty(wrapped, WRAPPED, { value: true, enumerable: false });
-  Object.defineProperty(wrapped, RAW, { value: base, enumerable: false });
-  return wrapped;
 }
 
 // src/mcloud/taskAccounts.ts
@@ -2524,16 +4629,6 @@ function resolveTaskAccounts(store2, task) {
 function labelOf(store2, acctId) {
   const a = loadAccounts(store2).find((x) => x.id === acctId);
   return a?.label || a?.id || acctId;
-}
-
-// src/mcloud/session.ts
-var STATE_BASE_URL = "mcloud.base_url";
-function loadBaseUrl(store2) {
-  const v = store2.getState(STATE_BASE_URL);
-  if (!v) return "";
-  const t = v.trim();
-  if (!/^https?:\/\//.test(t)) return "";
-  return t.replace(/\/+$/, "");
 }
 
 // src/entries/shared.ts
@@ -2577,19 +4672,144 @@ function taskDeps(store2, transport2, payload) {
   };
 }
 
+// src/mcloud/log.ts
+import { error, log as log2, warn as warn2 } from "host-api";
+
+// src/mcloud/logRing.ts
+var RING_KEY = "mcloud.log.ring";
+var RING_MAX = 400;
+function parse2(raw) {
+  if (raw === "") return [];
+  try {
+    const v = JSON.parse(raw);
+    if (!Array.isArray(v)) return [];
+    return v.filter(
+      (x) => typeof x === "object" && x !== null && typeof x.m === "string"
+    );
+  } catch {
+    return [];
+  }
+}
+function appendRing(store2, nowIso, level, msg) {
+  const all = parse2(store2.getState(RING_KEY) ?? "");
+  all.push({ t: nowIso, l: level, m: msg });
+  const kept = all.length > RING_MAX ? all.slice(all.length - RING_MAX) : all;
+  store2.setState(RING_KEY, JSON.stringify(kept), nowIso);
+}
+
+// src/mcloud/log.ts
+function logBoth(store2, level, msg, nowIso) {
+  if (level === "error") error(msg);
+  else if (level === "warn") warn2(msg);
+  else log2(msg);
+  appendRing(store2, nowIso, level, msg);
+}
+
+// src/mcloud/tokenGate.ts
+function exchangeOnce(deps, recipe) {
+  const auth = loadAuthRaw(deps.store);
+  if (auth === "") return { ok: false, note: "没有可换票的原生凭据 —— 先加一个账号" };
+  const started = startExchange(deps.store, auth, deps.nowIso, recipe);
+  if (!started.ok) return { ok: false, note: started.error ?? "这串登录信息用不了" };
+  const taskDeps3 = {
+    store: deps.store,
+    transport: deps.transport,
+    nowIso: deps.nowIso,
+    baseUrl: deps.baseUrl
+  };
+  const r = drain(
+    (d) => {
+      const x = runExchangeStep(d, recipe);
+      return { ok: x.ok, note: x.note, idle: x.done };
+    },
+    taskDeps3,
+    { label: `换票（${recipe}）`, maxSteps: 4, deadlineMs: 3e4, startedAt: Date.now() }
+  );
+  return { ok: r.ok && jwtFresh(deps.store, Date.now(), recipe), note: r.note };
+}
+
 // src/mcloud/tasks/exchangeRun.ts
-var BUDGET_MS = 9e4;
+var BUDGET_MS = 48e4;
 var DEADLINE_MS = BUDGET_MS - 1e4;
 var PLAN_KEY = "mcloud.exchange.plan";
+var STATE_SCHEDULE_PLAN = "mcloud.exchange.schedule.plan";
+var STATE_SCHEDULE_CRON = "mcloud.exchange.schedule.cron";
+var DEFAULT_SCHEDULE_CRON = "0 10 * * *";
+var STATE_SCHEDULE_UNTIL = "mcloud.exchange.schedule.until";
+var STATE_SCHEDULE_MAX_RUNS = "mcloud.exchange.schedule.max_runs";
+var STATE_SCHEDULE_RUNS = "mcloud.exchange.schedule.runs";
+var STATE_SCHEDULE_RUNS_GEN = "mcloud.exchange.schedule.runs_gen";
+var STATE_SCHEDULE_GEN = "mcloud.exchange.schedule.gen";
+var STATE_LEAD_SEC = "mcloud.exchange.lead_sec";
+var DEFAULT_LEAD_SEC = 120;
+function untilMs(raw) {
+  const t = raw.trim();
+  if (t === "") return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}))?$/.exec(t);
+  if (!m) return null;
+  const d = new Date(
+    Number(m[1]),
+    Number(m[2]) - 1,
+    Number(m[3]),
+    Number(m[4] ?? "23"),
+    Number(m[5] ?? "59"),
+    59,
+    0
+  );
+  return Number.isNaN(d.getTime()) ? null : d.getTime();
+}
+function scheduleUntilAllowed(store2, targetMs) {
+  const until = untilMs((store2.getState(STATE_SCHEDULE_UNTIL) ?? "").trim());
+  if (until !== null && targetMs > until) return { ok: false, note: "已过截止时间" };
+  return { ok: true, note: "" };
+}
+function scheduleMaxRuns(store2) {
+  const raw = Number((store2.getState(STATE_SCHEDULE_MAX_RUNS) ?? "0").trim());
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
+}
+function scheduleRuns(store2) {
+  const gen = (store2.getState(STATE_SCHEDULE_GEN) ?? "").trim();
+  const runsGen = (store2.getState(STATE_SCHEDULE_RUNS_GEN) ?? "").trim();
+  if (gen !== "" && runsGen !== gen) return 0;
+  const raw = Number((store2.getState(STATE_SCHEDULE_RUNS) ?? "0").trim());
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
+}
+function bumpScheduleRuns(store2, nowIso) {
+  const gen = (store2.getState(STATE_SCHEDULE_GEN) ?? "").trim();
+  const n = scheduleRuns(store2);
+  store2.setState(STATE_SCHEDULE_RUNS, String(n + 1), nowIso);
+  if (gen !== "") store2.setState(STATE_SCHEDULE_RUNS_GEN, gen, nowIso);
+}
+function scheduleLeadSec(store2) {
+  const raw = Number((store2.getState(STATE_LEAD_SEC) ?? String(DEFAULT_LEAD_SEC)).trim());
+  return Number.isFinite(raw) ? Math.min(300, Math.max(60, Math.floor(raw))) : DEFAULT_LEAD_SEC;
+}
+function scheduleLeadReady(nowMs, targetMs, leadSec) {
+  return nowMs >= targetMs - leadSec * 1e3;
+}
 function runExchange(deps, opts = {}) {
   const started = Date.now();
   const steps = [];
   const add = (name, ok, note, idle = false) => {
     steps.push({ name, ok, note, idle });
   };
+  const ensureToken = () => {
+    if (jwtFresh(deps.store, Date.now(), FALLBACK_RECIPE)) return true;
+    const x = exchangeOnce(
+      {
+        store: deps.store,
+        transport: deps.transport,
+        nowIso: deps.nowIso,
+        baseUrl: deps.baseUrl
+      },
+      FALLBACK_RECIPE
+    );
+    add("换票", x.ok, x.note);
+    return x.ok && jwtFresh(deps.store, Date.now(), FALLBACK_RECIPE);
+  };
   const finish = (ok, note, idle = false) => {
     if (opts.dryRun) {
-      add("干跑", true, "只看了能不能兑，**一枪都没发**（真下单走定时那一场）", true);
+      add("干跑", true, "只看了能不能兑，**一枪都没发**（真下单走「立即兑换」或定时那一场）", true);
     }
     return {
       ok,
@@ -2599,9 +4819,9 @@ function runExchange(deps, opts = {}) {
       steps
     };
   };
-  const targetHour = targetHourOf(deps.store);
+  const targetHour = opts.targetHour !== void 0 ? opts.targetHour : targetHourOf(deps.store);
   const gate = planTargetWait(depsNowMs(deps), targetHour);
-  if (!opts.dryRun && gate.needed && gate.ms > MAX_SPIN_MS) {
+  if (!opts.dryRun && gate.needed && gate.ms > (opts.maxWaitMs ?? MAX_SPIN_MS)) {
     add(
       "时间闸",
       true,
@@ -2614,16 +4834,19 @@ function runExchange(deps, opts = {}) {
       true
     );
   }
+  if (!ensureToken()) {
+    return finish(false, "网页会话续期失败 —— 登录凭据可能已过期，去「账号」页重新登录一次");
+  }
   try {
     const l = runExchangeList(deps);
     add("清单", l.ok, l.note);
   } catch (e) {
     add("清单", false, `抛异常 ${e instanceof Error ? e.message : String(e)}`);
   }
-  const plan = deps.store.getState(PLAN_KEY) ?? "";
+  const plan = deps.store.getState(STATE_SCHEDULE_PLAN) ?? deps.store.getState(PLAN_KEY) ?? "";
   if (plan === "") {
-    add("下单", true, "没有设兑换目标（设置里填「兑换目标」之后才会下单）", true);
-    return finish(true, "没有设兑换目标（设置里填「兑换目标」之后才会下单）");
+    add("下单", true, "没有设定时兑换目标（在「定时抢兑」里选一件之后才会下单）", true);
+    return finish(true, "没有设定时兑换目标（在「定时抢兑」里选一件之后才会下单）");
   }
   if (!deps.store.getState("mcloud.exchange.order.step")) {
     const s = startOrder(deps, plan);
@@ -2640,6 +4863,10 @@ function runExchange(deps, opts = {}) {
   if (multi) {
     for (const acc of accounts) {
       selectAccount(deps.store, acc.id, deps.nowIso);
+      if (!ensureToken()) {
+        add(`准备 ${maskAuth(loadAuthRaw(deps.store) ?? "")}`, false, "网页会话续期失败");
+        continue;
+      }
       clearOrder(deps);
       startOrder(deps, plan);
       const a = drain(runOrderStep, deps, {
@@ -2707,33 +4934,36 @@ function runExchange(deps, opts = {}) {
 worker_hint("exclusive");
 var store = makeStore();
 var transport = makeTransport(LONG_REQUEST_TIMEOUT_MS);
+var defaultCron = (store.getState(STATE_SCHEDULE_CRON) ?? "").trim() || DEFAULT_SCHEDULE_CRON;
+var defaultLeadMs = scheduleLeadSec(store) * 1e3;
 register_cron(
   "兑换",
-  // # 为什么是「每小时 59 分」而不是 `@every 10s`
-  //
-  // 第一版写的是 `@every 10s`：一天 **8640** 次触发，其中 8639 次是零请求秒返回。
-  // 逻辑上没错（每一次都便宜），但用户看到任务列表里那个表达式就说了
-  // 「太特么频繁了」—— 而用户是对的：**抢兑一天只发生一次**。
-  //
-  // 触发频率该由"这件事一天发生几次"决定，不是由"多久看一眼"决定。
-  //
-  // 现在的分工：`59 * * * *` 每小时醒一次（一天 **24** 次），正好落在
-  // **目标小时的前一分钟**；那一刻这一趟有 60 秒可用 —— 足够预热
-  //（两次 visitlog + 500ms）再自旋到整点 −10ms 发单。
-  // 剩下 23 次是**静默零请求**（离窗口远 ⇒ 标 `idle`，连日志都不写）。
-  //
-  // ⚠ 为什么"59 分那一跳"够准：调度器抖动实测是**毫秒级**（日志里那条
-  //   「调度延迟 2ms」），所以它确实落在 59:00.00x，60 秒自旋预算不会被吃掉。
-  "59 * * * *",
+  defaultCron,
   (p) => {
     const startedMs = Date.now();
     const at = new Date(startedMs).toISOString();
-    const thisHour = hourKey(startedMs);
+    const targetMs = Date.parse(p.scheduledAt);
+    if (!Number.isFinite(targetMs)) return;
+    const untilGate = scheduleUntilAllowed(store, targetMs);
+    if (!untilGate.ok) return;
+    const targetHour = new Date(targetMs).getHours();
+    const thisHour = hourKey(targetMs);
+    const leadSec = p.leadMs !== void 0 ? p.leadMs / 1e3 : scheduleLeadSec(store);
+    if (!p.manual && !scheduleLeadReady(startedMs, targetMs, leadSec)) return;
+    const maxRuns = scheduleMaxRuns(store);
     const runs = forEachTaskAccount(store, "兑换", p, transport, (deps) => {
       if (deps.store.getState(STATE_ORDERED_HOUR) === thisHour) return null;
-      return runExchange(deps);
+      const done = scheduleRuns(deps.store);
+      const cap = maxRuns;
+      if (cap > 0 && done >= cap) return null;
+      const r = runExchange(deps, { maxWaitMs: BUDGET_MS - 1e4, targetHour });
+      if (r && !r.idle) bumpScheduleRuns(deps.store, deps.nowIso);
+      return r;
     });
-    if (runs.length === 0) return;
+    if (runs.length === 0) {
+      log3("这一趟没跑 —— 「兑换」还没选账号（界面上那个「全部账号」下拉）");
+      return;
+    }
     let acted = 0;
     for (const one of runs) {
       const r = one.result;
@@ -2755,6 +4985,8 @@ register_cron(
       const note = runs.length > 1 ? `${who}：${r.note}` : r.note;
       appendRun(store, {
         task: "exchange",
+        acct: one.acctId,
+        who,
         at,
         ms: Date.now() - startedMs,
         ok: r.ok,
@@ -2770,16 +5002,22 @@ register_cron(
         ok: r.ok,
         note
       });
-      if (r.ok) log2(`兑换（${who}）：${r.note}`);
-      else warn2(`兑换（${who}）：${r.note}`);
+      logBoth(store, "info", `------【${who}】------`, at);
       for (const line of r.detail) {
-        if (line.includes("失败")) warn2(`  · ${line}`);
+        logBoth(store, line.includes("没成") ? "warn" : "info", line, at);
       }
+      const bad = r.steps.filter((x) => !x.ok).length;
+      const tail = bad === 0 ? `------【${who}】都成了------` : `------【${who}】${bad} 项没成------`;
+      logBoth(store, bad > 0 ? "warn" : "info", tail, at);
     }
-    void acted;
+    if (!acted) {
+      log3(
+        runs.length === 1 ? "这一趟没动手 —— 还没到该抢的时候（或这一场已经试过了）" : `这一趟没动手 —— ${runs.length} 个号都还没到该抢的时候（或这一场已经试过了）`
+      );
+    }
   },
-  { budget_ms: BUDGET_MS }
+  { budget_ms: BUDGET_MS, lead_ms: defaultLeadMs }
 );
-log2(
-  `mcloud-exchange：任务「兑换」（预算 ${BUDGET_MS / 1e3}s，独占线程）—— 每小时 59 分醒一次，只有下一小时是目标那一场才动手`
+log3(
+  `mcloud-exchange：任务「兑换」（预算 ${BUDGET_MS / 1e3}s，独占线程）—— 默认 ${defaultCron}，提前 ${defaultLeadMs / 1e3}s 醒`
 );

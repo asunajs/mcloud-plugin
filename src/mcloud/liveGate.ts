@@ -114,7 +114,7 @@ export function parseCmlive(body: string): Parsed<CmliveEnvelope> {
       ok: false,
       error:
         `直播侧的 rtnCode 应当是**字符串**，实际是 ${code === undefined ? '缺字段' : typeof code}` +
-        '（这一族用字符串码；上游若真改成了数字码，这里必须报出来而不是兼容掉）',
+        '（这一族用字符串码；服务端若真改成了数字码，这里必须报出来而不是兼容掉）',
     };
   }
   const msg = typeof v['rtnMsg'] === 'string' ? v['rtnMsg'] : undefined;
@@ -467,11 +467,11 @@ export function gateReadingLine(rooms: readonly LiveRoom[]): string {
   const live = rooms.filter((r) => r.status === STATUS_LIVE);
   const hit = koulingRooms(rooms);
   if (hit.length > 0) {
-    return `门开着：${hit.length} 间在播（${KOULING_ANCHOR}）—— ${hit.map((r) => r.title || `#${r.id}`).join('、')}`;
+    return `正在听：${KOULING_ANCHOR} 开播了（${hit.map((r) => r.title || `#${r.id}`).join('、')}）`;
   }
-  if (live.length === 0) return `门关着：谁都没在播（这一趟看到 ${rooms.length} 间房，全是预告/回放）`;
+  if (live.length === 0) return `现在没在听：谁都没开播（看到 ${rooms.length} 间房，全是预告/回放）`;
   return (
-    `门关着：有 ${live.length} 间在播，但都不是「${KOULING_ANCHOR}」` +
+    `现在没在听：有 ${live.length} 间在播，但不是「${KOULING_ANCHOR}」的` +
     `（${live.map((r) => r.anchorNickname || '无名').join('、')}）`
   );
 }

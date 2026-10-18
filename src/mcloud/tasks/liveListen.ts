@@ -58,8 +58,8 @@ import { wakeSleepMs } from './liveAutoTask.ts';
 import { parseSsoToken } from '../h5session.ts';
 import { STATE_AUTH, loadAuthRaw } from '../sessionExchange.ts';
 import { parseAuthorization } from '../authRefresh.ts';
-import { extractKouling, hasKouling } from '../liveKouling.ts';
-import { loadPoolFrom, note, savePoolTo } from '../koulingPool.ts';
+import { extractKouling, hasKouling, isKoulingHead, isKoulingMarker } from '../liveKouling.ts';
+import { loadFreshPool, note, savePoolTo } from '../koulingPool.ts';
 import { createListener, sockjsDataFrames } from '../liveWs.ts';
 import { CMD_ACK, decodeMsync } from '../msync.ts';
 import type { Listener } from '../liveWs.ts';
@@ -177,6 +177,13 @@ export interface ListenState {
   applied?: boolean;
   /** 按 `command` 分的收帧计数（`{"0":n,"1":n,"2":n,...}`）—— 诊断用。 */
   kinds?: Record<string, number>;
+  /** 上一帧是"口令头"（`复制口令1：` 结尾），口令内容在**下一帧**。
+   *
+   *  ⚠ 这一格必须**落盘**：两次调用之间服务端可能已经把下一帧推过来了，
+   *  而我们的调用是分拍的（一拍照 1.6 秒）。只在内存里记 = 一跨拍就丢。
+   *  ⚠ 参考实现（`mcloud-sign` 的 `live-room-kouling.ts:245-260`）就是这么做的：
+   *  `pendingKouling` 标记 + 下一帧"不是口令头、不是标记词"就当作口令收下。 */
+  pendingHead?: boolean;
   /** 连"是不是 SockJS 数据帧"都没认出来的文本帧条数（探针自己的失败计数）。 */
   decodeFail?: number;
   /** **上次真的去探门**是什么时候（ISO）。
@@ -270,8 +277,12 @@ export function wsHandshakeHeaders(): Record<string, string> {
  *  返回一句话给日志，`undefined` = 该干活了。 */
 export function listenerIdle(st: ListenState, nowMs: number): string | undefined {
   if (st.nextCheckAtMs !== undefined && nowMs < st.nextCheckAtMs) {
-    const at = new Date(st.nextCheckAtMs).toISOString().slice(11, 19);
-    return `门关着，等下一次检查（${at}Z 之后）`;
+    // ⚠ 说**本地时间**。`toISOString()` 是 UTC —— 用户在日志里看到 `03:54Z`
+    //   会以为那是"凌晨三点"（本地是 11:54），这种时间戳比没有还糟。
+    const d = new Date(st.nextCheckAtMs);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const at = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    return `现在没在听，${at} 之后再去看`;
   }
   return undefined;
 }
@@ -457,7 +468,7 @@ function handshakeStep(deps: ListenDeps, st: ListenState): TaskOutcome {
   st.step = 'rooms';
   persist(deps, st);
   clearError(deps.store, 'live-listen', deps.nowIso);
-  return { ok: true, note: '① SSO + ② 直播侧 JWT 都换到了（JWT 只在这一个窗口里活）' };
+  return { ok: true, note: '开始听了' };
 }
 
 /** ③ 两个页签各一发 → 合并 → 找那个主播的**在播**房间。 */
@@ -505,14 +516,16 @@ function roomsStep(deps: ListenDeps, st: ListenState, nowMs: number): TaskOutcom
       forced !== undefined
         ? `指定的房间 ${forced} 不在这次探到的 ${merged.length} 间房里（诊断口子）`
         : coolMs > IDLE_RECHECK_MS
-          ? `门关着（合并后 ${merged.length} 间房）—— 按日程睡到下一场之后（${Math.round(coolMs / 60000)} 分钟）`
-          : `门关着（合并后 ${merged.length} 间房）—— 隔 ${Math.round(coolMs / 60000)} 分钟再看` +
+          // 「门」是内部说法；用户看到的是"现在没在听，为什么、什么时候再看"
+          ? `现在没在听（看到 ${merged.length} 间房，都不是它）—— 到下一场之后再去看（${hours(coolMs)}）`
+          : `现在没在听（看到 ${merged.length} 间房，都不是它）—— 隔 ${hours(coolMs)}再看` +
             // ⚠ 带上"上次真探"的时刻：空闲时这条任务每 10 秒醒一次、读数**一模一样**，
             //   日志去重之后一个窗口只会留一行 —— 那一行必须能回答"这次是真探过，还是
             //   只是把旧读数重复了一遍"（2026-10-14 soak 里我就是靠数 ①/② 那两行才分清的）。
             `（上次真探 ${deps.nowIso.slice(11, 19)}）`;
     persist(deps, st);
-    return { ok: true, note: st.note };
+    // ⚠ 这句是**存下来的**（冷却期十几小时，不会重写）—— 出日志前统一翻一遍
+    return { ok: true, note: humanNote(st.note) };
   }
   st.roomId = chosen;
   // ⚠ 顺序照 mcloud 的 `listen_danmaku_with`：先取 **WS 凭据**，再问聊天室号，再进房间。
@@ -523,9 +536,27 @@ function roomsStep(deps: ListenDeps, st: ListenState, nowMs: number): TaskOutcom
     ok: true,
     note:
       forced === undefined
-        ? `门开着：房间 ${st.roomId}，接着取 WS 凭据`
+        ? `找到了：房间 ${st.roomId} 在播，接着去听`
         : `诊断口子：直接听指定的房间 ${st.roomId}，接着取 WS 凭据`,
   };
+}
+
+/** 老记录里的内部说法就地翻掉（冷却期很长，不能等下次真探）。 */
+function humanNote(note: string): string {
+  return note
+    .replace(/门关着（合并后 (\d+) 间房）/g, '现在没在听（看到 $1 间房）')
+    .replace(/门关着/g, '现在没在听')
+    .replace(/门开着/g, '正在听')
+    // 「（720 分钟）」→「（12 小时）」
+    .replace(/（(\d+) 分钟）/g, (_m, n: string) => `（${hours(Number(n) * 60000)}）`);
+}
+
+/** `720 分钟` 不如 `12 小时` 好读 —— 超过 90 分钟就换成小时。 */
+function hours(ms: number): string {
+  const min = Math.round(ms / 60000);
+  if (min < 90) return `${min} 分钟`;
+  const h = Math.round(min / 60);
+  return `${h} 小时`;
 }
 
 /** ③ 取 WS 凭据（`userToken`）。
@@ -772,9 +803,22 @@ function listenStep(deps: ListenDeps, st: ListenState, nowMs: number, windowMs: 
     if (actions.texts.length > 0) {
       st.danmakuFrames += 1;
       for (const text of actions.texts) {
-        if (!hasKouling(text)) continue;
-        const codes = extractKouling(text);
-        for (const code of codes) found.push(code);
+        // ① 上一帧是"口令头"（`复制口令1：`）⇒ 这一帧就是口令内容
+        //   （参考实现同一套：`pendingKouling` → 下一帧直接收下）
+        if (st.pendingHead === true) {
+          const t = text.trim();
+          // 不是"又一句口令头"、也不是标记词，才算内容（否则会把下一句弹幕当口令）
+          if (t !== '' && !isKoulingHead(t) && !isKoulingMarker(t)) {
+            found.push(t);
+          }
+          st.pendingHead = false;
+        }
+        // ② 正常提取（单行/多行都能切）
+        if (hasKouling(text)) {
+          for (const code of extractKouling(text)) found.push(code);
+        }
+        // ③ 这一帧以口令头结尾 ⇒ 内容在下一帧，记下来
+        if (isKoulingHead(text)) st.pendingHead = true;
       }
     }
     if (actions.closed !== undefined) {
@@ -789,7 +833,7 @@ function listenStep(deps: ListenDeps, st: ListenState, nowMs: number, windowMs: 
   if (found.length > 0) {
     // ⚠ 来源写 `danmaku` —— 池里这一档早就留好了（`xiaohongshu` 是另一档），
     //   它让"这条口令是从弹幕里听来的"与"从小红书主页抓来的"在池里分得开。
-    const { pool } = loadPoolFrom(deps.store);
+    const { pool } = loadFreshPool(deps.store, Date.now());
     note(pool, found, 'danmaku', Date.now());
     savePoolTo(deps.store, pool, deps.nowIso);
     for (const code of found) if (!st.codes.includes(code)) st.codes.push(code);
@@ -838,7 +882,8 @@ function listenStep(deps: ListenDeps, st: ListenState, nowMs: number, windowMs: 
   const got = found.length > 0 ? `，本轮口令 ${found.join(' / ')}` : '';
   return {
     ok: true,
-    note: `听着（帧 ${st.frames}、弹幕 ${st.danmakuFrames}、口令 ${st.codes.length}${got}）`,
+    // 与 `listenReadingLine` 同一套说法：只报弹幕/口令，帧数是排查用的
+    note: `正在听（收到 ${st.danmakuFrames} 条弹幕，捡到 ${st.codes.length} 条口令${got}）`,
   };
 }
 
@@ -903,13 +948,16 @@ export { sockjsDataFrames };
 export function listenReadingLine(st: ListenState | null): string {
   if (st === null) return '还没听过';
   if (st.step === 'listen') {
-    return (
-      `听着（帧 ${st.frames}、弹幕 ${st.danmakuFrames}、口令 ${st.codes.length}、回执 ${st.serverAcks ?? 0}` +
-      (st.sockjsHb ? `、h 帧 ${st.sockjsHb}` : '') +
-      (st.decodeFail ? `、认不出的帧 ${st.decodeFail}` : '') +
-      '）'
-    );
+    // 用户只关心"听到几条弹幕、捡到几条口令"；帧数/心跳是排查用的，不写
+    const bits = [`收到 ${st.danmakuFrames} 条弹幕`];
+    if (st.codes.length > 0) bits.push(`捡到 ${st.codes.length} 条口令`);
+    if ((st.serverAcks ?? 0) > 0) bits.push(`回了 ${st.serverAcks} 次`);
+    return `正在听（${bits.join('、')}）`;
   }
-  if (st.step === 'done') return st.note ?? '这一轮结束';
+  if (st.step === 'done') {
+    // ⚠ 老记录里存的是旧说法（「门关着（合并后 N 间房）」）。冷却期长达十几小时，
+    //   期间一直显示**存下来的那句** —— 所以在这里就地翻一遍，不等下次真探。
+    return humanNote(st.note ?? '这一轮结束');
+  }
   return `准备中（${st.step}）`;
 }

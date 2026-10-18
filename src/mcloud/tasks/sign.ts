@@ -34,7 +34,7 @@ export const STATE_STAGE = 'mcloud.sign.stage';
 export function runSign(deps: TaskDeps): TaskOutcome {
   const session = loadSession(deps.store);
   if (!session) {
-    return { ok: false, note: '未登录：state 里没有会话（见 docs/howto-session.md）' };
+    return { ok: false, note: '还没有网页会话 —— 上面「换票」那一步说了原因' };
   }
 
   const stage = deps.store.getState(STATE_STAGE) ?? '';
@@ -48,14 +48,16 @@ export function runSign(deps: TaskDeps): TaskOutcome {
       return { ok: true, note: '签到完成（回查 infoV3 确认今日已签）' };
     }
     // 提交过了但状态还没变：**如实报失败**，别自己安慰自己
-    return { ok: false, note: '已提交签到，但回查 infoV3 显示今日仍未签（上游可能延迟入账）' };
+    return { ok: false, note: '已提交签到，但回查 infoV3 显示今日仍未签（服务端可能延迟入账）' };
   }
 
   // ① 问状态
   const info = fetchInfoV3({ store: deps.store, transport: deps.transport, baseUrl: deps.baseUrl });
   if (!info.ok) return { ok: false, note: `查询签到状态失败：${info.error}` };
   if (info.info.todaySigned) {
-    return { ok: true, note: '今日已签到（infoV3 判据）' };
+    // 参考实现原话（`mcloud-sign/packages/core/src/tasks/sign/task.ts`）：
+    // 「网盘今日已签到获得 N 云朵」——它只说事实，不说"成功/跳过"
+    return { ok: true, idle: true, note: '网盘今日已签到' };
   }
 
   // ② 动手
@@ -70,13 +72,37 @@ export function runSign(deps: TaskDeps): TaskOutcome {
       isDeviceId: !!deviceId,
       stateKey: STATE_SIGN,
     },
-    (env) => ({
-      ok: true,
-      // ⚠️ 这里**不说"签到成功"** —— 动作响应不是判据（见文件头）。
-      note: `签到已提交（下次触发回查状态；上游回 ${JSON.stringify(env.result ?? env.message).slice(0, 80)}）`,
-      snapshot: { result: env.result ?? null, message: env.message },
-    }),
+    (env) => {
+      // ⚠️ 动作响应**一般**不是判据（见文件头）。但有一种情况它比 `infoV3` 更可信：
+      //   响应里**明确**说 `todaySignIn: true` —— 那是"这一枪打中了"的直接证据。
+      //
+      //   现场（2026-10-17）：响应 `{"todaySignIn":true,"signInPoints":3,"signCount":17}`，
+      //   而紧接着的 `infoV3` 还是 `false` —— 用户手机上打开 App 一看**确实签上了**。
+      //   于是"只认 infoV3"的结果是：`need-verify` 卡在那里，每一趟都报一次失败。
+      //
+      //   为什么这时候信响应是安全的：签到**幂等**。万一响应撒谎（说成了其实没成），
+      //   下一趟 ① 问状态就会发现没签、再打一枪 —— 代价是晚一天，而不是错报。
+      const r = (env.result ?? {}) as { todaySignIn?: unknown };
+      const said = r.todaySignIn === true || r.todaySignIn === 1 || r.todaySignIn === 'true';
+      if (said) {
+        deps.store.setState(STATE_STAGE, '', deps.nowIso);
+        return {
+          ok: true,
+          // 参考实现确认成功后打的就是这一句
+          note: '网盘签到成功',
+          snapshot: { result: env.result ?? null, message: env.message },
+        };
+      }
+      return {
+        ok: true,
+        // 响应里没给判据 ⇒ 照旧记"待回查"，下一次触发去看 infoV3
+        note: '网盘签到已提交，下一次确认',
+        snapshot: { result: env.result ?? null, message: env.message },
+      };
+    },
   );
-  if (out.ok) deps.store.setState(STATE_STAGE, 'need-verify', deps.nowIso);
+  if (out.ok && deps.store.getState(STATE_STAGE) !== '') {
+    deps.store.setState(STATE_STAGE, 'need-verify', deps.nowIso);
+  }
   return out;
 }

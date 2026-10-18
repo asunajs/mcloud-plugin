@@ -56,7 +56,11 @@ export function runPrizes(deps: TaskDeps, market = 'sign_in_3'): TaskOutcome {
       const unreceived = items.filter((i) => (i.state ?? '').toUpperCase().includes('UNRECEIVED'));
       return {
         ok: true,
-        note: `奖品 ${items.length} 条（未领取 ${unreceived.length} 条）`,
+        // 参考实现（`prize-records.ts`）：「无待领取奖品」/「待领取奖品 N 个」
+        note:
+          unreceived.length === 0
+            ? '无待领取奖品'
+            : `待领取奖品 ${unreceived.length} 个（共 ${items.length} 个）`,
         snapshot: items,
       };
     },

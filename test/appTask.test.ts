@@ -100,7 +100,7 @@ test('起一趟**一个请求都不发**；没有待办 ⇒ idle', () => {
   const { deps, sent } = mkDeps({});
   const out = startAppTask(deps);
   assert.equal(out.idle, true);
-  assert.match(out.note, /没有本插件能做的待办/);
+  assert.match(out.note, /没有能替你做的了/);
   assert.equal(sent.length, 0);
 });
 
@@ -200,7 +200,7 @@ test('⚠ 点过的名单**按天重置**（矩阵读数是慢的，同一份读
   startAppTask(deps); // ⚠ 起新一趟**不能**把今天的名单抹掉
   const out2 = startAppTask(deps);
   assert.equal(out2.idle, true, out2.note);
-  assert.match(out2.note, /今天都点过了/);
+  assert.match(out2.note, /今天这 \d+ 条都点过了/);
   assert.equal(clicks(sent), 1, '同一天不许重复点');
   // 换一天 ⇒ 名单清掉（但读数还是 todo ⇒ 会再点一次，这是**期望**的：
   //   那天的新读数本来就该让它再做一遍）

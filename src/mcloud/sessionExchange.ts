@@ -29,9 +29,11 @@
 import { callRawText } from './client.ts';
 import type { TaskDeps } from './tasks/base.ts';
 import { loadSession, saveSession } from '../store/types.ts';
-import { currentAccount } from './accounts.ts';
+import { currentAccount, loadAccounts, setAccountDomain } from './accounts.ts';
+import { scopedAccountOf } from '../store/scoped.ts';
 import type { Store } from '../store/types.ts';
 import { sha256Hex } from '../crypto/index.ts';
+import { fromBase64, fromUtf8 } from '../crypto/bytes.ts';
 import {
   ensureFingerprint,
   parseDeviceId,
@@ -66,6 +68,15 @@ export const STATE_AUTH = 'mcloud.h5.auth';
  *  "有的地方多账号、有的地方单账号"这种最难查的状态。收成一个函数之后，
  *  "现在是几账号"这件事只有这一个地方知道。 */
 export function loadAuthRaw(store: Pick<Store, 'getState'>): string {
+  // ⚠ 先用"这个 store 作用在哪个账号上"（`scoped()` 知道）——
+  //   只读"全局的当前账号"的话，遍历多账号时每个号都会拿到**同一个**凭据，
+  //   于是 B 的换票用的是 A 的身份（F-081 现场：给「移动」点连接，
+  //   它回"没有待换票的任务"，因为拿到的其实是「测试」那串）。
+  const scopedId = scopedAccountOf(store);
+  if (scopedId !== undefined) {
+    const one = loadAccounts(store).find((a) => a.id === scopedId);
+    if (one !== undefined) return one.auth;
+  }
   const cur = currentAccount(store);
   if (cur !== undefined) return cur.auth;
   // ⚠ 这一行**不许**写成 `loadAuthRaw(store)`（我的批量替换就把这里递归了：
@@ -178,12 +189,68 @@ function scopedKey(
   store: Pick<Store, 'getState'>,
   recipe: SessionRecipe,
 ): string {
-  const cur = currentAccount(store);
+  // ⚠ 账号 id 必须取**这个 store 作用在哪个账号上**（`scoped()` 包装器知道），
+  //   不能取"全局的当前账号"—— 遍历多账号时后者恒是同一个（通常是最后选中的那个），
+  //   于是 B 的键里嵌着 A 的 id、值却落在 B 的袋里，键与值对不上（F-081）。
+  const acct = scopedAccountOf(store) ?? currentAccount(store)?.id;
   // 兜底 + 单账号 ⇒ 裸键（不用迁移）
-  if (cur === undefined && recipe === FALLBACK_RECIPE) return base;
+  if (acct === undefined && recipe === FALLBACK_RECIPE) return base;
   // ⚠ 形状与 `accountScopedKey` 保持一致（`<base>.<账号 id>`），
   //   只是这里多一段配方。两处不一致的表现是"读不到"（像没数据），不报错。
-  return `${base}.${cur?.id ?? 'default'}.${recipe}`;
+  return `${base}.${acct ?? 'default'}.${recipe}`;
+}
+
+/** 从 jwttoken 里取 `userDomainId`（**唯一一份实现**）。
+ *
+ *  ⚠ **真机上它不在顶层**：payload 的键只有 `iss/iat/sub/exp`，
+ *  而 `userDomainId` 藏在 `sub` —— 那个键的值**本身是一段 JSON 文本**。
+ *  只查顶层会得到 `undefined`，然后表现成"账号缺用户域"（看着像账号的问题）。
+ *
+ *  ⚠ 放在本文件而不是 `authRefresh.ts`：换票这条链也要用它（补账号上的域），
+ *  而 `authRefresh` 已经 import 本文件 —— 反向 import 会成环。`authRefresh`
+ *  那边只是**再导出**这个名字。 */
+export function jwtUserDomainId(jwt: string): string | null {
+  const parts = jwt.split('.');
+  if (parts.length < 2) return null;
+  let payload: Record<string, unknown>;
+  try {
+    // base64url → base64（`fromBase64` 只认标准表；票里用的是 url 安全那套）
+    const b64 = parts[1]!.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4);
+    payload = JSON.parse(fromUtf8(fromBase64(padded))) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  const top = payload['userDomainId'];
+  if (typeof top === 'string' && top !== '') return top;
+  const sub = payload['sub'];
+  if (typeof sub === 'string' && sub.trim().startsWith('{')) {
+    try {
+      const inner = JSON.parse(sub) as Record<string, unknown>;
+      const v = inner['userDomainId'];
+      if (typeof v === 'string' && v !== '') return v;
+    } catch {
+      /* sub 不是 JSON 就算了 */
+    }
+  }
+  return null;
+}
+
+/** 把票里的用户域**补到当前账号**上（拿不到 / 已经有了 ⇒ 什么也不做）。
+ *
+ *  ⚠ 账号上那一格只有"登录那一刻"才会写。老账号（域还存全局一格那版）永远缺它，
+ *  而换票**每天都会跑** —— 跑一次自愈一次（见 F-076）。 */
+export function backfillDomainFromJwt(
+  store: Store,
+  jwt: string,
+  nowIso: string,
+): string | null {
+  const cur = currentAccount(store);
+  if (cur === undefined || (cur.userDomainId ?? '') !== '') return null;
+  const dom = jwtUserDomainId(jwt);
+  if (dom === null) return null;
+  setAccountDomain(store, cur.id, dom, nowIso);
+  return dom;
 }
 
 /** 票的键（导出是为了让"清掉某一个账号/某一页的票"这类操作能对准）。 */
@@ -272,7 +339,7 @@ export function runExchangeStep(
   const auth = loadAuthRaw(deps.store) || null;
 
   if (!st || st.step === 'done' || !auth) {
-    return { ok: true, note: '没有待换票的任务（先去界面上贴一份原生凭据）', done: true };
+    return { ok: true, note: '今天不用换票', done: true };
   }
   // ⚠ 用**状态里记的**那一页，不是入参默认值 —— 步骤跨多次调用，
   //   调用方可能已经换了页，而这一轮的三枪必须打同一页。
@@ -369,6 +436,14 @@ export function runExchangeStep(
     fingerprint: st.fingerprint,
   };
   deps.store.setState(jwtKey(deps.store, recipe), JSON.stringify(rec), deps.nowIso);
+
+  // ⚠ 顺手把用户域**补到当前账号上**（拿不到就什么也不做）。
+  //
+  //   票的 `payload.sub` 里带着它，而账号上那一格只有"登录那一刻"才会写。
+  //   于是老账号（登录域还是全局一格那版）永远缺这一格 —— 而换票**每天都会跑**，
+  //   跑一次就自愈一次。不写的话，`x-yun-uni` 那类业务请求永远缺一格，
+  //   且缺得毫无线索（见 F-076）。
+  backfillDomainFromJwt(deps.store, p.value.jwt, deps.nowIso);
 
   // ⚠⚠ 拿到票之后**再走一步**：把 `deviceId` 也换回来。
   //

@@ -2,14 +2,15 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.0.0 · 插件 `mcloud`
+//   mcloud-plugin 0.1.0 · 插件 `mcloud`
 
 // src/entries/mcloud.ts
 import {
   error,
   log as log2,
   register_nav,
-  register_route
+  register_route,
+  worker_hint
 } from "host-api";
 
 // src/store/keys.ts
@@ -23,6 +24,9 @@ var KEY_SCOPE = {
   "mcloud.session": "account",
   "mcloud.session.last_check": "account",
   "mcloud.h5.auth": "account",
+  // 宿主"能不能用 tls:native"的探测结论（= 这个面板构建支不支持直播）。
+  // **与账号无关**，但按账号存最省事 —— 结论一样，多存几份不花钱。
+  "mcloud.host.native_tls": "account",
   "mcloud.h5.exchange": "account",
   "mcloud.h5.jwt": "account",
   "mcloud.daily.done_date": "account",
@@ -49,6 +53,10 @@ var KEY_SCOPE = {
   // 不是某个号自己的设置（放进账号袋会让 A 的名单被 B 读到）。
   // ⚠ 动态键（键里带任务名）⇒ 靠  登记，见下面那张表。
   "mcloud.task.accounts.": "global",
+  // 运行日志的**环形副本**（最近 N 行）。global —— 它记的是"这台机器上发生过什么"，
+  // 不属于某个号；而且它要能在**面板重启之后**还读得到（面板的内存日志环是重启就没的，
+  // 见 findings F-085）。写的时候按"全局"落，界面上再按插件名过滤。
+  "mcloud.log.ring": "global",
   "mcloud.login.base": "global",
   "mcloud.login.userDomainId": "global",
   "mcloud.sign.stage": "account",
@@ -72,7 +80,15 @@ var KEY_SCOPE = {
   "mcloud.cloudsnapshot.last": "account",
   "mcloud.exchangelist.last": "account",
   "mcloud.exchangelist.raw": "account",
+  // 界面上「选一件」的下拉缓存（全量清单里挑出来的四格）。
+  // **按账号** —— 清单与"能不能换"都是账号级的。日界作废，见 exchangeList.ts。
+  "mcloud.exchangelist.pick": "account",
+  // 「我关注的奖品」：按账号存（不同账号的清单不同，关注的 id 也可能不同）。
+  "mcloud.exchange.subs": "account",
   "mcloud.exchange.plan": "account",
+  // 定时抢兑每个账号已经真正发起过几次（按账号）。
+  "mcloud.exchange.schedule.runs": "account",
+  "mcloud.exchange.schedule.runs_gen": "account",
   "mcloud.exchange.order.step": "account",
   "mcloud.exchange.order.baseline": "account",
   "mcloud.exchange.order.plan": "account",
@@ -107,6 +123,16 @@ var KEY_SCOPE = {
   "mcloud.login.pref": "global",
   /** 几点抢兑 —— 是**配置**，跟账号无关。 */
   "mcloud.exchange.target_hour": "global",
+  // 「定时抢兑」的目标：与手动目标分开，避免改一个把另一个带跑。
+  // 全局 —— 定时任务按「任务账号」逐个跑，但只认这一件目标。
+  "mcloud.exchange.schedule.plan": "global",
+  "mcloud.exchange.schedule.mode": "global",
+  "mcloud.exchange.schedule.cron": "global",
+  "mcloud.exchange.schedule.until": "global",
+  "mcloud.exchange.schedule.once_date": "global",
+  "mcloud.exchange.schedule.max_runs": "global",
+  "mcloud.exchange.schedule.gen": "global",
+  "mcloud.exchange.lead_sec": "global",
   /** 提前量 —— "网络慢的人该调大"，是**这台机器**的调参，与账号无关。 */
   "mcloud.exchange.order.lead_ms": "global",
   /** 领小红花的开关。 */
@@ -466,6 +492,16 @@ function phoneOf(raw) {
     return void 0;
   }
 }
+function normalizeAuth(raw) {
+  const t = raw.replace(/\uFEFF/g, "").trim();
+  const head = t.charAt(0);
+  const unquoted = t.length >= 2 && (head === '"' || head === "'") && t.charAt(t.length - 1) === head ? t.slice(1, -1).trim() : t;
+  const m = /^basic[\s:]+([\s\S]+)$/i.exec(unquoted);
+  const b64 = (m !== null ? m[1] : unquoted).replace(/\s+/g, "");
+  if (b64 === "") return unquoted;
+  const info = parseAuth(b64);
+  return info !== void 0 && info.raw !== "" ? `Basic ${b64}` : unquoted;
+}
 function idOf(raw) {
   const phone = phoneOf(raw);
   if (phone !== void 0) return phone;
@@ -491,7 +527,7 @@ function loadAccounts(store2) {
     if (it === null || typeof it !== "object") continue;
     const o = it;
     if (typeof o.id !== "string" || typeof o.auth !== "string" || o.auth === "") continue;
-    const auth = o.auth;
+    const auth = normalizeAuth(o.auth);
     const info = parseAuth(auth);
     const pc = o.pcPlatform;
     out.push({
@@ -501,6 +537,7 @@ function loadAccounts(store2) {
       // 老账号没存过这两格 ⇒ 从凭据里现解一次（不用迁移）
       platform: typeof o.platform === "string" ? o.platform : info?.platform ?? "",
       pcPlatform: pc === "win" || pc === "mac" ? pc : void 0,
+      userDomainId: typeof o.userDomainId === "string" && o.userDomainId !== "" ? o.userDomainId : void 0,
       disabled: o.disabled === true,
       addedAt: typeof o.addedAt === "string" ? o.addedAt : ""
     });
@@ -510,10 +547,12 @@ function loadAccounts(store2) {
 function saveAccounts(store2, list, nowIso) {
   store2.setState(STATE_ACCOUNTS, JSON.stringify(list), nowIso);
 }
-function upsertAccount(store2, auth, nowIso, label, pcPlatform) {
+function upsertAccount(store2, authInput, nowIso, label, pcPlatform, userDomainId) {
+  let auth = authInput;
   const list = loadAccounts(store2);
+  auth = normalizeAuth(auth);
   const id = idOf(auth);
-  const idx = list.findIndex((a) => a.id === id);
+  const idx = list.findIndex((a) => a.id === id || idOf(normalizeAuth(a.auth)) === id);
   const info = parseAuth(auth);
   const account = {
     id,
@@ -523,6 +562,8 @@ function upsertAccount(store2, auth, nowIso, label, pcPlatform) {
     // ⚠ 只在 PC 端才有意义。手机端传进来也丢掉 —— 留着会让"这个账号用哪套
     //   设备头"这件事出现两个互相矛盾的来源。
     pcPlatform: info?.platform === PC_AUTH_PREFIX ? pcPlatform ?? list[idx]?.pcPlatform ?? "win" : void 0,
+    // ⚠ 重加同一个号时**保留**用户域（贴凭据/换凭据那条路拿不到它）
+    userDomainId: userDomainId !== void 0 && userDomainId !== "" ? userDomainId : list[idx]?.userDomainId,
     // ⚠ 重加同一个号时**保留**停用状态（"刷新凭据"不该顺手把人启用回来）
     disabled: list[idx]?.disabled === true,
     addedAt: idx >= 0 ? list[idx].addedAt : nowIso
@@ -564,6 +605,30 @@ function selectAccount(store2, id, nowIso) {
   store2.setState(STATE_CURRENT_ACCOUNT, id, nowIso);
   return true;
 }
+function setAccountAuth(store2, id, auth, nowIso) {
+  if (auth === "") return void 0;
+  const list = loadAccounts(store2);
+  const idx = list.findIndex((a) => a.id === id);
+  if (idx < 0) return void 0;
+  if (list[idx].auth === auth) return list[idx];
+  list[idx] = { ...list[idx], auth };
+  saveAccounts(store2, list, nowIso);
+  return list[idx];
+}
+function setAccountDomain(store2, id, domain, nowIso) {
+  if (domain === "") return void 0;
+  const list = loadAccounts(store2);
+  const idx = list.findIndex((a) => a.id === id);
+  if (idx < 0) return void 0;
+  if (list[idx].userDomainId === domain) return list[idx];
+  list[idx] = { ...list[idx], userDomainId: domain };
+  saveAccounts(store2, list, nowIso);
+  return list[idx];
+}
+function currentAccountDomain(store2) {
+  const a = currentAccount(store2);
+  return a?.userDomainId !== void 0 && a.userDomainId !== "" ? a.userDomainId : null;
+}
 function currentAccount(store2) {
   const id = (store2.getState(STATE_CURRENT_ACCOUNT) ?? "").trim();
   if (id === "") return void 0;
@@ -593,179 +658,6 @@ function loadSession(store2) {
 }
 function saveSession(store2, s, nowIso) {
   store2.setState(SESSION_KEY, JSON.stringify({ ...s, savedAt: nowIso }), nowIso);
-}
-
-// src/mcloud/envelope.ts
-var isRecord = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
-function parseSignInEnvelope(body) {
-  let v;
-  try {
-    v = JSON.parse(body);
-  } catch (e) {
-    throw new Error(`签到响应不是 JSON：${e instanceof Error ? e.message : String(e)}`);
-  }
-  if (!isRecord(v)) {
-    throw new Error(`签到响应不是对象：${body.slice(0, 120)}`);
-  }
-  const raw = v.code;
-  let code = -1;
-  if (typeof raw === "number") code = Number.isFinite(raw) ? raw : -1;
-  else if (typeof raw === "string" && raw.trim() !== "" && !Number.isNaN(Number(raw))) {
-    code = Number(raw);
-  }
-  const msg = v.msg ?? v.message;
-  const message = typeof msg === "string" ? msg : "";
-  return {
-    code,
-    message,
-    result: v.result,
-    ok: code === 0
-  };
-}
-function resultObject(env) {
-  return isRecord(env.result) ? env.result : {};
-}
-
-// src/mcloud/client.ts
-var isFetchError = (v) => typeof v === "object" && v !== null && typeof v.error === "string";
-function pickError(msg) {
-  return msg.replace(/^\s*请求失败[:：]\s*/, "").trim() || msg;
-}
-function hostFetchOptions(req, timeoutMs) {
-  const opts = {
-    method: req.method,
-    headers: req.headers,
-    body: req.body,
-    timeout_ms: timeoutMs
-  };
-  if (req.tls !== void 0 && req.url.startsWith("https:")) opts.tls = req.tls;
-  return opts;
-}
-function callOnce(transport2, req) {
-  const t0 = Date.now();
-  const fail = (error3) => ({
-    status: 0,
-    tookMs: Date.now() - t0,
-    env: void 0,
-    ok: false,
-    error: error3,
-    raw: "",
-    setCookies: []
-  });
-  let res;
-  try {
-    res = transport2(req);
-  } catch (e) {
-    return fail(`请求失败：${e instanceof Error ? e.message : String(e)}`);
-  }
-  if (isFetchError(res)) return fail(pickError(res.error));
-  if (typeof res !== "object" || res === null || typeof res.body !== "string") {
-    return fail(`请求返回的形状不认识：${JSON.stringify(res)?.slice(0, 200) ?? String(res)}`);
-  }
-  const tookMs = Date.now() - t0;
-  const raw = res.body.length > 500 ? `${res.body.slice(0, 500)}…` : res.body;
-  let env;
-  let error2;
-  if (res.status !== 200) {
-    error2 = `HTTP ${res.status}`;
-  } else {
-    try {
-      env = parseSignInEnvelope(res.body);
-      if (!env.ok) error2 = `code=${env.code}${env.message ? ` msg=${env.message}` : ""}`;
-    } catch (e) {
-      error2 = e instanceof Error ? e.message : String(e);
-    }
-  }
-  return {
-    status: res.status,
-    tookMs,
-    env,
-    ok: res.status === 200 && !!env?.ok,
-    error: error2,
-    raw,
-    setCookies: extractSetCookies(res.headers)
-  };
-}
-var CONTENT_TYPE_JSON = "application/json;charset=UTF-8";
-function applyDefaultContentType(req) {
-  if (req.body === void 0) return req;
-  const declared = Object.keys(req.headers).some((k) => k.toLowerCase() === "content-type");
-  if (declared) return req;
-  return { ...req, headers: { ...req.headers, "content-type": CONTENT_TYPE_JSON } };
-}
-function callRawText(transport2, req) {
-  const t0 = Date.now();
-  const fail = (error2) => ({
-    ok: false,
-    status: 0,
-    text: "",
-    chars: 0,
-    tookMs: Date.now() - t0,
-    error: error2
-  });
-  let res;
-  try {
-    res = transport2(req);
-  } catch (e) {
-    return fail(`请求失败：${e instanceof Error ? e.message : String(e)}`);
-  }
-  const tookMs = Date.now() - t0;
-  if (isFetchError(res)) return { ...fail(pickError(res.error)), tookMs };
-  if (typeof res !== "object" || res === null || typeof res.body !== "string") {
-    return {
-      ...fail(`请求返回的形状不认识：${JSON.stringify(res)?.slice(0, 200) ?? String(res)}`),
-      tookMs
-    };
-  }
-  const chars = res.body.length;
-  if (res.status !== 200) {
-    return { ok: false, status: res.status, text: res.body, chars, tookMs, error: `HTTP ${res.status}` };
-  }
-  return { ok: true, status: 200, text: res.body, chars, tookMs, error: void 0 };
-}
-function extractSetCookies(headers) {
-  const raw = [];
-  for (const [k, v] of Object.entries(headers)) {
-    if (k.toLowerCase() === "set-cookie") raw.push(v);
-  }
-  const out = [];
-  for (const line of raw) {
-    let cur = line;
-    const parts = [];
-    let idx = 0;
-    for (; ; ) {
-      const m = /,\s*([A-Za-z0-9_.-]+)=/.exec(cur.slice(idx));
-      if (!m || m.index === void 0) break;
-      parts.push(cur.slice(idx, idx + m.index));
-      idx += m.index + 1;
-    }
-    parts.push(cur.slice(idx));
-    for (const p of parts) {
-      cur = p.trim();
-      if (!cur) continue;
-      const pair = cur.split(";")[0]?.trim() ?? "";
-      if (pair.includes("=")) out.push(pair);
-    }
-  }
-  return out;
-}
-function mergeCookieJar(existing, incoming) {
-  const jar = /* @__PURE__ */ new Map();
-  const eat = (s) => {
-    for (const part of s.split(";")) {
-      const p = part.trim();
-      if (!p) continue;
-      const eq = p.indexOf("=");
-      if (eq <= 0) continue;
-      const k = p.slice(0, eq).trim();
-      const v = p.slice(eq + 1).trim();
-      if (v === "" || /^(deleted|expired)$/i.test(v)) jar.delete(k);
-      else jar.set(k, v);
-    }
-  };
-  eat(existing);
-  for (const c of incoming) eat(c);
-  return [...jar.entries()].map(([k, v]) => `${k}=${v}`).join("; ");
 }
 
 // src/crypto/md5.ts
@@ -1136,6 +1028,181 @@ function anyBytes(d) {
   return typeof d === "string" ? utf8(d) : d;
 }
 
+// src/mcloud/envelope.ts
+var isRecord = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+function parseSignInEnvelope(body) {
+  let v;
+  try {
+    v = JSON.parse(body);
+  } catch (e) {
+    throw new Error(`签到响应不是 JSON：${e instanceof Error ? e.message : String(e)}`);
+  }
+  if (!isRecord(v)) {
+    throw new Error(`签到响应不是对象：${body.slice(0, 120)}`);
+  }
+  const raw = v.code;
+  let code = -1;
+  if (typeof raw === "number") code = Number.isFinite(raw) ? raw : -1;
+  else if (typeof raw === "string" && raw.trim() !== "" && !Number.isNaN(Number(raw))) {
+    code = Number(raw);
+  }
+  const msg = v.msg ?? v.message;
+  const message = typeof msg === "string" ? msg : "";
+  return {
+    code,
+    message,
+    result: v.result,
+    ok: code === 0
+  };
+}
+function resultObject(env) {
+  return isRecord(env.result) ? env.result : {};
+}
+
+// src/mcloud/client.ts
+var isFetchError = (v) => typeof v === "object" && v !== null && typeof v.error === "string";
+function pickError(msg) {
+  return msg.replace(/^\s*请求失败[:：]\s*/, "").trim() || msg;
+}
+function hostFetchOptions(req, timeoutMs) {
+  const opts = {
+    method: req.method,
+    headers: req.headers,
+    body: req.body,
+    timeout_ms: timeoutMs
+  };
+  if (req.tls !== void 0 && req.url.startsWith("https:")) opts.tls = req.tls;
+  return opts;
+}
+function callOnce(transport2, req) {
+  const t0 = Date.now();
+  const fail = (error3) => ({
+    status: 0,
+    tookMs: Date.now() - t0,
+    env: void 0,
+    ok: false,
+    error: error3,
+    raw: "",
+    body: "",
+    setCookies: []
+  });
+  let res;
+  try {
+    res = transport2(req);
+  } catch (e) {
+    return fail(`请求失败：${e instanceof Error ? e.message : String(e)}`);
+  }
+  if (isFetchError(res)) return fail(pickError(res.error));
+  if (typeof res !== "object" || res === null || typeof res.body !== "string") {
+    return fail(`请求返回的形状不认识：${JSON.stringify(res)?.slice(0, 200) ?? String(res)}`);
+  }
+  const tookMs = Date.now() - t0;
+  const raw = res.body.length > 500 ? `${res.body.slice(0, 500)}…` : res.body;
+  let env;
+  let error2;
+  if (res.status !== 200) {
+    error2 = `HTTP ${res.status}`;
+  } else {
+    try {
+      env = parseSignInEnvelope(res.body);
+      if (!env.ok) error2 = `code=${env.code}${env.message ? ` msg=${env.message}` : ""}`;
+    } catch (e) {
+      error2 = e instanceof Error ? e.message : String(e);
+    }
+  }
+  return {
+    status: res.status,
+    tookMs,
+    env,
+    ok: res.status === 200 && !!env?.ok,
+    error: error2,
+    raw,
+    body: res.body,
+    setCookies: extractSetCookies(res.headers)
+  };
+}
+var CONTENT_TYPE_JSON = "application/json;charset=UTF-8";
+function applyDefaultContentType(req) {
+  if (req.body === void 0) return req;
+  const declared = Object.keys(req.headers).some((k) => k.toLowerCase() === "content-type");
+  if (declared) return req;
+  return { ...req, headers: { ...req.headers, "content-type": CONTENT_TYPE_JSON } };
+}
+function callRawText(transport2, req) {
+  const t0 = Date.now();
+  const fail = (error2) => ({
+    ok: false,
+    status: 0,
+    text: "",
+    chars: 0,
+    tookMs: Date.now() - t0,
+    error: error2
+  });
+  let res;
+  try {
+    res = transport2(req);
+  } catch (e) {
+    return fail(`请求失败：${e instanceof Error ? e.message : String(e)}`);
+  }
+  const tookMs = Date.now() - t0;
+  if (isFetchError(res)) return { ...fail(pickError(res.error)), tookMs };
+  if (typeof res !== "object" || res === null || typeof res.body !== "string") {
+    return {
+      ...fail(`请求返回的形状不认识：${JSON.stringify(res)?.slice(0, 200) ?? String(res)}`),
+      tookMs
+    };
+  }
+  const chars = res.body.length;
+  if (res.status !== 200) {
+    return { ok: false, status: res.status, text: res.body, chars, tookMs, error: `HTTP ${res.status}` };
+  }
+  return { ok: true, status: 200, text: res.body, chars, tookMs, error: void 0 };
+}
+function extractSetCookies(headers) {
+  const raw = [];
+  for (const [k, v] of Object.entries(headers)) {
+    if (k.toLowerCase() === "set-cookie") raw.push(v);
+  }
+  const out = [];
+  for (const line of raw) {
+    let cur = line;
+    const parts = [];
+    let idx = 0;
+    for (; ; ) {
+      const m = /,\s*([A-Za-z0-9_.-]+)=/.exec(cur.slice(idx));
+      if (!m || m.index === void 0) break;
+      parts.push(cur.slice(idx, idx + m.index));
+      idx += m.index + 1;
+    }
+    parts.push(cur.slice(idx));
+    for (const p of parts) {
+      cur = p.trim();
+      if (!cur) continue;
+      const pair = cur.split(";")[0]?.trim() ?? "";
+      if (pair.includes("=")) out.push(pair);
+    }
+  }
+  return out;
+}
+function mergeCookieJar(existing, incoming) {
+  const jar = /* @__PURE__ */ new Map();
+  const eat = (s) => {
+    for (const part of s.split(";")) {
+      const p = part.trim();
+      if (!p) continue;
+      const eq = p.indexOf("=");
+      if (eq <= 0) continue;
+      const k = p.slice(0, eq).trim();
+      const v = p.slice(eq + 1).trim();
+      if (v === "" || /^(deleted|expired)$/i.test(v)) jar.delete(k);
+      else jar.set(k, v);
+    }
+  };
+  eat(existing);
+  for (const c of incoming) eat(c);
+  return [...jar.entries()].map(([k, v]) => `${k}=${v}`).join("; ");
+}
+
 // src/mcloud/sign.ts
 var SALT_MAP = [
   [1, "seedMdYYLIZfbCxg"],
@@ -1298,6 +1365,10 @@ function rootOrDefault(base, fallback) {
 }
 
 // src/mcloud/tasks/base.ts
+function hostBase(deps, fallback) {
+  const b = (deps.baseUrl ?? "").trim();
+  return b === "" ? fallback : b.replace(/\/+$/, "");
+}
 function depsNowMs(deps) {
   return (deps.nowMs ?? Date.now)();
 }
@@ -1315,15 +1386,15 @@ function runTask(deps, spec, judge2) {
   const late = deps.lateMs ?? 0;
   if (spec.skipIfLaterThanMs !== void 0 && late > spec.skipIfLaterThanMs) {
     const mins = Math.round(late / 6e4);
-    const note2 = `错过太久（晚了 ${mins} 分钟，阈值 ${Math.round(spec.skipIfLaterThanMs / 6e4)} 分钟）→ 主动跳过`;
-    recordError(deps.store, spec.task, note2, deps.nowIso);
-    return { ok: true, skipped: true, note: note2 };
+    const note3 = `错过太久（晚了 ${mins} 分钟，阈值 ${Math.round(spec.skipIfLaterThanMs / 6e4)} 分钟）→ 主动跳过`;
+    recordError(deps.store, spec.task, note3, deps.nowIso);
+    return { ok: true, skipped: true, note: note3 };
   }
   const session = loadSession(deps.store);
   if (!session) {
-    const note2 = "未登录：state 里没有会话（见 docs/howto-session.md）";
-    recordError(deps.store, spec.task, note2, deps.nowIso);
-    return { ok: false, note: note2 };
+    const note3 = "还没有网页会话 —— 上面「换票」那一步说了原因";
+    recordError(deps.store, spec.task, note3, deps.nowIso);
+    return { ok: false, note: note3 };
   }
   const method = spec.method ?? EP_METHOD[spec.endpoint] ?? "GET";
   const url = resolveUrl(spec.endpoint, deps.baseUrl) + (spec.query ? `?${spec.query}` : "");
@@ -1353,10 +1424,23 @@ function runTask(deps, spec, judge2) {
       recordError(deps.store, spec.task, explained, deps.nowIso);
       return { ok: false, note: explained };
     }
-    const note2 = res.error ?? "未知失败";
+    var note2 = res.error ?? "未知失败";
+    if (res.env?.code === 90001) {
+      const exp = jwtExpiry(deps.store, deps.nowIso);
+      const clock = (iso) => {
+        const d = new Date(iso);
+        if (Number.isNaN(d.getTime())) return "刚才";
+        return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+      };
+      note2 = exp !== null && exp.expired ? `凭据过期了（今天 ${clock(exp.atIso)} 就到期）—— 去「账号」页重新导入会话` : "这一环要的票没被认（不是账号被踢）—— 重新导入会话最快";
+    }
     if (spec.okWhenError?.(note2)) {
       clearError(deps.store, spec.task, deps.nowIso);
-      return { ok: true, note: `上游说「${note2}」—— 按"已经完成"处理（见 okWhenError）` };
+      const plain = note2.replace(
+        /^code=(-?\d+)(?: msg=(.*))?$/,
+        (_m, _c, msg) => msg === void 0 || msg.trim() === "" ? "" : msg.trim()
+      );
+      return { ok: true, note: plain === "" ? "已经做过了" : `已经做过了（服务端说：${plain}）` };
     }
     recordError(deps.store, spec.task, note2, deps.nowIso);
     return { ok: false, note: note2 };
@@ -1443,6 +1527,33 @@ function redact(secret) {
   return `${secret.slice(0, 4)}…（共 ${secret.length} 字符）`;
 }
 var STATE_LAST_CHECK = "mcloud.session.last_check";
+function jwtExpiryOf(raw, nowIso) {
+  const parts = raw.split(".");
+  if (parts.length < 2) return null;
+  let payload;
+  try {
+    payload = fromUtf8(fromBase64(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
+  } catch {
+    return null;
+  }
+  let exp;
+  try {
+    exp = JSON.parse(payload).exp;
+  } catch {
+    return null;
+  }
+  if (typeof exp !== "number" || !Number.isFinite(exp)) return null;
+  const atMs = exp * 1e3;
+  const now = Date.parse(nowIso);
+  return {
+    atIso: new Date(atMs).toISOString(),
+    // `now` 坏了就当没过期（宁可不吓人）
+    expired: Number.isNaN(now) ? false : now >= atMs
+  };
+}
+function jwtExpiry(store2, nowIso) {
+  return jwtExpiryOf(loadSession(store2)?.jwt ?? "", nowIso);
+}
 function sessionStatus(store2, nowIso) {
   const s = loadSession(store2);
   const checkRaw = store2.getState(STATE_LAST_CHECK);
@@ -1477,7 +1588,8 @@ function sessionStatus(store2, nowIso) {
     userAgent: s?.userAgent ?? "",
     lastCheck,
     lastCheckOk,
-    lastCheckNote
+    lastCheckNote,
+    jwtExpiry: jwtExpiry(store2, nowIso)
   };
 }
 function verifySession(deps) {
@@ -1531,6 +1643,48 @@ var TASK_NAMES = [
 ];
 var STATE_LAST_TASKLIST = "mcloud.tasklist.last";
 
+// src/mcloud/taskAccounts.ts
+var SCHEDULED_TASKS = ["日常", "兑换", "直播"];
+function taskAccountsKey(task) {
+  return `mcloud.task.accounts.${task}`;
+}
+var DEFAULT_TASK_ACCOUNTS = { all: true, ids: [] };
+function loadTaskAccounts(store2, task) {
+  const raw = (store2.getState(taskAccountsKey(task)) ?? "").trim();
+  if (raw === "") return { ...DEFAULT_TASK_ACCOUNTS };
+  try {
+    const v = JSON.parse(raw);
+    const ids = Array.isArray(v.ids) ? v.ids.filter((x) => typeof x === "string") : [];
+    return { all: v.all === true, ids };
+  } catch {
+    return { ...DEFAULT_TASK_ACCOUNTS };
+  }
+}
+function saveTaskAccounts(store2, task, v, nowIso) {
+  store2.setState(taskAccountsKey(task), JSON.stringify({ all: v.all, ids: v.ids }), nowIso);
+}
+function resolveTaskAccounts(store2, task) {
+  const sel = loadTaskAccounts(store2, task);
+  const all = loadAccounts(store2);
+  const enabled = all.filter((a) => a.disabled !== true);
+  if (sel.all) return enabled.map((a) => a.id);
+  const want = new Set(sel.ids);
+  return enabled.filter((a) => want.has(a.id)).map((a) => a.id);
+}
+function taskAccountsView(store2, task) {
+  const sel = loadTaskAccounts(store2, task);
+  return {
+    all: sel.all,
+    picked: sel.ids,
+    resolved: resolveTaskAccounts(store2, task),
+    accounts: loadAccounts(store2).map((a) => ({
+      id: a.id,
+      label: a.label,
+      disabled: a.disabled === true
+    }))
+  };
+}
+
 // src/mcloud/groups.ts
 var GROUPS = [
   {
@@ -1557,8 +1711,8 @@ var GROUPS = [
     id: "cloud-write",
     title: "要用网盘",
     // ⚠ 措辞改过（2026-10-14）：原先写的是"会往你的网盘里写文件……想清楚再点"，
-    //    把**任务的目的**说成了风险。可任务的定义就是改上游状态 ——
-    //    "上传任务不上传文件"根本不是完成任务，"做任务"不落到上游那也不叫做过。
+    //    把**任务的目的**说成了风险。可任务的定义就是改服务端状态 ——
+    //    "上传任务不上传文件"根本不是完成任务，"做任务"不落到服务端那也不叫做过。
     //    写文件不是副作用，**它就是这一组任务本身**。要提醒的只是"它会占用你的网盘"。
     why: "这一组任务**本身就是往网盘写**（上传文件 / 建外链 / 发邮件）—— 不是副作用，是它的内容。会在你的网盘里留下东西",
     order: 5
@@ -1578,7 +1732,7 @@ var TASK_META = [
   // ── 插件自身 ──
   { name: "selftest", title: "沙箱自检", group: "plugin", kind: "Query", risk: "none", missed: "catch-up", deps: [], batch: false, hidden: false, implemented: true, note: "密码学/UTF-8/base64/SQLite 都跑一遍" },
   { name: "diag", title: "调度健康", group: "plugin", kind: "Query", risk: "none", missed: "catch-up", deps: [], batch: false, hidden: false, implemented: true, note: "记录每次触发的调度延迟（面板 F-001 的那条测量）" },
-  { name: "session-check", title: "会话体检", group: "plugin", kind: "Query", risk: "none", missed: "catch-up", deps: [], batch: false, hidden: false, implemented: true, note: "每天 7:50 先问一次上游还认不认这份凭据" },
+  { name: "session-check", title: "会话体检", group: "plugin", kind: "Query", risk: "none", missed: "catch-up", deps: [], batch: false, hidden: false, implemented: true, note: "每天 7:50 先问一次服务端还认不认这份凭据" },
   // H5 换票（三步）：原生凭据 → `jwttoken`。**这是插件能不能用的前提** ——
   // 之前只能靠人手从浏览器抄票，而票 2 小时即废（过期时所有任务一起回 90001，
   // 看起来像"账号被踢了"）。现在自己换、自己续，鉴权细节见 mcloud/h5session.ts。
@@ -1608,7 +1762,7 @@ var TASK_META = [
   { name: "fun-ai", title: "趣玩AI抽奖", group: "activity", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["activity-token"], batch: true, hidden: false, implemented: false, evidence: "no-ticket", note: "换票那步没抓到 ⇒ 做不了" },
   // 更正：整条链在 `/ycloud/msgPushOn/` 下、要**另一张票**（marketName=msgpushon /
   // sourceId=1062）。`task/status` 有实拍，`task/obtain` **零样本** ——
-  // "什么值该做什么"仍是旧项目口径，一条都没被上游证实过。
+  // "什么值该做什么"仍是旧项目口径，一条都没被服务端证实过。
   // ⚠️ 2026-10-14 修正认知：这一族与 `notice` **不是同一件事**（域/配方/端点全不同，
   //    见 tasks/msgPush.ts 的文件头对照表）。两步：问状态（只读）+ 领（写）。
   { name: "msg-push", title: "消息推送奖励", group: "activity", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "captured", note: "两步：问状态 + 领（`secondTaskStatus===2` 才领）。⚠ `pushOn===0` 与首次奖励都要用户去 App 手动" },
@@ -1629,7 +1783,7 @@ var TASK_META = [
   // 抓主页走的是原项目 `xiaohongshu.ts` 的公开 GET + 逐字移植的提取器（41 条黄金向量守着）。
   // 领小红花那一步（写、会入群足迹）**仍然没做** —— 所以 risk 维持 `ledger` 不变。
   { name: "live-room", title: "直播口令（只看）", group: "activity", kind: "Query", risk: "none", missed: "catch-up", deps: [], batch: false, hidden: false, implemented: true, evidence: "partial", note: "抓口令发布方的**公开**主页 + 列出口令（**不需要凭据**）；口令要人给（那边无法鉴权）" },
-  // 门（直播日程）：只读地问上游「今天开播了吗 / 下一场几点」。
+  // 门（直播日程）：只读地问服务端「今天开播了吗 / 下一场几点」。
   // ⚠ 它**不需要**会话（云盘那套），要的是**原生凭据**（换直播侧 JWT 用）——
   //   所以 deps 是 ['auth'] 而不是 ['jwt']。缺凭据时它如实失败并说清缺什么。
   // 证据等级 `captured`：mcloud 那边这一段是**实证**的（只读探针主动走过一遍，
@@ -1639,10 +1793,10 @@ var TASK_META = [
   // 它虽然记账，但**基本幂等**：同一条口令再领一次回 `200112`（已兑换过），不会重复发奖。
   // 所以 risk 是 `ledger` 而不是 `irreversible`。
   { name: "live-listen", title: "听弹幕口令（只读）", group: "activity", kind: "Query", risk: "none", missed: "catch-up", deps: ["basic"], batch: false, hidden: false, implemented: true, evidence: "captured", note: "真机验过：SockJS 握手 + PROVISION + 心跳（15s 一拍）+ ack + 弹幕文本进池（来源 danmaku）。一次调用读 ~1.6 秒（面板预算 2000ms），窗口默认 10 分钟；门关着时**一个请求都不发**" },
-  // 定时器：**只算时刻、零上游请求**（mcloud 的 `live_auto`）。
+  // 定时器：**只算时刻、零服务端请求**（mcloud 的 `live_auto`）。
   // 它和听弹幕那条链的分工写在 liveAuto.ts 模块头：定时器负责**叫醒**，
   // 链自己负责"窗口到点 → 收尾 → 下一拍重走门"。
-  { name: "live-auto", title: "直播自动定时", group: "activity", kind: "Query", risk: "none", missed: "skip", deps: ["basic"], batch: false, hidden: false, implemented: true, evidence: "captured", note: '照 mcloud 的 `live_auto`：时刻 = **最早的「下一场」+ 1 小时**（那一小时留给主播发口令）；每 5 分钟重算一次、**一个上游请求都不发**。听弹幕那条链被判"门关着"时就睡到那一刻（原来固定 5 分钟 ⇒ 一天白问 288 次门）。⚠ 面板的 cron 不能在运行时改表达式 ⇒ 精度最坏晚 5 分钟' },
+  { name: "live-auto", title: "直播自动定时", group: "activity", kind: "Query", risk: "none", missed: "skip", deps: ["basic"], batch: false, hidden: false, implemented: true, evidence: "captured", note: '照 mcloud 的 `live_auto`：时刻 = **最早的「下一场」+ 1 小时**（那一小时留给主播发口令）；每 5 分钟重算一次、**一个服务端请求都不发**。听弹幕那条链被判"门关着"时就睡到那一刻（原来固定 5 分钟 ⇒ 一天白问 288 次门）。⚠ 面板的 cron 不能在运行时改表达式 ⇒ 精度最坏晚 5 分钟' },
   { name: "live-draw", title: "领小红花（写）", group: "activity", kind: "Action", risk: "ledger", missed: "skip", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "partial", note: "六步链 9+N 个请求，一次调用一步；**默认关**。同口令重领回 200112 ⇒ 基本幂等。⚠ 请求头形状未在真账号上验过" },
   // ── 要用网盘（未实现；原因见各条的 note，**不是**"它会写网盘"）──
   // ⚠ 未实现 —— 而理由**不是**"它会写网盘"（那是它的内容，不是风险）。
@@ -1677,14 +1831,14 @@ var TASK_META = [
   //    所以**默认不开**：一跑就 404 的任务开着只会烧请求并让人以为"跑过了"。见 F-022。
   { name: "ai-avatar", title: "AI 头像生成与抽奖", group: "activity", kind: "Action", risk: "write-cloud", missed: "skip", deps: ["basic+jwt"], batch: false, hidden: true, implemented: false, evidence: "dead", note: "八口全在 `/market/rabactive/*`，今天真机 404/405（已排除签名与 marketName）⇒ 默认关。恢复条件与读数见 F-022" },
   // ── 高风险（未实现）──
-  // ✅ 2026-10-14 实现并**真机跑通**（50 豆换到「移动云盘100G云空间月卡」，上游回 oid，
+  // ✅ 2026-10-14 实现并**真机跑通**（50 豆换到「移动云盘100G云空间月卡」，服务端回 oid，
   //    余额 9238 → 9188 正好少 50）。
   //
   // 口径（用户定的）：**优先发出去** —— 清单判据说不能兑、余额看着不够，都**照样发**
-  // （那两处是本地估算，上游仍可能放行；失败不扣豆）。
+  // （那两处是本地估算，服务端仍可能放行；失败不扣豆）。
   // ⚠ 但**滑块**不属这一类：offset 算错那一枪**不可能成功**（回 514、不成交也不扣豆），
   //    所以算不出就不发 —— 那不是"少一次机会"，是"多一次白打"。
-  { name: "exchange", title: "兑换奖品", group: "risky", kind: "Action", risk: "spend", missed: "skip", deps: ["jwt", "slider"], batch: false, hidden: false, implemented: true, evidence: "captured", note: "枪序：清单 → 余额 → 预热×2 → 取滑块本地解 → 下单 → 查余额差。**成交判据是余额差**（上游没有幂等，那句话不算数）；滑块算不出就不发" },
+  { name: "exchange", title: "兑换奖品", group: "risky", kind: "Action", risk: "spend", missed: "skip", deps: ["jwt", "slider"], batch: false, hidden: false, implemented: true, evidence: "captured", note: "枪序：清单 → 余额 → 预热×2 → 取滑块本地解 → 下单 → 查余额差。**成交判据是余额差**（服务端没有幂等，那句话不算数）；滑块算不出就不发" },
   // ⚠️ 2026-10-14 更正一处**我口头说过的错话**：我曾讲这条"会换掉现有授权"——
   //    那句话**没有出处**。`auth_refresh.rs` 的叙述是「**续期**」：刷新返回一个自带
   //    30 天有效期的新 token，并被编进后续请求的 `Authorization`；而**旧凭据会不会被
@@ -1757,6 +1911,37 @@ function sandboxCaps() {
 }
 function hasBigInt() {
   return typeof globalThis.BigInt === "function";
+}
+
+// src/store/scoped.ts
+var WRAPPED = Symbol.for("__mcloud_scoped_store__");
+var RAW = Symbol.for("__mcloud_raw_store__");
+var ACCT = Symbol.for("__mcloud_scoped_account__");
+function scopedAccountOf(store2) {
+  const v = store2[ACCT];
+  return typeof v === "string" && v !== "" ? v : void 0;
+}
+function rawStoreOf(s) {
+  const raw = s[RAW];
+  return raw ?? s;
+}
+function scoped(base, acctId) {
+  if (base[WRAPPED] === true) {
+    throw new Error(
+      "store 已经被 scoped() 包过一次了 —— 双重包装会让 `mcloud.acct.*` 也去查登记表然后抛错。"
+    );
+  }
+  const wrapped = {
+    ...base,
+    getState: (key) => routeGet(base, key, acctId),
+    setState: (key, value, nowIso) => routeSet(base, key, value, nowIso, acctId)
+  };
+  Object.defineProperty(wrapped, WRAPPED, { value: true, enumerable: false });
+  if (acctId !== void 0 && acctId !== "") {
+    Object.defineProperty(wrapped, ACCT, { value: acctId, enumerable: false });
+  }
+  Object.defineProperty(wrapped, RAW, { value: base, enumerable: false });
+  return wrapped;
 }
 
 // src/crypto/aes.ts
@@ -3474,6 +3659,11 @@ function authFingerprint(sha256hex) {
 // src/mcloud/sessionExchange.ts
 var STATE_AUTH = "mcloud.h5.auth";
 function loadAuthRaw(store2) {
+  const scopedId = scopedAccountOf(store2);
+  if (scopedId !== void 0) {
+    const one = loadAccounts(store2).find((a) => a.id === scopedId);
+    if (one !== void 0) return one.auth;
+  }
   const cur = currentAccount(store2);
   if (cur !== void 0) return cur.auth;
   return store2.getState(STATE_AUTH) ?? "";
@@ -3496,9 +3686,41 @@ function authStatus(store2) {
   return { present: true, fingerprint: authFingerprint(sha256Hex(v)), length: v.length };
 }
 function scopedKey(base, store2, recipe) {
+  const acct = scopedAccountOf(store2) ?? currentAccount(store2)?.id;
+  if (acct === void 0 && recipe === FALLBACK_RECIPE) return base;
+  return `${base}.${acct ?? "default"}.${recipe}`;
+}
+function jwtUserDomainId(jwt) {
+  const parts = jwt.split(".");
+  if (parts.length < 2) return null;
+  let payload;
+  try {
+    const b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const padded = b64 + "=".repeat((4 - b64.length % 4) % 4);
+    payload = JSON.parse(fromUtf8(fromBase64(padded)));
+  } catch {
+    return null;
+  }
+  const top = payload["userDomainId"];
+  if (typeof top === "string" && top !== "") return top;
+  const sub = payload["sub"];
+  if (typeof sub === "string" && sub.trim().startsWith("{")) {
+    try {
+      const inner = JSON.parse(sub);
+      const v = inner["userDomainId"];
+      if (typeof v === "string" && v !== "") return v;
+    } catch {
+    }
+  }
+  return null;
+}
+function backfillDomainFromJwt(store2, jwt, nowIso) {
   const cur = currentAccount(store2);
-  if (cur === void 0 && recipe === FALLBACK_RECIPE) return base;
-  return `${base}.${cur?.id ?? "default"}.${recipe}`;
+  if (cur === void 0 || (cur.userDomainId ?? "") !== "") return null;
+  const dom = jwtUserDomainId(jwt);
+  if (dom === null) return null;
+  setAccountDomain(store2, cur.id, dom, nowIso);
+  return dom;
 }
 function jwtKey(store2, recipe = FALLBACK_RECIPE) {
   return scopedKey(STATE_JWT, store2, recipe);
@@ -3540,7 +3762,7 @@ function runExchangeStep(deps, recipe = FALLBACK_RECIPE) {
   const st = loadExchange(deps.store, recipe);
   const auth = loadAuthRaw(deps.store) || null;
   if (!st || st.step === "done" || !auth) {
-    return { ok: true, note: "没有待换票的任务（先去界面上贴一份原生凭据）", done: true };
+    return { ok: true, note: "今天不用换票", done: true };
   }
   const rp = recipeParams(st.recipe ?? recipe);
   const finish3 = (s, ok, note2) => {
@@ -3622,6 +3844,7 @@ function runExchangeStep(deps, recipe = FALLBACK_RECIPE) {
     fingerprint: st.fingerprint
   };
   deps.store.setState(jwtKey(deps.store, recipe), JSON.stringify(rec), deps.nowIso);
+  backfillDomainFromJwt(deps.store, p.value.jwt, deps.nowIso);
   const sess = loadSession(deps.store);
   const needDevice = (sess?.deviceId ?? "") === "";
   if (needDevice) {
@@ -3674,6 +3897,16 @@ function failStep(deps, st, note2) {
   return { ok: false, note: note2, done: true };
 }
 var RETRY_AFTER_MS = 30 * 60 * 1e3;
+function needExchange(store2, nowMs, recipe = FALLBACK_RECIPE) {
+  if (loadAuthRaw(store2) === "") return false;
+  if (jwtFresh(store2, nowMs, recipe)) return false;
+  const st = loadExchange(store2, recipe);
+  if (!st) return true;
+  if (st.step !== "done") return true;
+  if (st.ok === true) return true;
+  const at = Date.parse(st.finishedAt ?? st.startedAt);
+  return !Number.isFinite(at) || nowMs - at > RETRY_AFTER_MS;
+}
 function maskMobile(m) {
   return m.length >= 7 ? `${m.slice(0, 3)}****${m.slice(-4)}` : "***";
 }
@@ -3703,34 +3936,6 @@ function parseAuthorization(raw) {
 function rebuildAuthorization(platform, phone, token) {
   return `Basic ${toBase64(utf8(`${platform}:${phone}:${token}`))}`;
 }
-function jwtPayload(jwt) {
-  const parts = jwt.split(".");
-  if (parts.length !== 3) return null;
-  const seg = parts[1].replace(/-/g, "+").replace(/_/g, "/");
-  const padded = seg + "=".repeat((4 - seg.length % 4) % 4);
-  try {
-    const v = JSON.parse(fromUtf8(fromBase64(padded)));
-    return v && typeof v === "object" ? v : null;
-  } catch {
-    return null;
-  }
-}
-function jwtUserDomainId(jwt) {
-  const p = jwtPayload(jwt);
-  if (!p) return null;
-  const top = p.userDomainId;
-  if (typeof top === "string" && top !== "") return top;
-  const sub = p.sub;
-  if (typeof sub === "string" && sub.trim().startsWith("{")) {
-    try {
-      const inner = JSON.parse(sub);
-      const v = inner.userDomainId;
-      if (typeof v === "string" && v !== "") return v;
-    } catch {
-    }
-  }
-  return null;
-}
 function clientTypeFor(platform) {
   return platform === "pc" ? PC_CLIENT_TYPE : APP_CLIENT_TYPE;
 }
@@ -3749,7 +3954,8 @@ function escapeJsonString(s) {
   return out;
 }
 function refreshRequest(raw, userDomainId, platform) {
-  const body = `{"userDomainId":"${escapeJsonString(userDomainId)}","clientType":"${escapeJsonString(clientTypeFor(platform))}"}`;
+  const domain = userDomainId === "" ? "" : `"userDomainId":"${escapeJsonString(userDomainId)}",`;
+  const body = `{${domain}"clientType":"${escapeJsonString(clientTypeFor(platform))}"}`;
   return {
     url: `${REFRESH_BASE}${REFRESH_PATH}`,
     method: "POST",
@@ -3765,17 +3971,19 @@ function parseRefresh(body) {
   try {
     v = JSON.parse(body);
   } catch (e) {
-    return { ok: false, error: `refreshToken 响应不是 JSON：${e instanceof Error ? e.message : String(e)}` };
+    return { ok: false, error: `回来的不是 JSON：${e instanceof Error ? e.message : String(e)}` };
   }
   const code = v.code;
   const codeOk = typeof code === "string" && (code === "0000" || code === "0") || typeof code === "number" && code === 0;
   const success = typeof v.success === "boolean" ? v.success : codeOk;
   if (!success || !codeOk) {
-    const msg = String(v.message ?? v.msg ?? "(无消息)");
-    return { ok: false, error: `refreshToken 失败：code=${String(code ?? "?")} ${msg}` };
+    const msg = String(v.message ?? v.msg ?? "");
+    const c = String(code ?? "");
+    if (c === "05050009") return { ok: false, error: "这个号已经失效了 —— 重新登录一次" };
+    return { ok: false, error: msg === "" ? "服务端拒绝了这一枪" : msg };
   }
   const data = v.data;
-  if (!data || typeof data !== "object") return { ok: false, error: "refreshToken 响应没有 data" };
+  if (!data || typeof data !== "object") return { ok: false, error: "没拿到新的登录信息" };
   const token = data.token;
   if (typeof token !== "string" || token === "") {
     return { ok: false, error: "refreshToken 响应没有 data.token" };
@@ -3786,8 +3994,8 @@ function parseRefresh(body) {
 }
 function applyRefreshResult(raw, res) {
   const seg = parseAuthorization(raw);
-  if (!seg) return { ok: false, error: "当前凭据解不开（不是 `Basic base64(端别:手机号:token)`），无法重拼" };
-  if (seg.phone === "") return { ok: false, error: "当前凭据里没有手机号段，无法重拼" };
+  if (!seg) return { ok: false, error: "存的那串登录信息读不出来 —— 重新登录一次" };
+  if (seg.phone === "") return { ok: false, error: "那串登录信息里没有手机号 —— 重新登录一次" };
   return { ok: true, raw: rebuildAuthorization(seg.platform, seg.phone, res.token) };
 }
 var DEFAULT_LEAD_DAYS = 10;
@@ -3814,17 +4022,17 @@ function daysLeft(expireMs, nowMs) {
 }
 function assertUsable(raw) {
   const seg = parseAuthorization(raw);
-  if (!seg) return { ok: false, error: "新凭据解不开（不是 `Basic base64(端别:手机号:token)`）" };
+  if (!seg) return { ok: false, error: "服务端回来的东西读不出来" };
   if (seg.platform === "" || seg.phone === "" || seg.token === "") {
-    return { ok: false, error: "新凭据有段是空的，拒绝落库" };
+    return { ok: false, error: "服务端回来的东西是空的，没存" };
   }
   return { ok: true };
 }
 var STATE_LAST = "mcloud.auth.refresh.last";
-function runAuthRefresh(deps, force = false, leadDays = DEFAULT_LEAD_DAYS) {
-  const raw = loadAuthRaw(deps.store);
+function runAuthRefresh(deps, force = false, leadDays = DEFAULT_LEAD_DAYS, target = {}) {
+  const raw = target.auth ?? loadAuthRaw(deps.store);
   if (raw === "") {
-    return { ok: true, skipped: true, note: "没有原生凭据，谈不上续期（先贴一份）" };
+    return { ok: true, skipped: true, note: "还没有账号 —— 先加一个" };
   }
   const nowMs = Date.parse(deps.nowIso);
   const expireMs = credentialExpireMs(raw);
@@ -3833,7 +4041,7 @@ function runAuthRefresh(deps, force = false, leadDays = DEFAULT_LEAD_DAYS) {
     return {
       ok: true,
       skipped: true,
-      note: "凭据解不开（过期段也没有）—— 这一档只能重新贴一份，续期接口帮不上"
+      note: "这条存的东西读不出来 —— 要重新登录一次"
     };
   }
   if (decision === "not-yet") {
@@ -3841,28 +4049,25 @@ function runAuthRefresh(deps, force = false, leadDays = DEFAULT_LEAD_DAYS) {
     return {
       ok: true,
       skipped: true,
-      note: `凭据还有 ${d2 ?? "?"} 天，离提前量（${leadDays} 天）还远，不打上游`
+      note: `还有 ${d2 ?? "?"} 天，不用刷`
     };
   }
   const jwt = loadJwt(deps.store);
-  const domain = jwt ? jwtUserDomainId(jwt.jwt) : null;
-  if (!domain) {
-    return {
-      ok: false,
-      note: "该续期，但手里没有可用的 jwttoken ⇒ 取不到 userDomainId（它的唯一本地来源）。先跑一次换票"
-    };
-  }
+  const targetDomain = target.accountId === void 0 ? null : loadAccounts(deps.store).find((a) => a.id === target.accountId)?.userDomainId ?? null;
+  const domain = targetDomain ?? currentAccountDomain(deps.store) ?? (jwt ? jwtUserDomainId(jwt.jwt) : null) ?? "";
   const seg = parseAuthorization(raw);
   const req = refreshRequest(raw, domain, seg.platform);
   const res = callRawText(deps.transport, req);
-  if (!res.ok) return { ok: false, note: `续期失败：${res.error ?? "未知失败"}` };
+  if (!res.ok) return { ok: false, note: `没刷成：${res.error ?? "连不上"}` };
   const parsed = parseRefresh(res.text);
-  if (!parsed.ok || !parsed.result) return { ok: false, note: parsed.error ?? "续期失败" };
+  if (!parsed.ok || !parsed.result) return { ok: false, note: `没刷成：${parsed.error ?? "看不懂回来的东西"}` };
   const applied = applyRefreshResult(raw, parsed.result);
-  if (!applied.ok) return { ok: false, note: applied.error };
+  if (!applied.ok) return { ok: false, note: `没刷成：${applied.error}` };
   const usable2 = assertUsable(applied.raw);
-  if (!usable2.ok) return { ok: false, note: `拒绝落库：${usable2.error}` };
-  deps.store.setState(STATE_AUTH, applied.raw, deps.nowIso);
+  if (!usable2.ok) return { ok: false, note: `没存下来：${usable2.error}` };
+  const who = target.accountId !== void 0 ? loadAccounts(deps.store).find((a) => a.id === target.accountId) : currentAccount(deps.store);
+  if (who !== void 0) setAccountAuth(deps.store, who.id, applied.raw, deps.nowIso);
+  else deps.store.setState(STATE_AUTH, applied.raw, deps.nowIso);
   deps.store.setState(STATE_LAST, JSON.stringify({
     at: deps.nowIso,
     expireSeconds: parsed.result.expireSeconds ?? null,
@@ -3874,7 +4079,8 @@ function runAuthRefresh(deps, force = false, leadDays = DEFAULT_LEAD_DAYS) {
   const d = daysLeft(newExpire, nowMs);
   return {
     ok: true,
-    note: `凭据已续期（旧尾 ${seg.token.slice(-6)} → 新尾 ${parsed.result.token.slice(-6)}；上游说还能用 ${parsed.result.expireSeconds ?? "?"} 秒` + (d === void 0 ? "" : `，新过期还剩 ${d} 天`) + "）—— 已重起一轮换票，让票也来自新凭据"
+    raw: applied.raw,
+    note: d === void 0 ? "已续期" : `已续期，还能用 ${d} 天`
   };
 }
 
@@ -4570,7 +4776,12 @@ function verdictOf(p) {
   if (p.monthLimit !== void 0 && p.received !== void 0 && p.received >= p.monthLimit) {
     return "month-limit";
   }
-  if (p.limit === void 0) return "unknown";
+  if (p.limit === void 0) return "limit-missing";
+  if (p.limit === LIMIT_AVAILABLE) {
+    if (p.minRemainderCount === 0) return "min-remainder-zero";
+    if (p.count !== void 0 && p.count <= 0) return "sold-out";
+    if (p.dailyRemainderCount !== void 0 && p.dailyRemainderCount <= 0) return "daily-empty";
+  }
   switch (p.limit) {
     case LIMIT_AVAILABLE:
       return "ok";
@@ -4588,10 +4799,14 @@ var VERDICT_TEXT = {
   ok: "可兑",
   tomorrow: "明日再来",
   exchanged: "本件本月已兑",
-  "group-exchanged": "本组本月已兑",
+  "group-exchanged": "这一组本月兑过了",
+  "limit-missing": "移动云盘没给可兑状态",
+  "min-remainder-zero": "已抢光",
+  "sold-out": "池子已兑完",
+  "daily-empty": "今日已抢完",
   offline: "已下架",
   "month-limit": "本月额度可能已用完",
-  unknown: "判不了"
+  unknown: "移动云盘没给可兑状态"
 };
 function asInt(v) {
   if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
@@ -4634,6 +4849,8 @@ function parsePrize(raw) {
     count: asInt(o.count),
     totalCount: asInt(o.totalCount ?? o.total_count),
     dailyRemainderCount: asInt(o.dailyRemainderCount ?? o.daily_remainder_count),
+    dailyCount: asInt(o.dailyCount ?? o.daily_count),
+    minRemainderCount: asInt(o.minRemainderCount ?? o.min_remainder_count),
     onLine: asInt(o.onLine ?? o.on_line),
     startTime: asStr(o.startTime ?? o.start_time),
     endTime: asStr(o.endTime ?? o.end_time)
@@ -4686,6 +4903,7 @@ function runExchangeList(deps) {
       const s = summarizeList(prizes);
       const reading = { at: deps.nowIso, groups: groups.length, ...s };
       deps.store.setState(STATE_LIST, JSON.stringify(reading), deps.nowIso);
+      savePickCache(deps.store, prizes, deps.nowIso);
       const names = s.ok.slice(0, 3).map(
         (x) => x.price === void 0 ? x.name ?? "#" + x.prizeId : `${x.name ?? "#" + x.prizeId}(${x.price}豆)`
       );
@@ -4705,6 +4923,85 @@ function readExchangeList(store2) {
   } catch {
     return null;
   }
+}
+var STATE_PICK = "mcloud.exchangelist.pick";
+function toPickItems(prizes) {
+  const out = [];
+  for (const p of prizes) {
+    const name = p.name?.trim();
+    if (name === void 0 || name === "") continue;
+    const item = { name, verdict: verdictOf(p) };
+    if (p.prizeId !== void 0) item.id = p.prizeId;
+    if (p.groupId !== void 0) item.groupId = p.groupId;
+    if (p.price !== void 0) item.price = p.price;
+    if (p.dailyRemainderCount !== void 0) item.remain = p.dailyRemainderCount;
+    if (p.count !== void 0) item.count = p.count;
+    if (p.totalCount !== void 0) item.totalCount = p.totalCount;
+    if (p.dailyRemainderCount !== void 0) item.dailyRemainderCount = p.dailyRemainderCount;
+    if (p.dailyCount !== void 0) item.dailyCount = p.dailyCount;
+    if (p.minRemainderCount !== void 0) item.minRemainderCount = p.minRemainderCount;
+    if (p.startTime !== void 0) item.startTime = p.startTime;
+    if (p.endTime !== void 0) item.endTime = p.endTime;
+    if (p.monthLimit !== void 0) item.monthLimit = p.monthLimit;
+    if (p.received !== void 0) item.received = p.received;
+    out.push(item);
+  }
+  return out;
+}
+function savePickCache(store2, prizes, nowIso) {
+  const cache = { date: nowIso.slice(0, 10), items: toPickItems(prizes) };
+  store2.setState(STATE_PICK, JSON.stringify(cache), nowIso);
+}
+function readPickCache(store2, nowIso) {
+  const raw = store2.getState(STATE_PICK);
+  if (raw === null || raw === void 0 || raw === "") return null;
+  const today = nowIso.slice(0, 10);
+  let c = null;
+  try {
+    const v = JSON.parse(raw);
+    if (Array.isArray(v.items)) {
+      c = { date: typeof v.date === "string" ? v.date : "", items: v.items };
+    }
+  } catch {
+    c = null;
+  }
+  if (c === null || c.date !== today) {
+    store2.setState(STATE_PICK, "", nowIso);
+    return null;
+  }
+  return c;
+}
+var STATE_SUBS = "mcloud.exchange.subs";
+function readSubscriptions(store2) {
+  const raw = store2.getState(STATE_SUBS);
+  if (!raw) return [];
+  try {
+    const v = JSON.parse(raw);
+    if (!Array.isArray(v)) return [];
+    const out = [];
+    for (const x of v) {
+      if (x === null || typeof x !== "object") continue;
+      const o = x;
+      const name = typeof o.name === "string" ? o.name.trim() : "";
+      if (name === "") continue;
+      const id = typeof o.id === "number" && Number.isFinite(o.id) ? Math.trunc(o.id) : void 0;
+      out.push(id === void 0 ? { name } : { id, name });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+function toggleSubscription(store2, sub, on, nowIso) {
+  const name = sub.name.trim();
+  if (name === "") return readSubscriptions(store2);
+  const same = (x) => sub.id !== void 0 ? x.id === sub.id : x.name === name;
+  const cur = readSubscriptions(store2).filter((x) => !same(x));
+  if (on) {
+    cur.push(sub.id === void 0 ? { name } : { id: sub.id, name });
+  }
+  store2.setState(STATE_SUBS, JSON.stringify(cur), nowIso);
+  return cur;
 }
 
 // src/mcloud/tasks/exchangeOrder.ts
@@ -4857,7 +5154,7 @@ function runOrderStep(deps) {
     const res = callRawText(
       deps.transport,
       signedReq(deps, {
-        url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/signin/page/exchangeList?client=app&clientVersion=${encodeURIComponent(EXCHANGE_CLIENT_VERSION)}`,
+        url: `${hostBase(deps, MCLOUD_HOST)}/ycloud/signin/page/exchangeList?client=app&clientVersion=${encodeURIComponent(EXCHANGE_CLIENT_VERSION)}`,
         method: "GET"
       })
     );
@@ -4876,7 +5173,7 @@ function runOrderStep(deps) {
   if (step === "balance") {
     const res = callRawText(
       deps.transport,
-      signedReq(deps, { url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/signin/page/infoV3?client=app`, method: "GET" })
+      signedReq(deps, { url: `${hostBase(deps, MCLOUD_HOST)}/ycloud/signin/page/infoV3?client=app`, method: "GET" })
     );
     if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? "未知失败"}` };
     let balance;
@@ -4911,7 +5208,7 @@ function runOrderStep(deps) {
     const res = callRawText(
       deps.transport,
       signedReq(deps, {
-        url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/visitlog/journaling?module=uservisit&optkeyword=${encodeURIComponent(keyword)}&sourceid=1002&marketName=${encodeURIComponent(VISIT_LOG_MARKET_NAME)}`,
+        url: `${hostBase(deps, MCLOUD_HOST)}/ycloud/visitlog/journaling?module=uservisit&optkeyword=${encodeURIComponent(keyword)}&sourceid=1002&marketName=${encodeURIComponent(VISIT_LOG_MARKET_NAME)}`,
         method: "POST",
         body: ""
       })
@@ -4928,7 +5225,7 @@ function runOrderStep(deps) {
     const res = callRawText(
       deps.transport,
       signedReq(deps, {
-        url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/auth-service/slide/getSlide`,
+        url: `${hostBase(deps, MCLOUD_HOST)}/ycloud/auth-service/slide/getSlide`,
         method: "POST",
         // ⚠ 这一条用 **form** content-type（不是 JSON）—— 逐接口的，不是一刀切
         contentType: SLIDE_FORM_CONTENT_TYPE,
@@ -4991,7 +5288,7 @@ function runOrderStep(deps) {
     if (st.offset === void 0) return done("内部状态缺 offset，这一单作废（不发一个没算出来的数）", false);
     const body = `{"prizeId":${plan.prizeId},"client":"app","clientVersion":"${EXCHANGE_CLIENT_VERSION}","puzzleOffset":${st.offset},"smsCode":"","deviceId":"${deviceId}"}`;
     const req = signedReq(deps, {
-      url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/signin/page/exchangeV3`,
+      url: `${hostBase(deps, MCLOUD_HOST)}/ycloud/signin/page/exchangeV3`,
       method: "POST",
       body,
       isDeviceId: true
@@ -5017,13 +5314,13 @@ function runOrderStep(deps) {
     }
     deps.store.setState(STATE_ORDERED_HOUR, hourKey(depsNowMs(deps)), deps.nowIso);
     saveState(deps, { ...st, step: "verify" });
-    return { ok: true, note: `${label}：上游回 ${JSON.stringify(env0(res.text)).slice(0, 140)} —— 下一步查余额差（**那句话不算数**）` };
+    return { ok: true, note: `${label}：服务端回 ${JSON.stringify(env0(res.text)).slice(0, 140)} —— 下一步查余额差（**那句话不算数**）` };
   }
   if (step === "verify") {
     const before = deps.store.getState(STATE_BASE);
     const res = callRawText(
       deps.transport,
-      signedReq(deps, { url: `${deps.baseUrl ?? MCLOUD_HOST}/ycloud/signin/page/infoV3?client=app`, method: "GET" })
+      signedReq(deps, { url: `${hostBase(deps, MCLOUD_HOST)}/ycloud/signin/page/infoV3?client=app`, method: "GET" })
     );
     if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? "未知失败"}` };
     let after;
@@ -5038,7 +5335,7 @@ function runOrderStep(deps) {
     }
     const delta = Number(before) - after;
     if (delta > 0) return done(`${label}：✅ 成交（余额 ${before} → ${after}，扣了 ${delta} 豆）`);
-    return done(`${label}：❌ 没成交（余额 ${before} → ${after}，没扣豆）—— 上游那句话不算数，只有余额差算数`, false);
+    return done(`${label}：❌ 没成交（余额 ${before} → ${after}，没扣豆）—— 服务端那句话不算数，只有余额差算数`, false);
   }
   return { ok: false, note: `不认识的步骤「${step}」` };
 }
@@ -5486,6 +5783,85 @@ function safeDecode(s) {
   }
 }
 
+// src/mcloud/scheduleCron.ts
+var MIN = 0;
+var MAX_HOUR = 23;
+function parseNum(s, min, max2) {
+  if (!/^\d+$/.test(s)) throw new Error(`不是数字：${s}`);
+  const n = Number(s);
+  if (n < min || n > max2) throw new Error(`超出范围：${s}`);
+  return n;
+}
+function parseField(field, min, max2) {
+  const f = field.trim();
+  if (f === "") throw new Error("cron 字段不能为空");
+  if (f === "*") return null;
+  const out = /* @__PURE__ */ new Set();
+  for (const part of f.split(",")) {
+    const p = part.trim();
+    if (p === "") throw new Error("cron 字段里有空项");
+    const base = p.split("/")[0];
+    const stepRaw = p.split("/")[1];
+    const step = stepRaw === void 0 ? 1 : parseNum(stepRaw, 1, 999);
+    let start = min;
+    let end = max2;
+    if (base !== "*") {
+      if (base.includes("-")) {
+        const [a, b] = base.split("-");
+        start = parseNum(a, min, max2);
+        end = parseNum(b, min, max2);
+        if (start > end) throw new Error(`范围反了：${base}`);
+      } else {
+        start = parseNum(base, min, max2);
+        end = start;
+      }
+    }
+    for (let n = start; n <= end; n += step) out.add(n);
+  }
+  return [...out].sort((a, b) => a - b);
+}
+function parseCron(expr) {
+  const parts = expr.trim().split(/\s+/);
+  if (parts.length !== 5) throw new Error("cron 要 5 段：分 时 日 月 周");
+  const minute = parseField(parts[0], 0, 59);
+  if (minute === null || minute.length !== 1 || minute[0] !== 0) {
+    throw new Error("分钟只能是 0（抢兑点都是整点）");
+  }
+  const hoursRaw = parseField(parts[1], MIN, MAX_HOUR);
+  const hours2 = hoursRaw ?? Array.from({ length: MAX_HOUR + 1 }, (_, i) => i);
+  const dom = parseField(parts[2], 1, 31);
+  const month = parseField(parts[3], 1, 12);
+  const dow = parseField(parts[4], 0, 7);
+  return {
+    hours: hours2,
+    dom,
+    month,
+    dow: dow === null ? null : [...new Set(dow.map((d) => d === 7 ? 0 : d))].sort((a, b) => a - b)
+  };
+}
+function dayMatches(spec, d) {
+  if (spec.month !== null && !spec.month.includes(d.getMonth() + 1)) return false;
+  const domOk = spec.dom === null || spec.dom.includes(d.getDate());
+  const dowOk = spec.dow === null || spec.dow.includes(d.getDay());
+  if (spec.dom !== null && spec.dow !== null) return domOk || dowOk;
+  return domOk && dowOk;
+}
+function nextCronTargetMs(expr, nowMs) {
+  const spec = parseCron(expr);
+  const base = new Date(nowMs);
+  for (let day = 0; day < 370; day += 1) {
+    const d = new Date(base.getTime());
+    d.setDate(base.getDate() + day);
+    if (!dayMatches(spec, d)) continue;
+    for (const h of spec.hours) {
+      const t = new Date(d.getTime());
+      t.setHours(h, 0, 0, 0);
+      if (t.getTime() >= nowMs) return t.getTime();
+    }
+  }
+  return null;
+}
+
 // src/mcloud/runLog.ts
 var RUN_LOG_KEY = "mcloud.run.log";
 function readRuns(store2) {
@@ -5510,6 +5886,8 @@ function readRun(store2, id) {
 function summarize(r) {
   return {
     id: r.id,
+    ...r.acct === void 0 ? {} : { acct: r.acct },
+    ...r.who === void 0 ? {} : { who: r.who },
     at: r.at,
     ms: r.ms,
     ok: r.ok,
@@ -5522,6 +5900,24 @@ function summarize(r) {
 }
 function recentRuns(store2, task, limit = 5) {
   return readRunsOf(store2, task).slice(0, limit).map(summarize);
+}
+
+// src/mcloud/logRing.ts
+var RING_KEY = "mcloud.log.ring";
+function parse3(raw) {
+  if (raw === "") return [];
+  try {
+    const v = JSON.parse(raw);
+    if (!Array.isArray(v)) return [];
+    return v.filter(
+      (x) => typeof x === "object" && x !== null && typeof x.m === "string"
+    );
+  } catch {
+    return [];
+  }
+}
+function readRing(store2) {
+  return parse3(store2.getState(RING_KEY) ?? "");
 }
 
 // src/drain.ts
@@ -5563,31 +5959,148 @@ function drain(step, deps, opts) {
       return { ok: false, idle: false, steps, note: `${opts.label}：第 ${steps} 步失败 —— ${r.note}`, notes };
     }
     if (r.idle || r.skipped) {
-      return { ok: true, idle: true, steps, note: `${opts.label}：${steps} 步走完 —— ${r.note}`, notes };
+      return { ok: true, idle: true, steps, note: brief(r.note, opts.label), notes };
     }
   }
   return {
     ok: true,
     idle: false,
     steps,
-    note: `${opts.label}：走到步数上限（${opts.maxSteps} 步），下一次接着走`,
+    // ⚠ 这里**不说**"还有没做完的"。踩过的坑：领取AI豆的队列刚好在第 12 步领空，
+    //   而"到上限"和"刚好做完"从这一步看不出区别 —— 于是每一趟都说"还有没做完的"，
+    //   用户看到的是一句假话（他的原话：「领取云朵应该没有步数啊」）。
+    //   对用户只报**结论**：成了。真想看走到哪一步，运行记录里每一步都在。
+    // 同样用最后一步自己的话（跑到上限时，它刚做完的那件事就是结论），
+    // 但**截短**：这一格要进 runs 表当一行摘要，不能塞整段原话。
+    note: brief(lastNote ?? "", opts.label),
     notes
   };
 }
+var BRIEF_MAX = 40;
+function brief(s, label) {
+  const t = s.trim();
+  return t.length === 0 || t.length > BRIEF_MAX ? `${label}：好了` : t;
+}
+
+// src/mcloud/tokenGate.ts
+var LoginExpiredError = class extends Error {
+  constructor(message = "这一环要的票没被认（90001）") {
+    super(message);
+    this.name = "LoginExpiredError";
+  }
+};
+var MAX_RESETS = 2;
+function exchangeOnce(deps, recipe) {
+  const auth = loadAuthRaw(deps.store);
+  if (auth === "") return { ok: false, note: "没有可换票的原生凭据 —— 先加一个账号" };
+  const started = startExchange(deps.store, auth, deps.nowIso, recipe);
+  if (!started.ok) return { ok: false, note: started.error ?? "这串登录信息用不了" };
+  const taskDeps = {
+    store: deps.store,
+    transport: deps.transport,
+    nowIso: deps.nowIso,
+    baseUrl: deps.baseUrl
+  };
+  const r = drain(
+    (d) => {
+      const x = runExchangeStep(d, recipe);
+      return { ok: x.ok, note: x.note, idle: x.done };
+    },
+    taskDeps,
+    { label: `换票（${recipe}）`, maxSteps: 4, deadlineMs: 3e4, startedAt: Date.now() }
+  );
+  return { ok: r.ok && jwtFresh(deps.store, Date.now(), recipe), note: r.note };
+}
+function withTokenGate(deps, read, recipe = FALLBACK_RECIPE) {
+  const doRefresh = deps.refreshToken ?? ((rp) => exchangeOnce(deps, rp));
+  if (!jwtFresh(deps.store, Date.now(), recipe)) doRefresh(recipe);
+  let resets = 0;
+  for (; ; ) {
+    try {
+      return read();
+    } catch (e) {
+      if (!(e instanceof LoginExpiredError)) throw e;
+      if (resets >= MAX_RESETS) {
+        throw new Error("这个号读不到：换了两次票还是不认 —— 多半是登录信息坏了，去「账号」页重新登录一次");
+      }
+      resets++;
+      doRefresh(recipe);
+    }
+  }
+}
 
 // src/mcloud/tasks/exchangeRun.ts
-var BUDGET_MS = 9e4;
+var BUDGET_MS = 48e4;
 var DEADLINE_MS = BUDGET_MS - 1e4;
 var PLAN_KEY = "mcloud.exchange.plan";
+var STATE_SCHEDULE_PLAN = "mcloud.exchange.schedule.plan";
+var STATE_SCHEDULE_CRON = "mcloud.exchange.schedule.cron";
+var STATE_SCHEDULE_MODE = "mcloud.exchange.schedule.mode";
+var STATE_SCHEDULE_UNTIL = "mcloud.exchange.schedule.until";
+var STATE_SCHEDULE_ONCE_DATE = "mcloud.exchange.schedule.once_date";
+var STATE_SCHEDULE_MAX_RUNS = "mcloud.exchange.schedule.max_runs";
+var STATE_SCHEDULE_RUNS = "mcloud.exchange.schedule.runs";
+var STATE_SCHEDULE_RUNS_GEN = "mcloud.exchange.schedule.runs_gen";
+var STATE_SCHEDULE_GEN = "mcloud.exchange.schedule.gen";
+var STATE_LEAD_SEC = "mcloud.exchange.lead_sec";
+var DEFAULT_LEAD_SEC = 120;
+function scheduleNextTargetMs(store2, nowMs) {
+  const raw = (store2.getState(STATE_SCHEDULE_CRON) ?? "").trim();
+  if (raw !== "") {
+    try {
+      return nextCronTargetMs(raw, nowMs);
+    } catch {
+      return null;
+    }
+  }
+  const targetHour = targetHourOf(store2);
+  const d = new Date(nowMs);
+  const t = new Date(d);
+  if (targetHour === null) t.setHours(d.getHours() + 1, 0, 0, 0);
+  else {
+    t.setHours(targetHour, 0, 0, 0);
+    if (t.getTime() < nowMs) t.setDate(t.getDate() + 1);
+  }
+  return t.getTime();
+}
+function scheduleMaxRuns(store2) {
+  const raw = Number((store2.getState(STATE_SCHEDULE_MAX_RUNS) ?? "0").trim());
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
+}
+function scheduleRuns(store2) {
+  const gen = (store2.getState(STATE_SCHEDULE_GEN) ?? "").trim();
+  const runsGen = (store2.getState(STATE_SCHEDULE_RUNS_GEN) ?? "").trim();
+  if (gen !== "" && runsGen !== gen) return 0;
+  const raw = Number((store2.getState(STATE_SCHEDULE_RUNS) ?? "0").trim());
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
+}
+function scheduleLeadSec(store2) {
+  const raw = Number((store2.getState(STATE_LEAD_SEC) ?? String(DEFAULT_LEAD_SEC)).trim());
+  return Number.isFinite(raw) ? Math.min(300, Math.max(60, Math.floor(raw))) : DEFAULT_LEAD_SEC;
+}
 function runExchange(deps, opts = {}) {
   const started = Date.now();
   const steps = [];
   const add = (name, ok, note2, idle = false) => {
     steps.push({ name, ok, note: note2, idle });
   };
+  const ensureToken = () => {
+    if (jwtFresh(deps.store, Date.now(), FALLBACK_RECIPE)) return true;
+    const x = exchangeOnce(
+      {
+        store: deps.store,
+        transport: deps.transport,
+        nowIso: deps.nowIso,
+        baseUrl: deps.baseUrl
+      },
+      FALLBACK_RECIPE
+    );
+    add("换票", x.ok, x.note);
+    return x.ok && jwtFresh(deps.store, Date.now(), FALLBACK_RECIPE);
+  };
   const finish3 = (ok, note2, idle = false) => {
     if (opts.dryRun) {
-      add("干跑", true, "只看了能不能兑，**一枪都没发**（真下单走定时那一场）", true);
+      add("干跑", true, "只看了能不能兑，**一枪都没发**（真下单走「立即兑换」或定时那一场）", true);
     }
     return {
       ok,
@@ -5597,9 +6110,9 @@ function runExchange(deps, opts = {}) {
       steps
     };
   };
-  const targetHour = targetHourOf(deps.store);
+  const targetHour = opts.targetHour !== void 0 ? opts.targetHour : targetHourOf(deps.store);
   const gate = planTargetWait(depsNowMs(deps), targetHour);
-  if (!opts.dryRun && gate.needed && gate.ms > MAX_SPIN_MS) {
+  if (!opts.dryRun && gate.needed && gate.ms > (opts.maxWaitMs ?? MAX_SPIN_MS)) {
     add(
       "时间闸",
       true,
@@ -5612,16 +6125,19 @@ function runExchange(deps, opts = {}) {
       true
     );
   }
+  if (!ensureToken()) {
+    return finish3(false, "网页会话续期失败 —— 登录凭据可能已过期，去「账号」页重新登录一次");
+  }
   try {
     const l = runExchangeList(deps);
     add("清单", l.ok, l.note);
   } catch (e) {
     add("清单", false, `抛异常 ${e instanceof Error ? e.message : String(e)}`);
   }
-  const plan = deps.store.getState(PLAN_KEY) ?? "";
+  const plan = deps.store.getState(STATE_SCHEDULE_PLAN) ?? deps.store.getState(PLAN_KEY) ?? "";
   if (plan === "") {
-    add("下单", true, "没有设兑换目标（设置里填「兑换目标」之后才会下单）", true);
-    return finish3(true, "没有设兑换目标（设置里填「兑换目标」之后才会下单）");
+    add("下单", true, "没有设定时兑换目标（在「定时抢兑」里选一件之后才会下单）", true);
+    return finish3(true, "没有设定时兑换目标（在「定时抢兑」里选一件之后才会下单）");
   }
   if (!deps.store.getState("mcloud.exchange.order.step")) {
     const s = startOrder(deps, plan);
@@ -5638,6 +6154,10 @@ function runExchange(deps, opts = {}) {
   if (multi) {
     for (const acc of accounts) {
       selectAccount(deps.store, acc.id, deps.nowIso);
+      if (!ensureToken()) {
+        add(`准备 ${maskAuth(loadAuthRaw(deps.store) ?? "")}`, false, "网页会话续期失败");
+        continue;
+      }
       clearOrder(deps);
       startOrder(deps, plan);
       const a = drain(runOrderStep, deps, {
@@ -5839,7 +6359,7 @@ function drawLine(code, out) {
     case "kouling-expired":
       return `口令「${code}」没领到：本场已结束（口令是对的）`;
     case "other":
-      return `口令「${code}」没领到：上游回了未分类的码 ${out.code ?? "?"}${out.message ? `（${out.message}）` : ""}`;
+      return `口令「${code}」没领到：服务端回了没见过的码 ${out.code ?? "?"}${out.message ? `（${out.message}）` : ""}`;
     default:
       return `口令「${code}」没领到：响应解不出来`;
   }
@@ -5944,7 +6464,7 @@ function parseCodeInput(raw) {
       codes: [],
       how: "",
       matchedFormat: false,
-      error: `「${bad.slice(0, 20)}」看着是观众的提问，不是口令 —— 拿去领只会白跑一枪（上游回 200108）`
+      error: `「${bad.slice(0, 20)}」看着是观众的提问，不是口令 —— 拿去领只会白跑一枪（服务端回 200108）`
     };
   }
   return finish(lines, `按原文收下 ${lines.length} 条（没匹配到任何弹幕格式）`, false);
@@ -6174,6 +6694,11 @@ function serializePool(pool) {
 function loadPoolFrom(store2) {
   return parsePool(store2.getState(POOL_KEY));
 }
+function loadFreshPool(store2, nowMs) {
+  const got = loadPoolFrom(store2);
+  normalize(got.pool, nowMs);
+  return got;
+}
 function savePoolTo(store2, pool, nowIso) {
   store2.setState(POOL_KEY, serializePool(pool), nowIso);
 }
@@ -6394,9 +6919,9 @@ function parseJson(raw) {
 // src/mcloud/tasks/liveDraw.ts
 var STATE_DRAW = "mcloud.live.draw";
 var STATE_CLAIM_ENABLED = "mcloud.live.claim_enabled";
-function collectCodes(store2) {
+function collectCodes(store2, nowMs = Date.now()) {
   const human = loadLiveCodes(store2)?.codes ?? [];
-  const { pool } = loadPoolFrom(store2);
+  const { pool } = loadFreshPool(store2, nowMs);
   return planDrawCodes(pool, accountOf(store2), human);
 }
 function loadDrawState(store2) {
@@ -6418,7 +6943,7 @@ function setClaimEnabled(store2, on, nowIso) {
 function probeLiveRoom(deps) {
   const session = loadSession(deps.store);
   if (!session || !session.jwt) {
-    return { ok: false, note: "未登录：这一族要 jwttoken（见 docs/howto-session.md）" };
+    return { ok: false, note: "这个号还没换到票 —— 上面「换票」那一步说了原因" };
   }
   const res = callOnce(deps.transport, withSession(userInfoRequest(deps.baseUrl), session.jwt));
   if (res.env === void 0) {
@@ -6433,10 +6958,10 @@ function probeLiveRoom(deps) {
   if (code === 90001) {
     return {
       ok: false,
-      note: "上游回 90001（未登录）—— 凭据是有的，所以问题在**请求头形状**：先怀疑少了 `jwttoken` / `showloading`，或多了签到族那套头（见 liveDraw.ts 文件头）"
+      note: "服务端回 90001（未登录）—— 凭据是有的，所以问题在**请求头形状**：先怀疑少了 `jwttoken` / `showloading`，或多了签到族那套头（见 liveDraw.ts 文件头）"
     };
   }
-  return { ok: false, note: `上游回 ${code}${res.env.message ? `（${res.env.message}）` : ""}` };
+  return { ok: false, note: `服务端回 ${code}${res.env.message ? `（${res.env.message}）` : ""}` };
 }
 function stepRequest(s, base) {
   switch (s.step) {
@@ -6468,13 +6993,13 @@ function stepRequest(s, base) {
 function runLiveDraw(deps, opts = {}) {
   const TASK = "live-room";
   if (!opts.force && !claimEnabled(deps.store)) {
-    return { ok: true, idle: true, note: "领小红花未开启（界面上那个开关）" };
+    return { ok: true, idle: true, note: "领小红花没开（要先在服务端那边开启）" };
   }
   let s = loadDrawState(deps.store);
-  const codes = collectCodes(deps.store);
+  const codes = collectCodes(deps.store, Date.parse(deps.nowIso));
   if (!s || s.step === "done") {
     const done = s?.codes ?? [];
-    const { pool } = loadPoolFrom(deps.store);
+    const { pool } = loadFreshPool(deps.store, Date.parse(deps.nowIso));
     const account = accountOf(deps.store);
     const allClaimed = done.length > 0 && done.every((c) => accountClaimed(pool, account, c));
     if (codes.length === 0) {
@@ -6496,7 +7021,7 @@ function runLiveDraw(deps, opts = {}) {
   }
   const session = loadSession(deps.store);
   if (!session || !session.jwt) {
-    const note2 = "未登录：领小红花要 jwttoken（见 docs/howto-session.md）";
+    const note2 = "领小红花要先有票 —— 上面「换票」那一步说了原因";
     recordError(deps.store, TASK, note2, deps.nowIso);
     return { ok: false, note: note2 };
   }
@@ -6513,7 +7038,7 @@ function runLiveDraw(deps, opts = {}) {
   if (s.step === "draw" && advance.state.results.length > before) {
     const row = advance.state.results[advance.state.results.length - 1];
     if (row !== void 0) {
-      const loaded = loadPoolFrom(deps.store);
+      const loaded = loadFreshPool(deps.store, Date.parse(deps.nowIso));
       noteClaim(loaded.pool, accountOf(deps.store), row.code, claimVerdictOf(row.kind), Date.parse(deps.nowIso));
       savePoolTo(deps.store, loaded.pool, deps.nowIso);
     }
@@ -6537,7 +7062,7 @@ function judge(s, label, res, nowIso) {
     const why = res.error ?? "未知失败";
     return { state: st, ok: false, note: `${label} 失败：${why}` };
   }
-  const biz = () => `${label}：上游回 ${res.env?.code ?? "?"}${res.env?.message ? `（${res.env.message}）` : ""}`;
+  const biz = () => `${label}：服务端回 ${res.env?.code ?? "?"}${res.env?.message ? `（${res.env.message}）` : ""}`;
   switch (s.step) {
     case "balance-before": {
       if (res.env.code !== 0) return { state: st, ok: false, note: biz() };
@@ -6560,7 +7085,7 @@ function judge(s, label, res, nowIso) {
     }
     case "first-participate": {
       const code = res.env.code;
-      st.firstParticipate = code === 0 ? "领到首次参与惊喜奖" : code === 200110 ? "已参与过（正常）" : `上游回 ${code ?? "?"}`;
+      st.firstParticipate = code === 0 ? "领到首次参与惊喜奖" : code === 200110 ? "已参与过（正常）" : `服务端回 ${code ?? "?"}`;
       st.step = "draw";
       return { state: st, ok: true, note: `${label}：${st.firstParticipate}` };
     }
@@ -6696,7 +7221,7 @@ function parseCmlive(body) {
   if (typeof code !== "string") {
     return {
       ok: false,
-      error: `直播侧的 rtnCode 应当是**字符串**，实际是 ${code === void 0 ? "缺字段" : typeof code}（这一族用字符串码；上游若真改成了数字码，这里必须报出来而不是兼容掉）`
+      error: `直播侧的 rtnCode 应当是**字符串**，实际是 ${code === void 0 ? "缺字段" : typeof code}（这一族用字符串码；服务端若真改成了数字码，这里必须报出来而不是兼容掉）`
     };
   }
   const msg = typeof v["rtnMsg"] === "string" ? v["rtnMsg"] : void 0;
@@ -6884,10 +7409,10 @@ function gateReadingLine(rooms) {
   const live = rooms.filter((r) => r.status === STATUS_LIVE);
   const hit = koulingRooms(rooms);
   if (hit.length > 0) {
-    return `门开着：${hit.length} 间在播（${KOULING_ANCHOR}）—— ${hit.map((r) => r.title || `#${r.id}`).join("、")}`;
+    return `正在听：${KOULING_ANCHOR} 开播了（${hit.map((r) => r.title || `#${r.id}`).join("、")}）`;
   }
-  if (live.length === 0) return `门关着：谁都没在播（这一趟看到 ${rooms.length} 间房，全是预告/回放）`;
-  return `门关着：有 ${live.length} 间在播，但都不是「${KOULING_ANCHOR}」（${live.map((r) => r.anchorNickname || "无名").join("、")}）`;
+  if (live.length === 0) return `现在没在听：谁都没开播（看到 ${rooms.length} 间房，全是预告/回放）`;
+  return `现在没在听：有 ${live.length} 间在播，但不是「${KOULING_ANCHOR}」的（${live.map((r) => r.anchorNickname || "无名").join("、")}）`;
 }
 function intAt2(o, k) {
   const v = o[k];
@@ -6929,7 +7454,7 @@ function handshake(deps, st, base) {
   const TASK = "live-gate";
   const auth = loadAuthRaw(deps.store);
   if (auth === "") {
-    const note2 = "门要**原生凭据**（`Authorization`）：先去界面贴一份（见 docs/howto-session.md）";
+    const note2 = "这个号还没有原生凭据 —— 先在账号页把它加上";
     recordError(deps.store, TASK, note2, deps.nowIso);
     return { ok: false, note: note2 };
   }
@@ -6955,7 +7480,9 @@ function handshake(deps, st, base) {
   clearError(deps.store, TASK, deps.nowIso);
   return {
     ok: true,
-    note: "① 换到 SSO token（**不落盘**，这一步就用掉了）+ ② 换到直播侧 JWT（≈30 天，这一轮用完就抹）"
+    // 日志里一行一步，这里只说结果（怎么换的、留不留盘是代码的事，见文件头）
+    // 这只是**第一步**（换票）；下一步才去看有没有开播 —— 说清楚，别让人以为已经看过了
+    note: "票换好了，下一步去看有没有开播"
   };
 }
 function roomsStep(deps, st, base, nowMs) {
@@ -7676,8 +8203,10 @@ function wsHandshakeHeaders() {
 }
 function listenerIdle(st, nowMs) {
   if (st.nextCheckAtMs !== void 0 && nowMs < st.nextCheckAtMs) {
-    const at = new Date(st.nextCheckAtMs).toISOString().slice(11, 19);
-    return `门关着，等下一次检查（${at}Z 之后）`;
+    const d = new Date(st.nextCheckAtMs);
+    const pad = (n) => String(n).padStart(2, "0");
+    const at = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    return `现在没在听，${at} 之后再去看`;
   }
   return void 0;
 }
@@ -7791,7 +8320,7 @@ function handshakeStep(deps, st) {
   st.step = "rooms";
   persist(deps, st);
   clearError(deps.store, "live-listen", deps.nowIso);
-  return { ok: true, note: "① SSO + ② 直播侧 JWT 都换到了（JWT 只在这一个窗口里活）" };
+  return { ok: true, note: "开始听了" };
 }
 function roomsStep2(deps, st, nowMs) {
   const base = loadGateBaseOf(deps.store);
@@ -7822,9 +8351,9 @@ function roomsStep2(deps, st, nowMs) {
     st.closedReason = "那个主播没在播";
     st.finishedAt = deps.nowIso;
     st.probedAt = deps.nowIso;
-    st.note = forced !== void 0 ? `指定的房间 ${forced} 不在这次探到的 ${merged.length} 间房里（诊断口子）` : coolMs > IDLE_RECHECK_MS ? `门关着（合并后 ${merged.length} 间房）—— 按日程睡到下一场之后（${Math.round(coolMs / 6e4)} 分钟）` : `门关着（合并后 ${merged.length} 间房）—— 隔 ${Math.round(coolMs / 6e4)} 分钟再看（上次真探 ${deps.nowIso.slice(11, 19)}）`;
+    st.note = forced !== void 0 ? `指定的房间 ${forced} 不在这次探到的 ${merged.length} 间房里（诊断口子）` : coolMs > IDLE_RECHECK_MS ? `现在没在听（看到 ${merged.length} 间房，都不是它）—— 到下一场之后再去看（${hours(coolMs)}）` : `现在没在听（看到 ${merged.length} 间房，都不是它）—— 隔 ${hours(coolMs)}再看（上次真探 ${deps.nowIso.slice(11, 19)}）`;
     persist(deps, st);
-    return { ok: true, note: st.note };
+    return { ok: true, note: humanNote(st.note) };
   }
   st.roomId = chosen;
   st.step = "userToken";
@@ -7832,8 +8361,17 @@ function roomsStep2(deps, st, nowMs) {
   persist(deps, st);
   return {
     ok: true,
-    note: forced === void 0 ? `门开着：房间 ${st.roomId}，接着取 WS 凭据` : `诊断口子：直接听指定的房间 ${st.roomId}，接着取 WS 凭据`
+    note: forced === void 0 ? `找到了：房间 ${st.roomId} 在播，接着去听` : `诊断口子：直接听指定的房间 ${st.roomId}，接着取 WS 凭据`
   };
+}
+function humanNote(note2) {
+  return note2.replace(/门关着（合并后 (\d+) 间房）/g, "现在没在听（看到 $1 间房）").replace(/门关着/g, "现在没在听").replace(/门开着/g, "正在听").replace(/（(\d+) 分钟）/g, (_m, n) => `（${hours(Number(n) * 6e4)}）`);
+}
+function hours(ms) {
+  const min = Math.round(ms / 6e4);
+  if (min < 90) return `${min} 分钟`;
+  const h = Math.round(min / 60);
+  return `${h} 小时`;
 }
 function userTokenStep(deps, st) {
   const base = loadGateBaseOf(deps.store);
@@ -8029,9 +8567,17 @@ function listenStep(deps, st, nowMs, windowMs) {
     if (actions.texts.length > 0) {
       st.danmakuFrames += 1;
       for (const text of actions.texts) {
-        if (!hasKouling(text)) continue;
-        const codes = extractKouling(text);
-        for (const code of codes) found.push(code);
+        if (st.pendingHead === true) {
+          const t = text.trim();
+          if (t !== "" && !isKoulingHead(t) && !isKoulingMarker(t)) {
+            found.push(t);
+          }
+          st.pendingHead = false;
+        }
+        if (hasKouling(text)) {
+          for (const code of extractKouling(text)) found.push(code);
+        }
+        if (isKoulingHead(text)) st.pendingHead = true;
       }
     }
     if (actions.closed !== void 0) {
@@ -8041,7 +8587,7 @@ function listenStep(deps, st, nowMs, windowMs) {
     }
   }
   if (found.length > 0) {
-    const { pool } = loadPoolFrom(deps.store);
+    const { pool } = loadFreshPool(deps.store, Date.now());
     note(pool, found, "danmaku", Date.now());
     savePoolTo(deps.store, pool, deps.nowIso);
     for (const code of found) if (!st.codes.includes(code)) st.codes.push(code);
@@ -8083,7 +8629,8 @@ function listenStep(deps, st, nowMs, windowMs) {
   const got = found.length > 0 ? `，本轮口令 ${found.join(" / ")}` : "";
   return {
     ok: true,
-    note: `听着（帧 ${st.frames}、弹幕 ${st.danmakuFrames}、口令 ${st.codes.length}${got}）`
+    // 与 `listenReadingLine` 同一套说法：只报弹幕/口令，帧数是排查用的
+    note: `正在听（收到 ${st.danmakuFrames} 条弹幕，捡到 ${st.codes.length} 条口令${got}）`
   };
 }
 function flush(deps, handle, outbound) {
@@ -8128,9 +8675,14 @@ function loadGateBaseOf(store2) {
 function listenReadingLine(st) {
   if (st === null) return "还没听过";
   if (st.step === "listen") {
-    return `听着（帧 ${st.frames}、弹幕 ${st.danmakuFrames}、口令 ${st.codes.length}、回执 ${st.serverAcks ?? 0}` + (st.sockjsHb ? `、h 帧 ${st.sockjsHb}` : "") + (st.decodeFail ? `、认不出的帧 ${st.decodeFail}` : "") + "）";
+    const bits2 = [`收到 ${st.danmakuFrames} 条弹幕`];
+    if (st.codes.length > 0) bits2.push(`捡到 ${st.codes.length} 条口令`);
+    if ((st.serverAcks ?? 0) > 0) bits2.push(`回了 ${st.serverAcks} 次`);
+    return `正在听（${bits2.join("、")}）`;
   }
-  if (st.step === "done") return st.note ?? "这一轮结束";
+  if (st.step === "done") {
+    return humanNote(st.note ?? "这一轮结束");
+  }
   return `准备中（${st.step}）`;
 }
 
@@ -8147,6 +8699,11 @@ function gfMul2(a, b) {
   }
   return r & 255;
 }
+function gfExp(i) {
+  let r = 1;
+  for (let k = 0; k < i; k += 1) r = gfMul2(r, 2);
+  return r;
+}
 function rsGenerator(n) {
   let poly = [1];
   for (let i = 0; i < n; i += 1) {
@@ -8154,7 +8711,7 @@ function rsGenerator(n) {
     for (let j = 0; j < poly.length; j += 1) {
       const coef = poly[j];
       next[j] = next[j] ^ coef;
-      next[j + 1] = next[j + 1] ^ gfMul2(coef, Math.pow(2, i) & 255);
+      next[j + 1] = next[j + 1] ^ gfMul2(coef, gfExp(i));
     }
     poly = next;
   }
@@ -8428,16 +8985,30 @@ function penalty(m, size) {
   score += Math.floor(Math.abs(pct - 50) / 5) * 10;
   return score;
 }
+var FORMAT_COORDS = [
+  [8, 0],
+  [8, 1],
+  [8, 2],
+  [8, 3],
+  [8, 4],
+  [8, 5],
+  [8, 7],
+  [8, 8],
+  [7, 8],
+  [5, 8],
+  [4, 8],
+  [3, 8],
+  [2, 8],
+  [1, 8],
+  [0, 8]
+];
 function placeFormat(dark, size, mask) {
   const bits2 = FORMAT_INFO[mask];
   const bit = (i) => (bits2 >> i & 1) === 1;
   for (let i = 0; i < 15; i += 1) {
     const v = bit(i);
-    if (i < 6) dark[8 * size + i] = v;
-    else if (i === 6) dark[8 * size + 7] = v;
-    else if (i === 7) dark[8 * size + 8] = v;
-    else if (i === 8) dark[7 * size + 8] = v;
-    else dark[(14 - i) * size + 8] = v;
+    const [c, r] = FORMAT_COORDS[i];
+    dark[r * size + c] = v;
     if (i < 8) dark[8 * size + (size - 1 - i)] = v;
     else dark[(size - 15 + i) * size + 8] = v;
   }
@@ -8485,6 +9056,15 @@ var LOGIN_HOST = "https://user-njs.yun.139.com";
 var THIRD_LOGIN_PATH = "/user/thirdlogin";
 var SEND_SMS_CODE_PATH = "/user/sms/getSmsCode";
 var SLIDER_PUZZLE_PATH = "/user/verfycode";
+var DEFAULT_PC_PLATFORM = "windows";
+function parsePcPlatform(raw) {
+  if (raw === "win" || raw === "windows") return "windows";
+  if (raw === "mac" || raw === "macos") return "macos";
+  return null;
+}
+function accountForm(platform) {
+  return platform === "macos" ? "mac" : "win";
+}
 function pcClient(platform, deviceId) {
   return { platform, deviceId };
 }
@@ -8626,6 +9206,7 @@ function sliderAnswer(p) {
   return plain;
 }
 function parseLoginEnvelope(body) {
+  if (body.trim() === "") throw new Error("空响应");
   let v;
   try {
     v = JSON.parse(body);
@@ -8715,11 +9296,31 @@ function userDomainIdFrom(userInfo) {
 function withClientHeaders(req, c, tid) {
   return { ...req, headers: { ...req.headers, ...pcHeaders(c), "x-yun-tid": tid } };
 }
+function loginUrl(path, base) {
+  const b = (base ?? "").trim().replace(/\/+$/, "");
+  return `${b === "" ? LOGIN_HOST : b}${path}`;
+}
 function postJson2(path, body, base) {
   return {
-    url: `${(base ?? LOGIN_HOST).replace(/\/+$/, "")}${path}`,
+    url: loginUrl(path, base),
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      // ⚠⚠ `accept-encoding: identity` 是**必须**的，不是优化（F-072）。
+      //
+      //   宿主（面板）会替我们发 `accept-encoding: gzip`，**但它不解压** ——
+      //   压缩过的响应体到了插件这边是一串二进制，`JSON.parse` 必然失败。
+      //   而移动云盘只在响应**够大**时才压：错误响应 94 字节（不压），
+      //   登录成功那个带 `data` 密文的响应 1–2 KB（压）——
+      //   于是表现成"扫码确认之后什么也没发生"。
+      //
+      //   实测：登录基址指向一个"你要 gzip 我就压"的本地服务器时，
+      //   `accept-encoding: gzip` 拿回来的是乱码；改口要 identity 就拿到完整 JSON。
+      //
+      //   ⚠ 放在这里而不是 `pcHeaders`：那里是**冒充哪台设备**的 5 个头
+      //   （有测试钉死"就是这 5 个"），而这一条是传输层的事。
+      "accept-encoding": "identity"
+    },
     body: JSON.stringify(body)
   };
 }
@@ -8756,11 +9357,14 @@ function parseSliderPuzzle(env) {
   };
 }
 var QR_TTL_SECONDS = 120;
-function newQrSession(deviceId, nowMs) {
+function newQrSession(deviceId, nowMs, platform = DEFAULT_PC_PLATFORM) {
   return {
     sessionId: newSessionId(),
     deviceId,
+    platform,
     startedAtMs: nowMs,
+    // ⚠ 整趟一个 `x-yun-tid`（参考实现也是这么做的，见 `QrSession.tid`）
+    tid: uuidV4(),
     scanned: false,
     done: false,
     lastNote: "等手机扫码"
@@ -8772,9 +9376,16 @@ function qrExpiresAt(s) {
 function qrExpired(s, nowMs) {
   return nowMs >= qrExpiresAt(s);
 }
+function qrRemainingMs(s, nowMs) {
+  return Math.max(0, qrExpiresAt(s) - nowMs);
+}
 function applyPoll(s, out, nowMs) {
   switch (out.kind) {
     case "not-scanned":
+      if (s.scanned) {
+        const note2 = "扫到了，但手机上没确认 —— 再扫一次，扫完就点「确认登录」";
+        return { session: { ...s, lastNote: note2 }, stop: false, ok: true, note: note2 };
+      }
       return { session: { ...s, lastNote: "等手机扫码" }, stop: false, ok: true, note: "等手机扫码" };
     case "scanned":
       return {
@@ -8817,17 +9428,18 @@ function applyPoll(s, out, nowMs) {
       };
     default:
       return {
-        session: { ...s, lastNote: `上游说：${out.message || `code=${out.code}`}` },
+        session: { ...s, lastNote: `服务端说：${out.message || `code=${out.code}`}` },
         stop: true,
         ok: false,
         note: `登录没成：${out.message || `code=${out.code}`}`
       };
   }
 }
-function newSmsSession(phone, nowMs) {
+function newSmsSession(phone, nowMs, platform = DEFAULT_PC_PLATFORM) {
   return {
     phone,
     random: newSmsRandom(),
+    platform,
     startedAtMs: nowMs,
     sent: false,
     slider: null,
@@ -8896,6 +9508,9 @@ function appClientInfo(deviceId) {
 }
 function appHeaders(deviceId, timestamp) {
   return {
+    // ⚠ 与 `pcHeaders` 同一个理由（F-072）：宿主替我们发 `accept-encoding: gzip`
+    //   但**不解压**，而登录成功的响应体是压过的 ⇒ 明确要 identity。
+    "accept-encoding": "identity",
     Pragma: "no-cache",
     "x-yun-user-timestamp": String(timestamp),
     "x-yun-app-channel": APP_CHANNEL,
@@ -8918,25 +9533,27 @@ function appHeaders(deviceId, timestamp) {
   };
 }
 var APP_LOGIN_HOST = "https://user-njs.yun.139.com";
-function appPost(path, rawBody, deviceId, timestamp) {
+function appPost(path, rawBody, deviceId, timestamp, base) {
+  const host2 = base === void 0 || base.trim() === "" ? APP_LOGIN_HOST : base.trim().replace(/\/+$/, "");
   return {
-    url: `${APP_LOGIN_HOST}${path}`,
+    url: `${host2}${path}`,
     method: "POST",
     headers: appHeaders(deviceId, timestamp),
     body: rawBody
   };
 }
-function appSendSmsCodeRequest(deviceId, timestamp, phone, puzzleVerfycode = "") {
+function appSendSmsCodeRequest(deviceId, timestamp, phone, puzzleVerfycode = "", base) {
   return appPost(
     APP_SEND_SMS_CODE_PATH,
     JSON.stringify(sendSmsCodeBody2(phone, puzzleVerfycode)),
     deviceId,
-    timestamp
+    timestamp,
+    base
   );
 }
-function appThirdloginRequest(deviceId, timestamp, phone, smsCode, random, key = APP_LOGIN_AES_KEY) {
+function appThirdloginRequest(deviceId, timestamp, phone, smsCode, random, key = APP_LOGIN_AES_KEY, base) {
   const plaintext = JSON.stringify(smsThirdloginBody2(phone, smsCode, random));
-  return appPost(APP_THIRDLOGIN_PATH, encryptBody(plaintext, key), deviceId, timestamp);
+  return appPost(APP_THIRDLOGIN_PATH, encryptBody(plaintext, key), deviceId, timestamp, base);
 }
 var APP_SLIDER_PUZZLE_PATH = "/user/verfycode";
 function classifyAppSendSms(env) {
@@ -9000,11 +9617,19 @@ function parseJson4(raw) {
     return null;
   }
 }
+function derivedTid(sessionId) {
+  const h = toHex(sha1(utf8(`mcloud-qr-tid:${sessionId}`)));
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-a${h.slice(17, 20)}-${h.slice(20, 32)}`;
+}
 function loadQrSession(store2) {
   const s = parseJson4(store2.getState(STATE_QR_SESSION));
   if (s === null) return null;
   if (typeof s.sessionId !== "string" || typeof s.deviceId !== "string") return null;
-  return s;
+  return {
+    ...s,
+    platform: parsePcPlatform(s.platform) ?? DEFAULT_PC_PLATFORM,
+    tid: typeof s.tid === "string" && s.tid !== "" ? s.tid : derivedTid(s.sessionId)
+  };
 }
 function saveQrSession(store2, s, nowIso) {
   store2.setState(STATE_QR_SESSION, JSON.stringify(s), nowIso);
@@ -9013,7 +9638,7 @@ function loadSmsSession(store2) {
   const s = parseJson4(store2.getState(STATE_SMS_SESSION));
   if (s === null) return null;
   if (typeof s.phone !== "string" || typeof s.random !== "string") return null;
-  return s;
+  return { ...s, platform: parsePcPlatform(s.platform) ?? DEFAULT_PC_PLATFORM };
 }
 function saveSmsSession(store2, s, nowIso) {
   store2.setState(STATE_SMS_SESSION, JSON.stringify(s), nowIso);
@@ -9043,14 +9668,14 @@ function clearLogin(store2) {
   store2.setState(STATE_SMS_SESSION, "", (/* @__PURE__ */ new Date()).toISOString());
   store2.setState(STATE_APP_SESSION, "", (/* @__PURE__ */ new Date()).toISOString());
 }
-function startQrSession(store2, nowMs, nowIso) {
+function startQrSession(store2, nowMs, nowIso, platform = DEFAULT_PC_PLATFORM) {
   const deviceId = loadDeviceId(store2, nowIso);
-  const s = newQrSession(deviceId, nowMs);
+  const s = newQrSession(deviceId, nowMs, platform);
   saveQrSession(store2, s, nowIso);
   return s;
 }
-function startSmsSession(store2, phone, nowMs, nowIso) {
-  const s = newSmsSession(phone, nowMs);
+function startSmsSession(store2, phone, nowMs, nowIso, platform = DEFAULT_PC_PLATFORM) {
+  const s = newSmsSession(phone, nowMs, platform);
   saveSmsSession(store2, s, nowIso);
   return s;
 }
@@ -9059,6 +9684,7 @@ function setSmsSlider(store2, s, slider, nowIso) {
   saveSmsSession(store2, next, nowIso);
   return next;
 }
+var QR_POLL_MS = 1e3;
 function loginReading(store2, nowMs, qrPayloadOf) {
   const qr = loadQrSession(store2);
   const sms = loadSmsSession(store2);
@@ -9068,14 +9694,17 @@ function loginReading(store2, nowMs, qrPayloadOf) {
       active: true,
       sessionId: qr.sessionId,
       payload: qrPayloadOf(qr.sessionId, qr.deviceId),
+      platform: qr.platform,
+      pollMs: QR_POLL_MS,
       scanned: qr.scanned,
-      expiresInMs: Math.max(0, qr.startedAtMs + QR_TTL_SECONDS * 1e3 - nowMs),
+      expiresInMs: qrRemainingMs(qr, nowMs),
       expired: qrExpired(qr, nowMs),
       note: qr.lastNote
     },
     sms: sms === null ? null : {
       active: true,
       phone: sms.phone,
+      platform: sms.platform,
       sent: sms.sent,
       hasSlider: sms.slider !== null,
       slider: sms.slider,
@@ -9100,72 +9729,252 @@ function loginReading(store2, nowMs, qrPayloadOf) {
   };
 }
 
-// src/store/scoped.ts
-var WRAPPED = Symbol.for("__mcloud_scoped_store__");
-var RAW = Symbol.for("__mcloud_raw_store__");
-function rawStoreOf(s) {
-  const raw = s[RAW];
-  return raw ?? s;
+// src/mcloud/beans.ts
+var LEDGER_AI_DOU = 1;
+var TYPE_ALL = 0;
+var PAGE_SIZE = 100;
+var MAX_PAGES = 20;
+var MAX_DETAIL_RECORDS = 500;
+var DAY_MS2 = 864e5;
+var BEIJING_OFFSET_SECS = 8 * 3600;
+function beanQuery(pageNumber) {
+  return `aiDou=${LEDGER_AI_DOU}&type=${TYPE_ALL}&pageNumber=${pageNumber}&pageSize=${PAGE_SIZE}`;
 }
-function scoped(base, acctId) {
-  if (base[WRAPPED] === true) {
-    throw new Error(
-      "store 已经被 scoped() 包过一次了 —— 双重包装会让 `mcloud.acct.*` 也去查登记表然后抛错。"
-    );
+function dayStartMs(nowMs) {
+  const offsetMs = BEIJING_OFFSET_SECS * 1e3;
+  const local = Math.floor((nowMs + offsetMs) / DAY_MS2) * DAY_MS2;
+  return local - offsetMs;
+}
+function isToday(tsMs, nowMs) {
+  const start = dayStartMs(nowMs);
+  return tsMs >= start && tsMs < start + DAY_MS2;
+}
+function rangeSinceMs(days, nowMs) {
+  if (!(days > 0)) return void 0;
+  return dayStartMs(nowMs) - (days - 1) * DAY_MS2;
+}
+function parseInsertTimeMs(raw) {
+  const s = raw.trim();
+  const tAt = s.indexOf("T");
+  if (tAt < 0) return void 0;
+  const date = s.slice(0, tAt);
+  const rest = s.slice(tAt + 1);
+  let time;
+  let offsetSecs;
+  if (rest.endsWith("Z") || rest.endsWith("z")) {
+    time = rest.slice(0, -1);
+    offsetSecs = 0;
+  } else {
+    const signAt = Math.max(rest.lastIndexOf("+"), rest.lastIndexOf("-"));
+    if (signAt <= 0) return void 0;
+    time = rest.slice(0, signAt);
+    const off = rest.slice(signAt);
+    const sign = off.startsWith("-") ? -1 : 1;
+    const [hhRaw, mmRaw] = off.slice(1).split(":");
+    const hh = Number(hhRaw);
+    const mm = Number(mmRaw);
+    if (!Number.isInteger(hh) || !Number.isInteger(mm) || hh > 23 || mm > 59) return void 0;
+    offsetSecs = sign * (hh * 3600 + mm * 60);
   }
-  const wrapped = {
-    ...base,
-    getState: (key) => routeGet(base, key, acctId),
-    setState: (key, value, nowIso) => routeSet(base, key, value, nowIso, acctId)
-  };
-  Object.defineProperty(wrapped, WRAPPED, { value: true, enumerable: false });
-  Object.defineProperty(wrapped, RAW, { value: base, enumerable: false });
-  return wrapped;
+  const dotAt = time.indexOf(".");
+  const hms = dotAt < 0 ? time : time.slice(0, dotAt);
+  const frac = dotAt < 0 ? "" : time.slice(dotAt + 1);
+  if (frac !== "" && !/^\d+$/.test(frac)) return void 0;
+  const millis = frac === "" ? 0 : Number((frac + "000").slice(0, 3));
+  const tp = hms.split(":");
+  if (tp.length !== 3) return void 0;
+  const hour = Number(tp[0]);
+  const minute = Number(tp[1]);
+  const second = Number(tp[2]);
+  if (!Number.isInteger(hour) || !Number.isInteger(minute) || !Number.isInteger(second)) {
+    return void 0;
+  }
+  if (hour > 23 || minute > 59 || second > 59) return void 0;
+  const dp = date.split("-");
+  if (dp.length !== 3) return void 0;
+  const year = Number(dp[0]);
+  const month = Number(dp[1]);
+  const day = Number(dp[2]);
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) {
+    return void 0;
+  }
+  if (month < 1 || month > 12 || day < 1 || day > daysInMonth(year, month)) return void 0;
+  const days = daysFromCivil(year, month, day);
+  const utcSecs = days * 86400 + hour * 3600 + minute * 60 + second - offsetSecs;
+  return utcSecs * 1e3 + millis;
+}
+function daysFromCivil(year, month, day) {
+  const y = month <= 2 ? year - 1 : year;
+  const era = y >= 0 ? Math.floor(y / 400) : Math.floor((y - 399) / 400);
+  const yoe = y - era * 400;
+  const mp = (month + 9) % 12;
+  const doy = Math.floor((153 * mp + 2) / 5) + day - 1;
+  const doe = yoe * 365 + Math.floor(yoe / 4) - Math.floor(yoe / 100) + doy;
+  return era * 146097 + doe - 719468;
+}
+function daysInMonth(year, month) {
+  if (month === 1 || month === 3 || month === 5 || month === 7 || month === 8 || month === 10 || month === 12) {
+    return 31;
+  }
+  if (month === 4 || month === 6 || month === 9 || month === 11) return 30;
+  const leap = year % 4 === 0 && year % 100 !== 0 || year % 400 === 0;
+  return leap ? 29 : 28;
+}
+var isRecord2 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+function numAt(o, key) {
+  const v = o[key];
+  if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
+  if (typeof v === "string" && v.trim() !== "" && !Number.isNaN(Number(v))) return Number(v);
+  return 0;
+}
+function strAt3(o, key) {
+  const v = o[key];
+  return typeof v === "string" ? v : "";
+}
+function parseCloudRecords(result) {
+  if (!isRecord2(result)) {
+    throw new Error("cloudRecordV2 响应缺少 result 对象");
+  }
+  const records = result.records;
+  if (!Array.isArray(records)) {
+    throw new Error("cloudRecordV2 响应缺少 result.records 数组");
+  }
+  return records.map((x) => {
+    const o = isRecord2(x) ? x : {};
+    const it = o.inserttime ?? o.insertTime;
+    return {
+      num: numAt(o, "num"),
+      summary: strAt3(o, "summary"),
+      mark: strAt3(o, "mark"),
+      insertTime: typeof it === "string" ? it : void 0
+    };
+  });
+}
+function aggregateToday(records, nowMs) {
+  let gained = 0;
+  let spent = 0;
+  let count = 0;
+  for (const r of records) {
+    if (r.insertTime === void 0) {
+      throw new Error(`流水里有一笔没有 insertTime（${r.summary || "（无摘要）"}），读不出它是不是今天`);
+    }
+    const ts = parseInsertTimeMs(r.insertTime);
+    if (ts === void 0) {
+      throw new Error(`流水的 insertTime 解不出（${r.insertTime}）—— 不猜它属于哪一天`);
+    }
+    if (!isToday(ts, nowMs)) continue;
+    count += 1;
+    if (r.num >= 0) gained += r.num;
+    else spent += -r.num;
+  }
+  return { net: gained - spent, gained, spent, count };
+}
+function buildRecords(all, sinceMs, limit, truncated) {
+  let recs = all.map((r) => ({
+    atMs: r.insertTime === void 0 ? void 0 : parseInsertTimeMs(r.insertTime),
+    rawTime: r.insertTime,
+    num: r.num,
+    summary: r.summary,
+    mark: r.mark
+  }));
+  if (sinceMs !== void 0) {
+    recs = recs.filter((r) => r.atMs === void 0 || r.atMs >= sinceMs);
+  }
+  recs.sort((a, b) => {
+    const x = a.atMs;
+    const y = b.atMs;
+    if (x === void 0 && y === void 0) return 0;
+    if (x === void 0) return 1;
+    if (y === void 0) return -1;
+    return y - x;
+  });
+  let hasMore = truncated;
+  if (recs.length > limit) {
+    recs = recs.slice(0, limit);
+    hasMore = true;
+  }
+  const undated = recs.filter((r) => r.atMs === void 0).length;
+  return { records: recs, undated, hasMore };
+}
+function fetchAll(fetch) {
+  const all = [];
+  for (let page = 1; page <= MAX_PAGES; page += 1) {
+    const batch = fetch(page);
+    const full = batch.length === PAGE_SIZE;
+    all.push(...batch);
+    if (!full) return { all, truncated: false };
+    if (page === MAX_PAGES) return { all, truncated: true };
+  }
+  return { all, truncated: true };
+}
+function readDay(fetch, nowMs) {
+  const { all, truncated } = fetchAll(fetch);
+  if (truncated) {
+    throw new Error(`AI豆流水翻满 ${MAX_PAGES} 页仍是满页，读不到底 —— 不报一个可能少算的数`);
+  }
+  return aggregateToday(all, nowMs);
+}
+function readRecords(fetch, sinceMs, limit) {
+  const { all, truncated } = fetchAll(fetch);
+  return buildRecords(all, sinceMs, limit, truncated);
 }
 
-// src/mcloud/taskAccounts.ts
-function taskAccountsKey(task) {
-  return `mcloud.task.accounts.${task}`;
-}
-var DEFAULT_TASK_ACCOUNTS = { all: true, ids: [] };
-function loadTaskAccounts(store2, task) {
-  const raw = (store2.getState(taskAccountsKey(task)) ?? "").trim();
-  if (raw === "") return { ...DEFAULT_TASK_ACCOUNTS };
-  try {
-    const v = JSON.parse(raw);
-    const ids = Array.isArray(v.ids) ? v.ids.filter((x) => typeof x === "string") : [];
-    return { all: v.all === true, ids };
-  } catch {
-    return { ...DEFAULT_TASK_ACCOUNTS };
-  }
-}
-function saveTaskAccounts(store2, task, v, nowIso) {
-  store2.setState(taskAccountsKey(task), JSON.stringify({ all: v.all, ids: v.ids }), nowIso);
-}
-function resolveTaskAccounts(store2, task) {
-  const sel = loadTaskAccounts(store2, task);
-  const all = loadAccounts(store2);
-  const enabled = all.filter((a) => a.disabled !== true);
-  if (sel.all) return enabled.map((a) => a.id);
-  const want = new Set(sel.ids);
-  return enabled.filter((a) => want.has(a.id)).map((a) => a.id);
-}
-function taskAccountsView(store2, task) {
-  const sel = loadTaskAccounts(store2, task);
-  return {
-    all: sel.all,
-    picked: sel.ids,
-    resolved: resolveTaskAccounts(store2, task),
-    accounts: loadAccounts(store2).map((a) => ({
-      id: a.id,
-      label: a.label,
-      disabled: a.disabled === true
-    }))
+// src/mcloud/beansRead.ts
+function makeFetchPage(deps) {
+  const nowIso = deps.nowIso ?? (/* @__PURE__ */ new Date()).toISOString();
+  const base = hostBase({ baseUrl: deps.baseUrl }, "");
+  return (pageNumber) => {
+    const session = loadSession(deps.store);
+    if (session === null) throw new LoginExpiredError("这个账号还没有网页会话");
+    const url = resolveUrl("cloudRecordV2", base === "" ? void 0 : base) + `?${beanQuery(pageNumber)}`;
+    const req = buildH5Request({
+      url,
+      method: "GET",
+      referer: REFERER_SIGN_IN,
+      showLoading: SHOW_LOADING,
+      isDeviceId: false,
+      saltKey: 1,
+      session: sessionHeaders(session)
+    });
+    const res = callOnce(deps.transport, req);
+    if (res.setCookies.length > 0) {
+      saveSession(
+        deps.store,
+        { ...session, cookie: mergeCookieJar(session.cookie, res.setCookies) },
+        nowIso
+      );
+    }
+    if (res.env?.code === 90001) throw new LoginExpiredError();
+    if (!res.ok) {
+      throw new Error(res.error ?? "cloudRecordV2 请求失败");
+    }
+    const env = res.env ?? parseSignInEnvelope(res.body);
+    return parseCloudRecords(resultObject(env));
   };
+}
+function gateDeps(deps) {
+  return {
+    store: deps.store,
+    transport: deps.transport,
+    nowIso: deps.nowIso ?? (/* @__PURE__ */ new Date()).toISOString(),
+    baseUrl: deps.baseUrl
+  };
+}
+function readDayForAccount(deps, nowMs) {
+  return withTokenGate(gateDeps(deps), () => readDay(makeFetchPage(deps), nowMs));
+}
+function normalizeDays(raw) {
+  const n = typeof raw === "number" ? raw : typeof raw === "string" && /^\d+$/.test(raw) ? Number(raw) : NaN;
+  return n === 1 || n === 7 || n === 30 ? n : 0;
+}
+function readRecordsForAccount(deps, nowMs, days) {
+  return withTokenGate(
+    gateDeps(deps),
+    () => readRecords(makeFetchPage(deps), rangeSinceMs(days, nowMs), MAX_DETAIL_RECORDS)
+  );
 }
 
 // src/mcloud/routes.ts
-var QR_POLL_MS = 2e3;
 var PLUGIN = "mcloud";
 function parseJson5(body) {
   if (typeof body !== "string") return body ?? null;
@@ -9194,6 +10003,17 @@ function accountsView(store2) {
         platform: a.platform,
         pcPlatform: a.pcPlatform ?? "",
         expireDays: exp > 0 ? Math.floor((exp - nowMs) / 864e5) : null,
+        ...(() => {
+          const bag = readBag(raw, a.id);
+          let jwt = "";
+          try {
+            jwt = JSON.parse(bag["mcloud.session"] ?? "{}").jwt ?? "";
+          } catch {
+            jwt = "";
+          }
+          const e = jwtExpiryOf(jwt, new Date(nowMs).toISOString());
+          return { jwtExpiresAt: e?.atIso ?? "", jwtExpired: e?.expired ?? false };
+        })(),
         deviceId: readBag(raw, a.id)["mcloud.smid.deviceId"] ?? "",
         disabled: a.disabled === true,
         // ⚠ 这两个键**是按账号的**（`KEY_SCOPE` 里登记成 `account`）。
@@ -9252,12 +10072,14 @@ function buildReadings(deps) {
       const r = loginReading(
         deps.store,
         nowMs,
-        (sid, did) => qrPayload(pcClient(loginPlatform(deps.store), did), sid)
+        (sid, did) => qrPayload(pcClient(sessionPlatform(deps.store), did), sid)
       );
       return { ...r, qr: r.qr === null ? null : { ...r.qr, svg: qrSvg(r.qr.payload) } };
     })(),
     daily: {
-      // 「今天跑完了吗」看标记；「上次跑成什么样」看读数。两个都要，
+      // ⚠ `doneToday` 是**读数**，不是闸 —— 日常一天两趟都照跑（第二趟兜底，
+      //   见 `entries/daily.ts` 里那段）。界面上别把它说成"今天已完成（不会再跑）"。
+      // 「今天跑过没」看标记；「上次跑成什么样」看读数。两个都要，
       // 因为它们回答的是不同的问题（用户真正会问的是后面那个）。
       // ⚠ 用常量，**不要**写键名字面量 —— 那处原来是硬编码的
       //   `'mcloud.daily.done_date'`；改名/改分法时字面量不会跟着动。
@@ -9275,14 +10097,27 @@ function buildReadings(deps) {
       // 这个读数就是回答那个问题的。
       timing: timingReading(nowMs, exchangeLeadMs(deps.store)),
       // 到目标时刻那一场还有多久（界面第一行用）
-      toTargetMs: planTargetWait(nowMs, targetHourOf(deps.store)).ms,
+      toTargetMs: Math.max(0, (scheduleNextTargetMs(deps.store, nowMs) ?? nowMs) - nowMs),
       // 这一小时已经发过单了吗（那道防重复花豆的闸）
-      orderedThisHour: deps.store.getState(STATE_ORDERED_HOUR) === hourKey(nowMs),
+      orderedThisHour: deps.store.getState(STATE_ORDERED_HOUR) === hourKey(scheduleNextTargetMs(deps.store, nowMs) ?? nowMs),
       // 目标时刻（几点抢）。`null` = 每小时都试。
       targetHour: targetHourOf(deps.store),
       leadMs: exchangeLeadMs(deps.store),
       plan: deps.store.getState("mcloud.exchange.plan") ?? "",
+      // 定时目标与手动目标分开存：页面上的「手动兑换」和「定时抢兑」不再互相改。
+      schedulePlan: deps.store.getState(STATE_SCHEDULE_PLAN) ?? "",
+      scheduleCron: deps.store.getState(STATE_SCHEDULE_CRON) ?? "",
+      scheduleMode: deps.store.getState(STATE_SCHEDULE_MODE) ?? "daily",
+      scheduleUntil: deps.store.getState(STATE_SCHEDULE_UNTIL) ?? "",
+      scheduleOnceDate: deps.store.getState(STATE_SCHEDULE_ONCE_DATE) ?? "",
+      scheduleMaxRuns: scheduleMaxRuns(deps.store),
+      scheduleRuns: scheduleRuns(deps.store),
+      leadSec: scheduleLeadSec(deps.store),
       reading: readExchangeList(deps.store),
+      // 「选一件」那份缓存。**过期即清**发生在读的时候（本地写一格，不打上游）——
+      // 用户点开这一屏就是"今天第一次看"，那一份昨天的清单在这一刻作废。
+      picks: readPickCache(deps.store, nowIso),
+      subs: readSubscriptions(deps.store),
       verdictText: VERDICT_TEXT
     },
     live: {
@@ -9313,7 +10148,8 @@ function buildReadings(deps) {
           enabled: claimEnabled(deps.store),
           step: st?.step ?? "",
           report: r,
-          line: r === null ? claimEnabled(deps.store) ? "还没领过" : "领小红花没开启" : r.line
+          // 这个开关只是"允许插件去领"；功能本身要服务端那边开（用户口径 2026-10-17）
+          line: r === null ? claimEnabled(deps.store) ? "还没领过" : "领小红花没开 —— 要先在服务端那边开启（这里的开关只是允许插件去领）" : r.line
         };
       })()
     },
@@ -9350,7 +10186,8 @@ function buildReadings(deps) {
       // 与云盘业务主机不是同一台。混用的话指到 mock 之后登录仍然打真上游。
       loginBase: loadLoginBase(deps.store),
       loginPlatform: loginPlatform(deps.store),
-      loginDomain: deps.store.getState(STATE_LOGIN_DOMAIN) ?? ""
+      // ⚠ 现在是**当前账号**的域（账号级那一格），不是全局那格 —— 见 F-075
+      loginDomain: currentAccountDomain(deps.store) ?? ""
     }
   };
 }
@@ -9359,21 +10196,40 @@ function loadLoginBase(store2) {
 }
 function loginCall(deps, req) {
   const res = callOnce(deps.transport, req);
-  if (!res.ok) return { ok: false, env: null, error: res.error ?? `http ${res.status}`, tookMs: res.tookMs };
+  if (res.env === void 0) {
+    return { ok: false, env: null, error: res.error ?? `http ${res.status}`, tookMs: res.tookMs };
+  }
   try {
-    return { ok: true, env: parseLoginEnvelope(res.raw), error: "", tookMs: res.tookMs };
+    return { ok: true, env: parseLoginEnvelope(res.body), error: "", tookMs: res.tookMs };
   } catch (e) {
     return { ok: false, env: null, error: e instanceof Error ? e.message : String(e), tookMs: res.tookMs };
   }
+}
+var SLIDER_MAX_ATTEMPTS = 2;
+function autoPassSlider(deps, logTag, fetchAnswer, sendWith) {
+  for (let attempt = 1; attempt <= SLIDER_MAX_ATTEMPTS; attempt += 1) {
+    const got = fetchAnswer();
+    if ("error" in got) return { ok: false, error: got.error };
+    const r = sendWith(got.answer);
+    if (r.kind === "sent") {
+      deps.log(`${logTag}：滑块过了（第 ${attempt} 轮），验证码已发出`);
+      return { ok: true, remainGetTimes: r.remainGetTimes };
+    }
+    if (r.kind === "other") return { ok: false, error: r.note };
+    deps.log(`${logTag}：滑块没过（${r.kind}），换一道新题再试`);
+  }
+  return { ok: false, error: "滑块连着两轮没过 —— 过一会儿再点一次" };
 }
 function newTid() {
   return uuidV4();
 }
 function loginPlatform(store2) {
-  const pref = store2.getState(STATE_LOGIN_PREF);
-  return pref === "macos" ? "macos" : "windows";
+  return parsePcPlatform(store2.getState(STATE_LOGIN_PREF)) ?? DEFAULT_PC_PLATFORM;
 }
-function adoptLoginResult(deps, encrypted, note2, prefix = PC_AUTH_PREFIX, key = LOGIN_AES_KEY) {
+function sessionPlatform(store2) {
+  return loadQrSession(store2)?.platform ?? loginPlatform(store2);
+}
+function adoptLoginResult(deps, encrypted, note2, prefix = PC_AUTH_PREFIX, key = LOGIN_AES_KEY, pcPlatform) {
   let info;
   try {
     info = decryptUserInfo(encrypted, key);
@@ -9387,10 +10243,18 @@ function adoptLoginResult(deps, encrypted, note2, prefix = PC_AUTH_PREFIX, key =
     return { ok: false, note: `登录结果缺字段：${e instanceof Error ? e.message : String(e)}` };
   }
   const phone = typeof info["account"] === "string" ? info["account"] : "";
-  const up = upsertAccount(deps.store, auth, deps.now(), phone === "" ? void 0 : maskPhone(phone));
-  selectAccount(deps.store, up.account.id, deps.now());
   const domain = userDomainIdFrom(info);
-  if (domain !== "") deps.store.setState(STATE_LOGIN_DOMAIN, domain, deps.now());
+  const up = upsertAccount(
+    deps.store,
+    auth,
+    deps.now(),
+    phone === "" ? void 0 : maskPhone(phone),
+    // ⚠ 词表在这里换一次（`windows` → `win`）—— 见 `accountForm` 的注释
+    pcPlatform === void 0 ? void 0 : accountForm(pcPlatform),
+    domain === "" ? void 0 : domain
+  );
+  selectAccount(deps.store, up.account.id, deps.now());
+  deps.store.setState(STATE_LOGIN_DOMAIN, "", deps.now());
   clearLogin(deps.store);
   deps.log(`登录成功：${up.account.label}${up.created ? "（新账号）" : "（已有账号，凭据已更新）"}`);
   return { ok: true, note: `${note2} · ${up.account.label}`, account: { id: up.account.id, label: up.account.label } };
@@ -9424,6 +10288,28 @@ function mcloudRoutes(deps) {
         const r = readRun(deps.store, id);
         if (r === null) return json(404, { error: `没有这次运行（可能已经被新记录挤掉了）：${id}` });
         return json(200, r);
+      }
+    },
+    {
+      // 运行日志的**历史**（最近 N 行）。
+      //
+      // 终端面板平时靠面板的日志流（SSE），可那条流的底子是内存环 ——
+      // **面板一重启就空**。所以插件自己留了一份副本（`logRing.ts`），
+      // 界面首屏先读这一份，再接流看新的。
+      //
+      // ⚠ 这是"上一次跑到哪"的答案，不是日志系统本身：没有级别过滤、没有续传，
+      //   只留最近 400 行。别拿它当审计。
+      path: `${base}/log/tail`,
+      method: "GET",
+      handler: (req) => {
+        const q = parseQuery(req.query);
+        const want = Number(q.limit ?? "200");
+        const limit = Number.isFinite(want) ? Math.min(Math.max(Math.trunc(want), 1), 400) : 200;
+        const all = readRing(deps.store);
+        return json(200, {
+          lines: all.slice(Math.max(0, all.length - limit)),
+          total: all.length
+        });
       }
     },
     // ── 推送 ────────────────────────────────────────────────────────
@@ -9539,11 +10425,11 @@ function mcloudRoutes(deps) {
           const r = loginReading(
             deps.store,
             Date.parse(deps.now()),
-            (sid, did) => qrPayload(pcClient(loginPlatform(deps.store), did), sid)
+            (sid, did) => qrPayload(pcClient(sessionPlatform(deps.store), did), sid)
           );
           return { ...r, qr: r.qr === null ? null : { ...r.qr, svg: qrSvg(r.qr.payload) } };
         })(),
-        platform: loginPlatform(deps.store)
+        platform: sessionPlatform(deps.store)
       })
     },
     // ── 登录：扫码 ──────────────────────────────────────────────────
@@ -9552,15 +10438,18 @@ function mcloudRoutes(deps) {
       // 实测 1622 个 body 文件里也没有对应的取码接口。
       path: `${base}/login/qr/start`,
       method: "POST",
-      handler: () => {
+      handler: (req) => {
+        const b = readBody(req);
+        const platform = parsePcPlatform(b.pcPlatform) ?? loginPlatform(deps.store);
         const nowMs = Date.parse(deps.now());
-        const s = startQrSession(deps.store, nowMs, deps.now());
-        const c = pcClient(loginPlatform(deps.store), s.deviceId);
+        const s = startQrSession(deps.store, nowMs, deps.now(), platform);
+        const c = pcClient(s.platform, s.deviceId);
         const payload = qrPayload(c, s.sessionId);
-        deps.log("扫码登录：已出码，等手机扫");
+        deps.log(`扫码登录：已出码（${s.platform === "macos" ? "macOS" : "Windows"}），等手机扫`);
         return json(200, {
           sessionId: s.sessionId,
           payload,
+          platform: s.platform,
           // **在插件这一侧编码**、界面只画格子：浏览器里没有二维码库，
           // 在那里现写一个等于把"码对不对"交给前端（见 crypto/qr.ts 的文件头）。
           svg: qrSvg(payload),
@@ -9581,26 +10470,68 @@ function mcloudRoutes(deps) {
         const s = loadQrSession(deps.store);
         if (s === null) return json(400, { error: "没有正在进行的扫码登录（先点「扫码登录」）" });
         const nowMs = Date.parse(deps.now());
+        const remain = qrRemainingMs(s, nowMs);
         if (qrExpired(s, nowMs)) {
-          return json(200, { stop: true, ok: false, note: "二维码过期了，点「扫码登录」重新出码" });
+          return json(200, {
+            stop: true,
+            ok: false,
+            note: "二维码过期了，点「扫码登录」重新出码",
+            expiresInMs: 0,
+            pollMs: QR_POLL_MS
+          });
         }
-        const c = pcClient(loginPlatform(deps.store), s.deviceId);
+        const c = pcClient(s.platform, s.deviceId);
         const r = loginCall(
           deps,
-          thirdloginRequest(c, newTid(), qrThirdloginBody(c, s.sessionId), loadLoginBase(deps.store))
+          // ⚠ 用**会话里那一个** `x-yun-tid`（整趟复用），不要每轮新生成 ——
+          //   参考实现的会话表存的就是 `(qr, tid, owner)`（F-071）。
+          thirdloginRequest(c, s.tid, qrThirdloginBody(c, s.sessionId), loadLoginBase(deps.store))
         );
-        if (!r.ok || r.env === null) {
-          return json(200, { stop: false, ok: true, note: `还没问到上游（${r.error}），再点一次`, retry: true });
+        if (r.env === null) {
+          const err2 = r.error ?? "没有回应";
+          deps.log(`扫码登录：问服务端没成（${err2}）`);
+          const empty = /不是 JSON/.test(err2);
+          const offline = /Connection refused|connection reset|io: |dns error|timed out|timeout/i.test(err2);
+          const code = /\b(?:HTTP|status:)\s*(\d{3})\b/.exec(err2)?.[1];
+          const why = empty ? "移动云盘回了个空响应 —— 过一会儿再点一次" : offline ? "连不上移动云盘 —— 过一会儿再点一次" : `移动云盘没回应（${code ?? err2}），过一会儿再点一次`;
+          return json(200, {
+            stop: false,
+            ok: true,
+            note: why,
+            retry: true,
+            expiresInMs: remain,
+            pollMs: QR_POLL_MS
+          });
         }
         const out = classifyPoll(r.env);
         const applied = applyPoll(s, out, nowMs);
         saveQrSession(deps.store, applied.session, deps.now());
         if (applied.encrypted !== void 0) {
-          const adopted = adoptLoginResult(deps, applied.encrypted, "扫码登录成功");
+          const adopted = adoptLoginResult(
+            deps,
+            applied.encrypted,
+            "扫码登录成功",
+            PC_AUTH_PREFIX,
+            LOGIN_AES_KEY,
+            s.platform
+          );
           return json(200, { ...applied, ...adopted, stop: true });
         }
-        if (applied.stop) deps.log(`扫码登录：${applied.note}`);
-        return json(200, { stop: applied.stop, ok: applied.ok, note: applied.note, scanned: applied.session.scanned });
+        if (applied.note !== s.lastNote) {
+          const raw = `${r.env.code ?? "无 code"}${r.env.message ? ` ${r.env.message}` : ""}`;
+          deps.log(`扫码登录：${applied.note}（服务端 code=${raw}）`);
+        }
+        return json(200, {
+          stop: applied.stop,
+          ok: applied.ok,
+          note: applied.note,
+          scanned: applied.session.scanned,
+          // ⚠ 终态（过期 / 会话对不上 / 限流）时剩余时间必须给 0：
+          //   否则界面上会出现「二维码过期了 · 剩 119 秒」这种自相矛盾的一行
+          //   （实测到过：出码后第一次轮询恰好撞上上游回 `200059542`）。
+          expiresInMs: applied.stop ? 0 : remain,
+          pollMs: QR_POLL_MS
+        });
       }
     },
     // ── 登录：短信 ──────────────────────────────────────────────────
@@ -9611,50 +10542,64 @@ function mcloudRoutes(deps) {
         const b = readBody(req);
         const phone = typeof b.phone === "string" ? b.phone.trim() : "";
         if (!/^1\d{10}$/.test(phone)) return json(400, { error: "手机号要 11 位、以 1 开头" });
-        const s = startSmsSession(deps.store, phone, Date.parse(deps.now()), deps.now());
-        return json(200, { phone: s.phone, note: "点「发验证码」" });
+        const platform = parsePcPlatform(b.pcPlatform) ?? loginPlatform(deps.store);
+        const s = startSmsSession(deps.store, phone, Date.parse(deps.now()), deps.now(), platform);
+        return json(200, { phone: s.phone, platform: s.platform, note: "点「发验证码」" });
       }
     },
     {
-      // 发码。**可能被风控拦下** ⇒ 回 `need-slider`，那时界面要去取图。
+      // 发码。**可能被风控拦下** ⇒ 这一侧**自己去过滑块**，人只负责等短信。
       path: `${base}/login/sms/send`,
       method: "POST",
       handler: () => {
         const s = loadSmsSession(deps.store);
         if (s === null) return json(400, { error: "没有正在进行的短信登录（先填手机号）" });
-        const c = pcClient(loginPlatform(deps.store), loadDeviceId(deps.store, deps.now()));
-        let body;
-        if (s.slider !== null) {
-          let answer;
-          try {
-            answer = sliderAnswer(s.slider);
-          } catch (e) {
-            return json(400, { error: `滑块图解不开：${e instanceof Error ? e.message : String(e)}` });
+        const c = pcClient(s.platform, loadDeviceId(deps.store, deps.now()));
+        const base2 = loadLoginBase(deps.store);
+        const attempt = (answer) => {
+          const body = answer === void 0 ? sendSmsCodeBody(c, s.phone, s.random) : sendSmsCodeBodyWithSlider(c, s.phone, s.random, answer);
+          const r = loginCall(deps, sendSmsCodeRequest(c, newTid(), body, base2));
+          if (r.env === null) return { kind: "other", note: `发码请求没成功：${r.error}` };
+          const out = classifySendSms(r.env);
+          if (out.kind === "sent") return { kind: "sent", remainGetTimes: out.remainGetTimes };
+          if (out.kind === "need-slider") return { kind: "need-slider" };
+          if (out.kind === "slider-exhausted") return { kind: "exhausted" };
+          return { kind: "other", note: `发码没成：${out.message || `code=${out.code}`}` };
+        };
+        const fetchAnswer = () => {
+          const pr = loginCall(deps, sliderPuzzleRequest(c, newTid(), sliderPuzzleBody(s.phone), base2));
+          if (pr.env === null) return { error: `取滑块没成功：${pr.error}` };
+          if (!isSuccessCode(pr.env.code)) {
+            return { error: `取滑块被拒：${pr.env.message || `code=${pr.env.code}`}` };
           }
-          body = sendSmsCodeBodyWithSlider(c, s.phone, s.random, answer);
+          try {
+            const puzzle = parseSliderPuzzle(pr.env);
+            saveSmsSession(deps.store, { ...s, slider: puzzle }, deps.now());
+            return { answer: sliderAnswer(puzzle) };
+          } catch (e) {
+            return { error: `滑块图解不开：${e instanceof Error ? e.message : String(e)}` };
+          }
+        };
+        let sent = null;
+        const first = attempt();
+        if (first.kind === "sent") {
+          sent = { remainGetTimes: first.remainGetTimes };
+        } else if (first.kind === "other") {
+          return json(200, { ok: false, note: first.note });
         } else {
-          body = sendSmsCodeBody(c, s.phone, s.random);
+          deps.log(`短信登录：要过滑块（${first.kind === "exhausted" ? "旧图已作废" : "首次发码被拦"}），自动过`);
+          const passed = autoPassSlider(deps, "短信登录", fetchAnswer, attempt);
+          if (!passed.ok) return json(200, { ok: false, note: passed.error });
+          sent = { remainGetTimes: passed.remainGetTimes };
         }
-        const r = loginCall(deps, sendSmsCodeRequest(c, newTid(), body, loadLoginBase(deps.store)));
-        if (!r.ok || r.env === null) return json(502, { error: `发码请求没成功：${r.error}` });
-        const out = classifySendSms(r.env);
-        if (out.kind === "sent") {
-          const next = { ...s, sent: true, lastNote: "验证码已发出" };
-          saveSmsSession(deps.store, next, deps.now());
-          deps.log("短信登录：验证码已发出");
-          return json(200, { sent: true, remainGetTimes: out.remainGetTimes, note: "看手机短信，把 6 位验证码填进来" });
-        }
-        if (out.kind === "need-slider" || out.kind === "slider-exhausted") {
-          const next = setSmsSlider(deps.store, s, null, deps.now());
-          saveSmsSession(deps.store, next, deps.now());
-          deps.log(`短信登录：要过滑块（${out.kind === "slider-exhausted" ? "旧图已作废，" : ""}去取新图）`);
-          return json(200, {
-            needSlider: true,
-            exhausted: out.kind === "slider-exhausted",
-            note: out.kind === "slider-exhausted" ? "这张滑块图作废了，重新取一张" : "要先过滑块，去取图"
-          });
-        }
-        return json(200, { ok: false, note: `发码没成：${out.message || `code=${out.code}`}`, code: out.code });
+        const next = { ...s, sent: true, lastNote: "验证码已发出" };
+        saveSmsSession(deps.store, next, deps.now());
+        deps.log("短信登录：验证码已发出");
+        return json(200, {
+          sent: true,
+          remainGetTimes: sent.remainGetTimes,
+          note: "看手机短信，把 6 位验证码填进来"
+        });
       }
     },
     {
@@ -9664,12 +10609,12 @@ function mcloudRoutes(deps) {
       handler: () => {
         const s = loadSmsSession(deps.store);
         if (s === null) return json(400, { error: "没有正在进行的短信登录（先填手机号）" });
-        const c = pcClient(loginPlatform(deps.store), loadDeviceId(deps.store, deps.now()));
+        const c = pcClient(s.platform, loadDeviceId(deps.store, deps.now()));
         const r = loginCall(
           deps,
           sliderPuzzleRequest(c, newTid(), sliderPuzzleBody(s.phone), loadLoginBase(deps.store))
         );
-        if (!r.ok || r.env === null) return json(502, { error: `取滑块失败：${r.error}` });
+        if (r.env === null) return json(502, { error: `取滑块失败：${r.error}` });
         if (!isSuccessCode(r.env.code)) {
           return json(200, { ok: false, note: `取滑块被拒：${r.env.message || `code=${r.env.code}`}` });
         }
@@ -9683,7 +10628,7 @@ function mcloudRoutes(deps) {
         try {
           answer = sliderAnswer(puzzle);
         } catch (e) {
-          return json(502, { error: `滑块缺口解不开（上游换字段了？）：${e instanceof Error ? e.message : String(e)}` });
+          return json(502, { error: `滑块缺口解不开（服务端换字段了？）：${e instanceof Error ? e.message : String(e)}` });
         }
         setSmsSlider(deps.store, s, puzzle, deps.now());
         return json(200, {
@@ -9707,15 +10652,22 @@ function mcloudRoutes(deps) {
         if (!/^\d{4,8}$/.test(code)) return json(400, { error: "验证码要 4–8 位数字" });
         const s = loadSmsSession(deps.store);
         if (s === null) return json(400, { error: "没有正在进行的短信登录（先填手机号）" });
-        const c = pcClient(loginPlatform(deps.store), loadDeviceId(deps.store, deps.now()));
+        const c = pcClient(s.platform, loadDeviceId(deps.store, deps.now()));
         const r = loginCall(
           deps,
           thirdloginRequest(c, newTid(), smsThirdloginBody(c, s.phone, code), loadLoginBase(deps.store))
         );
-        if (!r.ok || r.env === null) return json(502, { error: `提交请求没成功：${r.error}` });
+        if (r.env === null) return json(502, { error: `提交请求没成功：${r.error}` });
         const out = classifyPoll(r.env);
         if (out.kind === "success") {
-          const adopted = adoptLoginResult(deps, out.encrypted, "短信登录成功");
+          const adopted = adoptLoginResult(
+            deps,
+            out.encrypted,
+            "短信登录成功",
+            PC_AUTH_PREFIX,
+            LOGIN_AES_KEY,
+            s.platform
+          );
           return json(200, { ...adopted, stop: true });
         }
         const note2 = r.env.code === CODES.SMS_CODE_WRONG ? "验证码不对（或者过期了），再看一眼短信" : `登录没成：${out.kind === "other" ? out.message || `code=${out.code}` : out.kind}`;
@@ -9733,7 +10685,7 @@ function mcloudRoutes(deps) {
       handler: (req) => {
         const b = readBody(req);
         const task = typeof b.task === "string" ? b.task : "";
-        if (!TASK_NAMES.includes(task)) {
+        if (!SCHEDULED_TASKS.includes(task)) {
           return json(400, { error: `不认识的任务：${task || "(空)"}` });
         }
         const all = b.all === true;
@@ -9775,31 +10727,62 @@ function mcloudRoutes(deps) {
         if (a === null) return json(400, { error: "没有正在进行的手机端登录（先填手机号）" });
         const deviceId = loadDeviceId(deps.store, deps.now());
         const nowMs = Date.parse(deps.now());
-        let puzzle = "";
-        if (a.slider !== null) {
-          try {
-            puzzle = puzzleVerfycodeEncrypt(sliderAnswer(a.slider));
-          } catch (e) {
-            return json(400, { error: `滑块图解不开：${e instanceof Error ? e.message : String(e)}` });
+        const attempt = (answer) => {
+          const puzzle = answer === void 0 ? "" : puzzleVerfycodeEncrypt(answer);
+          const r = loginCall(
+            deps,
+            appSendSmsCodeRequest(deviceId, nowMs, a.phone, puzzle, loadLoginBase(deps.store))
+          );
+          if (r.env === null) return { kind: "other", note: `发码请求没成功：${r.error}` };
+          const out = classifyAppSendSms(r.env);
+          if (out.kind === "sent") return { kind: "sent", remainGetTimes: out.remainGetTimes };
+          if (out.kind === "need-captcha") return { kind: "need-slider" };
+          if (out.kind === "slider-exhausted") return { kind: "exhausted" };
+          return { kind: "other", note: out.note };
+        };
+        const fetchAnswer = () => {
+          const pr = loginCall(
+            deps,
+            appPost(
+              APP_SLIDER_PUZZLE_PATH,
+              JSON.stringify(sliderPuzzleBody(a.phone)),
+              deviceId,
+              nowMs,
+              loadLoginBase(deps.store)
+            )
+          );
+          if (pr.env === null) return { error: `取滑块没成功：${pr.error}` };
+          if (!isSuccessCode(pr.env.code)) {
+            return { error: `取滑块被拒：${pr.env.message || `code=${pr.env.code}`}` };
           }
+          try {
+            const puzzle = parseSliderPuzzle(pr.env);
+            saveAppSession(deps.store, { ...a, slider: puzzle }, deps.now());
+            return { answer: sliderAnswer(puzzle) };
+          } catch (e) {
+            return { error: `滑块图解不开：${e instanceof Error ? e.message : String(e)}` };
+          }
+        };
+        let sent = null;
+        const first = attempt();
+        if (first.kind === "sent") {
+          sent = { remainGetTimes: first.remainGetTimes };
+        } else if (first.kind === "other") {
+          return json(200, { ok: false, sent: false, note: first.note });
+        } else {
+          deps.log(`手机端登录：要过滑块（${first.kind === "exhausted" ? "旧图已作废" : "首次发码被拦"}），自动过`);
+          const passed = autoPassSlider(deps, "手机端登录", fetchAnswer, attempt);
+          if (!passed.ok) return json(200, { ok: false, sent: false, note: passed.error });
+          sent = { remainGetTimes: passed.remainGetTimes };
         }
-        const r = loginCall(deps, appSendSmsCodeRequest(deviceId, nowMs, a.phone, puzzle));
-        if (!r.ok || r.env === null) return json(502, { error: `发码请求没成功：${r.error}` });
-        const out = classifyAppSendSms(r.env);
-        if (out.kind === "sent") {
-          saveAppSession(deps.store, { ...a, sent: true, lastNote: "验证码已发出" }, deps.now());
-          return json(200, {
-            ok: true,
-            sent: true,
-            remainGetTimes: out.remainGetTimes,
-            note: out.remainGetTimes === null ? "验证码已发出" : `验证码已发出（今天还能发 ${out.remainGetTimes} 次）`
-          });
-        }
-        if (out.kind === "need-captcha" || out.kind === "slider-exhausted") {
-          saveAppSession(deps.store, { ...a, slider: null, lastNote: out.note }, deps.now());
-          return json(200, { ok: false, needSlider: true, note: out.note });
-        }
-        return json(200, { ok: false, sent: false, note: out.note });
+        saveAppSession(deps.store, { ...a, sent: true, lastNote: "验证码已发出" }, deps.now());
+        deps.log("手机端登录：验证码已发出");
+        return json(200, {
+          ok: true,
+          sent: true,
+          remainGetTimes: sent.remainGetTimes,
+          note: sent.remainGetTimes === null ? "验证码已发出" : `验证码已发出（今天还能发 ${sent.remainGetTimes} 次）`
+        });
       }
     },
     {
@@ -9811,9 +10794,15 @@ function mcloudRoutes(deps) {
         const deviceId = loadDeviceId(deps.store, deps.now());
         const r = loginCall(
           deps,
-          appPost(APP_SLIDER_PUZZLE_PATH, JSON.stringify(sliderPuzzleBody(a.phone)), deviceId, Date.parse(deps.now()))
+          appPost(
+            APP_SLIDER_PUZZLE_PATH,
+            JSON.stringify(sliderPuzzleBody(a.phone)),
+            deviceId,
+            Date.parse(deps.now()),
+            loadLoginBase(deps.store)
+          )
         );
-        if (!r.ok || r.env === null) return json(502, { error: `取题面没成功：${r.error}` });
+        if (r.env === null) return json(502, { error: `取题面没成功：${r.error}` });
         let p;
         try {
           p = parseSliderPuzzle(r.env);
@@ -9840,9 +10829,17 @@ function mcloudRoutes(deps) {
         const deviceId = loadDeviceId(deps.store, deps.now());
         const r = loginCall(
           deps,
-          appThirdloginRequest(deviceId, Date.parse(deps.now()), a.phone, code, a.random)
+          appThirdloginRequest(
+            deviceId,
+            Date.parse(deps.now()),
+            a.phone,
+            code,
+            a.random,
+            void 0,
+            loadLoginBase(deps.store)
+          )
         );
-        if (!r.ok || r.env === null) return json(502, { error: `提交请求没成功：${r.error}` });
+        if (r.env === null) return json(502, { error: `提交请求没成功：${r.error}` });
         const out = classifyAppLogin(r.env);
         if (out.kind === "success") {
           const adopted = adoptLoginResult(deps, out.encrypted, "手机端登录成功", APP_AUTH_PREFIX, APP_LOGIN_AES_KEY);
@@ -9862,18 +10859,26 @@ function mcloudRoutes(deps) {
         const password = typeof b.password === "string" ? b.password : "";
         if (phone === "") return json(400, { error: "要填手机号" });
         if (password === "") return json(400, { error: "要填口令" });
-        const c = pcClient(loginPlatform(deps.store), loadDeviceId(deps.store, deps.now()));
+        const platform = parsePcPlatform(b.pcPlatform) ?? loginPlatform(deps.store);
+        const c = pcClient(platform, loadDeviceId(deps.store, deps.now()));
         const r = loginCall(
           deps,
           thirdloginRequest(c, newTid(), passwordThirdloginBody(c, phone, password), loadLoginBase(deps.store))
         );
-        if (!r.ok || r.env === null) return json(502, { error: `登录请求没成功：${r.error}` });
+        if (r.env === null) return json(502, { error: `登录请求没成功：${r.error}` });
         const out = classifyPoll(r.env);
         if (out.kind === "success") {
-          const adopted = adoptLoginResult(deps, out.encrypted, "账密登录成功");
+          const adopted = adoptLoginResult(
+            deps,
+            out.encrypted,
+            "账密登录成功",
+            PC_AUTH_PREFIX,
+            LOGIN_AES_KEY,
+            platform
+          );
           return json(200, { ...adopted, stop: true });
         }
-        const note2 = r.env.code === CODES.LOGIN_FAILED ? "上游说登录失败 —— 手机号或口令不对（也可能是设备头被拒）" : `登录没成：${out.kind === "other" ? out.message || `code=${out.code}` : out.kind}`;
+        const note2 = r.env.code === CODES.LOGIN_FAILED ? "服务端说登录失败 —— 手机号或口令不对（也可能是设备头被拒）" : `登录没成：${out.kind === "other" ? out.message || `code=${out.code}` : out.kind}`;
         return json(200, { ok: false, stop: true, note: note2 });
       }
     },
@@ -9951,7 +10956,7 @@ function mcloudRoutes(deps) {
       path: `${base}/config`,
       method: "GET",
       handler: () => json(200, {
-        baseUrl: loadBaseUrl(deps.store) || "(真上游)",
+        baseUrl: loadBaseUrl(deps.store) || "(真主机)",
         liveUrl: loadLiveUrl(deps.store),
         liveUrlDefault: XIAOHONGSHU_KOULING_PROFILE_URL,
         // 门的两个主机（user-njs / v.cmcc-cs.cn）—— 一个口子，见 liveGateTask.loadGateBase
@@ -9982,8 +10987,8 @@ function mcloudRoutes(deps) {
             return json(400, { error: "baseUrl 要以 http:// 或 https:// 开头（清空就传空串）" });
           }
           deps.store.setState(STATE_BASE_URL, v.replace(/\/+$/, ""), deps.now());
-          deps.log(v ? `上游基址已改为 ${v}` : "上游基址已恢复为真上游");
-          out.baseUrl = v || "(真上游)";
+          deps.log(v ? `接口基址已改为 ${v}` : "接口基址已恢复成真主机");
+          out.baseUrl = v || "(真主机)";
         }
         if ("targetHour" in body) {
           const raw = body.targetHour;
@@ -10029,7 +11034,7 @@ function mcloudRoutes(deps) {
           out.loginBase = v || "(真主机)";
         }
         if ("loginPlatform" in body) {
-          const v = body.loginPlatform === "macos" ? "macos" : "windows";
+          const v = parsePcPlatform(body.loginPlatform) ?? DEFAULT_PC_PLATFORM;
           deps.store.setState(STATE_LOGIN_PREF, v, deps.now());
           out.loginPlatform = v;
         }
@@ -10039,7 +11044,7 @@ function mcloudRoutes(deps) {
             return json(400, { error: "gateBase 要以 http:// 或 https:// 开头（清空 = 用真主机）" });
           }
           saveGateBase(deps.store, v, deps.now());
-          deps.log(v ? `直播日程的上游已改为 ${v}` : "直播日程的上游已恢复为真主机");
+          deps.log(v ? `直播日程的接口基址已改为 ${v}` : "直播日程的接口基址已恢复成真主机");
           out.gateBase = v || "(真主机)";
         }
         if ("wsBase" in body) {
@@ -10171,7 +11176,7 @@ function mcloudRoutes(deps) {
         // 写那半（领小红花）：默认关，开关在这里
         claim: {
           enabled: claimEnabled(deps.store),
-          codes: collectCodes(deps.store),
+          codes: collectCodes(deps.store, Date.parse(deps.now())),
           state: loadDrawState(deps.store)
         }
       })
@@ -10237,15 +11242,24 @@ function mcloudRoutes(deps) {
       // **推进一步**（一次调用一个上游请求）。界面上的按钮循环调这里直到 done。
       path: `${base}/h5/step`,
       method: "POST",
-      handler: () => {
+      handler: (req) => {
+        const b = readBody(req);
+        const id = typeof b.id === "string" ? b.id : "";
+        const one = id === "" ? deps.store : scoped(rawStoreOf(deps.store), id);
+        if (needExchange(one, Date.now())) {
+          const st0 = loadExchange(one);
+          if (st0 === null || st0.step === "done") {
+            startExchange(one, loadAuthRaw(one), deps.now());
+          }
+        }
         const r = runExchangeStep({
-          store: deps.store,
+          store: one,
           transport: deps.transport,
           nowIso: deps.now(),
           baseUrl: loadBaseUrl(deps.store)
         });
-        deps.log(`换票：${r.note}`);
-        return json(200, { ...r, exchange: loadExchange(deps.store) });
+        deps.log(`换票${id === "" ? "" : `（${id}）`}：${r.note}`);
+        return json(200, { ...r, exchange: loadExchange(one) });
       }
     },
     {
@@ -10255,7 +11269,7 @@ function mcloudRoutes(deps) {
       // ⚠ 为什么不做成"现在就发一枪"：下单**不可逆**（没有幂等键，发出去就扣真豆）。
       //   用户点这个按钮想知道的是「**现在能不能兑**」—— 判据过不过、余额够不够、
       //   滑块算不算得出来。这些**不需要发那一枪**就能答。
-      //   真下单只走定时那一场（`@every 10s` + 时间闸 + 压整点）。
+      //   真下单走界面上的「立即兑换」（会二次确认）或定时那一场（时间闸 + 压整点）。
       path: `${base}/exchange/try`,
       method: "POST",
       handler: () => {
@@ -10272,6 +11286,56 @@ function mcloudRoutes(deps) {
       }
     },
     {
+      // 刷新「选一件」那份缓存 —— 界面上那颗「刷新清单」，以及"今天还没读到过"时自动打一次。
+      //
+      // ⚠ 只发**清单那一枪**（只读）：不碰余额、不碰滑块、更不下单。
+      // 与 `/exchange/try` 的区别就在这个"轻"字上 —— 干跑是把整条链走到"只差发枪"，
+      // 而这一条只是把清单重新拿一遍（用户点开界面不该惊动整条链）。
+      path: `${base}/exchange/picks`,
+      method: "POST",
+      handler: () => {
+        const d = {
+          store: deps.store,
+          transport: deps.transport,
+          nowIso: deps.now(),
+          baseUrl: loadBaseUrl(deps.store)
+        };
+        const r = runExchangeList(d);
+        deps.log(`兑换清单：${r.note}`);
+        return json(200, { ...r, picks: readPickCache(d.store, d.nowIso) });
+      }
+    },
+    {
+      // 「我关注的奖品」—— 读。
+      path: `${base}/exchange/subs`,
+      method: "GET",
+      handler: () => json(200, { ok: true, subs: readSubscriptions(deps.store) })
+    },
+    {
+      // 「我关注的奖品」—— 开/关。按 id（有）或名字（没有）定位。
+      path: `${base}/exchange/subs`,
+      method: "POST",
+      handler: (req) => {
+        const b = readBody(req);
+        const name = typeof b.name === "string" ? b.name.trim() : "";
+        if (name === "") return json(400, { error: "要传奖品名字（name）" });
+        const id = typeof b.id === "number" && Number.isFinite(b.id) ? Math.trunc(b.id) : typeof b.id === "string" && /^\d+$/.test(b.id.trim()) ? Number(b.id.trim()) : void 0;
+        const on = b.on !== false;
+        const subs = toggleSubscription(
+          deps.store,
+          id === void 0 ? { name } : { id, name },
+          on,
+          deps.now()
+        );
+        deps.log(`兑换关注：${on ? "关注" : "取消关注"}「${name}」`);
+        return json(200, {
+          ok: true,
+          subs,
+          note: on ? `已关注「${name}」` : `已取消关注「${name}」`
+        });
+      }
+    },
+    {
       // 兑换下单 —— **不可逆**（真扣豆）。起单只是写字（**不发请求**），
       // 后面每次 `step` 走一步、发一枪。见 tasks/exchangeOrder.ts 的枪序。
       path: `${base}/exchange/order`,
@@ -10283,12 +11347,59 @@ function mcloudRoutes(deps) {
           clearOrder(d);
           return json(200, { ok: true, note: "这一单已清掉" });
         }
+        if (b.action === "manual-plan") {
+          const query2 = typeof b.query === "string" ? b.query.trim() : "";
+          if (query2 === "") return json(400, { ok: false, error: "手动目标不能为空" });
+          deps.store.setState("mcloud.exchange.plan", query2, d.nowIso);
+          deps.log(`手动目标：${query2}`);
+          return json(200, { ok: true, note: `手动目标已设为「${query2}」` });
+        }
+        if (b.action === "plan") {
+          const query2 = typeof b.query === "string" ? b.query.trim() : "";
+          if (query2 === "") return json(400, { ok: false, error: "定时目标不能为空" });
+          const cron = typeof b.cron === "string" ? b.cron.trim() : "";
+          if (cron === "") return json(400, { ok: false, error: "cron 表达式不能为空" });
+          try {
+            parseCron(cron);
+          } catch (e) {
+            return json(400, { ok: false, error: `cron 不对：${e.message}` });
+          }
+          const until = typeof b.until === "string" ? b.until.trim() : "";
+          if (until !== "" && !/^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2})?$/.test(until)) {
+            return json(400, { ok: false, error: "截止时间要写成 YYYY-MM-DD 或 YYYY-MM-DDTHH:mm" });
+          }
+          const maxRunsRaw = Number(b.maxRuns ?? 0);
+          if (!Number.isInteger(maxRunsRaw) || maxRunsRaw < 0 || maxRunsRaw > 999) {
+            return json(400, { ok: false, error: "次数要是 0~999 的整数（0 = 不限）" });
+          }
+          const leadRaw = Number(b.leadSec ?? 120);
+          if (!Number.isFinite(leadRaw) || leadRaw < 60 || leadRaw > 300) {
+            return json(400, { ok: false, error: "提前触发要在 60~300 秒之间" });
+          }
+          const gen = String(Date.now());
+          deps.store.setState(STATE_SCHEDULE_PLAN, query2, d.nowIso);
+          deps.store.setState(STATE_SCHEDULE_CRON, cron, d.nowIso);
+          deps.store.setState(STATE_SCHEDULE_UNTIL, until, d.nowIso);
+          deps.store.setState(STATE_SCHEDULE_MAX_RUNS, String(maxRunsRaw), d.nowIso);
+          deps.store.setState(STATE_LEAD_SEC, String(Math.round(leadRaw)), d.nowIso);
+          deps.store.setState(STATE_SCHEDULE_GEN, gen, d.nowIso);
+          deps.log(
+            `定时目标：${query2}（cron ${cron}，提前 ${Math.round(leadRaw)}s，每号最多 ${maxRunsRaw || "不限"} 次）`
+          );
+          return json(200, {
+            ok: true,
+            note: `定时已保存：${query2}（提前 ${Math.round(leadRaw)}s）`
+          });
+        }
         if (b.action === "step") {
           const r2 = runOrderStep(d);
+          const step = d.store.getState(STATE_STEP) ?? "";
           deps.log(`兑换：${r2.note}`);
-          return json(200, r2);
+          return json(200, { ...r2, step, done: step === "done" });
         }
-        const r = startOrder(d, typeof b.query === "string" ? b.query : "");
+        const query = typeof b.query === "string" ? b.query.trim() : "";
+        if (query !== "") deps.store.setState("mcloud.exchange.plan", query, d.nowIso);
+        const r = startOrder(d, query);
         deps.log(`兑换起单：${r.note}`);
         return json(200, { ...r, queue: deps.store.getState("mcloud.exchange.order.step") ?? "" });
       }
@@ -10302,10 +11413,13 @@ function mcloudRoutes(deps) {
         const b = readBody(req);
         const force = b.force === true;
         const leadDays = typeof b.leadDays === "number" ? b.leadDays : void 0;
+        const cur = currentAccount(deps.store);
         const r = runAuthRefresh(
           { store: deps.store, transport: deps.transport, nowIso: deps.now(), baseUrl: loadBaseUrl(deps.store) },
           force,
-          leadDays
+          leadDays,
+          // 明确"刷当前这一条、写回这一条"（没有账号时才是单账号那格）
+          cur === void 0 ? {} : { auth: cur.auth, accountId: cur.id }
         );
         deps.log(`凭据续期：${r.note}`);
         return json(200, { ...r, auth: authStatus(deps.store) });
@@ -10399,15 +11513,16 @@ function mcloudRoutes(deps) {
           const id = typeof body.id === "string" ? body.id : "";
           const found = loadAccounts(deps.store).find((a) => a.id === id);
           if (!found) return json(400, { error: `列表里没有这个账号：${id}` });
-          const one = scoped(rawStoreOf(deps.store), id);
           const r = runAuthRefresh(
             {
-              store: one,
+              store: deps.store,
               transport: deps.transport,
               nowIso: deps.now(),
-              baseUrl: loadBaseUrl(one)
+              baseUrl: loadBaseUrl(deps.store)
             },
-            true
+            true,
+            void 0,
+            { auth: found.auth, accountId: found.id }
           );
           deps.log(`凭据续期（${found.label}）：${r.note}`);
           return json(200, {
@@ -10601,6 +11716,102 @@ function mcloudRoutes(deps) {
           recent: deps.store.recentRuns(20)
         });
       }
+    },
+    {
+      // 「今日AI豆」—— **只读**，一枪 `cloudRecordV2` 翻到底再按**东八区自然日**汇总。
+      //
+      // 照参考实现（`mcloud-tasks/src/beans.rs` + 路由 `GET /api/beans/today`）：
+      //   · **按账号一列**，**没有 `total` / `net` 这种跨账号字段** ——
+      //     豆是每个账号各一本账，加出来的总数哪个账号都花不了。
+      //   · **失败按账号隔离**：某个账号读不到（无会话 / 网络 / 上游码 /
+      //     翻不到底 / 解不出 `insertTime`）只让它那一行进 `failed[]`，
+      //     其余账号照常出数。这一条**不返回错误状态** —— 一个账号挂了不该
+      //     把整张卡打成"服务挂了"。
+      //   · **点了才取**：界面上那一格不做自动刷新；这一条路由每次点都真打上游。
+      path: `${base}/beans/today`,
+      method: "GET",
+      // 逐账号 × 翻页 + **当场续票**的只读链：一发上游的超时就有 1500ms，
+      // 面板默认 2 秒撑不到"把所有账号读一遍"。现在票过期还会**内联换票**
+      // （`withTokenGate`：到期主动一轮 + `90001` 被动最多两轮，每轮四步 × 1500ms）。
+      // 按最坏一档留预算：几个账号各可能"读失败→换票→再读"若干轮。健康路径秒回，
+      // 这一档只在票全烂时才顶到。
+      budget_ms: 6e4,
+      handler: () => {
+        const raw = rawStoreOf(deps.store);
+        const nowIso = deps.now();
+        const nowMs = Date.parse(nowIso);
+        const baseUrl = loadBaseUrl(deps.store);
+        const rows = [];
+        const failed = [];
+        for (const a of loadAccounts(deps.store)) {
+          if (a.disabled === true) continue;
+          const one = scoped(raw, a.id);
+          try {
+            const day = readDayForAccount(
+              { store: one, transport: deps.transport, baseUrl, nowIso },
+              nowMs
+            );
+            rows.push({ id: a.id, label: a.label, ...day });
+          } catch (e) {
+            failed.push({
+              id: a.id,
+              label: a.label,
+              reason: e instanceof Error ? e.message : String(e)
+            });
+          }
+        }
+        return json(200, { nowMs, accounts: rows, failed });
+      }
+    },
+    {
+      // 「查看明细」—— 一个账号的流水，**不限于今日**。窗口 `days ∈ 1/7/30/0`
+      // （`0` = 全部）；`MAX_DETAIL_RECORDS` 撞上时 `hasMore=true`，界面写一句
+      // "还有更多没列出来"，**不静默截断**。
+      //
+      // ⚠ 数据源与 `/beans/today` **同一条**：还是上游 `cloudRecordV2`。
+      //   **不是**本仓的运行记录 / 明细账本 —— 那是"我们做过什么"，
+      //   流水是"上游账上发生了什么"，两者对不上是常态（重试、手动操作、别的端）。
+      //   这一条要回答的是后者。
+      path: `${base}/beans/records`,
+      method: "GET",
+      // 「全部」那一档要把这个账号的流水**翻到底**（最多 `MAX_PAGES`=20 页）才能
+      // 如实说"有没有更多"，一页一发 ⇒ 最坏 20 发 × 1500ms = 30s；再叠上"当场续票"
+      // （到期主动一轮 + `90001` 被动最多两轮，每轮四步）⇒ 比今日那条再宽一档。
+      budget_ms: 9e4,
+      handler: (req) => {
+        const q = parseQuery(req.query ?? "");
+        const id = q["id"] ?? "";
+        const days = normalizeDays(q["days"]);
+        const found = loadAccounts(deps.store).find((a) => a.id === id);
+        if (!found) return json(400, { error: `列表里没有这个账号：${id || "（没给 id）"}` });
+        const raw = rawStoreOf(deps.store);
+        const nowIso = deps.now();
+        const nowMs = Date.parse(nowIso);
+        const baseUrl = loadBaseUrl(deps.store);
+        const one = scoped(raw, id);
+        try {
+          const data = readRecordsForAccount(
+            { store: one, transport: deps.transport, baseUrl, nowIso },
+            nowMs,
+            days
+          );
+          return json(200, {
+            account: found.label,
+            days,
+            nowMs,
+            records: data.records,
+            undated: data.undated,
+            hasMore: data.hasMore
+          });
+        } catch (e) {
+          return json(200, {
+            account: found.label,
+            days,
+            nowMs,
+            error: e instanceof Error ? e.message : String(e)
+          });
+        }
+      }
     }
   ];
 }
@@ -10619,13 +11830,27 @@ import {
 
 // src/store/host.ts
 import { sqlite_exec, sqlite_query } from "host-api";
+function sqlQ(sql, params) {
+  const rows = sqlite_query(sql, params);
+  if (!Array.isArray(rows)) {
+    throw new Error(`sqlite_query 失败：${rows.error ?? "未知错误"}`);
+  }
+  return rows;
+}
+function sqlX(sql, params) {
+  const r = sqlite_exec(sql, params);
+  if (typeof r?.error === "string" && r.error !== "") {
+    throw new Error(`sqlite_exec 失败：${r.error}`);
+  }
+  return { changes: Number(r?.changes ?? 0), lastInsertRowid: Number(r?.lastInsertRowid ?? 0) };
+}
 function hostStore() {
   let schemaReady = false;
   return {
     ensureSchema: () => {
       if (schemaReady) return;
-      sqlite_exec(
-        `CREATE TABLE IF NOT EXISTS runs (
+      sqlX(
+        `CREATE TABLE IF NOT EXISTS mcloud_runs (
            id           INTEGER PRIMARY KEY AUTOINCREMENT,
            task         TEXT    NOT NULL,
            runs         INTEGER NOT NULL,
@@ -10634,33 +11859,38 @@ function hostStore() {
            late_ms      INTEGER NOT NULL,
            ok           INTEGER NOT NULL,
            note         TEXT
-         )`
+         )`,
+        []
       );
-      sqlite_exec(`CREATE INDEX IF NOT EXISTS idx_runs_task_fired ON runs (task, fired_at)`);
-      sqlite_exec(
+      sqlX(
+        `CREATE INDEX IF NOT EXISTS idx_mcloud_runs_task_fired ON mcloud_runs (task, fired_at)`,
+        []
+      );
+      sqlX(
         `CREATE TABLE IF NOT EXISTS state (
            key   TEXT PRIMARY KEY,
            value TEXT NOT NULL,
            updated_at TEXT NOT NULL
-         )`
+         )`,
+        []
       );
       schemaReady = true;
     },
     getState: (key) => {
-      const rows = sqlite_query(`SELECT value FROM state WHERE key = ?1`, [key]);
+      const rows = sqlQ(`SELECT value FROM state WHERE key = ?1`, [key]);
       const row = rows[0];
       return row ? String(row.value) : null;
     },
     setState: (key, value, nowIso) => {
-      sqlite_exec(
+      sqlX(
         `INSERT INTO state (key, value, updated_at) VALUES (?1, ?2, ?3)
          ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = ?3`,
         [key, value, nowIso]
       );
     },
     recordRun: (r) => {
-      const res = sqlite_exec(
-        `INSERT INTO runs (task, runs, scheduled_at, fired_at, late_ms, ok, note)
+      const res = sqlX(
+        `INSERT INTO mcloud_runs (task, runs, scheduled_at, fired_at, late_ms, ok, note)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`,
         [r.task, r.runs, r.scheduledAt, r.firedAt, Math.round(r.lateMs), r.ok ? 1 : 0, r.note ?? null]
       );
@@ -10670,25 +11900,25 @@ function hostStore() {
     // 跑到几万次触发之后「拉回来再算」会静默丢数据 —— 那种错很难发现（数字看着还合理）。
     // 另外两点和内存实现必须同口径：**排除负延迟**（F-001）、**按值排序取分位**（不是按 id）。
     lateStats: (task, lastN = 500) => {
-      const agg = sqlite_query(
+      const agg = sqlQ(
         `SELECT COUNT(*) AS n, MAX(late_ms) AS mx FROM (
-           SELECT late_ms FROM runs WHERE task = ?1 AND late_ms >= 0 ORDER BY id DESC LIMIT ?2
+           SELECT late_ms FROM mcloud_runs WHERE task = ?1 AND late_ms >= 0 ORDER BY id DESC LIMIT ?2
          )`,
         [task, lastN]
       );
       const n = Number(agg[0]?.n ?? 0);
-      const neg = sqlite_query(
+      const neg = sqlQ(
         `SELECT COUNT(*) AS c FROM (
-           SELECT late_ms FROM runs WHERE task = ?1 ORDER BY id DESC LIMIT ?2
+           SELECT late_ms FROM mcloud_runs WHERE task = ?1 ORDER BY id DESC LIMIT ?2
          ) WHERE late_ms < 0`,
         [task, lastN]
       );
       const pick2 = (q) => {
         if (n === 0) return 0;
         const offset = Math.min(n - 1, Math.max(0, Math.ceil(n * q) - 1));
-        const rows = sqlite_query(
+        const rows = sqlQ(
           `SELECT late_ms AS v FROM (
-             SELECT late_ms FROM runs WHERE task = ?1 AND late_ms >= 0 ORDER BY id DESC LIMIT ?2
+             SELECT late_ms FROM mcloud_runs WHERE task = ?1 AND late_ms >= 0 ORDER BY id DESC LIMIT ?2
            ) ORDER BY late_ms ASC LIMIT 1 OFFSET ?3`,
           [task, lastN, offset]
         );
@@ -10704,8 +11934,8 @@ function hostStore() {
         excluded: Number(neg[0]?.c ?? 0)
       };
     },
-    recentRuns: (limit = 20) => sqlite_query(
-      `SELECT task, runs, fired_at, late_ms, ok, note FROM runs ORDER BY id DESC LIMIT ?1`,
+    recentRuns: (limit = 20) => sqlQ(
+      `SELECT task, runs, fired_at, late_ms, ok, note FROM mcloud_runs ORDER BY id DESC LIMIT ?1`,
       [Math.min(limit, 1e3)]
     )
   };
@@ -10756,6 +11986,7 @@ function makePushDeps(transport2) {
 }
 
 // src/selftest.ts
+import { http_fetch as http_fetch2 } from "host-api";
 function selftest(store2) {
   const checks = [];
   checks.push(['md5("abc")', md5Hex("abc") === "900150983cd24fb0d6963f7d28e17f72"]);
@@ -10769,6 +12000,7 @@ function selftest(store2) {
   checks.push(["base64 往返", fromUtf8(fromBase64(toBase64(raw))) === "mcloud-plugin"]);
   let id = 0;
   let statsOk = false;
+  let sqliteWhy = "";
   try {
     id = store2.recordRun({
       task: "__selftest__",
@@ -10780,22 +12012,37 @@ function selftest(store2) {
       note: "selftest"
     });
     statsOk = store2.lateStats("__selftest__", 10).n >= 1;
-  } catch {
+  } catch (e) {
     statsOk = false;
+    sqliteWhy = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
   }
   checks.push(["sqlite 自增主键返回", id > 0]);
   checks.push(["sqlite 聚合查询可用", statsOk]);
+  let nativeTls = false;
+  let tlsWhy = "";
+  try {
+    const r = http_fetch2("https://127.0.0.1:9/", { tls: "native", timeout_ms: 2e3 });
+    const err2 = r.error ?? "";
+    nativeTls = !/legacy-tls/.test(err2);
+    if (!nativeTls) tlsWhy = err2;
+  } catch (e) {
+    const m = e instanceof Error ? e.message : String(e);
+    nativeTls = !/legacy-tls/.test(m);
+    if (!nativeTls) tlsWhy = m;
+  }
+  checks.push(["宿主支持 native TLS（直播那条链要它）", nativeTls]);
   const caps = sandboxCaps();
   const bad = checks.filter(([, ok]) => !ok).map(([name]) => name);
   return {
     ok: bad.length === 0,
-    detail: (bad.length === 0 ? `${checks.length}/${checks.length} 通过` : `失败：${bad.join("、")}`) + ` · ${caps}`,
+    detail: (bad.length === 0 ? `${checks.length}/${checks.length} 通过` : `失败：${bad.join("、")}`) + (sqliteWhy === "" ? "" : `（sqlite：${sqliteWhy}）`) + (tlsWhy === "" ? "" : `（tls：${tlsWhy}）`) + ` · ${caps}`,
     checks: checks.map(([name, ok]) => ({ name, ok })),
     caps
   };
 }
 
 // src/entries/mcloud.ts
+worker_hint("exclusive");
 var store = makeStore();
 var transport = makeTransport();
 var host = makeHost();
@@ -10814,7 +12061,7 @@ try {
     ws: host,
     pushDeps: makePushDeps(transport)
   })) {
-    register_route(r.path, r.method, r.handler);
+    register_route(r.path, r.method, r.handler, r.budget_ms === void 0 ? void 0 : { budget_ms: r.budget_ms });
     registered++;
   }
 } catch (e) {

@@ -36,7 +36,8 @@
 
 import { fromBase64, fromUtf8, toBase64, utf8 } from '../crypto/bytes.ts';
 import { callRawText } from './client.ts';
-import { STATE_AUTH, loadAuthRaw, loadJwt, startExchange } from './sessionExchange.ts';
+import { STATE_AUTH, jwtUserDomainId, loadAuthRaw, loadJwt, startExchange } from './sessionExchange.ts';
+import { currentAccount, currentAccountDomain, loadAccounts, setAccountAuth } from './accounts.ts';
 import type { TaskDeps, TaskOutcome } from './tasks/base.ts';
 import type { BuiltRequest } from './h5.ts';
 
@@ -102,28 +103,10 @@ export function jwtPayload(jwt: string): Record<string, unknown> | null {
   }
 }
 
-/** 从 jwttoken 里取 `userDomainId`。
- *
- *  ⚠ **真机上它不在顶层**：payload 的键只有 `iss/iat/sub/exp`，
- *  而 `userDomainId` 藏在 `sub` —— 那个键的值**本身是一段 JSON 文本**。
- *  只查顶层会得到 `undefined`，然后表现成"账号缺用户域"（看着像账号的问题）。 */
-export function jwtUserDomainId(jwt: string): string | null {
-  const p = jwtPayload(jwt);
-  if (!p) return null;
-  const top = p.userDomainId;
-  if (typeof top === 'string' && top !== '') return top;
-  const sub = p.sub;
-  if (typeof sub === 'string' && sub.trim().startsWith('{')) {
-    try {
-      const inner = JSON.parse(sub) as Record<string, unknown>;
-      const v = inner.userDomainId;
-      if (typeof v === 'string' && v !== '') return v;
-    } catch {
-      /* sub 不是 JSON 就算了 */
-    }
-  }
-  return null;
-}
+/** 从 jwttoken 里取 `userDomainId` —— 实现在 `sessionExchange.ts`（唯一一份），
+ *  这里只是再导出，老调用点不用改。 */
+export { jwtUserDomainId } from './sessionExchange.ts';
+
 
 /** `clientType`：AC 端（H5/App）是 412，PC 是 414。 */
 export function clientTypeFor(platform: string): string {
@@ -153,8 +136,15 @@ export function escapeJsonString(s: string): string {
 export function refreshRequest(raw: string, userDomainId: string, platform: string): BuiltRequest {
   // ⚠ 手拼而不是 `JSON.stringify({userDomainId, clientType})`：
   // 顺序要照实拍（`userDomainId` 在前），而对象字面量的顺序**依赖调用方**写对，
-  // 手拼把这件事钉在**一处**、并且显式做了转义
-  const body = `{"userDomainId":"${escapeJsonString(userDomainId)}","clientType":"${escapeJsonString(clientTypeFor(platform))}"}`;
+  // 手拼把这件事钉在**一处**、并且显式做了转义。
+  //
+  // ⚠⚠ `userDomainId` **不是必填**（用户的原话：「据我所知，刷新不需要这个 id」）。
+  // 2026-10-17 真机实测：只发 `{"clientType":"414"}` 一样回
+  // `{"success":true,"code":"0000","data":{"token":…}}` —— 也就是说"缺它就不让刷"
+  // 是我们自己加的闸，不是上游的要求。有就带上（照实拍形状），没有就不写这一格
+  // ——**绝不写空串**（那是一个具体的、错误的用户域）。
+  const domain = userDomainId === '' ? '' : `"userDomainId":"${escapeJsonString(userDomainId)}",`;
+  const body = `{${domain}"clientType":"${escapeJsonString(clientTypeFor(platform))}"}`;
   return {
     url: `${REFRESH_BASE}${REFRESH_PATH}`,
     method: 'POST',
@@ -172,7 +162,7 @@ export function parseRefresh(body: string): { ok: boolean; result?: RefreshResul
   try {
     v = JSON.parse(body) as Record<string, unknown>;
   } catch (e) {
-    return { ok: false, error: `refreshToken 响应不是 JSON：${e instanceof Error ? e.message : String(e)}` };
+    return { ok: false, error: `回来的不是 JSON：${e instanceof Error ? e.message : String(e)}` };
   }
   const code = v.code;
   const codeOk =
@@ -181,11 +171,15 @@ export function parseRefresh(body: string): { ok: boolean; result?: RefreshResul
   // ⚠ `success` 缺了就以 `code` 为准（两种形态都见过）；但**给了且为假**就一定算失败
   const success = typeof v.success === 'boolean' ? v.success : codeOk;
   if (!success || !codeOk) {
-    const msg = String(v.message ?? v.msg ?? '(无消息)');
-    return { ok: false, error: `refreshToken 失败：code=${String(code ?? '?')} ${msg}` };
+    const msg = String(v.message ?? v.msg ?? '');
+    // ⚠ 这一句会**直接出现在给用户看的提示里**（用户的原话：「不要提示黑话啊」）
+    //   ⇒ 不写接口名、不写 `code=`。已知的那几个码翻成人话，剩下的原样带消息。
+    const c = String(code ?? '');
+    if (c === '05050009') return { ok: false, error: '这个号已经失效了 —— 重新登录一次' };
+    return { ok: false, error: msg === '' ? '服务端拒绝了这一枪' : msg };
   }
   const data = v.data;
-  if (!data || typeof data !== 'object') return { ok: false, error: 'refreshToken 响应没有 data' };
+  if (!data || typeof data !== 'object') return { ok: false, error: '没拿到新的登录信息' };
   const token = (data as Record<string, unknown>).token;
   if (typeof token !== 'string' || token === '') {
     return { ok: false, error: 'refreshToken 响应没有 data.token' };
@@ -202,8 +196,8 @@ export function applyRefreshResult(
   res: RefreshResult,
 ): { ok: true; raw: string } | { ok: false; error: string } {
   const seg = parseAuthorization(raw);
-  if (!seg) return { ok: false, error: '当前凭据解不开（不是 `Basic base64(端别:手机号:token)`），无法重拼' };
-  if (seg.phone === '') return { ok: false, error: '当前凭据里没有手机号段，无法重拼' };
+  if (!seg) return { ok: false, error: '存的那串登录信息读不出来 —— 重新登录一次' };
+  if (seg.phone === '') return { ok: false, error: '那串登录信息里没有手机号 —— 重新登录一次' };
   return { ok: true, raw: rebuildAuthorization(seg.platform, seg.phone, res.token) };
 }
 
@@ -262,9 +256,9 @@ export function daysLeft(expireMs: number, nowMs: number): number | undefined {
  *  只是每次请求都鉴权失败。 */
 export function assertUsable(raw: string): { ok: true } | { ok: false; error: string } {
   const seg = parseAuthorization(raw);
-  if (!seg) return { ok: false, error: '新凭据解不开（不是 `Basic base64(端别:手机号:token)`）' };
+  if (!seg) return { ok: false, error: '服务端回来的东西读不出来' };
   if (seg.platform === '' || seg.phone === '' || seg.token === '') {
-    return { ok: false, error: '新凭据有段是空的，拒绝落库' };
+    return { ok: false, error: '服务端回来的东西是空的，没存' };
   }
   return { ok: true };
 }
@@ -273,11 +267,30 @@ export function assertUsable(raw: string): { ok: true } | { ok: false; error: st
 
 export const STATE_LAST = 'mcloud.auth.refresh.last';
 
+/** 这一枪刷**谁**。
+ *
+ *  ⚠ 两个字段都是必要的：`auth` 决定"拿哪串去刷"，`accountId` 决定"刷完写回哪一条"。
+ *  只传一个（或者都不传、靠 `scoped()` 猜）会出两种错：
+ *  ① 刷的是**当前**账号、提示写的却是被点的那一条（刷错人）；
+ *  ② 新串写进账号袋/`STATE_AUTH`，而 `loadAuthRaw` 读的是 `Account.auth`
+ *     ⇒ 卡片上的天数**永远不变**（F-077 用户的原话：「点了没变化啊」）。 */
+export interface RefreshTarget {
+  /** 要刷的那串凭据（不传 ⇒ 当前账号 / 单账号那格）。 */
+  auth?: string;
+  /** 刷完写回哪个账号（不传 ⇒ 当前账号）。 */
+  accountId?: string;
+}
+
 /** 续期一次。`force` 跳过判据（对应 mcloud CLI 的 `--force`）。 */
-export function runAuthRefresh(deps: TaskDeps, force = false, leadDays = DEFAULT_LEAD_DAYS): TaskOutcome {
-  const raw = loadAuthRaw(deps.store);
+export function runAuthRefresh(
+  deps: TaskDeps,
+  force = false,
+  leadDays = DEFAULT_LEAD_DAYS,
+  target: RefreshTarget = {},
+): TaskOutcome & { raw?: string } {
+  const raw = target.auth ?? loadAuthRaw(deps.store);
   if (raw === '') {
-    return { ok: true, skipped: true, note: '没有原生凭据，谈不上续期（先贴一份）' };
+    return { ok: true, skipped: true, note: '还没有账号 —— 先加一个' };
   }
   const nowMs = Date.parse(deps.nowIso);
   const expireMs = credentialExpireMs(raw);
@@ -290,7 +303,7 @@ export function runAuthRefresh(deps: TaskDeps, force = false, leadDays = DEFAULT
     return {
       ok: true,
       skipped: true,
-      note: '凭据解不开（过期段也没有）—— 这一档只能重新贴一份，续期接口帮不上',
+      note: '这条存的东西读不出来 —— 要重新登录一次',
     };
   }
   if (decision === 'not-yet') {
@@ -298,34 +311,50 @@ export function runAuthRefresh(deps: TaskDeps, force = false, leadDays = DEFAULT
     return {
       ok: true,
       skipped: true,
-      note: `凭据还有 ${d ?? '?'} 天，离提前量（${leadDays} 天）还远，不打上游`,
+      note: `还有 ${d ?? '?'} 天，不用刷`,
     };
   }
 
-  // `userDomainId` 从**手里已有的** jwttoken 里取（⚠ 它在 `payload.sub` 那个 JSON 串里，
-  // 不在顶层 —— 见 `jwtUserDomainId`）。拿不到就是真的刷不了。
+  // `userDomainId` **有就带上、没有就省掉** —— 上游不要求它（真机实测，见 `refreshRequest`）。
+  //
+  // 三个来源按可靠性排：
+  //   ① **当前账号**上那一格（登录响应给的，`Account.userDomainId`）；
+  //   ② 手里那枚 jwttoken 的 `payload.sub`（H5 那套换来的票里带着）；
+  //   ③ 都没有 ⇒ 不带。
+  //
+  // ⚠ 原来这里写成"拿不到 ⇒ 直接失败，先跑一次换票"，而换票**又**要凭据能用
+  //   —— 于是刚登录进来、还没换过票的账号第一次续期必然失败，报的还是
+  //   "缺 userDomainId"，可它其实并不需要。用户的原话：「刷新不需要这个 id，
+  //   或者如果需要这个 id 的唯一源也不是 jwt」—— 两条都对。
   const jwt = loadJwt(deps.store);
-  const domain = jwt ? jwtUserDomainId(jwt.jwt) : null;
-  if (!domain) {
-    return {
-      ok: false,
-      note: '该续期，但手里没有可用的 jwttoken ⇒ 取不到 userDomainId（它的唯一本地来源）。先跑一次换票',
-    };
-  }
+  const targetDomain =
+    target.accountId === undefined
+      ? null
+      : (loadAccounts(deps.store).find((a) => a.id === target.accountId)?.userDomainId ?? null);
+  const domain =
+    targetDomain ?? currentAccountDomain(deps.store) ?? (jwt ? jwtUserDomainId(jwt.jwt) : null) ?? '';
 
   const seg = parseAuthorization(raw)!;
   const req = refreshRequest(raw, domain, seg.platform);
   const res = callRawText(deps.transport, req);
-  if (!res.ok) return { ok: false, note: `续期失败：${res.error ?? '未知失败'}` };
+  if (!res.ok) return { ok: false, note: `没刷成：${res.error ?? '连不上'}` };
   const parsed = parseRefresh(res.text);
-  if (!parsed.ok || !parsed.result) return { ok: false, note: parsed.error ?? '续期失败' };
+  if (!parsed.ok || !parsed.result) return { ok: false, note: `没刷成：${parsed.error ?? '看不懂回来的东西'}` };
 
   const applied = applyRefreshResult(raw, parsed.result);
-  if (!applied.ok) return { ok: false, note: applied.error };
+  if (!applied.ok) return { ok: false, note: `没刷成：${applied.error}` };
   const usable = assertUsable(applied.raw);
-  if (!usable.ok) return { ok: false, note: `拒绝落库：${usable.error}` };
+  if (!usable.ok) return { ok: false, note: `没存下来：${usable.error}` };
 
-  deps.store.setState(STATE_AUTH, applied.raw, deps.nowIso);
+  // ⚠⚠ 写回**账号记录**（`Account.auth`）—— `loadAuthRaw` 读的就是它。
+  //   原来只写 `STATE_AUTH`：那张卡读的是账号列表 ⇒ 提示说"续期成功"、
+  //   卡片上还是原来的天数，点几次都一样（F-077）。没有账号时才落到单账号那格。
+  const who =
+    target.accountId !== undefined
+      ? loadAccounts(deps.store).find((a) => a.id === target.accountId)
+      : currentAccount(deps.store);
+  if (who !== undefined) setAccountAuth(deps.store, who.id, applied.raw, deps.nowIso);
+  else deps.store.setState(STATE_AUTH, applied.raw, deps.nowIso);
   deps.store.setState(STATE_LAST, JSON.stringify({
       at: deps.nowIso,
       expireSeconds: parsed.result.expireSeconds ?? null,
@@ -337,12 +366,11 @@ export function runAuthRefresh(deps: TaskDeps, force = false, leadDays = DEFAULT
 
   const newExpire = tokenExpireMs(parsed.result.token);
   const d = daysLeft(newExpire, nowMs);
+  // ⚠ 这是**给用户看**的一句（用户的原话：「不要提示黑话啊，这是给用户看的」）。
+  //   旧尾/新尾/用户域/换票/上游 这些都在日志里（`deps.log`），不进提示。
   return {
     ok: true,
-    note:
-      `凭据已续期（旧尾 ${seg.token.slice(-6)} → 新尾 ${parsed.result.token.slice(-6)}；` +
-      `上游说还能用 ${parsed.result.expireSeconds ?? '?'} 秒` +
-      (d === undefined ? '' : `，新过期还剩 ${d} 天`) +
-      '）—— 已重起一轮换票，让票也来自新凭据',
+    raw: applied.raw,
+    note: d === undefined ? '已续期' : `已续期，还能用 ${d} 天`,
   };
 }

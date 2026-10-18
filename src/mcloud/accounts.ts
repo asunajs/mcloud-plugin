@@ -50,6 +50,19 @@ export type Account = {
    *  参考实现里也是单独一格（`Account::pc_platform`）。
    *  `platform === 'mobile'` 时这一格**没有意义**（手机端不存在 win/mac 之分）。 */
   pcPlatform?: PcPlatform | undefined;
+  /** 这个账号的**用户域**（`userInfo.userDomainId`，登录响应里才有）。
+   *
+   *  # 为什么必须在账号上，而不是全局一格
+   *
+   *  它回答的是"**这个账号**属于哪个用户域"——是**每个账号**的事实。原来存在
+   *  全局一格 `mcloud.login.userDomainId` 里，换账号登录一次就把上一号的域盖掉，
+   *  于是"当前账号的域"和"库里那一格"会悄悄不一致（而它决定 `x-yun-uni`）。
+   *
+   *  参考实现就是账号级：`Account::user_domain_id`。
+   *
+   *  ⚠ **可能没有**：贴凭据进来的账号拿不到它（凭据里没有这一格），
+   *  而这**不影响续期** —— 上游不要求（见 F-075）。 */
+  userDomainId?: string | undefined;
   /** **停用**：停用的账号不参与任务（但仍留在列表里）。
    *
    *  ⚠ 与"删掉"不是一回事：删掉会连它的状态袋一起清（见 `removeAccount`），
@@ -101,6 +114,37 @@ export function phoneOf(raw: string): string | undefined {
 }
 
 /** 稳定 id：手机号优先（人能对上），否则凭据的短哈希。 */
+/** 落库前**归一**成一串能直接当 `Authorization` 用的东西（**带 `Basic `**）。
+ *
+ *  ⚠ 用户从别处（mcloud、抓包、笔记）把凭据贴进来时，**经常没有 `Basic ` 前缀** ——
+ *  而这一格是原样当请求头发出去的。少了前缀的表现是上游回
+ *  `05050009 非法的token！`，一句**指向"凭据过期"的假线索**（真因是格式）。
+ *  更隐蔽的是 `phoneOf` 认不出手机号 ⇒ 账号 id 变成 `anon-xxxx`（与真实手机号脱钩）。
+ *
+ *  `parseAuth` 本来就容忍缺前缀并会补回来（它的 `raw` 是归一后的形状）——
+ *  这里只是把"归一"这件事**放到落库这一处**，而不是指望每个调用点都记得。 */
+export function normalizeAuth(raw: string): string {
+  // ⚠ 不直接调 `parseAuth`：它只认字面量 `'Basic '`（一个空格），
+  //   而真实粘贴里见过 `basic   `（多空格）、`Basic\n`、外层带引号这几种。
+  const t = raw.replace(/\uFEFF/g, '').trim();
+  // ⚠ 这里**不能**用带引号的正则（`/^(['"])…/`）：面板扫描 `worker_hint('exclusive')`
+  //   时用一个很朴素的状态机剥字符串/注释（`workers.rs::code_mask`），正则字面量里的
+  //   引号会把它的状态带歪 ⇒ 从那以后整段代码都被当成"字符串"，插件声明了独占也
+  //   扫不到 ⇒ 每次加载都报一句假警告（见 findings F-080）。
+  //   所以用 `charAt` 手写"去外层引号"，语义一样，扫的时候不添乱。
+  const head = t.charAt(0);
+  const unquoted =
+    t.length >= 2 && (head === '"' || head === "'") && t.charAt(t.length - 1) === head
+      ? t.slice(1, -1).trim()
+      : t;
+  const m = /^basic[\s:]+([\s\S]+)$/i.exec(unquoted);
+  const b64 = (m !== null ? m[1]! : unquoted).replace(/\s+/g, '');
+  if (b64 === '') return unquoted;
+  // 只认"解出来是三段"的那种 —— 解不开就原样留着，不替用户猜
+  const info = parseAuth(b64);
+  return info !== undefined && info.raw !== '' ? `Basic ${b64}` : unquoted;
+}
+
 export function idOf(raw: string): string {
   const phone = phoneOf(raw);
   if (phone !== undefined) return phone;
@@ -130,7 +174,10 @@ export function loadAccounts(store: Pick<Store, 'getState'>): Account[] {
     if (it === null || typeof it !== 'object') continue;
     const o = it as Record<string, unknown>;
     if (typeof o.id !== 'string' || typeof o.auth !== 'string' || o.auth === '') continue;
-    const auth = o.auth;
+    // ⚠ 顺手归一：老库里可能存着"没有 `Basic ` 前缀"的那一串（贴进来时就没带），
+    //   而它会被原样当请求头发出去 ⇒ 上游回 `05050009`。这里归一**不改 id**
+    //   （改了 id 会连累账号袋与"当前账号"），只把那一格修正过来。
+    const auth = normalizeAuth(o.auth);
     const info = parseAuth(auth);
     const pc = o.pcPlatform;
     out.push({
@@ -140,6 +187,8 @@ export function loadAccounts(store: Pick<Store, 'getState'>): Account[] {
       // 老账号没存过这两格 ⇒ 从凭据里现解一次（不用迁移）
       platform: typeof o.platform === 'string' ? o.platform : (info?.platform ?? ''),
       pcPlatform: pc === 'win' || pc === 'mac' ? pc : undefined,
+      userDomainId:
+        typeof o.userDomainId === 'string' && o.userDomainId !== '' ? o.userDomainId : undefined,
       disabled: o.disabled === true,
       addedAt: typeof o.addedAt === 'string' ? o.addedAt : '',
     });
@@ -154,14 +203,22 @@ export function saveAccounts(store: Store, list: readonly Account[], nowIso: str
 /** 加一个账号（同一个人再加一次 = **更新**那份凭据，不新增一条）。 */
 export function upsertAccount(
   store: Store,
-  auth: string,
+  authInput: string,
   nowIso: string,
   label?: string,
   pcPlatform?: PcPlatform,
+  /** 登录响应里的 `userDomainId`。**不传 = 保留原来那份**（贴凭据那条路没有它，
+   *  不能因此把已有的域抹掉）。 */
+  userDomainId?: string,
 ): { list: Account[]; account: Account; created: boolean } {
+  let auth = authInput;
   const list = loadAccounts(store);
+  // ⚠ 先归一（补 `Basic ` 前缀），再算 id —— 否则贴进来"缺前缀"的那串会拿到
+  //   `anon-xxxx` 的 id，与真实手机号那条并存（同一个号两条记录）。
+  auth = normalizeAuth(auth);
   const id = idOf(auth);
-  const idx = list.findIndex((a) => a.id === id);
+  // 老行可能还挂着 `anon-xxxx` 的 id：按"归一之后的 id"再找一遍，避免重复
+  const idx = list.findIndex((a) => a.id === id || idOf(normalizeAuth(a.auth)) === id);
   const info = parseAuth(auth);
   const account: Account = {
     id,
@@ -171,6 +228,11 @@ export function upsertAccount(
     // ⚠ 只在 PC 端才有意义。手机端传进来也丢掉 —— 留着会让"这个账号用哪套
     //   设备头"这件事出现两个互相矛盾的来源。
     pcPlatform: info?.platform === PC_AUTH_PREFIX ? (pcPlatform ?? list[idx]?.pcPlatform ?? 'win') : undefined,
+    // ⚠ 重加同一个号时**保留**用户域（贴凭据/换凭据那条路拿不到它）
+    userDomainId:
+      userDomainId !== undefined && userDomainId !== ''
+        ? userDomainId
+        : list[idx]?.userDomainId,
     // ⚠ 重加同一个号时**保留**停用状态（"刷新凭据"不该顺手把人启用回来）
     disabled: list[idx]?.disabled === true,
     addedAt: idx >= 0 ? list[idx]!.addedAt : nowIso,
@@ -237,6 +299,52 @@ export function selectAccount(store: Store, id: string, nowIso: string): boolean
   if (id !== '' && !loadAccounts(store).some((a) => a.id === id)) return false;
   store.setState(STATE_CURRENT_ACCOUNT, id, nowIso);
   return true;
+}
+
+/** **换掉某个账号的凭据**（其余字段原样保留）。
+ *
+ *  ⚠ 为什么必须有它：`loadAuthRaw` 读的是 `Account.auth` —— 账号列表里的那一格
+ *  才是权威。续期把新串写进**别处**（`STATE_AUTH` 或账号袋里的那份）时，
+ *  表现就是"提示说续期成功、卡片上还是原来的天数，点几次都一样"（F-077）。 */
+export function setAccountAuth(
+  store: Store,
+  id: string,
+  auth: string,
+  nowIso: string,
+): Account | undefined {
+  if (auth === '') return undefined;
+  const list = loadAccounts(store);
+  const idx = list.findIndex((a) => a.id === id);
+  if (idx < 0) return undefined;
+  if (list[idx]!.auth === auth) return list[idx];
+  list[idx] = { ...list[idx]!, auth };
+  saveAccounts(store, list, nowIso);
+  return list[idx];
+}
+
+/** 给某个账号补上用户域（拿不到就什么也不做）。 */
+export function setAccountDomain(
+  store: Store,
+  id: string,
+  domain: string,
+  nowIso: string,
+): Account | undefined {
+  if (domain === '') return undefined;
+  const list = loadAccounts(store);
+  const idx = list.findIndex((a) => a.id === id);
+  if (idx < 0) return undefined;
+  if (list[idx]!.userDomainId === domain) return list[idx];
+  list[idx] = { ...list[idx]!, userDomainId: domain };
+  saveAccounts(store, list, nowIso);
+  return list[idx];
+}
+
+/** **当前账号**的用户域（没有 ⇒ `null`）。
+ *
+ *  ⚠ 读的是账号上那一格，不是全局那格 —— 后者是 F-075 里挪掉的那份。 */
+export function currentAccountDomain(store: Pick<Store, 'getState'>): string | null {
+  const a = currentAccount(store);
+  return a?.userDomainId !== undefined && a.userDomainId !== '' ? a.userDomainId : null;
 }
 
 /** 当前账号（没设 / 设的 id 已不在列表里 ⇒ `undefined`）。 */

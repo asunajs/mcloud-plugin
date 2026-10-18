@@ -62,6 +62,53 @@ test('解析：groupid 小写与 groupId 驼峰都认（两族的真实差异）
   assert.equal(parseMatrixItem({ name: '永葆童心', description: '领38云朵', currstep: 4 })!.currStep, 4);
 });
 
+// 界面徽章那句"照抄上游"依赖这一格 —— 词不许由我们造（mcloud 的同一个错：`694e35f`）。
+test('⚠ 解析：按钮那一格按**端**优先取（email → app → out），同端里 buttonProperty 先于 button', () => {
+  // 1021 那种：只有 `button`、没有 `buttonProperty`
+  const only = parseMatrixItem({
+    id: 1021,
+    state: 'WAIT',
+    enable: 1,
+    button: { out: { text: '开启中', day: '5', total: 31, canReceive: 0 } },
+  })!;
+  assert.equal(only.buttonOutText, '开启中');
+  // 1029 那种：两份都在，取 `buttonProperty`
+  const both = parseMatrixItem({
+    id: 1029,
+    state: 'WAIT',
+    enable: 1,
+    buttonProperty: { app: { text: '去完成' } },
+    button: { app: { text: '旧的那份' } },
+  })!;
+  assert.equal(both.buttonOutText, '去完成');
+  // ⚠ **外层是端、内层才是形状**：`button.email` 要赢过 `buttonProperty.app`
+  //   （App 渲染的是 email/app 那一份，用户就是拿 App 比 —— mcloud 2026-10-11 口径）
+  const ends = parseMatrixItem({
+    id: 1017,
+    state: 'WAIT',
+    enable: 1,
+    buttonProperty: { app: { text: '属性里的 app' } },
+    button: { email: { text: '邮箱端那份' }, out: { text: '外部端那份' } },
+  })!;
+  assert.equal(ends.buttonOutText, '邮箱端那份');
+  // V2 那三档也带着（V3 通常只给 `text`）
+  const v2 = parseMatrixItem({
+    id: 551,
+    state: 'WAIT',
+    enable: 1,
+    button: { app: { text: '去开启', textMiddle: '开启中', textFinish: '领AI豆', actionMiddle: 'jump' } },
+  })!;
+  assert.equal(v2.buttonTextMiddle, '开启中');
+  assert.equal(v2.buttonTextFinish, '领AI豆');
+  assert.equal(v2.buttonActionMiddle, 'jump');
+  // 两种形状都没有 ⇒ `undefined`（界面回落状态词，**不猜**一个出来）
+  const none = parseMatrixItem({ id: 106, state: 'WAIT', enable: 1 })!;
+  assert.equal(none.buttonOutText, undefined);
+  // 少一层 / 不是字符串都不算数
+  assert.equal(parseMatrixItem({ id: 1, button: { app: { text: 42 } } })!.buttonOutText, undefined);
+  assert.equal(parseMatrixItem({ id: 1, button: { text: '漏了一层' } })!.buttonOutText, undefined);
+});
+
 test('判据：FINISH 算已完成、enable=1 算可做、其余不参与（字段不全也不参与）', () => {
   assert.equal(judgeItem({ state: 'FINISH', enable: 1 }), 'done');
   assert.equal(judgeItem({ state: 'DOING', enable: 1 }), 'todo');
@@ -92,7 +139,8 @@ test('一步只读一个**市场**、只发一个请求，2 次覆盖一轮并�
       r.sent[before]!.body.includes('"group":""'),
       `V3 的 group 该是空串，实际 ${r.sent[before]!.body.slice(0, 120)}`,
     );
-    assert.ok(String(out.note).includes(`market=${MATRIX_MARKETS[i]}`), out.note);
+    // 日志里不再出现 `market=…`（那是给排查用的）；读数里仍有
+    assert.ok(String(out.note).includes('已完成'), out.note);
   }
   // 第 3 次回到第一个（2 个市场 ⇒ 两发一轮）
   const before = r.sent.length;

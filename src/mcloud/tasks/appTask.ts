@@ -272,18 +272,19 @@ export function startAppTask(deps: TaskDeps): TaskOutcome {
   const all = pendingItems(deps);
   if (all.length === 0) {
     const sk = lastSkipped;
+    // 说人话：能替你做的一条都没有；剩下的要么得你去 App 里点，要么还没支持
     const extra =
       sk.length === 0
-        ? '（先跑一次 `app-task-matrix` 把读数填上）'
-        : `；另有 ${sk.length} 条上游列为待做，但**本插件还没实现**（#${sk.slice(0, 6).join('、')}${sk.length > 6 ? '…' : ''}）⇒ 不动它们（点了也不变状态）`;
-    return { ok: true, idle: true, note: `矩阵里没有本插件能做的待办${extra}` };
+        ? ''
+        : `，另有 ${sk.length} 条要在 App 里手动做（我们替不了）`;
+    return { ok: true, idle: true, note: `没有能替你做的了${extra}` };
   }
   const todo = all.filter((p) => !clicked.includes(p.itemId));
   if (todo.length === 0) {
     return {
       ok: true,
       idle: true,
-      note: `读数里 ${all.length} 条待办**今天都点过了** —— 不重发（读数刷新后会自然变 FINISH）`,
+      note: `今天这 ${all.length} 条都点过了`,
     };
   }
   const first = todo[0]!;
@@ -304,7 +305,8 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
   const st = load(deps);
   if (!st) return { ok: true, idle: true, note: '没有在跑的 app-task' };
   if (st.phase === 'done') {
-    return { ok: true, idle: true, note: '这一趟已经走完（读数刷新后新出现的待办要重新起一趟）' };
+    // 括号里那句是给排查用的，用户不需要 —— 只说做完了
+    return { ok: true, idle: true, note: '这一趟做完了' };
   }
 
   const pend = pendingItems(deps);

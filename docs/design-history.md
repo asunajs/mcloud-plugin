@@ -37,7 +37,7 @@
 
 **② 能不能"一份 core、插件 import 函数"？** —— **现在能了**。
 面板的模块加载器原先只认 `host-api`，相对 `import` 一律失败（而报错文案还建议你用它，
-见 [`docs/findings.md`](docs/findings.md) F-008）。这条已经修好并验证：
+见 [`docs/findings.md`](findings.md) F-008）。这条已经修好并验证：
 
 ```js
 // plugins/js/mcloud-signin.js
@@ -47,7 +47,7 @@ import { log } from 'host-api';
 
 * 模块标识是 `file://` URL（`import.meta.url` 可用）、活绑定、循环导入、动态 import 都成立
 * 扩展名可省、目录自动找 `index.js`（**放宽**，不是浏览器 ESM 的行为 —— 代价见
-  [`docs/findings.md`](docs/findings.md) F-008）
+  [`docs/findings.md`](findings.md) F-008）
 * **同一份 core 被多个插件 import 只加载一次**（按 URL 缓存）——
   这是省内存的关键：不必为了共用 core 而接受 N 份打包产物
 * 另有够用的 `require`（CJS 兼容）：`require('host-api')`、`require('./lib/x.js')`，
@@ -92,14 +92,14 @@ PLUGINS_DIR=/path/to/mcloud-plugin/plugins PANEL_TOKEN=<你的令牌> <面板二
 装好后：
 
 * 面板里能看到 `mcloud`，12 条任务全部登记
-* 接口文档（导入会话、看状态、指到 mock）：[`docs/howto-session.md`](docs/howto-session.md)
+* 接口文档（导入会话、看状态、指到 mock）：[`docs/howto-session.md`](howto-session.md)
 * 任务挂在**白天每 15 分钟**（不是"每天 8:05 打一枪"）—— 低配盒子不常在线，
   8 点没开机 9 点上线照样补上；每条任务自带门槛，不需要动作时就只是一次只读检查
 * 想让它立刻干活：面板上点「立即执行」，或
   `curl -X POST -H 'X-Panel-Token: <令牌>' -H 'x-panel: 1' <面板>/api/tasks/mcloud/task-list/run`
 
 > ⚠️ 写接口（POST）必须带 `-H 'x-panel: 1'` —— 面板的防跨站请求伪造要求，
-> **插件自己注册的路由同样适用**（见 [`docs/findings.md`](docs/findings.md) F-007）。
+> **插件自己注册的路由同样适用**（见 [`docs/findings.md`](findings.md) F-007）。
 
 ## M0 做了什么（已完成）
 

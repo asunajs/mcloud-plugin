@@ -30,6 +30,22 @@ const WRAPPED = Symbol.for('__mcloud_scoped_store__');
 /** 裸 store 挂在这个 symbol 上。 */
 const RAW = Symbol.for('__mcloud_raw_store__');
 
+/** "我这个包装器作用在哪个账号上"挂在这个 symbol 上。 */
+const ACCT = Symbol.for('__mcloud_scoped_account__');
+
+/** 取"这个 store 作用在哪个账号上"。
+ *
+ *  ⚠ 有它之前，需要"账号 id"的地方（`sessionExchange.ts::scopedKey`）只能去读
+ *  **全局**的"当前账号"——于是在遍历多账号时，B 的键里会嵌着 A 的 id，
+ *  而值却落在 B 的袋里 ⇒ 键与值对不上（F-081 现场：`移动` 的袋里躺着
+ *  `h5.exchange.19142492716.sign-in`，那个 id 是 `测试` 的）。
+ *
+ *  没包过（裸 store）⇒ `undefined`，调用方自己回落到 `currentAccount()`。 */
+export function scopedAccountOf(store: object): string | undefined {
+  const v = (store as unknown as Record<symbol, unknown>)[ACCT];
+  return typeof v === 'string' && v !== '' ? v : undefined;
+}
+
 /** 取回被包住的那个**裸** store。
  *
  *  # 谁需要它
@@ -64,6 +80,9 @@ export function scoped(base: Store, acctId?: string): Store {
     setState: (key, value, nowIso) => routeSet(base, key, value, nowIso, acctId),
   };
   Object.defineProperty(wrapped, WRAPPED, { value: true, enumerable: false });
+  if (acctId !== undefined && acctId !== '') {
+    Object.defineProperty(wrapped, ACCT, { value: acctId, enumerable: false });
+  }
   Object.defineProperty(wrapped, RAW, { value: base, enumerable: false });
   return wrapped;
 }

@@ -64,6 +64,7 @@ BIND_ADDR="127.0.0.1:$PANEL_PORT" \
 DB_PATH="$TMP/panel.db" \
 PLUGINS_DIR="$HERE/plugins" \
 PANEL_TOKEN="$TOKEN" \
+PANEL_ALLOW_PLAIN_TOKEN=1 \
   "$PANEL_BIN" > "$TMP/panel.log" 2>&1 &
 PANEL_PID=$!
 
