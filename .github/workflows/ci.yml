@@ -79,7 +79,11 @@ jobs:
           set -euo pipefail
           TMP=$(mktemp -d)
           echo "TMP=$TMP" >> "$GITHUB_ENV"
+          # ⚠ `PANEL_ALLOW_PLAIN_TOKEN=1` 不能省：面板默认拒绝明文口令，会**直接退出**
+          #   （日志里一行 Error）。少了它的症状是"等 30 秒没等到插件"，
+          #   很容易被误判成"插件加载慢"——踩过一次，写在这里。
           PANEL_TOKEN=ci-token-plugin \
+          PANEL_ALLOW_PLAIN_TOKEN=1 \
           BIND_ADDR=127.0.0.1:18795 \
           DB_PATH="$TMP/panel.db" \
           PLUGINS_DIR="$GITHUB_WORKSPACE/plugin/plugins" \
