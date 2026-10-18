@@ -101,95 +101,51 @@ jobs:
       - name: 等插件装好（不是等接口通）
         run: |
           set -euo pipefail
+          # ⚠ 等的是**插件与任务都真的就位**，不是"接口通了"。
+          #   这个坑踩过：`/api/state` 早早返回 200 时 `plugins` 还是空数组，
+          #   断言在插件装好前 40 毫秒就下了结论（F-003）。
+          #
+          # ⚠ 断言写在 `scripts/ci_state_check.py` 里，**不写 heredoc**：
+          #   `run: |` 里的 heredoc 结束符必须顶格，一改缩进就静默坏掉；
+          #   而且本机也能拿一份 state.json 直接验（不用等 CI 红）。
           got=0
           for i in $(seq 1 60); do
             curl -fsS -H 'X-Panel-Token: ci-token-plugin' \
               http://127.0.0.1:18795/api/state -o "$TMP/state.json" 2>/dev/null || true
-            if python3 -c "
-          import json, os, sys
-          try:
-              s = json.load(open(os.environ['TMP'] + '/state.json'))
-          except Exception:
-              sys.exit(1)
-          names = {j['name'] for j in s.get('jobs', [])
-                   if j.get('plugin') == 'mcloud' and not j.get('deleted')}
-          sys.exit(0 if {'selftest', 'diag'} <= names else 1)
-          " 2>/dev/null; then
-              echo "✅ 插件与它的任务都已就位（第 $i 次探测）"
+            if python3 plugin/scripts/ci_state_check.py ready "$TMP/state.json"; then
+              echo "✅ 4 个插件 + 3 条任务都已就位（第 $i 次探测）"
               got=1
               break
             fi
             sleep 0.5
           done
           if [ "$got" != 1 ]; then
-            echo "❌ 30 秒内没等到插件任务进入调度器"
+            echo "❌ 30 秒内没等到插件与任务就位"
             python3 -c "
           import json, os
           s = json.load(open(os.environ['TMP'] + '/state.json'))
-          print('plugins =', s.get('plugins'))
-          print('jobs    =', s.get('jobs'))
+          print('plugins =', [p['name'] for p in s.get('plugins', [])])
+          print('jobs    =', [j['name'] for j in s.get('jobs', [])])
           "
             exit 1
           fi
 
       - name: 插件加载了、任务登记了、没有错
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import json, os, sys
-          state = json.load(open(os.environ['TMP'] + '/state.json'))
-          plugins = {p['name']: p for p in state['plugins']}
-          p = plugins.get('mcloud')
-          assert p, f"没有加载 mcloud 插件，只有 {list(plugins)}"
-          assert p['runtime'] == 'js', p
-          assert p.get('error') in (None, ''), p
-          # 任务定义在 **jobs** 里（`tasks` 是「正在跑的调用」，见 F-004）；
-          # 插件条目上的 `tasks` 是数量，不是列表
-          mine = [j for j in state.get('jobs', []) if j.get('plugin') == 'mcloud']
-          names = sorted(j['name'] for j in mine)
-
-          # ⚠️ 这里**不写死数量**。第一版写的是 `p['tasks'] == 2`，插件长到 4 个任务时
-          # 自己的 CI 就红了 —— 断言不该跟着代码长大而失效。改成两条更强的检查：
-          #   ① 已知任务名必须是子集（插件新增任务不用改这里）
-          #   ② 插件自报的数量必须等于调度器里**实际**的数量（自报与事实一致）
-          expected = {
-              'selftest', 'diag', 'task-list', 'session-check',
-              'sign', 'receive', 'multiple', 'revival',
-              'backup-gift', 'prizes', 'cloud-snapshot',
-          }
-          missing = expected - set(names)
-          assert not missing, f"少了这些任务：{sorted(missing)}，实际 {names}"
-          assert p['tasks'] == len(mine), f"插件自报 {p['tasks']} 个任务，调度器里实际 {len(mine)} 个：{names}"
-          assert all(not j.get('deleted') for j in mine), mine
-          assert all(j.get('last_error') in (None, '') for j in mine), mine
-          print(f"✅ 插件 mcloud 已加载：runtime={p['runtime']} 任务 {names}（调度器里都登记了、无 last_error）")
-          PY
+        run: python3 plugin/scripts/ci_state_check.py loaded "$TMP/state.json"
 
       - name: 沙箱内的自检必须通过（这是 M0 的核心证据）
         run: |
           set -euo pipefail
-          curl -fsS -X POST -H 'X-Panel-Token: ci-token-plugin' -H 'x-panel: 1' \
-            http://127.0.0.1:18795/api/tasks/mcloud/selftest/run
-          sleep 3
-          grep -q "自检通过" "$TMP/panel.log" \
-            || { echo "❌ 沙箱内自检没有通过"; grep -i mcloud "$TMP/panel.log"; exit 1; }
-          if grep -q "自检失败" "$TMP/panel.log"; then
-            echo "❌ 沙箱内自检失败"; grep -i mcloud "$TMP/panel.log"; exit 1
-          fi
-          echo "✅ 沙箱内自检通过（密码学 / UTF-8 / base64 / SQLite 都跑在这台 ARM64 上的 QuickJS 里）"
+          # 自检是**路由**不是任务（用户不该在任务列表里看到"自检"），所以这里是 GET。
+          # 它验的是沙箱这一层（QuickJS + 无 TextEncoder/Buffer/crypto + SQLite）：
+          # 「Node 里绿」和「沙箱里绿」是两件事，不对的话表现是"上游回签名错误"。
+          curl -fsS -H 'X-Panel-Token: ci-token-plugin' \
+            http://127.0.0.1:18795/plugins/mcloud/api/selftest -o "$TMP/selftest.json"
+          python3 plugin/scripts/ci_state_check.py selftest "$TMP/selftest.json"
 
-      - name: 手动触发的负延迟要被排除、不能污染统计（F-001 的绕开）
-        run: |
-          set -euo pipefail
-          for _ in $(seq 1 10); do
-            curl -fsS -o /dev/null -X POST -H 'X-Panel-Token: ci-token-plugin' -H 'x-panel: 1' \
-              http://127.0.0.1:18795/api/tasks/mcloud/diag/run
-            sleep 0.2
-          done
-          sleep 1
-          grep -q "排除负延迟 10 条" "$TMP/panel.log" \
-            || { echo "❌ 负延迟没有被排除（或没报出来）"; grep -E "调度健康" "$TMP/panel.log"; exit 1; }
-          echo "✅ 10 次手动触发产生了 10 条负延迟，全部被排除且单独计数"
+      # ⚠ 这里原来还有一段「跑 10 次 diag，验负延迟被排除」——`diag` 也改成路由了，
+      #   没有任务可跑。那件事（手动触发的负延迟不进统计）是**面板**的行为，
+      #   由面板自己的用例守（`engine.rs` / `scripts/smoke.py`），插件 CI 不该再验一遍。
 
       # ══════════ 对着 mock 上游跑完整条链（CI 绝不碰真账号）══════════
       #
