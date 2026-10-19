@@ -1065,6 +1065,11 @@ button.picker-row {
 
 /* ── 兑换页：关注区 / 分组清单 / 行内动作（对齐原 Rust mcloud 的兑换页）── */
 
+/* 定时抢兑卡与「我关注的」之间要有间隔 —— 之前两张卡是贴着的（间距 0）。 */
+#ex-sched-card {
+  margin-bottom: var(--sp-3);
+}
+
 #ex-subs-card {
   margin-bottom: var(--sp-3);
 }
