@@ -112,6 +112,8 @@ export function log(msg: unknown): void;
 export function debug(msg: unknown): void;
 export function warn(msg: unknown): void;
 export function error(msg: unknown): void;
+/** 比 error 更重：这条路径已经不可用（不是“这次没成”）。 */
+export function fatal(msg: unknown): void;
 /** 语义类型：只影响着色，过滤级别仍是 info（见面板 log::Type::level）。 */
 export function start(msg: unknown): void;
 export function success(msg: unknown): void;

@@ -1140,8 +1140,13 @@ test('⚠ 面板缺直播支持时：当成**构建缺陷**报出来，并且别
     /logBoth\(store, 'error', c\.detail\[0\]/.test(live),
     '用 error 级别、且只印一行（段头+步骤+段尾说同一句话 = 噪声）',
   );
-  // logBoth 要真的支持 error
-  assert.ok(/export type LogLevel = 'debug' \| 'info' \| 'warn' \| 'error' \| 'start' \| 'success' \| 'fail'/.test(srcOf('src/mcloud/log.ts')), 'logBoth 要收语义类型');
+  // logBoth 要真的支持 error/fatal 和语义类型
+  const logSrc = srcOf('src/mcloud/log.ts');
+  assert.ok(/export type LogLevel =/.test(logSrc), 'logBoth 要有类型联合');
+  for (const lv of ['debug', 'info', 'warn', 'error', 'fatal', 'start', 'success', 'fail']) {
+    assert.ok(logSrc.includes(`'${lv}'`), `logBoth 要收 ${lv}`);
+  }
+  assert.ok(/case 'fatal':\s*fatal\(msg\)/.test(logSrc), 'fatal 要真的转发给面板');
   // 结论要缓存，别每次都探
   assert.ok(/export const CAP_TTL_MS/.test(cap), '要缓存');
 });
