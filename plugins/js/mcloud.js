@@ -10373,7 +10373,6 @@ function buildReadings(deps) {
       })()
     },
     data: {
-      caps: sandboxCaps(),
       hasBigInt: hasBigInt(),
       matrix: {
         groups: readMatrix(deps.store).map((r, i) => ({ group: MATRIX_MARKETS[i], reading: r })),
