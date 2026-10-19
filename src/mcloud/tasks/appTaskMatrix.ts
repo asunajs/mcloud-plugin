@@ -79,6 +79,8 @@ export interface MatrixItem {
   /** 按钮链接。⚠ 写的那半的**按钮门**要它（`beiyong1ButtonGate` 找 `uploadView`）。
    *  实拍里它在 `button.app.link` 这一层，另外两种拼法也认（旧 TS 用过）。 */
   buttonAppLink?: string;
+  /** `button.email.link` —— 1017 的入口页在这一格（`#ssoToken#` 占位）。 */
+  buttonEmailLink?: string;
   /** 上游**替这一条、这一阶段写好的那句按钮话** —— 界面徽章要照抄的就是它。
    *
    *  ⚠ 它**不是状态词**，别拿 `enable`/`state` 造一个「待做」盖上去：
@@ -113,11 +115,11 @@ function asStr(v: unknown): string | undefined {
   return typeof v === 'string' && v !== '' ? v : undefined;
 }
 /** 实拍形状是 `button: { app: { link } }` —— 缺一层就返回 `undefined`（不猜）。 */
-function nestedLink(button: unknown): string | undefined {
+function nestedLink(button: unknown, end = 'app'): string | undefined {
   if (button === null || typeof button !== 'object') return undefined;
-  const app = (button as Record<string, unknown>).app;
-  if (app === null || typeof app !== 'object') return undefined;
-  return asStr((app as Record<string, unknown>).link);
+  const one = (button as Record<string, unknown>)[end];
+  if (one === null || typeof one !== 'object') return undefined;
+  return asStr((one as Record<string, unknown>).link);
 }
 
 /** 取按钮那一格的"端形态"：`buttonProperty`/`button` 下面各挂 `email`/`app`/`out`。
@@ -154,7 +156,8 @@ export function parseMatrixItem(raw: unknown): MatrixItem | undefined {
     limitType: asStr(o.limitType ?? o.limit_type),
     enable: asInt(o.enable),
     currStep: asInt(o.currstep ?? o.currStep),
-    buttonAppLink: asStr(o.buttonAppLink ?? o.button_app_link) ?? nestedLink(o.button),
+    buttonAppLink: asStr(o.buttonAppLink ?? o.button_app_link) ?? nestedLink(o.button, 'app'),
+    buttonEmailLink: asStr(o.buttonEmailLink ?? o.button_email_link) ?? nestedLink(o.button, 'email'),
     buttonOutText: at('text'),
     buttonTextMiddle: at('textMiddle'),
     buttonTextFinish: at('textFinish'),

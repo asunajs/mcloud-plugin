@@ -175,10 +175,21 @@ export function isShare(taskId: number | undefined): boolean {
  *
  *  ⚠ 与 `SKIP_TASK_LIST` 是两件事：那一串是"**刻意不打**"（打了有副作用或无意义），
  *  这一层是"**还不知道怎么打**"。两者都不打，但**理由不同** —— 报出来的话也要不同。 */
+/** 专用执行器（与 mcloud 的 `AppRunner` 对齐）。目前先接 1020；
+ *  107/472/473/1004/1014/1028/585/609 在 mcloud 里也有实现，后续按同一形状补。 */
+export type AppRunner = 'mailBackup' | 'aiAssistant';
+
 export type TaskStep =
   | { kind: 'upload'; shape: UploadShape }
   | { kind: 'clickOnly' }
-  | { kind: 'portalEntry' };
+  /** 409 / 1005：固定入口两发上报 + 专用 key 补打卡。 */
+  | { kind: 'entry' }
+  /** 1017 / 604：入口页（`button.email.link` / `button.app.link`）+ 打卡。 */
+  | { kind: 'portal' }
+  /** 434：分享本趟传上去的第一个文件，再删外链。 */
+  | { kind: 'share' }
+  /** 专用执行器（1020 邮件转存 …）。 */
+  | { kind: 'runner'; runner: AppRunner };
 
 /** mcloud 里**已实现**的那些（`docs/app-task-status.md` §0）：
  *  106、113、409、434、522、547、604、609、615 —— 加上判定门 118。
@@ -188,13 +199,19 @@ export type TaskStep =
  *  （点了同样不变状态）。 */
 export function stepFor(item: AppTaskItem): TaskStep | undefined {
   if (shouldSkip(item.taskId)) return undefined;
+  // 409 / 1005：固定入口（两发上报 + 补打卡）。
+  if (item.taskId === 409 || item.taskId === 1005) return { kind: 'entry' };
+  // 1017 / 604：入口页。
+  if (needsPortalEntry(item.taskId)) return { kind: 'portal' };
+  // 434：分享文件。
+  if (isShare(item.taskId)) return { kind: 'share' };
+  // 1020：邮件转存。
+  if (item.taskId === 1020) return { kind: 'runner', runner: 'mailBackup' };
+  // 609：和 AI 助手对话（mcloud 真机验过：打卡不够，必须真对话）。
+  if (item.taskId === 609) return { kind: 'runner', runner: 'aiAssistant' };
   const shape = uploadShapeFor(item);
   if (shape) return { kind: 'upload', shape };
   if (isClickOnly(item.taskId)) return { kind: 'clickOnly' };
-  // ⚠ 入口页（1017 / 604）**动作层还没搬**：`runAppTaskStep` 没有 portal 这个 phase。
-  //   先返回 undefined（当“没实现”），别跳过入口直接点 —— 点了状态也不会变。
-  //   等入口那一枪补上再放回来。
-  if (needsPortalEntry(item.taskId)) return undefined;
   return undefined;
 }
 
