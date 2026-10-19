@@ -119,6 +119,7 @@ var KEY_SCOPE = {
   "mcloud.sign.last": "account",
   "mcloud.upload.state": "account",
   "mcloud.taskexpansion.state": "account",
+  "mcloud.month.backup": "account",
   "mcloud.apptask.state": "account",
   "mcloud.apptaskmatrix.last": "account",
   "mcloud.apptaskmatrix.group_index": "account",
