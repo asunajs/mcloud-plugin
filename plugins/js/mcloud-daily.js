@@ -570,6 +570,10 @@ function labelOf(store2, acctId) {
   const a = loadAccounts(store2).find((x) => x.id === acctId);
   return a?.label || a?.id || acctId;
 }
+function shortLabel(label) {
+  if (/^1\d{10}$/.test(label)) return `${label.slice(0, 3)}****${label.slice(-4)}`;
+  return label;
+}
 
 // src/mcloud/scheduleCron.ts
 var MIN = 0;
@@ -4525,7 +4529,7 @@ function stepFor(item) {
   const shape = uploadShapeFor(item);
   if (shape) return { kind: "upload", shape };
   if (isClickOnly(item.taskId)) return { kind: "clickOnly" };
-  if (needsPortalEntry(item.taskId)) return { kind: "portalEntry" };
+  if (needsPortalEntry(item.taskId)) return void 0;
   return void 0;
 }
 
@@ -4618,11 +4622,13 @@ var lastSkipped = [];
 function pendingItems(deps) {
   const out = [];
   const skipped = [];
+  lastSkipped = [];
   const readings = readMatrix(deps.store);
   readings.forEach((reading, gi) => {
     if (!reading) return;
     for (const [ii, item] of (reading.items ?? []).entries()) {
       if (judgeItem(item) !== "todo") continue;
+      if (shouldSkip(item.taskId)) continue;
       if (stepFor({ taskId: item.taskId, groupId: item.groupId, name: item.name, buttonAppLink: item.buttonAppLink }) === void 0) {
         skipped.push(item.taskId ?? 0);
         continue;
@@ -4641,6 +4647,7 @@ function pendingItems(deps) {
       });
     }
   });
+  lastSkipped = skipped;
   return out;
 }
 function beginUpload(deps, itemId, name) {
@@ -4653,9 +4660,8 @@ function startAppTask(deps) {
   const prev = load(deps);
   const clicked = prev ? freshClicked(prev, deps) : [];
   const all = pendingItems(deps);
+  const extra = lastSkipped.length === 0 ? "" : `，另有 ${lastSkipped.length} 条还没搬（当前要在 App 里手动做）`;
   if (all.length === 0) {
-    const sk = lastSkipped;
-    const extra = sk.length === 0 ? "" : `，另有 ${sk.length} 条要在 App 里手动做（我们替不了）`;
     return { ok: true, idle: true, note: `没有能替你做的了${extra}` };
   }
   const todo = all.filter((p) => !clicked.includes(p.itemId));
@@ -4663,7 +4669,7 @@ function startAppTask(deps) {
     return {
       ok: true,
       idle: true,
-      note: `今天这 ${all.length} 条都点过了`
+      note: `今天这 ${all.length} 条都点过了${extra}`
     };
   }
   const first = todo[0];
@@ -6218,7 +6224,8 @@ register_cron(
       if (r2.ok) {
         scoped(rawStoreOf(store), one.acctId).setState(DONE_KEY, today2, nowIso);
       }
-      logBoth(store, "start", `账号 ${who}`, nowIso);
+      const tag = `[${shortLabel(who)}]`;
+      logBoth(store, "start", tag, nowIso);
       let prev = "";
       const skippedSteps = [];
       for (const line of r2.detail) {
@@ -6229,20 +6236,20 @@ register_cron(
           skippedSteps.push(shown.split("：")[0] ?? shown);
           continue;
         }
-        logBoth(store, lineLevel(shown), shown, nowIso);
+        logBoth(store, lineLevel(shown), `${tag} ${shown}`, nowIso);
       }
       if (skippedSteps.length > 0) {
         const head = skippedSteps.slice(0, 3).join("、");
         logBoth(
           store,
           "debug",
-          `跳过 ${skippedSteps.length} 项（没有网页会话）：${head}${skippedSteps.length > 3 ? " 等" : ""}`,
+          `${tag} 跳过 ${skippedSteps.length} 项（没有网页会话）：${head}${skippedSteps.length > 3 ? " 等" : ""}`,
           nowIso
         );
       }
       const { bad: bad2, hard } = stepTally(r2.steps);
-      const tail = bad2 === 0 ? `账号 ${who}：都成了` : hard === 0 ? `账号 ${who}：${bad2} 项跳过（没有网页会话）` : `账号 ${who}：${hard} 项没成${bad2 > hard ? `、${bad2 - hard} 项跳过` : ""}`;
-      logBoth(store, hard > 0 ? "warn" : "debug", tail, nowIso);
+      const tail = bad2 === 0 ? "都成了" : hard === 0 ? `${bad2} 项跳过（没有网页会话）` : `${hard} 项没成${bad2 > hard ? `、${bad2 - hard} 项跳过` : ""}`;
+      logBoth(store, hard > 0 ? "warn" : "debug", `${tag} ${tail}`, nowIso);
     }
     if (results.length === 0) return;
     const okAll = results.every((x) => x.result.ok);

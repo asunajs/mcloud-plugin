@@ -43,7 +43,7 @@
 import { debug, register_cron, warn } from 'host-api';
 import { blockersFor, setTaskBlockers, setTaskSummary, summaryFor } from '../mcloud/taskReadiness.ts';
 import { appendRun, type RunStep } from '../mcloud/runLog.ts';
-import { labelOf } from '../mcloud/taskAccounts.ts';
+import { labelOf, shortLabel } from '../mcloud/taskAccounts.ts';
 import { logBoth } from '../mcloud/log.ts';
 import { lineLevel, lineText, onceHint, stepTally, userLine } from '../mcloud/tasks/stepLog.ts';
 import { collectCodes, runLiveDraw } from '../mcloud/tasks/liveDraw.ts';
@@ -326,7 +326,8 @@ register_cron(
         ok: r.ok,
         note,
       });
-      logBoth(store, 'start', `账号 ${who}`, at);
+      const tag = `[${shortLabel(who)}]`;
+      logBoth(store, 'start', tag, at);
       let prev = '';
       // 级联的“没有网页会话”不逐行刷：一个根因会拖垮十步，逐行写就是十行同样的字。
       const skippedSteps: string[] = [];
@@ -340,25 +341,25 @@ register_cron(
           skippedSteps.push(shown.split('：')[0] ?? shown);
           continue;
         }
-        logBoth(store, lineLevel(shown), shown, at);
+        logBoth(store, lineLevel(shown), `${tag} ${shown}`, at);
       }
       if (skippedSteps.length > 0) {
         const head = skippedSteps.slice(0, 3).join('、');
         logBoth(
           store,
           'debug',
-          `跳过 ${skippedSteps.length} 项（没有网页会话）：${head}${skippedSteps.length > 3 ? ' 等' : ''}`,
+          `${tag} 跳过 ${skippedSteps.length} 项（没有网页会话）：${head}${skippedSteps.length > 3 ? ' 等' : ''}`,
           at,
         );
       }
       const { bad, hard } = stepTally(r.steps);
       const tail =
         bad === 0
-          ? `账号 ${who}：都成了`
+          ? '都成了'
           : hard === 0
-            ? `账号 ${who}：${bad} 项跳过（没有网页会话）`
-            : `账号 ${who}：${hard} 项没成${bad > hard ? `、${bad - hard} 项跳过` : ''}`;
-      logBoth(store, hard > 0 ? 'warn' : 'debug', tail, at);
+            ? `${bad} 项跳过（没有网页会话）`
+            : `${hard} 项没成${bad > hard ? `、${bad - hard} 项跳过` : ''}`;
+      logBoth(store, hard > 0 ? 'warn' : 'debug', `${tag} ${tail}`, at);
     }
 
     const okCount = runs.filter((x) => x.result.ok).length;

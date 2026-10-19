@@ -16,7 +16,7 @@ import { appendRun } from '../mcloud/runLog.ts';
 import { STATE_ORDERED_HOUR } from '../mcloud/tasks/exchangeOrder.ts';
 import { depsForAccount, LONG_REQUEST_TIMEOUT_MS, makeStore, makeTransport } from './shared.ts';
 import type { TaskPayload } from './shared.ts';
-import { labelOf } from '../mcloud/taskAccounts.ts';
+import { labelOf, shortLabel } from '../mcloud/taskAccounts.ts';
 import { blockersFor } from '../mcloud/taskReadiness.ts';
 import { logBoth } from '../mcloud/log.ts';
 import { lineLevel, lineText, stepTally } from '../mcloud/tasks/stepLog.ts';
@@ -143,7 +143,8 @@ register_cron(
         ok: r.ok,
         note,
       });
-      logBoth(store, 'start', `兑换 · ${who} · ${plan.prizeName}`, at);
+      const tag = `[${shortLabel(who)}]`;
+      logBoth(store, 'start', `${tag} 兑换 · ${plan.prizeName}`, at);
       let prev = '';
       // 级联的“没有网页会话”不逐行刷：一个根因会拖垮十步。
       const skippedSteps: string[] = [];
@@ -155,14 +156,14 @@ register_cron(
           skippedSteps.push(shown.split('：')[0] ?? shown);
           continue;
         }
-        logBoth(store, lineLevel(shown), shown, at);
+        logBoth(store, lineLevel(shown), `${tag} ${shown}`, at);
       }
       if (skippedSteps.length > 0) {
         const head = skippedSteps.slice(0, 3).join('、');
         logBoth(
           store,
           'debug',
-          `跳过 ${skippedSteps.length} 项（没有网页会话）：${head}${skippedSteps.length > 3 ? ' 等' : ''}`,
+          `${tag} 跳过 ${skippedSteps.length} 项（没有网页会话）：${head}${skippedSteps.length > 3 ? ' 等' : ''}`,
           at,
         );
       }
@@ -173,7 +174,7 @@ register_cron(
           : hard === 0
             ? `${plan.prizeName}：${bad} 项跳过（没有网页会话）`
             : `${plan.prizeName}：${hard} 项没成${bad > hard ? `、${bad - hard} 项跳过` : ''}`;
-      logBoth(store, hard > 0 ? 'warn' : 'debug', tail, at);
+      logBoth(store, hard > 0 ? 'warn' : 'debug', `${tag} ${tail}`, at);
     }
 
     if (acted === 0) {

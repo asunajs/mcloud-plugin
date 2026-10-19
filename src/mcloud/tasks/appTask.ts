@@ -31,7 +31,7 @@ import { loadSession } from '../../store/types.ts';
 import { judgeItem, readMatrix } from './appTaskMatrix.ts';
 import { runUploadStep, startUpload, uploadDone } from './upload.ts';
 import { cloudFileOpHeaders, deterministicFile } from '../cloudUpload.ts';
-import { stepFor, uploadShapeFor } from '../appTaskRules.ts';
+import { shouldSkip, stepFor, uploadShapeFor } from '../appTaskRules.ts';
 import type { BuiltRequest } from '../h5.ts';
 import type { TaskDeps, TaskOutcome } from './base.ts';
 
@@ -215,6 +215,7 @@ export interface Pending {
 export function pendingItems(deps: TaskDeps): Pending[] {
   const out: Pending[] = [];
   const skipped: number[] = [];
+  lastSkipped = [];
   const readings = readMatrix(deps.store);
   readings.forEach((reading, gi) => {
     if (!reading) return;
@@ -226,6 +227,8 @@ export function pendingItems(deps: TaskDeps): Pending[] {
       //   真机/测试里的症状：只要**第一条**是"未实现"的（548），后面全部消失 ⇒
       //   `pendingItems` 回 `[]`，看着像"这账号没有任务"。我查了好几轮才定位到。
       if (judgeItem(item) !== 'todo') continue;
+      // 「刻意不做」的（SKIP_TASK_LIST）不算“没搬”—— 它们本来就不该点。
+      if (shouldSkip(item.taskId)) continue;
       // ⚠ **只做"知道该做什么"的那些**（见 `stepFor` 的注释）——
       //   第一版是"不在黑名单就打"，那是重写；真机上点了 4 条状态一条没变，
       //   因为它们在 mcloud 的账本里全是"未实现"。
@@ -248,6 +251,7 @@ export function pendingItems(deps: TaskDeps): Pending[] {
       });
     }
   });
+  lastSkipped = skipped;
   return out;
 }
 
@@ -270,13 +274,13 @@ export function startAppTask(deps: TaskDeps): TaskOutcome {
   const prev = load(deps);
   const clicked = prev ? freshClicked(prev, deps) : [];
   const all = pendingItems(deps);
+  // 说人话：能替你做的一条都没有；剩下的要么得你去 App 里点，要么还没搬。
+  // ⚠ 这个数以前永远是 0（`lastSkipped` 只读不写），于是日志把“没搬”说成了“没有”。
+  const extra =
+    lastSkipped.length === 0
+      ? ''
+      : `，另有 ${lastSkipped.length} 条还没搬（当前要在 App 里手动做）`;
   if (all.length === 0) {
-    const sk = lastSkipped;
-    // 说人话：能替你做的一条都没有；剩下的要么得你去 App 里点，要么还没支持
-    const extra =
-      sk.length === 0
-        ? ''
-        : `，另有 ${sk.length} 条要在 App 里手动做（我们替不了）`;
     return { ok: true, idle: true, note: `没有能替你做的了${extra}` };
   }
   const todo = all.filter((p) => !clicked.includes(p.itemId));
@@ -284,7 +288,7 @@ export function startAppTask(deps: TaskDeps): TaskOutcome {
     return {
       ok: true,
       idle: true,
-      note: `今天这 ${all.length} 条都点过了`,
+      note: `今天这 ${all.length} 条都点过了${extra}`,
     };
   }
   const first = todo[0]!;

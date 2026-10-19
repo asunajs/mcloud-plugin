@@ -168,6 +168,7 @@ mcloud-plugin/
 | [`docs/howto-session.md`](docs/howto-session.md) | 使用者手册：怎么拿会话、怎么导入、失败了怎么看 |
 | [`docs/ui-wording.md`](docs/ui-wording.md) | 界面用词规则（**对用户不许说"上游"**） |
 | [`docs/live-spec.md`](docs/live-spec.md) | **直播（小红花）业务规格**：两条路、共享口令池、领取结果分类、哪些环节还没被证实 |
+| [`docs/app-task-parity.md`](docs/app-task-parity.md) | **App 任务对照表**：mcloud-sign 的 runner 哪些搬了、哪些还没搬、日志怎么说 |
 | [`docs/smid-chain.md`](docs/smid-chain.md) · [`docs/upload-chain.md`](docs/upload-chain.md) | 两条比较绕的链路的实测记录 |
 | [`docs/shots/`](docs/shots/README.md) | 界面截图（七个区块各一张 + 扫码） |
 | [`docs/design-history.md`](docs/design-history.md) | **开工前的设计稿**（历史；有些判断后来被推翻了，为什么留着见文件头） |

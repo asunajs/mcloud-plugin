@@ -191,12 +191,18 @@ export function stepFor(item: AppTaskItem): TaskStep | undefined {
   const shape = uploadShapeFor(item);
   if (shape) return { kind: 'upload', shape };
   if (isClickOnly(item.taskId)) return { kind: 'clickOnly' };
-  if (needsPortalEntry(item.taskId)) return { kind: 'portalEntry' };
+  // ⚠ 入口页（1017 / 604）**动作层还没搬**：`runAppTaskStep` 没有 portal 这个 phase。
+  //   先返回 undefined（当“没实现”），别跳过入口直接点 —— 点了状态也不会变。
+  //   等入口那一枪补上再放回来。
+  if (needsPortalEntry(item.taskId)) return undefined;
   return undefined;
 }
 
 /** 这一条 mcloud 里**没实现**（本插件也不动它）—— 报出来用。 */
 export function isUnimplemented(taskId: number | undefined): boolean {
   if (taskId === undefined) return true;
-  return !shouldSkip(taskId) && !isClickOnly(taskId) && !needsPortalEntry(taskId);
+  // 刻意不做的（SKIP_TASK_LIST）不是“没实现”，是“不做”。
+  if (shouldSkip(taskId)) return false;
+  // ⚠ 必须走 `stepFor`：上传族（106/113/522）以前会被这句误报成“没实现”。
+  return stepFor({ taskId }) === undefined;
 }

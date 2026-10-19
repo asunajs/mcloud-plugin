@@ -2804,6 +2804,10 @@ function labelOf(store2, acctId) {
   const a = loadAccounts(store2).find((x) => x.id === acctId);
   return a?.label || a?.id || acctId;
 }
+function shortLabel(label) {
+  if (/^1\d{10}$/.test(label)) return `${label.slice(0, 3)}****${label.slice(-4)}`;
+  return label;
+}
 
 // src/entries/shared.ts
 var DEFAULT_REQUEST_TIMEOUT_MS = 1500;
@@ -5294,7 +5298,8 @@ register_cron(
         ok: r.ok,
         note
       });
-      logBoth(store, "start", `兑换 · ${who} · ${plan.prizeName}`, at);
+      const tag = `[${shortLabel(who)}]`;
+      logBoth(store, "start", `${tag} 兑换 · ${plan.prizeName}`, at);
       let prev = "";
       const skippedSteps = [];
       for (const line of r.detail) {
@@ -5305,20 +5310,20 @@ register_cron(
           skippedSteps.push(shown.split("：")[0] ?? shown);
           continue;
         }
-        logBoth(store, lineLevel(shown), shown, at);
+        logBoth(store, lineLevel(shown), `${tag} ${shown}`, at);
       }
       if (skippedSteps.length > 0) {
         const head = skippedSteps.slice(0, 3).join("、");
         logBoth(
           store,
           "debug",
-          `跳过 ${skippedSteps.length} 项（没有网页会话）：${head}${skippedSteps.length > 3 ? " 等" : ""}`,
+          `${tag} 跳过 ${skippedSteps.length} 项（没有网页会话）：${head}${skippedSteps.length > 3 ? " 等" : ""}`,
           at
         );
       }
       const { bad, hard } = stepTally(r.steps);
       const tail = bad === 0 ? `${plan.prizeName}：都成了` : hard === 0 ? `${plan.prizeName}：${bad} 项跳过（没有网页会话）` : `${plan.prizeName}：${hard} 项没成${bad > hard ? `、${bad - hard} 项跳过` : ""}`;
-      logBoth(store, hard > 0 ? "warn" : "debug", tail, at);
+      logBoth(store, hard > 0 ? "warn" : "debug", `${tag} ${tail}`, at);
     }
     if (acted === 0) {
       logBoth(

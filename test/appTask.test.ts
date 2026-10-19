@@ -104,6 +104,19 @@ test('起一趟**一个请求都不发**；没有待办 ⇒ idle', () => {
   assert.equal(sent.length, 0);
 });
 
+test('没有待办时要说清“还有几条没搬”，且“刻意不做”的不算', () => {
+  const { deps } = mkDeps({
+    [MATRIX_MARKETS[0]!]: [
+      { taskId: 107, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '创建云笔记' },
+      { taskId: 117, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '刻意不做' },
+    ],
+  });
+  const out = startAppTask(deps);
+  assert.equal(out.idle, true);
+  assert.match(out.note, /另有 1 条还没搬/, '117 在 SKIP_TASK_LIST 里，不该算“没搬”');
+  assert.match(out.note, /App 里手动做/);
+});
+
 test('打卡那一枪的形状：**GET**、主机**带端口**、`key=task&id=`', () => {
   const { deps } = mkDeps({});
   const req = clickRequest(deps, 115);
