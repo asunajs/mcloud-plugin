@@ -26,6 +26,7 @@
 
 import { loadAccounts } from './accounts.ts';
 import { resolveTaskAccounts, saveTaskAccounts, taskAccountsKey } from './taskAccounts.ts';
+import { loadPlans, planSummary } from './exchangePlans.ts';
 
 type Store = { getState(k: string): string | null | undefined };
 
@@ -64,10 +65,10 @@ export function exchangePlanName(store: Store): string {
 /** 一条任务的未就绪原因。 */
 export function blockersFor(store: Store, task: string): string[] {
   if (task === '兑换') {
-    const out: string[] = [];
-    if (resolveTaskAccounts(store as never, '兑换').length === 0) out.push('还没有选账号');
-    if (exchangePlanTarget(store) === '') out.push('还没设定时奖品');
-    return out;
+    const plans = loadPlans(store as never);
+    if (plans.length === 0) return ['还没设定时计划'];
+    if (!plans.some((p) => p.enabled)) return ['所有计划都未启用'];
+    return [];
   }
   return enabledAccountCount(store) === 0 ? ['还没有账号'] : [];
 }
@@ -84,19 +85,7 @@ function accountLabels(store: Store, ids: string[]): string {
 
 /** 一条任务在面板卡片上的一行人话。 */
 export function summaryFor(store: Store, task: string): string {
-  if (task === '兑换') {
-    const ids = resolveTaskAccounts(store as never, '兑换');
-    const n = ids.length;
-    const plan = exchangePlanName(store);
-    const lead = (store.getState('mcloud.exchange.lead_sec') ?? '120').trim() || '120';
-    const until = (store.getState('mcloud.exchange.schedule.until') ?? '').trim();
-    const max = Number((store.getState('mcloud.exchange.schedule.max_runs') ?? '0').trim());
-    const extra = (until ? ' · 截止 ' + until : '') + (max > 0 ? ' · 每号最多 ' + max + ' 次' : '');
-    if (plan === '') return n > 0 ? n + ' 个账号 · 还没设定时奖品' : '还没选账号和奖品';
-    // “哪个账号跑的、换的是哪一件、参数是什么”要在卡片上一眼看到 ——
-    // 这正是兑换任务不该藏在面板任务列表里的原因（它是插件里的一个功能实例）。
-    return n + ' 个账号（' + accountLabels(store, ids) + '） · 目标：' + plan + ' · 提前 ' + lead + 's' + extra;
-  }
+  if (task === '兑换') return planSummary(store as never);
   const n = enabledAccountCount(store);
   if (n === 0) return '还没有账号';
   const ids = loadAccounts(store as never)

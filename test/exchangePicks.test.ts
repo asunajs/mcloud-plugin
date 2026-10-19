@@ -131,6 +131,7 @@ test('兑换页对齐原页面：关注 / 分组 / 二次确认 / 本地判定 /
   for (const id of ['ex-plan-dialog', 'ex-plan-cron', 'ex-plan-lead-sec', 'ex-plan-submit']) {
     assert.ok(html.includes(`id="${id}"`), `缺定时弹窗的 ${id}`);
   }
-  assert.ok(/action: 'plan'/.test(js), '定时保存只写目标，不起单');
+  assert.ok(/api\('\/exchange\/plans'/.test(js), '定时保存走计划表，不起单');
+  assert.ok(/action: 'save'/.test(js), '计划保存动作是 save');
   assert.ok(/schedulePlan/.test(routes) && /STATE_SCHEDULE_PLAN/.test(routes), '读数要带定时目标');
 });

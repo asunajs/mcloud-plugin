@@ -181,20 +181,9 @@
           </div>
           <div class="dialog-body">
             <p class="hint">给 <strong id="ex-plan-prize">还没选目标</strong><span id="ex-plan-price"></span>
-              排一条定时任务。它只影响定时那一场，手动兑换不受影响。</p>
-            <p class="hint">任务账号：<span id="ex-plan-acct-label">全部账号</span></p>
-            <div class="picker" data-picker="兑换">
-              <button class="btn picker-btn" id="exchange-acct-btn" aria-expanded="false">
-                <span id="exchange-acct-label">全部账号</span> ▾
-              </button>
-              <div class="picker-panel" id="exchange-acct-panel" hidden>
-                <label class="picker-row picker-all">
-                  <input type="checkbox" id="exchange-acct-all" />
-                  <span><b>全部账号</b><br /><span class="hint">以后新登录的账号也一起跑</span></span>
-                </label>
-                <div class="picker-list" id="exchange-acct-list"></div>
-              </div>
-            </div>
+              排一条定时计划。一条计划只跑一个账号；它只影响定时那一场，手动兑换不受影响。</p>
+            <label class="field"><span class="field-label">这条计划用哪个账号</span>
+              <select id="ex-plan-account" class="input" aria-label="这条计划用哪个账号"></select></label>
 
             <label class="field"><span class="field-label">Cron 表达式</span>
               <input id="ex-plan-cron" class="input" type="text" inputmode="text"
@@ -236,7 +225,7 @@
             </div>
             <p class="hint">「提前多少毫秒发」是<b>你到云端的传输耗时</b>。网慢就调大，默认 10。</p>
 
-            <h3 class="h3">每个账号最多跑几次</h3>
+            <h3 class="h3">这条计划最多跑几次</h3>
             <div class="row">
               <div class="field ex-num-field">
                 <span class="field-label" id="ex-plan-max-label">次数</span>
@@ -250,7 +239,7 @@
                 </div>
               </div>
             </div>
-            <p class="hint">0 = 不限。失败也计入，每个账号分别计数。</p>
+            <p class="hint">0 = 不限。失败也计入；每条计划单独计数。</p>
             <p class="hint" id="ex-plan-preview"></p>
             <p class="hint" id="ex-plan-note"></p>
             <div class="row end">
@@ -498,12 +487,12 @@
             <span class="card-title">定时抢兑</span>
             <span class="badge idle" id="ex-sched-state">未启用</span>
           </div>
-          <p class="hint" id="ex-sched-summary">还没设定时奖品</p>
-          <p class="hint">到点由面板叫醒；账号、奖品、时间和提前量都以这里为准。</p>
+          <p class="hint" id="ex-sched-summary">还没设定时计划</p>
+          <div class="plan-list" id="ex-sched-list"></div>
           <div class="row">
-            <button class="btn" id="ex-sched-edit">改定时</button>
-            <button class="btn" id="ex-sched-toggle">启用定时</button>
+            <button class="btn" id="ex-sched-add">添加计划</button>
           </div>
+          <p class="hint">一条计划 = 一个账号 + 一个目标 + 一个整点；两个号换不同的东西、不同的时间，就建两条。</p>
         </div>
 
         <!-- 「我关注的」：原 Rust mcloud 的订阅区。清单每天变，关注的那几件固定在上面。 -->

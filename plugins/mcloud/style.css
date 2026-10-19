@@ -652,6 +652,47 @@ textarea:focus {
   padding-bottom: var(--sp-1);
 }
 
+/* ══════════ 定时计划列表 ══════════ */
+
+/* 一条计划一行：左边“谁、换什么、几点”，右边三个按钮。 */
+.plan-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: var(--sp-2) 0;
+}
+
+.plan-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+/* 暂停的计划：标题压暗一档（状态本身由按钮文字表达，颜色不是唯一载体）。 */
+.plan-row.is-off .plan-main strong {
+  color: var(--text-mute);
+}
+
+.plan-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.plan-main .hint {
+  overflow-wrap: anywhere;
+}
+
+.plan-row .row {
+  margin: 0;
+  flex: 0 0 auto;
+}
+
 /* ══════════ 账号卡 ══════════ */
 
 /* 一条一张卡，卡片**表皮走主面板的 `.card`**（边框、圆角、内边距、底色都在那边）。
