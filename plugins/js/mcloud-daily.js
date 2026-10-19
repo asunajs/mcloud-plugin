@@ -5057,6 +5057,9 @@ function advance(deps, st) {
   }
   if (next.needUpload) beginUpload(deps, next.itemId, next.name);
   const special = next.step.kind === "entry" ? "entry" : next.step.kind === "portal" ? "portal" : next.step.kind === "share" ? "share" : next.step.kind === "runner" ? next.step.runner === "aiAssistant" ? "aiAssistant" : "mailBackup" : void 0;
+  if (next.currStep !== void 0 && next.currStep !== 0 && (special === "entry" || special === "portal" || special === "mailBackup" || special === "aiAssistant")) {
+    phase = phaseOfSpecial(special) ?? phase;
+  }
   save2(deps, {
     gi: next.gi,
     ii: next.ii,
@@ -5154,6 +5157,9 @@ function startAppTask(deps) {
   }
   if (first.needUpload) beginUpload(deps, first.itemId, first.name);
   const special = first.step.kind === "entry" ? "entry" : first.step.kind === "portal" ? "portal" : first.step.kind === "share" ? "share" : first.step.kind === "runner" ? first.step.runner === "aiAssistant" ? "aiAssistant" : "mailBackup" : void 0;
+  if (first.currStep !== void 0 && first.currStep !== 0 && (special === "entry" || special === "portal" || special === "mailBackup" || special === "aiAssistant")) {
+    phase = phaseOfSpecial(special) ?? phase;
+  }
   save2(deps, {
     gi: first.gi,
     ii: first.ii,
@@ -5169,8 +5175,8 @@ function startAppTask(deps) {
   });
   return { ok: true, note: `已排队 ${todo.length} 条待办（今天已点过 ${clicked.length} 条），从 #${first.itemId} 开始` };
 }
-function specialPhase(st) {
-  switch (st.special) {
+function phaseOfSpecial(s) {
+  switch (s) {
     case "entry":
       return "entry";
     case "portal":
@@ -5183,6 +5189,16 @@ function specialPhase(st) {
     default:
       return void 0;
   }
+}
+function doneState(deps, st) {
+  const clicked = freshClicked(st, deps);
+  return {
+    ...st,
+    clicked: clicked.includes(st.itemId) ? clicked : [...clicked, st.itemId]
+  };
+}
+function specialPhase(st) {
+  return phaseOfSpecial(st.special);
 }
 function runAppTaskStep(deps) {
   const st = load(deps);
@@ -5257,7 +5273,7 @@ function runAppTaskStep(deps) {
     const c = callRawText(deps.transport, clickRequest(deps, st.itemId, "task2"));
     const bits = [a.ok ? "doTaskPost ok" : `doTaskPost 没成：${a.error ?? ""}`, b.ok ? "page/doTask ok" : `page/doTask 没成：${b.error ?? ""}`];
     if (!c.ok) bits.push(`补打卡没成：${c.error ?? "未知失败"}`);
-    const out2 = advance(deps, st);
+    const out2 = advance(deps, doneState(deps, st));
     return {
       ok: out2.ok,
       note: `固定入口 #${st.itemId}（${bits.join("；")}）。${out2.note}`
@@ -5279,7 +5295,7 @@ function runAppTaskStep(deps) {
       if (!c.ok) page += `；补打卡没成：${c.error ?? ""}`;
     }
     const bits = [a.ok ? "doTaskPost ok" : "doTaskPost 没成", b.ok ? "page/doTask ok" : "page/doTask 没成", page];
-    const out2 = advance(deps, st);
+    const out2 = advance(deps, doneState(deps, st));
     return { ok: out2.ok, note: `入口页 #${st.itemId}（${bits.join("；")}）。${out2.note}` };
   }
   if (st.phase === "share") {
@@ -5408,7 +5424,7 @@ function runAppTaskStep(deps) {
     const domain = st.data?.domain ?? "";
     const res2 = callRawText(deps.transport, aiChatRequest(auth, domain, "你好"));
     const sse = res2.ok ? parseSse(res2.text) : { events: 0, text: "" };
-    const out2 = advance(deps, st);
+    const out2 = advance(deps, doneState(deps, st));
     return {
       ok: res2.ok && sse.events > 0 && sse.text !== "",
       note: sse.events > 0 && sse.text !== "" ? `AI 对话成功（events=${sse.events}，回复 ${sse.text.slice(0, 20)}…）。${out2.note}` : `AI 对话没取到输出（events=${sse.events}）${res2.ok ? "" : `：${res2.error ?? ""}`}。${out2.note}`
@@ -5434,7 +5450,7 @@ function runAppTaskStep(deps) {
     const res2 = callRawText(deps.transport, mailSearchRequest(sess, st.data?.cguid ?? newCguid()));
     const mid = res2.ok ? firstField(res2.text, "mid") : void 0;
     if (!mid) {
-      const out2 = advance(deps, st);
+      const out2 = advance(deps, doneState(deps, st));
       return {
         ok: false,
         note: `邮件列表里取不到 mid：${res2.error ?? "响应里没有 mid"}。${out2.note}`
@@ -5450,7 +5466,7 @@ function runAppTaskStep(deps) {
       mailBackupRequest(sess, st.data?.cguid ?? newCguid(), st.data?.mid ?? "", st.data?.directoryId ?? "")
     );
     const code = res2.ok ? mailCode(res2.text) : { ok: false, code: "", summary: res2.error ?? "未知失败" };
-    const out2 = advance(deps, st);
+    const out2 = advance(deps, doneState(deps, st));
     return {
       ok: res2.ok && code.ok,
       note: code.ok ? `邮件转存已提交（服务端认了）。${out2.note}` : `邮件转存没成（code=${code.code} ${code.summary}）。${out2.note}`

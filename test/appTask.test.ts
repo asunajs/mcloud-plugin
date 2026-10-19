@@ -165,6 +165,22 @@ test('409 固定入口：两发上报 + 补一发 task2', () => {
   );
 });
 
+test('1005 已经走起来（currstep=1）：不再打默认 key，只补 task2', () => {
+  const { deps, sent } = mkDeps({
+    [MATRIX_MARKETS[0]!]: [
+      { taskId: 1005, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '从固定入口进入云朵中心', currStep: 1 },
+    ],
+  });
+  startAppTask(deps);
+  for (let i = 0; i < 12; i++) {
+    const out = runAppTaskStep(deps);
+    if (out.idle) break;
+  }
+  const clicks = sent.filter((r) => r.url.includes('task/click'));
+  assert.equal(clicks.length, 1, '只发补的那一发');
+  assert.ok(clicks[0]!.url.includes('key=task2'));
+});
+
 test('1017 入口页：取 button.email.link，再用 task2 补一发', () => {
   const { deps, sent } = mkDeps({
     [MATRIX_MARKETS[0]!]: [
