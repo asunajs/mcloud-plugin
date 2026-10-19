@@ -125,3 +125,10 @@ export function labelOf(store: ReadableState, acctId: string): string {
   const a = loadAccounts(store as never).find((x) => x.id === acctId);
   return a?.label || a?.id || acctId;
 }
+
+/** 日志前缀用的短名：昵称原样；纯 11 位手机号只留前 3 后 4。
+ *  已经是 `138****8000` 这种形状的不再二次处理。 */
+export function shortLabel(label: string): string {
+  if (/^1\d{10}$/.test(label)) return `${label.slice(0, 3)}****${label.slice(-4)}`;
+  return label;
+}

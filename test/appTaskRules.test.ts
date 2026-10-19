@@ -27,6 +27,7 @@ import {
   beiyong1NameGate,
   isClickOnly,
   isShare,
+  isUnimplemented,
   needsPortalEntry,
   shouldSkip,
   uploadShapeFor,
@@ -131,6 +132,17 @@ test('"不做"名单 / 只点一下 / 入口页 / 分享 —— 四个集合不�
   for (const id of [...CLICK_ONLY_TASK_IDS, ...PORTAL_ENTRY_TASK_IDS, SHARE_TASK_ID]) {
     assert.equal(skip.has(id), false, `${id} 同时在"不做"与别的集合里`);
   }
+});
+
+test('“没实现”要认上传族，也要把“刻意不做”排除在外', () => {
+  assert.equal(isUnimplemented(106), false, '106 是上传，别误报');
+  assert.equal(isUnimplemented(113), false, '113 是 PC 上传');
+  assert.equal(isUnimplemented(522), false, '522 是上传闸');
+  assert.equal(isUnimplemented(115), false, '115 是只点一下');
+  assert.equal(isUnimplemented(117), false, '117 是刻意不做，不是没实现');
+  assert.equal(isUnimplemented(107), true, '107 建笔记还没搬');
+  assert.equal(isUnimplemented(1028), true, '1028 AI 工作台还没搬');
+  assert.equal(isUnimplemented(undefined), true);
 });
 
 test('月度闸门的 marketName / groupId 是钉死的', () => {
