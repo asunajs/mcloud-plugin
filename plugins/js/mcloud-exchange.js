@@ -4733,7 +4733,9 @@ function blockersFor(store2, task) {
 function accountLabels(store2, ids) {
   const all = loadAccounts(store2);
   const out = ids.map((id) => all.find((a) => a.id === id)?.label ?? id);
-  return out.length === 0 ? "无" : out.join("、");
+  if (out.length === 0) return "无";
+  const head = out.slice(0, 3).join("、");
+  return out.length > 3 ? head + " 等" : head;
 }
 function summaryFor(store2, task) {
   if (task === "兑换") {

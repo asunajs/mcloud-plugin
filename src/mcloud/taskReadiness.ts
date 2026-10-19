@@ -67,7 +67,11 @@ export function blockersFor(store: Store, task: string): string[] {
 function accountLabels(store: Store, ids: string[]): string {
   const all = loadAccounts(store as never);
   const out = ids.map((id) => all.find((a) => a.id === id)?.label ?? id);
-  return out.length === 0 ? '无' : out.join('、');
+  if (out.length === 0) return '无';
+  // 卡片摘要不是账号清单：超过 3 个只列前三个 + “等”，
+  // 否则 20 个账号会把一行摘要撑成三行，反而看不出重点。
+  const head = out.slice(0, 3).join('、');
+  return out.length > 3 ? head + ' 等' : head;
 }
 
 /** 一条任务在面板卡片上的一行人话。 */
