@@ -654,11 +654,6 @@ textarea:focus {
 
 /* ══════════ 定时计划列表 ══════════ */
 
-/* 卡片最后一句说明别再把卡底撑出一道空档（`.hint` 自带 8px 下边距）。 */
-#ex-sched-card > .hint:last-child {
-  margin-bottom: 0;
-}
-
 /* 一条计划一行：左边“谁、换什么、几点”，右边三个按钮。 */
 .plan-list {
   display: flex;
