@@ -154,8 +154,11 @@ test('“没实现”要认上传族，也要把“刻意不做”排除在外',
   assert.equal(isUnimplemented(522), false, '522 是上传闸');
   assert.equal(isUnimplemented(115), false, '115 是只点一下');
   assert.equal(isUnimplemented(117), false, '117 是刻意不做，不是没实现');
-  assert.equal(isUnimplemented(107), true, '107 建笔记还没搬');
-  assert.equal(isUnimplemented(1028), true, '1028 AI 工作台还没搬');
+  assert.equal(isUnimplemented(107), false, '107 建笔记已接');
+  assert.equal(isUnimplemented(1028), false, '1028 AI 工作台已接');
+  assert.equal(isUnimplemented(1014), false, '1014 PDF 已接');
+  assert.equal(isUnimplemented(1029), false, '1029 账单已接');
+  assert.equal(isUnimplemented(999), true, '999 不在表里');
   assert.equal(isUnimplemented(undefined), true);
 });
 

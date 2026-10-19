@@ -14,9 +14,9 @@
 // ⚠ 与只读那一半**不是同一个 code**（只读的叫 `app-task-matrix`）——
 //   拿一个 code 做两件事会让它在两处指不同的东西。
 //
-// 依据是 **`mcloud-sign`**（那份 TS 是**能跑**的，行为以它为准）：
-// `tasks/app/runners.ts` 的 106 / 522 两个 runner，以及 `tasks.ts:68-77` 那个
-// `switch (task.groupid)` 的 `beiyong1` 分支。
+// 依据是 **Rust 版 `mcloud`**（不是 `mcloud-sign` 那份 TS —— 它很多已过期）：
+// `crates/mcloud-tasks/src/app_task.rs` 的 `upload_shape_for` / `step_for`，
+// 以及 `crates/mcloud-tasks/src/app_task/runners.rs` 的专用执行器。
 
 /** 往网盘传文件的那一档：传几轮、在哪停、每轮间隔、扩展名、渠道。 */
 export interface UploadShape {
@@ -177,7 +177,16 @@ export function isShare(taskId: number | undefined): boolean {
  *  这一层是"**还不知道怎么打**"。两者都不打，但**理由不同** —— 报出来的话也要不同。 */
 /** 专用执行器（与 mcloud 的 `AppRunner` 对齐）。目前先接 1020；
  *  107/472/473/1004/1014/1028/585/609 在 mcloud 里也有实现，后续按同一形状补。 */
-export type AppRunner = 'mailBackup' | 'aiAssistant';
+export type AppRunner =
+  | 'mailBackup'
+  | 'aiAssistant'
+  | 'aiWorkbench'
+  | 'aiCamera'
+  | 'note'
+  | 'mailActive'
+  | 'sendMail'
+  | 'pdfConvert'
+  | 'billView';
 
 export type TaskStep =
   | { kind: 'upload'; shape: UploadShape }
@@ -209,6 +218,20 @@ export function stepFor(item: AppTaskItem): TaskStep | undefined {
   if (item.taskId === 1020) return { kind: 'runner', runner: 'mailBackup' };
   // 609：和 AI 助手对话（mcloud 真机验过：打卡不够，必须真对话）。
   if (item.taskId === 609) return { kind: 'runner', runner: 'aiAssistant' };
+  // 1028 / 1057：AI 工作台（mcloud 的 AppRunner::AiWorkbench）。
+  if (item.taskId === 1028 || item.taskId === 1057) return { kind: 'runner', runner: 'aiWorkbench' };
+  // 585 / 618：AI 相机（mcloud 的 AppRunner::AiCamera）。
+  if (item.taskId === 585 || item.taskId === 618) return { kind: 'runner', runner: 'aiCamera' };
+  // 107：创建云笔记。
+  if (item.taskId === 107) return { kind: 'runner', runner: 'note' };
+  // 472 / 473：体验 139 邮箱。
+  if (item.taskId === 472 || item.taskId === 473) return { kind: 'runner', runner: 'mailActive' };
+  // 1004：给好友发邮件。
+  if (item.taskId === 1004) return { kind: 'runner', runner: 'sendMail' };
+  // 1014：PDF 转换。
+  if (item.taskId === 1014) return { kind: 'runner', runner: 'pdfConvert' };
+  // 1029：查看“我的账单”。
+  if (item.taskId === 1029) return { kind: 'runner', runner: 'billView' };
   const shape = uploadShapeFor(item);
   if (shape) return { kind: 'upload', shape };
   if (isClickOnly(item.taskId)) return { kind: 'clickOnly' };

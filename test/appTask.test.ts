@@ -48,6 +48,8 @@ function mkDeps(groups: Record<string, unknown[]>) {
   const store = memStore();
   store.ensureSchema();
   store.setState(SESSION_KEY, JSON.stringify({ cookie: '', jwt: 'J', savedAt: NOW }), NOW);
+  // 107 / 1004 要 authToken / phone；`pc:13800138000:tok` 的 base64
+  store.setState('mcloud.h5.auth', 'Basic cGM6MTM4MDAxMzgwMDA6dG9r', NOW);
   for (const [g, items] of Object.entries(groups)) {
     store.setState(
       matrixKey(g),
@@ -81,6 +83,17 @@ function mkDeps(groups: Record<string, unknown[]>) {
     if (req.url.includes('SearchByFidOrCondition')) {
       return { status: 200, headers: {}, body: '<string name="mid">M</string>' };
     }
+    if (req.url.includes('mobilebill.html')) return { status: 200, headers: {}, body: '<html></html>' };
+    if (req.url.includes('mbox:searchMessages')) {
+      return { status: 200, headers: {}, body: '<string name="mid">M</string>' };
+    }
+    if (req.url.includes('mbox:updateMessagesStatus')) return { status: 200, headers: {}, body: '{}' };
+    if (req.url.includes('view:readMessage')) return { status: 200, headers: {}, body: '<html></html>' };
+    if (req.url.includes('mailReportToMQ')) return { status: 200, headers: {}, body: JSON.stringify({ code: 'S_OK' }) };
+    if (req.url.includes('logBehaviorAction')) return { status: 200, headers: {}, body: 'ok' };
+    if (req.url.includes('convertPdfFromYunFile')) {
+      return { status: 200, headers: {}, body: JSON.stringify({ code: 'S_OK' }) };
+    }
     if (req.url.includes('disk:backupMail')) {
       return { status: 200, headers: {}, body: JSON.stringify({ code: 'S_OK' }) };
     }
@@ -95,6 +108,18 @@ function mkDeps(groups: Record<string, unknown[]>) {
     }
     if (req.url.includes('getUserTaskAndCloudStatusExternal')) {
       return { status: 200, headers: {}, body: JSON.stringify({ code: 0, result: { taskStatus: 1, cloudStatus: 0 } }) };
+    }
+    if (req.url.includes('authTokenRefresh.do')) {
+      return { status: 200, headers: {}, body: JSON.stringify({ headers: { app_auth: 'A' } }) };
+    }
+    if (req.url.includes('createNote.do')) return { status: 200, headers: {}, body: JSON.stringify({ code: 0 }) };
+    if (req.url.includes('moveToRecycleBin.do')) return { status: 200, headers: {}, body: JSON.stringify({ code: 0 }) };
+    if (req.url.includes('autologin.action')) return { status: 200, headers: {}, body: '{}' };
+    if (req.url.includes('taskClickV2')) return { status: 200, headers: {}, body: JSON.stringify({ code: 0 }) };
+    if (req.url.includes('mbox:getComposeId')) return { status: 200, headers: {}, body: JSON.stringify({ var: 'C' }) };
+    if (req.url.includes('mbox:compose')) return { status: 200, headers: {}, body: JSON.stringify({ code: 'S_OK' }) };
+    if (req.url.includes('aiRecognize')) {
+      return { status: 200, headers: {}, body: JSON.stringify({ success: true, data: { fileId: 'F', taskId: '7' } }) };
     }
     if (req.url.includes('assistant/chat/v2/add')) {
       return {
@@ -222,6 +247,106 @@ test('609 AI 助手：换票 → 登录 → 派生鉴权 → 状态 → SSE 对�
   assert.ok(urls.some((u) => u.includes('assistant/chat/v2/add')), 'SSE 对话');
 });
 
+test('107 云笔记：鉴权 → 建 → 删', () => {
+  const { deps, sent } = mkDeps({
+    [MATRIX_MARKETS[0]!]: [{ taskId: 107, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '创建云笔记' }],
+  });
+  startAppTask(deps);
+  for (let i = 0; i < 20; i++) {
+    const out = runAppTaskStep(deps);
+    if (out.idle) break;
+  }
+  const urls = sent.map((r) => r.url);
+  assert.ok(urls.some((u) => u.includes('authTokenRefresh.do')));
+  assert.ok(urls.some((u) => u.includes('createNote.do')));
+  assert.ok(urls.some((u) => u.includes('moveToRecycleBin.do')));
+});
+
+test('472 邮箱活跃：autologin + 市场打卡', () => {
+  const { deps, sent } = mkDeps({
+    [MATRIX_MARKETS[0]!]: [{ taskId: 472, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '体验 139 邮箱' }],
+  });
+  startAppTask(deps);
+  for (let i = 0; i < 20; i++) {
+    const out = runAppTaskStep(deps);
+    if (out.idle) break;
+  }
+  const urls = sent.map((r) => r.url);
+  assert.ok(urls.some((u) => u.includes('autologin.action')));
+  assert.ok(urls.some((u) => u.includes('taskClickV2')));
+});
+
+test('1004 发邮件：composeId → compose → 市场打卡', () => {
+  const { deps, sent } = mkDeps({
+    [MATRIX_MARKETS[0]!]: [{ taskId: 1004, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '给好友发邮件' }],
+  });
+  startAppTask(deps);
+  for (let i = 0; i < 20; i++) {
+    const out = runAppTaskStep(deps);
+    if (out.idle) break;
+  }
+  const urls = sent.map((r) => r.url);
+  assert.ok(urls.some((u) => u.includes('mbox:getComposeId')));
+  assert.ok(urls.some((u) => u.includes('mbox:compose')));
+  assert.ok(urls.some((u) => u.includes('taskClickV2')));
+});
+
+test('585 AI 相机：识图 → 对话', () => {
+  const { deps, sent } = mkDeps({
+    [MATRIX_MARKETS[0]!]: [{ taskId: 585, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '体验AI相机' }],
+  });
+  startAppTask(deps);
+  for (let i = 0; i < 25; i++) {
+    const out = runAppTaskStep(deps);
+    if (out.idle) break;
+  }
+  const urls = sent.map((r) => r.url);
+  assert.ok(urls.some((u) => u.includes('aiRecognize')));
+  assert.ok(urls.some((u) => u.includes('assistant/chat/v2/add')));
+});
+
+test('1014 PDF 转换：传 PDF → convertPdfFromYunFile', () => {
+  const { deps, sent } = mkDeps({
+    [MATRIX_MARKETS[0]!]: [{ taskId: 1014, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '体验PDF转换' }],
+  });
+  startAppTask(deps);
+  for (let i = 0; i < 30; i++) {
+    const out = runAppTaskStep(deps);
+    if (out.idle) break;
+  }
+  assert.ok(sent.some((r) => r.url.includes('convertPdfFromYunFile')));
+});
+
+test('1029 我的账单：页 → 找 mid → 标读 → 读信 → 3 发 MQ → 像素', () => {
+  const { deps, sent } = mkDeps({
+    [MATRIX_MARKETS[0]!]: [{ taskId: 1029, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '查看我的账单' }],
+  });
+  startAppTask(deps);
+  for (let i = 0; i < 30; i++) {
+    const out = runAppTaskStep(deps);
+    if (out.idle) break;
+  }
+  const urls = sent.map((r) => r.url);
+  assert.ok(urls.some((u) => u.includes('mobilebill.html')));
+  assert.ok(urls.some((u) => u.includes('mbox:searchMessages')));
+  assert.equal(sent.filter((r) => r.url.includes('mailReportToMQ')).length, 3);
+  assert.ok(urls.some((u) => u.includes('logBehaviorAction')));
+});
+
+test('1028 AI 工作台：派生鉴权 → 对话', () => {
+  const { deps, sent } = mkDeps({
+    [MATRIX_MARKETS[0]!]: [{ taskId: 1028, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '体验AI工作台' }],
+  });
+  startAppTask(deps);
+  for (let i = 0; i < 25; i++) {
+    const out = runAppTaskStep(deps);
+    if (out.idle) break;
+  }
+  const urls = sent.map((r) => r.url);
+  assert.ok(urls.some((u) => u.includes('queryUserToken')));
+  assert.ok(urls.some((u) => u.includes('assistant/chat/v2/add')));
+});
+
 test('434 分享：建外链后立刻删（不空发）', () => {
   const { deps, sent } = mkDeps({
     [MATRIX_MARKETS[0]!]: [{ taskId: 434, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '分享文件领好礼' }],
@@ -255,7 +380,7 @@ test('1020 邮件转存：换票 → 登录 → 目录 → 找邮件 → 转存'
 test('没有待办时要说清“还有几条没搬”，且“刻意不做”的不算', () => {
   const { deps } = mkDeps({
     [MATRIX_MARKETS[0]!]: [
-      { taskId: 107, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '创建云笔记' },
+      { taskId: 999, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '未知任务' },
       { taskId: 117, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '刻意不做' },
     ],
   });
