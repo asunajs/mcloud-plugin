@@ -28,6 +28,7 @@ import {
   isClickOnly,
   isShare,
   isUnimplemented,
+  monthGateSkips,
   needsPortalEntry,
   shouldSkip,
   stepFor,
@@ -165,4 +166,9 @@ test('“没实现”要认上传族，也要把“刻意不做”排除在外',
 test('月度闸门的 marketName / groupId 是钉死的', () => {
   assert.equal(MONTH_GATE_MARKET, 'sign_in_3');
   assert.equal(MONTH_GATE_GROUP, 'month');
+  assert.equal(monthGateSkips({ groupId: 'month', marketName: 'sign_in_3' }, false, 14), true);
+  assert.equal(monthGateSkips({ groupId: 'month', marketName: 'sign_in_3' }, false, 20), false);
+  assert.equal(monthGateSkips({ groupId: 'month', marketName: 'sign_in_3' }, true, 14), false);
+  assert.equal(monthGateSkips({ groupId: 'month', marketName: 'sign_in_3' }, undefined, 14), false);
+  assert.equal(monthGateSkips({ groupId: 'day', marketName: 'sign_in_3' }, false, 14), false);
 });
