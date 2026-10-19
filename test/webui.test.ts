@@ -1156,9 +1156,10 @@ test('⚠ 「数据」页第一格是主动请求的：开这一页自己取，�
   // 按钮叫「刷新」（不是「取一次」—— 用户不用先点一下）
   assert.ok(/id="beans-refresh"[^>]*>刷新</.test(html), '按钮要叫「刷新」');
   assert.ok(!/取一次/.test(html), '不许再让人"点一下才取"');
-  // 卡片式布局：三格各自一张 card
-  const cards = (html.match(/<div class="card">/g) || []).length;
-  assert.ok(cards >= 4, `数据页要卡片式（现在 ${cards} 张）`);
+  // 卡片式布局：数据页里每格各自一张 card（沙箱能力那张已删，现在两张）
+  const dataBlock = html.slice(html.indexOf('id="block-data"'), html.indexOf('id="block-push"'));
+  const cards = (dataBlock.match(/<div class="card">/g) || []).length;
+  assert.ok(cards >= 2, `数据页要卡片式（现在 ${cards} 张）`);
   assert.ok(/<span class="card-title">今日AI豆<\/span>/.test(html), '标题用面板的 card-title');
 });
 

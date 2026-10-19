@@ -1766,7 +1766,6 @@ function renderData(d) {
   setText('data-sub', '读数都在这儿 —— 豆那一格进这一页就取一次，要新的点它右上角「刷新」。');
   setText('matrix-line', (m.read || 0) === 0 ? '还没有读数（日常跑一次就有了）。' : '');
   paintAppTasks(m.groups);
-  setText('caps-line', d.caps || '');
 }
 
 // ══════════════ 今日AI豆（**点了才取**，照参考实现 `upstream-page.tsx::CloudCell`）══════════════

@@ -426,7 +426,7 @@ function readBody(req: RouteRequest): Record<string, unknown> {
  *  | `daily` | 日常 | 今天跑没跑、**最近一次运行的每一步结果** |
  *  | `exchange` | 兑换 | 兑换目标、奖品清单、判据文案 |
  *  | `live` | 直播 | 口令池、日程门、听窗口、下一次几点醒 |
- *  | `data` | 数据 | 沙箱能力、App 任务矩阵读数（纯读数，没有动作） |
+ *  | `data` | 数据 | App 任务矩阵读数（纯读数，没有动作） |
  *  | `push` | 推送 | **阶段 ⑤ 才实现** —— 现在给一个诚实的空壳 |
  *  | `settings` | 设置 | 五个上游口子 + 听窗口参数 |
  *
@@ -559,7 +559,6 @@ function buildReadings(deps: RouteDeps): Record<string, unknown> {
       })(),
     },
     data: {
-      caps: sandboxCaps(),
       hasBigInt: hasBigInt(),
       matrix: {
         groups: readMatrix(deps.store).map((r, i) => ({ group: MATRIX_MARKETS[i], reading: r })),
