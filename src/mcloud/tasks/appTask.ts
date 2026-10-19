@@ -344,17 +344,12 @@ function advance(deps: TaskDeps, st: TaskState): TaskOutcome {
           : next.step.kind === 'runner'
             ? specialForRunner(next.step.runner)
             : undefined;
-  let pdfTs: number | undefined;
-  if (special === 'pdfConvert') {
-    pdfTs = beginPdfUpload(deps);
-    phase = 'pdfUpload';
-  }
   // 已经走起来的条目（currstep != 0）不再打“先打卡”那一发 —— 参考实现的
   // `should_click` 就是这道门；1005 / 1017 实拍 currstep=1，只发补的那一发。
   if (
     next.currStep !== undefined &&
     next.currStep !== 0 &&
-    (special === 'entry' || special === 'portal' || special === 'mailBackup' || special === 'aiAssistant')
+    special !== undefined
   ) {
     phase = phaseOfSpecial(special) ?? phase;
   }
@@ -367,7 +362,6 @@ function advance(deps: TaskDeps, st: TaskState): TaskOutcome {
     data: {
       marketName: next.marketName,
       link: next.buttonEmailLink ?? next.buttonAppLink ?? '',
-      ...(pdfTs === undefined ? {} : { pdfTs: String(pdfTs) }),
     },
     clicked,
     day: today(deps),
@@ -535,15 +529,10 @@ export function startAppTask(deps: TaskDeps): TaskOutcome {
           : first.step.kind === 'runner'
             ? specialForRunner(first.step.runner)
             : undefined;
-  let pdfTs: number | undefined;
-  if (special === 'pdfConvert') {
-    pdfTs = beginPdfUpload(deps);
-    phase = 'pdfUpload';
-  }
   if (
     first.currStep !== undefined &&
     first.currStep !== 0 &&
-    (special === 'entry' || special === 'portal' || special === 'mailBackup' || special === 'aiAssistant')
+    special !== undefined
   ) {
     phase = phaseOfSpecial(special) ?? phase;
   }
@@ -556,7 +545,6 @@ export function startAppTask(deps: TaskDeps): TaskOutcome {
     data: {
       marketName: first.marketName,
       link: first.buttonEmailLink ?? first.buttonAppLink ?? '',
-      ...(pdfTs === undefined ? {} : { pdfTs: String(pdfTs) }),
     },
     clicked,
     day: today(deps),
@@ -1063,7 +1051,11 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
   }
 
   if (st.phase === 'pdfUpload') {
-    const ts = Number(st.data?.pdfTs ?? Date.now());
+    let ts = Number(st.data?.pdfTs ?? 0);
+    if (ts === 0) {
+      ts = beginPdfUpload(deps);
+      save(deps, { ...st, data: { ...(st.data ?? {}), pdfTs: String(ts) }, day: today(deps) });
+    }
     if (uploadDone(deps)) {
       const up = JSON.parse(deps.store.getState('mcloud.upload.state') ?? '{}') as { fileId?: string };
       save(deps, { ...st, phase: 'pdfConvert', fileId: up.fileId, day: today(deps) });
