@@ -1295,9 +1295,12 @@ function renderScheduleCard(e) {
     state.textContent = on ? '已启用' : '未启用';
     state.className = on ? 'badge success' : 'badge idle';
   }
+  const until = (e.scheduleUntil || '').trim();
+  const max = Number(e.scheduleMaxRuns || 0);
+  const extra = (until ? ` · 截止 ${until}` : '') + (max > 0 ? ` · 每号最多 ${max} 次` : '');
   setText(
     'ex-sched-summary',
-    plan ? `目标：${plan} · ${cron} · 提前 ${lead}s` : '还没设定时奖品 —— 点「改定时」选一件',
+    plan ? `目标：${plan} · ${cron} · 提前 ${lead}s${extra}` : '还没设定时奖品 —— 点「改定时」选一件',
   );
   const btn = $('ex-sched-toggle');
   if (btn) {

@@ -77,10 +77,13 @@ export function summaryFor(store: Store, task: string): string {
     const n = ids.length;
     const plan = exchangePlan(store);
     const lead = (store.getState('mcloud.exchange.lead_sec') ?? '120').trim() || '120';
+    const until = (store.getState('mcloud.exchange.schedule.until') ?? '').trim();
+    const max = Number((store.getState('mcloud.exchange.schedule.max_runs') ?? '0').trim());
+    const extra = (until ? ' · 截止 ' + until : '') + (max > 0 ? ' · 每号最多 ' + max + ' 次' : '');
     if (plan === '') return n > 0 ? n + ' 个账号 · 还没设定时奖品' : '还没选账号和奖品';
     // “哪个账号跑的、换的是哪一件、参数是什么”要在卡片上一眼看到 ——
     // 这正是兑换任务不该藏在面板任务列表里的原因（它是插件里的一个功能实例）。
-    return n + ' 个账号（' + accountLabels(store, ids) + '） · 目标：' + plan + ' · 提前 ' + lead + 's';
+    return n + ' 个账号（' + accountLabels(store, ids) + '） · 目标：' + plan + ' · 提前 ' + lead + 's' + extra;
   }
   const n = enabledAccountCount(store);
   if (n === 0) return '还没有账号';
