@@ -127,6 +127,9 @@ var KEY_SCOPE = {
   "mcloud.exchange.schedule.max_runs": "global",
   "mcloud.exchange.schedule.gen": "global",
   "mcloud.exchange.schedule.plan_name": "global",
+  // 多计划：计划表 + 每条计划已跑次数。
+  "mcloud.exchange.plans": "global",
+  "mcloud.exchange.plan.runs": "global",
   "mcloud.exchange.schedule.enabled": "global",
   "mcloud.exchange.lead_sec": "global",
   /** 提前量 —— "网络慢的人该调大"，是**这台机器**的调参，与账号无关。 */
@@ -548,6 +551,129 @@ function labelOf(store2, acctId) {
   return a?.label || a?.id || acctId;
 }
 
+// src/mcloud/scheduleCron.ts
+var MIN = 0;
+var MAX_HOUR = 23;
+function parseNum(s, min, max) {
+  if (!/^\d+$/.test(s)) throw new Error(`不是数字：${s}`);
+  const n = Number(s);
+  if (n < min || n > max) throw new Error(`超出范围：${s}`);
+  return n;
+}
+function parseField(field, min, max) {
+  const f = field.trim();
+  if (f === "") throw new Error("cron 字段不能为空");
+  if (f === "*") return null;
+  const out = /* @__PURE__ */ new Set();
+  for (const part of f.split(",")) {
+    const p = part.trim();
+    if (p === "") throw new Error("cron 字段里有空项");
+    const base = p.split("/")[0];
+    const stepRaw = p.split("/")[1];
+    const step = stepRaw === void 0 ? 1 : parseNum(stepRaw, 1, 999);
+    let start = min;
+    let end = max;
+    if (base !== "*") {
+      if (base.includes("-")) {
+        const [a, b] = base.split("-");
+        start = parseNum(a, min, max);
+        end = parseNum(b, min, max);
+        if (start > end) throw new Error(`范围反了：${base}`);
+      } else {
+        start = parseNum(base, min, max);
+        end = start;
+      }
+    }
+    for (let n = start; n <= end; n += step) out.add(n);
+  }
+  return [...out].sort((a, b) => a - b);
+}
+function parseCron(expr) {
+  const parts = expr.trim().split(/\s+/);
+  if (parts.length !== 5) throw new Error("cron 要 5 段：分 时 日 月 周");
+  const minute = parseField(parts[0], 0, 59);
+  if (minute === null || minute.length !== 1 || minute[0] !== 0) {
+    throw new Error("分钟只能是 0（抢兑点都是整点）");
+  }
+  const hoursRaw = parseField(parts[1], MIN, MAX_HOUR);
+  const hours2 = hoursRaw ?? Array.from({ length: MAX_HOUR + 1 }, (_, i) => i);
+  const dom = parseField(parts[2], 1, 31);
+  const month = parseField(parts[3], 1, 12);
+  const dow = parseField(parts[4], 0, 7);
+  return {
+    hours: hours2,
+    dom,
+    month,
+    dow: dow === null ? null : [...new Set(dow.map((d) => d === 7 ? 0 : d))].sort((a, b) => a - b)
+  };
+}
+function dayMatches(spec, d) {
+  if (spec.month !== null && !spec.month.includes(d.getMonth() + 1)) return false;
+  const domOk = spec.dom === null || spec.dom.includes(d.getDate());
+  const dowOk = spec.dow === null || spec.dow.includes(d.getDay());
+  if (spec.dom !== null && spec.dow !== null) return domOk || dowOk;
+  return domOk && dowOk;
+}
+function nextCronTargetMs(expr, nowMs) {
+  const spec = parseCron(expr);
+  const base = new Date(nowMs);
+  for (let day = 0; day < 370; day += 1) {
+    const d = new Date(base.getTime());
+    d.setDate(base.getDate() + day);
+    if (!dayMatches(spec, d)) continue;
+    for (const h of spec.hours) {
+      const t = new Date(d.getTime());
+      t.setHours(h, 0, 0, 0);
+      if (t.getTime() >= nowMs) return t.getTime();
+    }
+  }
+  return null;
+}
+
+// src/mcloud/exchangePlans.ts
+var STATE_PLANS = "mcloud.exchange.plans";
+function loadPlans(store2) {
+  const raw = (store2.getState(STATE_PLANS) ?? "").trim();
+  if (raw === "") return [];
+  try {
+    const v = JSON.parse(raw);
+    if (!Array.isArray(v)) return [];
+    return v.filter((x) => {
+      if (x === null || typeof x !== "object") return false;
+      const p = x;
+      return typeof p.id === "string" && typeof p.accountId === "string" && typeof p.prizeName === "string" && typeof p.cron === "string" && typeof p.leadSec === "number" && typeof p.until === "string" && typeof p.maxRuns === "number" && typeof p.enabled === "boolean";
+    });
+  } catch {
+    return [];
+  }
+}
+function enabledPlans(plans) {
+  return plans.filter((p) => p.enabled);
+}
+function nextPlanTargetMs(plans, afterMs) {
+  let best = null;
+  for (const p of plans) {
+    if (!p.enabled) continue;
+    const t = nextCronTargetMs(p.cron, afterMs);
+    if (t === null) continue;
+    if (best === null || t < best) best = t;
+  }
+  return best;
+}
+function fmtLocal(ms) {
+  const d = new Date(ms);
+  const p2 = (n) => String(n).padStart(2, "0");
+  return `${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:00`;
+}
+function planSummary(store2, nowMs = Date.now()) {
+  const plans = loadPlans(store2);
+  const on = enabledPlans(plans);
+  if (on.length === 0) return plans.length === 0 ? "还没设定时计划" : `${plans.length} 个计划（都未启用）`;
+  const next = nextPlanTargetMs(on, nowMs);
+  const head = `${on.length} 个计划`;
+  return next === null ? head : `${head} · 下次 ${fmtLocal(next)}`;
+}
+
 // src/mcloud/taskReadiness.ts
 var H = globalThis.host ?? globalThis.host_api ?? {};
 function call(name, ...args) {
@@ -561,21 +687,12 @@ function call(name, ...args) {
 function enabledAccountCount(store2) {
   return loadAccounts(store2).filter((a) => a.disabled !== true).length;
 }
-function exchangePlanTarget(store2) {
-  return (store2.getState("mcloud.exchange.schedule.plan") ?? "").trim();
-}
-function exchangePlanName(store2) {
-  const name = (store2.getState("mcloud.exchange.schedule.plan_name") ?? "").trim();
-  if (name !== "") return name;
-  const target = exchangePlanTarget(store2);
-  return /^\d+$/.test(target) ? `#${target}` : target;
-}
 function blockersFor(store2, task) {
   if (task === "兑换") {
-    const out = [];
-    if (resolveTaskAccounts(store2, "兑换").length === 0) out.push("还没有选账号");
-    if (exchangePlanTarget(store2) === "") out.push("还没设定时奖品");
-    return out;
+    const plans = loadPlans(store2);
+    if (plans.length === 0) return ["还没设定时计划"];
+    if (!plans.some((p) => p.enabled)) return ["所有计划都未启用"];
+    return [];
   }
   return enabledAccountCount(store2) === 0 ? ["还没有账号"] : [];
 }
@@ -587,17 +704,7 @@ function accountLabels(store2, ids) {
   return out.length > 3 ? head + " 等" : head;
 }
 function summaryFor(store2, task) {
-  if (task === "兑换") {
-    const ids2 = resolveTaskAccounts(store2, "兑换");
-    const n2 = ids2.length;
-    const plan = exchangePlanName(store2);
-    const lead = (store2.getState("mcloud.exchange.lead_sec") ?? "120").trim() || "120";
-    const until = (store2.getState("mcloud.exchange.schedule.until") ?? "").trim();
-    const max = Number((store2.getState("mcloud.exchange.schedule.max_runs") ?? "0").trim());
-    const extra = (until ? " · 截止 " + until : "") + (max > 0 ? " · 每号最多 " + max + " 次" : "");
-    if (plan === "") return n2 > 0 ? n2 + " 个账号 · 还没设定时奖品" : "还没选账号和奖品";
-    return n2 + " 个账号（" + accountLabels(store2, ids2) + "） · 目标：" + plan + " · 提前 " + lead + "s" + extra;
-  }
+  if (task === "兑换") return planSummary(store2);
   const n = enabledAccountCount(store2);
   if (n === 0) return "还没有账号";
   const ids = loadAccounts(store2).filter((a) => a.disabled !== true).map((a) => a.id);

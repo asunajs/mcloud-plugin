@@ -133,6 +133,9 @@ var KEY_SCOPE = {
   "mcloud.exchange.schedule.max_runs": "global",
   "mcloud.exchange.schedule.gen": "global",
   "mcloud.exchange.schedule.plan_name": "global",
+  // 多计划：计划表 + 每条计划已跑次数。
+  "mcloud.exchange.plans": "global",
+  "mcloud.exchange.plan.runs": "global",
   "mcloud.exchange.schedule.enabled": "global",
   "mcloud.exchange.lead_sec": "global",
   /** 提前量 —— "网络慢的人该调大"，是**这台机器**的调参，与账号无关。 */
@@ -6154,7 +6157,7 @@ function runExchange(deps, opts = {}) {
   } catch (e) {
     add("清单", false, `抛异常 ${e instanceof Error ? e.message : String(e)}`);
   }
-  const plan = deps.store.getState(STATE_SCHEDULE_PLAN) ?? deps.store.getState(PLAN_KEY) ?? "";
+  const plan = opts.target ?? deps.store.getState(STATE_SCHEDULE_PLAN) ?? deps.store.getState(PLAN_KEY) ?? "";
   if (plan === "") {
     add("下单", true, "没有设定时兑换目标（在「定时抢兑」里选一件之后才会下单）", true);
     return finish3(true, "没有设定时兑换目标（在「定时抢兑」里选一件之后才会下单）");
@@ -6166,7 +6169,9 @@ function runExchange(deps, opts = {}) {
       return finish3(false, s.note);
     }
   }
-  const accounts = loadAccounts(deps.store);
+  const scopedId = scopedAccountOf(deps.store);
+  const allAccounts = loadAccounts(deps.store);
+  const accounts = scopedId === void 0 ? allAccounts : allAccounts.filter((a) => a.id === scopedId);
   const multi = accounts.length > 1;
   const snaps = /* @__PURE__ */ new Map();
   const offsets = [];
@@ -9749,6 +9754,115 @@ function loginReading(store2, nowMs, qrPayloadOf) {
   };
 }
 
+// src/mcloud/exchangePlans.ts
+var STATE_PLANS = "mcloud.exchange.plans";
+var STATE_PLAN_RUNS = "mcloud.exchange.plan.runs";
+function newPlanId() {
+  return "p" + Date.now().toString(36) + Math.floor(Math.random() * 1e6).toString(36);
+}
+function loadPlans(store2) {
+  const raw = (store2.getState(STATE_PLANS) ?? "").trim();
+  if (raw === "") return [];
+  try {
+    const v = JSON.parse(raw);
+    if (!Array.isArray(v)) return [];
+    return v.filter((x) => {
+      if (x === null || typeof x !== "object") return false;
+      const p = x;
+      return typeof p.id === "string" && typeof p.accountId === "string" && typeof p.prizeName === "string" && typeof p.cron === "string" && typeof p.leadSec === "number" && typeof p.until === "string" && typeof p.maxRuns === "number" && typeof p.enabled === "boolean";
+    });
+  } catch {
+    return [];
+  }
+}
+function savePlans(store2, plans, nowIso) {
+  store2.setState(STATE_PLANS, JSON.stringify(plans), nowIso);
+}
+function enabledPlans(plans) {
+  return plans.filter((p) => p.enabled);
+}
+function unionCron(plans) {
+  const hours2 = /* @__PURE__ */ new Set();
+  for (const p of plans) {
+    if (!p.enabled) continue;
+    try {
+      for (const h of parseCron(p.cron).hours) hours2.add(h);
+    } catch {
+    }
+  }
+  if (hours2.size === 0) return "0 10 * * *";
+  return "0 " + [...hours2].sort((a, b) => a - b).join(",") + " * * *";
+}
+function maxLeadMs(plans) {
+  let ms = 6e4;
+  for (const p of plans) {
+    if (!p.enabled) continue;
+    ms = Math.max(ms, Math.min(300, Math.max(60, p.leadSec)) * 1e3);
+  }
+  return ms;
+}
+function nextPlanTargetMs(plans, afterMs) {
+  let best = null;
+  for (const p of plans) {
+    if (!p.enabled) continue;
+    const t = nextCronTargetMs(p.cron, afterMs);
+    if (t === null) continue;
+    if (best === null || t < best) best = t;
+  }
+  return best;
+}
+function fmtLocal(ms) {
+  const d = new Date(ms);
+  const p2 = (n) => String(n).padStart(2, "0");
+  return `${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:00`;
+}
+function planSummary(store2, nowMs = Date.now()) {
+  const plans = loadPlans(store2);
+  const on = enabledPlans(plans);
+  if (on.length === 0) return plans.length === 0 ? "还没设定时计划" : `${plans.length} 个计划（都未启用）`;
+  const next = nextPlanTargetMs(on, nowMs);
+  const head = `${on.length} 个计划`;
+  return next === null ? head : `${head} · 下次 ${fmtLocal(next)}`;
+}
+function loadPlanRuns(store2) {
+  const raw = (store2.getState(STATE_PLAN_RUNS) ?? "").trim();
+  if (raw === "") return {};
+  try {
+    const v = JSON.parse(raw);
+    return v !== null && typeof v === "object" ? v : {};
+  } catch {
+    return {};
+  }
+}
+function resetPlanRuns(store2, planId, nowIso) {
+  const all = loadPlanRuns(store2);
+  delete all[planId];
+  store2.setState(STATE_PLAN_RUNS, JSON.stringify(all), nowIso);
+}
+function planViews(store2) {
+  const accounts = loadAccounts(store2);
+  const runs = loadPlanRuns(store2);
+  return loadPlans(store2).map((p) => {
+    const a = accounts.find((x) => x.id === p.accountId);
+    const next = nextCronTargetMs(p.cron, Date.now());
+    return {
+      id: p.id,
+      accountId: p.accountId,
+      accountLabel: a?.label ?? p.accountId,
+      accountOk: !!a && a.disabled !== true,
+      prizeId: p.prizeId ?? null,
+      prizeName: p.prizeName,
+      cron: p.cron,
+      leadSec: p.leadSec,
+      until: p.until,
+      maxRuns: p.maxRuns,
+      enabled: p.enabled,
+      runs: runs[p.id] ?? 0,
+      nextRun: p.enabled && next !== null ? new Date(next).toISOString() : ""
+    };
+  });
+}
+
 // src/mcloud/taskReadiness.ts
 var H = globalThis.host ?? globalThis.host_api ?? {};
 function call(name, ...args) {
@@ -9765,18 +9879,12 @@ function enabledAccountCount(store2) {
 function exchangePlanTarget(store2) {
   return (store2.getState("mcloud.exchange.schedule.plan") ?? "").trim();
 }
-function exchangePlanName(store2) {
-  const name = (store2.getState("mcloud.exchange.schedule.plan_name") ?? "").trim();
-  if (name !== "") return name;
-  const target = exchangePlanTarget(store2);
-  return /^\d+$/.test(target) ? `#${target}` : target;
-}
 function blockersFor(store2, task) {
   if (task === "兑换") {
-    const out = [];
-    if (resolveTaskAccounts(store2, "兑换").length === 0) out.push("还没有选账号");
-    if (exchangePlanTarget(store2) === "") out.push("还没设定时奖品");
-    return out;
+    const plans = loadPlans(store2);
+    if (plans.length === 0) return ["还没设定时计划"];
+    if (!plans.some((p) => p.enabled)) return ["所有计划都未启用"];
+    return [];
   }
   return enabledAccountCount(store2) === 0 ? ["还没有账号"] : [];
 }
@@ -9788,17 +9896,7 @@ function accountLabels(store2, ids) {
   return out.length > 3 ? head + " 等" : head;
 }
 function summaryFor(store2, task) {
-  if (task === "兑换") {
-    const ids2 = resolveTaskAccounts(store2, "兑换");
-    const n2 = ids2.length;
-    const plan = exchangePlanName(store2);
-    const lead = (store2.getState("mcloud.exchange.lead_sec") ?? "120").trim() || "120";
-    const until = (store2.getState("mcloud.exchange.schedule.until") ?? "").trim();
-    const max2 = Number((store2.getState("mcloud.exchange.schedule.max_runs") ?? "0").trim());
-    const extra = (until ? " · 截止 " + until : "") + (max2 > 0 ? " · 每号最多 " + max2 + " 次" : "");
-    if (plan === "") return n2 > 0 ? n2 + " 个账号 · 还没设定时奖品" : "还没选账号和奖品";
-    return n2 + " 个账号（" + accountLabels(store2, ids2) + "） · 目标：" + plan + " · 提前 " + lead + "s" + extra;
-  }
+  if (task === "兑换") return planSummary(store2);
   const n = enabledAccountCount(store2);
   if (n === 0) return "还没有账号";
   const ids = loadAccounts(store2).filter((a) => a.disabled !== true).map((a) => a.id);
@@ -9809,6 +9907,12 @@ var TASK_KEYS = {
   兑换: "mcloud-exchange/兑换",
   直播: "mcloud-live/直播"
 };
+function setTaskSummary(task, text) {
+  call("set_job_summary", TASK_KEYS[task] ?? task, text);
+}
+function setTaskBlockers(task, blockers) {
+  call("set_job_blockers", TASK_KEYS[task] ?? task, blockers);
+}
 function setTaskSchedule(task, expr, leadMs) {
   call("set_job_schedule", TASK_KEYS[task] ?? task, { expr, lead_ms: leadMs });
 }
@@ -10210,6 +10314,8 @@ function buildReadings(deps) {
       // `schedulePlan` 是**显示名**（界面一直用它）；目标是 prizeId 或旧库的名字。
       schedulePlan: deps.store.getState(STATE_SCHEDULE_PLAN_NAME) ?? deps.store.getState(STATE_SCHEDULE_PLAN) ?? "",
       schedulePlanTarget: deps.store.getState(STATE_SCHEDULE_PLAN) ?? "",
+      // 多计划：一条 = 一个账号 + 一个目标 + 一个整点。
+      plans: planViews(deps.store),
       scheduleEnabled: scheduleEnabled(deps.store),
       scheduleCron: deps.store.getState(STATE_SCHEDULE_CRON) ?? "",
       scheduleMode: deps.store.getState(STATE_SCHEDULE_MODE) ?? "daily",
@@ -10364,6 +10470,19 @@ function adoptLoginResult(deps, encrypted, note2, prefix = PC_AUTH_PREFIX, key =
   deps.log(`登录成功：${up.account.label}${up.created ? "（新账号）" : "（已有账号，凭据已更新）"}`);
   syncTaskReadiness(deps.store);
   return { ok: true, note: `${note2} · ${up.account.label}`, account: { id: up.account.id, label: up.account.label } };
+}
+function syncExchangeJob(store2) {
+  const plans = loadPlans(store2);
+  const on = plans.filter((p) => p.enabled);
+  const expr = unionCron(on);
+  const lead = maxLeadMs(on);
+  setTaskSchedule("兑换", expr, lead);
+  setTaskPaused("兑换", on.length === 0);
+  setTaskBlockers(
+    "兑换",
+    on.length > 0 ? [] : [plans.length === 0 ? "还没设定时计划" : "所有计划都未启用"]
+  );
+  setTaskSummary("兑换", planSummary(store2));
 }
 function mcloudRoutes(deps) {
   const base = `/plugins/${PLUGIN}/api`;
@@ -11443,6 +11562,100 @@ function mcloudRoutes(deps) {
       }
     },
     {
+      // 定时抢兑的「计划表」—— 一条计划 = 一个账号 + 一个目标 + 一个整点。
+      path: `${base}/exchange/plans`,
+      method: "POST",
+      handler: (req) => {
+        const b = readBody(req);
+        const store2 = deps.store;
+        const plans = loadPlans(store2);
+        const nowIso = deps.now();
+        const action = typeof b.action === "string" ? b.action : "save";
+        if (action === "delete") {
+          const id2 = typeof b.id === "string" ? b.id : "";
+          const next2 = plans.filter((p) => p.id !== id2);
+          if (next2.length === plans.length) return json(404, { ok: false, error: "计划不存在" });
+          savePlans(store2, next2, nowIso);
+          resetPlanRuns(store2, id2, nowIso);
+          syncExchangeJob(store2);
+          deps.log("定时计划已删除");
+          return json(200, { ok: true, note: "计划已删除", plans: planViews(store2) });
+        }
+        if (action === "toggle") {
+          const id2 = typeof b.id === "string" ? b.id : "";
+          const on = b.enabled === true;
+          const idx2 = plans.findIndex((p) => p.id === id2);
+          if (idx2 < 0) return json(404, { ok: false, error: "计划不存在" });
+          const next2 = plans.slice();
+          next2[idx2] = { ...next2[idx2], enabled: on };
+          savePlans(store2, next2, nowIso);
+          syncExchangeJob(store2);
+          deps.log("定时计划「" + next2[idx2].prizeName + "」：" + (on ? "启用" : "暂停"));
+          return json(200, {
+            ok: true,
+            note: on ? "计划已启用" : "计划已暂停",
+            plans: planViews(store2)
+          });
+        }
+        const accountId = typeof b.accountId === "string" ? b.accountId.trim() : "";
+        if (accountId === "") return json(400, { ok: false, error: "要选一个账号" });
+        const acct = loadAccounts(store2).find((a) => a.id === accountId);
+        if (!acct) return json(400, { ok: false, error: "账号不存在" });
+        if (acct.disabled === true) return json(400, { ok: false, error: "这个账号已停用" });
+        const prizeName = typeof b.prizeName === "string" ? b.prizeName.trim() : "";
+        const prizeIdRaw = Number(b.prizeId);
+        const prizeId = Number.isInteger(prizeIdRaw) && prizeIdRaw > 0 ? prizeIdRaw : void 0;
+        if (prizeName === "" && prizeId === void 0) {
+          return json(400, { ok: false, error: "要选一个兑换目标" });
+        }
+        const cron = typeof b.cron === "string" ? b.cron.trim() : "";
+        try {
+          parseCron(cron);
+        } catch (e) {
+          return json(400, {
+            ok: false,
+            error: "cron 不对：" + (e instanceof Error ? e.message : String(e))
+          });
+        }
+        const leadRaw = Number(b.leadSec);
+        const leadSec = Number.isFinite(leadRaw) ? Math.min(300, Math.max(60, Math.floor(leadRaw))) : 120;
+        const until = typeof b.until === "string" ? b.until.trim() : "";
+        if (until !== "" && !/^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2})?$/.test(until)) {
+          return json(400, { ok: false, error: "截止时间格式：YYYY-MM-DD 或 YYYY-MM-DDTHH:mm" });
+        }
+        const maxRaw = Number(b.maxRuns);
+        const maxRuns = Number.isFinite(maxRaw) && maxRaw > 0 ? Math.min(999, Math.floor(maxRaw)) : 0;
+        const id = typeof b.id === "string" && b.id.trim() !== "" ? b.id.trim() : "";
+        const idx = id === "" ? -1 : plans.findIndex((p) => p.id === id);
+        if (id !== "" && idx < 0) return json(404, { ok: false, error: "计划不存在" });
+        const plan = {
+          id: idx >= 0 ? id : newPlanId(),
+          accountId,
+          ...prizeId === void 0 ? {} : { prizeId },
+          prizeName: prizeName === "" ? String(prizeId) : prizeName,
+          cron,
+          leadSec,
+          until,
+          maxRuns,
+          enabled: b.enabled === false ? false : true
+        };
+        const next = plans.slice();
+        if (idx >= 0) next[idx] = plan;
+        else next.push(plan);
+        savePlans(store2, next, nowIso);
+        resetPlanRuns(store2, plan.id, nowIso);
+        syncExchangeJob(store2);
+        deps.log(
+          "定时计划：" + acct.label + " · " + plan.prizeName + " · " + cron + " · 提前 " + leadSec + "s" + (until ? " · 截止 " + until : "") + (maxRuns > 0 ? " · 最多 " + maxRuns + " 次" : "")
+        );
+        return json(200, {
+          ok: true,
+          note: "计划已保存：" + acct.label + " · " + plan.prizeName,
+          plans: planViews(store2)
+        });
+      }
+    },
+    {
       // 兑换下单 —— **不可逆**（真扣豆）。起单只是写字（**不发请求**），
       // 后面每次 `step` 走一步、发一枪。见 tasks/exchangeOrder.ts 的枪序。
       path: `${base}/exchange/order`,
@@ -11502,10 +11715,27 @@ function mcloudRoutes(deps) {
           deps.store.setState(STATE_SCHEDULE_MAX_RUNS, String(maxRunsRaw), d.nowIso);
           deps.store.setState(STATE_LEAD_SEC, String(Math.round(leadRaw)), d.nowIso);
           deps.store.setState(STATE_SCHEDULE_GEN, gen, d.nowIso);
-          setTaskSchedule("兑换", cron, Math.round(leadRaw * 1e3));
-          setTaskPaused("兑换", false);
+          const accounts = resolveTaskAccounts(deps.store, "兑换");
+          const plans = loadPlans(deps.store);
+          for (const accountId of accounts) {
+            const idx = plans.findIndex((p) => p.accountId === accountId);
+            const plan = {
+              id: idx >= 0 ? plans[idx].id : newPlanId(),
+              accountId,
+              ...prizeId === void 0 ? {} : { prizeId },
+              prizeName,
+              cron,
+              leadSec: Math.round(leadRaw),
+              until,
+              maxRuns: maxRunsRaw,
+              enabled: true
+            };
+            if (idx >= 0) plans[idx] = plan;
+            else plans.push(plan);
+          }
+          savePlans(deps.store, plans, d.nowIso);
           setScheduleEnabled(deps.store, true, d.nowIso);
-          syncTaskReadiness(deps.store, ["兑换"]);
+          syncExchangeJob(deps.store);
           deps.log(
             `定时目标：${prizeName}${prizeId === void 0 ? "" : `（prizeId=${prizeId}）`}（cron ${cron}，提前 ${Math.round(leadRaw)}s，每号最多 ${maxRunsRaw || "不限"} 次）`
           );

@@ -210,8 +210,19 @@ import {
 import type { Store } from '../store/types.ts';
 import { rawStoreOf, scoped } from '../store/scoped.ts';
 import { currentAccountDomain, setAccountDisabled, setAccountLabel } from './accounts.ts';
-import { saveTaskAccounts, taskAccountsView } from './taskAccounts.ts';
-import { setTaskPaused, setTaskSchedule, syncTaskReadiness } from './taskReadiness.ts';
+import { resolveTaskAccounts, saveTaskAccounts, taskAccountsView } from './taskAccounts.ts';
+import {
+  loadPlans,
+  maxLeadMs,
+  newPlanId,
+  planSummary,
+  planViews,
+  resetPlanRuns,
+  savePlans,
+  unionCron,
+  type ExchangePlan,
+} from './exchangePlans.ts';
+import { setTaskBlockers, setTaskPaused, setTaskSchedule, setTaskSummary, syncTaskReadiness } from './taskReadiness.ts';
 
 import {
   APP_LOGIN_AES_KEY,
@@ -485,6 +496,8 @@ function buildReadings(deps: RouteDeps): Record<string, unknown> {
       // `schedulePlan` 是**显示名**（界面一直用它）；目标是 prizeId 或旧库的名字。
       schedulePlan: deps.store.getState(STATE_SCHEDULE_PLAN_NAME) ?? deps.store.getState(STATE_SCHEDULE_PLAN) ?? '',
       schedulePlanTarget: deps.store.getState(STATE_SCHEDULE_PLAN) ?? '',
+      // 多计划：一条 = 一个账号 + 一个目标 + 一个整点。
+      plans: planViews(deps.store),
       scheduleEnabled: scheduleEnabled(deps.store),
       scheduleCron: deps.store.getState(STATE_SCHEDULE_CRON) ?? '',
       scheduleMode: deps.store.getState(STATE_SCHEDULE_MODE) ?? 'daily',
@@ -763,6 +776,24 @@ function adoptLoginResult(
   // 兑换也不再显示“还没有选账号”）。
   syncTaskReadiness(deps.store);
   return { ok: true, note: `${note} · ${up.account.label}`, account: { id: up.account.id, label: up.account.label } };
+}
+
+/** 把计划表的变化同步给面板那一条「兑换」任务：
+ *  cron = 所有启用计划整点的并集；暂停/未就绪/摘要都跟着计划走。 */
+function syncExchangeJob(store: Store): void {
+  const plans = loadPlans(store);
+  const on = plans.filter((p) => p.enabled);
+  const expr = unionCron(on);
+  const lead = maxLeadMs(on);
+  setTaskSchedule('兑换', expr, lead);
+  setTaskPaused('兑换', on.length === 0);
+  setTaskBlockers(
+    '兑换',
+    on.length > 0
+      ? []
+      : [plans.length === 0 ? '还没设定时计划' : '所有计划都未启用'],
+  );
+  setTaskSummary('兑换', planSummary(store));
 }
 
 /** 路由表。四个入口遍历它去调用真的 `register_route`。 */
@@ -2024,6 +2055,127 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
       },
     },
     {
+      // 定时抢兑的「计划表」—— 一条计划 = 一个账号 + 一个目标 + 一个整点。
+      path: `${base}/exchange/plans`,
+      method: 'POST',
+      handler: (req) => {
+        const b = readBody(req) as {
+          action?: unknown;
+          id?: unknown;
+          accountId?: unknown;
+          prizeId?: unknown;
+          prizeName?: unknown;
+          cron?: unknown;
+          leadSec?: unknown;
+          until?: unknown;
+          maxRuns?: unknown;
+          enabled?: unknown;
+        };
+        const store = deps.store;
+        const plans = loadPlans(store);
+        const nowIso = deps.now();
+        const action = typeof b.action === 'string' ? b.action : 'save';
+
+        if (action === 'delete') {
+          const id = typeof b.id === 'string' ? b.id : '';
+          const next = plans.filter((p) => p.id !== id);
+          if (next.length === plans.length) return json(404, { ok: false, error: '计划不存在' });
+          savePlans(store, next, nowIso);
+          resetPlanRuns(store, id, nowIso);
+          syncExchangeJob(store);
+          deps.log('定时计划已删除');
+          return json(200, { ok: true, note: '计划已删除', plans: planViews(store) });
+        }
+
+        if (action === 'toggle') {
+          const id = typeof b.id === 'string' ? b.id : '';
+          const on = b.enabled === true;
+          const idx = plans.findIndex((p) => p.id === id);
+          if (idx < 0) return json(404, { ok: false, error: '计划不存在' });
+          const next = plans.slice();
+          next[idx] = { ...next[idx]!, enabled: on };
+          savePlans(store, next, nowIso);
+          syncExchangeJob(store);
+          deps.log('定时计划「' + next[idx]!.prizeName + '」：' + (on ? '启用' : '暂停'));
+          return json(200, {
+            ok: true,
+            note: on ? '计划已启用' : '计划已暂停',
+            plans: planViews(store),
+          });
+        }
+
+        // save（新增或编辑）
+        const accountId = typeof b.accountId === 'string' ? b.accountId.trim() : '';
+        if (accountId === '') return json(400, { ok: false, error: '要选一个账号' });
+        const acct = loadAccounts(store).find((a) => a.id === accountId);
+        if (!acct) return json(400, { ok: false, error: '账号不存在' });
+        if (acct.disabled === true) return json(400, { ok: false, error: '这个账号已停用' });
+        const prizeName = typeof b.prizeName === 'string' ? b.prizeName.trim() : '';
+        const prizeIdRaw = Number(b.prizeId);
+        const prizeId = Number.isInteger(prizeIdRaw) && prizeIdRaw > 0 ? prizeIdRaw : undefined;
+        if (prizeName === '' && prizeId === undefined) {
+          return json(400, { ok: false, error: '要选一个兑换目标' });
+        }
+        const cron = typeof b.cron === 'string' ? b.cron.trim() : '';
+        try {
+          parseCron(cron);
+        } catch (e) {
+          return json(400, {
+            ok: false,
+            error: 'cron 不对：' + (e instanceof Error ? e.message : String(e)),
+          });
+        }
+        const leadRaw = Number(b.leadSec);
+        const leadSec = Number.isFinite(leadRaw)
+          ? Math.min(300, Math.max(60, Math.floor(leadRaw)))
+          : 120;
+        const until = typeof b.until === 'string' ? b.until.trim() : '';
+        if (until !== '' && !/^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2})?$/.test(until)) {
+          return json(400, { ok: false, error: '截止时间格式：YYYY-MM-DD 或 YYYY-MM-DDTHH:mm' });
+        }
+        const maxRaw = Number(b.maxRuns);
+        const maxRuns = Number.isFinite(maxRaw) && maxRaw > 0 ? Math.min(999, Math.floor(maxRaw)) : 0;
+        const id = typeof b.id === 'string' && b.id.trim() !== '' ? b.id.trim() : '';
+        const idx = id === '' ? -1 : plans.findIndex((p) => p.id === id);
+        if (id !== '' && idx < 0) return json(404, { ok: false, error: '计划不存在' });
+        const plan: ExchangePlan = {
+          id: idx >= 0 ? id : newPlanId(),
+          accountId,
+          ...(prizeId === undefined ? {} : { prizeId }),
+          prizeName: prizeName === '' ? String(prizeId) : prizeName,
+          cron,
+          leadSec,
+          until,
+          maxRuns,
+          enabled: b.enabled === false ? false : true,
+        };
+        const next = plans.slice();
+        if (idx >= 0) next[idx] = plan;
+        else next.push(plan);
+        savePlans(store, next, nowIso);
+        resetPlanRuns(store, plan.id, nowIso);
+        syncExchangeJob(store);
+        deps.log(
+          '定时计划：' +
+            acct.label +
+            ' · ' +
+            plan.prizeName +
+            ' · ' +
+            cron +
+            ' · 提前 ' +
+            leadSec +
+            's' +
+            (until ? ' · 截止 ' + until : '') +
+            (maxRuns > 0 ? ' · 最多 ' + maxRuns + ' 次' : ''),
+        );
+        return json(200, {
+          ok: true,
+          note: '计划已保存：' + acct.label + ' · ' + plan.prizeName,
+          plans: planViews(store),
+        });
+      },
+    },
+    {
       // 兑换下单 —— **不可逆**（真扣豆）。起单只是写字（**不发请求**），
       // 后面每次 `step` 走一步、发一枪。见 tasks/exchangeOrder.ts 的枪序。
       path: `${base}/exchange/order`,
@@ -2106,13 +2258,29 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
           deps.store.setState(STATE_LEAD_SEC, String(Math.round(leadRaw)), d.nowIso);
           // 换一版定时 = 每个账号的已跑次数从头算。
           deps.store.setState(STATE_SCHEDULE_GEN, gen, d.nowIso);
-          // 面板任务才是调度的权威：把用户设的 cron/提前量同步过去，并启用它。
-          // 以前这一步靠插件页 postMessage 给父页面（跨 origin，且独立打开时没有父页面），
-          // 现在在服务端直接写面板任务，两种打开方式都生效。
-          setTaskSchedule('兑换', cron, Math.round(leadRaw * 1000));
-          setTaskPaused('兑换', false);
+          // 兼容旧客户端：旧版只有“一条全局计划”，按当时选的账号拆成计划表。
+          // 新界面直接走 `/exchange/plans`，这里只做兜底。
+          const accounts = resolveTaskAccounts(deps.store, '兑换');
+          const plans = loadPlans(deps.store);
+          for (const accountId of accounts) {
+            const idx = plans.findIndex((p) => p.accountId === accountId);
+            const plan: ExchangePlan = {
+              id: idx >= 0 ? plans[idx]!.id : newPlanId(),
+              accountId,
+              ...(prizeId === undefined ? {} : { prizeId }),
+              prizeName,
+              cron,
+              leadSec: Math.round(leadRaw),
+              until,
+              maxRuns: maxRunsRaw,
+              enabled: true,
+            };
+            if (idx >= 0) plans[idx] = plan;
+            else plans.push(plan);
+          }
+          savePlans(deps.store, plans, d.nowIso);
           setScheduleEnabled(deps.store, true, d.nowIso);
-          syncTaskReadiness(deps.store, ['兑换']);
+          syncExchangeJob(deps.store);
           deps.log(
             `定时目标：${prizeName}${prizeId === undefined ? '' : `（prizeId=${prizeId}）`}` +
               `（cron ${cron}，提前 ${Math.round(leadRaw)}s，每号最多 ${maxRunsRaw || '不限'} 次）`,
