@@ -48,18 +48,32 @@ export interface TaskAccounts {
 
 export const DEFAULT_TASK_ACCOUNTS: TaskAccounts = { all: true, ids: [] };
 
-/** 读一条任务的账号选择。没设过 ⇒ **全部**（与"新装的任务先按全部跑"一致）。 */
+/** 按任务给默认值。
+ *
+ * 日常/直播是“随时跑都安全”的环境型任务 ⇒ 默认全部账号，用户加完号就能用；
+ * 兑换会真花 AI豆 ⇒ 默认**一个都不选**，必须用户在兑换页里显式挑账号。
+ * 这条差异是刻意的：默认值也是一种“授权”，花钱的任务不能替用户授权。 */
+export const DEFAULT_TASK_ACCOUNTS_BY_TASK: Record<string, TaskAccounts> = {
+  兑换: { all: false, ids: [] },
+};
+
+export function defaultTaskAccounts(task: string): TaskAccounts {
+  const v = DEFAULT_TASK_ACCOUNTS_BY_TASK[task];
+  return v ? { ...v } : { ...DEFAULT_TASK_ACCOUNTS };
+}
+
+/** 读一条任务的账号选择。没设过 ⇒ 按任务取默认（日常/直播全部，兑换空）。 */
 export function loadTaskAccounts(store: ReadableState, task: string): TaskAccounts {
   const raw = (store.getState(taskAccountsKey(task)) ?? '').trim();
-  if (raw === '') return { ...DEFAULT_TASK_ACCOUNTS };
+  if (raw === '') return defaultTaskAccounts(task);
   try {
     const v = JSON.parse(raw) as { all?: unknown; ids?: unknown };
     const ids = Array.isArray(v.ids) ? v.ids.filter((x): x is string => typeof x === 'string') : [];
     return { all: v.all === true, ids };
   } catch {
-    // 库里那段坏了（手改过 / 老版本写的）⇒ 当作"全部"，
+    // 库里那段坏了（手改过 / 老版本写的）⇒ 按任务默认，
     // **不是**当作"没有账号" —— 后者会让任务静默不跑，而用户什么都看不出来。
-    return { ...DEFAULT_TASK_ACCOUNTS };
+    return defaultTaskAccounts(task);
   }
 }
 

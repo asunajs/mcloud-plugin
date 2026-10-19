@@ -132,6 +132,7 @@ var KEY_SCOPE = {
   "mcloud.exchange.schedule.once_date": "global",
   "mcloud.exchange.schedule.max_runs": "global",
   "mcloud.exchange.schedule.gen": "global",
+  "mcloud.exchange.schedule.enabled": "global",
   "mcloud.exchange.lead_sec": "global",
   /** 提前量 —— "网络慢的人该调大"，是**这台机器**的调参，与账号无关。 */
   "mcloud.exchange.order.lead_ms": "global",
@@ -1649,15 +1650,22 @@ function taskAccountsKey(task) {
   return `mcloud.task.accounts.${task}`;
 }
 var DEFAULT_TASK_ACCOUNTS = { all: true, ids: [] };
+var DEFAULT_TASK_ACCOUNTS_BY_TASK = {
+  兑换: { all: false, ids: [] }
+};
+function defaultTaskAccounts(task) {
+  const v = DEFAULT_TASK_ACCOUNTS_BY_TASK[task];
+  return v ? { ...v } : { ...DEFAULT_TASK_ACCOUNTS };
+}
 function loadTaskAccounts(store2, task) {
   const raw = (store2.getState(taskAccountsKey(task)) ?? "").trim();
-  if (raw === "") return { ...DEFAULT_TASK_ACCOUNTS };
+  if (raw === "") return defaultTaskAccounts(task);
   try {
     const v = JSON.parse(raw);
     const ids = Array.isArray(v.ids) ? v.ids.filter((x) => typeof x === "string") : [];
     return { all: v.all === true, ids };
   } catch {
-    return { ...DEFAULT_TASK_ACCOUNTS };
+    return defaultTaskAccounts(task);
   }
 }
 function saveTaskAccounts(store2, task, v, nowIso) {
@@ -6042,6 +6050,16 @@ var STATE_SCHEDULE_MAX_RUNS = "mcloud.exchange.schedule.max_runs";
 var STATE_SCHEDULE_RUNS = "mcloud.exchange.schedule.runs";
 var STATE_SCHEDULE_RUNS_GEN = "mcloud.exchange.schedule.runs_gen";
 var STATE_SCHEDULE_GEN = "mcloud.exchange.schedule.gen";
+var STATE_SCHEDULE_ENABLED = "mcloud.exchange.schedule.enabled";
+function scheduleEnabled(store2) {
+  const raw = (store2.getState(STATE_SCHEDULE_ENABLED) ?? "").trim();
+  if (raw === "1") return true;
+  if (raw === "0") return false;
+  return (store2.getState(STATE_SCHEDULE_PLAN) ?? "").trim() !== "";
+}
+function setScheduleEnabled(store2, on, nowIso) {
+  store2.setState(STATE_SCHEDULE_ENABLED, on ? "1" : "0", nowIso);
+}
 var STATE_LEAD_SEC = "mcloud.exchange.lead_sec";
 var DEFAULT_LEAD_SEC = 120;
 function scheduleNextTargetMs(store2, nowMs) {
@@ -9729,6 +9747,77 @@ function loginReading(store2, nowMs, qrPayloadOf) {
   };
 }
 
+// src/mcloud/taskReadiness.ts
+var H = globalThis.host ?? globalThis.host_api ?? {};
+function call(name, ...args) {
+  const fn = H[name];
+  if (typeof fn !== "function") return;
+  try {
+    fn(...args);
+  } catch {
+  }
+}
+function enabledAccountCount(store2) {
+  return loadAccounts(store2).filter((a) => a.disabled !== true).length;
+}
+function exchangePlan(store2) {
+  return (store2.getState("mcloud.exchange.schedule.plan") ?? "").trim();
+}
+function blockersFor(store2, task) {
+  if (task === "兑换") {
+    const out = [];
+    if (resolveTaskAccounts(store2, "兑换").length === 0) out.push("还没有选账号");
+    if (exchangePlan(store2) === "") out.push("还没设定时奖品");
+    return out;
+  }
+  return enabledAccountCount(store2) === 0 ? ["还没有账号"] : [];
+}
+function accountLabels(store2, ids) {
+  const all = loadAccounts(store2);
+  const out = ids.map((id) => all.find((a) => a.id === id)?.label ?? id);
+  return out.length === 0 ? "无" : out.join("、");
+}
+function summaryFor(store2, task) {
+  if (task === "兑换") {
+    const ids2 = resolveTaskAccounts(store2, "兑换");
+    const n2 = ids2.length;
+    const plan = exchangePlan(store2);
+    const lead = (store2.getState("mcloud.exchange.lead_sec") ?? "120").trim() || "120";
+    if (plan === "") return n2 > 0 ? n2 + " 个账号 · 还没设定时奖品" : "还没选账号和奖品";
+    return n2 + " 个账号（" + accountLabels(store2, ids2) + "） · 目标：" + plan + " · 提前 " + lead + "s";
+  }
+  const n = enabledAccountCount(store2);
+  if (n === 0) return "还没有账号";
+  const ids = loadAccounts(store2).filter((a) => a.disabled !== true).map((a) => a.id);
+  return n <= 3 ? n + " 个账号（" + accountLabels(store2, ids) + "）" : n + " 个账号";
+}
+var TASK_KEYS = {
+  日常: "mcloud-daily/日常",
+  兑换: "mcloud-exchange/兑换",
+  直播: "mcloud-live/直播"
+};
+function setTaskSchedule(task, expr, leadMs) {
+  call("set_job_schedule", TASK_KEYS[task] ?? task, { expr, lead_ms: leadMs });
+}
+function setTaskPaused(task, paused) {
+  call("set_job_paused", TASK_KEYS[task] ?? task, paused);
+}
+function migrateLegacyExchange(store2, nowIso) {
+  if (exchangePlan(store2) === "") return false;
+  if ((store2.getState("mcloud.exchange.schedule.enabled") ?? "").trim() !== "") return false;
+  if ((store2.getState(taskAccountsKey("兑换")) ?? "").trim() !== "") return false;
+  saveTaskAccounts(store2, "兑换", { all: true, ids: [] }, nowIso);
+  store2.setState("mcloud.exchange.schedule.enabled", "1", nowIso);
+  return true;
+}
+function syncTaskReadiness(store2, tasks = ["日常", "兑换", "直播"]) {
+  for (const task of tasks) {
+    const key = TASK_KEYS[task] ?? task;
+    call("set_job_blockers", key, blockersFor(store2, task));
+    call("set_job_summary", key, summaryFor(store2, task));
+  }
+}
+
 // src/mcloud/beans.ts
 var LEDGER_AI_DOU = 1;
 var TYPE_ALL = 0;
@@ -10106,6 +10195,7 @@ function buildReadings(deps) {
       plan: deps.store.getState("mcloud.exchange.plan") ?? "",
       // 定时目标与手动目标分开存：页面上的「手动兑换」和「定时抢兑」不再互相改。
       schedulePlan: deps.store.getState(STATE_SCHEDULE_PLAN) ?? "",
+      scheduleEnabled: scheduleEnabled(deps.store),
       scheduleCron: deps.store.getState(STATE_SCHEDULE_CRON) ?? "",
       scheduleMode: deps.store.getState(STATE_SCHEDULE_MODE) ?? "daily",
       scheduleUntil: deps.store.getState(STATE_SCHEDULE_UNTIL) ?? "",
@@ -10257,6 +10347,7 @@ function adoptLoginResult(deps, encrypted, note2, prefix = PC_AUTH_PREFIX, key =
   deps.store.setState(STATE_LOGIN_DOMAIN, "", deps.now());
   clearLogin(deps.store);
   deps.log(`登录成功：${up.account.label}${up.created ? "（新账号）" : "（已有账号，凭据已更新）"}`);
+  syncTaskReadiness(deps.store);
   return { ok: true, note: `${note2} · ${up.account.label}`, account: { id: up.account.id, label: up.account.label } };
 }
 function mcloudRoutes(deps) {
@@ -10693,6 +10784,7 @@ function mcloudRoutes(deps) {
         const ids = Array.isArray(b.ids) ? b.ids.filter((x) => typeof x === "string" && known.has(x)) : [];
         saveTaskAccounts(deps.store, task, { all, ids }, deps.now());
         deps.log(`任务账号（${task}）：${all ? "全部" : `${ids.length} 个`}`);
+        syncTaskReadiness(deps.store, [task]);
         return json(200, {
           ...taskAccountsView(deps.store, task),
           note: all ? `${task}：全部账号` : `${task}：${ids.length} 个账号`
@@ -11354,6 +11446,13 @@ function mcloudRoutes(deps) {
           deps.log(`手动目标：${query2}`);
           return json(200, { ok: true, note: `手动目标已设为「${query2}」` });
         }
+        if (b.action === "schedule-pause" || b.action === "schedule-resume") {
+          const on = b.action === "schedule-resume";
+          setTaskPaused("兑换", !on);
+          setScheduleEnabled(deps.store, on, deps.now());
+          deps.log(`定时抢兑：${on ? "启用" : "暂停"}`);
+          return json(200, { ok: true, note: on ? "定时已启用" : "定时已暂停" });
+        }
         if (b.action === "plan") {
           const query2 = typeof b.query === "string" ? b.query.trim() : "";
           if (query2 === "") return json(400, { ok: false, error: "定时目标不能为空" });
@@ -11383,6 +11482,10 @@ function mcloudRoutes(deps) {
           deps.store.setState(STATE_SCHEDULE_MAX_RUNS, String(maxRunsRaw), d.nowIso);
           deps.store.setState(STATE_LEAD_SEC, String(Math.round(leadRaw)), d.nowIso);
           deps.store.setState(STATE_SCHEDULE_GEN, gen, d.nowIso);
+          setTaskSchedule("兑换", cron, Math.round(leadRaw * 1e3));
+          setTaskPaused("兑换", false);
+          setScheduleEnabled(deps.store, true, d.nowIso);
+          syncTaskReadiness(deps.store, ["兑换"]);
           deps.log(
             `定时目标：${query2}（cron ${cron}，提前 ${Math.round(leadRaw)}s，每号最多 ${maxRunsRaw || "不限"} 次）`
           );
@@ -11484,6 +11587,7 @@ function mcloudRoutes(deps) {
           );
           deps.log(`账号：${r.created ? "添加" : "更新"} ${r.account.label}`);
           if (loadAccounts(deps.store).length === 1) selectAccount(deps.store, r.account.id, now);
+          syncTaskReadiness(deps.store);
           return json(200, { ...accountsView(deps.store), note: `${r.created ? "已添加" : "已更新"} ${r.account.label}` });
         }
         if (op === "set-settings") {
@@ -11536,6 +11640,7 @@ function mcloudRoutes(deps) {
           const a = setAccountDisabled(deps.store, id, disabled, now);
           if (!a) return json(400, { error: `列表里没有这个账号：${id}` });
           deps.log(`账号：${disabled ? "停用" : "启用"} ${a.label}`);
+          syncTaskReadiness(deps.store);
           return json(200, {
             ...accountsView(deps.store),
             note: `${disabled ? "已停用" : "已启用"} ${a.label}`
@@ -11562,6 +11667,7 @@ function mcloudRoutes(deps) {
           const id = typeof body.id === "string" ? body.id : "";
           removeAccount(deps.store, id, now);
           deps.log(`账号：删掉 ${id}`);
+          syncTaskReadiness(deps.store);
           return json(200, { ...accountsView(deps.store), note: `已删掉 ${id}` });
         }
         return json(400, { error: '需要 {"op":"add|select|remove", …}' });
@@ -12044,6 +12150,11 @@ function selftest(store2) {
 // src/entries/mcloud.ts
 worker_hint("exclusive");
 var store = makeStore();
+var bootIso = (/* @__PURE__ */ new Date()).toISOString();
+if (migrateLegacyExchange(store, bootIso)) {
+  log2("老库迁移：兑换的账号选择沿用“全部账号”（这一版改成显式选择）");
+}
+syncTaskReadiness(store);
 var transport = makeTransport();
 var host = makeHost();
 register_nav({

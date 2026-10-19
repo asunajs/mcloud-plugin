@@ -7,74 +7,6 @@
 // src/entries/live.ts
 import { log as log3, register_cron } from "host-api";
 
-// src/mcloud/runLog.ts
-var RUN_LOG_KEY = "mcloud.run.log";
-var RUNS_PER_TASK = 20;
-var MAX_STEPS = 40;
-var MAX_NOTE = 300;
-function clip(s, max = MAX_NOTE) {
-  const t = typeof s === "string" ? s : String(s ?? "");
-  return t.length <= max ? t : `…${t.slice(t.length - max + 1)}`;
-}
-function cleanStep(s) {
-  return {
-    name: clip(s.name, 60),
-    ok: s.ok === true,
-    note: clip(s.note),
-    idle: s.idle === true,
-    // ⚠ 这个标记要跟着走：界面靠它把"内部管道"（换票之类）成功时藏起来。
-    //   漏掉的话，界面上会冒出「换票（签到族）：没有待换票的任务」这种话。
-    ...s.plumb === true ? { plumb: true } : {}
-  };
-}
-function readRuns(store2) {
-  const raw = store2.getState(RUN_LOG_KEY);
-  if (raw === void 0 || raw === null || raw === "") return [];
-  try {
-    const v = JSON.parse(raw);
-    if (!Array.isArray(v)) return [];
-    return v.filter(
-      (r) => typeof r === "object" && r !== null && typeof r.id === "string"
-    );
-  } catch {
-    return [];
-  }
-}
-function appendRun(store2, rec) {
-  const steps = rec.steps.slice(0, MAX_STEPS).map(cleanStep);
-  const tail = rec.acct === void 0 || rec.acct === "" ? "" : `-${rec.acct}`;
-  const id = `${rec.task}-${Date.parse(rec.at) || 0}${tail}`;
-  const all = readRuns(store2);
-  const next = {
-    id,
-    task: rec.task,
-    ...rec.acct === void 0 ? {} : { acct: rec.acct },
-    ...rec.who === void 0 ? {} : { who: rec.who },
-    at: rec.at,
-    ms: Math.max(0, Math.round(rec.ms)),
-    ok: rec.ok === true,
-    note: clip(rec.note),
-    steps,
-    truncated: rec.steps.length > MAX_STEPS
-  };
-  const kept = all.filter((r) => r.id !== id);
-  kept.push(next);
-  const byTask = /* @__PURE__ */ new Map();
-  for (const r of kept) {
-    const list = byTask.get(r.task) ?? [];
-    list.push(r);
-    byTask.set(r.task, list);
-  }
-  const trimmed = [];
-  for (const list of byTask.values()) {
-    list.sort((a, b) => a.at < b.at ? 1 : a.at > b.at ? -1 : 0);
-    trimmed.push(...list.slice(0, RUNS_PER_TASK));
-  }
-  trimmed.sort((a, b) => a.at < b.at ? 1 : a.at > b.at ? -1 : 0);
-  store2.setState(RUN_LOG_KEY, JSON.stringify(trimmed), rec.at);
-  return id;
-}
-
 // src/store/keys.ts
 var DEFAULT_ACCT = "default";
 var PLUGIN_NS = "mcloud.";
@@ -194,6 +126,7 @@ var KEY_SCOPE = {
   "mcloud.exchange.schedule.once_date": "global",
   "mcloud.exchange.schedule.max_runs": "global",
   "mcloud.exchange.schedule.gen": "global",
+  "mcloud.exchange.schedule.enabled": "global",
   "mcloud.exchange.lead_sec": "global",
   /** 提前量 —— "网络慢的人该调大"，是**这台机器**的调参，与账号无关。 */
   "mcloud.exchange.order.lead_ms": "global",
@@ -583,15 +516,22 @@ function taskAccountsKey(task) {
   return `mcloud.task.accounts.${task}`;
 }
 var DEFAULT_TASK_ACCOUNTS = { all: true, ids: [] };
+var DEFAULT_TASK_ACCOUNTS_BY_TASK = {
+  兑换: { all: false, ids: [] }
+};
+function defaultTaskAccounts(task) {
+  const v = DEFAULT_TASK_ACCOUNTS_BY_TASK[task];
+  return v ? { ...v } : { ...DEFAULT_TASK_ACCOUNTS };
+}
 function loadTaskAccounts(store2, task) {
   const raw = (store2.getState(taskAccountsKey(task)) ?? "").trim();
-  if (raw === "") return { ...DEFAULT_TASK_ACCOUNTS };
+  if (raw === "") return defaultTaskAccounts(task);
   try {
     const v = JSON.parse(raw);
     const ids = Array.isArray(v.ids) ? v.ids.filter((x) => typeof x === "string") : [];
     return { all: v.all === true, ids };
   } catch {
-    return { ...DEFAULT_TASK_ACCOUNTS };
+    return defaultTaskAccounts(task);
   }
 }
 function resolveTaskAccounts(store2, task) {
@@ -605,6 +545,130 @@ function resolveTaskAccounts(store2, task) {
 function labelOf(store2, acctId) {
   const a = loadAccounts(store2).find((x) => x.id === acctId);
   return a?.label || a?.id || acctId;
+}
+
+// src/mcloud/taskReadiness.ts
+var H = globalThis.host ?? globalThis.host_api ?? {};
+function call(name, ...args) {
+  const fn = H[name];
+  if (typeof fn !== "function") return;
+  try {
+    fn(...args);
+  } catch {
+  }
+}
+function enabledAccountCount(store2) {
+  return loadAccounts(store2).filter((a) => a.disabled !== true).length;
+}
+function exchangePlan(store2) {
+  return (store2.getState("mcloud.exchange.schedule.plan") ?? "").trim();
+}
+function blockersFor(store2, task) {
+  if (task === "兑换") {
+    const out = [];
+    if (resolveTaskAccounts(store2, "兑换").length === 0) out.push("还没有选账号");
+    if (exchangePlan(store2) === "") out.push("还没设定时奖品");
+    return out;
+  }
+  return enabledAccountCount(store2) === 0 ? ["还没有账号"] : [];
+}
+function accountLabels(store2, ids) {
+  const all = loadAccounts(store2);
+  const out = ids.map((id) => all.find((a) => a.id === id)?.label ?? id);
+  return out.length === 0 ? "无" : out.join("、");
+}
+function summaryFor(store2, task) {
+  if (task === "兑换") {
+    const ids2 = resolveTaskAccounts(store2, "兑换");
+    const n2 = ids2.length;
+    const plan = exchangePlan(store2);
+    const lead = (store2.getState("mcloud.exchange.lead_sec") ?? "120").trim() || "120";
+    if (plan === "") return n2 > 0 ? n2 + " 个账号 · 还没设定时奖品" : "还没选账号和奖品";
+    return n2 + " 个账号（" + accountLabels(store2, ids2) + "） · 目标：" + plan + " · 提前 " + lead + "s";
+  }
+  const n = enabledAccountCount(store2);
+  if (n === 0) return "还没有账号";
+  const ids = loadAccounts(store2).filter((a) => a.disabled !== true).map((a) => a.id);
+  return n <= 3 ? n + " 个账号（" + accountLabels(store2, ids) + "）" : n + " 个账号";
+}
+var TASK_KEYS = {
+  日常: "mcloud-daily/日常",
+  兑换: "mcloud-exchange/兑换",
+  直播: "mcloud-live/直播"
+};
+function setTaskSummary(task, text) {
+  call("set_job_summary", TASK_KEYS[task] ?? task, text);
+}
+function setTaskBlockers(task, blockers) {
+  call("set_job_blockers", TASK_KEYS[task] ?? task, blockers);
+}
+
+// src/mcloud/runLog.ts
+var RUN_LOG_KEY = "mcloud.run.log";
+var RUNS_PER_TASK = 20;
+var MAX_STEPS = 40;
+var MAX_NOTE = 300;
+function clip(s, max = MAX_NOTE) {
+  const t = typeof s === "string" ? s : String(s ?? "");
+  return t.length <= max ? t : `…${t.slice(t.length - max + 1)}`;
+}
+function cleanStep(s) {
+  return {
+    name: clip(s.name, 60),
+    ok: s.ok === true,
+    note: clip(s.note),
+    idle: s.idle === true,
+    // ⚠ 这个标记要跟着走：界面靠它把"内部管道"（换票之类）成功时藏起来。
+    //   漏掉的话，界面上会冒出「换票（签到族）：没有待换票的任务」这种话。
+    ...s.plumb === true ? { plumb: true } : {}
+  };
+}
+function readRuns(store2) {
+  const raw = store2.getState(RUN_LOG_KEY);
+  if (raw === void 0 || raw === null || raw === "") return [];
+  try {
+    const v = JSON.parse(raw);
+    if (!Array.isArray(v)) return [];
+    return v.filter(
+      (r) => typeof r === "object" && r !== null && typeof r.id === "string"
+    );
+  } catch {
+    return [];
+  }
+}
+function appendRun(store2, rec) {
+  const steps = rec.steps.slice(0, MAX_STEPS).map(cleanStep);
+  const tail = rec.acct === void 0 || rec.acct === "" ? "" : `-${rec.acct}`;
+  const id = `${rec.task}-${Date.parse(rec.at) || 0}${tail}`;
+  const all = readRuns(store2);
+  const next = {
+    id,
+    task: rec.task,
+    ...rec.acct === void 0 ? {} : { acct: rec.acct },
+    ...rec.who === void 0 ? {} : { who: rec.who },
+    at: rec.at,
+    ms: Math.max(0, Math.round(rec.ms)),
+    ok: rec.ok === true,
+    note: clip(rec.note),
+    steps,
+    truncated: rec.steps.length > MAX_STEPS
+  };
+  const kept = all.filter((r) => r.id !== id);
+  kept.push(next);
+  const byTask = /* @__PURE__ */ new Map();
+  for (const r of kept) {
+    const list = byTask.get(r.task) ?? [];
+    list.push(r);
+    byTask.set(r.task, list);
+  }
+  const trimmed = [];
+  for (const list of byTask.values()) {
+    list.sort((a, b) => a.at < b.at ? 1 : a.at > b.at ? -1 : 0);
+    trimmed.push(...list.slice(0, RUNS_PER_TASK));
+  }
+  trimmed.sort((a, b) => a.at < b.at ? 1 : a.at > b.at ? -1 : 0);
+  store2.setState(RUN_LOG_KEY, JSON.stringify(trimmed), rec.at);
+  return id;
 }
 
 // src/mcloud/log.ts
@@ -4130,7 +4194,15 @@ register_cron(
       const tail = bad === 0 ? `------【${who}】都成了------` : `------【${who}】${bad} 项没成------`;
       logBoth(store, bad > 0 ? "warn" : "info", tail, at);
     }
+    setTaskBlockers("直播", blockersFor(store, "直播"));
+    setTaskSummary("直播", summaryFor(store, "直播"));
   },
-  { budget_ms: BUDGET_MS }
+  {
+    budget_ms: BUDGET_MS,
+    // 直播也是环境型任务：面板任务列表里显示；没账号时“未就绪”。
+    surface: "panel",
+    summary: summaryFor(store, "直播"),
+    blockers: blockersFor(store, "直播")
+  }
 );
 log3(`mcloud-live：任务「直播」（预算 ${BUDGET_MS / 1e3}s，共享粗粒度 lane）`);

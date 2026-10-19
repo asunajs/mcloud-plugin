@@ -491,6 +491,21 @@
       <section class="block" id="block-exchange">
         <p class="hero" id="ex-hero">…</p>
 
+        <!-- 定时抢兑：这条任务的配置（奖品/时间/提前量/账号）都在这里，
+             面板任务列表里不单独显示它 —— 它是兑换功能的一部分，不是一个面板任务。 -->
+        <div class="card" id="ex-sched-card">
+          <div class="card-head">
+            <span class="card-title">定时抢兑</span>
+            <span class="badge idle" id="ex-sched-state">未启用</span>
+          </div>
+          <p class="hint" id="ex-sched-summary">还没设定时奖品</p>
+          <p class="hint">到点由面板叫醒；账号、奖品、时间和提前量都以这里为准。</p>
+          <div class="row">
+            <button class="btn" id="ex-sched-edit">改定时</button>
+            <button class="btn" id="ex-sched-toggle">启用定时</button>
+          </div>
+        </div>
+
         <!-- 「我关注的」：原 Rust mcloud 的订阅区。清单每天变，关注的那几件固定在上面。 -->
         <div class="card" id="ex-subs-card">
           <div class="card-head">

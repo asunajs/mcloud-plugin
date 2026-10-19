@@ -65,6 +65,8 @@ import {
   scheduleMaxRuns,
   scheduleRuns,
   scheduleNextTargetMs,
+  scheduleEnabled,
+  setScheduleEnabled,
 } from './tasks/exchangeRun.ts';
 import { STATE_TARGET_HOUR, targetHourOf } from './exchangeTiming.ts';
 import { APP_AUTH_PREFIX, parseAuth } from './auth.ts';
@@ -208,6 +210,7 @@ import type { Store } from '../store/types.ts';
 import { rawStoreOf, scoped } from '../store/scoped.ts';
 import { currentAccountDomain, setAccountDisabled, setAccountLabel } from './accounts.ts';
 import { saveTaskAccounts, taskAccountsView } from './taskAccounts.ts';
+import { setTaskPaused, setTaskSchedule, syncTaskReadiness } from './taskReadiness.ts';
 
 import {
   APP_LOGIN_AES_KEY,
@@ -479,6 +482,7 @@ function buildReadings(deps: RouteDeps): Record<string, unknown> {
       plan: deps.store.getState('mcloud.exchange.plan') ?? '',
       // 定时目标与手动目标分开存：页面上的「手动兑换」和「定时抢兑」不再互相改。
       schedulePlan: deps.store.getState(STATE_SCHEDULE_PLAN) ?? '',
+      scheduleEnabled: scheduleEnabled(deps.store),
       scheduleCron: deps.store.getState(STATE_SCHEDULE_CRON) ?? '',
       scheduleMode: deps.store.getState(STATE_SCHEDULE_MODE) ?? 'daily',
       scheduleUntil: deps.store.getState(STATE_SCHEDULE_UNTIL) ?? '',
@@ -752,6 +756,9 @@ function adoptLoginResult(
 
   clearLogin(deps.store);
   deps.log(`登录成功：${up.account.label}${up.created ? '（新账号）' : '（已有账号，凭据已更新）'}`);
+  // 账号数变了 ⇒ 三条任务的“未就绪”和卡片摘要跟着变（日常/直播不再显示“还没有账号”，
+  // 兑换也不再显示“还没有选账号”）。
+  syncTaskReadiness(deps.store);
   return { ok: true, note: `${note} · ${up.account.label}`, account: { id: up.account.id, label: up.account.label } };
 }
 
@@ -1271,6 +1278,7 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
           : [];
         saveTaskAccounts(deps.store, task, { all, ids }, deps.now());
         deps.log(`任务账号（${task}）：${all ? '全部' : `${ids.length} 个`}`);
+        syncTaskReadiness(deps.store, [task]);
         return json(200, {
           ...taskAccountsView(deps.store as unknown as Store, task),
           note: all ? `${task}：全部账号` : `${task}：${ids.length} 个账号`,
@@ -2044,6 +2052,16 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
         }
         // 只写「定时目标」，**不**起单、不发请求。定时弹窗用它；
         // 手动兑换那条仍走下面的 `query`（会 startOrder）。
+        // 启用/暂停「定时抢兑」。面板任务列表不显示这条任务，所以开关必须在这里。
+        if (b.action === 'schedule-pause' || b.action === 'schedule-resume') {
+          const on = b.action === 'schedule-resume';
+          // 注意语义：`on` 是“启用”，而 `set_job_paused` 收的是“暂停与否” ——
+          // 直接传 `on` 会把“启用”写成暂停（实测就是这么反的）。
+          setTaskPaused('兑换', !on);
+          setScheduleEnabled(deps.store, on, deps.now());
+          deps.log(`定时抢兑：${on ? '启用' : '暂停'}`);
+          return json(200, { ok: true, note: on ? '定时已启用' : '定时已暂停' });
+        }
         if (b.action === 'plan') {
           const query = typeof b.query === 'string' ? b.query.trim() : '';
           if (query === '') return json(400, { ok: false, error: '定时目标不能为空' });
@@ -2074,6 +2092,13 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
           deps.store.setState(STATE_LEAD_SEC, String(Math.round(leadRaw)), d.nowIso);
           // 换一版定时 = 每个账号的已跑次数从头算。
           deps.store.setState(STATE_SCHEDULE_GEN, gen, d.nowIso);
+          // 面板任务才是调度的权威：把用户设的 cron/提前量同步过去，并启用它。
+          // 以前这一步靠插件页 postMessage 给父页面（跨 origin，且独立打开时没有父页面），
+          // 现在在服务端直接写面板任务，两种打开方式都生效。
+          setTaskSchedule('兑换', cron, Math.round(leadRaw * 1000));
+          setTaskPaused('兑换', false);
+          setScheduleEnabled(deps.store, true, d.nowIso);
+          syncTaskReadiness(deps.store, ['兑换']);
           deps.log(
             `定时目标：${query}（cron ${cron}，提前 ${Math.round(leadRaw)}s，` +
               `每号最多 ${maxRunsRaw || '不限'} 次）`,
@@ -2194,6 +2219,7 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
           // ⚠ 日志里只说"谁"，不说凭据
           deps.log(`账号：${r.created ? '添加' : '更新'} ${r.account.label}`);
           if (loadAccounts(deps.store).length === 1) selectAccount(deps.store, r.account.id, now);
+          syncTaskReadiness(deps.store);
           return json(200, { ...accountsView(deps.store), note: `${r.created ? '已添加' : '已更新'} ${r.account.label}` });
         }
         // **按账号**写设置。
@@ -2270,6 +2296,7 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
           const a = setAccountDisabled(deps.store, id, disabled, now);
           if (!a) return json(400, { error: `列表里没有这个账号：${id}` });
           deps.log(`账号：${disabled ? '停用' : '启用'} ${a.label}`);
+          syncTaskReadiness(deps.store);
           return json(200, {
             ...accountsView(deps.store as unknown as Store),
             note: `${disabled ? '已停用' : '已启用'} ${a.label}`,
@@ -2297,6 +2324,7 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
           const id = typeof body.id === 'string' ? body.id : '';
           removeAccount(deps.store, id, now);
           deps.log(`账号：删掉 ${id}`);
+          syncTaskReadiness(deps.store);
           return json(200, { ...accountsView(deps.store), note: `已删掉 ${id}` });
         }
         return json(400, { error: '需要 {"op":"add|select|remove", …}' });
