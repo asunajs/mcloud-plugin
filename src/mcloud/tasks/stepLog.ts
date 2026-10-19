@@ -111,3 +111,55 @@ export function userLine(step: {
   if (!step.ok) return `${step.name}：没成${why === '' ? '' : ` —— ${why}`}`;
   return `${step.name}：${why === '' ? '好了' : why}`;
 }
+
+/** 用户日志的**着色类型**。与面板的 `start/success/fail/debug` 对齐。
+ *
+ *  规则只有一条：**根因失败**才红（`fail`）；被根因拖下水的步骤
+ *  （"还没有网页会话"）只是 `debug` —— 否则一个票过期会刷十几行红字，
+ *  用户根本看不出哪一行才是真正要处理的。
+ */
+export type LineLevel = 'debug' | 'info' | 'success' | 'warn' | 'fail';
+
+export function lineLevel(line: string): LineLevel {
+  // 级联失败：根因（换票 / 凭据续期）已经单独一行 fail
+  if (
+    line.includes('没成') &&
+    /还没有网页会话|上面「换票」|没有会话|未登录|90001|票没被认/.test(line)
+  ) {
+    return 'debug';
+  }
+  if (line.includes('没成')) return 'fail';
+  // 需要用户动手的，黄一下（不是错误，但不该被当成"成了"）
+  if (/需手动|手动完成|需前往/.test(line)) return 'warn';
+  // 真的做成了
+  if (/已完成|领到|成功|好了|获得|签到成功/.test(line)) return 'success';
+  // 今天已经做过 / 没有可领的 / 跳过 —— 过程信息，别用绿色假装是这次做的
+  if (/跳过|已经|已领|没有可|没有能|无需|今天|未开启|没开|不发|不领|没问过|走完/.test(line)) {
+    return 'debug';
+  }
+  return 'success';
+}
+
+/** 级联失败的那一行改成"跳过"：不要每行都把根因抄一遍。 */
+export function lineText(line: string): string {
+  if (line.includes('还没有网页会话') || line.includes('上面「换票」')) {
+    const m = /^(.+?)：没成 —— /.exec(line);
+    if (m !== null) return `${m[1]}：跳过（没有网页会话）`;
+  }
+  return line;
+}
+
+/** 段尾的口径：`bad` 是全部没成的步数，`hard` 是**根因**（不是级联）。
+ *
+ *  一个票过期会拖垮十步；段尾写「11 项没成」会让人以为要做 11 件事，
+ *  实际只有「换票」那一件。分开报才读得懂。 */
+export function stepTally(steps: { ok: boolean; note: string }[]): {
+  bad: number;
+  hard: number;
+} {
+  const failed = steps.filter((x) => !x.ok);
+  const hard = failed.filter(
+    (x) => !/还没有网页会话|上面「换票」|没有会话|未登录|90001|票没被认/.test(x.note),
+  ).length;
+  return { bad: failed.length, hard };
+}

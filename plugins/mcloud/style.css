@@ -984,9 +984,15 @@ button.picker-row {
 .term-lv-debug { color: var(--text-mute); }
 .term-lv-warn { color: var(--warning); }
 .term-lv-error, .term-lv-fatal { color: var(--error); }
+.term-lv-start { color: var(--accent); }
+.term-lv-success { color: var(--success); }
+.term-lv-fail { color: var(--error); }
 .term-line-warn .term-msg { color: var(--warning); }
 .term-line-error .term-msg, .term-line-fatal .term-msg { color: var(--error); }
 .term-line-debug .term-msg { color: var(--text-dim); }
+.term-line-start .term-msg { color: var(--accent); font-weight: 600; }
+.term-line-success .term-msg { color: var(--success); }
+.term-line-fail .term-msg { color: var(--error); }
 .term-empty { color: var(--text-mute); }
 @media (max-width: 720px) {
   .term-body { max-height: 42vh; font-size: 11px; }

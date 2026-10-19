@@ -109,8 +109,13 @@ export interface NavOpts {
 }
 
 export function log(msg: unknown): void;
+export function debug(msg: unknown): void;
 export function warn(msg: unknown): void;
 export function error(msg: unknown): void;
+/** 语义类型：只影响着色，过滤级别仍是 info（见面板 log::Type::level）。 */
+export function start(msg: unknown): void;
+export function success(msg: unknown): void;
+export function fail(msg: unknown): void;
 
 /** 5 段或 6 段 cron；表达式非法会在**注册阶段**就报错（加载插件时失败） */
 export function register_cron(

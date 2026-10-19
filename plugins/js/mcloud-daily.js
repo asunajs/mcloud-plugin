@@ -5,7 +5,7 @@
 //   mcloud-plugin 0.1.1 · 插件 `mcloud-daily`
 
 // src/entries/daily.ts
-import { log as log3, register_cron } from "host-api";
+import { debug as debug2, register_cron } from "host-api";
 
 // src/store/keys.ts
 var DEFAULT_ACCT = "default";
@@ -591,20 +591,20 @@ function parseField(field, min, max) {
     const base = p.split("/")[0];
     const stepRaw = p.split("/")[1];
     const step = stepRaw === void 0 ? 1 : parseNum(stepRaw, 1, 999);
-    let start = min;
+    let start2 = min;
     let end = max;
     if (base !== "*") {
       if (base.includes("-")) {
         const [a, b] = base.split("-");
-        start = parseNum(a, min, max);
+        start2 = parseNum(a, min, max);
         end = parseNum(b, min, max);
-        if (start > end) throw new Error(`范围反了：${base}`);
+        if (start2 > end) throw new Error(`范围反了：${base}`);
       } else {
-        start = parseNum(base, min, max);
-        end = start;
+        start2 = parseNum(base, min, max);
+        end = start2;
       }
     }
-    for (let n = start; n <= end; n += step) out.add(n);
+    for (let n = start2; n <= end; n += step) out.add(n);
   }
   return [...out].sort((a, b) => a - b);
 }
@@ -800,7 +800,7 @@ function hostFetchOptions(req, timeoutMs) {
 }
 function callOnce(transport2, req) {
   const t0 = Date.now();
-  const fail = (error3) => ({
+  const fail2 = (error3) => ({
     status: 0,
     tookMs: Date.now() - t0,
     env: void 0,
@@ -814,11 +814,11 @@ function callOnce(transport2, req) {
   try {
     res = transport2(req);
   } catch (e) {
-    return fail(`请求失败：${e instanceof Error ? e.message : String(e)}`);
+    return fail2(`请求失败：${e instanceof Error ? e.message : String(e)}`);
   }
-  if (isFetchError(res)) return fail(pickError(res.error));
+  if (isFetchError(res)) return fail2(pickError(res.error));
   if (typeof res !== "object" || res === null || typeof res.body !== "string") {
-    return fail(`请求返回的形状不认识：${JSON.stringify(res)?.slice(0, 200) ?? String(res)}`);
+    return fail2(`请求返回的形状不认识：${JSON.stringify(res)?.slice(0, 200) ?? String(res)}`);
   }
   const tookMs = Date.now() - t0;
   const raw = res.body.length > 500 ? `${res.body.slice(0, 500)}…` : res.body;
@@ -854,7 +854,7 @@ function applyDefaultContentType(req) {
 }
 function callRawText(transport2, req) {
   const t0 = Date.now();
-  const fail = (error2) => ({
+  const fail2 = (error2) => ({
     ok: false,
     status: 0,
     text: "",
@@ -866,13 +866,13 @@ function callRawText(transport2, req) {
   try {
     res = transport2(req);
   } catch (e) {
-    return fail(`请求失败：${e instanceof Error ? e.message : String(e)}`);
+    return fail2(`请求失败：${e instanceof Error ? e.message : String(e)}`);
   }
   const tookMs = Date.now() - t0;
-  if (isFetchError(res)) return { ...fail(pickError(res.error)), tookMs };
+  if (isFetchError(res)) return { ...fail2(pickError(res.error)), tookMs };
   if (typeof res !== "object" || res === null || typeof res.body !== "string") {
     return {
-      ...fail(`请求返回的形状不认识：${JSON.stringify(res)?.slice(0, 200) ?? String(res)}`),
+      ...fail2(`请求返回的形状不认识：${JSON.stringify(res)?.slice(0, 200) ?? String(res)}`),
       tookMs
     };
   }
@@ -3356,8 +3356,8 @@ function parseRefresh(body) {
   }
   const code = v.code;
   const codeOk = typeof code === "string" && (code === "0000" || code === "0") || typeof code === "number" && code === 0;
-  const success = typeof v.success === "boolean" ? v.success : codeOk;
-  if (!success || !codeOk) {
+  const success2 = typeof v.success === "boolean" ? v.success : codeOk;
+  if (!success2 || !codeOk) {
     const msg = String(v.message ?? v.msg ?? "");
     const c = String(code ?? "");
     if (c === "05050009") return { ok: false, error: "这个号已经失效了 —— 重新登录一次" };
@@ -3534,7 +3534,7 @@ function appendRun(store2, rec) {
 }
 
 // src/mcloud/log.ts
-import { error, log, warn } from "host-api";
+import { debug, error, fail, log, start, success, warn } from "host-api";
 
 // src/mcloud/logRing.ts
 var RING_KEY = "mcloud.log.ring";
@@ -3560,9 +3560,28 @@ function appendRing(store2, nowIso, level, msg) {
 
 // src/mcloud/log.ts
 function logBoth(store2, level, msg, nowIso) {
-  if (level === "error") error(msg);
-  else if (level === "warn") warn(msg);
-  else log(msg);
+  switch (level) {
+    case "debug":
+      debug(msg);
+      break;
+    case "warn":
+      warn(msg);
+      break;
+    case "error":
+      error(msg);
+      break;
+    case "start":
+      start(msg);
+      break;
+    case "success":
+      success(msg);
+      break;
+    case "fail":
+      fail(msg);
+      break;
+    default:
+      log(msg);
+  }
   appendRing(store2, nowIso, level, msg);
 }
 
@@ -3605,6 +3624,32 @@ function userLine(step) {
   const why = trimNote(step.name, step.note);
   if (!step.ok) return `${step.name}：没成${why === "" ? "" : ` —— ${why}`}`;
   return `${step.name}：${why === "" ? "好了" : why}`;
+}
+function lineLevel(line) {
+  if (line.includes("没成") && /还没有网页会话|上面「换票」|没有会话|未登录|90001|票没被认/.test(line)) {
+    return "debug";
+  }
+  if (line.includes("没成")) return "fail";
+  if (/需手动|手动完成|需前往/.test(line)) return "warn";
+  if (/已完成|领到|成功|好了|获得|签到成功/.test(line)) return "success";
+  if (/跳过|已经|已领|没有可|没有能|无需|今天|未开启|没开|不发|不领|没问过|走完/.test(line)) {
+    return "debug";
+  }
+  return "success";
+}
+function lineText(line) {
+  if (line.includes("还没有网页会话") || line.includes("上面「换票」")) {
+    const m = /^(.+?)：没成 —— /.exec(line);
+    if (m !== null) return `${m[1]}：跳过（没有网页会话）`;
+  }
+  return line;
+}
+function stepTally(steps) {
+  const failed = steps.filter((x) => !x.ok);
+  const hard = failed.filter(
+    (x) => !/还没有网页会话|上面「换票」|没有会话|未登录|90001|票没被认/.test(x.note)
+  ).length;
+  return { bad: failed.length, hard };
 }
 
 // src/mcloud/session.ts
@@ -6116,7 +6161,9 @@ function runDaily(deps) {
     //   正常情况下这一趟根本不该走到这里：票由任务自己续（见上面 ① 换票）。
     //   真走到这里 = 自动续票也没成（凭据废了），这时唯一有意义的动作就是重新导入。
     note: (() => {
-      const base = `${steps.length - failed.length} 项好了、${failed.length} 项没成`;
+      const { bad, hard } = stepTally(steps);
+      const skipped = bad - hard;
+      const base = `${steps.length - bad} 项好了、${hard} 项没成${skipped > 0 ? `、${skipped} 项跳过` : ""}`;
       const allLogin = failed.every((x) => /未登录|没登录|90001|凭据过期|票没被认/.test(x.note));
       if (!allLogin) return base;
       return `${base} —— 登录状态失效了，去「账号」页重新导入会话`;
@@ -6138,6 +6185,8 @@ register_cron(
     if (runs.length === 0) return;
     const results = [];
     const onceHints = /* @__PURE__ */ new Set();
+    const willRun = runs.filter((x) => x.result !== null).length;
+    if (willRun > 0) logBoth(store, "start", `日常 · ${willRun} 个账号`, nowIso);
     for (const [i, one] of runs.entries()) {
       const r2 = one.result;
       if (r2 === null) continue;
@@ -6166,21 +6215,41 @@ register_cron(
       if (r2.ok) {
         scoped(rawStoreOf(store), one.acctId).setState(DONE_KEY, today2, nowIso);
       }
-      logBoth(store, "info", `------【${who}】------`, nowIso);
+      logBoth(store, "start", `账号 ${who}`, nowIso);
+      let prev = "";
+      const skippedSteps = [];
       for (const line of r2.detail) {
+        const shown = lineText(onceHint(line, onceHints));
+        if (shown === prev) continue;
+        prev = shown;
+        if (shown.includes("跳过（没有网页会话）")) {
+          skippedSteps.push(shown.split("：")[0] ?? shown);
+          continue;
+        }
+        logBoth(store, lineLevel(shown), shown, nowIso);
+      }
+      if (skippedSteps.length > 0) {
+        const head = skippedSteps.slice(0, 3).join("、");
         logBoth(
           store,
-          line.includes("没成") ? "warn" : "info",
-          onceHint(line, onceHints),
+          "debug",
+          `跳过 ${skippedSteps.length} 项（没有网页会话）：${head}${skippedSteps.length > 3 ? " 等" : ""}`,
           nowIso
         );
       }
-      const bad2 = r2.steps.filter((x) => !x.ok).length;
-      const tail = bad2 === 0 ? `------【${who}】都成了------` : `------【${who}】${bad2} 项没成------`;
-      logBoth(store, bad2 > 0 ? "warn" : "info", tail, nowIso);
+      const { bad: bad2, hard } = stepTally(r2.steps);
+      const tail = bad2 === 0 ? `账号 ${who}：都成了` : hard === 0 ? `账号 ${who}：${bad2} 项跳过（没有网页会话）` : `账号 ${who}：${hard} 项没成${bad2 > hard ? `、${bad2 - hard} 项跳过` : ""}`;
+      logBoth(store, hard > 0 ? "warn" : "debug", tail, nowIso);
     }
     if (results.length === 0) return;
     const okAll = results.every((x) => x.result.ok);
+    const okCount = results.filter((x) => x.result.ok).length;
+    logBoth(
+      store,
+      okAll ? "success" : "warn",
+      `日常完成：${okCount}/${results.length} 个账号好了`,
+      nowIso
+    );
     const summary = results.length === 1 ? results[0].result.note : `${results.length} 个账号：${results.filter((x) => x.result.ok).length} 成功 / ${results.filter((x) => !x.result.ok).length} 失败`;
     store.setState(LAST_KEY, JSON.stringify({
       at: nowIso,
@@ -6222,4 +6291,4 @@ register_cron(
     blockers: blockersFor(store, "日常")
   }
 );
-log3(`mcloud-daily：任务「日常」（预算 ${BUDGET_MS / 1e3}s，共享粗粒度 lane）`);
+debug2(`mcloud-daily：任务「日常」（预算 ${BUDGET_MS / 1e3}s，共享粗粒度 lane）`);

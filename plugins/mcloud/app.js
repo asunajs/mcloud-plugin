@@ -2390,23 +2390,27 @@ function makeTerm(plugin, el) {
     } catch {
       return;
     }
+    // SSE 的 `type` 才是语义类型（start/success/fail）；`level` 只是过滤档位。
+    // 历史（/log/tail）没有 `type`，它把类型放在 `level` 里。
+    const lv = d.type || d.level || 'info';
+    if (!levelPasses(lv)) return;
     const empty = body.querySelector('.term-empty');
     if (empty) empty.remove();
     const el = document.createElement('span');
-    el.className = `term-line term-line-${d.level || 'info'}`;
+    el.className = `term-line term-line-${lv}`;
     const ts = document.createElement('span');
     ts.className = 'term-ts';
     // 面板给的是 `2026-10-17 10:50:42.498`；我们铺历史时给的是已经切好的 `10:50:42.498`。
     // 两种都要能吃（`slice(11)` 对后者会把时分秒切掉）。
     const raw = String(d.ts || '');
     ts.textContent = (/^\d{4}-\d{2}-\d{2}/.test(raw) ? raw.slice(11) : raw) + ' ';
-    const lv = document.createElement('span');
-    lv.className = `term-lv term-lv-${d.level || 'info'}`;
-    lv.textContent = String(d.level || 'info').padEnd(5);
+    const lvEl = document.createElement('span');
+    lvEl.className = `term-lv term-lv-${lv}`;
+    lvEl.textContent = lv.padEnd(7);
     const msg = document.createElement('span');
     msg.className = 'term-msg';
     msg.textContent = String(d.msg || d.line || '');
-    el.append(ts, lv, msg);
+    el.append(ts, lvEl, msg);
     body.appendChild(el);
     lines += 1;
     shown += 1;
@@ -2440,9 +2444,10 @@ function makeTerm(plugin, el) {
 
   /** 这一行的级别过不过当前那道门槛。口径与下拉那三个值一致：
    *  `info`=全部、`warn`=提醒以上、`error`=只看错误。
-   *  认不出的级别（比如面板哪天加个 `debug`）⇒ 当作最低档，
-   *  选了「全部」还在，选了「只看错误」就没了 —— **不猜它是高的**。 */
-  const LEVEL_RANK = { info: 0, warn: 1, error: 2 };
+   *  `start/success/debug` 是过程/着色，归最低档；`fail` 是根因失败，
+   *  要跟 `warn` 一起出现在「提醒以上」里（否则票过期时反而看不到红字）。
+   *  认不出的级别 ⇒ 当作最低档，**不猜它是高的**。 */
+  const LEVEL_RANK = { debug: 0, info: 0, start: 0, success: 0, warn: 1, fail: 2, error: 2, fatal: 3 };
   function levelPasses(lv) {
     const want = LEVEL_RANK[level.value] ?? 0;
     return (LEVEL_RANK[lv] ?? 0) >= want;
@@ -2505,7 +2510,9 @@ function makeTerm(plugin, el) {
 
   function open() {
     if (es !== null || typeof EventSource === 'undefined') return;
-    const q = new URLSearchParams({ channel: 'plugin', plugin, level: level.value });
+    // 服务端永远给 `debug` 全量，级别筛选**在本地做**：`fail` 在面板那边
+    // 归 info 档，若把下拉值直接发过去，选「提醒以上」会把红字滤掉。
+    const q = new URLSearchParams({ channel: 'plugin', plugin, level: 'debug' });
     setMeta('连接中…');
     // ⚠ 顺序：先历史、后实时。反过来的话历史会把新到的几行盖掉。
     void seed().then(() => {

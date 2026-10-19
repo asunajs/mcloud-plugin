@@ -49,7 +49,7 @@
 // 秒返回。这是**刻意接受**的：宁可多一次便宜的整趟，也不要漏掉一整天。
 
 
-import { log, register_cron, warn } from 'host-api';
+import { debug, register_cron, warn } from 'host-api';
 import { blockersFor, setTaskBlockers, setTaskSummary, summaryFor } from '../mcloud/taskReadiness.ts';
 import { runAuthRefresh } from '../mcloud/authRefresh.ts';
 import { appendRun } from '../mcloud/runLog.ts';
@@ -63,7 +63,7 @@ import {
 import type { SessionRecipe } from '../mcloud/h5session.ts';
 import { labelOf } from '../mcloud/taskAccounts.ts';
 import { logBoth } from '../mcloud/log.ts';
-import { isPlumbing, onceHint, userLine } from '../mcloud/tasks/stepLog.ts';
+import { isPlumbing, lineLevel, lineText, onceHint, stepTally, userLine } from '../mcloud/tasks/stepLog.ts';
 import { loadQueue } from '../mcloud/tasks/receive.ts';
 import { rawStoreOf, scoped } from '../store/scoped.ts';
 
@@ -380,7 +380,9 @@ function runDaily(deps: TaskDeps): {
     //   正常情况下这一趟根本不该走到这里：票由任务自己续（见上面 ① 换票）。
     //   真走到这里 = 自动续票也没成（凭据废了），这时唯一有意义的动作就是重新导入。
     note: (() => {
-      const base = `${steps.length - failed.length} 项好了、${failed.length} 项没成`;
+      const { bad, hard } = stepTally(steps);
+      const skipped = bad - hard;
+      const base = `${steps.length - bad} 项好了、${hard} 项没成${skipped > 0 ? `、${skipped} 项跳过` : ''}`;
       const allLogin = failed.every((x) => /未登录|没登录|90001|凭据过期|票没被认/.test(x.note));
       if (!allLogin) return base;
       return `${base} —— 登录状态失效了，去「账号」页重新导入会话`;
@@ -437,6 +439,8 @@ register_cron(
     const results: typeof runs = [];
     // 这一趟里"已经解释过的后缀"（跨账号共用，见 onceHint）
     const onceHints = new Set<string>();
+    const willRun = runs.filter((x) => x.result !== null).length;
+    if (willRun > 0) logBoth(store, 'start', `日常 · ${willRun} 个账号`, nowIso);
     for (const [i, one] of runs.entries()) {
       const r = one.result;
       if (r === null) continue; // 这一条今天已经跑过
@@ -474,25 +478,43 @@ register_cron(
         //   但它在闭包里，所以这里现取一个"作用在指定账号上"的 store。
         scoped(rawStoreOf(store), one.acctId).setState(DONE_KEY, today, nowIso);
       }
-      // 日志照参考实现（`mcloud` / `mcloud-sign`）的形状：
-      //   一个账号一段，段头一行，**每一步一行**，段尾一行。
-      // ⚠ 失败的那些行用 warn（面板按级别过滤时"只看提醒以上"能一眼捞出来），
-      //   其余走 info —— 不把成功也染成黄色，否则"满屏黄"就等于没有信号。
-      logBoth(store, 'info', `------【${who}】------`, nowIso);
+      // 日志照 `mcloud-sign`：账号头用 start，步骤按结论着色，
+      // 级联失败只留 debug 的"跳过" —— 根因（换票）才红。
+      logBoth(store, 'start', `账号 ${who}`, nowIso);
+      let prev = '';
+      // 级联的“没有网页会话”不逐行刷：一个根因会拖垮十步，逐行写就是十行同样的字。
+      // 合并成一行“跳过 N 项（…）”，根因和段尾已经说清了。
+      const skippedSteps: string[] = [];
       for (const line of r.detail) {
-        // 「没成」的那些行走 warn（面板按级别过滤时能一眼捞出来）
         // ⚠ `onceHint`：跨账号的同一句解释只说一遍（见 stepLog.ts 那段）
+        const shown = lineText(onceHint(line, onceHints));
+        if (shown === prev) continue;
+        prev = shown;
+        if (shown.includes('跳过（没有网页会话）')) {
+          skippedSteps.push(shown.split('：')[0] ?? shown);
+          continue;
+        }
+        logBoth(store, lineLevel(shown), shown, nowIso);
+      }
+      if (skippedSteps.length > 0) {
+        const head = skippedSteps.slice(0, 3).join('、');
         logBoth(
           store,
-          line.includes('没成') ? 'warn' : 'info',
-          onceHint(line, onceHints),
+          'debug',
+          `跳过 ${skippedSteps.length} 项（没有网页会话）：${head}${skippedSteps.length > 3 ? ' 等' : ''}`,
           nowIso,
         );
       }
-      const bad = r.steps.filter((x) => !x.ok).length;
-      // 段尾只说"几项没成"（用户要的是结论）；都成了就一句"都成了"
-      const tail = bad === 0 ? `------【${who}】都成了------` : `------【${who}】${bad} 项没成------`;
-      logBoth(store, bad > 0 ? 'warn' : 'info', tail, nowIso);
+      const { bad, hard } = stepTally(r.steps);
+      // 段尾只说"几项没成"（用户要的是结论）；都成了就一句"都成了"。
+      // 级联失败单独说"跳过"，否则 1 个根因会被写成 11 项没成。
+      const tail =
+        bad === 0
+          ? `账号 ${who}：都成了`
+          : hard === 0
+            ? `账号 ${who}：${bad} 项跳过（没有网页会话）`
+            : `账号 ${who}：${hard} 项没成${bad > hard ? `、${bad - hard} 项跳过` : ''}`;
+      logBoth(store, hard > 0 ? 'warn' : 'debug', tail, nowIso);
     }
 
     // 全都"今天已经跑过" ⇒ 静默返回（不推、不记）
@@ -500,6 +522,13 @@ register_cron(
 
     // 「一次运行」的完整结果落一条读数 —— 界面读它，不用去翻环形日志
     const okAll = results.every((x) => x.result!.ok);
+    const okCount = results.filter((x) => x.result!.ok).length;
+    logBoth(
+      store,
+      okAll ? 'success' : 'warn',
+      `日常完成：${okCount}/${results.length} 个账号好了`,
+      nowIso,
+    );
     const summary =
       results.length === 1
         ? results[0]!.result!.note
@@ -556,4 +585,4 @@ register_cron(
   },
 );
 
-log(`mcloud-daily：任务「日常」（预算 ${BUDGET_MS / 1000}s，共享粗粒度 lane）`);
+debug(`mcloud-daily：任务「日常」（预算 ${BUDGET_MS / 1000}s，共享粗粒度 lane）`);

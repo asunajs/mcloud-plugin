@@ -15,6 +15,7 @@
 
 
 import {
+  debug,
   error,
   log,
   register_nav,
@@ -100,4 +101,4 @@ const selftestRoute: RouteEntry = {
 register_route(selftestRoute.path, selftestRoute.method, selftestRoute.handler);
 
 store.setState('plugin.loaded_at', new Date().toISOString(), new Date().toISOString());
-log(`mcloud（服务型）：${registered + 1} 条路由 + 侧边栏入口，**没有 cron 任务**`);
+debug(`mcloud（服务型）：${registered + 1} 条路由 + 侧边栏入口，**没有 cron 任务**`);
