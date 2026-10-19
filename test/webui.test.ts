@@ -778,12 +778,12 @@ test('⚠ 日志一行一步，形状照参考实现（成功 / 跳过 / 失败 
   assert.ok(/from '\.\.\/mcloud\/tasks\/stepLog\.ts'/.test(daily), '日常要用共享的那两个');
   assert.ok(/from '\.\.\/mcloud\/tasks\/stepLog\.ts'/.test(srcOf('src/entries/live.ts')), '直播也要用同一套');
   assert.ok(/const line = userLine\(one\);/.test(daily), '格式由 `userLine` 决定：`签到：网盘签到成功` / `复活卡：没成 —— 原因`');
-  // 段头 / 段尾（参考实现里是 `------【组名】------`）
+  // 段头 / 段尾：照 mcloud-sign，用 start/success/fail 着色，不再画 `------【】------`
   // 段头/段尾都走 `logBoth`（面板日志流 + 重启后还在的环，见 F-085）
-  assert.ok(/logBoth\(store, 'info', `------【\$\{who\}】------`, nowIso\)/.test(daily), '缺段头');
-  assert.ok(/const tail = bad === 0 \?/.test(daily), '缺段尾');
-  assert.ok(/logBoth\(store, bad > 0 \? 'warn' : 'info', tail, nowIso\)/.test(daily), '段尾也要进两个去处');
-  assert.ok(/项没成------/.test(daily), '段尾说"几项没成"');
+  assert.ok(/logBoth\(store, 'start', `账号 \$\{who\}`, nowIso\)/.test(daily), '缺段头');
+  assert.ok(/const tail =\s*bad === 0/.test(daily), '缺段尾');
+  assert.ok(/logBoth\(store, hard > 0 \? 'warn' : 'debug', tail, nowIso\)/.test(daily), '段尾也要进两个去处');
+  assert.ok(/项没成/.test(daily), '段尾说"几项没成"');
   // 旧写法（同一件事说两遍 + 那一长串名字）不许回来
   assert.ok(!/步失败：/.test(daily), '`11/16 步失败：签到、领取AI豆、…` 那种汇总行不要了');
   assert.ok(!/`  · \$\{line\}`/.test(daily), '`  · ` 那种缩进行不要了');
@@ -912,7 +912,7 @@ test('⚠ 页头那个数报**屏上摆了几行**，不再报服务端环（用
   assert.ok(/显示 \$\{shown\} 行/.test(js), '那句要报屏上的行数');
   assert.ok(!/缓冲 \$\{/.test(js), '「缓冲 ${…}」那口径不许回来');
   // `shown` 只数 `.term-line`（分界线与空态那句不算）
-  assert.ok(/el\.className = `term-line term-line-\$\{d\.level/.test(js), '每行都带 .term-line');
+  assert.ok(/el\.className = `term-line term-line-\$\{lv\}`/.test(js), '每行都带 .term-line');
   assert.ok(
     /if \(cut\.classList\.contains\('term-line'\)\) shown -= 1;/.test(js),
     '超 400 行从上面砍时，屏上的数要跟着减（否则页头会越报越多）',
@@ -997,7 +997,7 @@ test('⚠ 直播：口令只收**一次**（一个账号听到，所有账号都
   assert.ok(!/runLive\(deps, startedMs\)/.test(live), '不再有"每账号跑一遍"');
   assert.ok(/const listenDeadline = runStartMs \+ BUDGET_MS - 20_000;/.test(live), '截止按整趟算');
   // 收口令那一段的日志不挂在某个账号名下
-  assert.ok(/------【口令】------/.test(live), '收口令要单独一段');
+  assert.ok(/logBoth\(store, 'start', '口令', at\)/.test(live), '收口令要单独一段');
 });
 
 test('⚠ 先验开播再决定要不要听（参考 mcloud `live_room.rs:1603`）', () => {
@@ -1141,7 +1141,7 @@ test('⚠ 面板缺直播支持时：当成**构建缺陷**报出来，并且别
     '用 error 级别、且只印一行（段头+步骤+段尾说同一句话 = 噪声）',
   );
   // logBoth 要真的支持 error
-  assert.ok(/'info' \| 'warn' \| 'error'/.test(srcOf('src/mcloud/log.ts')), 'logBoth 要收 error');
+  assert.ok(/export type LogLevel = 'debug' \| 'info' \| 'warn' \| 'error' \| 'start' \| 'success' \| 'fail'/.test(srcOf('src/mcloud/log.ts')), 'logBoth 要收语义类型');
   // 结论要缓存，别每次都探
   assert.ok(/export const CAP_TTL_MS/.test(cap), '要缓存');
 });

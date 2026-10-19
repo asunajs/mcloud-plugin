@@ -40,12 +40,12 @@
 // ⚠ 面板对 `budget_ms` 的上限是 10 分钟（`rust-plugin-panel/src/hostapi.rs`
 //   的 `MAX_DECLARED_BUDGET_MS`），5 分钟留足了余量。
 
-import { log, register_cron, warn } from 'host-api';
+import { debug, register_cron, warn } from 'host-api';
 import { blockersFor, setTaskBlockers, setTaskSummary, summaryFor } from '../mcloud/taskReadiness.ts';
 import { appendRun, type RunStep } from '../mcloud/runLog.ts';
 import { labelOf } from '../mcloud/taskAccounts.ts';
 import { logBoth } from '../mcloud/log.ts';
-import { onceHint, userLine } from '../mcloud/tasks/stepLog.ts';
+import { lineLevel, lineText, onceHint, stepTally, userLine } from '../mcloud/tasks/stepLog.ts';
 import { collectCodes, runLiveDraw } from '../mcloud/tasks/liveDraw.ts';
 import { readGateReading, runLiveGate } from '../mcloud/tasks/liveGateTask.ts';
 import { KOULING_ANCHOR, loadPoolFrom, stopScraping, validCount } from '../mcloud/koulingPool.ts';
@@ -256,24 +256,21 @@ register_cron(
       if (capOnly) {
         logBoth(store, 'error', c.detail[0] ?? c.note, at);
       } else {
-        logBoth(store, 'info', '------【口令】------', at);
+        logBoth(store, 'start', '口令', at);
         let prev = '';
         for (const line of c.detail) {
-          if (line === prev) continue;
-          prev = line;
-          logBoth(store, line.includes('没成') ? 'warn' : 'info', line, at);
+          const shown = lineText(onceHint(line, onceHints));
+          if (shown === prev) continue;
+          prev = shown;
+          logBoth(store, lineLevel(shown), shown, at);
         }
         const cBad = c.steps.filter((x) => !x.ok).length;
-        logBoth(
-          store,
-          cBad > 0 ? 'warn' : 'info',
-          `------【口令】${c.note}------`,
-          at,
-        );
+        logBoth(store, cBad > 0 ? 'warn' : 'success', `口令：${c.note}`, at);
       }
     }
 
     // ── ② 每个账号：拿共享池里的口令去领 ─────────────────────────────
+    logBoth(store, 'start', `直播 · ${runs.length} 个账号`, at);
     for (const one of runs) {
       const r = one.result;
       const who = labelOf(store, one.acctId);
@@ -299,21 +296,48 @@ register_cron(
         ok: r.ok,
         note,
       });
-      logBoth(store, 'info', `------【${who}】------`, at);
+      logBoth(store, 'start', `账号 ${who}`, at);
       let prev = '';
+      // 级联的“没有网页会话”不逐行刷：一个根因会拖垮十步，逐行写就是十行同样的字。
+      const skippedSteps: string[] = [];
       for (const line of r.detail) {
         // 同一行连着出现（同一账号里的重复步骤）不必重画；
         // `onceHint` 管的是**跨账号**的同一句解释（见 stepLog.ts 那段）
-        const shown = onceHint(line, onceHints);
+        const shown = lineText(onceHint(line, onceHints));
         if (shown === prev) continue;
         prev = shown;
-        logBoth(store, shown.includes('没成') ? 'warn' : 'info', shown, at);
+        if (shown.includes('跳过（没有网页会话）')) {
+          skippedSteps.push(shown.split('：')[0] ?? shown);
+          continue;
+        }
+        logBoth(store, lineLevel(shown), shown, at);
       }
-      const bad = r.steps.filter((x) => !x.ok).length;
+      if (skippedSteps.length > 0) {
+        const head = skippedSteps.slice(0, 3).join('、');
+        logBoth(
+          store,
+          'debug',
+          `跳过 ${skippedSteps.length} 项（没有网页会话）：${head}${skippedSteps.length > 3 ? ' 等' : ''}`,
+          at,
+        );
+      }
+      const { bad, hard } = stepTally(r.steps);
       const tail =
-        bad === 0 ? `------【${who}】都成了------` : `------【${who}】${bad} 项没成------`;
-      logBoth(store, bad > 0 ? 'warn' : 'info', tail, at);
+        bad === 0
+          ? `账号 ${who}：都成了`
+          : hard === 0
+            ? `账号 ${who}：${bad} 项跳过（没有网页会话）`
+            : `账号 ${who}：${hard} 项没成${bad > hard ? `、${bad - hard} 项跳过` : ''}`;
+      logBoth(store, hard > 0 ? 'warn' : 'debug', tail, at);
     }
+
+    const okCount = runs.filter((x) => x.result.ok).length;
+    logBoth(
+      store,
+      okCount === runs.length ? 'success' : 'warn',
+      `直播完成：${okCount}/${runs.length} 个账号好了`,
+      at,
+    );
 
     // 账号可能在运行期间被删/停用：卡片摘要和未就绪状态跟着重算。
     setTaskBlockers('直播', blockersFor(store, '直播'));
@@ -328,4 +352,4 @@ register_cron(
   },
 );
 
-log(`mcloud-live：任务「直播」（预算 ${BUDGET_MS / 1000}s，共享粗粒度 lane）`);
+debug(`mcloud-live：任务「直播」（预算 ${BUDGET_MS / 1000}s，共享粗粒度 lane）`);

@@ -9,7 +9,7 @@
 //
 // 目标存 **prizeId**（稳定），名字只用于显示；老库只有名字时按名字兼容。
 
-import { log, register_cron, worker_hint } from 'host-api';
+import { debug, log, register_cron, worker_hint } from 'host-api';
 import { hourKey } from '../mcloud/exchangeTiming.ts';
 import { loadAccounts } from '../mcloud/accounts.ts';
 import { appendRun } from '../mcloud/runLog.ts';
@@ -19,6 +19,7 @@ import type { TaskPayload } from './shared.ts';
 import { labelOf } from '../mcloud/taskAccounts.ts';
 import { blockersFor } from '../mcloud/taskReadiness.ts';
 import { logBoth } from '../mcloud/log.ts';
+import { lineLevel, lineText, stepTally } from '../mcloud/tasks/stepLog.ts';
 import {
   BUDGET_MS,
   DEFAULT_SCHEDULE_CRON,
@@ -76,7 +77,7 @@ register_cron(
       const acct = accounts.find((a) => a.id === plan.accountId);
       if (!acct || acct.disabled === true) {
         skipped += 1;
-        log('计划「' + plan.prizeName + '」：账号已删除或停用，这一趟跳过');
+        logBoth(store, 'debug', '计划「' + plan.prizeName + '」：账号已删除或停用，这一趟跳过', at);
         continue;
       }
       const untilGate = scheduleUntilAllowed(store, targetMs, plan.until);
@@ -142,24 +143,48 @@ register_cron(
         ok: r.ok,
         note,
       });
-      logBoth(store, 'info', '------【' + who + ' · ' + plan.prizeName + '】------', at);
+      logBoth(store, 'start', `兑换 · ${who} · ${plan.prizeName}`, at);
+      let prev = '';
+      // 级联的“没有网页会话”不逐行刷：一个根因会拖垮十步。
+      const skippedSteps: string[] = [];
       for (const line of r.detail) {
-        logBoth(store, line.includes('没成') ? 'warn' : 'info', line, at);
+        const shown = lineText(line);
+        if (shown === prev) continue;
+        prev = shown;
+        if (shown.includes('跳过（没有网页会话）')) {
+          skippedSteps.push(shown.split('：')[0] ?? shown);
+          continue;
+        }
+        logBoth(store, lineLevel(shown), shown, at);
       }
-      const bad = r.steps.filter((x) => !x.ok).length;
+      if (skippedSteps.length > 0) {
+        const head = skippedSteps.slice(0, 3).join('、');
+        logBoth(
+          store,
+          'debug',
+          `跳过 ${skippedSteps.length} 项（没有网页会话）：${head}${skippedSteps.length > 3 ? ' 等' : ''}`,
+          at,
+        );
+      }
+      const { bad, hard } = stepTally(r.steps);
       const tail =
         bad === 0
-          ? '------【' + who + '】都成了------'
-          : '------【' + who + '】' + bad + ' 项没成------';
-      logBoth(store, bad > 0 ? 'warn' : 'info', tail, at);
+          ? `${plan.prizeName}：都成了`
+          : hard === 0
+            ? `${plan.prizeName}：${bad} 项跳过（没有网页会话）`
+            : `${plan.prizeName}：${hard} 项没成${bad > hard ? `、${bad - hard} 项跳过` : ''}`;
+      logBoth(store, hard > 0 ? 'warn' : 'debug', tail, at);
     }
 
     if (acted === 0) {
-      log(
+      logBoth(
+        store,
+        'debug',
         '这一趟没动手 —— ' +
           plans.length +
           ' 条计划都还没到该抢的时候（或这一场已经试过了）' +
           (skipped > 0 ? '，其中 ' + skipped + ' 条被跳过' : ''),
+        at,
       );
     }
   },
@@ -178,7 +203,7 @@ register_cron(
   },
 );
 
-log(
+debug(
   'mcloud-exchange：任务「兑换」（预算 ' +
     BUDGET_MS / 1000 +
     's，独占线程）—— ' +

@@ -6,6 +6,7 @@
 
 // src/entries/mcloud.ts
 import {
+  debug,
   error,
   log as log2,
   register_nav,
@@ -12447,4 +12448,4 @@ var selftestRoute = {
 };
 register_route(selftestRoute.path, selftestRoute.method, selftestRoute.handler);
 store.setState("plugin.loaded_at", (/* @__PURE__ */ new Date()).toISOString(), (/* @__PURE__ */ new Date()).toISOString());
-log2(`mcloud（服务型）：${registered + 1} 条路由 + 侧边栏入口，**没有 cron 任务**`);
+debug(`mcloud（服务型）：${registered + 1} 条路由 + 侧边栏入口，**没有 cron 任务**`);

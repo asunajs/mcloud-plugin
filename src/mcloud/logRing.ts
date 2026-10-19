@@ -30,7 +30,7 @@ export const RING_MAX = 400;
 export interface RingLine {
   /** 时刻（ISO） */
   t: string;
-  /** 级别：`info` / `warn` */
+  /** 类型：`debug` / `info` / `warn` / `error` / `start` / `success` / `fail` */
   l: string;
   /** 正文 */
   m: string;
@@ -59,7 +59,7 @@ export function readRing(store: Pick<Store, 'getState'>): RingLine[] {
 export function appendRing(
   store: Pick<Store, 'getState' | 'setState'>,
   nowIso: string,
-  level: 'info' | 'warn' | 'error',
+  level: string,
   msg: string,
 ): void {
   const all = parse(store.getState(RING_KEY) ?? '');
