@@ -28,14 +28,37 @@ import { callRawText } from '../client.ts';
 import { sessionHeaders } from './base.ts';
 import { REFERER_SIGN_IN, SHOW_LOADING, buildH5Request } from '../h5.ts';
 import { loadSession } from '../../store/types.ts';
+import { loadAuthRaw } from '../sessionExchange.ts';
+import { parseAuth } from '../auth.ts';
+import { uuidV4 } from '../rand.ts';
+import { utf8 } from '../../crypto/bytes.ts';
 import { judgeItem, readMatrix } from './appTaskMatrix.ts';
 import { runUploadStep, startUpload, uploadDone } from './upload.ts';
 import { cloudFileOpHeaders, deterministicFile } from '../cloudUpload.ts';
 import { shouldSkip, stepFor, uploadShapeFor } from '../appTaskRules.ts';
-import type { TaskStep } from '../appTaskRules.ts';
+import type { AppRunner, TaskStep } from '../appTaskRules.ts';
 import { parseSsoToken } from '../h5session.ts';
 import {
+  aiCameraChatRequest,
+  billMailsSearchRequest,
+  billPageRequest,
+  logBehaviorActionRequest,
+  mailReportToMqRequest,
+  markMailReadRequest,
+  readMessageRequest,
   aiChatRequest,
+  aiRecognizeRequest,
+  composeMailRequest,
+  convertPdfRequest,
+  getComposeIdRequest,
+  mailAutologinRequest,
+  marketClickRequest,
+  noteAuthRequest,
+  noteCreateRequest,
+  noteDeleteRequest,
+  parseAiRecognize,
+  parseComposeId,
+  parseNoteHeaders,
   cloudTaskStatusRequest,
   delOutLinkRequest,
   deriveAiAuth,
@@ -100,10 +123,32 @@ export type TaskPhase =
   | 'aiQuery'
   | 'aiStatus'
   | 'aiChat'
+  | 'noteAuth'
+  | 'noteCreate'
+  | 'noteDelete'
+  | 'mailActiveAction'
+  | 'sendMailAction'
+  | 'camRecognize'
+  | 'camChat'
+  | 'pdfUpload'
+  | 'pdfConvert'
+  | 'billViewAction'
   | 'done';
 
 /** 这一条除了“点一下”之外还要做的动作。 */
-type Special = 'entry' | 'portal' | 'share' | 'mailBackup' | 'aiAssistant';
+type Special =
+  | 'entry'
+  | 'portal'
+  | 'share'
+  | 'mailBackup'
+  | 'aiAssistant'
+  | 'aiWorkbench'
+  | 'aiCamera'
+  | 'note'
+  | 'mailActive'
+  | 'sendMail'
+  | 'pdfConvert'
+  | 'billView';
 
 interface TaskState {
   gi: number;
@@ -141,6 +186,16 @@ const PHASE_TEXT: Record<TaskPhase, string> = {
   aiQuery: 'AI 鉴权（queryUserToken）',
   aiStatus: 'AI 状态查询',
   aiChat: 'AI 对话（SSE）',
+  noteAuth: '云笔记鉴权',
+  noteCreate: '建云笔记',
+  noteDelete: '删云笔记',
+  mailActiveAction: '邮箱活跃 + 市场打卡',
+  sendMailAction: '发邮件 + 市场打卡',
+  camRecognize: 'AI 相机识图',
+  camChat: 'AI 相机对话（SSE）',
+  pdfUpload: '传 PDF',
+  pdfConvert: 'PDF 转换',
+  billViewAction: '我的账单（8 发）',
   done: '这一趟走完了',
 };
 
@@ -287,10 +342,13 @@ function advance(deps: TaskDeps, st: TaskState): TaskOutcome {
         : next.step.kind === 'share'
           ? 'share'
           : next.step.kind === 'runner'
-            ? next.step.runner === 'aiAssistant'
-              ? 'aiAssistant'
-              : 'mailBackup'
+            ? specialForRunner(next.step.runner)
             : undefined;
+  let pdfTs: number | undefined;
+  if (special === 'pdfConvert') {
+    pdfTs = beginPdfUpload(deps);
+    phase = 'pdfUpload';
+  }
   // 已经走起来的条目（currstep != 0）不再打“先打卡”那一发 —— 参考实现的
   // `should_click` 就是这道门；1005 / 1017 实拍 currstep=1，只发补的那一发。
   if (
@@ -309,6 +367,7 @@ function advance(deps: TaskDeps, st: TaskState): TaskOutcome {
     data: {
       marketName: next.marketName,
       link: next.buttonEmailLink ?? next.buttonAppLink ?? '',
+      ...(pdfTs === undefined ? {} : { pdfTs: String(pdfTs) }),
     },
     clicked,
     day: today(deps),
@@ -401,6 +460,30 @@ function beginUpload(deps: TaskDeps, itemId: number, name: string): void {
   });
 }
 
+/** 生成一个最小 PDF（参考 mcloud 的 pdf_convert_runner）。 */
+function makePdf(ts: number): string {
+  const text = `asign auto pdf ${ts}`;
+  return (
+    '%PDF-1.4\n' +
+    '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n' +
+    '2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n' +
+    '3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n' +
+    `4 0 obj\n<< /Length ${text.length + 50} >>\nstream\n` +
+    `BT\n/F1 18 Tf\n72 720 Td\n(${text}) Tj\nET\n` +
+    'endstream\nendobj\n' +
+    '5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n' +
+    'xref\n0 6\n0000000000 65535 f\n0000000009 00000 n\n0000000058 00000 n\n' +
+    '0000000115 00000 n\n0000000223 00000 n\n0000000378 00000 n\n' +
+    'trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n444\n%%EOF\n'
+  );
+}
+
+function beginPdfUpload(deps: TaskDeps): number {
+  const ts = Date.now();
+  startUpload(deps, { name: `asign-pdf-${ts}.pdf`, bytes: utf8(makePdf(ts)) });
+  return ts;
+}
+
 /** 起一趟（**一个请求都不发**）。 */
 export function startAppTask(deps: TaskDeps): TaskOutcome {
   // ⚠ **今天的"已点过"名单要接着用**：矩阵读数是慢的（8 个 group 轮着读），
@@ -450,10 +533,13 @@ export function startAppTask(deps: TaskDeps): TaskOutcome {
         : first.step.kind === 'share'
           ? 'share'
           : first.step.kind === 'runner'
-            ? first.step.runner === 'aiAssistant'
-              ? 'aiAssistant'
-              : 'mailBackup'
+            ? specialForRunner(first.step.runner)
             : undefined;
+  let pdfTs: number | undefined;
+  if (special === 'pdfConvert') {
+    pdfTs = beginPdfUpload(deps);
+    phase = 'pdfUpload';
+  }
   if (
     first.currStep !== undefined &&
     first.currStep !== 0 &&
@@ -470,11 +556,36 @@ export function startAppTask(deps: TaskDeps): TaskOutcome {
     data: {
       marketName: first.marketName,
       link: first.buttonEmailLink ?? first.buttonAppLink ?? '',
+      ...(pdfTs === undefined ? {} : { pdfTs: String(pdfTs) }),
     },
     clicked,
     day: today(deps),
   });
   return { ok: true, note: `已排队 ${todo.length} 条待办（今天已点过 ${clicked.length} 条），从 #${first.itemId} 开始` };
+}
+
+/** 专用 runner → 特殊动作标记。 */
+function specialForRunner(runner: AppRunner): Special {
+  switch (runner) {
+    case 'aiAssistant':
+      return 'aiAssistant';
+    case 'aiWorkbench':
+      return 'aiWorkbench';
+    case 'aiCamera':
+      return 'aiCamera';
+    case 'note':
+      return 'note';
+    case 'mailActive':
+      return 'mailActive';
+    case 'sendMail':
+      return 'sendMail';
+    case 'pdfConvert':
+      return 'pdfConvert';
+    case 'billView':
+      return 'billView';
+    default:
+      return 'mailBackup';
+  }
 }
 
 /** 某个特殊动作对应的阶段（没有就 `undefined`）。 */
@@ -488,7 +599,19 @@ function phaseOfSpecial(s: Special | undefined): TaskPhase | undefined {
       return 'share';
     case 'mailBackup':
     case 'aiAssistant':
+    case 'aiWorkbench':
+    case 'aiCamera':
       return 'mailLogin';
+    case 'note':
+      return 'noteAuth';
+    case 'mailActive':
+      return 'mailActiveAction';
+    case 'sendMail':
+      return 'sendMailAction';
+    case 'pdfConvert':
+      return 'pdfUpload';
+    case 'billView':
+      return 'billViewAction';
     default:
       return undefined;
   }
@@ -712,15 +835,172 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
     if (!res.ok) return { ok: false, note: `邮箱登录失败：${res.error ?? '未知失败'}` };
     const sess = parseMailSession(res.text);
     if (!sess) return { ok: false, note: '邮箱登录响应里没有 var.sid / var.rmkey' };
+    const nextPhase =
+      st.special === 'aiAssistant' || st.special === 'aiWorkbench' || st.special === 'aiCamera'
+        ? 'aiQuery'
+        : st.special === 'mailActive'
+          ? 'mailActiveAction'
+          : st.special === 'sendMail'
+            ? 'sendMailAction'
+            : st.special === 'pdfConvert'
+              ? 'pdfUpload'
+              : st.special === 'billView'
+                ? 'billViewAction'
+                : 'mailDirs';
     save(deps, {
       ...st,
-      phase: st.special === 'aiAssistant' ? 'aiQuery' : 'mailDirs',
+      phase: nextPhase,
       data: { ...(st.data ?? {}), sso: '', sid: sess.sid, rmkey: sess.rmkey, cguid: newCguid() },
       day: today(deps),
     });
     return {
       ok: true,
-      note: `邮箱登录成功（sid/rmkey 已拿到）—— 下一步${st.special === 'aiAssistant' ? '派生 AI 鉴权' : '取云盘目录'}`,
+      note: `邮箱登录成功（sid/rmkey 已拿到）—— 下一步${nextPhase === 'aiQuery' ? '派生 AI 鉴权' : nextPhase === 'mailActiveAction' ? '打邮箱活跃' : nextPhase === 'sendMailAction' ? '发邮件' : nextPhase === 'pdfUpload' ? '传 PDF' : nextPhase === 'billViewAction' ? '看账单' : '取云盘目录'}`,
+    };
+  }
+
+  if (st.phase === 'noteAuth') {
+    const auth = parseAuth(loadAuthRaw(deps.store));
+    if (!auth || auth.token === '') {
+      const out = advance(deps, doneState(deps, st));
+      return { ok: true, note: `云笔记 #${st.itemId}：没有 authToken，跳过。${out.note}` };
+    }
+    const res = callRawText(deps.transport, noteAuthRequest(auth.token, auth.phone));
+    if (!res.ok) return { ok: false, note: `云笔记鉴权失败：${res.error ?? '未知失败'}` };
+    const headers = parseNoteHeaders(res.text);
+    if (!headers) {
+      const out = advance(deps, doneState(deps, st));
+      return { ok: true, note: `云笔记 #${st.itemId}：鉴权响应没有 headers.app_auth，跳过。${out.note}` };
+    }
+    const noteId = uuidV4().replace(/-/g, '').padEnd(32, '0').slice(0, 32);
+    save(deps, {
+      ...st,
+      phase: 'noteCreate',
+      data: { ...(st.data ?? {}), noteId, title: noteId.slice(0, 3), headers: JSON.stringify(headers) },
+      day: today(deps),
+    });
+    return { ok: true, note: '云笔记鉴权成功 —— 下一步建笔记' };
+  }
+
+  if (st.phase === 'noteCreate') {
+    const auth = parseAuth(loadAuthRaw(deps.store));
+    let headers: Record<string, string> = {};
+    try {
+      headers = JSON.parse(st.data?.headers ?? '{}') as Record<string, string>;
+    } catch {
+      headers = {};
+    }
+    const res = callRawText(
+      deps.transport,
+      noteCreateRequest(st.data?.noteId ?? '', st.data?.title ?? '', auth?.phone ?? '', headers, Date.now()),
+    );
+    save(deps, { ...st, phase: 'noteDelete', day: today(deps) });
+    return {
+      ok: true,
+      note: res.ok ? '云笔记已创建 —— 下一步移进回收站' : `建笔记没成（旧实现也忽略）：${res.error ?? ''} —— 下一步移进回收站`,
+    };
+  }
+
+  if (st.phase === 'noteDelete') {
+    let headers: Record<string, string> = {};
+    try {
+      headers = JSON.parse(st.data?.headers ?? '{}') as Record<string, string>;
+    } catch {
+      headers = {};
+    }
+    const res = callRawText(deps.transport, noteDeleteRequest(st.data?.noteId ?? '', headers));
+    const out = advance(deps, doneState(deps, st));
+    return {
+      ok: true,
+      note: res.ok ? `云笔记已移进回收站。${out.note}` : `删云笔记没成（旧实现也忽略）：${res.error ?? ''}。${out.note}`,
+    };
+  }
+
+  if (st.phase === 'mailActiveAction') {
+    const sess = { sid: st.data?.sid ?? '', rmkey: st.data?.rmkey ?? '' };
+    const a = callRawText(deps.transport, mailAutologinRequest(sess));
+    const b = callRawText(deps.transport, marketClickRequest(st.itemId, 'sign_in_3'));
+    const out = advance(deps, doneState(deps, st));
+    return {
+      ok: true,
+      note: `邮箱活跃 #${st.itemId}（autologin ${a.ok ? 'ok' : '没成'}；市场打卡 ${b.ok ? 'ok' : '没成'}）。${out.note}`,
+    };
+  }
+
+  if (st.phase === 'sendMailAction') {
+    const sess = { sid: st.data?.sid ?? '', rmkey: st.data?.rmkey ?? '' };
+    const a = callRawText(deps.transport, getComposeIdRequest(sess));
+    const composeId = a.ok ? parseComposeId(a.text) : undefined;
+    if (!composeId) {
+      const out = advance(deps, doneState(deps, st));
+      return { ok: false, note: `发邮件 #${st.itemId}：取不到 composeId。${out.note}` };
+    }
+    const auth = parseAuth(loadAuthRaw(deps.store));
+    const account = `${auth?.phone ?? ''}@139.com`;
+    const b = callRawText(
+      deps.transport,
+      composeMailRequest(sess, {
+        composeId,
+        account,
+        to: account,
+        subject: `签到任务测试 ${Date.now()}`,
+        content: '本邮件由 mcloud 插件自动发送，可忽略。',
+      }),
+    );
+    const code = b.ok ? mailCode(b.text) : { ok: false, code: '', summary: b.error ?? '' };
+    const c = callRawText(deps.transport, marketClickRequest(1004, 'newsign_139mail'));
+    const out = advance(deps, doneState(deps, st));
+    return {
+      ok: code.ok,
+      note: code.ok
+        ? `邮件已发送到 ${account}（市场打卡 ${c.ok ? 'ok' : '没成'}）。${out.note}`
+        : `发邮件没成（code=${code.code} ${code.summary}）。${out.note}`,
+    };
+  }
+
+  if (st.phase === 'camRecognize') {
+    const auth = parseAuth(loadAuthRaw(deps.store));
+    const s = loadSession(deps.store);
+    const tid = uuidV4().replace(/-/g, '').slice(0, 16);
+    const res = callRawText(
+      deps.transport,
+      aiRecognizeRequest(auth?.raw ?? '', st.data?.domain ?? '', tid, s?.deviceId ?? ''),
+    );
+    const rec = res.ok ? parseAiRecognize(res.text) : undefined;
+    if (!rec || !rec.success || !rec.fileId) {
+      const out = advance(deps, doneState(deps, st));
+      return { ok: false, note: `AI 相机识图没成：${rec?.message ?? res.error ?? '没有 fileId'}。${out.note}` };
+    }
+    save(deps, {
+      ...st,
+      phase: 'camChat',
+      data: { ...(st.data ?? {}), fileId: rec.fileId, camTaskId: rec.taskId ?? '' },
+      day: today(deps),
+    });
+    return { ok: true, note: `AI 相机识图成功（fileId ${rec.fileId.length} 字符）—— 下一步对话` };
+  }
+
+  if (st.phase === 'camChat') {
+    const auth = parseAuth(loadAuthRaw(deps.store));
+    const tid = uuidV4().replace(/-/g, '').slice(0, 16);
+    const res = callRawText(
+      deps.transport,
+      aiCameraChatRequest(
+        auth?.raw ?? '',
+        st.data?.domain ?? '',
+        st.data?.fileId ?? '',
+        st.data?.camTaskId ?? '',
+        tid,
+      ),
+    );
+    const sse = res.ok ? parseSse(res.text) : { events: 0, text: '' };
+    const ok = sse.events > 0 || sse.text !== '' || (res.ok && res.text.includes('"success":true'));
+    const out = advance(deps, doneState(deps, st));
+    return {
+      ok,
+      note: ok
+        ? `AI 相机对话完成（events=${sse.events}）。${out.note}`
+        : `AI 相机对话没成（events=${sse.events}）。${out.note}`,
     };
   }
 
@@ -735,9 +1015,10 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
     const auth = t ? deriveAiAuth(t) : undefined;
     if (!t || !auth) return { ok: false, note: 'queryUserToken 没给全 account/token 或解不出手机号' };
     if (auth.userDomainId === '') return { ok: false, note: 'queryUserToken 没给 userDomainId' };
+    const next = st.special === 'aiCamera' ? 'camRecognize' : 'aiStatus';
     save(deps, {
       ...st,
-      phase: 'aiStatus',
+      phase: next,
       data: {
         ...(st.data ?? {}),
         phone: auth.phone,
@@ -746,7 +1027,10 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
       },
       day: today(deps),
     });
-    return { ok: true, note: `AI 鉴权已派生（userDomainId ${auth.userDomainId.length} 字符）—— 下一步查状态` };
+    return {
+      ok: true,
+      note: `AI 鉴权已派生（userDomainId ${auth.userDomainId.length} 字符）—— 下一步${next === 'camRecognize' ? '识图' : '查状态'}`,
+    };
   }
 
   if (st.phase === 'aiStatus') {
@@ -775,6 +1059,76 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
         sse.events > 0 && sse.text !== ''
           ? `AI 对话成功（events=${sse.events}，回复 ${sse.text.slice(0, 20)}…）。${out.note}`
           : `AI 对话没取到输出（events=${sse.events}）${res.ok ? '' : `：${res.error ?? ''}`}。${out.note}`,
+    };
+  }
+
+  if (st.phase === 'pdfUpload') {
+    const ts = Number(st.data?.pdfTs ?? Date.now());
+    if (uploadDone(deps)) {
+      const up = JSON.parse(deps.store.getState('mcloud.upload.state') ?? '{}') as { fileId?: string };
+      save(deps, { ...st, phase: 'pdfConvert', fileId: up.fileId, day: today(deps) });
+      return { ok: true, note: 'PDF 已传完 —— 下一步转换' };
+    }
+    const out = runUploadStep(deps, utf8(makePdf(ts)));
+    if (uploadDone(deps)) {
+      const up = JSON.parse(deps.store.getState('mcloud.upload.state') ?? '{}') as { fileId?: string };
+      save(deps, { ...st, phase: 'pdfConvert', fileId: up.fileId, day: today(deps) });
+      return { ok: true, note: 'PDF 已传完 —— 下一步转换' };
+    }
+    return out;
+  }
+
+  if (st.phase === 'pdfConvert') {
+    const sess = { sid: st.data?.sid ?? '', rmkey: st.data?.rmkey ?? '' };
+    const ts = Number(st.data?.pdfTs ?? Date.now());
+    const res = callRawText(
+      deps.transport,
+      convertPdfRequest(
+        sess,
+        `asign-pdf-${ts}.pdf`,
+        utf8(makePdf(ts)).length,
+        st.fileId ?? '',
+        String(Math.random()),
+        st.data?.cguid ?? newCguid(),
+      ),
+    );
+    const code = res.ok ? mailCode(res.text) : { ok: false, code: '', summary: res.error ?? '未知失败' };
+    const out = advance(deps, doneState(deps, st));
+    return {
+      ok: code.ok,
+      note: code.ok ? `PDF 转换完成。${out.note}` : `PDF 转换没成（code=${code.code} ${code.summary}）。${out.note}`,
+    };
+  }
+
+  if (st.phase === 'billViewAction') {
+    const sess = { sid: st.data?.sid ?? '', rmkey: st.data?.rmkey ?? '' };
+    const cguid = st.data?.cguid ?? newCguid();
+    const a = callRawText(deps.transport, billPageRequest(sess, cguid));
+    const b = callRawText(deps.transport, billMailsSearchRequest(sess, cguid));
+    const mid = b.ok ? firstField(b.text, 'mid') : undefined;
+    if (!mid) {
+      const out = advance(deps, doneState(deps, st));
+      return { ok: false, note: `账单 #${st.itemId}：邮件列表里取不到 mid。${out.note}` };
+    }
+    const c = callRawText(deps.transport, markMailReadRequest(sess, cguid, mid));
+    const d = callRawText(deps.transport, readMessageRequest(sess, cguid, mid));
+    const mq: boolean[] = [];
+    for (const [actionType, clientType, channel] of [
+      ['1003', '2', ''],
+      ['1003', '2', ''],
+      ['1017', '1', '10242400'],
+    ] as const) {
+      const r = callRawText(
+        deps.transport,
+        mailReportToMqRequest(sess, cguid, String(Math.random()), actionType, clientType, mid, channel),
+      );
+      mq.push(r.ok);
+    }
+    const e = callRawText(deps.transport, logBehaviorActionRequest(sess, 111631, 261, cguid, '110542_6'));
+    const out = advance(deps, doneState(deps, st));
+    return {
+      ok: d.ok && mq.every(Boolean) && e.ok,
+      note: `账单 #${st.itemId}（页 ${a.ok ? 'ok' : '没成'}；mid 已取；标读 ${c.ok ? 'ok' : '没成'}；读信 ${d.ok ? 'ok' : '没成'}；MQ ${mq.filter(Boolean).length}/3；像素 ${e.ok ? 'ok' : '没成'}）。${out.note}`,
     };
   }
 

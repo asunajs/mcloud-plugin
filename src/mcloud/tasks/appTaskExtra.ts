@@ -518,6 +518,439 @@ export function parseSse(body: string): { events: number; text: string } {
   return { events, text };
 }
 
+
+// ── 107：云笔记 ────────────────────────────────────────────────────────
+
+const NOTE_AUTH_URL = 'https://note.mcloud.139.com/noteServer/api/authTokenRefresh.do';
+const MNOTE = 'https://mnote.caiyun.feixin.10086.cn';
+
+export function noteAuthRequest(token: string, phone: string): BuiltRequest {
+  return {
+    url: NOTE_AUTH_URL,
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      APP_CP: 'android',
+      APP_NUMBER: phone,
+      CP_VERSION: '3.2.0',
+      'x-huawei-channelsrc': '10001400',
+      'User-Agent': 'mobile',
+    },
+    body: JSON.stringify({ authToken: token, userPhone: phone }),
+  };
+}
+
+export function parseNoteHeaders(body: string): Record<string, string> | undefined {
+  try {
+    const v = JSON.parse(body) as { headers?: unknown };
+    if (v.headers === null || typeof v.headers !== 'object') return undefined;
+    const out: Record<string, string> = {};
+    for (const [k, val] of Object.entries(v.headers as Record<string, unknown>)) {
+      if (typeof val === 'string') out[k] = val;
+    }
+    return out.app_auth ? out : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function noteCreateRequest(
+  noteId: string,
+  title: string,
+  phone: string,
+  headers: Record<string, string>,
+  nowMs: number,
+): BuiltRequest {
+  const ts = String(nowMs);
+  return {
+    url: `${MNOTE}/noteServer/api/createNote.do`,
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      APP_CP: 'pc',
+      APP_NUMBER: phone,
+      CP_VERSION: '7.7.1.20240115',
+      ...headers,
+    },
+    body: JSON.stringify({
+      archived: 0,
+      attachmentdir: '',
+      attachmentdirid: '',
+      attachments: [],
+      contentid: '',
+      contents: [{ data: '<span></span>', noteId, sortOrder: 0, type: 'TEXT' }],
+      cp: '',
+      createtime: ts,
+      description: '',
+      expands: { noteType: 0 },
+      landMark: [],
+      latlng: '',
+      location: '',
+      noteid: noteId,
+      remindtime: '',
+      remindtype: 0,
+      revision: '1',
+      system: '',
+      tags: [],
+      title,
+      topmost: '0',
+      updatetime: ts,
+      userphone: phone,
+      version: '',
+      visitTime: ts,
+    }),
+  };
+}
+
+export function noteDeleteRequest(noteId: string, headers: Record<string, string>): BuiltRequest {
+  return {
+    url: `${MNOTE}/noteServer/api/moveToRecycleBin.do`,
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      APP_CP: 'pc',
+      CP_VERSION: '7.7.1.20240115',
+      ...headers,
+    },
+    body: JSON.stringify({ noteids: [{ noteid: noteId }] }),
+  };
+}
+
+// ── 472 / 473：邮箱活跃 ─────────────────────────────────────────────────
+
+export function mailAutologinRequest(session: MailSession): BuiltRequest {
+  return {
+    url: `https://mail.10086.cn/login/autologin.action?sid=${session.sid}&rmkey=${session.rmkey}`,
+    method: 'GET',
+    headers: {},
+    body: undefined,
+  };
+}
+
+export function marketClickRequest(taskId: number, marketname: string): BuiltRequest {
+  return {
+    url: 'https://m.mcloud.139.com/ycloud/signin/task/taskClickV2',
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ marketname, clientVersion: '11.2.1', taskId }),
+  };
+}
+
+// ── 1004：发邮件 ────────────────────────────────────────────────────────
+
+export function getComposeIdRequest(session: MailSession): BuiltRequest {
+  return {
+    url: `${APPMAIL}/RmWeb/mail?func=mbox:getComposeId&sid=${session.sid}`,
+    method: 'POST',
+    headers: mailHeaders(session),
+    body: '',
+  };
+}
+
+export function parseComposeId(body: string): string | undefined {
+  try {
+    const v = JSON.parse(body) as { var?: unknown };
+    if (typeof v.var === 'string' && v.var !== '') return v.var;
+    if (v.var !== null && typeof v.var === 'object') {
+      const o = v.var as Record<string, unknown>;
+      for (const k of ['m', 'id']) {
+        if (typeof o[k] === 'string' && o[k] !== '') return o[k] as string;
+      }
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export interface ComposeMail {
+  composeId: string;
+  account: string;
+  to: string;
+  subject: string;
+  content: string;
+}
+
+export function composeMailRequest(session: MailSession, mail: ComposeMail): BuiltRequest {
+  const e = xmlEscape;
+  const xml =
+    `<object><object name='attrs'>` +
+    `<string name='id'>${e(mail.composeId)}</string>` +
+    `<string name='mid'></string><string name='messageId'></string>` +
+    `<string name='account'>${e(mail.account)}</string>` +
+    `<string name='to'>${e(mail.to)}</string>` +
+    `<string name='cc'></string><string name='bcc'></string><string name='replyTo'></string>` +
+    `<string name='subject'>${e(mail.subject)}</string>` +
+    `<string name='content'>${e(mail.content)}</string>` +
+    `<int name='isHtml'>0</int><int name='priority'>3</int>` +
+    `<int name='saveSentCopy'>1</int><int name='scheduleDate'>0</int>` +
+    `<array name='attachments'></array></object>` +
+    `<string name='action'>asyn</string></object>`;
+  return {
+    url: `${APPMAIL}/RmWeb/mail?func=mbox:compose&peFlag=1&sid=${session.sid}`,
+    method: 'POST',
+    headers: { ...mailHeaders(session), 'Content-Type': 'text/xml; charset=UTF-8' },
+    body: xml,
+  };
+}
+
+// ── 585 / 618：AI 相机 ─────────────────────────────────────────────────
+
+const AI_RECOGNIZE_URL = 'https://ai.yun.139.com/api/image/aiRecognize';
+const AI_CAMERA_BASE64 =
+  'iVBORw0KGgoAAAANSUhEUgAAAGQAAABkCAIAAAD/gAIDAAAACklEQVR42u3BAQEAAACCIP+vbkhAAQAAAO8GECAAASFhMcYAAAAASUVORK5CYII=';
+const AI_CAMERA_UA =
+  'Mozilla/5.0 (Linux; Android 14; 22041216C Build/TP1A.220624.014; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/128.0.6613.88 Mobile Safari/537.36';
+
+export function aiRecognizeRequest(
+  auth: string,
+  userId: string,
+  tid: string,
+  deviceId: string,
+): BuiltRequest {
+  return {
+    url: AI_RECOGNIZE_URL,
+    method: 'POST',
+    headers: {
+      accept: 'application/json',
+      'Content-Type': 'application/json',
+      'User-Agent': AI_CAMERA_UA,
+      deviceid: deviceId,
+      'x-yun-tid': tid,
+      Authorization: auth,
+      'x-yun-api-version': 'v1',
+      'x-yun-module-type': '100',
+      'x-yun-op-type': '1',
+      'x-yun-app-channel': '10214200',
+      'hcy-cool-flag': '1',
+      'x-yun-uni': userId,
+    },
+    body: JSON.stringify({
+      channelId: '101',
+      userId,
+      recognizeType: '1',
+      base64: AI_CAMERA_BASE64,
+      sendType: '2',
+      imageExt: 'jpg',
+      uploadToCloud: true,
+      timeout: 30000,
+    }),
+  };
+}
+
+export function parseAiRecognize(body: string): {
+  success: boolean;
+  fileId?: string;
+  taskId?: string;
+  message?: string;
+} | undefined {
+  try {
+    const v = JSON.parse(body) as {
+      success?: unknown;
+      data?: { fileId?: unknown; taskId?: unknown };
+      message?: unknown;
+    };
+    return {
+      success: v.success === true,
+      fileId: typeof v.data?.fileId === 'string' ? v.data.fileId : undefined,
+      taskId:
+        typeof v.data?.taskId === 'string'
+          ? v.data.taskId
+          : typeof v.data?.taskId === 'number'
+            ? String(v.data.taskId)
+            : undefined,
+      message: typeof v.message === 'string' ? v.message : undefined,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+export function aiCameraChatRequest(auth: string, userId: string, fileId: string, taskId: string, tid: string): BuiltRequest {
+  const n = Number.parseInt(taskId, 10);
+  const fileName = `${Number.isFinite(n) ? n + 1 : Date.now()}.jpeg`;
+  return {
+    url: AI_CHAT_URL,
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'User-Agent': AI_CAMERA_UA,
+      'x-yun-tid': tid,
+      Authorization: auth,
+      'x-yun-api-version': 'v1',
+      'x-yun-module-type': '100',
+      'x-yun-op-type': '1',
+      'x-yun-app-channel': '10214200',
+      'hcy-cool-flag': '1',
+      'x-yun-client-info': '||8||||||||||||',
+      Accept: 'text/event-stream',
+    },
+    body: JSON.stringify({
+      userId,
+      sessionId: '',
+      applicationType: 'chat',
+      applicationId: '',
+      sourceChannel: '101',
+      dialogueInput: {
+        dialogue: '？',
+        prompt: '',
+        inputTime: new Date().toISOString(),
+        enableForceLlm: false,
+        enableForceNetworkSearch: true,
+        enableModelThinking: false,
+        enableAllNetworkSearch: false,
+        enableKnowledgeAndNetworkSearch: false,
+        enableRegenerate: false,
+        versionInfo: { h5Version: '2.7.6' },
+        extInfo: '{}',
+        sortInfo: {},
+        toolSetting: { imageToolSetting: { enableLlmDescribe: true } },
+        attachment: { attachmentTypeList: [3], fileList: [{ fileId, name: fileName }] },
+      },
+    }),
+  };
+}
+
+
+/** 1014：`disk:convertPdfFromYunFile`。 */
+export function convertPdfRequest(
+  session: MailSession,
+  fileName: string,
+  fileRealSize: number,
+  fileId: string,
+  rnd: string,
+  cguid: string,
+): BuiltRequest {
+  const body =
+    '<object>\n  ' +
+    `<string name="fileName">${xmlEscape(fileName)}</string>\n  ` +
+    `<int name="fileRealSize">${fileRealSize}</int>\n  ` +
+    `<string name="fileId">${xmlEscape(fileId)}</string>\n  ` +
+    '<int name="convertType">1</int>\n  ' +
+    '<string name="appType">1</string>\n  ' +
+    '<string name="appVer">10.0.3</string>\n  ' +
+    '<string name="channel">10242000</string>\n' +
+    '</object>';
+  return {
+    url: `${HTML5_MAIL}/mw2/file/disk?func=disk:convertPdfFromYunFile&sid=${session.sid}&behaviorData=&rnd=${rnd}&cguid=${cguid}&k=&comefrom=166`,
+    method: 'POST',
+    headers: mailHeaders(session, {
+      Origin: HTML5_MAIL,
+      Referer: `${HTML5_MAIL}/`,
+      'X-Requested-With': 'cn.cj.pe',
+    }),
+    body,
+  };
+}
+
+
+// ── 1029：我的账单 ──────────────────────────────────────────────────────
+
+export function billPageRequest(session: MailSession, cguid: string): BuiltRequest {
+  return {
+    url: `${HTML5_MAIL}/html/mobilebill.html?sendId=1000006&sid=${session.sid}&cguid=${cguid}`,
+    method: 'GET',
+    headers: {
+      Cookie: `RMKEY=${session.rmkey}`,
+      'User-Agent': MAIL_UA,
+      Referer: `${HTML5_MAIL}/?id=bill`,
+    },
+    body: undefined,
+  };
+}
+
+export function billMailsSearchRequest(session: MailSession, cguid: string): BuiltRequest {
+  const cond = (field: string, op: string, value: number): string =>
+    `<object><string name="field">${field}</string><string name="operator">${op}</string><int name="value">${value}</int></object>`;
+  const conditions = [
+    cond('sendId', '=', 1000006),
+    cond('sendId1', '=', 1000007),
+    cond('sendId2', 'GE', 1000301),
+    cond('sendId2', 'LE', 1000700),
+    cond('sendId3', '=', 1000010),
+  ].join('');
+  const body =
+    '<object><int name="fid">1</int><int name="recursive">0</int><int name="ignoreCase">0</int>' +
+    '<int name="isSearch">1</int><int name="isFullSearch">0</int><int name="start">0</int>' +
+    '<int name="total">10</int><int name="limit">1000</int><string name="order">receiveDate</string>' +
+    '<string name="desc">1</string><int name="highLight">0</int>' +
+    '<array name="exceptFids"><int>4</int></array>' +
+    `<array name="condictions">${conditions}</array>` +
+    '<int name="addSendIdFlag">3</int><int name="statType">1</int></object>';
+  return {
+    url: `${APPMAIL}/RmWeb/mail?func=mbox:searchMessages&sid=${session.sid}&cguid=${cguid}`,
+    method: 'POST',
+    headers: mailHeaders(session, { 'X-Requested-With': 'cn.cj.pe' }),
+    body,
+  };
+}
+
+export function markMailReadRequest(session: MailSession, cguid: string, mid: string): BuiltRequest {
+  return {
+    url: `${APPMAIL}/RmWeb/mail?func=mbox:updateMessagesStatus&sid=${session.sid}&cguid=${cguid}`,
+    method: 'POST',
+    headers: mailHeaders(session, { 'X-Requested-With': 'cn.cj.pe' }),
+    body: `<object><array name="ids"><string>${xmlEscape(mid)}</string></array><string name="type">read</string><string name="value">1</string></object>`,
+  };
+}
+
+export function readMessageRequest(session: MailSession, cguid: string, mid: string): BuiltRequest {
+  return {
+    url: `${HTML5_MAIL}/RmWeb/view.do?func=view:readMessage&sid=${session.sid}&mid=${encodeURIComponent(mid)}&callback=getMailInfo&comefrom=166&fid=1&mode=mobile&resetdomain=0&cguid=${cguid}`,
+    method: 'GET',
+    headers: {
+      Cookie: `RMKEY=${session.rmkey}`,
+      Referer: `${HTML5_MAIL}/html/readmail.html`,
+    },
+    body: undefined,
+  };
+}
+
+export function mailReportToMqRequest(
+  session: MailSession,
+  cguid: string,
+  rnd: string,
+  actionType: string,
+  clientType: string,
+  mid: string,
+  channel: string,
+): BuiltRequest {
+  return {
+    url: `${HTML5_MAIL}/mw2/file/disk?func=disk:mailReportToMQ&sid=${session.sid}&rnd=${rnd}&cguid=${cguid}&comefrom=166`,
+    method: 'POST',
+    headers: {
+      Cookie: `RMKEY=${session.rmkey}`,
+      'Content-Type': 'application/xml',
+      Referer: `${HTML5_MAIL}/html/readmail.html`,
+    },
+    body: JSON.stringify({
+      actionType,
+      clientType,
+      imapId: mid,
+      clientVersion: 'h5',
+      channel,
+    }),
+  };
+}
+
+export function logBehaviorActionRequest(
+  session: MailSession,
+  action: number,
+  thingId: number,
+  cguid: string,
+  behaviorData: string,
+): BuiltRequest {
+  return {
+    url: `${HTML5_MAIL}/mw2/weather/weather?func=user:logBehaviorAction&action=${action}&thingId=${thingId}&version=html5&cguid=${cguid}&behaviorData=${encodeURIComponent(behaviorData)}`,
+    method: 'GET',
+    headers: {
+      Cookie: `RMKEY=${session.rmkey}`,
+      'User-Agent': MAIL_UA,
+    },
+    body: undefined,
+  };
+}
+
 /** 发一个请求（给状态机复用）。 */
 export function send(deps: TaskDeps, req: BuiltRequest) {
   return callRawText(deps.transport, req);

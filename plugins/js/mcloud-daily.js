@@ -4562,6 +4562,13 @@ function stepFor(item) {
   if (isShare(item.taskId)) return { kind: "share" };
   if (item.taskId === 1020) return { kind: "runner", runner: "mailBackup" };
   if (item.taskId === 609) return { kind: "runner", runner: "aiAssistant" };
+  if (item.taskId === 1028 || item.taskId === 1057) return { kind: "runner", runner: "aiWorkbench" };
+  if (item.taskId === 585 || item.taskId === 618) return { kind: "runner", runner: "aiCamera" };
+  if (item.taskId === 107) return { kind: "runner", runner: "note" };
+  if (item.taskId === 472 || item.taskId === 473) return { kind: "runner", runner: "mailActive" };
+  if (item.taskId === 1004) return { kind: "runner", runner: "sendMail" };
+  if (item.taskId === 1014) return { kind: "runner", runner: "pdfConvert" };
+  if (item.taskId === 1029) return { kind: "runner", runner: "billView" };
   const shape = uploadShapeFor(item);
   if (shape) return { kind: "upload", shape };
   if (isClickOnly(item.taskId)) return { kind: "clickOnly" };
@@ -4958,6 +4965,327 @@ function parseSse(body) {
   }
   return { events, text };
 }
+var NOTE_AUTH_URL = "https://note.mcloud.139.com/noteServer/api/authTokenRefresh.do";
+var MNOTE = "https://mnote.caiyun.feixin.10086.cn";
+function noteAuthRequest(token, phone) {
+  return {
+    url: NOTE_AUTH_URL,
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      APP_CP: "android",
+      APP_NUMBER: phone,
+      CP_VERSION: "3.2.0",
+      "x-huawei-channelsrc": "10001400",
+      "User-Agent": "mobile"
+    },
+    body: JSON.stringify({ authToken: token, userPhone: phone })
+  };
+}
+function parseNoteHeaders(body) {
+  try {
+    const v = JSON.parse(body);
+    if (v.headers === null || typeof v.headers !== "object") return void 0;
+    const out = {};
+    for (const [k, val] of Object.entries(v.headers)) {
+      if (typeof val === "string") out[k] = val;
+    }
+    return out.app_auth ? out : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function noteCreateRequest(noteId, title, phone, headers, nowMs) {
+  const ts = String(nowMs);
+  return {
+    url: `${MNOTE}/noteServer/api/createNote.do`,
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      APP_CP: "pc",
+      APP_NUMBER: phone,
+      CP_VERSION: "7.7.1.20240115",
+      ...headers
+    },
+    body: JSON.stringify({
+      archived: 0,
+      attachmentdir: "",
+      attachmentdirid: "",
+      attachments: [],
+      contentid: "",
+      contents: [{ data: "<span></span>", noteId, sortOrder: 0, type: "TEXT" }],
+      cp: "",
+      createtime: ts,
+      description: "",
+      expands: { noteType: 0 },
+      landMark: [],
+      latlng: "",
+      location: "",
+      noteid: noteId,
+      remindtime: "",
+      remindtype: 0,
+      revision: "1",
+      system: "",
+      tags: [],
+      title,
+      topmost: "0",
+      updatetime: ts,
+      userphone: phone,
+      version: "",
+      visitTime: ts
+    })
+  };
+}
+function noteDeleteRequest(noteId, headers) {
+  return {
+    url: `${MNOTE}/noteServer/api/moveToRecycleBin.do`,
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      APP_CP: "pc",
+      CP_VERSION: "7.7.1.20240115",
+      ...headers
+    },
+    body: JSON.stringify({ noteids: [{ noteid: noteId }] })
+  };
+}
+function mailAutologinRequest(session) {
+  return {
+    url: `https://mail.10086.cn/login/autologin.action?sid=${session.sid}&rmkey=${session.rmkey}`,
+    method: "GET",
+    headers: {},
+    body: void 0
+  };
+}
+function marketClickRequest(taskId, marketname) {
+  return {
+    url: "https://m.mcloud.139.com/ycloud/signin/task/taskClickV2",
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ marketname, clientVersion: "11.2.1", taskId })
+  };
+}
+function getComposeIdRequest(session) {
+  return {
+    url: `${APPMAIL}/RmWeb/mail?func=mbox:getComposeId&sid=${session.sid}`,
+    method: "POST",
+    headers: mailHeaders(session),
+    body: ""
+  };
+}
+function parseComposeId(body) {
+  try {
+    const v = JSON.parse(body);
+    if (typeof v.var === "string" && v.var !== "") return v.var;
+    if (v.var !== null && typeof v.var === "object") {
+      const o = v.var;
+      for (const k of ["m", "id"]) {
+        if (typeof o[k] === "string" && o[k] !== "") return o[k];
+      }
+    }
+    return void 0;
+  } catch {
+    return void 0;
+  }
+}
+function composeMailRequest(session, mail) {
+  const e = xmlEscape;
+  const xml = `<object><object name='attrs'><string name='id'>${e(mail.composeId)}</string><string name='mid'></string><string name='messageId'></string><string name='account'>${e(mail.account)}</string><string name='to'>${e(mail.to)}</string><string name='cc'></string><string name='bcc'></string><string name='replyTo'></string><string name='subject'>${e(mail.subject)}</string><string name='content'>${e(mail.content)}</string><int name='isHtml'>0</int><int name='priority'>3</int><int name='saveSentCopy'>1</int><int name='scheduleDate'>0</int><array name='attachments'></array></object><string name='action'>asyn</string></object>`;
+  return {
+    url: `${APPMAIL}/RmWeb/mail?func=mbox:compose&peFlag=1&sid=${session.sid}`,
+    method: "POST",
+    headers: { ...mailHeaders(session), "Content-Type": "text/xml; charset=UTF-8" },
+    body: xml
+  };
+}
+var AI_RECOGNIZE_URL = "https://ai.yun.139.com/api/image/aiRecognize";
+var AI_CAMERA_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAGQAAABkCAIAAAD/gAIDAAAACklEQVR42u3BAQEAAACCIP+vbkhAAQAAAO8GECAAASFhMcYAAAAASUVORK5CYII=";
+var AI_CAMERA_UA = "Mozilla/5.0 (Linux; Android 14; 22041216C Build/TP1A.220624.014; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/128.0.6613.88 Mobile Safari/537.36";
+function aiRecognizeRequest(auth, userId, tid, deviceId) {
+  return {
+    url: AI_RECOGNIZE_URL,
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      "Content-Type": "application/json",
+      "User-Agent": AI_CAMERA_UA,
+      deviceid: deviceId,
+      "x-yun-tid": tid,
+      Authorization: auth,
+      "x-yun-api-version": "v1",
+      "x-yun-module-type": "100",
+      "x-yun-op-type": "1",
+      "x-yun-app-channel": "10214200",
+      "hcy-cool-flag": "1",
+      "x-yun-uni": userId
+    },
+    body: JSON.stringify({
+      channelId: "101",
+      userId,
+      recognizeType: "1",
+      base64: AI_CAMERA_BASE64,
+      sendType: "2",
+      imageExt: "jpg",
+      uploadToCloud: true,
+      timeout: 3e4
+    })
+  };
+}
+function parseAiRecognize(body) {
+  try {
+    const v = JSON.parse(body);
+    return {
+      success: v.success === true,
+      fileId: typeof v.data?.fileId === "string" ? v.data.fileId : void 0,
+      taskId: typeof v.data?.taskId === "string" ? v.data.taskId : typeof v.data?.taskId === "number" ? String(v.data.taskId) : void 0,
+      message: typeof v.message === "string" ? v.message : void 0
+    };
+  } catch {
+    return void 0;
+  }
+}
+function aiCameraChatRequest(auth, userId, fileId, taskId, tid) {
+  const n = Number.parseInt(taskId, 10);
+  const fileName = `${Number.isFinite(n) ? n + 1 : Date.now()}.jpeg`;
+  return {
+    url: AI_CHAT_URL,
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "User-Agent": AI_CAMERA_UA,
+      "x-yun-tid": tid,
+      Authorization: auth,
+      "x-yun-api-version": "v1",
+      "x-yun-module-type": "100",
+      "x-yun-op-type": "1",
+      "x-yun-app-channel": "10214200",
+      "hcy-cool-flag": "1",
+      "x-yun-client-info": "||8||||||||||||",
+      Accept: "text/event-stream"
+    },
+    body: JSON.stringify({
+      userId,
+      sessionId: "",
+      applicationType: "chat",
+      applicationId: "",
+      sourceChannel: "101",
+      dialogueInput: {
+        dialogue: "？",
+        prompt: "",
+        inputTime: (/* @__PURE__ */ new Date()).toISOString(),
+        enableForceLlm: false,
+        enableForceNetworkSearch: true,
+        enableModelThinking: false,
+        enableAllNetworkSearch: false,
+        enableKnowledgeAndNetworkSearch: false,
+        enableRegenerate: false,
+        versionInfo: { h5Version: "2.7.6" },
+        extInfo: "{}",
+        sortInfo: {},
+        toolSetting: { imageToolSetting: { enableLlmDescribe: true } },
+        attachment: { attachmentTypeList: [3], fileList: [{ fileId, name: fileName }] }
+      }
+    })
+  };
+}
+function convertPdfRequest(session, fileName, fileRealSize, fileId, rnd, cguid) {
+  const body = `<object>
+  <string name="fileName">${xmlEscape(fileName)}</string>
+  <int name="fileRealSize">${fileRealSize}</int>
+  <string name="fileId">${xmlEscape(fileId)}</string>
+  <int name="convertType">1</int>
+  <string name="appType">1</string>
+  <string name="appVer">10.0.3</string>
+  <string name="channel">10242000</string>
+</object>`;
+  return {
+    url: `${HTML5_MAIL}/mw2/file/disk?func=disk:convertPdfFromYunFile&sid=${session.sid}&behaviorData=&rnd=${rnd}&cguid=${cguid}&k=&comefrom=166`,
+    method: "POST",
+    headers: mailHeaders(session, {
+      Origin: HTML5_MAIL,
+      Referer: `${HTML5_MAIL}/`,
+      "X-Requested-With": "cn.cj.pe"
+    }),
+    body
+  };
+}
+function billPageRequest(session, cguid) {
+  return {
+    url: `${HTML5_MAIL}/html/mobilebill.html?sendId=1000006&sid=${session.sid}&cguid=${cguid}`,
+    method: "GET",
+    headers: {
+      Cookie: `RMKEY=${session.rmkey}`,
+      "User-Agent": MAIL_UA,
+      Referer: `${HTML5_MAIL}/?id=bill`
+    },
+    body: void 0
+  };
+}
+function billMailsSearchRequest(session, cguid) {
+  const cond = (field, op, value) => `<object><string name="field">${field}</string><string name="operator">${op}</string><int name="value">${value}</int></object>`;
+  const conditions = [
+    cond("sendId", "=", 1000006),
+    cond("sendId1", "=", 1000007),
+    cond("sendId2", "GE", 1000301),
+    cond("sendId2", "LE", 1000700),
+    cond("sendId3", "=", 1000010)
+  ].join("");
+  const body = `<object><int name="fid">1</int><int name="recursive">0</int><int name="ignoreCase">0</int><int name="isSearch">1</int><int name="isFullSearch">0</int><int name="start">0</int><int name="total">10</int><int name="limit">1000</int><string name="order">receiveDate</string><string name="desc">1</string><int name="highLight">0</int><array name="exceptFids"><int>4</int></array><array name="condictions">${conditions}</array><int name="addSendIdFlag">3</int><int name="statType">1</int></object>`;
+  return {
+    url: `${APPMAIL}/RmWeb/mail?func=mbox:searchMessages&sid=${session.sid}&cguid=${cguid}`,
+    method: "POST",
+    headers: mailHeaders(session, { "X-Requested-With": "cn.cj.pe" }),
+    body
+  };
+}
+function markMailReadRequest(session, cguid, mid) {
+  return {
+    url: `${APPMAIL}/RmWeb/mail?func=mbox:updateMessagesStatus&sid=${session.sid}&cguid=${cguid}`,
+    method: "POST",
+    headers: mailHeaders(session, { "X-Requested-With": "cn.cj.pe" }),
+    body: `<object><array name="ids"><string>${xmlEscape(mid)}</string></array><string name="type">read</string><string name="value">1</string></object>`
+  };
+}
+function readMessageRequest(session, cguid, mid) {
+  return {
+    url: `${HTML5_MAIL}/RmWeb/view.do?func=view:readMessage&sid=${session.sid}&mid=${encodeURIComponent(mid)}&callback=getMailInfo&comefrom=166&fid=1&mode=mobile&resetdomain=0&cguid=${cguid}`,
+    method: "GET",
+    headers: {
+      Cookie: `RMKEY=${session.rmkey}`,
+      Referer: `${HTML5_MAIL}/html/readmail.html`
+    },
+    body: void 0
+  };
+}
+function mailReportToMqRequest(session, cguid, rnd, actionType, clientType, mid, channel) {
+  return {
+    url: `${HTML5_MAIL}/mw2/file/disk?func=disk:mailReportToMQ&sid=${session.sid}&rnd=${rnd}&cguid=${cguid}&comefrom=166`,
+    method: "POST",
+    headers: {
+      Cookie: `RMKEY=${session.rmkey}`,
+      "Content-Type": "application/xml",
+      Referer: `${HTML5_MAIL}/html/readmail.html`
+    },
+    body: JSON.stringify({
+      actionType,
+      clientType,
+      imapId: mid,
+      clientVersion: "h5",
+      channel
+    })
+  };
+}
+function logBehaviorActionRequest(session, action, thingId, cguid, behaviorData) {
+  return {
+    url: `${HTML5_MAIL}/mw2/weather/weather?func=user:logBehaviorAction&action=${action}&thingId=${thingId}&version=html5&cguid=${cguid}&behaviorData=${encodeURIComponent(behaviorData)}`,
+    method: "GET",
+    headers: {
+      Cookie: `RMKEY=${session.rmkey}`,
+      "User-Agent": MAIL_UA
+    },
+    body: void 0
+  };
+}
 
 // src/mcloud/tasks/appTask.ts
 var STATE_TASK = "mcloud.apptask.state";
@@ -5056,7 +5384,12 @@ function advance(deps, st) {
     }
   }
   if (next.needUpload) beginUpload(deps, next.itemId, next.name);
-  const special = next.step.kind === "entry" ? "entry" : next.step.kind === "portal" ? "portal" : next.step.kind === "share" ? "share" : next.step.kind === "runner" ? next.step.runner === "aiAssistant" ? "aiAssistant" : "mailBackup" : void 0;
+  const special = next.step.kind === "entry" ? "entry" : next.step.kind === "portal" ? "portal" : next.step.kind === "share" ? "share" : next.step.kind === "runner" ? specialForRunner(next.step.runner) : void 0;
+  let pdfTs;
+  if (special === "pdfConvert") {
+    pdfTs = beginPdfUpload(deps);
+    phase = "pdfUpload";
+  }
   if (next.currStep !== void 0 && next.currStep !== 0 && (special === "entry" || special === "portal" || special === "mailBackup" || special === "aiAssistant")) {
     phase = phaseOfSpecial(special) ?? phase;
   }
@@ -5068,7 +5401,8 @@ function advance(deps, st) {
     special,
     data: {
       marketName: next.marketName,
-      link: next.buttonEmailLink ?? next.buttonAppLink ?? ""
+      link: next.buttonEmailLink ?? next.buttonAppLink ?? "",
+      ...pdfTs === void 0 ? {} : { pdfTs: String(pdfTs) }
     },
     clicked,
     day: today(deps)
@@ -5124,6 +5458,51 @@ function beginUpload(deps, itemId, name) {
     bytes: deterministicFile(`app-task-${itemId}`, 256)
   });
 }
+function makePdf(ts) {
+  const text = `asign auto pdf ${ts}`;
+  return `%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+endobj
+4 0 obj
+<< /Length ${text.length + 50} >>
+stream
+BT
+/F1 18 Tf
+72 720 Td
+(${text}) Tj
+ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+xref
+0 6
+0000000000 65535 f
+0000000009 00000 n
+0000000058 00000 n
+0000000115 00000 n
+0000000223 00000 n
+0000000378 00000 n
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+444
+%%EOF
+`;
+}
+function beginPdfUpload(deps) {
+  const ts = Date.now();
+  startUpload(deps, { name: `asign-pdf-${ts}.pdf`, bytes: utf8(makePdf(ts)) });
+  return ts;
+}
 function startAppTask(deps) {
   const prev = load(deps);
   const clicked = prev ? freshClicked(prev, deps) : [];
@@ -5156,7 +5535,12 @@ function startAppTask(deps) {
     }
   }
   if (first.needUpload) beginUpload(deps, first.itemId, first.name);
-  const special = first.step.kind === "entry" ? "entry" : first.step.kind === "portal" ? "portal" : first.step.kind === "share" ? "share" : first.step.kind === "runner" ? first.step.runner === "aiAssistant" ? "aiAssistant" : "mailBackup" : void 0;
+  const special = first.step.kind === "entry" ? "entry" : first.step.kind === "portal" ? "portal" : first.step.kind === "share" ? "share" : first.step.kind === "runner" ? specialForRunner(first.step.runner) : void 0;
+  let pdfTs;
+  if (special === "pdfConvert") {
+    pdfTs = beginPdfUpload(deps);
+    phase = "pdfUpload";
+  }
   if (first.currStep !== void 0 && first.currStep !== 0 && (special === "entry" || special === "portal" || special === "mailBackup" || special === "aiAssistant")) {
     phase = phaseOfSpecial(special) ?? phase;
   }
@@ -5168,12 +5552,35 @@ function startAppTask(deps) {
     special,
     data: {
       marketName: first.marketName,
-      link: first.buttonEmailLink ?? first.buttonAppLink ?? ""
+      link: first.buttonEmailLink ?? first.buttonAppLink ?? "",
+      ...pdfTs === void 0 ? {} : { pdfTs: String(pdfTs) }
     },
     clicked,
     day: today(deps)
   });
   return { ok: true, note: `已排队 ${todo.length} 条待办（今天已点过 ${clicked.length} 条），从 #${first.itemId} 开始` };
+}
+function specialForRunner(runner) {
+  switch (runner) {
+    case "aiAssistant":
+      return "aiAssistant";
+    case "aiWorkbench":
+      return "aiWorkbench";
+    case "aiCamera":
+      return "aiCamera";
+    case "note":
+      return "note";
+    case "mailActive":
+      return "mailActive";
+    case "sendMail":
+      return "sendMail";
+    case "pdfConvert":
+      return "pdfConvert";
+    case "billView":
+      return "billView";
+    default:
+      return "mailBackup";
+  }
 }
 function phaseOfSpecial(s) {
   switch (s) {
@@ -5185,7 +5592,19 @@ function phaseOfSpecial(s) {
       return "share";
     case "mailBackup":
     case "aiAssistant":
+    case "aiWorkbench":
+    case "aiCamera":
       return "mailLogin";
+    case "note":
+      return "noteAuth";
+    case "mailActive":
+      return "mailActiveAction";
+    case "sendMail":
+      return "sendMailAction";
+    case "pdfConvert":
+      return "pdfUpload";
+    case "billView":
+      return "billViewAction";
     default:
       return void 0;
   }
@@ -5373,15 +5792,150 @@ function runAppTaskStep(deps) {
     if (!res2.ok) return { ok: false, note: `邮箱登录失败：${res2.error ?? "未知失败"}` };
     const sess = parseMailSession(res2.text);
     if (!sess) return { ok: false, note: "邮箱登录响应里没有 var.sid / var.rmkey" };
+    const nextPhase = st.special === "aiAssistant" || st.special === "aiWorkbench" || st.special === "aiCamera" ? "aiQuery" : st.special === "mailActive" ? "mailActiveAction" : st.special === "sendMail" ? "sendMailAction" : st.special === "pdfConvert" ? "pdfUpload" : st.special === "billView" ? "billViewAction" : "mailDirs";
     save2(deps, {
       ...st,
-      phase: st.special === "aiAssistant" ? "aiQuery" : "mailDirs",
+      phase: nextPhase,
       data: { ...st.data ?? {}, sso: "", sid: sess.sid, rmkey: sess.rmkey, cguid: newCguid() },
       day: today(deps)
     });
     return {
       ok: true,
-      note: `邮箱登录成功（sid/rmkey 已拿到）—— 下一步${st.special === "aiAssistant" ? "派生 AI 鉴权" : "取云盘目录"}`
+      note: `邮箱登录成功（sid/rmkey 已拿到）—— 下一步${nextPhase === "aiQuery" ? "派生 AI 鉴权" : nextPhase === "mailActiveAction" ? "打邮箱活跃" : nextPhase === "sendMailAction" ? "发邮件" : nextPhase === "pdfUpload" ? "传 PDF" : nextPhase === "billViewAction" ? "看账单" : "取云盘目录"}`
+    };
+  }
+  if (st.phase === "noteAuth") {
+    const auth = parseAuth(loadAuthRaw(deps.store));
+    if (!auth || auth.token === "") {
+      const out2 = advance(deps, doneState(deps, st));
+      return { ok: true, note: `云笔记 #${st.itemId}：没有 authToken，跳过。${out2.note}` };
+    }
+    const res2 = callRawText(deps.transport, noteAuthRequest(auth.token, auth.phone));
+    if (!res2.ok) return { ok: false, note: `云笔记鉴权失败：${res2.error ?? "未知失败"}` };
+    const headers = parseNoteHeaders(res2.text);
+    if (!headers) {
+      const out2 = advance(deps, doneState(deps, st));
+      return { ok: true, note: `云笔记 #${st.itemId}：鉴权响应没有 headers.app_auth，跳过。${out2.note}` };
+    }
+    const noteId = uuidV4().replace(/-/g, "").padEnd(32, "0").slice(0, 32);
+    save2(deps, {
+      ...st,
+      phase: "noteCreate",
+      data: { ...st.data ?? {}, noteId, title: noteId.slice(0, 3), headers: JSON.stringify(headers) },
+      day: today(deps)
+    });
+    return { ok: true, note: "云笔记鉴权成功 —— 下一步建笔记" };
+  }
+  if (st.phase === "noteCreate") {
+    const auth = parseAuth(loadAuthRaw(deps.store));
+    let headers = {};
+    try {
+      headers = JSON.parse(st.data?.headers ?? "{}");
+    } catch {
+      headers = {};
+    }
+    const res2 = callRawText(
+      deps.transport,
+      noteCreateRequest(st.data?.noteId ?? "", st.data?.title ?? "", auth?.phone ?? "", headers, Date.now())
+    );
+    save2(deps, { ...st, phase: "noteDelete", day: today(deps) });
+    return {
+      ok: true,
+      note: res2.ok ? "云笔记已创建 —— 下一步移进回收站" : `建笔记没成（旧实现也忽略）：${res2.error ?? ""} —— 下一步移进回收站`
+    };
+  }
+  if (st.phase === "noteDelete") {
+    let headers = {};
+    try {
+      headers = JSON.parse(st.data?.headers ?? "{}");
+    } catch {
+      headers = {};
+    }
+    const res2 = callRawText(deps.transport, noteDeleteRequest(st.data?.noteId ?? "", headers));
+    const out2 = advance(deps, doneState(deps, st));
+    return {
+      ok: true,
+      note: res2.ok ? `云笔记已移进回收站。${out2.note}` : `删云笔记没成（旧实现也忽略）：${res2.error ?? ""}。${out2.note}`
+    };
+  }
+  if (st.phase === "mailActiveAction") {
+    const sess = { sid: st.data?.sid ?? "", rmkey: st.data?.rmkey ?? "" };
+    const a = callRawText(deps.transport, mailAutologinRequest(sess));
+    const b = callRawText(deps.transport, marketClickRequest(st.itemId, "sign_in_3"));
+    const out2 = advance(deps, doneState(deps, st));
+    return {
+      ok: true,
+      note: `邮箱活跃 #${st.itemId}（autologin ${a.ok ? "ok" : "没成"}；市场打卡 ${b.ok ? "ok" : "没成"}）。${out2.note}`
+    };
+  }
+  if (st.phase === "sendMailAction") {
+    const sess = { sid: st.data?.sid ?? "", rmkey: st.data?.rmkey ?? "" };
+    const a = callRawText(deps.transport, getComposeIdRequest(sess));
+    const composeId = a.ok ? parseComposeId(a.text) : void 0;
+    if (!composeId) {
+      const out3 = advance(deps, doneState(deps, st));
+      return { ok: false, note: `发邮件 #${st.itemId}：取不到 composeId。${out3.note}` };
+    }
+    const auth = parseAuth(loadAuthRaw(deps.store));
+    const account = `${auth?.phone ?? ""}@139.com`;
+    const b = callRawText(
+      deps.transport,
+      composeMailRequest(sess, {
+        composeId,
+        account,
+        to: account,
+        subject: `签到任务测试 ${Date.now()}`,
+        content: "本邮件由 mcloud 插件自动发送，可忽略。"
+      })
+    );
+    const code = b.ok ? mailCode(b.text) : { ok: false, code: "", summary: b.error ?? "" };
+    const c = callRawText(deps.transport, marketClickRequest(1004, "newsign_139mail"));
+    const out2 = advance(deps, doneState(deps, st));
+    return {
+      ok: code.ok,
+      note: code.ok ? `邮件已发送到 ${account}（市场打卡 ${c.ok ? "ok" : "没成"}）。${out2.note}` : `发邮件没成（code=${code.code} ${code.summary}）。${out2.note}`
+    };
+  }
+  if (st.phase === "camRecognize") {
+    const auth = parseAuth(loadAuthRaw(deps.store));
+    const s = loadSession(deps.store);
+    const tid = uuidV4().replace(/-/g, "").slice(0, 16);
+    const res2 = callRawText(
+      deps.transport,
+      aiRecognizeRequest(auth?.raw ?? "", st.data?.domain ?? "", tid, s?.deviceId ?? "")
+    );
+    const rec = res2.ok ? parseAiRecognize(res2.text) : void 0;
+    if (!rec || !rec.success || !rec.fileId) {
+      const out2 = advance(deps, doneState(deps, st));
+      return { ok: false, note: `AI 相机识图没成：${rec?.message ?? res2.error ?? "没有 fileId"}。${out2.note}` };
+    }
+    save2(deps, {
+      ...st,
+      phase: "camChat",
+      data: { ...st.data ?? {}, fileId: rec.fileId, camTaskId: rec.taskId ?? "" },
+      day: today(deps)
+    });
+    return { ok: true, note: `AI 相机识图成功（fileId ${rec.fileId.length} 字符）—— 下一步对话` };
+  }
+  if (st.phase === "camChat") {
+    const auth = parseAuth(loadAuthRaw(deps.store));
+    const tid = uuidV4().replace(/-/g, "").slice(0, 16);
+    const res2 = callRawText(
+      deps.transport,
+      aiCameraChatRequest(
+        auth?.raw ?? "",
+        st.data?.domain ?? "",
+        st.data?.fileId ?? "",
+        st.data?.camTaskId ?? "",
+        tid
+      )
+    );
+    const sse = res2.ok ? parseSse(res2.text) : { events: 0, text: "" };
+    const ok2 = sse.events > 0 || sse.text !== "" || res2.ok && res2.text.includes('"success":true');
+    const out2 = advance(deps, doneState(deps, st));
+    return {
+      ok: ok2,
+      note: ok2 ? `AI 相机对话完成（events=${sse.events}）。${out2.note}` : `AI 相机对话没成（events=${sse.events}）。${out2.note}`
     };
   }
   if (st.phase === "aiQuery") {
@@ -5395,9 +5949,10 @@ function runAppTaskStep(deps) {
     const auth = t ? deriveAiAuth(t) : void 0;
     if (!t || !auth) return { ok: false, note: "queryUserToken 没给全 account/token 或解不出手机号" };
     if (auth.userDomainId === "") return { ok: false, note: "queryUserToken 没给 userDomainId" };
+    const next = st.special === "aiCamera" ? "camRecognize" : "aiStatus";
     save2(deps, {
       ...st,
-      phase: "aiStatus",
+      phase: next,
       data: {
         ...st.data ?? {},
         phone: auth.phone,
@@ -5406,7 +5961,10 @@ function runAppTaskStep(deps) {
       },
       day: today(deps)
     });
-    return { ok: true, note: `AI 鉴权已派生（userDomainId ${auth.userDomainId.length} 字符）—— 下一步查状态` };
+    return {
+      ok: true,
+      note: `AI 鉴权已派生（userDomainId ${auth.userDomainId.length} 字符）—— 下一步${next === "camRecognize" ? "识图" : "查状态"}`
+    };
   }
   if (st.phase === "aiStatus") {
     const phone = st.data?.phone ?? "";
@@ -5428,6 +5986,73 @@ function runAppTaskStep(deps) {
     return {
       ok: res2.ok && sse.events > 0 && sse.text !== "",
       note: sse.events > 0 && sse.text !== "" ? `AI 对话成功（events=${sse.events}，回复 ${sse.text.slice(0, 20)}…）。${out2.note}` : `AI 对话没取到输出（events=${sse.events}）${res2.ok ? "" : `：${res2.error ?? ""}`}。${out2.note}`
+    };
+  }
+  if (st.phase === "pdfUpload") {
+    const ts = Number(st.data?.pdfTs ?? Date.now());
+    if (uploadDone(deps)) {
+      const up = JSON.parse(deps.store.getState("mcloud.upload.state") ?? "{}");
+      save2(deps, { ...st, phase: "pdfConvert", fileId: up.fileId, day: today(deps) });
+      return { ok: true, note: "PDF 已传完 —— 下一步转换" };
+    }
+    const out2 = runUploadStep(deps, utf8(makePdf(ts)));
+    if (uploadDone(deps)) {
+      const up = JSON.parse(deps.store.getState("mcloud.upload.state") ?? "{}");
+      save2(deps, { ...st, phase: "pdfConvert", fileId: up.fileId, day: today(deps) });
+      return { ok: true, note: "PDF 已传完 —— 下一步转换" };
+    }
+    return out2;
+  }
+  if (st.phase === "pdfConvert") {
+    const sess = { sid: st.data?.sid ?? "", rmkey: st.data?.rmkey ?? "" };
+    const ts = Number(st.data?.pdfTs ?? Date.now());
+    const res2 = callRawText(
+      deps.transport,
+      convertPdfRequest(
+        sess,
+        `asign-pdf-${ts}.pdf`,
+        utf8(makePdf(ts)).length,
+        st.fileId ?? "",
+        String(Math.random()),
+        st.data?.cguid ?? newCguid()
+      )
+    );
+    const code = res2.ok ? mailCode(res2.text) : { ok: false, code: "", summary: res2.error ?? "未知失败" };
+    const out2 = advance(deps, doneState(deps, st));
+    return {
+      ok: code.ok,
+      note: code.ok ? `PDF 转换完成。${out2.note}` : `PDF 转换没成（code=${code.code} ${code.summary}）。${out2.note}`
+    };
+  }
+  if (st.phase === "billViewAction") {
+    const sess = { sid: st.data?.sid ?? "", rmkey: st.data?.rmkey ?? "" };
+    const cguid = st.data?.cguid ?? newCguid();
+    const a = callRawText(deps.transport, billPageRequest(sess, cguid));
+    const b = callRawText(deps.transport, billMailsSearchRequest(sess, cguid));
+    const mid = b.ok ? firstField(b.text, "mid") : void 0;
+    if (!mid) {
+      const out3 = advance(deps, doneState(deps, st));
+      return { ok: false, note: `账单 #${st.itemId}：邮件列表里取不到 mid。${out3.note}` };
+    }
+    const c = callRawText(deps.transport, markMailReadRequest(sess, cguid, mid));
+    const d = callRawText(deps.transport, readMessageRequest(sess, cguid, mid));
+    const mq = [];
+    for (const [actionType, clientType, channel] of [
+      ["1003", "2", ""],
+      ["1003", "2", ""],
+      ["1017", "1", "10242400"]
+    ]) {
+      const r = callRawText(
+        deps.transport,
+        mailReportToMqRequest(sess, cguid, String(Math.random()), actionType, clientType, mid, channel)
+      );
+      mq.push(r.ok);
+    }
+    const e = callRawText(deps.transport, logBehaviorActionRequest(sess, 111631, 261, cguid, "110542_6"));
+    const out2 = advance(deps, doneState(deps, st));
+    return {
+      ok: d.ok && mq.every(Boolean) && e.ok,
+      note: `账单 #${st.itemId}（页 ${a.ok ? "ok" : "没成"}；mid 已取；标读 ${c.ok ? "ok" : "没成"}；读信 ${d.ok ? "ok" : "没成"}；MQ ${mq.filter(Boolean).length}/3；像素 ${e.ok ? "ok" : "没成"}）。${out2.note}`
     };
   }
   if (st.phase === "mailDirs") {
