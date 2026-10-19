@@ -32,6 +32,34 @@ import { judgeItem, readMatrix } from './appTaskMatrix.ts';
 import { runUploadStep, startUpload, uploadDone } from './upload.ts';
 import { cloudFileOpHeaders, deterministicFile } from '../cloudUpload.ts';
 import { shouldSkip, stepFor, uploadShapeFor } from '../appTaskRules.ts';
+import type { TaskStep } from '../appTaskRules.ts';
+import { parseSsoToken } from '../h5session.ts';
+import {
+  aiChatRequest,
+  cloudTaskStatusRequest,
+  delOutLinkRequest,
+  deriveAiAuth,
+  encryptPhone,
+  parseCloudTaskStatus,
+  parseQueryUserToken,
+  parseSse,
+  queryUserTokenRequest,
+  entryGetRequest,
+  entryPostRequest,
+  firstField,
+  getOutLinkRequest,
+  mailBackupRequest,
+  mailCode,
+  mailDirsRequest,
+  mailLoginRequest,
+  mailSearchRequest,
+  mailSpecTokenRequest,
+  newCguid,
+  parseLinkIds,
+  parseMailSession,
+  portalPageRequest,
+  portalUrl,
+} from './appTaskExtra.ts';
 import type { BuiltRequest } from '../h5.ts';
 import type { TaskDeps, TaskOutcome } from './base.ts';
 
@@ -55,13 +83,37 @@ export const JOURNALING_SOURCE_ID = '1077';
 /** 收尾：批量移进回收站。 */
 export const BATCH_TRASH_URL = 'https://personal-kd-njs.yun.139.com/hcy/recyclebin/batchTrash';
 
-export type TaskPhase = 'upload' | 'visit' | 'click' | 'trash' | 'done';
+export type TaskPhase =
+  | 'upload'
+  | 'visit'
+  | 'click'
+  | 'trash'
+  | 'entry'
+  | 'portal'
+  | 'share'
+  | 'shareDel'
+  | 'mailLogin'
+  | 'mailLogin2'
+  | 'mailDirs'
+  | 'mailSearch'
+  | 'mailBackup'
+  | 'aiQuery'
+  | 'aiStatus'
+  | 'aiChat'
+  | 'done';
+
+/** 这一条除了“点一下”之外还要做的动作。 */
+type Special = 'entry' | 'portal' | 'share' | 'mailBackup' | 'aiAssistant';
 
 interface TaskState {
   gi: number;
   ii: number;
   phase: TaskPhase;
   itemId: number;
+  /** 特殊动作的类型（entry/portal/share/mailBackup）；普通条目没有。 */
+  special?: Special | undefined;
+  /** 特殊动作的中间数据（marketName / 入口链接 / sid / mid …）。 */
+  data?: Record<string, string> | undefined;
   /** 本轮为这条任务传上去的文件 id（收尾要用）。**没有就不发收尾那一枪。** */
   fileId?: string | undefined;
   /** 已经点过的那些（防重发 —— `task/click` 不可回滚）。 */
@@ -77,14 +129,30 @@ const PHASE_TEXT: Record<TaskPhase, string> = {
   visit: '记访问日志（"我点了哪条任务"）',
   click: '打卡（不可回滚）',
   trash: '收尾（移进回收站）',
+  entry: '固定入口（两发上报 + 补打卡）',
+  portal: '入口页 + 打卡',
+  share: '分享文件（建外链）',
+  shareDel: '删外链（收尾）',
+  mailLogin: '邮箱 SSO token',
+  mailLogin2: '邮箱登录（sid/rmkey）',
+  mailDirs: '云盘目录',
+  mailSearch: '邮件列表',
+  mailBackup: '邮件转存',
+  aiQuery: 'AI 鉴权（queryUserToken）',
+  aiStatus: 'AI 状态查询',
+  aiChat: 'AI 对话（SSE）',
   done: '这一趟走完了',
 };
 
 /** 打卡那一枪。⚠ GET + 查询参数 `key=task&id=<id>`（实拍逐字）。 */
-export function clickRequest(deps: TaskDeps, id: number): ReturnType<typeof buildH5Request> {
+export function clickRequest(
+  deps: TaskDeps,
+  id: number,
+  key = 'task',
+): ReturnType<typeof buildH5Request> {
   const session = loadSession(deps.store);
   return buildH5Request({
-    url: `${CLICK_HOST}${CLICK_PATH}?key=task&id=${id}`,
+    url: `${CLICK_HOST}${CLICK_PATH}?key=${encodeURIComponent(key)}&id=${id}`,
     method: 'GET',
     body: undefined,
     referer: REFERER_SIGN_IN,
@@ -175,7 +243,15 @@ function advance(deps: TaskDeps, st: TaskState): TaskOutcome {
   if (!next) {
     // ⚠ **不清空**：清成 `''` 会把"今天点过"那份名单一起毁掉，于是下一趟
     //   拿着同一份（没刷新的）读数就会**重复点**。标成 `done` 把名单留着。
-    save(deps, { ...st, phase: 'done', fileId: undefined, clicked, day: today(deps) });
+    save(deps, {
+      ...st,
+      phase: 'done',
+      fileId: undefined,
+      special: undefined,
+      data: undefined,
+      clicked,
+      day: today(deps),
+    });
     // ⚠ 收摊时**必须**把"点了但状态没变"的那些报出来 —— 否则面板上会是一句
     //   "都走完了"，而实际上一大半根本没生效（真机上就是这样）。
     const dead = clickedButIneffective(deps, { ...st, clicked });
@@ -187,12 +263,44 @@ function advance(deps: TaskDeps, st: TaskState): TaskOutcome {
           '光点一下不算数';
     return { ok: dead.length === 0, note: `待办都走完了（这一趟点了 ${clicked.length} 条）${warn}` };
   }
+  // 434 需要“手里有文件”。本趟传过就直接用；没有就先传一个。
+  let phase: TaskPhase = next.needUpload ? 'upload' : 'visit';
+  if (next.step.kind === 'share') {
+    const up = (() => {
+      try {
+        return JSON.parse(deps.store.getState('mcloud.upload.state') ?? '{}') as { fileId?: string };
+      } catch {
+        return {};
+      }
+    })();
+    if (!up.fileId) {
+      beginUpload(deps, next.itemId, next.name);
+      phase = 'upload';
+    }
+  }
   if (next.needUpload) beginUpload(deps, next.itemId, next.name);
+  const special: Special | undefined =
+    next.step.kind === 'entry'
+      ? 'entry'
+      : next.step.kind === 'portal'
+        ? 'portal'
+        : next.step.kind === 'share'
+          ? 'share'
+          : next.step.kind === 'runner'
+            ? next.step.runner === 'aiAssistant'
+              ? 'aiAssistant'
+              : 'mailBackup'
+            : undefined;
   save(deps, {
     gi: next.gi,
     ii: next.ii,
-    phase: next.needUpload ? 'upload' : 'visit',
+    phase,
     itemId: next.itemId,
+    special,
+    data: {
+      marketName: next.marketName,
+      link: next.buttonEmailLink ?? next.buttonAppLink ?? '',
+    },
     clicked,
     day: today(deps),
   });
@@ -210,6 +318,13 @@ export interface Pending {
   needUpload: boolean;
   /** 条目名（上传的文件名用它 —— 门是按**名字**判的，文件名取一致的好对账）。 */
   name: string;
+  /** 这一条要做的事（上传 / 点击 / 入口 / 分享 / runner）。 */
+  step: TaskStep;
+  /** 矩阵读数的市场名（409/1005 的入口上报要它）。 */
+  marketName: string;
+  buttonAppLink?: string | undefined;
+  buttonEmailLink?: string | undefined;
+  currStep?: number | undefined;
 }
 
 export function pendingItems(deps: TaskDeps): Pending[] {
@@ -232,7 +347,13 @@ export function pendingItems(deps: TaskDeps): Pending[] {
       // ⚠ **只做"知道该做什么"的那些**（见 `stepFor` 的注释）——
       //   第一版是"不在黑名单就打"，那是重写；真机上点了 4 条状态一条没变，
       //   因为它们在 mcloud 的账本里全是"未实现"。
-      if (stepFor({ taskId: item.taskId, groupId: item.groupId, name: item.name, buttonAppLink: item.buttonAppLink }) === undefined) {
+      const step = stepFor({
+        taskId: item.taskId,
+        groupId: item.groupId,
+        name: item.name,
+        buttonAppLink: item.buttonAppLink,
+      });
+      if (step === undefined) {
         skipped.push(item.taskId ?? 0);
         continue; // ⚠ 同上：不能 `return`（那会退掉整份读数）
       }
@@ -248,6 +369,11 @@ export function pendingItems(deps: TaskDeps): Pending[] {
             name: item.name,
             buttonAppLink: item.buttonAppLink,
           }) !== undefined,
+        step,
+        marketName: reading.group,
+        buttonAppLink: item.buttonAppLink,
+        buttonEmailLink: item.buttonEmailLink,
+        currStep: item.currStep,
       });
     }
   });
@@ -292,16 +418,64 @@ export function startAppTask(deps: TaskDeps): TaskOutcome {
     };
   }
   const first = todo[0]!;
+  let phase: TaskPhase = first.needUpload ? 'upload' : 'visit';
+  if (first.step.kind === 'share') {
+    const up = (() => {
+      try {
+        return JSON.parse(deps.store.getState('mcloud.upload.state') ?? '{}') as { fileId?: string };
+      } catch {
+        return {};
+      }
+    })();
+    if (!up.fileId) {
+      beginUpload(deps, first.itemId, first.name);
+      phase = 'upload';
+    }
+  }
   if (first.needUpload) beginUpload(deps, first.itemId, first.name);
+  const special: Special | undefined =
+    first.step.kind === 'entry'
+      ? 'entry'
+      : first.step.kind === 'portal'
+        ? 'portal'
+        : first.step.kind === 'share'
+          ? 'share'
+          : first.step.kind === 'runner'
+            ? first.step.runner === 'aiAssistant'
+              ? 'aiAssistant'
+              : 'mailBackup'
+            : undefined;
   save(deps, {
     gi: first.gi,
     ii: first.ii,
-    phase: first.needUpload ? 'upload' : 'visit',
+    phase,
     itemId: first.itemId,
+    special,
+    data: {
+      marketName: first.marketName,
+      link: first.buttonEmailLink ?? first.buttonAppLink ?? '',
+    },
     clicked,
     day: today(deps),
   });
   return { ok: true, note: `已排队 ${todo.length} 条待办（今天已点过 ${clicked.length} 条），从 #${first.itemId} 开始` };
+}
+
+/** 打卡之后该去哪个特殊阶段（没有就 `undefined`）。 */
+function specialPhase(st: TaskState): TaskPhase | undefined {
+  switch (st.special) {
+    case 'entry':
+      return 'entry';
+    case 'portal':
+      return 'portal';
+    case 'share':
+      return 'share';
+    case 'mailBackup':
+    case 'aiAssistant':
+      return 'mailLogin';
+    default:
+      return undefined;
+  }
 }
 
 /** 推进一步，一次调用一个请求。 */
@@ -352,6 +526,11 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
     if (freshClicked(st, deps).includes(st.itemId)) {
       // ⚠ 不重发（`task/click` 不可回滚），而且**必须换下一条** ——
       //   早先这里把 phase 又设回 `click`，于是永远停在同一条上（真机上一眼看出来的）。
+      const sp = specialPhase(st);
+      if (sp !== undefined) {
+        save(deps, { ...st, phase: sp, day: today(deps) });
+        return { ok: true, note: `#${st.itemId} 今天已经点过了 —— 不重发，去做「${sp}」` };
+      }
       if (st.fileId) {
         save(deps, { ...st, phase: 'trash', day: today(deps) });
         return { ok: true, note: `#${st.itemId} 今天已经点过了 —— 不重发，去收尾` };
@@ -363,6 +542,11 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
     if (!res.ok) return { ok: false, note: `打卡 #${st.itemId} 失败：${res.error ?? '未知失败'}` };
     // 点了就记下来（哪怕响应不理想 —— 不可回滚的东西不能"当没发过"）
     const clicked = [...freshClicked(st, deps), st.itemId];
+    const sp = specialPhase(st);
+    if (sp !== undefined) {
+      save(deps, { ...st, phase: sp, clicked, day: today(deps) });
+      return { ok: true, note: `打卡 #${st.itemId}（HTTP ${res.status}）—— 下一步「${sp}」` };
+    }
     if (st.fileId) {
       save(deps, { ...st, phase: 'trash', clicked, day: today(deps) });
       return { ok: true, note: `打卡 #${st.itemId}（HTTP ${res.status}）—— 下一步收尾` };
@@ -374,6 +558,242 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
     return {
       ok: out.ok,
       note: `打卡 #${st.itemId}（HTTP ${res.status}）—— 这条没有要收尾的文件。${out.note}`,
+    };
+  }
+
+
+  // ③ 特殊动作（入口 / 入口页 / 分享 / 邮件转存）
+  if (st.phase === 'entry') {
+    const market = st.data?.marketName ?? 'sign_in_3';
+    const a = callRawText(deps.transport, entryPostRequest(deps, market));
+    const b = callRawText(deps.transport, entryGetRequest(deps));
+    // 409 / 1005 的“补那一发”都是 task2（参考实现 409 实测靠它翻 FINISH）。
+    const c = callRawText(deps.transport, clickRequest(deps, st.itemId, 'task2'));
+    const bits = [a.ok ? 'doTaskPost ok' : `doTaskPost 没成：${a.error ?? ''}`, b.ok ? 'page/doTask ok' : `page/doTask 没成：${b.error ?? ''}`];
+    if (!c.ok) bits.push(`补打卡没成：${c.error ?? '未知失败'}`);
+    const out = advance(deps, st);
+    return {
+      ok: out.ok,
+      note: `固定入口 #${st.itemId}（${bits.join('；')}）。${out.note}`,
+    };
+  }
+
+  if (st.phase === 'portal') {
+    const market = st.data?.marketName ?? 'sign_in_3';
+    const a = callRawText(deps.transport, entryPostRequest(deps, market));
+    const b = callRawText(deps.transport, entryGetRequest(deps));
+    const link = st.data?.link ?? '';
+    const url = link === '' ? undefined : portalUrl(link, deps);
+    let page = '没有入口链接';
+    if (url !== undefined) {
+      const p = callRawText(deps.transport, portalPageRequest(deps, url));
+      page = p.ok ? `入口页 HTTP ${p.status}（${p.text.length} 字节）` : `入口页没取成：${p.error ?? ''}`;
+    }
+    // 1017 的 gate 在 currstep=1 时不会打，参考实现用 task2 补；604 的 gate 会自己打。
+    if (st.itemId === 1017) {
+      const c = callRawText(deps.transport, clickRequest(deps, st.itemId, 'task2'));
+      if (!c.ok) page += `；补打卡没成：${c.error ?? ''}`;
+    }
+    const bits = [a.ok ? 'doTaskPost ok' : 'doTaskPost 没成', b.ok ? 'page/doTask ok' : 'page/doTask 没成', page];
+    const out = advance(deps, st);
+    return { ok: out.ok, note: `入口页 #${st.itemId}（${bits.join('；')}）。${out.note}` };
+  }
+
+  if (st.phase === 'share') {
+    const fileId =
+      st.fileId ??
+      (() => {
+        try {
+          return (JSON.parse(deps.store.getState('mcloud.upload.state') ?? '{}') as { fileId?: string }).fileId;
+        } catch {
+          return undefined;
+        }
+      })();
+    if (!fileId) {
+      const out = advance(deps, { ...st, fileId: undefined });
+      return { ok: true, note: `分享 #${st.itemId}：手里没有文件 —— 不发空外链。${out.note}` };
+    }
+    const req = getOutLinkRequest(deps, [fileId]);
+    if (!req) {
+      const out = advance(deps, st);
+      return { ok: true, note: `分享 #${st.itemId}：请求没造出来。${out.note}` };
+    }
+    const res = callRawText(deps.transport, req);
+    if (!res.ok) {
+      const out = advance(deps, st);
+      return { ok: false, note: `分享 #${st.itemId} 建外链失败：${res.error ?? '未知失败'}。${out.note}` };
+    }
+    const ids = parseLinkIds(res.text);
+    if (ids.length === 0) {
+      const out = advance(deps, st);
+      return { ok: false, note: `分享 #${st.itemId}：响应里没有 linkID，没法删外链。${out.note}` };
+    }
+    save(deps, {
+      ...st,
+      phase: 'shareDel',
+      data: { ...(st.data ?? {}), linkIds: JSON.stringify(ids) },
+      day: today(deps),
+    });
+    return { ok: true, note: `分享 #${st.itemId}：外链已建（${ids.length} 条），下一步删掉` };
+  }
+
+  if (st.phase === 'shareDel') {
+    let ids: string[] = [];
+    try {
+      ids = JSON.parse(st.data?.linkIds ?? '[]') as string[];
+    } catch {
+      ids = [];
+    }
+    const req = delOutLinkRequest(deps, ids);
+    if (!req) {
+      const out = advance(deps, st);
+      return { ok: true, note: `分享 #${st.itemId}：没有 linkID 可删。${out.note}` };
+    }
+    const res = callRawText(deps.transport, req);
+    const out = advance(deps, { ...st, fileId: undefined });
+    return {
+      ok: res.ok,
+      note: res.ok
+        ? `分享 #${st.itemId}：外链已删。${out.note}`
+        : `分享 #${st.itemId}：删外链失败（${res.error ?? '未知失败'}）。${out.note}`,
+    };
+  }
+
+  // ③b 1020 邮件转存：一次一步
+  if (st.phase === 'mailLogin') {
+    const res = callRawText(deps.transport, mailSpecTokenRequest(deps));
+    if (!res.ok) return { ok: false, note: `邮箱 SSO token 失败：${res.error ?? '未知失败'}` };
+    const parsed = parseSsoToken(res.text);
+    if (!parsed.ok || parsed.value === undefined) {
+      return { ok: false, note: `邮箱 SSO token 没换到：${parsed.error}` };
+    }
+    save(deps, {
+      ...st,
+      phase: 'mailLogin2',
+      data: { ...(st.data ?? {}), sso: parsed.value },
+      day: today(deps),
+    });
+    return { ok: true, note: '邮箱 SSO token 已换到 —— 下一步登录邮箱' };
+  }
+
+  if (st.phase === 'mailLogin2') {
+    const sso = st.data?.sso ?? '';
+    const res = callRawText(deps.transport, mailLoginRequest(sso));
+    if (!res.ok) return { ok: false, note: `邮箱登录失败：${res.error ?? '未知失败'}` };
+    const sess = parseMailSession(res.text);
+    if (!sess) return { ok: false, note: '邮箱登录响应里没有 var.sid / var.rmkey' };
+    save(deps, {
+      ...st,
+      phase: st.special === 'aiAssistant' ? 'aiQuery' : 'mailDirs',
+      data: { ...(st.data ?? {}), sso: '', sid: sess.sid, rmkey: sess.rmkey, cguid: newCguid() },
+      day: today(deps),
+    });
+    return {
+      ok: true,
+      note: `邮箱登录成功（sid/rmkey 已拿到）—— 下一步${st.special === 'aiAssistant' ? '派生 AI 鉴权' : '取云盘目录'}`,
+    };
+  }
+
+  if (st.phase === 'aiQuery') {
+    const sess = { sid: st.data?.sid ?? '', rmkey: st.data?.rmkey ?? '' };
+    const res = callRawText(
+      deps.transport,
+      queryUserTokenRequest(sess, st.data?.cguid ?? newCguid()),
+    );
+    if (!res.ok) return { ok: false, note: `AI 鉴权 queryUserToken 失败：${res.error ?? '未知失败'}` };
+    const t = parseQueryUserToken(res.text);
+    const auth = t ? deriveAiAuth(t) : undefined;
+    if (!t || !auth) return { ok: false, note: 'queryUserToken 没给全 account/token 或解不出手机号' };
+    if (auth.userDomainId === '') return { ok: false, note: 'queryUserToken 没给 userDomainId' };
+    save(deps, {
+      ...st,
+      phase: 'aiStatus',
+      data: {
+        ...(st.data ?? {}),
+        phone: auth.phone,
+        auth: auth.authorization,
+        domain: auth.userDomainId,
+      },
+      day: today(deps),
+    });
+    return { ok: true, note: `AI 鉴权已派生（userDomainId ${auth.userDomainId.length} 字符）—— 下一步查状态` };
+  }
+
+  if (st.phase === 'aiStatus') {
+    const phone = st.data?.phone ?? '';
+    const rsa = encryptPhone(phone);
+    const res = callRawText(deps.transport, cloudTaskStatusRequest(rsa, st.itemId));
+    const cs = res.ok ? parseCloudTaskStatus(res.text) : undefined;
+    save(deps, { ...st, phase: 'aiChat', day: today(deps) });
+    return {
+      ok: true,
+      note: cs
+        ? `AI 状态读数（taskId=${st.itemId}）：taskStatus=${String(cs.taskStatus)} cloudStatus=${String(cs.cloudStatus)} —— 下一步对话`
+        : `AI 状态没读到（不影响对话）—— 下一步对话`,
+    };
+  }
+
+  if (st.phase === 'aiChat') {
+    const auth = st.data?.auth ?? '';
+    const domain = st.data?.domain ?? '';
+    const res = callRawText(deps.transport, aiChatRequest(auth, domain, '你好'));
+    const sse = res.ok ? parseSse(res.text) : { events: 0, text: '' };
+    const out = advance(deps, st);
+    return {
+      ok: res.ok && sse.events > 0 && sse.text !== '',
+      note:
+        sse.events > 0 && sse.text !== ''
+          ? `AI 对话成功（events=${sse.events}，回复 ${sse.text.slice(0, 20)}…）。${out.note}`
+          : `AI 对话没取到输出（events=${sse.events}）${res.ok ? '' : `：${res.error ?? ''}`}。${out.note}`,
+    };
+  }
+
+  if (st.phase === 'mailDirs') {
+    const sess = { sid: st.data?.sid ?? '', rmkey: st.data?.rmkey ?? '' };
+    const res = callRawText(deps.transport, mailDirsRequest(sess, st.data?.cguid ?? newCguid()));
+    const dir = res.ok ? firstField(res.text, 'directoryId') : undefined;
+    save(deps, {
+      ...st,
+      phase: 'mailSearch',
+      data: { ...(st.data ?? {}), directoryId: dir ?? '' },
+      day: today(deps),
+    });
+    return {
+      ok: true,
+      note: res.ok
+        ? `云盘目录已取${dir === undefined ? '（没有 directoryId，落点留空）' : ''} —— 下一步找一封邮件`
+        : `云盘目录没取到（落点留空）：${res.error ?? '未知失败'} —— 下一步找一封邮件`,
+    };
+  }
+
+  if (st.phase === 'mailSearch') {
+    const sess = { sid: st.data?.sid ?? '', rmkey: st.data?.rmkey ?? '' };
+    const res = callRawText(deps.transport, mailSearchRequest(sess, st.data?.cguid ?? newCguid()));
+    const mid = res.ok ? firstField(res.text, 'mid') : undefined;
+    if (!mid) {
+      const out = advance(deps, st);
+      return {
+        ok: false,
+        note: `邮件列表里取不到 mid：${res.error ?? '响应里没有 mid'}。${out.note}`,
+      };
+    }
+    save(deps, { ...st, phase: 'mailBackup', data: { ...(st.data ?? {}), mid }, day: today(deps) });
+    return { ok: true, note: `找到邮件 mid（${mid.length} 字符）—— 下一步转存` };
+  }
+
+  if (st.phase === 'mailBackup') {
+    const sess = { sid: st.data?.sid ?? '', rmkey: st.data?.rmkey ?? '' };
+    const res = callRawText(
+      deps.transport,
+      mailBackupRequest(sess, st.data?.cguid ?? newCguid(), st.data?.mid ?? '', st.data?.directoryId ?? ''),
+    );
+    const code = res.ok ? mailCode(res.text) : { ok: false, code: '', summary: res.error ?? '未知失败' };
+    const out = advance(deps, st);
+    return {
+      ok: res.ok && code.ok,
+      note: code.ok
+        ? `邮件转存已提交（服务端认了）。${out.note}`
+        : `邮件转存没成（code=${code.code} ${code.summary}）。${out.note}`,
     };
   }
 

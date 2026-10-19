@@ -2189,6 +2189,32 @@ function desEncryptBase64(message, key) {
   if (padded.length === 0) return "";
   return toBase64(desEcbEncrypt(fitKey8(key), padded));
 }
+function desEcbDecrypt(key, cipher) {
+  if (key.length !== 8) throw new Error(`DES: 密钥必须是 8 字节（得到 ${key.length}）`);
+  if (cipher.length % 8 !== 0) throw new Error(`DES: 密文长度必须是 8 的倍数（得到 ${cipher.length}）`);
+  const subKeys = desSubKeys(key).reverse();
+  const out = new Uint8Array(cipher.length);
+  for (let off = 0; off < cipher.length; off += 8) {
+    const l = (cipher[off] << 24 | cipher[off + 1] << 16 | cipher[off + 2] << 8 | cipher[off + 3]) >>> 0;
+    const r = (cipher[off + 4] << 24 | cipher[off + 5] << 16 | cipher[off + 6] << 8 | cipher[off + 7]) >>> 0;
+    const [pl, pr] = desCryptBlock(l, r, subKeys);
+    out[off] = pl >>> 24 & 255;
+    out[off + 1] = pl >>> 16 & 255;
+    out[off + 2] = pl >>> 8 & 255;
+    out[off + 3] = pl & 255;
+    out[off + 4] = pr >>> 24 & 255;
+    out[off + 5] = pr >>> 16 & 255;
+    out[off + 6] = pr >>> 8 & 255;
+    out[off + 7] = pr & 255;
+  }
+  return out;
+}
+function desDecryptBase64(cipherB64, key) {
+  const raw = desEcbDecrypt(fitKey8(key), fromBase64(cipherB64));
+  let end = raw.length;
+  while (end > 0 && raw[end - 1] === 0) end--;
+  return fromUtf8(raw.subarray(0, end));
+}
 
 // src/crypto/gzip.ts
 var GZIP_OS = 19;
@@ -4004,11 +4030,11 @@ function asInt(v) {
 function asStr(v) {
   return typeof v === "string" && v !== "" ? v : void 0;
 }
-function nestedLink(button) {
+function nestedLink(button, end = "app") {
   if (button === null || typeof button !== "object") return void 0;
-  const app = button.app;
-  if (app === null || typeof app !== "object") return void 0;
-  return asStr(app.link);
+  const one = button[end];
+  if (one === null || typeof one !== "object") return void 0;
+  return asStr(one.link);
 }
 function buttonEnds(o) {
   const obj = (v) => v !== null && typeof v === "object" ? v : void 0;
@@ -4035,7 +4061,8 @@ function parseMatrixItem(raw) {
     limitType: asStr(o.limitType ?? o.limit_type),
     enable: asInt(o.enable),
     currStep: asInt(o.currstep ?? o.currStep),
-    buttonAppLink: asStr(o.buttonAppLink ?? o.button_app_link) ?? nestedLink(o.button),
+    buttonAppLink: asStr(o.buttonAppLink ?? o.button_app_link) ?? nestedLink(o.button, "app"),
+    buttonEmailLink: asStr(o.buttonEmailLink ?? o.button_email_link) ?? nestedLink(o.button, "email"),
     buttonOutText: at("text"),
     buttonTextMiddle: at("textMiddle"),
     buttonTextFinish: at("textFinish"),
@@ -4464,6 +4491,7 @@ var STOP_AT_PROCESS = 100;
 var PC_UPLOAD_TASK_ID = 113;
 var UPLOAD_TASK_ID = 106;
 var GATE_UPLOAD_TASK_ID = 522;
+var SHARE_TASK_ID = 434;
 var SKIP_TASK_LIST = [
   117,
   437,
@@ -4524,13 +4552,411 @@ function isClickOnly(taskId) {
 function needsPortalEntry(taskId) {
   return taskId !== void 0 && PORTAL_ENTRY_TASK_IDS.includes(taskId);
 }
+function isShare(taskId) {
+  return taskId === SHARE_TASK_ID;
+}
 function stepFor(item) {
   if (shouldSkip(item.taskId)) return void 0;
+  if (item.taskId === 409 || item.taskId === 1005) return { kind: "entry" };
+  if (needsPortalEntry(item.taskId)) return { kind: "portal" };
+  if (isShare(item.taskId)) return { kind: "share" };
+  if (item.taskId === 1020) return { kind: "runner", runner: "mailBackup" };
+  if (item.taskId === 609) return { kind: "runner", runner: "aiAssistant" };
   const shape = uploadShapeFor(item);
   if (shape) return { kind: "upload", shape };
   if (isClickOnly(item.taskId)) return { kind: "clickOnly" };
-  if (needsPortalEntry(item.taskId)) return void 0;
   return void 0;
+}
+
+// src/mcloud/tasks/appTaskExtra.ts
+var MCLOUD = "https://m.mcloud.139.com";
+var MRP = "https://mrp.mcloud.139.com";
+var YUN = "https://yun.139.com";
+var APPMAIL = "https://appmail.mail.10086.cn";
+var HTML5_MAIL = "https://html5.mail.10086.cn";
+var MAIL_LOGIN = "https://mail.10086.cn/login/inlogin.action";
+function sessionOf(deps) {
+  return loadSession(deps.store);
+}
+function accountPhone(deps) {
+  return parseAuth(loadAuthRaw(deps.store))?.phone ?? "";
+}
+function entryPostRequest(deps, marketName) {
+  const s = sessionOf(deps);
+  return buildH5Request({
+    url: `${MCLOUD}/ycloud/signin/page/doTaskPost`,
+    method: "POST",
+    body: JSON.stringify({ client: "app", deviceId: s?.deviceId ?? "" }),
+    referer: REFERER_SIGN_IN,
+    showLoading: SHOW_LOADING,
+    isDeviceId: true,
+    saltKey: 1,
+    marketName,
+    session: s ? sessionHeaders(s) : {}
+  });
+}
+function entryGetRequest(deps) {
+  const s = sessionOf(deps);
+  return buildH5Request({
+    url: `${MRP}/market/signin/page/doTask?client=app&deviceId=${encodeURIComponent(s?.deviceId ?? "")}`,
+    method: "GET",
+    body: void 0,
+    referer: REFERER_SIGN_IN,
+    showLoading: SHOW_LOADING,
+    isDeviceId: false,
+    saltKey: 1,
+    session: s ? sessionHeaders(s) : {}
+  });
+}
+var SSO_TOKEN_PLACEHOLDER = "#ssoToken#";
+function portalUrl(link, deps) {
+  const token = parseAuth(loadAuthRaw(deps.store))?.token ?? "";
+  if (!link.startsWith("https://")) return void 0;
+  return link.split(SSO_TOKEN_PLACEHOLDER).join(token);
+}
+function portalPageRequest(deps, url) {
+  const s = sessionOf(deps);
+  return {
+    url,
+    method: "GET",
+    headers: {
+      Accept: "*/*",
+      ...s ? sessionHeaders(s) : {}
+    },
+    body: void 0
+  };
+}
+var OUTLINK_HEADERS = {
+  caller: "web",
+  "cms-device": "default",
+  "mcloud-channel": "1000101",
+  "mcloud-version": "7.14.4",
+  "x-deviceinfo": "||9|7.14.4|edge||||linux unknow||zh-CN|||",
+  "x-huawei-channelsrc": "10000034",
+  "x-svctype": "1",
+  "x-yun-api-version": "v1",
+  "x-yun-app-channel": "10000034",
+  "x-yun-channel-source": "10000034",
+  "x-yun-client-info": "||9|7.14.4|edge||||linux unknow||zh-CN|||||",
+  "x-yun-module-type": "100",
+  "x-yun-svc-type": "1",
+  "content-type": "application/json"
+};
+function getOutLinkRequest(deps, fileIds) {
+  if (fileIds.length === 0) return void 0;
+  const account = accountPhone(deps);
+  return {
+    url: `${YUN}/orchestration/personalCloud-rebuild/outlink/v1.0/getOutLink`,
+    method: "POST",
+    headers: { ...OUTLINK_HEADERS },
+    body: JSON.stringify({
+      getOutLinkReq: {
+        subLinkType: 0,
+        encrypt: 1,
+        coIDLst: fileIds,
+        caIDLst: [],
+        pubType: 1,
+        dedicatedName: "",
+        period: 1,
+        periodUnit: 1,
+        viewerLst: [],
+        extInfo: { isWatermark: 0, shareChannel: "3001" },
+        commonAccountInfo: { account, accountType: 1 }
+      }
+    })
+  };
+}
+function delOutLinkRequest(deps, linkIds) {
+  if (linkIds.length === 0) return void 0;
+  const account = accountPhone(deps);
+  return {
+    url: `${YUN}/orchestration/personalCloud-rebuild/outlink/v1.0/delOutLink`,
+    method: "POST",
+    headers: { ...OUTLINK_HEADERS },
+    body: JSON.stringify({
+      delOutLinkReq: {
+        linkIDs: linkIds,
+        commonAccountInfo: { account, accountType: 1 }
+      }
+    })
+  };
+}
+function parseLinkIds(body) {
+  let v;
+  try {
+    v = JSON.parse(body);
+  } catch {
+    return [];
+  }
+  const out = [];
+  const walk = (x) => {
+    if (Array.isArray(x)) {
+      for (const it of x) walk(it);
+      return;
+    }
+    if (x === null || typeof x !== "object") return;
+    for (const [k, val] of Object.entries(x)) {
+      if ((k === "linkID" || k === "linkId") && typeof val === "string" && val !== "") out.push(val);
+      else walk(val);
+    }
+  };
+  walk(v);
+  return [...new Set(out)];
+}
+var MAIL_UA = "Mozilla/5.0 (Linux; Android 14; 22041216C Build/TP1A.220624.014; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/120.0.0.0 Mobile Safari/537.36";
+function xmlEscape(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+}
+function mailSpecTokenRequest(deps) {
+  return specTokenRequest({ toSourceId: "001003" }, loadAuthRaw(deps.store));
+}
+function mailLoginRequest(sso) {
+  const body = `<?xml version="1.0" encoding="utf-8"?>
+      <object>
+       <string name="clientId">10804</string>
+       <string name="version">9</string>
+       <string name="loginType">7</string>
+       <string name="token">${xmlEscape(sso)}</string>
+      </object>`;
+  return {
+    url: MAIL_LOGIN,
+    method: "POST",
+    headers: { "content-type": "application/xml;charset=UTF-8" },
+    body
+  };
+}
+function parseMailSession(body) {
+  let v;
+  try {
+    v = JSON.parse(body);
+  } catch {
+    return void 0;
+  }
+  const varObj = v.var;
+  if (varObj === null || typeof varObj !== "object") return void 0;
+  const sid = varObj.sid;
+  const rmkey = varObj.rmkey;
+  if (typeof sid !== "string" || typeof rmkey !== "string" || sid === "" || rmkey === "") {
+    return void 0;
+  }
+  return { sid, rmkey };
+}
+function mailHeaders(session, extra = {}) {
+  return {
+    Cookie: `RMKEY=${session.rmkey}`,
+    "Content-Type": "application/xml;charset=UTF-8",
+    Accept: "*/*",
+    "User-Agent": MAIL_UA,
+    ...extra
+  };
+}
+function mailDirsRequest(session, cguid) {
+  const body = '<object><string name="qureySubDirectory">1</string><string name="parentId"></string></object>';
+  return {
+    url: `${HTML5_MAIL}/mw2/file/disk?func=disk:getDirectorys&sid=${session.sid}&comefrom=54&cguid=${cguid}`,
+    method: "POST",
+    headers: mailHeaders(session, {
+      Origin: HTML5_MAIL,
+      Referer: `${HTML5_MAIL}/`,
+      "X-Requested-With": "cn.cj.pe"
+    }),
+    body
+  };
+}
+function mailSearchRequest(session, cguid) {
+  const body = '<object><int name="fid">1</int><string name="order">receiveDate</string><int name="desc">1</int><int name="total">1</int><int name="limit">10</int><int name="start">0</int><int name="ignoreCase">0</int><int name="isSearch">1</int><int name="statType">1</int><int name="isFullSearch">0</int></object>';
+  return {
+    url: `${APPMAIL}/RmWeb/mail?func=mbox:SearchByFidOrCondition&peFlag=1&sid=${session.sid}&comefrom=54&cguid=${cguid}`,
+    method: "POST",
+    headers: mailHeaders(session, { "X-Requested-With": "cn.cj.pe" }),
+    body
+  };
+}
+function mailBackupRequest(session, cguid, mid, directoryId) {
+  const body = `<object><string name="mailIds">${xmlEscape(mid)}</string><string name="backupType" /><string name="channel">16861</string><string name="directoryId">${xmlEscape(directoryId)}</string></object>`;
+  return {
+    url: `${HTML5_MAIL}/mw2/file/disk?func=disk:backupMail&sid=${session.sid}&comefrom=16861&cguid=${cguid}`,
+    method: "POST",
+    headers: mailHeaders(session, {
+      Origin: HTML5_MAIL,
+      Referer: `${HTML5_MAIL}/`,
+      "X-Requested-With": "cn.cj.pe"
+    }),
+    body
+  };
+}
+function firstField(body, key) {
+  const re = new RegExp(`name=["']${key}["']\\s*>([^<]*)<`, "i");
+  const m = re.exec(body);
+  if (m !== null && m[1] !== void 0 && m[1] !== "") return m[1];
+  const j = new RegExp(`"${key}"\\s*:\\s*"([^"]*)"`, "i");
+  const mj = j.exec(body);
+  return mj?.[1];
+}
+function mailCode(body) {
+  try {
+    const v = JSON.parse(body);
+    const code = typeof v.code === "string" ? v.code : String(v.code ?? "");
+    return { ok: code === "S_OK", code, summary: typeof v.summary === "string" ? v.summary : "" };
+  } catch {
+    return { ok: false, code: "", summary: "响应不是 JSON" };
+  }
+}
+function newCguid() {
+  return uuidV4().replace(/-/g, "");
+}
+var AI_CHAT_URL = "https://ai.yun.139.com/api/outer/assistant/chat/v2/add";
+var AI_STATUS_URL = "https://m.mcloud.139.com/ycloud/signin/public/getUserTaskAndCloudStatusExternal";
+var AI_CHAT_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var AI_STATUS_PUBKEY = "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA1PWBlhoygGhj2uqniCjIPXbyufSSeST1yojxn1w1G6E/Uc9OpOFcXqcZYb1uc111zYdBAupYOxG+PXsQoZnZTXiZfYO6oTBC623OzEPnE3afYGa62E/8g8C4Zrzaqng4Sw+YvERoroHRM29SRvCBQK7qcszK2kGLuPVh02WhHuprvR6GQPWcOOXLYOUbg2qVhKu+J1+bJ2wS4camxNF2W96YSTdWPysHSw0o3fPIOfkDylCmj4odAVIln5vBP/rYtKeFskco+Tpyd5UM+zpwRf+VOJ/c/7DIC2iUjsENdb2pasLlhp5mTDeARDK4lzQR+MkJaGzYis3NqSu2PAPJTwIDAQAB";
+function queryUserTokenRequest(session, cguid) {
+  return {
+    url: `${HTML5_MAIL}/mw2/file/disk?func=disk:queryUserToken&sid=${session.sid}&behaviorData=&rnd=${Math.random()}&cguid=${cguid}&k=&comefrom=166`,
+    method: "POST",
+    headers: mailHeaders(session, {
+      Origin: HTML5_MAIL,
+      Referer: `${HTML5_MAIL}/`,
+      "X-Requested-With": "cn.cj.pe"
+    }),
+    body: "<object></object>"
+  };
+}
+function parseQueryUserToken(body) {
+  try {
+    const v = JSON.parse(body);
+    const inner = v.var?.data?.data;
+    if (!inner) return void 0;
+    const account = typeof inner.account === "string" ? inner.account : "";
+    const token = typeof inner.token === "string" ? inner.token : "";
+    if (account === "" || token === "") return void 0;
+    return {
+      account,
+      token,
+      userDomainId: typeof inner.userDomainId === "string" ? inner.userDomainId : void 0
+    };
+  } catch {
+    return void 0;
+  }
+}
+function deriveAiAuth(t) {
+  let phone = "";
+  try {
+    phone = desDecryptBase64(t.account, "139_mail");
+  } catch {
+    return void 0;
+  }
+  if (phone === "") return void 0;
+  const authorization = `Basic ${toBase64(utf8(`mobile:${phone}:${t.token}`))}`;
+  return { phone, authorization, userDomainId: t.userDomainId ?? "" };
+}
+function encryptPhone(phone) {
+  const bytes = new Uint8Array(phone.length);
+  for (let i = 0; i < phone.length; i++) bytes[i] = phone.charCodeAt(i) & 255;
+  const rng = (n) => {
+    const out = new Uint8Array(n);
+    const c = globalThis.crypto;
+    if (c?.getRandomValues) {
+      c.getRandomValues(out);
+      return out;
+    }
+    for (let i = 0; i < n; i++) out[i] = Math.floor(Math.random() * 256);
+    return out;
+  };
+  return rsaEncryptBase64(AI_STATUS_PUBKEY, bytes, rng);
+}
+function cloudTaskStatusRequest(rsaToken, taskId) {
+  return {
+    url: AI_STATUS_URL,
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Origin: "https://appmail.mail.10086.cn",
+      Referer: "https://appmail.mail.10086.cn/",
+      "User-Agent": AI_CHAT_UA
+    },
+    body: JSON.stringify({ token: rsaToken, taskId, sourceChannel: "10175" })
+  };
+}
+function parseCloudTaskStatus(body) {
+  try {
+    const v = JSON.parse(body);
+    const r = v.result;
+    if (!r) return void 0;
+    return {
+      taskStatus: typeof r.taskStatus === "number" ? r.taskStatus : void 0,
+      cloudStatus: typeof r.cloudStatus === "number" ? r.cloudStatus : void 0
+    };
+  } catch {
+    return void 0;
+  }
+}
+function beijingStamp() {
+  const d = new Date(Date.now() + 8 * 3600 * 1e3);
+  return d.toISOString().slice(0, 19).replace("T", " ");
+}
+function dialogueInput(message) {
+  return {
+    dialogue: message,
+    prompt: "",
+    inputTime: beijingStamp(),
+    commands: "000",
+    command: null,
+    resourceType: "0",
+    resourceId: "",
+    dialogueType: "0",
+    commandType: 1,
+    enableForceNetworkSearch: false,
+    enableAllNetworkSearch: false,
+    enableAiSearch: false,
+    extInfo: "{}",
+    versionInfo: { pcVersion: "1.7.0", h5Version: "2.5.0" },
+    toolSetting: { imageToolSetting: { enableLlmDescribe: false } },
+    attachment: {},
+    aiWritingSetting: {}
+  };
+}
+function aiChatRequest(auth, userId, message) {
+  return {
+    url: AI_CHAT_URL,
+    method: "POST",
+    headers: {
+      "x-yun-api-version": "v1",
+      "x-yun-client-info": "4g||30|||||||1440/900|zh-CN||||",
+      "x-yun-app-channel": "10175",
+      Authorization: auth,
+      "Content-Type": "application/json",
+      Accept: "text/event-stream",
+      "User-Agent": AI_CHAT_UA
+    },
+    body: JSON.stringify({
+      applicationType: "chat",
+      sessionId: "",
+      dialogueInput: dialogueInput(message),
+      sourceChannel: "10175",
+      userId,
+      continuationInfo: null
+    })
+  };
+}
+function parseSse(body) {
+  let events = 0;
+  let text = "";
+  for (const raw of body.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line === "" || line === "[DONE]") continue;
+    const data = line.startsWith("data:") ? line.slice(5).trim() : line;
+    if (data === "") continue;
+    try {
+      const ev = JSON.parse(data);
+      events++;
+      const a = ev.data?.flowResult?.outContent;
+      const b = ev.data?.outContent;
+      if (typeof a === "string") text += a;
+      if (typeof b === "string") text += b;
+    } catch {
+    }
+  }
+  return { events, text };
 }
 
 // src/mcloud/tasks/appTask.ts
@@ -4540,10 +4966,10 @@ var CLICK_PATH = "/ycloud/signin/task/click";
 var JOURNALING_PATH = "/ycloud/visitlog/journaling";
 var JOURNALING_SOURCE_ID = "1077";
 var BATCH_TRASH_URL = "https://personal-kd-njs.yun.139.com/hcy/recyclebin/batchTrash";
-function clickRequest(deps, id) {
+function clickRequest(deps, id, key = "task") {
   const session = loadSession(deps.store);
   return buildH5Request({
-    url: `${CLICK_HOST}${CLICK_PATH}?key=task&id=${id}`,
+    url: `${CLICK_HOST}${CLICK_PATH}?key=${encodeURIComponent(key)}&id=${id}`,
     method: "GET",
     body: void 0,
     referer: REFERER_SIGN_IN,
@@ -4602,17 +5028,45 @@ function advance(deps, st) {
   const clicked = freshClicked(st, deps);
   const next = pendingItems(deps).find((p) => !clicked.includes(p.itemId));
   if (!next) {
-    save2(deps, { ...st, phase: "done", fileId: void 0, clicked, day: today(deps) });
+    save2(deps, {
+      ...st,
+      phase: "done",
+      fileId: void 0,
+      special: void 0,
+      data: void 0,
+      clicked,
+      day: today(deps)
+    });
     const dead = clickedButIneffective(deps, { ...st, clicked });
     const warn4 = dead.length === 0 ? "" : `。⚠ 其中 ${dead.length} 条**点了但状态没变**（#${dead.join("、")}）—— HTTP 200 只说明"请求被接受了"。这类多半要**先做那个动作**（开启备份 / 开启通知），光点一下不算数`;
     return { ok: dead.length === 0, note: `待办都走完了（这一趟点了 ${clicked.length} 条）${warn4}` };
   }
+  let phase = next.needUpload ? "upload" : "visit";
+  if (next.step.kind === "share") {
+    const up = (() => {
+      try {
+        return JSON.parse(deps.store.getState("mcloud.upload.state") ?? "{}");
+      } catch {
+        return {};
+      }
+    })();
+    if (!up.fileId) {
+      beginUpload(deps, next.itemId, next.name);
+      phase = "upload";
+    }
+  }
   if (next.needUpload) beginUpload(deps, next.itemId, next.name);
+  const special = next.step.kind === "entry" ? "entry" : next.step.kind === "portal" ? "portal" : next.step.kind === "share" ? "share" : next.step.kind === "runner" ? next.step.runner === "aiAssistant" ? "aiAssistant" : "mailBackup" : void 0;
   save2(deps, {
     gi: next.gi,
     ii: next.ii,
-    phase: next.needUpload ? "upload" : "visit",
+    phase,
     itemId: next.itemId,
+    special,
+    data: {
+      marketName: next.marketName,
+      link: next.buttonEmailLink ?? next.buttonAppLink ?? ""
+    },
     clicked,
     day: today(deps)
   });
@@ -4629,7 +5083,13 @@ function pendingItems(deps) {
     for (const [ii, item] of (reading.items ?? []).entries()) {
       if (judgeItem(item) !== "todo") continue;
       if (shouldSkip(item.taskId)) continue;
-      if (stepFor({ taskId: item.taskId, groupId: item.groupId, name: item.name, buttonAppLink: item.buttonAppLink }) === void 0) {
+      const step = stepFor({
+        taskId: item.taskId,
+        groupId: item.groupId,
+        name: item.name,
+        buttonAppLink: item.buttonAppLink
+      });
+      if (step === void 0) {
         skipped.push(item.taskId ?? 0);
         continue;
       }
@@ -4643,7 +5103,12 @@ function pendingItems(deps) {
           groupId: item.groupId,
           name: item.name,
           buttonAppLink: item.buttonAppLink
-        }) !== void 0
+        }) !== void 0,
+        step,
+        marketName: reading.group,
+        buttonAppLink: item.buttonAppLink,
+        buttonEmailLink: item.buttonEmailLink,
+        currStep: item.currStep
       });
     }
   });
@@ -4673,16 +5138,51 @@ function startAppTask(deps) {
     };
   }
   const first = todo[0];
+  let phase = first.needUpload ? "upload" : "visit";
+  if (first.step.kind === "share") {
+    const up = (() => {
+      try {
+        return JSON.parse(deps.store.getState("mcloud.upload.state") ?? "{}");
+      } catch {
+        return {};
+      }
+    })();
+    if (!up.fileId) {
+      beginUpload(deps, first.itemId, first.name);
+      phase = "upload";
+    }
+  }
   if (first.needUpload) beginUpload(deps, first.itemId, first.name);
+  const special = first.step.kind === "entry" ? "entry" : first.step.kind === "portal" ? "portal" : first.step.kind === "share" ? "share" : first.step.kind === "runner" ? first.step.runner === "aiAssistant" ? "aiAssistant" : "mailBackup" : void 0;
   save2(deps, {
     gi: first.gi,
     ii: first.ii,
-    phase: first.needUpload ? "upload" : "visit",
+    phase,
     itemId: first.itemId,
+    special,
+    data: {
+      marketName: first.marketName,
+      link: first.buttonEmailLink ?? first.buttonAppLink ?? ""
+    },
     clicked,
     day: today(deps)
   });
   return { ok: true, note: `已排队 ${todo.length} 条待办（今天已点过 ${clicked.length} 条），从 #${first.itemId} 开始` };
+}
+function specialPhase(st) {
+  switch (st.special) {
+    case "entry":
+      return "entry";
+    case "portal":
+      return "portal";
+    case "share":
+      return "share";
+    case "mailBackup":
+    case "aiAssistant":
+      return "mailLogin";
+    default:
+      return void 0;
+  }
 }
 function runAppTaskStep(deps) {
   const st = load(deps);
@@ -4720,6 +5220,11 @@ function runAppTaskStep(deps) {
   }
   if (st.phase === "click") {
     if (freshClicked(st, deps).includes(st.itemId)) {
+      const sp2 = specialPhase(st);
+      if (sp2 !== void 0) {
+        save2(deps, { ...st, phase: sp2, day: today(deps) });
+        return { ok: true, note: `#${st.itemId} 今天已经点过了 —— 不重发，去做「${sp2}」` };
+      }
       if (st.fileId) {
         save2(deps, { ...st, phase: "trash", day: today(deps) });
         return { ok: true, note: `#${st.itemId} 今天已经点过了 —— 不重发，去收尾` };
@@ -4730,6 +5235,11 @@ function runAppTaskStep(deps) {
     const res2 = callRawText(deps.transport, clickRequest(deps, st.itemId));
     if (!res2.ok) return { ok: false, note: `打卡 #${st.itemId} 失败：${res2.error ?? "未知失败"}` };
     const clicked = [...freshClicked(st, deps), st.itemId];
+    const sp = specialPhase(st);
+    if (sp !== void 0) {
+      save2(deps, { ...st, phase: sp, clicked, day: today(deps) });
+      return { ok: true, note: `打卡 #${st.itemId}（HTTP ${res2.status}）—— 下一步「${sp}」` };
+    }
     if (st.fileId) {
       save2(deps, { ...st, phase: "trash", clicked, day: today(deps) });
       return { ok: true, note: `打卡 #${st.itemId}（HTTP ${res2.status}）—— 下一步收尾` };
@@ -4738,6 +5248,212 @@ function runAppTaskStep(deps) {
     return {
       ok: out2.ok,
       note: `打卡 #${st.itemId}（HTTP ${res2.status}）—— 这条没有要收尾的文件。${out2.note}`
+    };
+  }
+  if (st.phase === "entry") {
+    const market = st.data?.marketName ?? "sign_in_3";
+    const a = callRawText(deps.transport, entryPostRequest(deps, market));
+    const b = callRawText(deps.transport, entryGetRequest(deps));
+    const c = callRawText(deps.transport, clickRequest(deps, st.itemId, "task2"));
+    const bits = [a.ok ? "doTaskPost ok" : `doTaskPost 没成：${a.error ?? ""}`, b.ok ? "page/doTask ok" : `page/doTask 没成：${b.error ?? ""}`];
+    if (!c.ok) bits.push(`补打卡没成：${c.error ?? "未知失败"}`);
+    const out2 = advance(deps, st);
+    return {
+      ok: out2.ok,
+      note: `固定入口 #${st.itemId}（${bits.join("；")}）。${out2.note}`
+    };
+  }
+  if (st.phase === "portal") {
+    const market = st.data?.marketName ?? "sign_in_3";
+    const a = callRawText(deps.transport, entryPostRequest(deps, market));
+    const b = callRawText(deps.transport, entryGetRequest(deps));
+    const link = st.data?.link ?? "";
+    const url = link === "" ? void 0 : portalUrl(link, deps);
+    let page = "没有入口链接";
+    if (url !== void 0) {
+      const p = callRawText(deps.transport, portalPageRequest(deps, url));
+      page = p.ok ? `入口页 HTTP ${p.status}（${p.text.length} 字节）` : `入口页没取成：${p.error ?? ""}`;
+    }
+    if (st.itemId === 1017) {
+      const c = callRawText(deps.transport, clickRequest(deps, st.itemId, "task2"));
+      if (!c.ok) page += `；补打卡没成：${c.error ?? ""}`;
+    }
+    const bits = [a.ok ? "doTaskPost ok" : "doTaskPost 没成", b.ok ? "page/doTask ok" : "page/doTask 没成", page];
+    const out2 = advance(deps, st);
+    return { ok: out2.ok, note: `入口页 #${st.itemId}（${bits.join("；")}）。${out2.note}` };
+  }
+  if (st.phase === "share") {
+    const fileId = st.fileId ?? (() => {
+      try {
+        return JSON.parse(deps.store.getState("mcloud.upload.state") ?? "{}").fileId;
+      } catch {
+        return void 0;
+      }
+    })();
+    if (!fileId) {
+      const out2 = advance(deps, { ...st, fileId: void 0 });
+      return { ok: true, note: `分享 #${st.itemId}：手里没有文件 —— 不发空外链。${out2.note}` };
+    }
+    const req = getOutLinkRequest(deps, [fileId]);
+    if (!req) {
+      const out2 = advance(deps, st);
+      return { ok: true, note: `分享 #${st.itemId}：请求没造出来。${out2.note}` };
+    }
+    const res2 = callRawText(deps.transport, req);
+    if (!res2.ok) {
+      const out2 = advance(deps, st);
+      return { ok: false, note: `分享 #${st.itemId} 建外链失败：${res2.error ?? "未知失败"}。${out2.note}` };
+    }
+    const ids = parseLinkIds(res2.text);
+    if (ids.length === 0) {
+      const out2 = advance(deps, st);
+      return { ok: false, note: `分享 #${st.itemId}：响应里没有 linkID，没法删外链。${out2.note}` };
+    }
+    save2(deps, {
+      ...st,
+      phase: "shareDel",
+      data: { ...st.data ?? {}, linkIds: JSON.stringify(ids) },
+      day: today(deps)
+    });
+    return { ok: true, note: `分享 #${st.itemId}：外链已建（${ids.length} 条），下一步删掉` };
+  }
+  if (st.phase === "shareDel") {
+    let ids = [];
+    try {
+      ids = JSON.parse(st.data?.linkIds ?? "[]");
+    } catch {
+      ids = [];
+    }
+    const req = delOutLinkRequest(deps, ids);
+    if (!req) {
+      const out3 = advance(deps, st);
+      return { ok: true, note: `分享 #${st.itemId}：没有 linkID 可删。${out3.note}` };
+    }
+    const res2 = callRawText(deps.transport, req);
+    const out2 = advance(deps, { ...st, fileId: void 0 });
+    return {
+      ok: res2.ok,
+      note: res2.ok ? `分享 #${st.itemId}：外链已删。${out2.note}` : `分享 #${st.itemId}：删外链失败（${res2.error ?? "未知失败"}）。${out2.note}`
+    };
+  }
+  if (st.phase === "mailLogin") {
+    const res2 = callRawText(deps.transport, mailSpecTokenRequest(deps));
+    if (!res2.ok) return { ok: false, note: `邮箱 SSO token 失败：${res2.error ?? "未知失败"}` };
+    const parsed = parseSsoToken(res2.text);
+    if (!parsed.ok || parsed.value === void 0) {
+      return { ok: false, note: `邮箱 SSO token 没换到：${parsed.error}` };
+    }
+    save2(deps, {
+      ...st,
+      phase: "mailLogin2",
+      data: { ...st.data ?? {}, sso: parsed.value },
+      day: today(deps)
+    });
+    return { ok: true, note: "邮箱 SSO token 已换到 —— 下一步登录邮箱" };
+  }
+  if (st.phase === "mailLogin2") {
+    const sso = st.data?.sso ?? "";
+    const res2 = callRawText(deps.transport, mailLoginRequest(sso));
+    if (!res2.ok) return { ok: false, note: `邮箱登录失败：${res2.error ?? "未知失败"}` };
+    const sess = parseMailSession(res2.text);
+    if (!sess) return { ok: false, note: "邮箱登录响应里没有 var.sid / var.rmkey" };
+    save2(deps, {
+      ...st,
+      phase: st.special === "aiAssistant" ? "aiQuery" : "mailDirs",
+      data: { ...st.data ?? {}, sid: sess.sid, rmkey: sess.rmkey, cguid: newCguid() },
+      day: today(deps)
+    });
+    return {
+      ok: true,
+      note: `邮箱登录成功（sid/rmkey 已拿到）—— 下一步${st.special === "aiAssistant" ? "派生 AI 鉴权" : "取云盘目录"}`
+    };
+  }
+  if (st.phase === "aiQuery") {
+    const sess = { sid: st.data?.sid ?? "", rmkey: st.data?.rmkey ?? "" };
+    const res2 = callRawText(
+      deps.transport,
+      queryUserTokenRequest(sess, st.data?.cguid ?? newCguid())
+    );
+    if (!res2.ok) return { ok: false, note: `AI 鉴权 queryUserToken 失败：${res2.error ?? "未知失败"}` };
+    const t = parseQueryUserToken(res2.text);
+    const auth = t ? deriveAiAuth(t) : void 0;
+    if (!t || !auth) return { ok: false, note: "queryUserToken 没给全 account/token 或解不出手机号" };
+    if (auth.userDomainId === "") return { ok: false, note: "queryUserToken 没给 userDomainId" };
+    save2(deps, {
+      ...st,
+      phase: "aiStatus",
+      data: {
+        ...st.data ?? {},
+        phone: auth.phone,
+        auth: auth.authorization,
+        domain: auth.userDomainId
+      },
+      day: today(deps)
+    });
+    return { ok: true, note: `AI 鉴权已派生（userDomainId ${auth.userDomainId.length} 字符）—— 下一步查状态` };
+  }
+  if (st.phase === "aiStatus") {
+    const phone = st.data?.phone ?? "";
+    const rsa = encryptPhone(phone);
+    const res2 = callRawText(deps.transport, cloudTaskStatusRequest(rsa, st.itemId));
+    const cs = res2.ok ? parseCloudTaskStatus(res2.text) : void 0;
+    save2(deps, { ...st, phase: "aiChat", day: today(deps) });
+    return {
+      ok: true,
+      note: cs ? `AI 状态读数（taskId=${st.itemId}）：taskStatus=${String(cs.taskStatus)} cloudStatus=${String(cs.cloudStatus)} —— 下一步对话` : `AI 状态没读到（不影响对话）—— 下一步对话`
+    };
+  }
+  if (st.phase === "aiChat") {
+    const auth = st.data?.auth ?? "";
+    const domain = st.data?.domain ?? "";
+    const res2 = callRawText(deps.transport, aiChatRequest(auth, domain, "你好"));
+    const sse = res2.ok ? parseSse(res2.text) : { events: 0, text: "" };
+    const out2 = advance(deps, st);
+    return {
+      ok: res2.ok && sse.events > 0 && sse.text !== "",
+      note: sse.events > 0 && sse.text !== "" ? `AI 对话成功（events=${sse.events}，回复 ${sse.text.slice(0, 20)}…）。${out2.note}` : `AI 对话没取到输出（events=${sse.events}）${res2.ok ? "" : `：${res2.error ?? ""}`}。${out2.note}`
+    };
+  }
+  if (st.phase === "mailDirs") {
+    const sess = { sid: st.data?.sid ?? "", rmkey: st.data?.rmkey ?? "" };
+    const res2 = callRawText(deps.transport, mailDirsRequest(sess, st.data?.cguid ?? newCguid()));
+    const dir = res2.ok ? firstField(res2.text, "directoryId") : void 0;
+    save2(deps, {
+      ...st,
+      phase: "mailSearch",
+      data: { ...st.data ?? {}, directoryId: dir ?? "" },
+      day: today(deps)
+    });
+    return {
+      ok: true,
+      note: res2.ok ? `云盘目录已取${dir === void 0 ? "（没有 directoryId，落点留空）" : ""} —— 下一步找一封邮件` : `云盘目录没取到（落点留空）：${res2.error ?? "未知失败"} —— 下一步找一封邮件`
+    };
+  }
+  if (st.phase === "mailSearch") {
+    const sess = { sid: st.data?.sid ?? "", rmkey: st.data?.rmkey ?? "" };
+    const res2 = callRawText(deps.transport, mailSearchRequest(sess, st.data?.cguid ?? newCguid()));
+    const mid = res2.ok ? firstField(res2.text, "mid") : void 0;
+    if (!mid) {
+      const out2 = advance(deps, st);
+      return {
+        ok: false,
+        note: `邮件列表里取不到 mid：${res2.error ?? "响应里没有 mid"}。${out2.note}`
+      };
+    }
+    save2(deps, { ...st, phase: "mailBackup", data: { ...st.data ?? {}, mid }, day: today(deps) });
+    return { ok: true, note: `找到邮件 mid（${mid.length} 字符）—— 下一步转存` };
+  }
+  if (st.phase === "mailBackup") {
+    const sess = { sid: st.data?.sid ?? "", rmkey: st.data?.rmkey ?? "" };
+    const res2 = callRawText(
+      deps.transport,
+      mailBackupRequest(sess, st.data?.cguid ?? newCguid(), st.data?.mid ?? "", st.data?.directoryId ?? "")
+    );
+    const code = res2.ok ? mailCode(res2.text) : { ok: false, code: "", summary: res2.error ?? "未知失败" };
+    const out2 = advance(deps, st);
+    return {
+      ok: res2.ok && code.ok,
+      note: code.ok ? `邮件转存已提交（服务端认了）。${out2.note}` : `邮件转存没成（code=${code.code} ${code.summary}）。${out2.note}`
     };
   }
   if (!st.fileId) {
