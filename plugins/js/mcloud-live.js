@@ -583,8 +583,11 @@ function summaryFor(store2, task) {
     const n2 = ids2.length;
     const plan = exchangePlan(store2);
     const lead = (store2.getState("mcloud.exchange.lead_sec") ?? "120").trim() || "120";
+    const until = (store2.getState("mcloud.exchange.schedule.until") ?? "").trim();
+    const max = Number((store2.getState("mcloud.exchange.schedule.max_runs") ?? "0").trim());
+    const extra = (until ? " · 截止 " + until : "") + (max > 0 ? " · 每号最多 " + max + " 次" : "");
     if (plan === "") return n2 > 0 ? n2 + " 个账号 · 还没设定时奖品" : "还没选账号和奖品";
-    return n2 + " 个账号（" + accountLabels(store2, ids2) + "） · 目标：" + plan + " · 提前 " + lead + "s";
+    return n2 + " 个账号（" + accountLabels(store2, ids2) + "） · 目标：" + plan + " · 提前 " + lead + "s" + extra;
   }
   const n = enabledAccountCount(store2);
   if (n === 0) return "还没有账号";
