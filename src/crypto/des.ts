@@ -13,7 +13,7 @@
 // 尤其是 `SBOX_P` 那种"已合并 S 盒 + P 置换"的对象映射 —— 见那个文件的注释。
 // 验收用 FIPS 的已知答案（`test/des.test.ts`），不测"跟我自己算的一样"。
 
-import { toBase64, utf8 } from './bytes.ts';
+import { fromBase64, fromUtf8, toBase64, utf8 } from './bytes.ts';
 import { BIT_SHIFTS, PC1, PC2, SBOX_MASK, SBOX_P } from './desTables.ts';
 
 /** 复刻 `key.substring(0, 8).padEnd(8, "\0")`。 */
@@ -161,4 +161,36 @@ export function desEncryptBase64(message: string, key: string): string {
   const padded = zeroPadToBlock(utf8(message), 8);
   if (padded.length === 0) return ''; // 空明文 ⇒ 空串（照抄原实现）
   return toBase64(desEcbEncrypt(fitKey8(key), padded));
+}
+
+/** ECB 解密（逐块，子密钥倒序）。返回原始明文字节（含零填充）。 */
+export function desEcbDecrypt(key: Uint8Array, cipher: Uint8Array): Uint8Array {
+  if (key.length !== 8) throw new Error(`DES: 密钥必须是 8 字节（得到 ${key.length}）`);
+  if (cipher.length % 8 !== 0) throw new Error(`DES: 密文长度必须是 8 的倍数（得到 ${cipher.length}）`);
+  const subKeys = desSubKeys(key).reverse();
+  const out = new Uint8Array(cipher.length);
+  for (let off = 0; off < cipher.length; off += 8) {
+    const l =
+      ((cipher[off]! << 24) | (cipher[off + 1]! << 16) | (cipher[off + 2]! << 8) | cipher[off + 3]!) >>> 0;
+    const r =
+      ((cipher[off + 4]! << 24) | (cipher[off + 5]! << 16) | (cipher[off + 6]! << 8) | cipher[off + 7]!) >>> 0;
+    const [pl, pr] = desCryptBlock(l, r, subKeys);
+    out[off] = (pl >>> 24) & 0xff;
+    out[off + 1] = (pl >>> 16) & 0xff;
+    out[off + 2] = (pl >>> 8) & 0xff;
+    out[off + 3] = pl & 0xff;
+    out[off + 4] = (pr >>> 24) & 0xff;
+    out[off + 5] = (pr >>> 16) & 0xff;
+    out[off + 6] = (pr >>> 8) & 0xff;
+    out[off + 7] = pr & 0xff;
+  }
+  return out;
+}
+
+/** base64 密文 + 密钥 → 明文字符串（去掉尾部零填充）。 */
+export function desDecryptBase64(cipherB64: string, key: string): string {
+  const raw = desEcbDecrypt(fitKey8(key), fromBase64(cipherB64));
+  let end = raw.length;
+  while (end > 0 && raw[end - 1] === 0) end--;
+  return fromUtf8(raw.subarray(0, end));
 }

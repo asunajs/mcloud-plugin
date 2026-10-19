@@ -23,6 +23,7 @@ import { SESSION_KEY } from '../src/store/types.ts';
 import { memStore } from '../src/store/memory.ts';
 import type { BuiltRequest } from '../src/mcloud/h5.ts';
 import type { TaskDeps } from '../src/mcloud/tasks/base.ts';
+import { desEncryptBase64 } from '../src/crypto/des.ts';
 
 const NOW = '2026-10-14T01:00:00.000Z';
 
@@ -60,6 +61,48 @@ function mkDeps(groups: Record<string, unknown[]>) {
     if (req.url.includes('task/click')) return { status: 200, headers: {}, body: JSON.stringify({ code: 0 }) };
     if (req.url.includes('batchTrash')) return { status: 200, headers: {}, body: JSON.stringify({ code: '0000', success: true }) };
     if (req.url.includes('file/create')) return { status: 200, headers: {}, body: JSON.stringify({ code: 0, data: { fileId: 'F1', rapidUpload: true } }) };
+    if (req.url.includes('getOutLink')) {
+      return {
+        status: 200,
+        headers: {},
+        body: JSON.stringify({ code: '0', data: { getOutLinkRes: { getOutLinkResSet: [{ linkID: 'L1' }] } } }),
+      };
+    }
+    if (req.url.includes('delOutLink')) return { status: 200, headers: {}, body: JSON.stringify({ code: '0' }) };
+    if (req.url.includes('querySpecTokenV2')) {
+      return { status: 200, headers: {}, body: JSON.stringify({ success: true, data: { token: 'S' } }) };
+    }
+    if (req.url.includes('inlogin.action')) {
+      return { status: 200, headers: {}, body: JSON.stringify({ var: { sid: 's', rmkey: 'r' } }) };
+    }
+    if (req.url.includes('disk:getDirectorys')) {
+      return { status: 200, headers: {}, body: '<string name="directoryId">D</string>' };
+    }
+    if (req.url.includes('SearchByFidOrCondition')) {
+      return { status: 200, headers: {}, body: '<string name="mid">M</string>' };
+    }
+    if (req.url.includes('disk:backupMail')) {
+      return { status: 200, headers: {}, body: JSON.stringify({ code: 'S_OK' }) };
+    }
+    if (req.url.includes('disk:queryUserToken')) {
+      return {
+        status: 200,
+        headers: {},
+        body: JSON.stringify({
+          var: { data: { data: { account: desEncryptBase64('13800138000', '139_mail'), token: 'T', userDomainId: 'D' } } },
+        }),
+      };
+    }
+    if (req.url.includes('getUserTaskAndCloudStatusExternal')) {
+      return { status: 200, headers: {}, body: JSON.stringify({ code: 0, result: { taskStatus: 1, cloudStatus: 0 } }) };
+    }
+    if (req.url.includes('assistant/chat/v2/add')) {
+      return {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+        body: 'data: {"data":{"flowResult":{"outContent":"hi"}}}\n\n',
+      };
+    }
     return { status: 200, headers: {}, body: JSON.stringify({ code: 0, result: {} }) };
   }) as never;
   return { deps: { store, transport, nowIso: NOW, baseUrl: undefined } as TaskDeps, sent, store };
@@ -102,6 +145,95 @@ test('起一趟**一个请求都不发**；没有待办 ⇒ idle', () => {
   assert.equal(out.idle, true);
   assert.match(out.note, /没有能替你做的了/);
   assert.equal(sent.length, 0);
+});
+
+test('409 固定入口：两发上报 + 补一发 task2', () => {
+  const { deps, sent } = mkDeps({
+    [MATRIX_MARKETS[0]!]: [{ taskId: 409, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '从固定入口访问云朵中心' }],
+  });
+  startAppTask(deps);
+  for (let i = 0; i < 12; i++) {
+    const out = runAppTaskStep(deps);
+    if (out.idle) break;
+  }
+  const urls = sent.map((r) => r.url);
+  assert.ok(urls.some((u) => u.includes('doTaskPost')), '新路径上报');
+  assert.ok(urls.some((u) => u.includes('/market/signin/page/doTask')), '旧路径上报');
+  assert.ok(
+    sent.some((r) => r.url.includes('task/click') && r.url.includes('key=task2')),
+    '补打卡要 task2',
+  );
+});
+
+test('1017 入口页：取 button.email.link，再用 task2 补一发', () => {
+  const { deps, sent } = mkDeps({
+    [MATRIX_MARKETS[0]!]: [
+      {
+        taskId: 1017,
+        state: 'UNFINISH',
+        enable: 1,
+        groupId: 'g1',
+        name: '登录移动云盘云朵中心',
+        buttonEmailLink: 'https://m.mcloud.139.com/portal/mobilecloud/index.html?path=newsignin&token=#ssoToken#',
+      },
+    ],
+  });
+  startAppTask(deps);
+  for (let i = 0; i < 15; i++) {
+    const out = runAppTaskStep(deps);
+    if (out.idle) break;
+  }
+  const urls = sent.map((r) => r.url);
+  assert.ok(urls.some((u) => u.includes('/portal/mobilecloud/index.html')), '要取入口页');
+  assert.ok(
+    sent.some((r) => r.url.includes('task/click') && r.url.includes('key=task2')),
+    '1017 补打卡要 task2',
+  );
+});
+
+test('609 AI 助手：换票 → 登录 → 派生鉴权 → 状态 → SSE 对话', () => {
+  const { deps, sent } = mkDeps({
+    [MATRIX_MARKETS[0]!]: [{ taskId: 609, state: 'UNFINISH', enable: 1, groupId: 'time', name: '和AI助手对话' }],
+  });
+  startAppTask(deps);
+  for (let i = 0; i < 25; i++) {
+    const out = runAppTaskStep(deps);
+    if (out.idle) break;
+  }
+  const urls = sent.map((r) => r.url);
+  assert.ok(urls.some((u) => u.includes('queryUserToken')), '派生 AI 鉴权');
+  assert.ok(urls.some((u) => u.includes('getUserTaskAndCloudStatusExternal')), '状态查询');
+  assert.ok(urls.some((u) => u.includes('assistant/chat/v2/add')), 'SSE 对话');
+});
+
+test('434 分享：建外链后立刻删（不空发）', () => {
+  const { deps, sent } = mkDeps({
+    [MATRIX_MARKETS[0]!]: [{ taskId: 434, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '分享文件领好礼' }],
+  });
+  startAppTask(deps);
+  for (let i = 0; i < 30; i++) {
+    const out = runAppTaskStep(deps);
+    if (out.idle) break;
+  }
+  assert.ok(sent.some((r) => r.url.includes('getOutLink')), '要建外链');
+  assert.ok(sent.some((r) => r.url.includes('delOutLink')), '建完要删');
+});
+
+test('1020 邮件转存：换票 → 登录 → 目录 → 找邮件 → 转存', () => {
+  const { deps, sent } = mkDeps({
+    [MATRIX_MARKETS[0]!]: [{ taskId: 1020, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '重要邮件存储云盘' }],
+  });
+  startAppTask(deps);
+  for (let i = 0; i < 20; i++) {
+    const out = runAppTaskStep(deps);
+    if (out.idle) break;
+  }
+  const urls = sent.map((r) => r.url);
+  assert.ok(urls.some((u) => u.includes('querySpecTokenV2')), '换 SSO token');
+  assert.ok(urls.some((u) => u.includes('inlogin.action')), '邮箱登录');
+  assert.ok(urls.some((u) => u.includes('disk:getDirectorys')), '云盘目录');
+  assert.ok(urls.some((u) => u.includes('SearchByFidOrCondition')), '邮件列表');
+  assert.ok(urls.some((u) => u.includes('disk:backupMail')), '转存');
 });
 
 test('没有待办时要说清“还有几条没搬”，且“刻意不做”的不算', () => {

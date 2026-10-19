@@ -30,6 +30,7 @@ import {
   isUnimplemented,
   needsPortalEntry,
   shouldSkip,
+  stepFor,
   uploadShapeFor,
 } from '../src/mcloud/appTaskRules.ts';
 
@@ -122,6 +123,14 @@ test('"不做"名单 / 只点一下 / 入口页 / 分享 —— 四个集合不�
   assert.equal(PORTAL_ENTRY_TASK_IDS.length, 2);
   assert.equal(needsPortalEntry(1017), true);
   assert.equal(needsPortalEntry(604), true);
+  assert.equal(stepFor({ taskId: 409 })?.kind, 'entry');
+  assert.equal(stepFor({ taskId: 1005 })?.kind, 'entry');
+  assert.equal(stepFor({ taskId: 1017 })?.kind, 'portal');
+  assert.equal(stepFor({ taskId: 604 })?.kind, 'portal');
+  assert.equal(stepFor({ taskId: 434 })?.kind, 'share');
+  assert.equal(stepFor({ taskId: 1020 })?.kind, 'runner');
+  assert.equal(stepFor({ taskId: 609 })?.kind, 'runner');
+  assert.equal(needsPortalEntry(604), true);
   assert.equal(needsPortalEntry(605), false);
   assert.equal(isShare(SHARE_TASK_ID), true);
   assert.equal(isShare(434), true);
@@ -136,6 +145,11 @@ test('"不做"名单 / 只点一下 / 入口页 / 分享 —— 四个集合不�
 
 test('“没实现”要认上传族，也要把“刻意不做”排除在外', () => {
   assert.equal(isUnimplemented(106), false, '106 是上传，别误报');
+  assert.equal(isUnimplemented(409), false, '409 固定入口');
+  assert.equal(isUnimplemented(434), false, '434 分享');
+  assert.equal(isUnimplemented(1017), false, '1017 入口页');
+  assert.equal(isUnimplemented(1020), false, '1020 邮件转存');
+  assert.equal(isUnimplemented(609), false, '609 AI 助手');
   assert.equal(isUnimplemented(113), false, '113 是 PC 上传');
   assert.equal(isUnimplemented(522), false, '522 是上传闸');
   assert.equal(isUnimplemented(115), false, '115 是只点一下');
