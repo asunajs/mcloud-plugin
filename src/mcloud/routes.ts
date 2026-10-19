@@ -59,6 +59,7 @@ import {
   STATE_SCHEDULE_MODE,
   STATE_SCHEDULE_ONCE_DATE,
   STATE_SCHEDULE_PLAN,
+  STATE_SCHEDULE_PLAN_NAME,
   STATE_SCHEDULE_UNTIL,
   runExchange,
   scheduleLeadSec,
@@ -481,7 +482,9 @@ function buildReadings(deps: RouteDeps): Record<string, unknown> {
       leadMs: exchangeLeadMs(deps.store),
       plan: deps.store.getState('mcloud.exchange.plan') ?? '',
       // 定时目标与手动目标分开存：页面上的「手动兑换」和「定时抢兑」不再互相改。
-      schedulePlan: deps.store.getState(STATE_SCHEDULE_PLAN) ?? '',
+      // `schedulePlan` 是**显示名**（界面一直用它）；目标是 prizeId 或旧库的名字。
+      schedulePlan: deps.store.getState(STATE_SCHEDULE_PLAN_NAME) ?? deps.store.getState(STATE_SCHEDULE_PLAN) ?? '',
+      schedulePlanTarget: deps.store.getState(STATE_SCHEDULE_PLAN) ?? '',
       scheduleEnabled: scheduleEnabled(deps.store),
       scheduleCron: deps.store.getState(STATE_SCHEDULE_CRON) ?? '',
       scheduleMode: deps.store.getState(STATE_SCHEDULE_MODE) ?? 'daily',
@@ -2035,6 +2038,8 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
           maxRuns?: unknown;
           leadSec?: unknown;
           cron?: unknown;
+          prizeId?: unknown;
+          prizeName?: unknown;
         };
         const d = { store: deps.store, transport: deps.transport, nowIso: deps.now(), baseUrl: loadBaseUrl(deps.store) };
         if (b.action === 'clear') {
@@ -2064,7 +2069,15 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
         }
         if (b.action === 'plan') {
           const query = typeof b.query === 'string' ? b.query.trim() : '';
-          if (query === '') return json(400, { ok: false, error: '定时目标不能为空' });
+          // 目标是 **prizeId**（稳定），名字只用于显示。老客户端只传 query（名字）时
+          // 继续按名字走 —— `pickPrize` 本来就兼容两种写法。
+          const prizeIdRaw = Number(b.prizeId);
+          const prizeId = Number.isInteger(prizeIdRaw) && prizeIdRaw > 0 ? prizeIdRaw : undefined;
+          const prizeName = typeof b.prizeName === 'string' && b.prizeName.trim() !== ''
+            ? b.prizeName.trim()
+            : query;
+          const target = prizeId === undefined ? query : String(prizeId);
+          if (target === '') return json(400, { ok: false, error: '定时目标不能为空' });
           const cron = typeof b.cron === 'string' ? b.cron.trim() : '';
           if (cron === '') return json(400, { ok: false, error: 'cron 表达式不能为空' });
           try {
@@ -2085,7 +2098,8 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
             return json(400, { ok: false, error: '提前触发要在 60~300 秒之间' });
           }
           const gen = String(Date.now());
-          deps.store.setState(STATE_SCHEDULE_PLAN, query, d.nowIso);
+          deps.store.setState(STATE_SCHEDULE_PLAN, target, d.nowIso);
+          deps.store.setState(STATE_SCHEDULE_PLAN_NAME, prizeName, d.nowIso);
           deps.store.setState(STATE_SCHEDULE_CRON, cron, d.nowIso);
           deps.store.setState(STATE_SCHEDULE_UNTIL, until, d.nowIso);
           deps.store.setState(STATE_SCHEDULE_MAX_RUNS, String(maxRunsRaw), d.nowIso);
@@ -2100,12 +2114,12 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
           setScheduleEnabled(deps.store, true, d.nowIso);
           syncTaskReadiness(deps.store, ['兑换']);
           deps.log(
-            `定时目标：${query}（cron ${cron}，提前 ${Math.round(leadRaw)}s，` +
-              `每号最多 ${maxRunsRaw || '不限'} 次）`,
+            `定时目标：${prizeName}${prizeId === undefined ? '' : `（prizeId=${prizeId}）`}` +
+              `（cron ${cron}，提前 ${Math.round(leadRaw)}s，每号最多 ${maxRunsRaw || '不限'} 次）`,
           );
           return json(200, {
             ok: true,
-            note: `定时已保存：${query}（提前 ${Math.round(leadRaw)}s）`,
+            note: `定时已保存：${prizeName}（提前 ${Math.round(leadRaw)}s）`,
           });
         }
         if (b.action === 'step') {
