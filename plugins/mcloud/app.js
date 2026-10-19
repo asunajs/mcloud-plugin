@@ -1205,6 +1205,28 @@ function fillPlanAccounts(selected) {
   sel.value = selected || (cur && cur.id) || (usable[0] && usable[0].id) || '';
 }
 
+/** 填目标下拉：优先用清单缓存；编辑的目标不在缓存里时补一条（保留 prizeId）。 */
+function fillPlanTargets(name, id) {
+  const sel = $('ex-plan-target');
+  if (!sel) return;
+  const items = exPicks || [];
+  const wantId = id === null || id === undefined ? '' : String(id);
+  const match = (p) => (wantId !== '' ? String(p.id) === wantId : !!name && p.name === name);
+  const opts = items.map((p) => {
+    const pid = p.id === undefined ? '' : String(p.id);
+    return (
+      `<option value="${esc(p.name)}" data-id="${esc(pid)}"${match(p) ? ' selected' : ''}>` +
+      `${esc(p.name)}${p.id === undefined ? '' : ` · #${p.id}`}</option>`
+    );
+  });
+  if (name && !items.some(match)) {
+    opts.unshift(
+      `<option value="${esc(name)}" data-id="${esc(wantId)}" selected>${esc(name)}${wantId === '' ? '' : ` · #${wantId}`}</option>`,
+    );
+  }
+  sel.innerHTML = opts.join('') || '<option value="">先点「读一次」拿清单</option>';
+}
+
 /** 打开「定时抢兑」弹窗。`p` 是清单/关注里点的那一件；`plan` 是编辑已有计划。 */
 function openPlanDialog(p, plan) {
   const e = (last && last.exchange) || {};
@@ -1217,6 +1239,7 @@ function openPlanDialog(p, plan) {
     planDialogId = p && Number.isInteger(p.id) ? p.id : null;
   }
   fillPlanAccounts(plan ? plan.accountId : '');
+  fillPlanTargets(planDialogQuery, planDialogId);
   setText('ex-plan-title', plan ? '编辑定时计划' : '新建定时计划');
   setText('ex-plan-prize', planDialogQuery || '还没选目标');
   setText('ex-plan-price', p && p.price !== undefined ? `（${p.price} 豆）` : '');
@@ -1229,6 +1252,12 @@ function openPlanDialog(p, plan) {
 
 /** 保存一条计划：写计划表 + 目标/时刻/提前量（不 startsOrder、不发请求）。 */
 async function savePlanDialog() {
+  // 目标以下拉为准（编辑时可能是缓存里没有的旧目标）。
+  const t = $('ex-plan-target');
+  if (t && t.selectedOptions[0] && t.value !== '') {
+    planDialogQuery = t.value;
+    planDialogId = t.selectedOptions[0].dataset.id ? Number(t.selectedOptions[0].dataset.id) : null;
+  }
   const query = planDialogQuery.trim();
   if (query === '') throw new Error('先从清单里选一件，再保存计划');
   const accountId = ($('ex-plan-account') && $('ex-plan-account').value) || '';
@@ -3485,6 +3514,13 @@ $('ex-sched-list').addEventListener('click', (ev) => {
 });
 
 // 定时抢兑弹窗：入口是清单/关注行的「定时」。
+$('ex-plan-target').addEventListener('change', () => {
+  const opt = $('ex-plan-target').selectedOptions[0];
+  planDialogQuery = opt ? opt.value : '';
+  planDialogId = opt && opt.dataset.id ? Number(opt.dataset.id) : null;
+  setText('ex-plan-prize', planDialogQuery || '还没选目标');
+  setText('ex-plan-price', '');
+});
 $('ex-plan-close').addEventListener('click', () => {
   $('ex-plan-dialog').hidden = true;
 });
