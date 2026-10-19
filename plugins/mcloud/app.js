@@ -1386,7 +1386,8 @@ function renderScheduleCard(e) {
         (p.accountOk === false ? ' · 账号不可用' : '');
       return (
         `<div class="plan-row${p.enabled ? '' : ' is-off'}">` +
-        `<div class="plan-main"><strong>${esc(p.prizeName)}</strong>` +
+        `<div class="plan-main"><strong>${esc(p.prizeName)}` +
+        `${p.prizeId === null || p.prizeId === undefined ? '' : ` <span class="hint">#${p.prizeId}</span>`}</strong>` +
         `<span class="hint">${esc(p.accountLabel)} · ${esc(p.cron)} · 提前 ${p.leadSec}s${extra}</span></div>` +
         `<div class="row end">` +
         `<button class="btn btn-sm" data-plan-toggle="${esc(p.id)}">${p.enabled ? '暂停' : '启用'}</button>` +
