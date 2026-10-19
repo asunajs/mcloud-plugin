@@ -17,6 +17,7 @@ import { STATE_ORDERED_HOUR } from '../mcloud/tasks/exchangeOrder.ts';
 import { depsForAccount, LONG_REQUEST_TIMEOUT_MS, makeStore, makeTransport } from './shared.ts';
 import type { TaskPayload } from './shared.ts';
 import { labelOf } from '../mcloud/taskAccounts.ts';
+import { blockersFor } from '../mcloud/taskReadiness.ts';
 import { logBoth } from '../mcloud/log.ts';
 import {
   BUDGET_MS,
@@ -173,10 +174,7 @@ register_cron(
     paused: bootPlans.length === 0,
     manage_url: '#/plugin/mcloud',
     summary: planSummary(store),
-    blockers:
-      bootPlans.length > 0
-        ? []
-        : [bootAll.length === 0 ? '还没设定时计划' : '所有计划都未启用'],
+    blockers: blockersFor(store, '兑换'),
   },
 );
 
