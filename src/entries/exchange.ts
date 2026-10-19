@@ -53,6 +53,7 @@ import {
 import { labelOf } from '../mcloud/taskAccounts.ts';
 import { logBoth } from '../mcloud/log.ts';
 import type { TaskPayload } from './shared.ts';
+import { blockersFor, summaryFor } from '../mcloud/taskReadiness.ts';
 import {
   BUDGET_MS,
   DEFAULT_SCHEDULE_CRON,
@@ -81,6 +82,9 @@ register_cron(
   '兑换',
   defaultCron,
   (p: TaskPayload) => {
+    // 没选账号 / 没选奖品 ⇒ 这一趟什么都不做。定时那一下不该在
+    // “用户还没配置完”时发请求，更不该花豆。
+    if (blockersFor(store, '兑换').length > 0) return;
     const startedMs = Date.now();
     const at = new Date(startedMs).toISOString();
     // 任务自己的 cron 是权威：`scheduledAt` 是**目标整点**（不是提前后的触发时刻），
@@ -189,7 +193,19 @@ register_cron(
       );
     }
   },
-  { budget_ms: BUDGET_MS, lead_ms: defaultLeadMs },
+  {
+    budget_ms: BUDGET_MS,
+    lead_ms: defaultLeadMs,
+    // 兑换是**插件页面管理的功能实例**：面板任务列表不显示它，配置（奖品/时间/
+    // 账号/提前量）全在云盘页的「定时抢兑」里。面板只负责到点叫醒。
+    surface: 'plugin',
+    // 新装先暂停：等用户选好奖品、设好时间，页面里点“启用定时”再跑。
+    // 已有安装的 paused 状态由面板保留，不会因为升级被重置。
+    paused: true,
+    manage_url: '#/plugin/mcloud',
+    summary: summaryFor(store, '兑换'),
+    blockers: blockersFor(store, '兑换'),
+  },
 );
 
 log(

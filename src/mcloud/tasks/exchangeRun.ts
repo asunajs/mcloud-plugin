@@ -31,6 +31,7 @@ import { hourKey, planTargetWait, targetHourOf } from '../exchangeTiming.ts';
 import { nextCronTargetMs } from '../scheduleCron.ts';
 import { FALLBACK_RECIPE } from '../h5session.ts';
 import { exchangeOnce } from '../tokenGate.ts';
+import type { ReadableState, WritableState } from '../../store/keys-types.ts';
 
 /** 整趟预算。包含最长 300 秒的提前等待 + 6 大步（两次 500ms 等待与一次滑块求解）。 */
 export const BUDGET_MS = 480_000;
@@ -59,6 +60,20 @@ export const STATE_SCHEDULE_RUNS = 'mcloud.exchange.schedule.runs';
 export const STATE_SCHEDULE_RUNS_GEN = 'mcloud.exchange.schedule.runs_gen';
 /** 定时版本；保存定时时换一个值。 */
 export const STATE_SCHEDULE_GEN = 'mcloud.exchange.schedule.gen';
+
+/** 定时抢兑是否启用。老库没有这一格 ⇒ 有定时目标就算启用（升级前面板任务默认是开的）。 */
+export const STATE_SCHEDULE_ENABLED = 'mcloud.exchange.schedule.enabled';
+
+export function scheduleEnabled(store: ReadableState): boolean {
+  const raw = (store.getState(STATE_SCHEDULE_ENABLED) ?? '').trim();
+  if (raw === '1') return true;
+  if (raw === '0') return false;
+  return (store.getState(STATE_SCHEDULE_PLAN) ?? '').trim() !== '';
+}
+
+export function setScheduleEnabled(store: WritableState, on: boolean, nowIso: string): void {
+  store.setState(STATE_SCHEDULE_ENABLED, on ? '1' : '0', nowIso);
+}
 /** 提前触发秒数（任务在目标时刻前多少秒启动）。 */
 export const STATE_LEAD_SEC = 'mcloud.exchange.lead_sec';
 
