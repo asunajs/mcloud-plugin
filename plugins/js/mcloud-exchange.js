@@ -5131,7 +5131,8 @@ var transport = makeTransport(LONG_REQUEST_TIMEOUT_MS);
 if (migrateLegacyPlan(store, (/* @__PURE__ */ new Date()).toISOString())) {
   log3("老库迁移：兑换的旧单计划已按账号拆成多条计划");
 }
-var bootPlans = enabledPlans(loadPlans(store));
+var bootAll = loadPlans(store);
+var bootPlans = enabledPlans(bootAll);
 var bootCron = bootPlans.length > 0 ? unionCron(bootPlans) : DEFAULT_SCHEDULE_CRON;
 var bootLeadMs = maxLeadMs(bootPlans);
 register_cron(
@@ -5236,7 +5237,7 @@ register_cron(
     paused: bootPlans.length === 0,
     manage_url: "#/plugin/mcloud",
     summary: planSummary(store),
-    blockers: bootPlans.length === 0 ? ["还没设定时计划"] : []
+    blockers: bootPlans.length > 0 ? [] : [bootAll.length === 0 ? "还没设定时计划" : "所有计划都未启用"]
   }
 );
 log3(
