@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   duePlans,
+  loadPlans,
   maxLeadMs,
+  migrateLegacyPlan,
   nextPlanTargetMs,
   planSummary,
   planTarget,
@@ -71,6 +73,14 @@ test('提前量取最大；下一次目标取最早', () => {
 test('目标：有 prizeId 用 id，没有才退回名字', () => {
   assert.equal(planTarget(plan({ prizeId: 424242 })), '424242');
   assert.equal(planTarget(plan({ prizeId: undefined, prizeName: '旧名字' })), '旧名字');
+});
+
+test('老计划只迁移一次：有标记后不再看旧键', () => {
+  const s = store([]);
+  s.setState('mcloud.exchange.schedule.plan', '旧目标');
+  s.setState('mcloud.exchange.plans.migrated', '1');
+  assert.equal(migrateLegacyPlan(s as never, new Date().toISOString()), false);
+  assert.equal(loadPlans(s as never).length, 0);
 });
 
 test('摘要：条数 + 下次时间；全暂停说清楚', () => {

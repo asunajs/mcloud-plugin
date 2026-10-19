@@ -192,6 +192,7 @@ var KEY_SCOPE = {
   // 多计划：计划表 + 每条计划已跑次数。
   "mcloud.exchange.plans": "global",
   "mcloud.exchange.plan.runs": "global",
+  "mcloud.exchange.plans.migrated": "global",
   "mcloud.exchange.schedule.enabled": "global",
   "mcloud.exchange.lead_sec": "global",
   /** 提前量 —— "网络慢的人该调大"，是**这台机器**的调参，与账号无关。 */
@@ -4995,6 +4996,7 @@ function runExchange(deps, opts = {}) {
 // src/mcloud/exchangePlans.ts
 var STATE_PLANS = "mcloud.exchange.plans";
 var STATE_PLAN_RUNS = "mcloud.exchange.plan.runs";
+var STATE_PLANS_MIGRATED = "mcloud.exchange.plans.migrated";
 function newPlanId() {
   return "p" + Date.now().toString(36) + Math.floor(Math.random() * 1e6).toString(36);
 }
@@ -5094,9 +5096,16 @@ function bumpPlanRuns(store2, planId, nowIso) {
   store2.setState(STATE_PLAN_RUNS, JSON.stringify(all), nowIso);
 }
 function migrateLegacyPlan(store2, nowIso) {
-  if (loadPlans(store2).length > 0) return false;
+  if (store2.getState(STATE_PLANS_MIGRATED) === "1") return false;
+  if (loadPlans(store2).length > 0) {
+    store2.setState(STATE_PLANS_MIGRATED, "1", nowIso);
+    return false;
+  }
   const target = (store2.getState("mcloud.exchange.schedule.plan") ?? "").trim();
-  if (target === "") return false;
+  if (target === "") {
+    store2.setState(STATE_PLANS_MIGRATED, "1", nowIso);
+    return false;
+  }
   const name = (store2.getState("mcloud.exchange.schedule.plan_name") ?? "").trim();
   const cron = (store2.getState("mcloud.exchange.schedule.cron") ?? "").trim() || "0 10 * * *";
   const leadSec = Number(store2.getState("mcloud.exchange.lead_sec") ?? "120") || 120;
@@ -5119,6 +5128,7 @@ function migrateLegacyPlan(store2, nowIso) {
     maxRuns,
     enabled
   }));
+  store2.setState(STATE_PLANS_MIGRATED, "1", nowIso);
   if (plans.length === 0) return false;
   savePlans(store2, plans, nowIso);
   return true;

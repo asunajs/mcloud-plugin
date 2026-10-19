@@ -19,6 +19,8 @@ import type { ReadableState, WritableState } from '../store/keys-types.ts';
 
 export const STATE_PLANS = 'mcloud.exchange.plans';
 export const STATE_PLAN_RUNS = 'mcloud.exchange.plan.runs';
+/** 老单计划只迁移一次。没有它，用户把计划全删了、插件一重载又会把旧计划变回来。 */
+export const STATE_PLANS_MIGRATED = 'mcloud.exchange.plans.migrated';
 
 export interface ExchangePlan {
   /** 本地 id；编辑时不变，用来关联每号已跑次数。 */
@@ -199,9 +201,16 @@ export function planViews(store: ReadableState): Record<string, unknown>[] {
 
 /** 老库一次性迁移：旧单计划按当时选的账号拆成多条计划。 */
 export function migrateLegacyPlan(store: WritableState, nowIso: string): boolean {
-  if (loadPlans(store).length > 0) return false;
+  if (store.getState(STATE_PLANS_MIGRATED) === '1') return false;
+  if (loadPlans(store).length > 0) {
+    store.setState(STATE_PLANS_MIGRATED, '1', nowIso);
+    return false;
+  }
   const target = (store.getState('mcloud.exchange.schedule.plan') ?? '').trim();
-  if (target === '') return false;
+  if (target === '') {
+    store.setState(STATE_PLANS_MIGRATED, '1', nowIso);
+    return false;
+  }
   const name = (store.getState('mcloud.exchange.schedule.plan_name') ?? '').trim();
   const cron = (store.getState('mcloud.exchange.schedule.cron') ?? '').trim() || '0 10 * * *';
   const leadSec = Number(store.getState('mcloud.exchange.lead_sec') ?? '120') || 120;
@@ -228,6 +237,7 @@ export function migrateLegacyPlan(store: WritableState, nowIso: string): boolean
     maxRuns,
     enabled,
   }));
+  store.setState(STATE_PLANS_MIGRATED, '1', nowIso);
   if (plans.length === 0) return false;
   savePlans(store, plans, nowIso);
   return true;

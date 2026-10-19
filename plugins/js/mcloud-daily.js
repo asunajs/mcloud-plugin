@@ -130,6 +130,7 @@ var KEY_SCOPE = {
   // 多计划：计划表 + 每条计划已跑次数。
   "mcloud.exchange.plans": "global",
   "mcloud.exchange.plan.runs": "global",
+  "mcloud.exchange.plans.migrated": "global",
   "mcloud.exchange.schedule.enabled": "global",
   "mcloud.exchange.lead_sec": "global",
   /** 提前量 —— "网络慢的人该调大"，是**这台机器**的调参，与账号无关。 */
