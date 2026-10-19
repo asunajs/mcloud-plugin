@@ -205,6 +205,7 @@ export const KEY_SCOPE: Readonly<Record<string, KeyScope>> = {
   'mcloud.exchange.schedule.once_date': 'global',
   'mcloud.exchange.schedule.max_runs': 'global',
   'mcloud.exchange.schedule.gen': 'global',
+  'mcloud.exchange.schedule.plan_name': 'global',
   'mcloud.exchange.schedule.enabled': 'global',
   'mcloud.exchange.lead_sec': 'global',
   /** 提前量 —— "网络慢的人该调大"，是**这台机器**的调参，与账号无关。 */

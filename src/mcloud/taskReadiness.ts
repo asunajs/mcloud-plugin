@@ -48,9 +48,17 @@ export function enabledAccountCount(store: Store): number {
   return loadAccounts(store as never).filter((a) => a.disabled !== true).length;
 }
 
-/** 兑换的定时目标（奖品那一句）；空 = 还没选。 */
-export function exchangePlan(store: Store): string {
+/** 兑换的定时目标：**prizeId**（新）或旧库里的名字；空 = 还没选。 */
+export function exchangePlanTarget(store: Store): string {
   return (store.getState('mcloud.exchange.schedule.plan') ?? '').trim();
+}
+
+/** 兑换定时目标的显示名；老库只有名字时回退到目标本身。 */
+export function exchangePlanName(store: Store): string {
+  const name = (store.getState('mcloud.exchange.schedule.plan_name') ?? '').trim();
+  if (name !== '') return name;
+  const target = exchangePlanTarget(store);
+  return /^\d+$/.test(target) ? `#${target}` : target;
 }
 
 /** 一条任务的未就绪原因。 */
@@ -58,7 +66,7 @@ export function blockersFor(store: Store, task: string): string[] {
   if (task === '兑换') {
     const out: string[] = [];
     if (resolveTaskAccounts(store as never, '兑换').length === 0) out.push('还没有选账号');
-    if (exchangePlan(store) === '') out.push('还没设定时奖品');
+    if (exchangePlanTarget(store) === '') out.push('还没设定时奖品');
     return out;
   }
   return enabledAccountCount(store) === 0 ? ['还没有账号'] : [];
@@ -79,7 +87,7 @@ export function summaryFor(store: Store, task: string): string {
   if (task === '兑换') {
     const ids = resolveTaskAccounts(store as never, '兑换');
     const n = ids.length;
-    const plan = exchangePlan(store);
+    const plan = exchangePlanName(store);
     const lead = (store.getState('mcloud.exchange.lead_sec') ?? '120').trim() || '120';
     const until = (store.getState('mcloud.exchange.schedule.until') ?? '').trim();
     const max = Number((store.getState('mcloud.exchange.schedule.max_runs') ?? '0').trim());
@@ -129,7 +137,7 @@ export function setTaskPaused(task: string, paused: boolean): void {
  * 判据用 `schedule.enabled` 这一格：它是这一版才有的，老库没有。
  * 新用户（从没设过定时目标）不会被迁移，仍从“空账号 + 暂停”开始。 */
 export function migrateLegacyExchange(store: Store & { setState(k: string, v: string, now: string): void }, nowIso: string): boolean {
-  if (exchangePlan(store) === '') return false;
+  if (exchangePlanTarget(store) === '') return false;
   if ((store.getState('mcloud.exchange.schedule.enabled') ?? '').trim() !== '') return false;
   if ((store.getState(taskAccountsKey('兑换')) ?? '').trim() !== '') return false;
   saveTaskAccounts(store as never, '兑换', { all: true, ids: [] }, nowIso);

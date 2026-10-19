@@ -132,6 +132,7 @@ var KEY_SCOPE = {
   "mcloud.exchange.schedule.once_date": "global",
   "mcloud.exchange.schedule.max_runs": "global",
   "mcloud.exchange.schedule.gen": "global",
+  "mcloud.exchange.schedule.plan_name": "global",
   "mcloud.exchange.schedule.enabled": "global",
   "mcloud.exchange.lead_sec": "global",
   /** 提前量 —— "网络慢的人该调大"，是**这台机器**的调参，与账号无关。 */
@@ -6042,6 +6043,7 @@ var BUDGET_MS = 48e4;
 var DEADLINE_MS = BUDGET_MS - 1e4;
 var PLAN_KEY = "mcloud.exchange.plan";
 var STATE_SCHEDULE_PLAN = "mcloud.exchange.schedule.plan";
+var STATE_SCHEDULE_PLAN_NAME = "mcloud.exchange.schedule.plan_name";
 var STATE_SCHEDULE_CRON = "mcloud.exchange.schedule.cron";
 var STATE_SCHEDULE_MODE = "mcloud.exchange.schedule.mode";
 var STATE_SCHEDULE_UNTIL = "mcloud.exchange.schedule.until";
@@ -9760,14 +9762,20 @@ function call(name, ...args) {
 function enabledAccountCount(store2) {
   return loadAccounts(store2).filter((a) => a.disabled !== true).length;
 }
-function exchangePlan(store2) {
+function exchangePlanTarget(store2) {
   return (store2.getState("mcloud.exchange.schedule.plan") ?? "").trim();
+}
+function exchangePlanName(store2) {
+  const name = (store2.getState("mcloud.exchange.schedule.plan_name") ?? "").trim();
+  if (name !== "") return name;
+  const target = exchangePlanTarget(store2);
+  return /^\d+$/.test(target) ? `#${target}` : target;
 }
 function blockersFor(store2, task) {
   if (task === "兑换") {
     const out = [];
     if (resolveTaskAccounts(store2, "兑换").length === 0) out.push("还没有选账号");
-    if (exchangePlan(store2) === "") out.push("还没设定时奖品");
+    if (exchangePlanTarget(store2) === "") out.push("还没设定时奖品");
     return out;
   }
   return enabledAccountCount(store2) === 0 ? ["还没有账号"] : [];
@@ -9783,7 +9791,7 @@ function summaryFor(store2, task) {
   if (task === "兑换") {
     const ids2 = resolveTaskAccounts(store2, "兑换");
     const n2 = ids2.length;
-    const plan = exchangePlan(store2);
+    const plan = exchangePlanName(store2);
     const lead = (store2.getState("mcloud.exchange.lead_sec") ?? "120").trim() || "120";
     const until = (store2.getState("mcloud.exchange.schedule.until") ?? "").trim();
     const max2 = Number((store2.getState("mcloud.exchange.schedule.max_runs") ?? "0").trim());
@@ -9808,7 +9816,7 @@ function setTaskPaused(task, paused) {
   call("set_job_paused", TASK_KEYS[task] ?? task, paused);
 }
 function migrateLegacyExchange(store2, nowIso) {
-  if (exchangePlan(store2) === "") return false;
+  if (exchangePlanTarget(store2) === "") return false;
   if ((store2.getState("mcloud.exchange.schedule.enabled") ?? "").trim() !== "") return false;
   if ((store2.getState(taskAccountsKey("兑换")) ?? "").trim() !== "") return false;
   saveTaskAccounts(store2, "兑换", { all: true, ids: [] }, nowIso);
@@ -10199,7 +10207,9 @@ function buildReadings(deps) {
       leadMs: exchangeLeadMs(deps.store),
       plan: deps.store.getState("mcloud.exchange.plan") ?? "",
       // 定时目标与手动目标分开存：页面上的「手动兑换」和「定时抢兑」不再互相改。
-      schedulePlan: deps.store.getState(STATE_SCHEDULE_PLAN) ?? "",
+      // `schedulePlan` 是**显示名**（界面一直用它）；目标是 prizeId 或旧库的名字。
+      schedulePlan: deps.store.getState(STATE_SCHEDULE_PLAN_NAME) ?? deps.store.getState(STATE_SCHEDULE_PLAN) ?? "",
+      schedulePlanTarget: deps.store.getState(STATE_SCHEDULE_PLAN) ?? "",
       scheduleEnabled: scheduleEnabled(deps.store),
       scheduleCron: deps.store.getState(STATE_SCHEDULE_CRON) ?? "",
       scheduleMode: deps.store.getState(STATE_SCHEDULE_MODE) ?? "daily",
@@ -11460,7 +11470,11 @@ function mcloudRoutes(deps) {
         }
         if (b.action === "plan") {
           const query2 = typeof b.query === "string" ? b.query.trim() : "";
-          if (query2 === "") return json(400, { ok: false, error: "定时目标不能为空" });
+          const prizeIdRaw = Number(b.prizeId);
+          const prizeId = Number.isInteger(prizeIdRaw) && prizeIdRaw > 0 ? prizeIdRaw : void 0;
+          const prizeName = typeof b.prizeName === "string" && b.prizeName.trim() !== "" ? b.prizeName.trim() : query2;
+          const target = prizeId === void 0 ? query2 : String(prizeId);
+          if (target === "") return json(400, { ok: false, error: "定时目标不能为空" });
           const cron = typeof b.cron === "string" ? b.cron.trim() : "";
           if (cron === "") return json(400, { ok: false, error: "cron 表达式不能为空" });
           try {
@@ -11481,7 +11495,8 @@ function mcloudRoutes(deps) {
             return json(400, { ok: false, error: "提前触发要在 60~300 秒之间" });
           }
           const gen = String(Date.now());
-          deps.store.setState(STATE_SCHEDULE_PLAN, query2, d.nowIso);
+          deps.store.setState(STATE_SCHEDULE_PLAN, target, d.nowIso);
+          deps.store.setState(STATE_SCHEDULE_PLAN_NAME, prizeName, d.nowIso);
           deps.store.setState(STATE_SCHEDULE_CRON, cron, d.nowIso);
           deps.store.setState(STATE_SCHEDULE_UNTIL, until, d.nowIso);
           deps.store.setState(STATE_SCHEDULE_MAX_RUNS, String(maxRunsRaw), d.nowIso);
@@ -11492,11 +11507,11 @@ function mcloudRoutes(deps) {
           setScheduleEnabled(deps.store, true, d.nowIso);
           syncTaskReadiness(deps.store, ["兑换"]);
           deps.log(
-            `定时目标：${query2}（cron ${cron}，提前 ${Math.round(leadRaw)}s，每号最多 ${maxRunsRaw || "不限"} 次）`
+            `定时目标：${prizeName}${prizeId === void 0 ? "" : `（prizeId=${prizeId}）`}（cron ${cron}，提前 ${Math.round(leadRaw)}s，每号最多 ${maxRunsRaw || "不限"} 次）`
           );
           return json(200, {
             ok: true,
-            note: `定时已保存：${query2}（提前 ${Math.round(leadRaw)}s）`
+            note: `定时已保存：${prizeName}（提前 ${Math.round(leadRaw)}s）`
           });
         }
         if (b.action === "step") {

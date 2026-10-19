@@ -126,6 +126,7 @@ var KEY_SCOPE = {
   "mcloud.exchange.schedule.once_date": "global",
   "mcloud.exchange.schedule.max_runs": "global",
   "mcloud.exchange.schedule.gen": "global",
+  "mcloud.exchange.schedule.plan_name": "global",
   "mcloud.exchange.schedule.enabled": "global",
   "mcloud.exchange.lead_sec": "global",
   /** 提前量 —— "网络慢的人该调大"，是**这台机器**的调参，与账号无关。 */
@@ -579,14 +580,20 @@ function call(name, ...args) {
 function enabledAccountCount(store2) {
   return loadAccounts(store2).filter((a) => a.disabled !== true).length;
 }
-function exchangePlan(store2) {
+function exchangePlanTarget(store2) {
   return (store2.getState("mcloud.exchange.schedule.plan") ?? "").trim();
+}
+function exchangePlanName(store2) {
+  const name = (store2.getState("mcloud.exchange.schedule.plan_name") ?? "").trim();
+  if (name !== "") return name;
+  const target = exchangePlanTarget(store2);
+  return /^\d+$/.test(target) ? `#${target}` : target;
 }
 function blockersFor(store2, task) {
   if (task === "兑换") {
     const out = [];
     if (resolveTaskAccounts(store2, "兑换").length === 0) out.push("还没有选账号");
-    if (exchangePlan(store2) === "") out.push("还没设定时奖品");
+    if (exchangePlanTarget(store2) === "") out.push("还没设定时奖品");
     return out;
   }
   return enabledAccountCount(store2) === 0 ? ["还没有账号"] : [];
@@ -602,7 +609,7 @@ function summaryFor(store2, task) {
   if (task === "兑换") {
     const ids2 = resolveTaskAccounts(store2, "兑换");
     const n2 = ids2.length;
-    const plan = exchangePlan(store2);
+    const plan = exchangePlanName(store2);
     const lead = (store2.getState("mcloud.exchange.lead_sec") ?? "120").trim() || "120";
     const until = (store2.getState("mcloud.exchange.schedule.until") ?? "").trim();
     const max = Number((store2.getState("mcloud.exchange.schedule.max_runs") ?? "0").trim());
