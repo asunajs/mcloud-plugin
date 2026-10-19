@@ -61,7 +61,7 @@ import {
   startExchange,
 } from '../mcloud/sessionExchange.ts';
 import type { SessionRecipe } from '../mcloud/h5session.ts';
-import { labelOf } from '../mcloud/taskAccounts.ts';
+import { labelOf, shortLabel } from '../mcloud/taskAccounts.ts';
 import { logBoth } from '../mcloud/log.ts';
 import { isPlumbing, lineLevel, lineText, onceHint, stepTally, userLine } from '../mcloud/tasks/stepLog.ts';
 import { loadQueue } from '../mcloud/tasks/receive.ts';
@@ -480,7 +480,8 @@ register_cron(
       }
       // 日志照 `mcloud-sign`：账号头用 start，步骤按结论着色，
       // 级联失败只留 debug 的"跳过" —— 根因（换票）才红。
-      logBoth(store, 'start', `账号 ${who}`, nowIso);
+      const tag = `[${shortLabel(who)}]`;
+      logBoth(store, 'start', tag, nowIso);
       let prev = '';
       // 级联的“没有网页会话”不逐行刷：一个根因会拖垮十步，逐行写就是十行同样的字。
       // 合并成一行“跳过 N 项（…）”，根因和段尾已经说清了。
@@ -494,14 +495,14 @@ register_cron(
           skippedSteps.push(shown.split('：')[0] ?? shown);
           continue;
         }
-        logBoth(store, lineLevel(shown), shown, nowIso);
+        logBoth(store, lineLevel(shown), `${tag} ${shown}`, nowIso);
       }
       if (skippedSteps.length > 0) {
         const head = skippedSteps.slice(0, 3).join('、');
         logBoth(
           store,
           'debug',
-          `跳过 ${skippedSteps.length} 项（没有网页会话）：${head}${skippedSteps.length > 3 ? ' 等' : ''}`,
+          `${tag} 跳过 ${skippedSteps.length} 项（没有网页会话）：${head}${skippedSteps.length > 3 ? ' 等' : ''}`,
           nowIso,
         );
       }
@@ -510,11 +511,11 @@ register_cron(
       // 级联失败单独说"跳过"，否则 1 个根因会被写成 11 项没成。
       const tail =
         bad === 0
-          ? `账号 ${who}：都成了`
+          ? '都成了'
           : hard === 0
-            ? `账号 ${who}：${bad} 项跳过（没有网页会话）`
-            : `账号 ${who}：${hard} 项没成${bad > hard ? `、${bad - hard} 项跳过` : ''}`;
-      logBoth(store, hard > 0 ? 'warn' : 'debug', tail, nowIso);
+            ? `${bad} 项跳过（没有网页会话）`
+            : `${hard} 项没成${bad > hard ? `、${bad - hard} 项跳过` : ''}`;
+      logBoth(store, hard > 0 ? 'warn' : 'debug', `${tag} ${tail}`, nowIso);
     }
 
     // 全都"今天已经跑过" ⇒ 静默返回（不推、不记）

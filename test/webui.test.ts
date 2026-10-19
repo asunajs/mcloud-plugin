@@ -780,9 +780,10 @@ test('⚠ 日志一行一步，形状照参考实现（成功 / 跳过 / 失败 
   assert.ok(/const line = userLine\(one\);/.test(daily), '格式由 `userLine` 决定：`签到：网盘签到成功` / `复活卡：没成 —— 原因`');
   // 段头 / 段尾：照 mcloud-sign，用 start/success/fail 着色，不再画 `------【】------`
   // 段头/段尾都走 `logBoth`（面板日志流 + 重启后还在的环，见 F-085）
-  assert.ok(/logBoth\(store, 'start', `账号 \$\{who\}`, nowIso\)/.test(daily), '缺段头');
+  assert.ok(/const tag = `\[\$\{shortLabel\(who\)\}\]`;/.test(daily), '账号前缀要用短名');
+  assert.ok(/logBoth\(store, 'start', tag, nowIso\)/.test(daily), '缺段头');
   assert.ok(/const tail =\s*bad === 0/.test(daily), '缺段尾');
-  assert.ok(/logBoth\(store, hard > 0 \? 'warn' : 'debug', tail, nowIso\)/.test(daily), '段尾也要进两个去处');
+  assert.ok(/logBoth\(store, hard > 0 \? 'warn' : 'debug', `\$\{tag\} \$\{tail\}`, nowIso\)/.test(daily), '段尾也要进两个去处');
   assert.ok(/项没成/.test(daily), '段尾说"几项没成"');
   // 旧写法（同一件事说两遍 + 那一长串名字）不许回来
   assert.ok(!/步失败：/.test(daily), '`11/16 步失败：签到、领取AI豆、…` 那种汇总行不要了');
@@ -998,6 +999,21 @@ test('⚠ 直播：口令只收**一次**（一个账号听到，所有账号都
   assert.ok(/const listenDeadline = runStartMs \+ BUDGET_MS - 20_000;/.test(live), '截止按整趟算');
   // 收口令那一段的日志不挂在某个账号名下
   assert.ok(/logBoth\(store, 'start', '口令', at\)/.test(live), '收口令要单独一段');
+});
+
+test('⚠ 每行日志都带账号短名前缀（昵称原样，手机号 3+4）', () => {
+  for (const f of ['src/entries/daily.ts', 'src/entries/live.ts', 'src/entries/exchange.ts']) {
+    const s = srcOf(f);
+    assert.ok(/const tag = `\[\$\{shortLabel\(who\)\}\]`;/.test(s), `${f} 缺短名前缀`);
+    assert.ok(/`\$\{tag\} \$\{shown\}`/.test(s), `${f} 的步骤行没带前缀`);
+    assert.ok(/`\$\{tag\} \$\{tail\}`/.test(s), `${f} 的段尾没带前缀`);
+  }
+  assert.ok(
+    /if \(\/\^1\\d\{10\}\$\/\.test\(label\)\) return `\$\{label\.slice\(0, 3\)\}\*\*\*\*\$\{label\.slice\(-4\)\}`;/.test(
+      srcOf('src/mcloud/taskAccounts.ts'),
+    ),
+    '手机号要掩成 3+4',
+  );
 });
 
 test('⚠ 直播没开始就整趟跳过：不逐账号输出「领小红花没开 / 都成了」', () => {
