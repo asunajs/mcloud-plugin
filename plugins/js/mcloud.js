@@ -9884,7 +9884,14 @@ function blockersFor(store2, task) {
   if (task === "兑换") {
     const plans = loadPlans(store2);
     if (plans.length === 0) return ["还没设定时计划"];
-    if (!plans.some((p) => p.enabled)) return ["所有计划都未启用"];
+    const on = plans.filter((p) => p.enabled);
+    if (on.length === 0) return ["所有计划都未启用"];
+    const accounts = loadAccounts(store2);
+    const bad = on.filter((p) => {
+      const a = accounts.find((x) => x.id === p.accountId);
+      return !a || a.disabled === true;
+    });
+    if (bad.length === on.length) return ["计划里的账号都不可用"];
     return [];
   }
   return enabledAccountCount(store2) === 0 ? ["还没有账号"] : [];
@@ -10479,10 +10486,7 @@ function syncExchangeJob(store2) {
   const lead = maxLeadMs(on);
   setTaskSchedule("兑换", expr, lead);
   setTaskPaused("兑换", on.length === 0);
-  setTaskBlockers(
-    "兑换",
-    on.length > 0 ? [] : [plans.length === 0 ? "还没设定时计划" : "所有计划都未启用"]
-  );
+  setTaskBlockers("兑换", blockersFor(store2, "兑换"));
   setTaskSummary("兑换", planSummary(store2));
 }
 function mcloudRoutes(deps) {

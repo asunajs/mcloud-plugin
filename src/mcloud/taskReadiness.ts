@@ -67,7 +67,18 @@ export function blockersFor(store: Store, task: string): string[] {
   if (task === '兑换') {
     const plans = loadPlans(store as never);
     if (plans.length === 0) return ['还没设定时计划'];
-    if (!plans.some((p) => p.enabled)) return ['所有计划都未启用'];
+    const on = plans.filter((p) => p.enabled);
+    if (on.length === 0) return ['所有计划都未启用'];
+    // 计划里的账号被删/停用 ⇒ 到点也跑不了。说清楚是哪一种，别让面板显示“已就绪”。
+    const accounts = loadAccounts(store as never);
+    const bad = on.filter((p) => {
+      const a = accounts.find((x) => x.id === p.accountId);
+      return !a || a.disabled === true;
+    });
+    // ⚠ 只有**全部**计划的账号都不可用才把整条任务挡住。
+    //   部分不可用时不能让面板跳过整条任务 —— 其余计划的账号还是好的，
+    //   挡掉等于“一条坏计划拖死所有计划”。坏的那条由入口逐条跳过。
+    if (bad.length === on.length) return ['计划里的账号都不可用'];
     return [];
   }
   return enabledAccountCount(store) === 0 ? ['还没有账号'] : [];

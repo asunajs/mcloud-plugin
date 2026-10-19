@@ -222,7 +222,14 @@ import {
   unionCron,
   type ExchangePlan,
 } from './exchangePlans.ts';
-import { setTaskBlockers, setTaskPaused, setTaskSchedule, setTaskSummary, syncTaskReadiness } from './taskReadiness.ts';
+import {
+  blockersFor,
+  setTaskBlockers,
+  setTaskPaused,
+  setTaskSchedule,
+  setTaskSummary,
+  syncTaskReadiness,
+} from './taskReadiness.ts';
 
 import {
   APP_LOGIN_AES_KEY,
@@ -787,12 +794,8 @@ function syncExchangeJob(store: Store): void {
   const lead = maxLeadMs(on);
   setTaskSchedule('兑换', expr, lead);
   setTaskPaused('兑换', on.length === 0);
-  setTaskBlockers(
-    '兑换',
-    on.length > 0
-      ? []
-      : [plans.length === 0 ? '还没设定时计划' : '所有计划都未启用'],
-  );
+  // 未就绪原因由 `blockersFor` 统一算（没计划 / 全暂停 / 账号不可用）。
+  setTaskBlockers('兑换', blockersFor(store, '兑换'));
   setTaskSummary('兑换', planSummary(store));
 }
 
