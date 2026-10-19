@@ -4306,15 +4306,41 @@ register_cron(
     const at = new Date(startedMs).toISOString();
     const manual = collectCodes(store, startedMs).length > 0;
     let collected = null;
+    let stopAll = false;
     const runs = forEachTaskAccount(store, "直播", p, transport, (deps, _acct, index) => {
-      if (index === 0 && !manual) collected = collectOnce(deps, startedMs);
+      if (index === 0 && !manual) {
+        const one = collectOnce(deps, startedMs);
+        collected = one;
+        if (one.stopped) stopAll = true;
+      }
+      if (stopAll) return { steps: [], detail: [], ok: true, note: "没在播，跳过" };
       return drawOnce(deps, startedMs);
     });
     if (runs.length === 0) return;
-    const onceHints = /* @__PURE__ */ new Set();
     const c = collected;
+    const capOnly = c !== null && c.steps.length === 1 && !c.ok && c.steps[0]?.name === "这个面板能不能直播";
+    if (c !== null && c.stopped) {
+      const reason = c.steps[0]?.note ?? c.note;
+      if (capOnly) {
+        logBoth(store, "error", c.detail[0] ?? c.note, at);
+      } else {
+        logBoth(store, "info", `这一趟不领 —— ${reason}；跳过 ${runs.length} 个账号`, at);
+      }
+      store.recordRun({
+        task: p.name,
+        runs: p.runs,
+        scheduledAt: p.scheduledAt,
+        firedAt: p.firedAt,
+        lateMs: p.lateMs,
+        ok: !capOnly,
+        note: capOnly ? c.note : `直播没开始，跳过 ${runs.length} 个账号`
+      });
+      setTaskBlockers("直播", blockersFor(store, "直播"));
+      setTaskSummary("直播", summaryFor(store, "直播"));
+      return;
+    }
+    const onceHints = /* @__PURE__ */ new Set();
     if (c !== null && c.detail.length > 0) {
-      const capOnly = c.steps.length === 1 && !c.ok && c.steps[0]?.name === "这个面板能不能直播";
       if (capOnly) {
         logBoth(store, "error", c.detail[0] ?? c.note, at);
       } else {
