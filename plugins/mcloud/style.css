@@ -162,6 +162,11 @@ body {
   display: block;
 }
 
+/* 同一块里相邻卡片之间统一留出间隔 —— 之前数据页 / 兑换页的卡片是贴着的。 */
+.block > .card + .card {
+  margin-top: var(--sp-3);
+}
+
 /* 兑换页：清单是数据表，宽一点能少折行；仍不超过外层 1000px。 */
 #block-exchange {
   max-width: 1000px;
@@ -1064,11 +1069,6 @@ button.picker-row {
 }
 
 /* ── 兑换页：关注区 / 分组清单 / 行内动作（对齐原 Rust mcloud 的兑换页）── */
-
-/* 定时抢兑卡与「我关注的」之间要有间隔 —— 之前两张卡是贴着的（间距 0）。 */
-#ex-sched-card {
-  margin-bottom: var(--sp-3);
-}
 
 #ex-subs-card {
   margin-bottom: var(--sp-3);
