@@ -1143,6 +1143,8 @@ function exResult(text, ok = true) {
 
 /** 定时弹窗当前给哪一件排定时（不是手动兑换）。 */
 let planDialogQuery = '';
+/** 定时目标的 **prizeId**（稳定）；老数据只有名字时是 null。 */
+let planDialogId = null;
 
 /** 把读数灌进定时弹窗（打开时 / 轮询重绘时）。 */
 function syncPlanFields(e) {
@@ -1182,6 +1184,12 @@ function updatePlanPreview() {
 function openPlanDialog(p) {
   const e = (last && last.exchange) || {};
   planDialogQuery = (p && p.name) || e.schedulePlan || e.plan || '';
+  const target = String(e.schedulePlanTarget || '');
+  planDialogId = p && Number.isInteger(p.id)
+    ? p.id
+    : /^\d+$/.test(target)
+      ? Number(target)
+      : null;
   setText('ex-plan-prize', planDialogQuery || '还没选目标');
   setText('ex-plan-price', p && p.price !== undefined ? `（${p.price} 豆）` : '');
   const lead = $('ex-plan-lead');
@@ -1205,7 +1213,16 @@ async function savePlanDialog() {
   const r = await api('/exchange/order', {
     method: 'POST',
     write: true,
-    body: { action: 'plan', query, cron, until, maxRuns: Number(maxRuns), leadSec: Number(leadSec) },
+    body: {
+      action: 'plan',
+      query,
+      prizeId: planDialogId === null ? undefined : planDialogId,
+      prizeName: query,
+      cron,
+      until,
+      maxRuns: Number(maxRuns),
+      leadSec: Number(leadSec),
+    },
   });
   if (!r.ok) throw new Error(r.note || '定时目标没存上');
   // 面板任务由**服务端**同步（routes.ts 的 action:'plan' 调 set_job_schedule），

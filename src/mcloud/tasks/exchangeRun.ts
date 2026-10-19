@@ -41,6 +41,8 @@ const DEADLINE_MS = BUDGET_MS - 10_000;
 const PLAN_KEY = 'mcloud.exchange.plan';
 /** 定时目标：弹窗「定时抢兑」写它。与手动目标分开，免得改一个把另一个带跑。 */
 export const STATE_SCHEDULE_PLAN = 'mcloud.exchange.schedule.plan';
+/** 定时目标的**显示名**（`STATE_SCHEDULE_PLAN` 现在存 prizeId，名字单独一格）。 */
+export const STATE_SCHEDULE_PLAN_NAME = 'mcloud.exchange.schedule.plan_name';
 /** 定时 cron（5 段，分钟必须 0）。 */
 export const STATE_SCHEDULE_CRON = 'mcloud.exchange.schedule.cron';
 
