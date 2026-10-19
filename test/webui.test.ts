@@ -990,7 +990,7 @@ test('⚠ 直播：口令只收**一次**（一个账号听到，所有账号都
   // 用户口径 2026-10-17：「一个听到其他人就能用了」
   assert.ok(/function collectOnce\(/.test(live), '收口令要独立成一支');
   assert.ok(/function drawOnce\(/.test(live), '领取才是按账号的那一支');
-  assert.ok(/if \(index === 0 && !manual\) collected = collectOnce\(deps, startedMs\);/.test(live),
+  assert.ok(/if \(index === 0 && !manual\) \{[\s\S]{0,160}?collectOnce\(deps, startedMs\)/.test(live),
     '只有第一个账号去收，且人贴了口令就不收');
   assert.ok(/return drawOnce\(deps, startedMs\);/.test(live), '每个账号都领');
   // 听窗口不能再按账号摊预算
@@ -998,6 +998,26 @@ test('⚠ 直播：口令只收**一次**（一个账号听到，所有账号都
   assert.ok(/const listenDeadline = runStartMs \+ BUDGET_MS - 20_000;/.test(live), '截止按整趟算');
   // 收口令那一段的日志不挂在某个账号名下
   assert.ok(/logBoth\(store, 'start', '口令', at\)/.test(live), '收口令要单独一段');
+});
+
+test('⚠ 直播没开始就整趟跳过：不逐账号输出「领小红花没开 / 都成了」', () => {
+  const live = srcOf('src/entries/live.ts');
+  // 第一段说“没在播”时，后面的账号连 drawOnce 都不进
+  assert.ok(/if \(one\.stopped\) stopAll = true;/.test(live), '要记住“整趟停”');
+  assert.ok(
+    /if \(stopAll\) return \{ steps: \[\] as RunStep\[\], detail: \[\] as string\[\]/.test(live),
+    '停掉之后不许再发领取请求',
+  );
+  assert.ok(/if \(c !== null && c\.stopped\)/.test(live), '日志侧也要早退');
+  assert.ok(
+    /这一趟不领 —— \$\{reason\}；跳过 \$\{runs\.length\} 个账号/.test(live),
+    '只留一行“跳过 N 个账号”',
+  );
+  // 早退必须在“每个账号一段”之前，否则还是每个号都印
+  assert.ok(
+    live.indexOf('c.stopped') < live.indexOf('for (const one of runs)'),
+    '早退要在账号循环之前',
+  );
 });
 
 test('⚠ 先验开播再决定要不要听（参考 mcloud `live_room.rs:1603`）', () => {

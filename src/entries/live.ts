@@ -236,23 +236,53 @@ register_cron(
     const manual = collectCodes(store, startedMs).length > 0;
     let collected: { steps: RunStep[]; detail: string[]; ok: boolean; note: string; stopped: boolean } | null =
       null;
+    // 第一段（收口令）说“别领”时，后面的账号**一个请求都不发**：
+    // 否则没开播也会每个号打一次「领小红花没开」，再给每个号印一句「都成了」。
+    let stopAll = false;
     const runs = forEachTaskAccount(store, '直播', p, transport, (deps, _acct, index) => {
-      if (index === 0 && !manual) collected = collectOnce(deps, startedMs);
+      if (index === 0 && !manual) {
+        const one = collectOnce(deps, startedMs);
+        collected = one;
+        if (one.stopped) stopAll = true;
+      }
+      if (stopAll) return { steps: [] as RunStep[], detail: [] as string[], ok: true, note: '没在播，跳过' };
       return drawOnce(deps, startedMs);
     });
     // 没选到账号 ⇒ 静默返回（那不是失败，是"这条任务没配账号"）
     if (runs.length === 0) return;
 
+    // 收口令那一段：**一次**，标成「口令」而不是某个账号 —— 它不属于任何账号
+    const c = collected as null | { steps: RunStep[]; detail: string[]; ok: boolean; note: string; stopped: boolean };
+    const capOnly =
+      c !== null && c.steps.length === 1 && !c.ok && c.steps[0]?.name === '这个面板能不能直播';
+
+    // 没开播（或面板根本不支持直播）⇒ **整趟到此为止**。
+    // 用户的原话：「实际上是因为直播未开始，所以跳过就好了，结果她每个账号都输出」。
+    if (c !== null && c.stopped) {
+      const reason = c.steps[0]?.note ?? c.note;
+      if (capOnly) {
+        logBoth(store, 'error', c.detail[0] ?? c.note, at);
+      } else {
+        logBoth(store, 'info', `这一趟不领 —— ${reason}；跳过 ${runs.length} 个账号`, at);
+      }
+      store.recordRun({
+        task: p.name,
+        runs: p.runs,
+        scheduledAt: p.scheduledAt,
+        firedAt: p.firedAt,
+        lateMs: p.lateMs,
+        ok: !capOnly,
+        note: capOnly ? c.note : `直播没开始，跳过 ${runs.length} 个账号`,
+      });
+      setTaskBlockers('直播', blockersFor(store, '直播'));
+      setTaskSummary('直播', summaryFor(store, '直播'));
+      return;
+    }
+
     // 这一趟里"已经解释过的后缀"（跨账号共用，见 stepLog.ts 的 onceHint）
     const onceHints = new Set<string>();
 
-    // 收口令那一段：**一次**，标成「口令」而不是某个账号 —— 它不属于任何账号
-    const c = collected as null | { steps: RunStep[]; detail: string[]; ok: boolean; note: string; stopped: boolean };
     if (c !== null && c.detail.length > 0) {
-      // ⚠ 只有一步、且那一步是「这个面板能不能直播」= **构建缺陷**：
-      //   · 用 error（warn 会被当成"偶发，下次再看看"，而这件事不会自己好）；
-      //   · 只印**一行**（段头 + 步骤 + 段尾说的是同一句话，印三遍纯噪声）。
-      const capOnly = c.steps.length === 1 && !c.ok && c.steps[0]?.name === '这个面板能不能直播';
       if (capOnly) {
         logBoth(store, 'error', c.detail[0] ?? c.note, at);
       } else {
