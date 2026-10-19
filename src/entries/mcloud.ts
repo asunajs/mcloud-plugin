@@ -25,12 +25,21 @@ import { mcloudRoutes } from '../mcloud/routes.ts';
 import type { RouteEntry } from '../mcloud/routes.ts';
 import { makeHost, makePushDeps, makeStore, makeTransport } from './shared.ts';
 import { selftest } from '../selftest.ts';
+import { migrateLegacyExchange, syncTaskReadiness } from '../mcloud/taskReadiness.ts';
 
 // `mcloud` 是服务型插件，但 /beans/today 与 /beans/records 是逐账号 × 翻页的
 // 长只读链，声明了 >2s 的预算；没有独占线程会把同线程上其它插件一起拖住。
 worker_hint('exclusive');
 
 const store = makeStore();
+// 老库一次性迁移：上一版兑换默认“全部账号”，定时默认启用。
+// 先迁移再同步，否则第一条注册算出来的 blockers 会停在“还没有选账号”。
+const bootIso = new Date().toISOString();
+if (migrateLegacyExchange(store, bootIso)) {
+  log('老库迁移：兑换的账号选择沿用“全部账号”（这一版改成显式选择）');
+}
+syncTaskReadiness(store);
+
 // transport 的 `timeoutMs` 是**每一发请求**的超时（1500ms），与路由的**执行预算**
 // 是两件事：预算是"这一条 handler 从头跑到尾能占多久"，面板默认 2 秒。
 // 大多数路由（点一下读一格）用默认档就够；像「今日AI豆」那样逐账号 × 翻页的

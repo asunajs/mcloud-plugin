@@ -188,6 +188,7 @@ var KEY_SCOPE = {
   "mcloud.exchange.schedule.once_date": "global",
   "mcloud.exchange.schedule.max_runs": "global",
   "mcloud.exchange.schedule.gen": "global",
+  "mcloud.exchange.schedule.enabled": "global",
   "mcloud.exchange.lead_sec": "global",
   /** 提前量 —— "网络慢的人该调大"，是**这台机器**的调参，与账号无关。 */
   "mcloud.exchange.order.lead_ms": "global",
@@ -4607,15 +4608,22 @@ function taskAccountsKey(task) {
   return `mcloud.task.accounts.${task}`;
 }
 var DEFAULT_TASK_ACCOUNTS = { all: true, ids: [] };
+var DEFAULT_TASK_ACCOUNTS_BY_TASK = {
+  兑换: { all: false, ids: [] }
+};
+function defaultTaskAccounts(task) {
+  const v = DEFAULT_TASK_ACCOUNTS_BY_TASK[task];
+  return v ? { ...v } : { ...DEFAULT_TASK_ACCOUNTS };
+}
 function loadTaskAccounts(store2, task) {
   const raw = (store2.getState(taskAccountsKey(task)) ?? "").trim();
-  if (raw === "") return { ...DEFAULT_TASK_ACCOUNTS };
+  if (raw === "") return defaultTaskAccounts(task);
   try {
     const v = JSON.parse(raw);
     const ids = Array.isArray(v.ids) ? v.ids.filter((x) => typeof x === "string") : [];
     return { all: v.all === true, ids };
   } catch {
-    return { ...DEFAULT_TASK_ACCOUNTS };
+    return defaultTaskAccounts(task);
   }
 }
 function resolveTaskAccounts(store2, task) {
@@ -4703,6 +4711,43 @@ function logBoth(store2, level, msg, nowIso) {
   else if (level === "warn") warn2(msg);
   else log2(msg);
   appendRing(store2, nowIso, level, msg);
+}
+
+// src/mcloud/taskReadiness.ts
+var H = globalThis.host ?? globalThis.host_api ?? {};
+function enabledAccountCount(store2) {
+  return loadAccounts(store2).filter((a) => a.disabled !== true).length;
+}
+function exchangePlan(store2) {
+  return (store2.getState("mcloud.exchange.schedule.plan") ?? "").trim();
+}
+function blockersFor(store2, task) {
+  if (task === "兑换") {
+    const out = [];
+    if (resolveTaskAccounts(store2, "兑换").length === 0) out.push("还没有选账号");
+    if (exchangePlan(store2) === "") out.push("还没设定时奖品");
+    return out;
+  }
+  return enabledAccountCount(store2) === 0 ? ["还没有账号"] : [];
+}
+function accountLabels(store2, ids) {
+  const all = loadAccounts(store2);
+  const out = ids.map((id) => all.find((a) => a.id === id)?.label ?? id);
+  return out.length === 0 ? "无" : out.join("、");
+}
+function summaryFor(store2, task) {
+  if (task === "兑换") {
+    const ids2 = resolveTaskAccounts(store2, "兑换");
+    const n2 = ids2.length;
+    const plan = exchangePlan(store2);
+    const lead = (store2.getState("mcloud.exchange.lead_sec") ?? "120").trim() || "120";
+    if (plan === "") return n2 > 0 ? n2 + " 个账号 · 还没设定时奖品" : "还没选账号和奖品";
+    return n2 + " 个账号（" + accountLabels(store2, ids2) + "） · 目标：" + plan + " · 提前 " + lead + "s";
+  }
+  const n = enabledAccountCount(store2);
+  if (n === 0) return "还没有账号";
+  const ids = loadAccounts(store2).filter((a) => a.disabled !== true).map((a) => a.id);
+  return n <= 3 ? n + " 个账号（" + accountLabels(store2, ids) + "）" : n + " 个账号";
 }
 
 // src/mcloud/tokenGate.ts
@@ -4940,6 +4985,7 @@ register_cron(
   "兑换",
   defaultCron,
   (p) => {
+    if (blockersFor(store, "兑换").length > 0) return;
     const startedMs = Date.now();
     const at = new Date(startedMs).toISOString();
     const targetMs = Date.parse(p.scheduledAt);
@@ -5016,7 +5062,19 @@ register_cron(
       );
     }
   },
-  { budget_ms: BUDGET_MS, lead_ms: defaultLeadMs }
+  {
+    budget_ms: BUDGET_MS,
+    lead_ms: defaultLeadMs,
+    // 兑换是**插件页面管理的功能实例**：面板任务列表不显示它，配置（奖品/时间/
+    // 账号/提前量）全在云盘页的「定时抢兑」里。面板只负责到点叫醒。
+    surface: "plugin",
+    // 新装先暂停：等用户选好奖品、设好时间，页面里点“启用定时”再跑。
+    // 已有安装的 paused 状态由面板保留，不会因为升级被重置。
+    paused: true,
+    manage_url: "#/plugin/mcloud",
+    summary: summaryFor(store, "兑换"),
+    blockers: blockersFor(store, "兑换")
+  }
 );
 log3(
   `mcloud-exchange：任务「兑换」（预算 ${BUDGET_MS / 1e3}s，独占线程）—— 默认 ${defaultCron}，提前 ${defaultLeadMs / 1e3}s 醒`

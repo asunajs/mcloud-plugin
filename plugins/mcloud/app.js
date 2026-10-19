@@ -1208,24 +1208,8 @@ async function savePlanDialog() {
     body: { action: 'plan', query, cron, until, maxRuns: Number(maxRuns), leadSec: Number(leadSec) },
   });
   if (!r.ok) throw new Error(r.note || '定时目标没存上');
-  // 面板任务才是调度的权威：把用户 cron 和提前量同步给父页面（面板）。
-  // 插件页跑在另一个 origin，拿不到面板会话，所以只发消息、不直接调 /api/jobs。
-  try {
-    if (window.parent && window.parent !== window) {
-      window.parent.postMessage(
-        {
-          type: 'panel:edit-job',
-          plugin: 'mcloud-exchange',
-          name: '兑换',
-          expr: cron,
-          lead_ms: Number(leadSec) * 1000,
-        },
-        '*',
-      );
-    }
-  } catch {
-    /* 独立打开时没有父页面；设置本身已经存到插件里 */
-  }
+  // 面板任务由**服务端**同步（routes.ts 的 action:'plan' 调 set_job_schedule），
+  // 插件页不再 postMessage 给父页面：独立打开时没有父页面，跨 origin 也不可靠。
   $('ex-plan-dialog').hidden = true;
   await load();
   return r;
@@ -1300,8 +1284,31 @@ async function exToggleSub(p, on, btn) {
   );
 }
 
+/** 定时抢兑的状态卡：启用/暂停 + 目标/时间/提前量一句话说清。 */
+function renderScheduleCard(e) {
+  const on = e.scheduleEnabled === true;
+  const plan = (e.schedulePlan || '').trim();
+  const cron = (e.scheduleCron || '').trim() || '0 10 * * *';
+  const lead = e.leadSec ?? 120;
+  const state = $('ex-sched-state');
+  if (state) {
+    state.textContent = on ? '已启用' : '未启用';
+    state.className = on ? 'badge success' : 'badge idle';
+  }
+  setText(
+    'ex-sched-summary',
+    plan ? `目标：${plan} · ${cron} · 提前 ${lead}s` : '还没设定时奖品 —— 点「改定时」选一件',
+  );
+  const btn = $('ex-sched-toggle');
+  if (btn) {
+    btn.textContent = on ? '暂停定时' : '启用定时';
+    btn.disabled = !on && plan === '';
+  }
+}
+
 function renderExchange(e) {
   setText('ex-hero', '兑换');
+  renderScheduleCard(e);
   renderAcctChips('exchange-accounts', 'exchange-account-detail', e.recent);
   // 定时弹窗回填当前值（**它们不是秘密**，可以回填）
   const leadEl = $('ex-plan-lead');
@@ -3374,6 +3381,26 @@ function stepNumber(btn) {
 for (const b of document.querySelectorAll('[data-step-for]')) {
   b.addEventListener('click', () => stepNumber(b));
 }
+
+// 定时抢兑状态卡：改定时 / 启用暂停。
+$('ex-sched-edit').addEventListener('click', () => openPlanDialog(null));
+$('ex-sched-toggle').addEventListener('click', (ev) => {
+  const on = !(last && last.exchange && last.exchange.scheduleEnabled);
+  return act(
+    ev.currentTarget,
+    async () => {
+      const r = await api('/exchange/order', {
+        method: 'POST',
+        write: true,
+        body: { action: on ? 'schedule-resume' : 'schedule-pause' },
+      });
+      if (!r.ok) throw new Error(r.note || '没改成功');
+      await load();
+      return r;
+    },
+    (r) => (r && r.note) || (on ? '定时已启用' : '定时已暂停'),
+  );
+});
 
 // 定时抢兑弹窗：入口是清单/关注行的「定时」。
 $('ex-plan-close').addEventListener('click', () => {

@@ -50,6 +50,7 @@
 
 
 import { log, register_cron, warn } from 'host-api';
+import { blockersFor, setTaskBlockers, setTaskSummary, summaryFor } from '../mcloud/taskReadiness.ts';
 import { runAuthRefresh } from '../mcloud/authRefresh.ts';
 import { appendRun } from '../mcloud/runLog.ts';
 import {
@@ -510,6 +511,11 @@ register_cron(
         steps: results.flatMap((x) => x.result!.steps),
       }), nowIso);
 
+    // 面板卡片上的“这次跑成什么样”。账号可能在运行期间被删/停用，
+    // 所以 blockers 也顺手重算一次（不然卡片会一直停在旧的就绪状态）。
+    setTaskBlockers('日常', blockersFor(store, '日常'));
+    setTaskSummary('日常', summary);
+
     // 下面那段推送用这两个名字（原来它们指"那一次"的结果）
     const r = {
       ok: okAll,
@@ -540,7 +546,14 @@ register_cron(
       !r.ok,
     );
   },
-  { budget_ms: BUDGET_MS },
+  {
+    budget_ms: BUDGET_MS,
+    // 日常是“随时跑都安全”的环境型任务：面板任务列表里显示，默认 cron 保留。
+    // 没账号时是“未就绪”（灰），不是“失败”（红）。
+    surface: 'panel',
+    summary: summaryFor(store, '日常'),
+    blockers: blockersFor(store, '日常'),
+  },
 );
 
 log(`mcloud-daily：任务「日常」（预算 ${BUDGET_MS / 1000}s，共享粗粒度 lane）`);

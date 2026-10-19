@@ -73,7 +73,30 @@ export interface TaskOpts {
   /** 在 cron 目标前多久触发（毫秒）。范围 0 ~ 3600000；0/不填 = 不提前。
    *  用户看到的仍是 cron 里的整点，调度器提前醒。 */
   lead_ms?: number;
+  /** 任务在面板上的归属面：`panel`（默认，任务列表里显示）/ `plugin`（插件页面管理）。
+   *  兑换这种“功能实例”用 `plugin`：面板只调度、只记录，配置在插件页面里。 */
+  surface?: 'panel' | 'plugin';
+  /** 面板卡片上的一行人话摘要（如“全部账号（3）· 每天 8:00 / 20:00”）。 */
+  summary?: string;
+  /** 未就绪原因。非空 ⇒ 调度器不触发，面板显示“未就绪”；账号/配置就绪后清空。 */
+  blockers?: string[];
+  /** 新建时先暂停（插件自管任务常用：等用户在插件页面里配置好再启用）。 */
+  paused?: boolean;
+  /** 面板卡片上「去插件页配置」的地址，如 `#/plugin/mcloud`。 */
+  manage_url?: string;
 }
+
+/** 运行期改**自己**任务的暂停状态（只作用于调用它的插件名下的任务）。 */
+export function set_job_paused(name: string, paused: boolean): void;
+/** 运行期设置未就绪原因（空数组 = 就绪）。 */
+export function set_job_blockers(name: string, blockers: string[]): void;
+/** 运行期设置面板卡片摘要（空串 = 清掉）。 */
+export function set_job_summary(name: string, text: string): void;
+/** 运行期改自己任务的调度（写面板的 override，插件更新不会丢）。 */
+export function set_job_schedule(
+  name: string,
+  opts: { expr: string; lead_ms?: number },
+): void;
 
 /** 侧边栏入口。`label` 面板自己推不出来（插件名不是人话），所以由插件给。 */
 export interface NavOpts {

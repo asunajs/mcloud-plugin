@@ -41,6 +41,7 @@
 //   的 `MAX_DECLARED_BUDGET_MS`），5 分钟留足了余量。
 
 import { log, register_cron, warn } from 'host-api';
+import { blockersFor, setTaskBlockers, setTaskSummary, summaryFor } from '../mcloud/taskReadiness.ts';
 import { appendRun, type RunStep } from '../mcloud/runLog.ts';
 import { labelOf } from '../mcloud/taskAccounts.ts';
 import { logBoth } from '../mcloud/log.ts';
@@ -313,8 +314,18 @@ register_cron(
         bad === 0 ? `------【${who}】都成了------` : `------【${who}】${bad} 项没成------`;
       logBoth(store, bad > 0 ? 'warn' : 'info', tail, at);
     }
+
+    // 账号可能在运行期间被删/停用：卡片摘要和未就绪状态跟着重算。
+    setTaskBlockers('直播', blockersFor(store, '直播'));
+    setTaskSummary('直播', summaryFor(store, '直播'));
   },
-  { budget_ms: BUDGET_MS },
+  {
+    budget_ms: BUDGET_MS,
+    // 直播也是环境型任务：面板任务列表里显示；没账号时“未就绪”。
+    surface: 'panel',
+    summary: summaryFor(store, '直播'),
+    blockers: blockersFor(store, '直播'),
+  },
 );
 
 log(`mcloud-live：任务「直播」（预算 ${BUDGET_MS / 1000}s，共享粗粒度 lane）`);
