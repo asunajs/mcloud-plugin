@@ -34,8 +34,9 @@ import { uuidV4 } from '../rand.ts';
 import { utf8 } from '../../crypto/bytes.ts';
 import { judgeItem, readMatrix } from './appTaskMatrix.ts';
 import { runUploadStep, startUpload, uploadDone } from './upload.ts';
+import { readMonthBackup } from './taskExpansion.ts';
 import { cloudFileOpHeaders, deterministicFile } from '../cloudUpload.ts';
-import { shouldSkip, stepFor, uploadShapeFor } from '../appTaskRules.ts';
+import { monthGateSkips, shouldSkip, stepFor, uploadShapeFor } from '../appTaskRules.ts';
 import type { AppRunner, TaskStep } from '../appTaskRules.ts';
 import { parseSsoToken } from '../h5session.ts';
 import {
@@ -394,6 +395,8 @@ export function pendingItems(deps: TaskDeps): Pending[] {
   const skipped: number[] = [];
   lastSkipped = [];
   const readings = readMatrix(deps.store);
+  const monthBackup = readMonthBackup(deps);
+  const day = Number(deps.nowIso.slice(8, 10));
   readings.forEach((reading, gi) => {
     if (!reading) return;
     // ⚠ 老读数（这一环补上之前落的）没有 `items` —— 那时只能当"读不出条目"，
@@ -406,6 +409,10 @@ export function pendingItems(deps: TaskDeps): Pending[] {
       if (judgeItem(item) !== 'todo') continue;
       // 「刻意不做」的（SKIP_TASK_LIST）不算“没搬”—— 它们本来就不该点。
       if (shouldSkip(item.taskId)) continue;
+      // 月门：sign_in_3 / month、本月备份确认没开、日期 < 20 ⇒ 这一趟不动。
+      if (monthGateSkips({ groupId: item.groupId, marketName: reading.group }, monthBackup, day)) {
+        continue;
+      }
       // ⚠ **只做"知道该做什么"的那些**（见 `stepFor` 的注释）——
       //   第一版是"不在黑名单就打"，那是重写；真机上点了 4 条状态一条没变，
       //   因为它们在 mcloud 的账本里全是"未实现"。

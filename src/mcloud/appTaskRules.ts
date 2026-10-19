@@ -91,6 +91,19 @@ export const CLICK_ONLY_TASK_IDS: readonly number[] = [
 /** 月度闸门所在的 marketName 与 groupId。 */
 export const MONTH_GATE_MARKET = 'sign_in_3';
 export const MONTH_GATE_GROUP = 'month';
+/** 20 号前、本月备份没开 ⇒ 不做 app 的月任务（Rust mcloud 的 month_gate_skips）。 */
+export const MONTH_GATE_DAY_LIMIT = 20;
+
+/** 月门：只在**确认**本月备份没开（`false`）且日期 < 20 时跳过；
+ *  `undefined`（没读到）不跳 —— 把“不知道”当成“没开”会白跳一次。 */
+export function monthGateSkips(
+  item: { groupId?: string | undefined; marketName?: string | undefined },
+  monthBackup: boolean | undefined,
+  day: number | undefined,
+): boolean {
+  if (day === undefined || monthBackup !== false) return false;
+  return item.groupId === MONTH_GATE_GROUP && item.marketName === MONTH_GATE_MARKET && day < MONTH_GATE_DAY_LIMIT;
+}
 
 /** beiyong1 的**名字门**：名字里有"上传"且有"图"或"照"。 */
 export function beiyong1NameGate(name: string): boolean {

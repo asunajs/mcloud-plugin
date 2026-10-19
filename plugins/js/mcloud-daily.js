@@ -57,6 +57,7 @@ var KEY_SCOPE = {
   "mcloud.sign.last": "account",
   "mcloud.upload.state": "account",
   "mcloud.taskexpansion.state": "account",
+  "mcloud.month.backup": "account",
   "mcloud.apptask.state": "account",
   "mcloud.apptaskmatrix.last": "account",
   "mcloud.apptaskmatrix.group_index": "account",
@@ -4461,6 +4462,164 @@ function uploadDone(deps) {
   return loadUpload(deps)?.step === "done";
 }
 
+// src/mcloud/tasks/taskExpansion.ts
+function signedGet(deps, path) {
+  const session = loadSession(deps.store);
+  return buildH5Request({
+    url: withBase(deps, path),
+    method: "GET",
+    body: void 0,
+    referer: REFERER_SIGN_IN,
+    showLoading: SHOW_LOADING,
+    isDeviceId: false,
+    saltKey: 1,
+    marketName: "sign_in_3",
+    session: session ? sessionHeaders(session) : {}
+  });
+}
+function digResult(text) {
+  try {
+    const v = JSON.parse(text);
+    const r = v.result;
+    return r && typeof r === "object" ? r : v;
+  } catch {
+    return {};
+  }
+}
+var STATE_EXPAND = "mcloud.taskexpansion.state";
+var STATE_MONTH_BACKUP = "mcloud.month.backup";
+function saveMonthBackup(deps, backup) {
+  if (backup === void 0) return;
+  const month = deps.nowIso.slice(0, 7);
+  deps.store.setState(STATE_MONTH_BACKUP, JSON.stringify({ month, backup }), deps.nowIso);
+}
+function readMonthBackup(deps) {
+  const raw = deps.store.getState(STATE_MONTH_BACKUP);
+  if (!raw) return void 0;
+  try {
+    const v = JSON.parse(raw);
+    if (v.month !== deps.nowIso.slice(0, 7)) return void 0;
+    return typeof v.backup === "boolean" ? v.backup : void 0;
+  } catch {
+    return void 0;
+  }
+}
+var STEP_TEXT2 = {
+  read: "① 读任务拓展状态",
+  upload: "② 传一个文件触发本月备份",
+  recheck: "②b 再过一遍状态",
+  claim: "③ 领云朵",
+  done: "完成"
+};
+function shouldUpload(read) {
+  return read.curMonthBackup === false;
+}
+function asInt2(v) {
+  if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
+  if (typeof v === "string" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
+  return void 0;
+}
+function parseExpand(result) {
+  const o = result && typeof result === "object" ? result : {};
+  return {
+    curMonthBackup: typeof o.curMonthBackup === "boolean" ? o.curMonthBackup : void 0,
+    curMonthTaskRecordCount: asInt2(o.curMonthTaskRecordCount),
+    acceptDate: typeof o.acceptDate === "string" ? o.acceptDate : void 0,
+    nextMonthTaskRecordCount: asInt2(o.nextMonthTaskRecordCount)
+  };
+}
+function load(deps) {
+  const raw = deps.store.getState(STATE_EXPAND);
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw);
+    return typeof v.step === "string" ? v : null;
+  } catch {
+    return null;
+  }
+}
+var save2 = (deps, st) => deps.store.setState(STATE_EXPAND, JSON.stringify(st), deps.nowIso);
+function startExpansion(deps) {
+  save2(deps, { step: "read" });
+  return { ok: true, note: "已排队：读状态 → （需要时）传文件触发备份 → 领云朵" };
+}
+function runExpansionStep(deps) {
+  const st = load(deps) ?? { step: "read" };
+  if (st.step === "done") return { ok: true, idle: true, note: "这一趟已经走完" };
+  const label = STEP_TEXT2[st.step];
+  if (st.step === "upload") {
+    if (uploadDone(deps)) {
+      save2(deps, { ...st, step: "recheck" });
+      return { ok: true, note: `${label}：文件已传完 —— 下一步再过一遍状态` };
+    }
+    const out2 = runUploadStep(deps, deterministicFile(EXPAND_FILE_SEED, EXPAND_FILE_BYTES));
+    if (out2.idle || uploadDone(deps)) {
+      save2(deps, { ...st, step: "recheck" });
+      return {
+        ok: true,
+        note: out2.idle ? `${label}：没有待传的（可能上次已传完）—— 下一步再过一遍状态` : `${label}：文件已传完 —— 下一步再过一遍状态`
+      };
+    }
+    return out2;
+  }
+  if (st.step === "read" || st.step === "recheck") {
+    const res2 = callRawText(deps.transport, signedGet(deps, "/ycloud/signin/page/taskExpansion"));
+    if (!res2.ok) return { ok: false, note: `${label}失败：${res2.error ?? "未知失败"}` };
+    let read;
+    try {
+      read = parseExpand(digResult(res2.text));
+    } catch (e) {
+      return { ok: false, note: `${label}：响应解析不了（${e instanceof Error ? e.message : String(e)}）` };
+    }
+    saveMonthBackup(deps, read.curMonthBackup);
+    const next = {
+      step: "claim",
+      acceptDate: read.acceptDate,
+      curMonthBackup: read.curMonthBackup,
+      curMonthTaskRecordCount: read.curMonthTaskRecordCount,
+      nextMonthTaskRecordCount: read.nextMonthTaskRecordCount
+    };
+    if (st.step === "read" && shouldUpload(read)) {
+      save2(deps, { ...next, step: "upload" });
+      startUpload(deps, { name: EXPAND_FILE_NAME, bytes: deterministicFile(EXPAND_FILE_SEED, EXPAND_FILE_BYTES) });
+      return { ok: true, note: `${label}：本月**未开启备份** ⇒ 传一个文件把它做出来 —— 下一步开始传` };
+    }
+    save2(deps, next);
+    const tail = read.nextMonthTaskRecordCount === void 0 ? "" : `；下月可领 ${read.nextMonthTaskRecordCount} 个`;
+    return {
+      ok: true,
+      note: `${label}：备份=${read.curMonthBackup === void 0 ? "没读到" : String(read.curMonthBackup)}，可领次数=${read.curMonthTaskRecordCount ?? "没读到"}${tail} —— 下一步领`
+    };
+  }
+  const res = callRawText(
+    deps.transport,
+    signedGet(deps, `/ycloud/signin/page/receiveTaskExpansion?acceptDate=${st.acceptDate ?? ""}`)
+  );
+  save2(deps, { ...st, step: "done" });
+  if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? "未知失败"}` };
+  let out;
+  try {
+    out = JSON.parse(res.text);
+  } catch {
+    out = void 0;
+  }
+  const code = out?.code;
+  const codeOk = code === void 0 || code === 0 || code === "0" || code === "0000";
+  const raw = out?.result;
+  const detail = typeof raw === "number" ? `${raw}（这一族的 result 是裸数字）` : `${res.text.slice(0, 120)}（⚠ 这一枪**缺成功样本**，形状没被实拍验过）`;
+  if (!codeOk) {
+    const msg = typeof out?.msg === "string" ? out.msg : "";
+    return { ok: false, note: `${label}：服务端拒绝 —— code=${String(code)}${msg === "" ? "" : ` ${msg}`}` };
+  }
+  return { ok: true, note: `${label}：服务端回 ${detail}` };
+}
+var EXPAND_FILE_NAME = "panel-backup-marker.txt";
+var EXPAND_FILE_SEED = "mcloud-panel-backup-marker-v1";
+var EXPAND_FILE_BYTES = 256;
+function withBase(deps, path) {
+  return `${hostBase(deps, MCLOUD_HOST)}${path}`;
+}
+
 // src/mcloud/appTaskRules.ts
 var UPLOAD_ONE = {
   rounds: 1,
@@ -4517,6 +4676,13 @@ var CLICK_ONLY_TASK_IDS = [
   447,
   547
 ];
+var MONTH_GATE_MARKET = "sign_in_3";
+var MONTH_GATE_GROUP = "month";
+var MONTH_GATE_DAY_LIMIT = 20;
+function monthGateSkips(item, monthBackup, day) {
+  if (day === void 0 || monthBackup !== false) return false;
+  return item.groupId === MONTH_GATE_GROUP && item.marketName === MONTH_GATE_MARKET && day < MONTH_GATE_DAY_LIMIT;
+}
 function beiyong1NameGate(name) {
   return name.includes("上传") && (name.includes("图") || name.includes("照"));
 }
@@ -5329,7 +5495,7 @@ function trashRequest(deps, fileIds) {
     body: JSON.stringify({ fileIds })
   };
 }
-function load(deps) {
+function load2(deps) {
   const raw = deps.store.getState(STATE_TASK);
   if (!raw) return null;
   try {
@@ -5339,7 +5505,7 @@ function load(deps) {
     return null;
   }
 }
-var save2 = (deps, st) => deps.store.setState(STATE_TASK, JSON.stringify(st), deps.nowIso);
+var save3 = (deps, st) => deps.store.setState(STATE_TASK, JSON.stringify(st), deps.nowIso);
 function today(deps) {
   return deps.nowIso.slice(0, 10);
 }
@@ -5356,7 +5522,7 @@ function advance(deps, st) {
   const clicked = freshClicked(st, deps);
   const next = pendingItems(deps).find((p) => !clicked.includes(p.itemId));
   if (!next) {
-    save2(deps, {
+    save3(deps, {
       ...st,
       phase: "done",
       fileId: void 0,
@@ -5388,7 +5554,7 @@ function advance(deps, st) {
   if (next.currStep !== void 0 && next.currStep !== 0 && special !== void 0) {
     phase = phaseOfSpecial(special) ?? phase;
   }
-  save2(deps, {
+  save3(deps, {
     gi: next.gi,
     ii: next.ii,
     phase,
@@ -5409,11 +5575,16 @@ function pendingItems(deps) {
   const skipped = [];
   lastSkipped = [];
   const readings = readMatrix(deps.store);
+  const monthBackup = readMonthBackup(deps);
+  const day = Number(deps.nowIso.slice(8, 10));
   readings.forEach((reading, gi) => {
     if (!reading) return;
     for (const [ii, item] of (reading.items ?? []).entries()) {
       if (judgeItem(item) !== "todo") continue;
       if (shouldSkip(item.taskId)) continue;
+      if (monthGateSkips({ groupId: item.groupId, marketName: reading.group }, monthBackup, day)) {
+        continue;
+      }
       const step = stepFor({
         taskId: item.taskId,
         groupId: item.groupId,
@@ -5498,7 +5669,7 @@ function beginPdfUpload(deps) {
   return ts;
 }
 function startAppTask(deps) {
-  const prev = load(deps);
+  const prev = load2(deps);
   const clicked = prev ? freshClicked(prev, deps) : [];
   const all = pendingItems(deps);
   const extra = lastSkipped.length === 0 ? "" : `，另有 ${lastSkipped.length} 条还没搬（当前要在 App 里手动做）`;
@@ -5533,7 +5704,7 @@ function startAppTask(deps) {
   if (first.currStep !== void 0 && first.currStep !== 0 && special !== void 0) {
     phase = phaseOfSpecial(special) ?? phase;
   }
-  save2(deps, {
+  save3(deps, {
     gi: first.gi,
     ii: first.ii,
     phase,
@@ -5608,7 +5779,7 @@ function specialPhase(st) {
   return phaseOfSpecial(st.special);
 }
 function runAppTaskStep(deps) {
-  const st = load(deps);
+  const st = load2(deps);
   if (!st) return { ok: true, idle: true, note: "没有在跑的 app-task" };
   if (st.phase === "done") {
     return { ok: true, idle: true, note: "这一趟做完了" };
@@ -5621,35 +5792,35 @@ function runAppTaskStep(deps) {
   if (st.phase === "upload") {
     if (uploadDone(deps)) {
       const up = JSON.parse(deps.store.getState("mcloud.upload.state") ?? "{}");
-      save2(deps, { ...st, phase: "visit", fileId: up.fileId, day: today(deps) });
+      save3(deps, { ...st, phase: "visit", fileId: up.fileId, day: today(deps) });
       return { ok: true, note: `文件已传完（收尾要用它的 id）—— 下一步记访问日志` };
     }
     const out2 = runUploadStep(deps, deterministicFile(`app-task-${st.itemId}`, 256));
     if (out2.idle) {
-      save2(deps, { ...st, phase: "visit", day: today(deps) });
+      save3(deps, { ...st, phase: "visit", day: today(deps) });
       return { ok: true, note: "没有待传的 —— 下一步记访问日志" };
     }
     if (uploadDone(deps)) {
       const up = JSON.parse(deps.store.getState("mcloud.upload.state") ?? "{}");
-      save2(deps, { ...st, phase: "visit", fileId: up.fileId, day: today(deps) });
+      save3(deps, { ...st, phase: "visit", fileId: up.fileId, day: today(deps) });
     }
     return out2;
   }
   if (st.phase === "visit") {
     const res2 = callRawText(deps.transport, journalingRequest(deps, st.itemId));
     if (!res2.ok) return { ok: false, note: `记访问日志 #${st.itemId} 失败：${res2.error ?? "未知失败"}` };
-    save2(deps, { ...st, phase: "click", day: today(deps) });
+    save3(deps, { ...st, phase: "click", day: today(deps) });
     return { ok: true, note: `已记访问日志 #${st.itemId}（HTTP ${res2.status}）—— 下一步打卡` };
   }
   if (st.phase === "click") {
     if (freshClicked(st, deps).includes(st.itemId)) {
       const sp2 = specialPhase(st);
       if (sp2 !== void 0) {
-        save2(deps, { ...st, phase: sp2, day: today(deps) });
+        save3(deps, { ...st, phase: sp2, day: today(deps) });
         return { ok: true, note: `#${st.itemId} 今天已经点过了 —— 不重发，去做「${sp2}」` };
       }
       if (st.fileId) {
-        save2(deps, { ...st, phase: "trash", day: today(deps) });
+        save3(deps, { ...st, phase: "trash", day: today(deps) });
         return { ok: true, note: `#${st.itemId} 今天已经点过了 —— 不重发，去收尾` };
       }
       const out3 = advance(deps, st);
@@ -5660,11 +5831,11 @@ function runAppTaskStep(deps) {
     const clicked = [...freshClicked(st, deps), st.itemId];
     const sp = specialPhase(st);
     if (sp !== void 0) {
-      save2(deps, { ...st, phase: sp, clicked, day: today(deps) });
+      save3(deps, { ...st, phase: sp, clicked, day: today(deps) });
       return { ok: true, note: `打卡 #${st.itemId}（HTTP ${res2.status}）—— 下一步「${sp}」` };
     }
     if (st.fileId) {
-      save2(deps, { ...st, phase: "trash", clicked, day: today(deps) });
+      save3(deps, { ...st, phase: "trash", clicked, day: today(deps) });
       return { ok: true, note: `打卡 #${st.itemId}（HTTP ${res2.status}）—— 下一步收尾` };
     }
     const out2 = advance(deps, { ...st, clicked });
@@ -5732,7 +5903,7 @@ function runAppTaskStep(deps) {
       const out2 = advance(deps, st);
       return { ok: false, note: `分享 #${st.itemId}：响应里没有 linkID，没法删外链。${out2.note}` };
     }
-    save2(deps, {
+    save3(deps, {
       ...st,
       phase: "shareDel",
       data: { ...st.data ?? {}, linkIds: JSON.stringify(ids) },
@@ -5766,7 +5937,7 @@ function runAppTaskStep(deps) {
     if (!parsed.ok || parsed.value === void 0) {
       return { ok: false, note: `邮箱 SSO token 没换到：${parsed.error}` };
     }
-    save2(deps, {
+    save3(deps, {
       ...st,
       phase: "mailLogin2",
       data: { ...st.data ?? {}, sso: parsed.value },
@@ -5781,7 +5952,7 @@ function runAppTaskStep(deps) {
     const sess = parseMailSession(res2.text);
     if (!sess) return { ok: false, note: "邮箱登录响应里没有 var.sid / var.rmkey" };
     const nextPhase = st.special === "aiAssistant" || st.special === "aiWorkbench" || st.special === "aiCamera" ? "aiQuery" : st.special === "mailActive" ? "mailActiveAction" : st.special === "sendMail" ? "sendMailAction" : st.special === "pdfConvert" ? "pdfUpload" : st.special === "billView" ? "billViewAction" : "mailDirs";
-    save2(deps, {
+    save3(deps, {
       ...st,
       phase: nextPhase,
       data: { ...st.data ?? {}, sso: "", sid: sess.sid, rmkey: sess.rmkey, cguid: newCguid() },
@@ -5806,7 +5977,7 @@ function runAppTaskStep(deps) {
       return { ok: true, note: `云笔记 #${st.itemId}：鉴权响应没有 headers.app_auth，跳过。${out2.note}` };
     }
     const noteId = uuidV4().replace(/-/g, "").padEnd(32, "0").slice(0, 32);
-    save2(deps, {
+    save3(deps, {
       ...st,
       phase: "noteCreate",
       data: { ...st.data ?? {}, noteId, title: noteId.slice(0, 3), headers: JSON.stringify(headers) },
@@ -5826,7 +5997,7 @@ function runAppTaskStep(deps) {
       deps.transport,
       noteCreateRequest(st.data?.noteId ?? "", st.data?.title ?? "", auth?.phone ?? "", headers, Date.now())
     );
-    save2(deps, { ...st, phase: "noteDelete", day: today(deps) });
+    save3(deps, { ...st, phase: "noteDelete", day: today(deps) });
     return {
       ok: true,
       note: res2.ok ? "云笔记已创建 —— 下一步移进回收站" : `建笔记没成（旧实现也忽略）：${res2.error ?? ""} —— 下一步移进回收站`
@@ -5897,7 +6068,7 @@ function runAppTaskStep(deps) {
       const out2 = advance(deps, doneState(deps, st));
       return { ok: false, note: `AI 相机识图没成：${rec?.message ?? res2.error ?? "没有 fileId"}。${out2.note}` };
     }
-    save2(deps, {
+    save3(deps, {
       ...st,
       phase: "camChat",
       data: { ...st.data ?? {}, fileId: rec.fileId, camTaskId: rec.taskId ?? "" },
@@ -5938,7 +6109,7 @@ function runAppTaskStep(deps) {
     if (!t || !auth) return { ok: false, note: "queryUserToken 没给全 account/token 或解不出手机号" };
     if (auth.userDomainId === "") return { ok: false, note: "queryUserToken 没给 userDomainId" };
     const next = st.special === "aiCamera" ? "camRecognize" : "aiStatus";
-    save2(deps, {
+    save3(deps, {
       ...st,
       phase: next,
       data: {
@@ -5959,7 +6130,7 @@ function runAppTaskStep(deps) {
     const rsa = encryptPhone(phone);
     const res2 = callRawText(deps.transport, cloudTaskStatusRequest(rsa, st.itemId));
     const cs = res2.ok ? parseCloudTaskStatus(res2.text) : void 0;
-    save2(deps, { ...st, phase: "aiChat", day: today(deps) });
+    save3(deps, { ...st, phase: "aiChat", day: today(deps) });
     return {
       ok: true,
       note: cs ? `AI 状态读数（taskId=${st.itemId}）：taskStatus=${String(cs.taskStatus)} cloudStatus=${String(cs.cloudStatus)} —— 下一步对话` : `AI 状态没读到（不影响对话）—— 下一步对话`
@@ -5980,17 +6151,17 @@ function runAppTaskStep(deps) {
     let ts = Number(st.data?.pdfTs ?? 0);
     if (ts === 0) {
       ts = beginPdfUpload(deps);
-      save2(deps, { ...st, data: { ...st.data ?? {}, pdfTs: String(ts) }, day: today(deps) });
+      save3(deps, { ...st, data: { ...st.data ?? {}, pdfTs: String(ts) }, day: today(deps) });
     }
     if (uploadDone(deps)) {
       const up = JSON.parse(deps.store.getState("mcloud.upload.state") ?? "{}");
-      save2(deps, { ...st, phase: "pdfConvert", fileId: up.fileId, day: today(deps) });
+      save3(deps, { ...st, phase: "pdfConvert", fileId: up.fileId, day: today(deps) });
       return { ok: true, note: "PDF 已传完 —— 下一步转换" };
     }
     const out2 = runUploadStep(deps, utf8(makePdf(ts)));
     if (uploadDone(deps)) {
       const up = JSON.parse(deps.store.getState("mcloud.upload.state") ?? "{}");
-      save2(deps, { ...st, phase: "pdfConvert", fileId: up.fileId, day: today(deps) });
+      save3(deps, { ...st, phase: "pdfConvert", fileId: up.fileId, day: today(deps) });
       return { ok: true, note: "PDF 已传完 —— 下一步转换" };
     }
     return out2;
@@ -6051,7 +6222,7 @@ function runAppTaskStep(deps) {
     const sess = { sid: st.data?.sid ?? "", rmkey: st.data?.rmkey ?? "" };
     const res2 = callRawText(deps.transport, mailDirsRequest(sess, st.data?.cguid ?? newCguid()));
     const dir = res2.ok ? firstField(res2.text, "directoryId") : void 0;
-    save2(deps, {
+    save3(deps, {
       ...st,
       phase: "mailSearch",
       data: { ...st.data ?? {}, directoryId: dir ?? "" },
@@ -6073,7 +6244,7 @@ function runAppTaskStep(deps) {
         note: `邮件列表里取不到 mid：${res2.error ?? "响应里没有 mid"}。${out2.note}`
       };
     }
-    save2(deps, { ...st, phase: "mailBackup", data: { ...st.data ?? {}, mid }, day: today(deps) });
+    save3(deps, { ...st, phase: "mailBackup", data: { ...st.data ?? {}, mid }, day: today(deps) });
     return { ok: true, note: `找到邮件 mid（${mid.length} 字符）—— 下一步转存` };
   }
   if (st.phase === "mailBackup") {
@@ -6228,7 +6399,7 @@ function runCloudSnapshot(deps) {
 var STATE_STATUS = "mcloud.msgpush.last";
 var STATE_CAN2 = "mcloud.msgpush.can";
 var SECOND_STATUS_CLAIMABLE = 2;
-function asInt2(v) {
+function asInt3(v) {
   if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
   if (typeof v === "string" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
   return void 0;
@@ -6236,10 +6407,10 @@ function asInt2(v) {
 function parseStatus(result) {
   const o = resultObject({ code: 0, message: "", result, ok: true });
   return {
-    pushOn: asInt2(o.pushOn),
-    onDuaration: asInt2(o.onDuaration),
-    firstTaskStatus: asInt2(o.firstTaskStatus),
-    secondTaskStatus: asInt2(o.secondTaskStatus)
+    pushOn: asInt3(o.pushOn),
+    onDuaration: asInt3(o.onDuaration),
+    firstTaskStatus: asInt3(o.firstTaskStatus),
+    secondTaskStatus: asInt3(o.secondTaskStatus)
   };
 }
 var PUSH_ON_OFF = 0;
@@ -6304,7 +6475,7 @@ function runMsgPushObtain(deps) {
     },
     (env) => {
       const o = resultObject(env);
-      const code = asInt2(o.obtainCode);
+      const code = asInt3(o.obtainCode);
       if (code === 0) return { ok: true, note: "消息推送奖励：已领取" };
       return {
         ok: false,
@@ -6350,7 +6521,7 @@ var STATE_CAN3 = "mcloud.notice.can_claim";
 var STATE_INFO2 = "mcloud.notice.info";
 var NOTICE_CLOUD_STATUS_UNCLAIMED = 1;
 var NOTICE_TASK_STATUS_DONE = 3;
-function asInt3(v) {
+function asInt4(v) {
   if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
   if (typeof v === "string" && v.trim() !== "" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
   return void 0;
@@ -6359,10 +6530,10 @@ function parseNoticeSlot(raw) {
   if (raw === null || raw === void 0 || typeof raw !== "object") return void 0;
   const o = raw;
   const slot = {
-    cloudStatus: asInt3(o.cloudStatus ?? o.cloud_status),
-    sum: asInt3(o.sum),
-    progress: asInt3(o.progress),
-    taskStatus: asInt3(o.taskStatus ?? o.task_status)
+    cloudStatus: asInt4(o.cloudStatus ?? o.cloud_status),
+    sum: asInt4(o.sum),
+    progress: asInt4(o.progress),
+    taskStatus: asInt4(o.taskStatus ?? o.task_status)
   };
   const any = slot.cloudStatus !== void 0 || slot.sum !== void 0 || slot.progress !== void 0 || slot.taskStatus !== void 0;
   return any ? slot : void 0;
@@ -6583,146 +6754,6 @@ function runSign(deps) {
     deps.store.setState(STATE_STAGE, "need-verify", deps.nowIso);
   }
   return out;
-}
-
-// src/mcloud/tasks/taskExpansion.ts
-function signedGet(deps, path) {
-  const session = loadSession(deps.store);
-  return buildH5Request({
-    url: withBase(deps, path),
-    method: "GET",
-    body: void 0,
-    referer: REFERER_SIGN_IN,
-    showLoading: SHOW_LOADING,
-    isDeviceId: false,
-    saltKey: 1,
-    marketName: "sign_in_3",
-    session: session ? sessionHeaders(session) : {}
-  });
-}
-function digResult(text) {
-  try {
-    const v = JSON.parse(text);
-    const r = v.result;
-    return r && typeof r === "object" ? r : v;
-  } catch {
-    return {};
-  }
-}
-var STATE_EXPAND = "mcloud.taskexpansion.state";
-var STEP_TEXT2 = {
-  read: "① 读任务拓展状态",
-  upload: "② 传一个文件触发本月备份",
-  recheck: "②b 再过一遍状态",
-  claim: "③ 领云朵",
-  done: "完成"
-};
-function shouldUpload(read) {
-  return read.curMonthBackup === false;
-}
-function asInt4(v) {
-  if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
-  if (typeof v === "string" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
-  return void 0;
-}
-function parseExpand(result) {
-  const o = result && typeof result === "object" ? result : {};
-  return {
-    curMonthBackup: typeof o.curMonthBackup === "boolean" ? o.curMonthBackup : void 0,
-    curMonthTaskRecordCount: asInt4(o.curMonthTaskRecordCount),
-    acceptDate: typeof o.acceptDate === "string" ? o.acceptDate : void 0,
-    nextMonthTaskRecordCount: asInt4(o.nextMonthTaskRecordCount)
-  };
-}
-function load2(deps) {
-  const raw = deps.store.getState(STATE_EXPAND);
-  if (!raw) return null;
-  try {
-    const v = JSON.parse(raw);
-    return typeof v.step === "string" ? v : null;
-  } catch {
-    return null;
-  }
-}
-var save3 = (deps, st) => deps.store.setState(STATE_EXPAND, JSON.stringify(st), deps.nowIso);
-function startExpansion(deps) {
-  save3(deps, { step: "read" });
-  return { ok: true, note: "已排队：读状态 → （需要时）传文件触发备份 → 领云朵" };
-}
-function runExpansionStep(deps) {
-  const st = load2(deps) ?? { step: "read" };
-  if (st.step === "done") return { ok: true, idle: true, note: "这一趟已经走完" };
-  const label = STEP_TEXT2[st.step];
-  if (st.step === "upload") {
-    if (uploadDone(deps)) {
-      save3(deps, { ...st, step: "recheck" });
-      return { ok: true, note: `${label}：文件已传完 —— 下一步再过一遍状态` };
-    }
-    const out2 = runUploadStep(deps, deterministicFile(EXPAND_FILE_SEED, EXPAND_FILE_BYTES));
-    if (out2.idle || uploadDone(deps)) {
-      save3(deps, { ...st, step: "recheck" });
-      return {
-        ok: true,
-        note: out2.idle ? `${label}：没有待传的（可能上次已传完）—— 下一步再过一遍状态` : `${label}：文件已传完 —— 下一步再过一遍状态`
-      };
-    }
-    return out2;
-  }
-  if (st.step === "read" || st.step === "recheck") {
-    const res2 = callRawText(deps.transport, signedGet(deps, "/ycloud/signin/page/taskExpansion"));
-    if (!res2.ok) return { ok: false, note: `${label}失败：${res2.error ?? "未知失败"}` };
-    let read;
-    try {
-      read = parseExpand(digResult(res2.text));
-    } catch (e) {
-      return { ok: false, note: `${label}：响应解析不了（${e instanceof Error ? e.message : String(e)}）` };
-    }
-    const next = {
-      step: "claim",
-      acceptDate: read.acceptDate,
-      curMonthBackup: read.curMonthBackup,
-      curMonthTaskRecordCount: read.curMonthTaskRecordCount,
-      nextMonthTaskRecordCount: read.nextMonthTaskRecordCount
-    };
-    if (st.step === "read" && shouldUpload(read)) {
-      save3(deps, { ...next, step: "upload" });
-      startUpload(deps, { name: EXPAND_FILE_NAME, bytes: deterministicFile(EXPAND_FILE_SEED, EXPAND_FILE_BYTES) });
-      return { ok: true, note: `${label}：本月**未开启备份** ⇒ 传一个文件把它做出来 —— 下一步开始传` };
-    }
-    save3(deps, next);
-    const tail = read.nextMonthTaskRecordCount === void 0 ? "" : `；下月可领 ${read.nextMonthTaskRecordCount} 个`;
-    return {
-      ok: true,
-      note: `${label}：备份=${read.curMonthBackup === void 0 ? "没读到" : String(read.curMonthBackup)}，可领次数=${read.curMonthTaskRecordCount ?? "没读到"}${tail} —— 下一步领`
-    };
-  }
-  const res = callRawText(
-    deps.transport,
-    signedGet(deps, `/ycloud/signin/page/receiveTaskExpansion?acceptDate=${st.acceptDate ?? ""}`)
-  );
-  save3(deps, { ...st, step: "done" });
-  if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? "未知失败"}` };
-  let out;
-  try {
-    out = JSON.parse(res.text);
-  } catch {
-    out = void 0;
-  }
-  const code = out?.code;
-  const codeOk = code === void 0 || code === 0 || code === "0" || code === "0000";
-  const raw = out?.result;
-  const detail = typeof raw === "number" ? `${raw}（这一族的 result 是裸数字）` : `${res.text.slice(0, 120)}（⚠ 这一枪**缺成功样本**，形状没被实拍验过）`;
-  if (!codeOk) {
-    const msg = typeof out?.msg === "string" ? out.msg : "";
-    return { ok: false, note: `${label}：服务端拒绝 —— code=${String(code)}${msg === "" ? "" : ` ${msg}`}` };
-  }
-  return { ok: true, note: `${label}：服务端回 ${detail}` };
-}
-var EXPAND_FILE_NAME = "panel-backup-marker.txt";
-var EXPAND_FILE_SEED = "mcloud-panel-backup-marker-v1";
-var EXPAND_FILE_BYTES = 256;
-function withBase(deps, path) {
-  return `${hostBase(deps, MCLOUD_HOST)}${path}`;
 }
 
 // src/mcloud/dailyState.ts

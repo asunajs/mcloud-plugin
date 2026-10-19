@@ -68,6 +68,29 @@ function digResult(text: string): Record<string, unknown> {
 
 export const STATE_EXPAND = 'mcloud.taskexpansion.state';
 
+/** 本月备份读数（App 任务的月门要它）。⚠ 按月份存，跨月自动失效。 */
+export const STATE_MONTH_BACKUP = 'mcloud.month.backup';
+
+/** 把 `curMonthBackup` 落盘；`undefined`（没读到）不写，避免把“不知道”当成“没开”。 */
+export function saveMonthBackup(deps: TaskDeps, backup: boolean | undefined): void {
+  if (backup === undefined) return;
+  const month = deps.nowIso.slice(0, 7);
+  deps.store.setState(STATE_MONTH_BACKUP, JSON.stringify({ month, backup }), deps.nowIso);
+}
+
+/** 读本月备份读数；月份对不上/没记录 ⇒ `undefined`（月门不跳）。 */
+export function readMonthBackup(deps: TaskDeps): boolean | undefined {
+  const raw = deps.store.getState(STATE_MONTH_BACKUP);
+  if (!raw) return undefined;
+  try {
+    const v = JSON.parse(raw) as { month?: unknown; backup?: unknown };
+    if (v.month !== deps.nowIso.slice(0, 7)) return undefined;
+    return typeof v.backup === 'boolean' ? v.backup : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export type ExpandStep = 'read' | 'upload' | 'recheck' | 'claim' | 'done';
 
 interface ExpandState {
@@ -175,6 +198,8 @@ export function runExpansionStep(deps: TaskDeps): TaskOutcome {
     } catch (e) {
       return { ok: false, note: `${label}：响应解析不了（${e instanceof Error ? e.message : String(e)}）` };
     }
+    // 顺手落盘：App 任务的月门要 `curMonthBackup`（没读到不写）。
+    saveMonthBackup(deps, read.curMonthBackup);
     const next: ExpandState = {
       step: 'claim',
       acceptDate: read.acceptDate,
