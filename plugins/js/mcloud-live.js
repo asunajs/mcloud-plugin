@@ -5,7 +5,7 @@
 //   mcloud-plugin 0.1.1 · 插件 `mcloud-live`
 
 // src/entries/live.ts
-import { log as log3, register_cron } from "host-api";
+import { debug as debug2, register_cron } from "host-api";
 
 // src/store/keys.ts
 var DEFAULT_ACCT = "default";
@@ -572,20 +572,20 @@ function parseField(field, min, max) {
     const base = p.split("/")[0];
     const stepRaw = p.split("/")[1];
     const step = stepRaw === void 0 ? 1 : parseNum(stepRaw, 1, 999);
-    let start = min;
+    let start2 = min;
     let end = max;
     if (base !== "*") {
       if (base.includes("-")) {
         const [a, b] = base.split("-");
-        start = parseNum(a, min, max);
+        start2 = parseNum(a, min, max);
         end = parseNum(b, min, max);
-        if (start > end) throw new Error(`范围反了：${base}`);
+        if (start2 > end) throw new Error(`范围反了：${base}`);
       } else {
-        start = parseNum(base, min, max);
-        end = start;
+        start2 = parseNum(base, min, max);
+        end = start2;
       }
     }
-    for (let n = start; n <= end; n += step) out.add(n);
+    for (let n = start2; n <= end; n += step) out.add(n);
   }
   return [...out].sort((a, b) => a - b);
 }
@@ -799,7 +799,7 @@ function appendRun(store2, rec) {
 }
 
 // src/mcloud/log.ts
-import { error, log, warn } from "host-api";
+import { debug, error, fail, log, start, success, warn } from "host-api";
 
 // src/mcloud/logRing.ts
 var RING_KEY = "mcloud.log.ring";
@@ -825,9 +825,28 @@ function appendRing(store2, nowIso, level, msg) {
 
 // src/mcloud/log.ts
 function logBoth(store2, level, msg, nowIso) {
-  if (level === "error") error(msg);
-  else if (level === "warn") warn(msg);
-  else log(msg);
+  switch (level) {
+    case "debug":
+      debug(msg);
+      break;
+    case "warn":
+      warn(msg);
+      break;
+    case "error":
+      error(msg);
+      break;
+    case "start":
+      start(msg);
+      break;
+    case "success":
+      success(msg);
+      break;
+    case "fail":
+      fail(msg);
+      break;
+    default:
+      log(msg);
+  }
   appendRing(store2, nowIso, level, msg);
 }
 
@@ -870,6 +889,32 @@ function userLine(step) {
   const why = trimNote(step.name, step.note);
   if (!step.ok) return `${step.name}：没成${why === "" ? "" : ` —— ${why}`}`;
   return `${step.name}：${why === "" ? "好了" : why}`;
+}
+function lineLevel(line) {
+  if (line.includes("没成") && /还没有网页会话|上面「换票」|没有会话|未登录|90001|票没被认/.test(line)) {
+    return "debug";
+  }
+  if (line.includes("没成")) return "fail";
+  if (/需手动|手动完成|需前往/.test(line)) return "warn";
+  if (/已完成|领到|成功|好了|获得|签到成功/.test(line)) return "success";
+  if (/跳过|已经|已领|没有可|没有能|无需|今天|未开启|没开|不发|不领|没问过|走完/.test(line)) {
+    return "debug";
+  }
+  return "success";
+}
+function lineText(line) {
+  if (line.includes("还没有网页会话") || line.includes("上面「换票」")) {
+    const m = /^(.+?)：没成 —— /.exec(line);
+    if (m !== null) return `${m[1]}：跳过（没有网页会话）`;
+  }
+  return line;
+}
+function stepTally(steps) {
+  const failed = steps.filter((x) => !x.ok);
+  const hard = failed.filter(
+    (x) => !/还没有网页会话|上面「换票」|没有会话|未登录|90001|票没被认/.test(x.note)
+  ).length;
+  return { bad: failed.length, hard };
 }
 
 // src/mcloud/envelope.ts
@@ -917,7 +962,7 @@ function hostFetchOptions(req, timeoutMs) {
 }
 function callOnce(transport2, req) {
   const t0 = Date.now();
-  const fail = (error3) => ({
+  const fail2 = (error3) => ({
     status: 0,
     tookMs: Date.now() - t0,
     env: void 0,
@@ -931,11 +976,11 @@ function callOnce(transport2, req) {
   try {
     res = transport2(req);
   } catch (e) {
-    return fail(`请求失败：${e instanceof Error ? e.message : String(e)}`);
+    return fail2(`请求失败：${e instanceof Error ? e.message : String(e)}`);
   }
-  if (isFetchError(res)) return fail(pickError(res.error));
+  if (isFetchError(res)) return fail2(pickError(res.error));
   if (typeof res !== "object" || res === null || typeof res.body !== "string") {
-    return fail(`请求返回的形状不认识：${JSON.stringify(res)?.slice(0, 200) ?? String(res)}`);
+    return fail2(`请求返回的形状不认识：${JSON.stringify(res)?.slice(0, 200) ?? String(res)}`);
   }
   const tookMs = Date.now() - t0;
   const raw = res.body.length > 500 ? `${res.body.slice(0, 500)}…` : res.body;
@@ -971,7 +1016,7 @@ function applyDefaultContentType(req) {
 }
 function callRawText(transport2, req) {
   const t0 = Date.now();
-  const fail = (error2) => ({
+  const fail2 = (error2) => ({
     ok: false,
     status: 0,
     text: "",
@@ -983,13 +1028,13 @@ function callRawText(transport2, req) {
   try {
     res = transport2(req);
   } catch (e) {
-    return fail(`请求失败：${e instanceof Error ? e.message : String(e)}`);
+    return fail2(`请求失败：${e instanceof Error ? e.message : String(e)}`);
   }
   const tookMs = Date.now() - t0;
-  if (isFetchError(res)) return { ...fail(pickError(res.error)), tookMs };
+  if (isFetchError(res)) return { ...fail2(pickError(res.error)), tookMs };
   if (typeof res !== "object" || res === null || typeof res.body !== "string") {
     return {
-      ...fail(`请求返回的形状不认识：${JSON.stringify(res)?.slice(0, 200) ?? String(res)}`),
+      ...fail2(`请求返回的形状不认识：${JSON.stringify(res)?.slice(0, 200) ?? String(res)}`),
       tookMs
     };
   }
@@ -4270,22 +4315,19 @@ register_cron(
       if (capOnly) {
         logBoth(store, "error", c.detail[0] ?? c.note, at);
       } else {
-        logBoth(store, "info", "------【口令】------", at);
+        logBoth(store, "start", "口令", at);
         let prev = "";
         for (const line of c.detail) {
-          if (line === prev) continue;
-          prev = line;
-          logBoth(store, line.includes("没成") ? "warn" : "info", line, at);
+          const shown = lineText(onceHint(line, onceHints));
+          if (shown === prev) continue;
+          prev = shown;
+          logBoth(store, lineLevel(shown), shown, at);
         }
         const cBad = c.steps.filter((x) => !x.ok).length;
-        logBoth(
-          store,
-          cBad > 0 ? "warn" : "info",
-          `------【口令】${c.note}------`,
-          at
-        );
+        logBoth(store, cBad > 0 ? "warn" : "success", `口令：${c.note}`, at);
       }
     }
+    logBoth(store, "start", `直播 · ${runs.length} 个账号`, at);
     for (const one of runs) {
       const r = one.result;
       const who = labelOf(store, one.acctId);
@@ -4309,18 +4351,39 @@ register_cron(
         ok: r.ok,
         note: note2
       });
-      logBoth(store, "info", `------【${who}】------`, at);
+      logBoth(store, "start", `账号 ${who}`, at);
       let prev = "";
+      const skippedSteps = [];
       for (const line of r.detail) {
-        const shown = onceHint(line, onceHints);
+        const shown = lineText(onceHint(line, onceHints));
         if (shown === prev) continue;
         prev = shown;
-        logBoth(store, shown.includes("没成") ? "warn" : "info", shown, at);
+        if (shown.includes("跳过（没有网页会话）")) {
+          skippedSteps.push(shown.split("：")[0] ?? shown);
+          continue;
+        }
+        logBoth(store, lineLevel(shown), shown, at);
       }
-      const bad = r.steps.filter((x) => !x.ok).length;
-      const tail = bad === 0 ? `------【${who}】都成了------` : `------【${who}】${bad} 项没成------`;
-      logBoth(store, bad > 0 ? "warn" : "info", tail, at);
+      if (skippedSteps.length > 0) {
+        const head = skippedSteps.slice(0, 3).join("、");
+        logBoth(
+          store,
+          "debug",
+          `跳过 ${skippedSteps.length} 项（没有网页会话）：${head}${skippedSteps.length > 3 ? " 等" : ""}`,
+          at
+        );
+      }
+      const { bad, hard } = stepTally(r.steps);
+      const tail = bad === 0 ? `账号 ${who}：都成了` : hard === 0 ? `账号 ${who}：${bad} 项跳过（没有网页会话）` : `账号 ${who}：${hard} 项没成${bad > hard ? `、${bad - hard} 项跳过` : ""}`;
+      logBoth(store, hard > 0 ? "warn" : "debug", tail, at);
     }
+    const okCount = runs.filter((x) => x.result.ok).length;
+    logBoth(
+      store,
+      okCount === runs.length ? "success" : "warn",
+      `直播完成：${okCount}/${runs.length} 个账号好了`,
+      at
+    );
     setTaskBlockers("直播", blockersFor(store, "直播"));
     setTaskSummary("直播", summaryFor(store, "直播"));
   },
@@ -4332,4 +4395,4 @@ register_cron(
     blockers: blockersFor(store, "直播")
   }
 );
-log3(`mcloud-live：任务「直播」（预算 ${BUDGET_MS / 1e3}s，共享粗粒度 lane）`);
+debug2(`mcloud-live：任务「直播」（预算 ${BUDGET_MS / 1e3}s，共享粗粒度 lane）`);
