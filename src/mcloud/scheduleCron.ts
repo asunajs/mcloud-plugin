@@ -81,6 +81,14 @@ function dayMatches(spec: CronSpec, d: Date): boolean {
   return domOk && dowOk;
 }
 
+/** 这一毫秒是不是这个 cron 的目标整点（分钟必须是 0）。 */
+export function cronMatchesAt(expr: string, ms: number): boolean {
+  const spec = parseCron(expr);
+  const d = new Date(ms);
+  if (d.getMinutes() !== 0) return false;
+  return dayMatches(spec, d) && spec.hours.includes(d.getHours());
+}
+
 /** 下一个目标整点（本地时区）。找不到返回 null。 */
 export function nextCronTargetMs(expr: string, nowMs: number): number | null {
   const spec = parseCron(expr);

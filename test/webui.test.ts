@@ -841,13 +841,13 @@ test('⚠ 每个号一个 chip，点开看那一次的每一步（三块任务�
 });
 
 test('定时弹窗：cron / 提前秒数 / 截止时间 / 每号次数', () => {
-  for (const id of ['ex-plan-cron', 'ex-plan-until', 'ex-plan-lead-sec', 'ex-plan-max']) {
+  for (const id of ['ex-plan-cron', 'ex-plan-until', 'ex-plan-lead-sec', 'ex-plan-max', 'ex-plan-account']) {
     assert.ok(html.includes(`id="${id}"`), `缺 ${id}`);
   }
   // 保存时要把这些一起交给后端；只写目标的话，界面上调了也不生效。
-  for (const k of ['cron', 'until', 'maxRuns', 'leadSec', 'prizeId', 'prizeName']) {
-    // 保存体是多行对象；从 `action: 'plan'` 往后找这个字段即可。
-    assert.ok(new RegExp(`action: 'plan',[\\s\\S]*?${k}`).test(js), `保存没带 ${k}`);
+  for (const k of ['cron', 'until', 'maxRuns', 'leadSec', 'prizeId', 'prizeName', 'accountId']) {
+    // 保存体是多行对象；从 `action: 'save'` 往后找这个字段即可。
+    assert.ok(new RegExp(`action: 'save',[\\s\\S]*?${k}`).test(js), `保存没带 ${k}`);
   }
   // 一天多个整点：cron 的占位/说明要出现，不能又退回单个“几点”下拉。
   assert.ok(/0 10,20 \* \* \*/.test(html), '要给出多整点示例');

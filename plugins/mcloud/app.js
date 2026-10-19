@@ -1145,23 +1145,32 @@ function exResult(text, ok = true) {
 let planDialogQuery = '';
 /** 定时目标的 **prizeId**（稳定）；老数据只有名字时是 null。 */
 let planDialogId = null;
+/** 正在编辑的计划 id；空 = 新建。 */
+let planEditId = '';
 
 /** 把读数灌进定时弹窗（打开时 / 轮询重绘时）。 */
-function syncPlanFields(e) {
+function syncPlanFields(e, plan) {
   const setVal = (id, v) => {
     const el = $(id);
     if (el && document.activeElement !== el) el.value = v;
   };
-  const cron =
-    e.scheduleCron || (e.targetHour === null || e.targetHour === undefined ? '0 * * * *' : `0 ${e.targetHour} * * *`);
+  const cron = plan
+    ? plan.cron
+    : e.scheduleCron ||
+      (e.targetHour === null || e.targetHour === undefined ? '0 * * * *' : `0 ${e.targetHour} * * *`);
   setVal('ex-plan-cron', cron);
-  const until = e.scheduleUntil || '';
+  const until = plan ? plan.until || '' : e.scheduleUntil || '';
   setVal('ex-plan-until', /^\d{4}-\d{2}-\d{2}$/.test(until) ? `${until}T23:59` : until);
-  setVal('ex-plan-lead-sec', String(e.leadSec ?? 120));
-  setVal('ex-plan-max', String(e.scheduleMaxRuns ?? 0));
+  setVal('ex-plan-lead-sec', String(plan ? plan.leadSec : e.leadSec ?? 120));
+  setVal('ex-plan-max', String(plan ? plan.maxRuns : e.scheduleMaxRuns ?? 0));
+  if (plan) setVal('ex-plan-account', plan.accountId);
   setText(
     'ex-plan-note',
-    e.scheduleRuns ? `当前账号这一版定时已经跑过 ${e.scheduleRuns} 次` : '',
+    plan
+      ? `这条计划已经跑过 ${plan.runs ?? 0} 次`
+      : e.scheduleRuns
+        ? `当前账号这一版定时已经跑过 ${e.scheduleRuns} 次`
+        : '',
   );
   updatePlanPreview();
 }
@@ -1180,29 +1189,50 @@ function updatePlanPreview() {
   );
 }
 
-/** 打开「定时抢兑」弹窗。`p` 是清单/关注里点的那一件。 */
-function openPlanDialog(p) {
+/** 填账号下拉：编辑时保留原账号（即使已停用），新建时默认当前账号。 */
+function fillPlanAccounts(selected) {
+  const sel = $('ex-plan-account');
+  if (!sel) return;
+  const all = (last && last.account && last.account.accounts) || [];
+  const usable = all.filter((a) => !a.disabled || a.id === selected);
+  sel.innerHTML = usable
+    .map(
+      (a) =>
+        `<option value="${esc(a.id)}">${esc(a.label || a.id)}${a.disabled ? '（已停用）' : ''}</option>`,
+    )
+    .join('');
+  const cur = all.find((a) => a.current);
+  sel.value = selected || (cur && cur.id) || (usable[0] && usable[0].id) || '';
+}
+
+/** 打开「定时抢兑」弹窗。`p` 是清单/关注里点的那一件；`plan` 是编辑已有计划。 */
+function openPlanDialog(p, plan) {
   const e = (last && last.exchange) || {};
-  planDialogQuery = (p && p.name) || e.schedulePlan || e.plan || '';
-  const target = String(e.schedulePlanTarget || '');
-  planDialogId = p && Number.isInteger(p.id)
-    ? p.id
-    : /^\d+$/.test(target)
-      ? Number(target)
-      : null;
+  planEditId = plan ? plan.id : '';
+  if (plan) {
+    planDialogQuery = plan.prizeName || '';
+    planDialogId = plan.prizeId === undefined || plan.prizeId === null ? null : plan.prizeId;
+  } else {
+    planDialogQuery = (p && p.name) || '';
+    planDialogId = p && Number.isInteger(p.id) ? p.id : null;
+  }
+  fillPlanAccounts(plan ? plan.accountId : '');
+  setText('ex-plan-title', plan ? '编辑定时计划' : '新建定时计划');
   setText('ex-plan-prize', planDialogQuery || '还没选目标');
   setText('ex-plan-price', p && p.price !== undefined ? `（${p.price} 豆）` : '');
   const lead = $('ex-plan-lead');
   if (lead) lead.value = String(e.leadMs ?? 10);
-  syncPlanFields(e);
+  syncPlanFields(e, plan || null);
   $('ex-plan-dialog').hidden = false;
   $('ex-plan-cron').focus();
 }
 
-/** 保存定时：写时刻/提前量 + 只写定时目标（不 startsOrder、不发请求）。 */
+/** 保存一条计划：写计划表 + 目标/时刻/提前量（不 startsOrder、不发请求）。 */
 async function savePlanDialog() {
   const query = planDialogQuery.trim();
-  if (query === '') throw new Error('先从清单里选一件，再保存定时');
+  if (query === '') throw new Error('先从清单里选一件，再保存计划');
+  const accountId = ($('ex-plan-account') && $('ex-plan-account').value) || '';
+  if (accountId === '') throw new Error('先选一个账号');
   const cron = $('ex-plan-cron').value.trim();
   if (cron === '') throw new Error('cron 表达式不能为空');
   const lead = $('ex-plan-lead').value.trim() || '10';
@@ -1210,12 +1240,13 @@ async function savePlanDialog() {
   const leadSec = $('ex-plan-lead-sec').value.trim() || '120';
   const maxRuns = $('ex-plan-max').value.trim() || '0';
   await post('config', { leadMs: lead });
-  const r = await api('/exchange/order', {
+  const r = await api('/exchange/plans', {
     method: 'POST',
     write: true,
     body: {
-      action: 'plan',
-      query,
+      action: 'save',
+      ...(planEditId === '' ? {} : { id: planEditId }),
+      accountId,
       prizeId: planDialogId === null ? undefined : planDialogId,
       prizeName: query,
       cron,
@@ -1224,9 +1255,8 @@ async function savePlanDialog() {
       leadSec: Number(leadSec),
     },
   });
-  if (!r.ok) throw new Error(r.note || '定时目标没存上');
-  // 面板任务由**服务端**同步（routes.ts 的 action:'plan' 调 set_job_schedule），
-  // 插件页不再 postMessage 给父页面：独立打开时没有父页面，跨 origin 也不可靠。
+  if (!r.ok) throw new Error(r.note || '计划没存上');
+  // 面板那条「兑换」任务由服务端同步（cron 取所有启用计划整点的并集）。
   $('ex-plan-dialog').hidden = true;
   await load();
   return r;
@@ -1303,27 +1333,40 @@ async function exToggleSub(p, on, btn) {
 
 /** 定时抢兑的状态卡：启用/暂停 + 目标/时间/提前量一句话说清。 */
 function renderScheduleCard(e) {
-  const on = e.scheduleEnabled === true;
-  const plan = (e.schedulePlan || '').trim();
-  const cron = (e.scheduleCron || '').trim() || '0 10 * * *';
-  const lead = e.leadSec ?? 120;
+  const plans = Array.isArray(e.plans) ? e.plans : [];
+  const on = plans.filter((p) => p.enabled).length;
   const state = $('ex-sched-state');
   if (state) {
-    state.textContent = on ? '已启用' : '未启用';
-    state.className = on ? 'badge success' : 'badge idle';
+    state.textContent = on > 0 ? '已启用' : plans.length > 0 ? '全部暂停' : '未启用';
+    state.className = on > 0 ? 'badge success' : 'badge idle';
   }
-  const until = (e.scheduleUntil || '').trim();
-  const max = Number(e.scheduleMaxRuns || 0);
-  const extra = (until ? ` · 截止 ${until}` : '') + (max > 0 ? ` · 每号最多 ${max} 次` : '');
   setText(
     'ex-sched-summary',
-    plan ? `目标：${plan} · ${cron} · 提前 ${lead}s${extra}` : '还没设定时奖品 —— 点「改定时」选一件',
+    plans.length === 0
+      ? '还没设定时计划 —— 点「添加计划」选一个账号和一件奖品'
+      : `${on} 条启用 / 共 ${plans.length} 条计划`,
   );
-  const btn = $('ex-sched-toggle');
-  if (btn) {
-    btn.textContent = on ? '暂停定时' : '启用定时';
-    btn.disabled = !on && plan === '';
-  }
+  const list = $('ex-sched-list');
+  if (!list) return;
+  list.innerHTML = plans
+    .map((p) => {
+      const extra =
+        (p.until ? ` · 截止 ${esc(p.until)}` : '') +
+        (p.maxRuns > 0 ? ` · 最多 ${p.maxRuns} 次` : '') +
+        (p.runs > 0 ? ` · 已跑 ${p.runs} 次` : '') +
+        (p.accountOk === false ? ' · 账号不可用' : '');
+      return (
+        `<div class="plan-row${p.enabled ? '' : ' is-off'}">` +
+        `<div class="plan-main"><strong>${esc(p.prizeName)}</strong>` +
+        `<span class="hint">${esc(p.accountLabel)} · ${esc(p.cron)} · 提前 ${p.leadSec}s${extra}</span></div>` +
+        `<div class="row end">` +
+        `<button class="btn btn-sm" data-plan-toggle="${esc(p.id)}">${p.enabled ? '暂停' : '启用'}</button>` +
+        `<button class="btn btn-sm" data-plan-edit="${esc(p.id)}">编辑</button>` +
+        `<button class="btn btn-sm" data-plan-del="${esc(p.id)}">删除</button>` +
+        `</div></div>`
+      );
+    })
+    .join('');
 }
 
 function renderExchange(e) {
@@ -2713,7 +2756,6 @@ $('acct-refresh-all').addEventListener('click', (e) =>
 //    同一套口径**，否则迟早一处改了、另一处没改」。
 const PICKERS = [
   { task: '日常', key: 'daily', btn: 'daily-acct-btn', panel: 'daily-acct-panel', all: 'daily-acct-all', list: 'daily-acct-list' },
-  { task: '兑换', key: 'exchange', btn: 'exchange-acct-btn', panel: 'exchange-acct-panel', all: 'exchange-acct-all', list: 'exchange-acct-list' },
   { task: '直播', key: 'live', btn: 'live-acct-btn', panel: 'live-acct-panel', all: 'live-acct-all', list: 'live-acct-list' },
 ];
 
@@ -2734,7 +2776,6 @@ function renderPicker(cfg) {
   const all = (last && last.taskAccounts && last.taskAccounts[cfg.task]) || null;
   const v = all || { all: true, picked: [], accounts: [] };
   setText(`${cfg.key}-acct-label`, pickerLabel(v));
-  if (cfg.key === 'exchange') setText('ex-plan-acct-label', pickerLabel(v));
   $(`${cfg.key}-acct-all`).checked = v.all === true;
 
   // 名单。⚠ 「全部」勾着时下面那些**不禁用** —— 用户可以先挑几个，
@@ -2814,17 +2855,11 @@ $('daily-acct-all').addEventListener('change', (ev) =>
 );
 $('daily-acct-list').addEventListener('change', (ev) => pickerPick(PICKERS[0], ev));
 
-$('exchange-acct-btn').addEventListener('click', (ev) => pickerToggle(PICKERS[1], ev));
-$('exchange-acct-all').addEventListener('change', (ev) =>
+$('live-acct-btn').addEventListener('click', (ev) => pickerToggle(PICKERS[1], ev));
+$('live-acct-all').addEventListener('change', (ev) =>
   pickerToggleAll(PICKERS[1], ev.currentTarget.checked),
 );
-$('exchange-acct-list').addEventListener('change', (ev) => pickerPick(PICKERS[1], ev));
-
-$('live-acct-btn').addEventListener('click', (ev) => pickerToggle(PICKERS[2], ev));
-$('live-acct-all').addEventListener('change', (ev) =>
-  pickerToggleAll(PICKERS[2], ev.currentTarget.checked),
-);
-$('live-acct-list').addEventListener('change', (ev) => pickerPick(PICKERS[2], ev));
+$('live-acct-list').addEventListener('change', (ev) => pickerPick(PICKERS[1], ev));
 
 // 点外部关闭（浮层的基本礼貌 —— 参考实现特意点过这一条）
 document.addEventListener('click', (ev) => {
@@ -3402,23 +3437,50 @@ for (const b of document.querySelectorAll('[data-step-for]')) {
   b.addEventListener('click', () => stepNumber(b));
 }
 
-// 定时抢兑状态卡：改定时 / 启用暂停。
-$('ex-sched-edit').addEventListener('click', () => openPlanDialog(null));
-$('ex-sched-toggle').addEventListener('click', (ev) => {
-  const on = !(last && last.exchange && last.exchange.scheduleEnabled);
+// 定时抢兑：计划列表（添加 / 编辑 / 暂停 / 删除）。
+$('ex-sched-add').addEventListener('click', () => openPlanDialog(null));
+$('ex-sched-list').addEventListener('click', (ev) => {
+  const btn = ev.target.closest('button[data-plan-toggle],button[data-plan-edit],button[data-plan-del]');
+  if (!btn) return;
+  const plans = (last && last.exchange && last.exchange.plans) || [];
+  const id = btn.dataset.planToggle || btn.dataset.planEdit || btn.dataset.planDel;
+  const plan = plans.find((p) => p.id === id);
+  if (!plan) return;
+  if (btn.dataset.planEdit !== undefined) {
+    openPlanDialog(null, plan);
+    return;
+  }
+  if (btn.dataset.planDel !== undefined) {
+    if (!confirm(`删除计划「${plan.prizeName}」？`)) return;
+    return act(
+      btn,
+      async () => {
+        const r = await api('/exchange/plans', {
+          method: 'POST',
+          write: true,
+          body: { action: 'delete', id },
+        });
+        if (!r.ok) throw new Error(r.note || '没删成');
+        await load();
+        return r;
+      },
+      (r) => (r && r.note) || '计划已删除',
+    );
+  }
+  const on = !plan.enabled;
   return act(
-    ev.currentTarget,
+    btn,
     async () => {
-      const r = await api('/exchange/order', {
+      const r = await api('/exchange/plans', {
         method: 'POST',
         write: true,
-        body: { action: on ? 'schedule-resume' : 'schedule-pause' },
+        body: { action: 'toggle', id, enabled: on },
       });
       if (!r.ok) throw new Error(r.note || '没改成功');
       await load();
       return r;
     },
-    (r) => (r && r.note) || (on ? '定时已启用' : '定时已暂停'),
+    (r) => (r && r.note) || (on ? '计划已启用' : '计划已暂停'),
   );
 });
 

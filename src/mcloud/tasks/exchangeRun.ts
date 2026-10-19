@@ -10,6 +10,7 @@
 
 
 import { loadAccounts, maskAuth, selectAccount } from '../accounts.ts';
+import { scopedAccountOf } from '../../store/scoped.ts';
 import { jwtFresh, loadAuthRaw } from '../sessionExchange.ts';
 import { type RunStep } from '../runLog.ts';
 import { drain } from '../../drain.ts';
@@ -127,8 +128,11 @@ export function scheduleNextTargetMs(
 export function scheduleUntilAllowed(
   store: { getState(k: string): string | null | undefined },
   targetMs: number,
+  // 多计划：截止时间是**每条计划自己的**；不传时退回全局键（旧调用）。
+  untilOverride?: string,
 ): { ok: boolean; note: string } {
-  const until = untilMs((store.getState(STATE_SCHEDULE_UNTIL) ?? '').trim());
+  const raw = untilOverride !== undefined ? untilOverride : (store.getState(STATE_SCHEDULE_UNTIL) ?? '');
+  const until = untilMs(raw.trim());
   if (until !== null && targetMs > until) return { ok: false, note: '已过截止时间' };
   return { ok: true, note: '' };
 }
@@ -200,7 +204,7 @@ export function scheduleLeadReady(nowMs: number, targetMs: number, leadSec: numb
  *  真正下单走界面上的「立即兑换」（会二次确认）或**定时那一场**（时间闸 + 压整点）。 */
 export function runExchange(
   deps: TaskDeps,
-  opts: { dryRun?: boolean; maxWaitMs?: number; targetHour?: number | null } = {},
+  opts: { dryRun?: boolean; maxWaitMs?: number; targetHour?: number | null; target?: string } = {},
 ): {
   ok: boolean;
   note: string;
@@ -311,7 +315,9 @@ export function runExchange(
   //    奖品名从设置里读 —— 阶段 ③ 会把它换成界面上的「兑换目标」。
   // ⚠ `getState` 返回字符串本身（不是 `{value}`）—— 见 deps.store/types.ts
   // 定时目标优先；没设过定时目标才回退到手动目标 —— 兼容旧版本只存一格的行为。
-  const plan = deps.store.getState(STATE_SCHEDULE_PLAN) ?? deps.store.getState(PLAN_KEY) ?? '';
+  // 多计划：入口把这一条计划的**目标**传进来（prizeId 或旧名字）。
+  // 没传时退回全局键，兼容手动/旧调用。
+  const plan = opts.target ?? deps.store.getState(STATE_SCHEDULE_PLAN) ?? deps.store.getState(PLAN_KEY) ?? '';
   if (plan === '') {
     add('下单', true, '没有设定时兑换目标（在「定时抢兑」里选一件之后才会下单）', true);
     return finish(true, '没有设定时兑换目标（在「定时抢兑」里选一件之后才会下单）');
@@ -351,7 +357,12 @@ export function runExchange(
   // 这样整点那一刻每个账号的代价从"整条链"（约 1.5 秒）降到"一枪"（约 0.15 秒）。
   // 8 个账号的最后一枪约晚 1.2 秒 —— 比串行走完整条链的 12 秒好一个数量级，
   // 而且**如实告诉用户每个账号差了多少**（见下面的 `offsets`）。
-  const accounts = loadAccounts(deps.store);
+  // ⚠ 入口是**按账号**调进来的（`deps.store` 已经被 `scoped()` 包过）：
+  //   这里只能跑那一个账号。不筛的话 `loadAccounts` 读到的是全局列表，
+  //   每条计划都会把所有账号再跑一遍（N×N 真下单）。
+  const scopedId = scopedAccountOf(deps.store);
+  const allAccounts = loadAccounts(deps.store);
+  const accounts = scopedId === undefined ? allAccounts : allAccounts.filter((a) => a.id === scopedId);
   const multi = accounts.length > 1;
   const snaps = new Map<string, OrderSnapshot>();
   const offsets: string[] = [];

@@ -164,6 +164,16 @@ export function forEachTaskAccount<T>(
   return out;
 }
 
+/** 只给**一个**账号造 deps（多计划里每条计划一个账号）。 */
+export function depsForAccount(
+  base: Store,
+  acctId: string,
+  payload: { lateMs: number },
+  transport: Transport,
+): TaskDeps {
+  return taskDeps(scoped(rawStoreOf(base), acctId), transport, payload);
+}
+
 export function taskDeps(
   store: Store,
   transport: Transport,
