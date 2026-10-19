@@ -40,13 +40,17 @@
 | 115 / 431 / 435 / 1009 / 1010 / 1013 / 1016 / 447 / 547 | 只点一下 |
 | 117 / 437 / 991 / 406 / 385 / 480 / 1022 / 1018 / 603 / 1021 / 120 | 刻意不做 |
 
+## 月门
+
+已按 Rust mcloud 的 `month_gate_skips` 接上：
+
+- `market=sign_in_3` 且 `group=month` 且本月备份**确认**为 `false` 且日期 < 20 ⇒ 跳过；
+- `task-expansion` 读到 `curMonthBackup` 时落盘到 `mcloud.month.backup`（按月份存，跨月失效）；
+- 没读到（`undefined`）不跳 —— 把“不知道”当成“没开”会白跳一次。
+
 ## 还没接的
 
-只有 **月门**：
-
-- Rust mcloud：`market=sign_in_3` 且 `group=month` 且本月备份为 `false` 且日期 < 20 时跳过。
-- 插件还没有持久化 `curMonthBackup` 的读数，所以暂时不跳。
-- 这是“少做一次”，不是“点坏”；等把 `infoV3.curMonthBackup` 落盘后补上。
+无（Rust mcloud 的 AppTask runner 已全部接上）。
 
 ## 安全边界
 

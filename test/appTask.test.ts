@@ -19,6 +19,7 @@ import {
   trashRequest,
 } from '../src/mcloud/tasks/appTask.ts';
 import { MATRIX_MARKETS, matrixKey } from '../src/mcloud/tasks/appTaskMatrix.ts';
+import { STATE_MONTH_BACKUP } from '../src/mcloud/tasks/taskExpansion.ts';
 import { SESSION_KEY } from '../src/store/types.ts';
 import { memStore } from '../src/store/memory.ts';
 import type { BuiltRequest } from '../src/mcloud/h5.ts';
@@ -170,6 +171,23 @@ test('起一趟**一个请求都不发**；没有待办 ⇒ idle', () => {
   assert.equal(out.idle, true);
   assert.match(out.note, /没有能替你做的了/);
   assert.equal(sent.length, 0);
+});
+
+test('月门：本月备份确认没开且 <20 号 ⇒ 跳过 month 任务；true/没读到不跳', () => {
+  const mk = (backup: boolean | undefined) => {
+    const { deps, store } = mkDeps({
+      [MATRIX_MARKETS[0]!]: [
+        { taskId: 1017, state: 'UNFINISH', enable: 1, groupId: 'month', name: '月任务' },
+      ],
+    });
+    if (backup !== undefined) {
+      store.setState(STATE_MONTH_BACKUP, JSON.stringify({ month: NOW.slice(0, 7), backup }), NOW);
+    }
+    return deps;
+  };
+  assert.equal(pendingItems(mk(false)).length, 0, '确认没开 ⇒ 跳过');
+  assert.equal(pendingItems(mk(true)).length, 1, '已开 ⇒ 不跳');
+  assert.equal(pendingItems(mk(undefined)).length, 1, '不知道 ⇒ 不跳');
 });
 
 test('409 固定入口：两发上报 + 补一发 task2', () => {
