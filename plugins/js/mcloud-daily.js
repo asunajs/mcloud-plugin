@@ -5385,12 +5385,7 @@ function advance(deps, st) {
   }
   if (next.needUpload) beginUpload(deps, next.itemId, next.name);
   const special = next.step.kind === "entry" ? "entry" : next.step.kind === "portal" ? "portal" : next.step.kind === "share" ? "share" : next.step.kind === "runner" ? specialForRunner(next.step.runner) : void 0;
-  let pdfTs;
-  if (special === "pdfConvert") {
-    pdfTs = beginPdfUpload(deps);
-    phase = "pdfUpload";
-  }
-  if (next.currStep !== void 0 && next.currStep !== 0 && (special === "entry" || special === "portal" || special === "mailBackup" || special === "aiAssistant")) {
+  if (next.currStep !== void 0 && next.currStep !== 0 && special !== void 0) {
     phase = phaseOfSpecial(special) ?? phase;
   }
   save2(deps, {
@@ -5401,8 +5396,7 @@ function advance(deps, st) {
     special,
     data: {
       marketName: next.marketName,
-      link: next.buttonEmailLink ?? next.buttonAppLink ?? "",
-      ...pdfTs === void 0 ? {} : { pdfTs: String(pdfTs) }
+      link: next.buttonEmailLink ?? next.buttonAppLink ?? ""
     },
     clicked,
     day: today(deps)
@@ -5536,12 +5530,7 @@ function startAppTask(deps) {
   }
   if (first.needUpload) beginUpload(deps, first.itemId, first.name);
   const special = first.step.kind === "entry" ? "entry" : first.step.kind === "portal" ? "portal" : first.step.kind === "share" ? "share" : first.step.kind === "runner" ? specialForRunner(first.step.runner) : void 0;
-  let pdfTs;
-  if (special === "pdfConvert") {
-    pdfTs = beginPdfUpload(deps);
-    phase = "pdfUpload";
-  }
-  if (first.currStep !== void 0 && first.currStep !== 0 && (special === "entry" || special === "portal" || special === "mailBackup" || special === "aiAssistant")) {
+  if (first.currStep !== void 0 && first.currStep !== 0 && special !== void 0) {
     phase = phaseOfSpecial(special) ?? phase;
   }
   save2(deps, {
@@ -5552,8 +5541,7 @@ function startAppTask(deps) {
     special,
     data: {
       marketName: first.marketName,
-      link: first.buttonEmailLink ?? first.buttonAppLink ?? "",
-      ...pdfTs === void 0 ? {} : { pdfTs: String(pdfTs) }
+      link: first.buttonEmailLink ?? first.buttonAppLink ?? ""
     },
     clicked,
     day: today(deps)
@@ -5989,7 +5977,11 @@ function runAppTaskStep(deps) {
     };
   }
   if (st.phase === "pdfUpload") {
-    const ts = Number(st.data?.pdfTs ?? Date.now());
+    let ts = Number(st.data?.pdfTs ?? 0);
+    if (ts === 0) {
+      ts = beginPdfUpload(deps);
+      save2(deps, { ...st, data: { ...st.data ?? {}, pdfTs: String(ts) }, day: today(deps) });
+    }
     if (uploadDone(deps)) {
       const up = JSON.parse(deps.store.getState("mcloud.upload.state") ?? "{}");
       save2(deps, { ...st, phase: "pdfConvert", fileId: up.fileId, day: today(deps) });
