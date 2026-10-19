@@ -5360,7 +5360,7 @@ function runAppTaskStep(deps) {
     save2(deps, {
       ...st,
       phase: st.special === "aiAssistant" ? "aiQuery" : "mailDirs",
-      data: { ...st.data ?? {}, sid: sess.sid, rmkey: sess.rmkey, cguid: newCguid() },
+      data: { ...st.data ?? {}, sso: "", sid: sess.sid, rmkey: sess.rmkey, cguid: newCguid() },
       day: today(deps)
     });
     return {
