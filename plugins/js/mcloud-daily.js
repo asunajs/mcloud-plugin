@@ -3586,6 +3586,21 @@ function fetchInfoV3(deps) {
 }
 
 // src/mcloud/tasks/receive.ts
+var CLOUD_TYPE = {
+  /** 当前可领取 ⇒ `receiveV3` */
+  NOW: 0,
+  /** 已到期、现在能领 ⇒ `receiveTaskExpansion`（GET，另一口端点） */
+  EXPANSION: 1,
+  /** 下月可领取 ⇒ **什么都不发** */
+  NEXT_MONTH: 2
+};
+function receiveAmountOf(env) {
+  if (typeof env !== "object" || env === null) return void 0;
+  const r = env.result;
+  if (typeof r !== "object" || r === null) return void 0;
+  const n = r.receive;
+  return typeof n === "number" ? n : void 0;
+}
 function numOf(raw) {
   if (typeof raw !== "object" || raw === null) return void 0;
   const n = raw.cloudNum;
@@ -3651,14 +3666,29 @@ function runReceive(deps) {
       return { ok: true, skipped: true, note: "无待领取的云朵" };
     }
     saveQueue(deps.store, info.info.receiveList, deps.nowIso);
+    const nextMonth = info.info.receiveList.filter(
+      (x) => x.cloudType === CLOUD_TYPE.NEXT_MONTH
+    ).length;
+    const now = info.info.receiveList.length - nextMonth;
     return {
       ok: true,
-      note: `待领取 ${info.info.receiveList.length} 个`
+      // 清单里混着「下月可领」时要说清 —— 否则"待领取 2 个"会让人以为今天能领两个，
+      // 而实际上今天一个请求都不会为它们发（见 CLOUD_TYPE 的说明）。
+      note: nextMonth === 0 ? `待领取 ${now} 个` : `待领取 ${now + nextMonth} 个（${nextMonth} 个是「下月可领」，今天不发请求）`
     };
   }
   const item = queue[0];
   const rest = queue.slice(1);
-  if (item.cloudType === 1) {
+  if (item.cloudType === CLOUD_TYPE.NEXT_MONTH) {
+    saveQueue(deps.store, rest, deps.nowIso);
+    const n = numOf(item.raw);
+    return {
+      ok: true,
+      skipped: true,
+      note: n === void 0 ? "下月可领取 —— 今天不发请求" : `下月可领取（${n} 个）—— 今天不发请求`
+    };
+  }
+  if (item.cloudType === CLOUD_TYPE.EXPANSION) {
     const acceptDate = readAcceptDate(item.raw);
     const out2 = runTask(
       deps,
@@ -3693,13 +3723,25 @@ function runReceive(deps) {
       // 615/614 的原话是"活动太火爆啦"，而真相是 deviceId 的事 —— 翻成人话
       explainFail: explainReceiveFail
     },
-    (env) => ({
-      ok: true,
-      // 参考实现（`task-expansion.ts`）：「领取到 N 个云朵」。
-      // 数量在队列那一条里（响应里没有）—— 取不到就说 1 个。
-      note: `领取到 ${numOf(item.raw) ?? 1} 个云朵`,
-      snapshot: { item: item.raw, result: env.result ?? null }
-    })
+    (env) => {
+      const got = receiveAmountOf(env);
+      const snapshot = { item: item.raw, result: env.result ?? null };
+      if (got === void 0) {
+        return {
+          ok: false,
+          note: "响应里没有 `result.receive` —— 不能确认领到了什么（不猜）",
+          snapshot
+        };
+      }
+      if (got <= 0) {
+        return {
+          ok: false,
+          note: "服务端回「领到 0 个」—— 这一笔没进账（多半是已经领过，或者类型不对）",
+          snapshot
+        };
+      }
+      return { ok: true, note: `领到 ${got} 个云朵`, snapshot };
+    }
   );
   saveQueue(deps.store, rest, deps.nowIso);
   const left = rest.length;

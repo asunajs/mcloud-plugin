@@ -227,7 +227,11 @@ test('revival：不可逆 —— 晚太久不发；「已领取」算完成不�
 });
 
 test('receive：清单入队 → 逐条领（一次一条，两种 cloudType 各走对端点）', () => {
-  let list: unknown[] = [{ recordId: 'r1', cloudType: 2 }, { recordId: 'r2', cloudType: 1 }];
+  // ⚠ 第一条必须是 `cloudType: 0`（当前可领）。这里原来写的是 `2`，而 `2` 是
+  //   **下月可领** —— H5 对它一个请求都不发（参考实现 `mcloud` 的 `signin.rs`）。
+  //   旧代码把 `2` 也送去 `receiveV3`，于是每天发一枪注定 `receive: 0` 的请求，
+  //   再把清单上的 `cloudNum` 说成"领到了"（用户 2026-10-19 报的 bug）。
+  let list: unknown[] = [{ recordId: 'r1', cloudType: 0 }, { recordId: 'r2', cloudType: 1 }];
   const received: string[] = [];
   const expansionCalled: string[] = [];
   const store = seeded();
@@ -242,7 +246,12 @@ test('receive：清单入队 → 逐条领（一次一条，两种 cloudType 各
       const b = JSON.parse(req.body ?? '{}') as { cloudId?: string };
       received.push(b.cloudId ?? '');
       list = list.filter((x) => (x as { recordId?: string }).recordId !== b.cloudId);
-      return { status: 200, headers: {}, body: JSON.stringify({ code: 0, msg: 'success', result: {} }) };
+      // 数量**只在响应里**（`result.receive`）—— 不再从清单那一条猜
+      return {
+        status: 200,
+        headers: {},
+        body: JSON.stringify({ code: 0, msg: 'success', result: { receive: 7, total: 9000 } }),
+      };
     }
     return { status: 404, headers: {}, body: '{}' };
   };
@@ -259,7 +268,7 @@ test('receive：清单入队 → 逐条领（一次一条，两种 cloudType 各
   assert.equal(r2.ok, true);
   assert.equal(received.length, 1);
   assert.equal(received[0], 'r1');
-  assert.match(r2.note, /领取到 1 个云朵/);
+  assert.match(r2.note, /领到 7 个云朵/, '数量必须是响应里的 7，不是清单里编的');
 
   // ③ 第二条是延期领取 → 走另一口端点（不是跳过）
   const r3 = runReceive({ store, transport, nowIso: NOW, lateMs: 0 });

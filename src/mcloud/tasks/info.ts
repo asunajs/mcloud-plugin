@@ -41,7 +41,8 @@ import { sessionHeaders } from './base.ts';
 export interface ReceiveItem {
   /** 可能有也可能没有（见文件头） */
   recordId: string;
-  /** 1 = 延期领取（走另一口端点），其余走 `receiveV3` */
+  /** `0` = 现在可领（`receiveV3`）、`1` = 已到期延期（另一口端点）、
+   *  `2` = **下月可领**（一个请求都不发）。见 `receive.ts` 的 `CLOUD_TYPE`。 */
   cloudType: number | undefined;
   raw: unknown;
 }
