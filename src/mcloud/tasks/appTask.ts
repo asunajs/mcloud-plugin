@@ -291,6 +291,15 @@ function advance(deps: TaskDeps, st: TaskState): TaskOutcome {
               ? 'aiAssistant'
               : 'mailBackup'
             : undefined;
+  // 已经走起来的条目（currstep != 0）不再打“先打卡”那一发 —— 参考实现的
+  // `should_click` 就是这道门；1005 / 1017 实拍 currstep=1，只发补的那一发。
+  if (
+    next.currStep !== undefined &&
+    next.currStep !== 0 &&
+    (special === 'entry' || special === 'portal' || special === 'mailBackup' || special === 'aiAssistant')
+  ) {
+    phase = phaseOfSpecial(special) ?? phase;
+  }
   save(deps, {
     gi: next.gi,
     ii: next.ii,
@@ -445,6 +454,13 @@ export function startAppTask(deps: TaskDeps): TaskOutcome {
               ? 'aiAssistant'
               : 'mailBackup'
             : undefined;
+  if (
+    first.currStep !== undefined &&
+    first.currStep !== 0 &&
+    (special === 'entry' || special === 'portal' || special === 'mailBackup' || special === 'aiAssistant')
+  ) {
+    phase = phaseOfSpecial(special) ?? phase;
+  }
   save(deps, {
     gi: first.gi,
     ii: first.ii,
@@ -461,9 +477,9 @@ export function startAppTask(deps: TaskDeps): TaskOutcome {
   return { ok: true, note: `已排队 ${todo.length} 条待办（今天已点过 ${clicked.length} 条），从 #${first.itemId} 开始` };
 }
 
-/** 打卡之后该去哪个特殊阶段（没有就 `undefined`）。 */
-function specialPhase(st: TaskState): TaskPhase | undefined {
-  switch (st.special) {
+/** 某个特殊动作对应的阶段（没有就 `undefined`）。 */
+function phaseOfSpecial(s: Special | undefined): TaskPhase | undefined {
+  switch (s) {
     case 'entry':
       return 'entry';
     case 'portal':
@@ -476,6 +492,20 @@ function specialPhase(st: TaskState): TaskPhase | undefined {
     default:
       return undefined;
   }
+}
+
+/** 这条已经做完（或已经动手）：把它记进“今天点过”，`advance` 才会换下一条。 */
+function doneState(deps: TaskDeps, st: TaskState): TaskState {
+  const clicked = freshClicked(st, deps);
+  return {
+    ...st,
+    clicked: clicked.includes(st.itemId) ? clicked : [...clicked, st.itemId],
+  };
+}
+
+/** 打卡之后该去哪个特殊阶段（没有就 `undefined`）。 */
+function specialPhase(st: TaskState): TaskPhase | undefined {
+  return phaseOfSpecial(st.special);
 }
 
 /** 推进一步，一次调用一个请求。 */
@@ -571,7 +601,7 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
     const c = callRawText(deps.transport, clickRequest(deps, st.itemId, 'task2'));
     const bits = [a.ok ? 'doTaskPost ok' : `doTaskPost 没成：${a.error ?? ''}`, b.ok ? 'page/doTask ok' : `page/doTask 没成：${b.error ?? ''}`];
     if (!c.ok) bits.push(`补打卡没成：${c.error ?? '未知失败'}`);
-    const out = advance(deps, st);
+    const out = advance(deps, doneState(deps, st));
     return {
       ok: out.ok,
       note: `固定入口 #${st.itemId}（${bits.join('；')}）。${out.note}`,
@@ -595,7 +625,7 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
       if (!c.ok) page += `；补打卡没成：${c.error ?? ''}`;
     }
     const bits = [a.ok ? 'doTaskPost ok' : 'doTaskPost 没成', b.ok ? 'page/doTask ok' : 'page/doTask 没成', page];
-    const out = advance(deps, st);
+    const out = advance(deps, doneState(deps, st));
     return { ok: out.ok, note: `入口页 #${st.itemId}（${bits.join('；')}）。${out.note}` };
   }
 
@@ -738,7 +768,7 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
     const domain = st.data?.domain ?? '';
     const res = callRawText(deps.transport, aiChatRequest(auth, domain, '你好'));
     const sse = res.ok ? parseSse(res.text) : { events: 0, text: '' };
-    const out = advance(deps, st);
+    const out = advance(deps, doneState(deps, st));
     return {
       ok: res.ok && sse.events > 0 && sse.text !== '',
       note:
@@ -771,7 +801,7 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
     const res = callRawText(deps.transport, mailSearchRequest(sess, st.data?.cguid ?? newCguid()));
     const mid = res.ok ? firstField(res.text, 'mid') : undefined;
     if (!mid) {
-      const out = advance(deps, st);
+      const out = advance(deps, doneState(deps, st));
       return {
         ok: false,
         note: `邮件列表里取不到 mid：${res.error ?? '响应里没有 mid'}。${out.note}`,
@@ -788,7 +818,7 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
       mailBackupRequest(sess, st.data?.cguid ?? newCguid(), st.data?.mid ?? '', st.data?.directoryId ?? ''),
     );
     const code = res.ok ? mailCode(res.text) : { ok: false, code: '', summary: res.error ?? '未知失败' };
-    const out = advance(deps, st);
+    const out = advance(deps, doneState(deps, st));
     return {
       ok: res.ok && code.ok,
       note: code.ok
