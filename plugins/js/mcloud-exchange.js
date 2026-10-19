@@ -3088,7 +3088,7 @@ function blockersFor(store2, task) {
 }
 
 // src/mcloud/log.ts
-import { debug, error, fail, log as log2, start, success, warn as warn2 } from "host-api";
+import { debug, error, fail, fatal, log as log2, start, success, warn as warn2 } from "host-api";
 
 // src/mcloud/logRing.ts
 var RING_KEY = "mcloud.log.ring";
@@ -3123,6 +3123,9 @@ function logBoth(store2, level, msg, nowIso) {
       break;
     case "error":
       error(msg);
+      break;
+    case "fatal":
+      fatal(msg);
       break;
     case "start":
       start(msg);

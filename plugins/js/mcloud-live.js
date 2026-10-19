@@ -799,7 +799,7 @@ function appendRun(store2, rec) {
 }
 
 // src/mcloud/log.ts
-import { debug, error, fail, log, start, success, warn } from "host-api";
+import { debug, error, fail, fatal, log, start, success, warn } from "host-api";
 
 // src/mcloud/logRing.ts
 var RING_KEY = "mcloud.log.ring";
@@ -834,6 +834,9 @@ function logBoth(store2, level, msg, nowIso) {
       break;
     case "error":
       error(msg);
+      break;
+    case "fatal":
+      fatal(msg);
       break;
     case "start":
       start(msg);

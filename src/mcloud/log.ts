@@ -10,15 +10,25 @@
  *
  *  `start/success/fail` 是**语义类型**：面板按类型着色，过滤级别仍按 info 算
  *  （见面板 `log::Type::level`）。`debug` 是“跳过/没有可领”这类过程信息。
+ *  `error` / `fatal` 仍是**严重级别**：前者表示“这条路坏了”，后者表示“已经不可用”；
+ *  它们不会被当成普通任务失败（那是 `fail`）。
  *
  *  ⚠ 两个都写是有意的：面板那条带时间戳/级别/插件名，是**权威**；环那条只为
  *    "面板重启之后界面还能看见上一次"。只写一处都会缺一块（见 `logRing.ts`）。
  */
-import { debug, error, fail, log, start, success, warn } from 'host-api';
+import { debug, error, fail, fatal, log, start, success, warn } from 'host-api';
 import type { Store } from '../store/types.ts';
 import { appendRing } from './logRing.ts';
 
-export type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'start' | 'success' | 'fail';
+export type LogLevel =
+  | 'debug'
+  | 'info'
+  | 'warn'
+  | 'error'
+  | 'fatal'
+  | 'start'
+  | 'success'
+  | 'fail';
 
 export function logBoth(
   store: Pick<Store, 'getState' | 'setState'>,
@@ -37,6 +47,9 @@ export function logBoth(
       break;
     case 'error':
       error(msg);
+      break;
+    case 'fatal':
+      fatal(msg);
       break;
     case 'start':
       start(msg);

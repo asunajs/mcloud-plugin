@@ -118,7 +118,7 @@ export function userLine(step: {
  *  （"还没有网页会话"）只是 `debug` —— 否则一个票过期会刷十几行红字，
  *  用户根本看不出哪一行才是真正要处理的。
  */
-export type LineLevel = 'debug' | 'info' | 'success' | 'warn' | 'fail';
+export type LineLevel = 'debug' | 'info' | 'success' | 'warn' | 'error' | 'fail' | 'fatal';
 
 export function lineLevel(line: string): LineLevel {
   // 级联失败：根因（换票 / 凭据续期）已经单独一行 fail
