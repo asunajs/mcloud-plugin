@@ -11,12 +11,13 @@
 // 面板一次调用只给 2000ms，而这一条链要发 2-3 枪、中间还要传字节。
 // 所以状态落 SQLite、`step` 当游标（与 `sessionExchange.ts`、`exchangeOrder.ts` 同构）。
 //
-// # ⚠ 传上去的文件**不许删**
+// # 清理由调用方决定
 //
-// mcloud 在这一点上有明确的话（`task_expansion.rs:18`）：
-// "把它放进清理名单就是**删用户的东西**" ⇒ 那一档**不交 id**（`upload_file_id` 留空）。
-// 所以这个状态机**只负责传**，不做任何清理；要不要留 id 由调用方决定，而
-// "触发备份"这一档的答案是**不留**。
+// 这个状态机只负责传，不做清理。它把 `ownedByUs` 记下来：
+//   · `true`  = 这次是我们造的文件 ⇒ 调用方可以 `batchTrash`
+//   · `false` = 撞上用户已有文件（`exist:true`）⇒ **绝不删**
+//   · `undefined` = 判不了（`exist` 缺席且没有新上传会话）⇒ 按不删处理
+// `task-expansion` 会用它决定链尾要不要清理；`app-task` 用它决定收尾。
 //
 // # 两种定位
 //
@@ -29,9 +30,11 @@ import {
   buildCreateRequest,
   buildPutRequest,
   contentHashOf,
+  deterministicFile,
   parseComplete,
   parseCreate,
 } from '../cloudUpload.ts';
+import type { CloudOp } from '../cloudUpload.ts';
 import type { TaskDeps, TaskOutcome } from './base.ts';
 
 export const STATE_UPLOAD = 'mcloud.upload.state';
@@ -51,6 +54,16 @@ export interface UploadState {
   uploadUrl?: string | undefined;
   /** 秒传 ⇒ 跳过 PUT。 */
   rapidUpload?: boolean | undefined;
+  /** 重建字节用的种子（不落原始字节；`runUploadStep` 缺 bytes 时用它重算）。 */
+  seed?: string | undefined;
+  /** 改名模式 / 并行上传 / localCreatedAt / op：由调用方按支路口径给。 */
+  renameMode?: string | undefined;
+  parallelUpload?: boolean | undefined;
+  localCreatedAt?: string | undefined;
+  op?: CloudOp | undefined;
+  /** `true` = 这次是我们造的文件；`false` = 撞上用户已有文件；`undefined` = 判不了。
+   *  只有 `true` 才允许链尾清理。 */
+  ownedByUs?: boolean | undefined;
 }
 
 const STEP_TEXT: Record<UploadStep, string> = {
@@ -87,6 +100,11 @@ export function startUpload(
     bytes: Uint8Array;
     locateKey?: 'parentFileId' | 'parentPath';
     locateValue?: string;
+    seed?: string;
+    renameMode?: string;
+    parallelUpload?: boolean;
+    localCreatedAt?: string;
+    op?: CloudOp;
   },
 ): TaskOutcome {
   if (opts.name.trim() === '') return { ok: false, note: '上传要有文件名' };
@@ -99,6 +117,11 @@ export function startUpload(
     contentHash: contentHashOf(opts.bytes),
     locateKey: opts.locateKey ?? 'parentFileId',
     locateValue: opts.locateValue ?? '/',
+    seed: opts.seed,
+    renameMode: opts.renameMode,
+    parallelUpload: opts.parallelUpload,
+    localCreatedAt: opts.localCreatedAt,
+    op: opts.op,
   };
   save(deps, st);
   // ⚠ 字节本身**不落库**：它在第 ② 枪时要重新给（由调用方从"确定的文件体"重建，
@@ -122,13 +145,26 @@ export function runUploadStep(deps: TaskDeps, bytes?: Uint8Array): TaskOutcome {
       size: st.size,
       contentHash: st.contentHash,
       locate: { key: st.locateKey, value: st.locateValue },
+      renameMode: st.renameMode,
+      parallelUpload: st.parallelUpload,
+      localCreatedAt: st.localCreatedAt,
+      op: st.op,
     });
     const res = callRawText(deps.transport, req);
     if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? '未知失败'}` };
     const parsed = parseCreate(res.text);
     if (!parsed.ok || !parsed.created) return { ok: false, note: `${label}：${parsed.error}` };
     const c = parsed.created;
-    const next: UploadState = { ...st, fileId: c.fileId };
+    // 三种状态：true=我们造的 / false=用户的 / undefined=判不了（同样按不删处理）。
+    const ownedByUs = c.ownedByUs;
+    const next: UploadState = { ...st, fileId: c.fileId, ownedByUs };
+    if (ownedByUs === false) {
+      // 撞上用户已有同名文件：上游按 refuse 语义把那一枚交回来 ⇒ **不是我们造的**，
+      // 既不 PUT 也不进清理名单。
+      next.step = 'done';
+      save(deps, next);
+      return { ok: true, note: `${label}：撞上已有同名文件（不是我们造的，不覆盖、不删）` };
+    }
     if (c.rapidUpload) {
       // 秒传 ⇒ **没有 PUT 可发**（真机那一支就是 `uploadId: null`）
       next.step = 'done';
@@ -146,17 +182,18 @@ export function runUploadStep(deps: TaskDeps, bytes?: Uint8Array): TaskOutcome {
   }
 
   if (st.step === 'put') {
+    const body = bytes ?? (st.seed !== undefined ? deterministicFile(st.seed, st.size) : undefined);
+    if (body === undefined) {
+      return { ok: false, note: `${label}：这次调用没带字节，且状态里没有可重建的字节（缺 bytes/seed）⇒ 不发` };
+    }
     if (!st.uploadUrl || !st.uploadId) {
       return { ok: false, note: `${label}：状态里没有 uploadUrl/uploadId ⇒ 这一趟作废（重起一次上传）` };
     }
-    if (!bytes || bytes.length === 0) {
-      // ⚠ 没给字节就**不发空体**：那会把一个 0 字节文件传上去（不是"失败"，是"传错了东西"）
-      return {
-        ok: false,
-        note: `${label}：这次调用没带字节 ⇒ 不发（拿空体去 PUT 会真的传一个 0 字节文件上去）`,
-      };
+    if (body.length === 0) {
+      // ⚠ 空体**不发**：那会把一个 0 字节文件传上去（不是"失败"，是"传错了东西"）
+      return { ok: false, note: `${label}：字节是空的 ⇒ 不发（拿空体去 PUT 会真的传一个 0 字节文件上去）` };
     }
-    const { req, leaksCredential } = buildPutRequest(st.uploadUrl, bytes, false);
+    const { req, leaksCredential } = buildPutRequest(st.uploadUrl, body, st.op ?? false);
     if (leaksCredential) {
       // 照设计不该发生；真发生了就**不发** —— 凭据泄漏到存储主机比这次上传失败严重得多
       return {
@@ -167,11 +204,14 @@ export function runUploadStep(deps: TaskDeps, bytes?: Uint8Array): TaskOutcome {
     const res = callRawText(deps.transport, req);
     if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? '未知失败'}` };
     save(deps, { ...st, step: 'complete' });
-    return { ok: true, note: `${label}：${bytes.length} 字节已发（HTTP ${res.status}）—— 下一步确认` };
+    return { ok: true, note: `${label}：${body.length} 字节已发（HTTP ${res.status}）—— 下一步确认` };
   }
 
   // complete
-  const res = callRawText(deps.transport, buildCompleteRequest(st.fileId!, st.uploadId!, st.contentHash));
+  const res = callRawText(
+    deps.transport,
+    buildCompleteRequest(st.fileId!, st.uploadId!, st.contentHash, st.op ?? 'backup'),
+  );
   if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? '未知失败'}` };
   const parsed = parseComplete(res.text);
   if (!parsed.ok) return { ok: false, note: `${label}：${parsed.error}` };

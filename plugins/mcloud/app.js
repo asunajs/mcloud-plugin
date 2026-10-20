@@ -132,13 +132,24 @@ async function runTaskAndWait(key, btn) {
   const only = lv === 'info' ? '' : lv === 'warn' ? '提醒以上' : '只看错误';
   const hidden = only === '' ? '' : ` · 日志只显示「${only}」，这趟的行大多被挡掉了`;
   const label = btn.textContent;
+  const stopBtn = $(`${key}-stop`);
   btn.disabled = true;
+  // 触发前先把终端流连上：否则前几行会落在连接之前
+  if (TERMS[key]) termHandle(key).open();
+  if (stopBtn) {
+    stopBtn.hidden = false;
+    stopBtn.disabled = false;
+    stopBtn.textContent = '停止';
+  }
   const t0 = Date.now();
   try {
-    await call(`/api/tasks/${encodeURIComponent(pair[0])}/${encodeURIComponent(pair[1])}/run`, {
-      method: 'POST',
-      write: true,
-    });
+    // `?async=1`：面板只负责入队，立刻回 `{queued:true}`。
+    // 旧面板没有这个参数，会一直挂到任务结束 —— 所以它必须和新面板一起用；
+    // 这样按钮上的秒数、停止按钮和日志流才能真正同时工作。
+    await call(
+      `/api/tasks/${encodeURIComponent(pair[0])}/${encodeURIComponent(pair[1])}/run?async=1`,
+      { method: 'POST', write: true },
+    );
     const one = await waitRun(pair[0], pair[1], t0, (ms) => {
       btn.textContent = `跑着呢 ${Math.round(ms / 1000)}s`;
     });
@@ -147,14 +158,39 @@ async function runTaskAndWait(key, btn) {
       return;
     }
     const secs = one.duration_ms ? `${(one.duration_ms / 1000).toFixed(1)}s` : '';
+    const stopped = /interrupted|停止/i.test(String(one.error || ''));
     if (one.ok === true) toast(`跑完了${secs === '' ? '' : ` · 用时 ${secs}`}${hidden}`);
+    else if (stopped) toast(`已停止${secs === '' ? '' : ` · 用时 ${secs}`} —— 当前那一步已经收尾`, true);
     else toast(`跑完了，但有失败${secs === '' ? '' : ` · 用时 ${secs}`} —— 看日志里是哪几步${hidden}`, true);
   } catch (e) {
     toast(String(e && e.message ? e.message : e), true);
   } finally {
     btn.disabled = false;
     btn.textContent = label;
+    if (stopBtn) {
+      stopBtn.hidden = true;
+      stopBtn.disabled = false;
+      stopBtn.textContent = '停止';
+    }
     await load();
+  }
+}
+
+/// 停止当前任务：面板侧会打断 QuickJS；已经卡在宿主调用里的部分只能等它返回。
+async function stopRunning(key, btn) {
+  const pair = TASK[key];
+  btn.disabled = true;
+  btn.textContent = '停止中…';
+  try {
+    await call(`/api/tasks/${encodeURIComponent(pair[0])}/${encodeURIComponent(pair[1])}/stop`, {
+      method: 'POST',
+      write: true,
+    });
+    toast('已请求停止；当前那一步返回后会停');
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = '停止';
+    toast(String(e && e.message ? e.message : e), true);
   }
 }
 
@@ -1695,7 +1731,7 @@ function plainText(raw) {
  *  那一格就只能看个热闹（用户原话：「app任务看不了具体事项」）。
  *  所以按市场分两段，段里逐条：名字 + 奖励文案 + 状态。
  *  ⚠ 顺序是**没做完的在前**：这一页是读数页，用户来这儿是想知道"还有什么没做"。 */
-function paintAppTasks(groups) {
+function paintAppTasks(groups, local) {
   const ul = $('matrix-list');
   if (!ul) return;
   const rows = [];
@@ -1727,11 +1763,37 @@ function paintAppTasks(groups) {
       // 名字与描述常常是"任务 + 奖励"两截（实拍：`永葆童心 领38云朵`）——
       // 名字里已经含了描述就不重复画。
       const sub = desc && !name.includes(desc) ? desc : '';
+      // 照 mcloud：每条都带 taskId；没做完的再带 `currStep`（通知 / 备份这类
+      // 分阶段任务，光看「去开启」不知道走到哪一步了）。
+      const id = it.taskId === undefined || it.taskId === null ? '' : `#${it.taskId}`;
+      const bits = [id];
+      // 照 mcloud：`#106 · 第 1 步`。`currStep` 不是"完成了几步"，
+      // 它可以是 22 这种任务专属步号，所以**不写分母**。
+      if (appTaskBucket(it) === 'todo') {
+        bits.push(`第 ${typeof it.currStep === 'number' ? it.currStep : 0} 步`);
+        const day = String(it.buttonOutDay ?? '').trim();
+        if (day !== '') {
+          const total = String(it.buttonOutTotal ?? '').trim();
+          const guess = total === '' ? (/连续(\d+)天/.exec(name)?.[1] ?? '') : total;
+          bits.push(guess === '' ? `完成进度 ${day}` : `完成进度 (${day}/${guess})`);
+        }
+        // 本机动作证据：106 这种"传了、点了，但服务端还是 WAIT"（mcloud 有同一条真机记录）
+        const upName = String((local && local.uploadName) || '');
+        if (local && local.uploadDone && (upName === '' || upName.startsWith(name))) {
+          bits.push('本机已上传');
+        }
+        if (local && Array.isArray(local.unconfirmed) && local.unconfirmed.includes(it.taskId)) {
+          bits.push('本机已请求（服务端未确认）');
+        } else if (local && Array.isArray(local.clicked) && local.clicked.includes(it.taskId)) {
+          bits.push('本机已点过');
+        }
+      }
+      const meta = [sub, bits.filter(Boolean).join(' · ')].filter(Boolean).join(' · ');
       // ⚠ 徽章上那个词是**上游给的**，照样要 `esc`（它进过我们的 DOM 字符串）
       return (
         `<li class="item is-sub"${foldedRow ? ` hidden data-folded="1" data-g="${esc(g.group)}"` : ''}>` +
         `<div class="item-main"><span class="item-t">${esc(name)}</span>` +
-        (sub ? `<span class="item-s">${esc(sub)}</span>` : '') +
+        (meta ? `<span class="item-s">${esc(meta)}</span>` : '') +
         `</div><div class="item-r"><span class="badge ${view.badge}">${esc(view.label)}</span></div></li>`
       );
     };
@@ -1759,14 +1821,110 @@ function paintAppTasks(groups) {
   ul.innerHTML = rows.join('');
 }
 
-function renderData(d) {
+/** 数据页「App 任务」当前看的是哪个账号（空 = 跟当前账号走）。 */
+let matrixAccountId = '';
+
+function matrixLabel(accounts, id) {
+  const hit = (accounts || []).find((a) => a.id === id);
+  return hit ? hit.label || hit.id : id;
+}
+
+function fillMatrixAccounts(accounts, current) {
+  const sel = $('matrix-account');
+  if (!sel) return;
+  const list = accounts || [];
+  if (matrixAccountId === '' || !list.some((a) => a.id === matrixAccountId)) {
+    matrixAccountId = current || (list[0] ? list[0].id : '');
+  }
+  sel.innerHTML = list
+    .map(
+      (a) =>
+        `<option value="${esc(a.id)}"${a.id === matrixAccountId ? ' selected' : ''}>${esc(a.label || a.id)}</option>`,
+    )
+    .join('');
+  if (list.length === 0) sel.innerHTML = '<option value="">还没有账号</option>';
+}
+
+const BACKUP_STEP_TEXT = {
+  read: '正在读取',
+  upload: '正在上传',
+  'snapshot-create': '正在建快照',
+  'snapshot-put': '正在写快照',
+  'snapshot-complete': '正在完成快照',
+  recheck: '正在复查',
+  cleanup: '正在清理',
+  done: '已完成',
+};
+
+function paintMatrixLine(label, groups, backup) {
+  const read = (groups || []).filter((g) => g.reading).length;
+  const b =
+    backup && typeof backup.enabled === 'boolean'
+      ? ` · 本月备份：${backup.enabled ? '已开启' : '未开启'}${
+          backup.step ? `（任务拓展：${BACKUP_STEP_TEXT[backup.step] || backup.step}）` : ''
+        }`
+      : '';
+  setText(
+    'matrix-line',
+    (read === 0
+      ? `看的是「${label}」—— 还没有读数（日常跑一次就有了）。`
+      : `看的是「${label}」· 只读本地缓存，不发新请求。`) + b,
+  );
+}
+
+/** 切账号只读**本地矩阵缓存**（`GET /matrix` 不发请求）；默认不主动请求。 */
+async function loadMatrix(account, refresh = false) {
+  const url = `/matrix?account=${encodeURIComponent(account)}${refresh ? '&refresh=1' : ''}`;
+  const r = await api(url);
+  matrixAccountId = account;
+  paintAppTasks(r.groups || [], r.local);
+  paintMatrixLine(r.label || account, r.groups || [], r.backup);
+  return r;
+}
+
+function renderData(d, account) {
   const m = d.matrix || {};
+  const current = (account && account.current) || '';
+  const accounts = (account && account.accounts) || [];
+  fillMatrixAccounts(accounts, current);
+  const selected = matrixAccountId || current;
   setText('data-hero', `读了 ${m.read || 0}/${m.total || 0} 个市场`);
   // ⚠ 别再写"这一页没有任何动作"：豆那一格现在是**进来就取一次**的（见 autoFetchBeansOnce）
   setText('data-sub', '读数都在这儿 —— 豆那一格进这一页就取一次，要新的点它右上角「刷新」。');
-  setText('matrix-line', (m.read || 0) === 0 ? '还没有读数（日常跑一次就有了）。' : '');
-  paintAppTasks(m.groups);
+  if (selected !== '' && selected !== current) {
+    // 用户之前切到了别的号：只在**本地**读那个号的缓存。
+    void loadMatrix(selected).catch((e) => {
+      setText('matrix-line', `读不到这个账号的任务状态 —— ${e.message || String(e)}`);
+    });
+    return;
+  }
+  paintAppTasks(m.groups, m.local);
+  paintMatrixLine(matrixLabel(accounts, selected), m.groups, m.backup);
 }
+
+$('matrix-account').addEventListener('change', (ev) => {
+  const id = ev.currentTarget.value;
+  if (!id) return;
+  matrixAccountId = id;
+  void loadMatrix(id).catch((e) => toast(`读不到任务状态：${e.message || String(e)}`, true));
+});
+
+$('matrix-refresh').addEventListener('click', (ev) => {
+  const id = matrixAccountId || $('matrix-account').value;
+  if (!id) return;
+  const btn = ev.currentTarget;
+  btn.disabled = true;
+  void loadMatrix(id, true)
+    .then((r) => {
+      const errs = Array.isArray(r.refreshErrors) ? r.refreshErrors : [];
+      if (errs.length > 0) toast(`刷新有失败：${errs[0]}`, true);
+      else toast('已向移动云盘重新读取任务状态');
+    })
+    .catch((e) => toast(`读不到任务状态：${e.message || String(e)}`, true))
+    .finally(() => {
+      btn.disabled = false;
+    });
+});
 
 // ══════════════ 今日AI豆（**点了才取**，照参考实现 `upstream-page.tsx::CloudCell`）══════════════
 //
@@ -1806,10 +1964,15 @@ function paintBeansList() {
   const rows = [];
   for (const a of ok) {
     const sign = a.net > 0 ? `+${a.net}` : String(a.net);
-    const sub = `收 ${a.gained} · 支 ${a.spent} · ${a.count} 笔`;
+    const bal = typeof a.balance === 'number' ? `${a.balance}` : '？';
+    const today = `今日 ${sign}（收 ${a.gained} · 支 ${a.spent} · ${a.count} 笔）`;
+    const sub =
+      typeof a.balance === 'number'
+        ? today
+        : `当前余额读不到${a.balanceReason ? `（${a.balanceReason}）` : ''} · ${today}`;
     rows.push(
       `<li class="item"><div class="item-main">` +
-        `<span class="item-t">${esc(a.label)} · <b>${esc(sign)}</b></span>` +
+        `<span class="item-t">${esc(a.label)} · <b>当前 ${esc(bal)} 豆</b></span>` +
         `<span class="item-s">${esc(sub)}</span>` +
         `</div><div class="item-r">` +
         `<button class="btn ghost" type="button" data-beans-detail="${esc(a.id)}">查看明细</button>` +
@@ -1833,20 +1996,23 @@ function paintBeansList() {
 function paintBeansLine() {
   if (beansToday === null) return;
   const iso = new Date(beansToday.nowMs).toISOString();
+  const cache = beansToday.cached === true ? ' · 来自缓存（2 小时内不重取，刷新可强取）' : '';
   setText(
     'beans-line',
-    `取于 ${when(iso)} · 每个账号各一本账，不给跨账号合计（豆不能跨账号花）`,
+    `取于 ${when(iso)}${cache} · 每个账号各一本账，不给跨账号合计（豆不能跨账号花）`,
   );
 }
 
 /** 取一次今日AI豆（画完就返回）。**自动取**与「刷新」共用这一条路。 */
-async function fetchBeans() {
-  beansToday = await api('/beans/today');
+async function fetchBeans(force = false) {
+  beansToday = await api(`/beans/today${force ? '?refresh=1' : ''}`);
   paintBeansList();
   paintBeansLine();
 }
 
-$('beans-refresh').addEventListener('click', (ev) => act(ev.currentTarget, fetchBeans, () => ''));
+$('beans-refresh').addEventListener('click', (ev) =>
+  act(ev.currentTarget, () => fetchBeans(true), () => ''),
+);
 
 /** 这一页**打开时自己取**，不用先点一下。
  *
@@ -1859,7 +2025,7 @@ function autoFetchBeansOnce() {
   beansAutoFetched = true;
   // ⚠ `act` 自己会 toast 失败原因（它不 rethrow），所以这里不用再接一层 catch；
   //   它还会顺手 `load()` 一把，把这一页其余读数一起刷新 —— 正好。
-  void act($('beans-refresh'), fetchBeans, () => '').then(() => {
+  void act($('beans-refresh'), () => fetchBeans(false), () => '').then(() => {
     // 取不到时说清"下一步点哪里"，别留一句"正在取…"在那儿装作还在跑
     if (beansToday === null) {
       const ul = $('beans-list');
@@ -2018,249 +2184,6 @@ async function loadRunDetail(stepsId, id) {
   }
 }
 
-// ── 推送 ──
-//
-// # 界面的取舍
-//
-// 10 个渠道 × 每个 1~5 个字段 = 三十几个输入框。**全铺出来就是"文字一大堆"**，
-// 而那正是这一版要解决的问题。所以：
-//
-//   · 渠道**一行一个**，只显示「配了 / 没配」+ 一个按钮
-//   · 点「填」才展开**那一个**渠道的字段（同时只展开一个）
-//   · 绑定默认"全部渠道"，用户不碰也能用
-//
-// 配好的渠道显示**掩码**（`abc…yz（共 32 字符）`）—— 值本身从不上屏。
-
-/** 每个渠道要填的字段。`secret` 的会按口令框显示。 */
-const PUSH_FIELDS = {
-  pushplus: [['token', 'token', true]],
-  serverChan: [['token', 'SendKey', true]],
-  workWeixin: [
-    ['corpid', 'corpid', false],
-    ['corpsecret', 'corpsecret', true],
-    ['agentid', 'agentid（数字）', false],
-  ],
-  workWeixinBot: [['url', '群机器人 webhook 地址', false]],
-  tgBot: [
-    ['token', 'bot token', true],
-    ['chat_id', 'chat_id（群 ID 是负数）', false],
-  ],
-  bark: [['key', 'key', true]],
-  twoIm: [
-    ['key', 'key', true],
-    ['sid', 'sid', true],
-  ],
-  dingTalk: [
-    ['token', 'access_token', true],
-    ['secret', '加签密钥（有就填）', true],
-  ],
-  email: [
-    ['host', 'SMTP 主机', false],
-    ['from', '发件人', false],
-    ['pass', '密码', true],
-    ['to', '收件人', false],
-    ['port', '端口（不给按 587 / 465 推）', false],
-  ],
-  customPost: [['url', '请求地址', false]],
-};
-
-/** 当前展开的是哪个渠道（同时只展开一个）。 */
-let pushEditing = '';
-
-function renderPush(p) {
-  const chans = (p && p.channels) || [];
-  const configured = (p && p.configured) || [];
-  const fields = (p && p.fields) || {};
-
-  if (chans.length === 0) {
-    setText('push-hero', '还没做');
-    setText('push-sub', '推送在阶段 ⑤。');
-    return;
-  }
-
-  // 第一行回答"配了没有" —— 这是这一块唯一必须一眼看到的事
-  setText('push-hero', configured.length === 0 ? '还没配推送' : `配了 ${configured.length} 个渠道`);
-  setText(
-    'push-sub',
-    configured.length === 0
-      ? '配一个渠道，任务跑完就会给你发一条。'
-      : configured.map((c) => CH_LABEL(c)).join(' · '),
-  );
-
-  const box = $('push-channels');
-  if (!box) return;
-  box.innerHTML = '';
-  for (const ch of chans) {
-    const on = configured.includes(ch.id);
-    const row = el('div', 'row' + (on ? ' is-on' : ''));
-
-    const name = el('span', 'row-name');
-    name.textContent = CH_LABEL(ch.id);
-    row.appendChild(name);
-
-    const state = el('span', 'row-state');
-    state.textContent = on ? '已配' : '';
-    row.appendChild(state);
-
-    const btn = el('button', 'btn' + (on ? ' ghost' : ''));
-    btn.type = 'button';
-    btn.textContent = on ? '改' : '填';
-    btn.addEventListener('click', () => {
-      pushEditing = pushEditing === ch.id ? '' : ch.id;
-      renderPush(last.push);
-    });
-    row.appendChild(btn);
-    box.appendChild(row);
-
-    if (on && fields[ch.id]) {
-      const hint = el('div', 'row-note');
-      hint.textContent = Object.entries(fields[ch.id])
-        .map(([k, v]) => `${k}=${v}`)
-        .join('  ');
-      box.appendChild(hint);
-    }
-
-    // 展开：**只这一个**渠道的字段
-    if (pushEditing === ch.id) {
-      const form = el('div', 'form');
-      const inputs = {};
-      for (const [key, label, secret] of PUSH_FIELDS[ch.id] || []) {
-        const lab = el('label', 'field');
-        const span = el('span');
-        span.textContent = label;
-        const input = document.createElement('input');
-        input.type = secret ? 'password' : 'text';
-        input.autocomplete = 'off';
-        input.placeholder = label;
-        // 已配的字段**不回填值**（值在服务端存着，界面拿不到也不该拿）——
-        // 留空 = 不改这一项
-        lab.appendChild(span);
-        lab.appendChild(input);
-        form.appendChild(lab);
-        inputs[key] = input;
-      }
-      const note = el('p', 'hint');
-      note.textContent = '已经填过的项留空 = 不改。';
-      form.appendChild(note);
-
-      const save = el('button', 'btn');
-      save.type = 'button';
-      save.textContent = '保存';
-      save.addEventListener('click', () => {
-        // ⚠ 只发**这一个渠道的改动**（`{set, remove}` 形状）——
-        //   界面拿不到已存的值（读数里只有掩码），所以没法整份发回去。
-        const one = {};
-        for (const [key, input] of Object.entries(inputs)) {
-          const v = input.value.trim();
-          if (v === '') continue; // 留空 = 不改这一项
-          one[key] = key === 'agentid' || key === 'port' ? Number(v) : v;
-        }
-        if (Object.keys(one).length === 0) {
-          toast('一项都没填', true);
-          return;
-        }
-        act('push-config', () => post('push/config', { set: { [ch.id]: one } }), '推送配置已保存');
-      });
-      form.appendChild(save);
-
-      if (on) {
-        const del = el('button', 'btn ghost');
-        del.type = 'button';
-        del.textContent = '不用这个';
-        del.addEventListener('click', () => {
-          act('push-config', () => post('push/config', { remove: [ch.id] }), '已去掉这个渠道');
-        });
-        form.appendChild(del);
-      }
-      box.appendChild(form);
-    }
-  }
-
-  // ── 绑定：三行下拉 ──
-  const bbox = $('push-bindings');
-  if (bbox) {
-    bbox.innerHTML = '';
-    const rules = (p && p.rules) || [];
-    const bindings = (p && p.bindings) || {};
-    for (const [key, label] of [['daily', '日常'], ['exchange', '兑换'], ['live', '直播']]) {
-      const row = el('div', 'row');
-      const name = el('span', 'row-name');
-      name.textContent = label;
-      row.appendChild(name);
-      const sel = document.createElement('select');
-      sel.className = 'select';
-      const none = document.createElement('option');
-      none.value = '';
-      none.textContent = '不发';
-      sel.appendChild(none);
-      for (const r of rules) {
-        const o = document.createElement('option');
-        o.value = r.id;
-        o.textContent = r.name;
-        sel.appendChild(o);
-      }
-      sel.value = bindings[key] || '';
-      sel.addEventListener('change', () => {
-        const next = { ...bindings, [key]: sel.value };
-        act('push-bindings', () => post('push/bindings', next), '绑定已保存');
-      });
-      row.appendChild(sel);
-      bbox.appendChild(row);
-    }
-  }
-
-  // ── 规则列表 ──
-  const rbox = $('push-rules');
-  if (rbox) {
-    rbox.innerHTML = '';
-    const rules = (p && p.rules) || [];
-    if (rules.length === 0) {
-      const empty = el('p', 'hint');
-      empty.textContent = '还没有规则。加一条，然后在上面给任务选上。';
-      rbox.appendChild(empty);
-    }
-    for (const r of rules) {
-      const row = el('div', 'row');
-      const name = el('span', 'row-name');
-      name.textContent = r.name;
-      row.appendChild(name);
-      const state = el('span', 'row-state');
-      const n = (r.channels || []).length;
-      state.textContent =
-        (n === 0 ? '全部渠道' : `${n} 个渠道`) +
-        (r.minLevel === 'error' ? ' · 只在有失败时' : '');
-      row.appendChild(state);
-      const del = el('button', 'btn ghost');
-      del.type = 'button';
-      del.textContent = '删';
-      del.addEventListener('click', () => {
-        const next = rules.filter((x) => x.id !== r.id);
-        act('push-rules', () => post('push/rules', next), '规则已删除');
-      });
-      row.appendChild(del);
-      rbox.appendChild(row);
-    }
-  }
-}
-
-/** 渠道 id → 界面上的名字（**与 pushConfig.ts 的 CHANNEL_LABELS 一致**）。 */
-function CH_LABEL(id) {
-  return (
-    {
-      pushplus: 'pushplus',
-      serverChan: 'Server酱',
-      workWeixin: '企业微信',
-      workWeixinBot: '企业微信机器人',
-      tgBot: 'Telegram',
-      bark: 'Bark',
-      twoIm: '回逍',
-      dingTalk: '钉钉',
-      email: '邮件',
-      customPost: '自定义',
-    }[id] || id
-  );
-}
-
 // ⚠ 这里**故意没有**"整份配置的缓存"：界面拿不到已存的值（只有掩码），
 //   所以保存走的是 `{set, remove}` 增量形状。曾经想缓存一份再整份发回去，
 //   但那要么要求界面持有秘密、要么在保存时把别的渠道**清空**。
@@ -2281,8 +2204,7 @@ function render(r) {
   renderDaily(r.daily || {});
   renderExchange(r.exchange || {});
   renderLive(r.live || {});
-  renderData(r.data || {});
-  renderPush(r.push || {});
+  renderData(r.data || {}, r.account || {});
 }
 
 // ──────────────────────────────────────────────────────────── 加载
@@ -2464,6 +2386,10 @@ function makeTerm(plugin, el) {
       const r = await api('/log/tail?limit=' + TERM_MAX_LINES);
       const history = r.lines || [];
       if (history.length === 0) return;
+      // ⚠ 实时流已经画了行就别再清屏：`open()` 现在是**先连流、后补历史**，
+      //   这一枪可能因为任务占着插件运行时而被拖到任务结束才回来；此时屏上
+      //   已经是新的实时日志了，再清一次会把它整段抹掉。
+      if (shown > 0) return;
       body.textContent = '';
       lines = 0;
       shown = 0;
@@ -2514,11 +2440,13 @@ function makeTerm(plugin, el) {
     // 归 info 档，若把下拉值直接发过去，选「提醒以上」会把红字滤掉。
     const q = new URLSearchParams({ channel: 'plugin', plugin, level: 'debug' });
     setMeta('连接中…');
-    // ⚠ 顺序：先历史、后实时。反过来的话历史会把新到的几行盖掉。
-    void seed().then(() => {
-      if (es !== null) return;
-      connect(q);
-    });
+    // ⚠ **先连流，再补历史**。`/log/tail` 是插件自己的路由；任务正在跑时
+    //   它和任务抢同一个插件运行时，请求会被排到任务结束才返回。旧顺序是
+    //   `seed()`（等 `/log/tail`）完成后才 `connect()` —— 于是整场任务期间
+    //   SSE 根本没连上，日志只能等任务跑完一次性出现。
+    //   历史回来时如果实时流已经画了行，`seed()` 会自己放弃清屏（见上）。
+    connect(q);
+    void seed();
   }
 
   function connect(q) {
@@ -3321,6 +3249,7 @@ $('acct-list').addEventListener('click', async (ev) => {
 // 日常
 // ⚠ 不走 `act`：它会在触发后**立刻**说"跑完了"（面板那个接口是异步的）
 $('daily-run').addEventListener('click', (e) => runTaskAndWait('daily', e.currentTarget));
+$('daily-stop').addEventListener('click', (e) => stopRunning('daily', e.currentTarget));
 
 // 兑换
 // 当前账号（手动兑换用）。切号会改全局「当前账号」—— 原页面也是这个语义。
@@ -3444,6 +3373,7 @@ $('live-claim').addEventListener('click', (e) =>
 );
 // 同「日常」：这个也是异步触发的任务，要说真话就得等它跑完
 $('live-run').addEventListener('click', (e) => runTaskAndWait('live', e.currentTarget));
+$('live-stop').addEventListener('click', (e) => stopRunning('live', e.currentTarget));
 
 // ⚠ 「设置」那一页的保存按钮（`cfg-save`）与「跑自检」（`selftest-run`）跟着那一页
 //   一起删了。自检那条**路由**还在（`/selftest`，e2e 与 `scripts/split_check.py`
@@ -3543,38 +3473,6 @@ $('ex-plan-submit').addEventListener('click', (ev) =>
 for (const id of ['ex-plan-cron', 'ex-plan-lead', 'ex-plan-lead-sec', 'ex-plan-max', 'ex-plan-until']) {
   $(id).addEventListener('input', updatePlanPreview);
 }
-
-// ── 推送：试发一条 ──
-$('push-test').addEventListener('click', (ev) =>
-  act(
-    ev.currentTarget,
-    async () => {
-      const r = await post('push/test', {});
-      // ⚠ 试发**失败也把结果当"成功返回"处理**（接口本身是 200）——
-      //   这里要的是把 `line` 显示出来，而不是让 `act` 抛错后只显示一句
-      //   笼统的错误。所以成败自己判。
-      if (!r.ok) throw new Error(r.line || '没发出去');
-      return r;
-    },
-    (r) => r.line,
-  ),
-);
-
-// ── 推送：加一条规则 ──
-$('push-add-rule').addEventListener('click', (ev) => {
-  const name = prompt('这条规则叫什么？（比如「只在有失败时」）', '全部渠道');
-  if (!name) return;
-  const onlyError = confirm('只在有失败的时候才推？\n确定 = 只在有失败时推；取消 = 每次都推');
-  const rules = ((last.push && last.push.rules) || []).slice();
-  rules.push({
-    // id 用时间戳 —— 不需要稳定，只要在规则列表里唯一
-    id: `r${Date.now()}`,
-    name,
-    channels: [],
-    minLevel: onlyError ? 'error' : 'always',
-  });
-  act(ev.currentTarget, () => post('push/rules', rules), '规则已加，去下面给任务选上');
-});
 
 // ──────────────────────────────────────────────────────────── 起手
 

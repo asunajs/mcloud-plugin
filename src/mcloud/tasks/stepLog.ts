@@ -105,6 +105,10 @@ export function userLine(step: {
 }): string | null {
   if (isPlumbing(step.name) && step.ok) return null; // 内部的事，成了就不提
   const why = trimNote(step.name, step.note);
+  // 「签到翻倍 / 复活卡」是**每月一次**的事：已经做过之后，后面每趟都只是一句
+  // 状态，不该在日志里反复出现（mcloud / mcloud-sign 也不会每趟都跑）。
+  // 运行记录里仍保留这一步，排查时能看到。
+  if (/^(签到翻倍|复活卡)$/.test(step.name) && /(这个月|本月)/.test(why)) return null;
   // ⚠ 不写"成了/成功/跳过"这种抽象词（用户的原话：「成了是啥啊」）——
   //   直接把这一步**发生了什么**说出来：`签到：今天已经签过了`、
   //   `领取AI豆：今天没有可领的`、`复活卡：没成 —— 服务端说：2025年无云朵记录`。
@@ -141,6 +145,9 @@ export function lineLevel(line: string): LineLevel {
   ) {
     return 'info';
   }
+
+  // 「今日已签到」是状态，不是这一趟又做成了一次（参考 mcloud-sign 的 info）。
+  if (/已签到|已经签到/.test(line)) return 'info';
 
   // success 的口径：**做了事情 + 明确拿到奖励**。
   // 只有「成功」两个字不算 —— 签到成功、分享成功、领取请求成功都只是"动作发出去了"，

@@ -67,6 +67,9 @@ export function drain(
     /** 「状态里还有没做完的段吗」。给了就在每轮**开头**判（第一轮除外 ——
      *  总得先跑一次才知道要干嘛）。没给就只认 `idle` / `skipped`。 */
     more?: () => boolean;
+    /** 每步的原话（**立刻**回调）。给长状态机用：文件上传、任务重试这些过程
+     *  要能在日志里看到，而不是等整趟 drain 结束只剩一句结论。 */
+    onStep?: ((note: string, step: number) => void) | undefined;
   },
 ): DrainResult {
   const startedAt = opts.startedAt ?? Date.now();
@@ -107,6 +110,7 @@ export function drain(
     steps++;
     lastNote = r.note;
     notes.push(r.note);
+    opts.onStep?.(r.note, steps);
     if (!r.ok) {
       return { ok: false, idle: false, steps, note: `${opts.label}：第 ${steps} 步失败 —— ${r.note}`, notes };
     }

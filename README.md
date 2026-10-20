@@ -171,6 +171,8 @@ mcloud-plugin/
 | [`docs/app-task-parity.md`](docs/app-task-parity.md) | **App 任务对照表**：mcloud-sign 的 runner 哪些搬了、哪些还没搬、日志怎么说 |
 | [`docs/smid-chain.md`](docs/smid-chain.md) · [`docs/upload-chain.md`](docs/upload-chain.md) | 两条比较绕的链路的实测记录 |
 | [`docs/shots/`](docs/shots/README.md) | 界面截图（七个区块各一张 + 扫码） |
+| [`docs/standalone.md`](docs/standalone.md) | **面板外独立运行**：替代 mcloud-sign 的 CLI / 配置 / 导出函数 |
+| [`docs/task-state.md`](docs/task-state.md) | **任务状态规则**：本地动作不算成功，只有服务端 FINISH 才算；每日/每月记录有效期，未确认可重试 |
 | [`docs/design-history.md`](docs/design-history.md) | **开工前的设计稿**（历史；有些判断后来被推翻了，为什么留着见文件头） |
 | [`docs/acceptance-real.md`](docs/acceptance-real.md) | **真机验收清单**（这一步只能在你的真机上做 —— 照着点，每步写清看什么算过） |
 

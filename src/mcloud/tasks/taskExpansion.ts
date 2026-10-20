@@ -1,39 +1,43 @@
-// 任务拓展（`task-expansion`）—— "本月备份 + 领云朵"。
+// 任务拓展（`task-expansion`）—— "把本月备份做出来"。
 //
-// # 三件事（mcloud `task_expansion.rs` 的口径）
+// # 四件事
 //
 // ```text
 // ① GET  /ycloud/signin/page/taskExpansion        读状态
-// ②      上传一个文件（触发"本月已备份"）—— 走 `tasks/upload.ts` 那三枪
-// ③ GET  /ycloud/signin/page/receiveTaskExpansion 领云朵（**裸 GET**）
+// ②      上传一个文件（随机名/随机内容，refuse_duplicate_content）
+// ②a     backup/createSnapshot → PUT(0/0) → backup/completeSnapshot
+// ③      把**自己造的**文件移进回收站（撞同名/判不了的不删）
 // ```
 //
-// # 三处照 mcloud 来的讲究
+// # 照 mcloud 来的讲究
 //
 // ① **判据是严格读到 `false`**，不是"没读到 true"（`should_upload`）：
 //    没读到 ≠ 未开启备份。读成"没读到 true 就去传"，会在上游改字段时**白发一堆上传**。
-// ② **传上去的文件不许删** —— mcloud 的原话是"把它放进清理名单就是**删用户的东西**"，
-//    所以那一档**不交 id**。本文件只负责触发，不做清理。
-// ③ 领那一枪的 `result` 是**裸数字**（实拍 `result: 100`），不是对象 ⇒ 别去解形状。
+// ② **只删自己造的** —— `exist:true` 是用户已有文件，`exist` 判不了同样不删；
+//    只有 `ownedByUs === true` 才进 `batchTrash`。
+// ③ 快照体是**空 ZIP**（mcloud 同款 22 字节 EOCD），装什么没有读数。
 //
-// # ⚠ 与用户口径的一处**刻意分歧**
-//
-// mcloud 只在 `curMonthTaskRecordCount > 0` 时才发第 ③ 枪。本插件**不判**（用户定的）：
-// 那一枪是只读 GET、成功了就有云朵、失败了什么也不花 —— 发出去**有可能成功**，
-// 所以直接发，把上游的答复如实报出来。这与"清空判据只做选择"是同一条口径。
-//
-// # ⚠ 证据强度要说清
-//
-// `app_signin.rs:28` 注明：`receiveTaskExpansion` **缺成功样本**
-// （两个测试号本月都已领过）。所以这一枪的**成功响应形状没被实拍验过** ——
-// 实现照源码逐字，但拿不到成功样本时不要假装它被验过。
+// ⚠ 这条**不领云朵**：`receiveTaskExpansion` 那一枪已按用户 2026-10-20 口径去掉，
+//    只负责把备份做出来。
 
 
 import { callRawText } from '../client.ts';
 import { REFERER_SIGN_IN, SHOW_LOADING, buildH5Request, MCLOUD_HOST } from '../h5.ts';
 import { hostBase, sessionHeaders } from './base.ts';
-import { deterministicFile } from '../cloudUpload.ts';
-import { runUploadStep, startUpload, uploadDone } from './upload.ts';
+import {
+  EMPTY_ZIP,
+  RENAME_REFUSE_DUPLICATE_CONTENT,
+  buildPutRequest,
+  buildSnapshotCompleteRequest,
+  buildSnapshotCreateRequest,
+  contentHashOf,
+  deterministicFile,
+  parseSnapshotComplete,
+  parseSnapshotCreate,
+  randomHex,
+} from '../cloudUpload.ts';
+import { loadUpload, runUploadStep, startUpload, uploadDone } from './upload.ts';
+import { trashRequest } from './cloudTrash.ts';
 import { loadSession } from '../../store/types.ts';
 import type { TaskDeps, TaskOutcome } from './base.ts';
 
@@ -91,23 +95,45 @@ export function readMonthBackup(deps: TaskDeps): boolean | undefined {
   }
 }
 
-export type ExpandStep = 'read' | 'upload' | 'recheck' | 'claim' | 'done';
+export type ExpandStep =
+  | 'read'
+  | 'upload'
+  | 'snapshot-create'
+  | 'snapshot-put'
+  | 'snapshot-complete'
+  | 'recheck'
+  | 'cleanup'
+  | 'done';
 
 interface ExpandState {
   step: ExpandStep;
-  /** ① 读到的 `acceptDate`（领那一枪要用它；读不到就发空值 —— 见下面那条 ⚠）。 */
-  acceptDate?: string | undefined;
-  /** ① 读到的四样（用于文案与"下月可领"）。 */
+  /** 这一趟属于哪一天（`YYYY-MM-DD`）。跨天/老状态没有这一格 ⇒ 重新起。 */
+  day?: string | undefined;
+  /** ① 读到的四样（用于文案与“下月可领”）。 */
   curMonthBackup?: boolean | undefined;
   curMonthTaskRecordCount?: number | undefined;
   nextMonthTaskRecordCount?: number | undefined;
+  /** 上传完成后记下：只有 `owned === true` 才允许链尾清理。 */
+  uploadFileId?: string | undefined;
+  uploadOwned?: boolean | undefined;
+  /** 快照那三枪要复用的字段。 */
+  snapFileId?: string | undefined;
+  snapUploadId?: string | undefined;
+  snapUploadUrl?: string | undefined;
+  snapHash?: string | undefined;
+  snapSize?: number | undefined;
+  snapTimestamp?: number | undefined;
+  snapError?: string | undefined;
 }
 
 const STEP_TEXT: Record<ExpandStep, string> = {
   read: '① 读任务拓展状态',
   upload: '② 传一个文件触发本月备份',
+  'snapshot-create': '②a 建备份快照',
+  'snapshot-put': '②a 传快照体',
+  'snapshot-complete': '②a 确认快照',
   recheck: '②b 再过一遍状态',
-  claim: '③ 领云朵',
+  cleanup: '③ 清理自己传的文件',
   done: '完成',
 };
 
@@ -154,10 +180,19 @@ function load(deps: TaskDeps): ExpandState | null {
 const save = (deps: TaskDeps, st: ExpandState): void =>
   deps.store.setState(STATE_EXPAND, JSON.stringify(st), deps.nowIso);
 
-/** 起一趟（**一个请求都不发**）。 */
+/** 起一趟（**一个请求都不发**）。
+ *
+ *  ⚠ 每天都要能重新起：`done` 是**当天**的完成标记，不是永久标记。
+ *  老状态没有 `day`（或跨天）⇒ 重新起；同一天还在走 ⇒ 不重置；同一天已走完 ⇒ idle。 */
 export function startExpansion(deps: TaskDeps): TaskOutcome {
-  save(deps, { step: 'read' });
-  return { ok: true, note: '已排队：读状态 → （需要时）传文件触发备份 → 领云朵' };
+  const day = deps.nowIso.slice(0, 10);
+  const cur = load(deps);
+  if (cur && cur.day === day) {
+    if (cur.step === 'done') return { ok: true, idle: true, note: '今天这一趟已经走完' };
+    return { ok: true, note: '今天这一趟还在走，接着推' };
+  }
+  save(deps, { step: 'read', day });
+  return { ok: true, note: '已排队：读状态 → （需要时）传文件+快照触发备份 → 清理' };
 }
 
 /** 推进一步，一次调用一个请求。 */
@@ -169,24 +204,110 @@ export function runExpansionStep(deps: TaskDeps): TaskOutcome {
 
   // ② 交给上传那台状态机（它自己知道下一步是 create 还是 put 还是 complete）
   if (st.step === 'upload') {
-    if (uploadDone(deps)) {
-      save(deps, { ...st, step: 'recheck' });
-      return { ok: true, note: `${label}：文件已传完 —— 下一步再过一遍状态` };
-    }
-    // 字节在这里重建（**确定的**，所以摘要能对上 ① 那一步算出来的）
-    const out = runUploadStep(deps, deterministicFile(EXPAND_FILE_SEED, EXPAND_FILE_BYTES));
-    // ⚠ 上传一完成就**在这一步推进**游标（否则会多出一次"不发请求的空调用：
-    //   下一次进来才发现传完了）。空闲同理。
+    const out = uploadDone(deps) ? { ok: true, idle: true, note: '' } : runUploadStep(deps);
+    // ⚠ 上传一完成就**在这一步推进**游标（否则会多出一次"不发请求的空调用"）。
     if (out.idle || uploadDone(deps)) {
-      save(deps, { ...st, step: 'recheck' });
-      return {
-        ok: true,
-        note: out.idle
-          ? `${label}：没有待传的（可能上次已传完）—— 下一步再过一遍状态`
-          : `${label}：文件已传完 —— 下一步再过一遍状态`,
-      };
+      const up = loadUpload(deps);
+      const owned = up?.ownedByUs;
+      // 撞上用户已有同名文件 / exist 判不了 ⇒ 不建快照、也不清理；只去复查+收尾。
+      const step: ExpandStep = owned === true ? 'snapshot-create' : 'recheck';
+      save(deps, { ...st, step, uploadFileId: up?.fileId, uploadOwned: owned });
+      const why =
+        owned === true
+          ? '文件已传完'
+          : owned === false
+            ? '撞上已有同名文件（不是我们造的，不覆盖、不删）'
+            : '文件已传完，但 exist 判不了（按不是我们造的算，不删）';
+      return { ok: true, note: `${label}：${why} —— 下一步${owned === true ? '建快照' : '再复查'}` };
     }
     return out;
+  }
+
+  // ②a 快照三枪：createSnapshot → PUT(0/0) → completeSnapshot
+  if (st.step === 'snapshot-create') {
+    const hash = contentHashOf(EMPTY_ZIP);
+    const timestamp = Date.parse(deps.nowIso);
+    const req = buildSnapshotCreateRequest({
+      fileExtension: 'zip',
+      count: 1,
+      size: EMPTY_ZIP.length,
+      contentHash: hash,
+      timestampMs: Number.isFinite(timestamp) ? timestamp : Date.now(),
+    });
+    const res = callRawText(deps.transport, req);
+    if (!res.ok) {
+      save(deps, { ...st, step: 'recheck', snapError: `建快照失败：${res.error ?? '未知失败'}` });
+      return { ok: true, note: `${label}：没成（${res.error ?? '未知失败'}）—— 不挡领取，继续复查` };
+    }
+    const parsed = parseSnapshotCreate(res.text);
+    if (!parsed.ok || !parsed.created) {
+      save(deps, { ...st, step: 'recheck', snapError: parsed.error ?? '快照响应解析不了' });
+      return { ok: true, note: `${label}：没成（${parsed.error ?? '响应解析不了'}）—— 不挡领取，继续复查` };
+    }
+    const c = parsed.created;
+    const step: ExpandStep = c.rapidUpload ? 'snapshot-complete' : 'snapshot-put';
+    save(deps, {
+      ...st,
+      step,
+      snapFileId: c.fileId,
+      snapUploadId: c.uploadId,
+      snapUploadUrl: c.uploadUrl,
+      snapHash: hash,
+      snapSize: EMPTY_ZIP.length,
+      snapTimestamp: Number.isFinite(timestamp) ? timestamp : Date.now(),
+    });
+    return { ok: true, note: `${label}：已声明快照（${c.rapidUpload ? '秒传，直接确认' : '下一步传快照体'}）` };
+  }
+
+  if (st.step === 'snapshot-put') {
+    if (!st.snapUploadUrl || !st.snapUploadId) {
+      save(deps, { ...st, step: 'recheck', snapError: '快照状态缺 uploadUrl/uploadId' });
+      return { ok: true, note: `${label}：没成（状态缺 uploadUrl/uploadId）—— 不挡领取，继续复查` };
+    }
+    const { req } = buildPutRequest(st.snapUploadUrl, EMPTY_ZIP, 'snapshot');
+    const res = callRawText(deps.transport, req);
+    if (!res.ok) {
+      save(deps, { ...st, step: 'recheck', snapError: `快照 PUT 失败：${res.error ?? '未知失败'}` });
+      return { ok: true, note: `${label}：没成（${res.error ?? '未知失败'}）—— 不挡领取，继续复查` };
+    }
+    save(deps, { ...st, step: 'snapshot-complete' });
+    return { ok: true, note: `${label}：快照体已传完 —— 下一步确认` };
+  }
+
+  if (st.step === 'snapshot-complete') {
+    if (!st.snapFileId || !st.snapHash) {
+      save(deps, { ...st, step: 'recheck', snapError: '快照状态缺 fileId/contentHash' });
+      return { ok: true, note: `${label}：没成（状态缺 fileId/contentHash）—— 不挡领取，继续复查` };
+    }
+    const req = buildSnapshotCompleteRequest({
+      fileId: st.snapFileId,
+      uploadId: st.snapUploadId ?? '',
+      count: 1,
+      contentHash: st.snapHash,
+      size: st.snapSize ?? EMPTY_ZIP.length,
+      timestampMs: st.snapTimestamp ?? Date.now(),
+    });
+    const res = callRawText(deps.transport, req);
+    const parsed = res.ok ? parseSnapshotComplete(res.text) : { ok: false, error: res.error };
+    save(deps, { ...st, step: 'recheck', snapError: parsed.ok ? undefined : parsed.error });
+    return {
+      ok: true,
+      note: parsed.ok
+        ? `${label}：快照已确认 —— 下一步复查`
+        : `${label}：没成（${parsed.error ?? '未知失败'}）—— 不挡领取，继续复查`,
+    };
+  }
+
+  if (st.step === 'cleanup') {
+    const fileId = st.uploadFileId;
+    if (st.uploadOwned !== true || !fileId) {
+      save(deps, { ...st, step: 'done' });
+      return { ok: true, note: `${label}：没有该由我们清的文件（不是我们造的 / 判不了）` };
+    }
+    const res = callRawText(deps.transport, trashRequest([fileId]));
+    save(deps, { ...st, step: 'done' });
+    if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? '未知失败'}` };
+    return { ok: true, note: `${label}：已移进回收站` };
   }
 
   if (st.step === 'read' || st.step === 'recheck') {
@@ -201,17 +322,32 @@ export function runExpansionStep(deps: TaskDeps): TaskOutcome {
     // 顺手落盘：App 任务的月门要 `curMonthBackup`（没读到不写）。
     saveMonthBackup(deps, read.curMonthBackup);
     const next: ExpandState = {
-      step: 'claim',
-      acceptDate: read.acceptDate,
+      ...st,
+      step: 'cleanup',
       curMonthBackup: read.curMonthBackup,
       curMonthTaskRecordCount: read.curMonthTaskRecordCount,
       nextMonthTaskRecordCount: read.nextMonthTaskRecordCount,
     };
 
     if (st.step === 'read' && shouldUpload(read)) {
-      // ⚠ 严格读到 false 才传（见 shouldUpload）
+      // ⚠ 严格读到 false 才传（见 shouldUpload）。
+      //    文件**随机**（名字 + 内容）：固定内容会命中秒传，固定名字会撞用户文件；
+      //    mcloud 的 task_expansion 就是随机名 + 随机字节。
+      const seed = randomHex(16);
+      const name = `${randomHex(8)}.bin`;
       save(deps, { ...next, step: 'upload' });
-      startUpload(deps, { name: EXPAND_FILE_NAME, bytes: deterministicFile(EXPAND_FILE_SEED, EXPAND_FILE_BYTES) });
+      startUpload(deps, {
+        name,
+        bytes: deterministicFile(seed, 256),
+        seed,
+        // 备份支：按路径定位根目录 + refuse_duplicate_content + parallelUpload。
+        locateKey: 'parentPath',
+        locateValue: '/',
+        renameMode: RENAME_REFUSE_DUPLICATE_CONTENT,
+        parallelUpload: true,
+        localCreatedAt: deps.nowIso,
+        op: 'backup',
+      });
       return { ok: true, note: `${label}：本月**未开启备份** ⇒ 传一个文件把它做出来 —— 下一步开始传` };
     }
     save(deps, next);
@@ -219,54 +355,12 @@ export function runExpansionStep(deps: TaskDeps): TaskOutcome {
       read.nextMonthTaskRecordCount === undefined ? '' : `；下月可领 ${read.nextMonthTaskRecordCount} 个`;
     return {
       ok: true,
-      note: `${label}：备份=${read.curMonthBackup === undefined ? '没读到' : String(read.curMonthBackup)}，可领次数=${read.curMonthTaskRecordCount ?? '没读到'}${tail} —— 下一步领`,
+      note: `${label}：备份=${read.curMonthBackup === undefined ? '没读到' : String(read.curMonthBackup)}，可领次数=${read.curMonthTaskRecordCount ?? '没读到'}${tail} —— 下一步清理`,
     };
   }
 
-  // ③ 领 —— ⚠ **必须带 `acceptDate` 这个参数**，哪怕值是空的。
-  //
-  // 抓包 §3.6.6 说"真实客户端发的是裸 GET、别写成 `?acceptDate=`"，
-  // 而**真机实测把它推翻了**（2026-10-14）：
-  //   裸 GET        ⇒ HTTP 404（网关路由不到，回的是 nginx 的 404 页）
-  //   `?acceptDate=` ⇒ HTTP 200（`{"code":500,"msg":"云朵已过领取有效期～"}`）
-  // 抓包记的是"客户端实际发出了什么"—— 当时那个值是 `undefined`、axios 丢了键，
-  // 而那个请求**本身就是失败的**。抓包把"客户端发了什么"当成了"正确的形状"。
-  // ⇒ 参数的存在是路由条件；值从 ① 读里取，取不到就发空值（空值也能路由）。
-  const res = callRawText(
-    deps.transport,
-    signedGet(deps, `/ycloud/signin/page/receiveTaskExpansion?acceptDate=${st.acceptDate ?? ''}`),
-  );
-  save(deps, { ...st, step: 'done' });
-  if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? '未知失败'}` };
-  let out: Record<string, unknown> | undefined;
-  try {
-    out = JSON.parse(res.text) as Record<string, unknown>;
-  } catch {
-    out = undefined;
-  }
-  // ⚠ `result` 是**裸数字**（实拍 `result: 100`），不是对象 —— 所以两种都认，
-  //   认不出来就如实回显原文，**不编一个"领到 N 个"**
-  // ⚠ 判据：这一族**没有统一的成功码**（`app_signin.rs:531`），但 `code` 在场且不是
-  //   那几个成功值时，那就是**失败** —— 别把 `code:500` 报成 `ok: true`
-  //   （文案是真的、`ok` 也得是真的，否则面板会把失败画成成功）。
-  const code = out?.code;
-  const codeOk = code === undefined || code === 0 || code === '0' || code === '0000';
-  const raw = out?.result;
-  const detail =
-    typeof raw === 'number'
-      ? `${raw}（这一族的 result 是裸数字）`
-      : `${res.text.slice(0, 120)}（⚠ 这一枪**缺成功样本**，形状没被实拍验过）`;
-  if (!codeOk) {
-    const msg = typeof out?.msg === 'string' ? out.msg : '';
-    return { ok: false, note: `${label}：服务端拒绝 —— code=${String(code)}${msg === '' ? '' : ` ${msg}`}` };
-  }
-  return { ok: true, note: `${label}：服务端回 ${detail}` };
+  return { ok: false, note: `${label}：不认识的步骤` };
 }
-
-/** 触发备份用的那个文件：**确定**内容（夹具与摘要都可复现）。 */
-export const EXPAND_FILE_NAME = 'panel-backup-marker.txt';
-export const EXPAND_FILE_SEED = 'mcloud-panel-backup-marker-v1';
-export const EXPAND_FILE_BYTES = 256;
 
 function withBase(deps: TaskDeps, path: string): string {
   // ⚠ 空串必须当成"没给"（见 `hostBase` 那段说明）

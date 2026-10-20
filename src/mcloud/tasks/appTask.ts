@@ -33,9 +33,9 @@ import { parseAuth } from '../auth.ts';
 import { uuidV4 } from '../rand.ts';
 import { utf8 } from '../../crypto/bytes.ts';
 import { judgeItem, readMatrix } from './appTaskMatrix.ts';
-import { runUploadStep, startUpload, uploadDone } from './upload.ts';
+import { loadUpload, runUploadStep, startUpload, uploadDone } from './upload.ts';
 import { readMonthBackup } from './taskExpansion.ts';
-import { cloudFileOpHeaders, deterministicFile } from '../cloudUpload.ts';
+import { cloudFileOpHeaders, deterministicFile, randomHex } from '../cloudUpload.ts';
 import { monthGateSkips, shouldSkip, stepFor, uploadShapeFor } from '../appTaskRules.ts';
 import type { AppRunner, TaskStep } from '../appTaskRules.ts';
 import { parseSsoToken } from '../h5session.ts';
@@ -162,8 +162,25 @@ interface TaskState {
   data?: Record<string, string> | undefined;
   /** 本轮为这条任务传上去的文件 id（收尾要用）。**没有就不发收尾那一枪。** */
   fileId?: string | undefined;
-  /** 已经点过的那些（防重发 —— `task/click` 不可回滚）。 */
+  /** 已经点过的那些（防重发 —— `task/click` 不可回滚）。
+   *  ⚠ 这不是"成功"名单：只有矩阵回 `FINISH` 才算成功；
+   *  收摊时仍待办的那些会被移到 `unconfirmed`，**不留在 clicked**，好让下一趟重试。 */
   clicked: number[];
+  /** 点了/传了，但服务端状态仍不是 `FINISH` 的条目（本地动作 ≠ 成功）。 */
+  unconfirmed?: number[] | undefined;
+  /** 这条已经走起来了（`currStep != 0`）⇒ 按参考实现**不再打卡**，只做动作。
+   *  上传族尤其重要：106 `currstep=1` 时旧实现不发 `task/click`。 */
+  skipClick?: boolean | undefined;
+  /** 上传族「先打卡、再传文件」：打完卡后下一步要起上传（参考实现 106 的顺序）。 */
+  uploadAfter?: boolean | undefined;
+  /** 这一条是否已经发过访问日志（参考实现是 `task/click` **之后**再发 visitlog）。 */
+  journaled?: boolean | undefined;
+  /** 起这条时的 `currStep`（日志里说"已走到第 N 步"要用）。 */
+  currStep?: number | undefined;
+  /** `unconfirmed` 记录属于哪一天；跨天别拿昨天的"未确认"挡今天。 */
+  retryDay?: string | undefined;
+  /** 当天已经重试过几次（**只做日志/诊断**，不参与封顶）。 */
+  retryCount?: number | undefined;
   /** ⚠ 上面那份名单**按天重置**：矩阵读数是**慢**的（8 个 group 轮着读），
    *  所以同一份读数会被反复消费；不清名单就会重复点，清得太早又会在读数刷新前重点。
    *  按天划一条线 —— 一天之内绝不重复点同一条。 */
@@ -225,13 +242,32 @@ export function clickRequest(
  *  体（mcloud 逐字）：`module=uservisit&optkeyword=139newsignin_index_task_<id>&sourceid=1077&marketName=<mn>`
  *
  *  ⚠ 这一枪我一开始**整个漏了** —— 少了它，打卡回 200 但状态不变。 */
+/** 打卡之后补访问日志（参考实现 `click_with_key()` 的第二发）。
+ *  只发一次；失败也只记明细，不挡后面的动作。 */
+function journalOnce(deps: TaskDeps, st: TaskState): { note: string; state: TaskState } {
+  if (st.journaled === true) return { note: '', state: st };
+  const market = st.data?.marketName ?? 'sign_in_3';
+  const res = callRawText(deps.transport, journalingRequest(deps, st.itemId, market));
+  return {
+    note: res.ok
+      ? `访问日志已发（HTTP ${res.status}）`
+      : `访问日志没发出去（${res.error ?? '未知失败'}）`,
+    state: { ...st, journaled: true },
+  };
+}
+
 export function journalingRequest(deps: TaskDeps, taskId: number, marketname = 'sign_in_3'): BuiltRequest {
   const session = loadSession(deps.store);
   return {
     url: `${CLICK_HOST}${JOURNALING_PATH}`,
     method: 'POST',
     headers: {
+      // ⚠ 参考实现 `visitlog_journaling_request()`：**不是**通用 H5 那两枚头，
+      //   `activityid` 跟本条任务的 marketName 走、`appversion` 是 11.4.1.0。
+      //   缺这两枚时上游照样回 code 0，但**不记账**（106 真机踩过）。
       'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+      activityid: marketname,
+      appversion: '11.4.1.0',
       ...(session ? sessionHeaders(session) : {}),
     },
     body:
@@ -297,30 +333,36 @@ function advance(deps: TaskDeps, st: TaskState): TaskOutcome {
   const clicked = freshClicked(st, deps);
   const next = pendingItems(deps).find((p) => !clicked.includes(p.itemId));
   if (!next) {
-    // ⚠ **不清空**：清成 `''` 会把"今天点过"那份名单一起毁掉，于是下一趟
-    //   拿着同一份（没刷新的）读数就会**重复点**。标成 `done` 把名单留着。
+    // ⚠⚠ **本地动作 ≠ 成功**：只有上游矩阵回 `FINISH` 才算。
+    //   先算"点了但仍是待办"的，把它们从 `clicked` 里**移出去**，否则下一趟会
+    //   以为"今天已经点过"而永远不重试（106 上传就是这么被卡住的）。
+    const dead = clickedButIneffective(deps, { ...st, clicked });
+    const kept = clicked.filter((id) => !dead.includes(id));
+    const retryCount = dead.length > 0 ? (st.retryCount ?? 0) + 1 : 0;
     save(deps, {
       ...st,
       phase: 'done',
       fileId: undefined,
       special: undefined,
       data: undefined,
-      clicked,
+      clicked: kept,
+      unconfirmed: dead,
+      retryDay: today(deps),
+      retryCount,
       day: today(deps),
     });
-    // ⚠ 收摊时**必须**把"点了但状态没变"的那些报出来 —— 否则面板上会是一句
-    //   "都走完了"，而实际上一大半根本没生效（真机上就是这样）。
-    const dead = clickedButIneffective(deps, { ...st, clicked });
     const warn =
       dead.length === 0
         ? ''
-        : `。⚠ 其中 ${dead.length} 条**点了但状态没变**（#${dead.join('、')}）—— ` +
-          'HTTP 200 只说明"请求被接受了"。这类多半要**先做那个动作**（开启备份 / 开启通知），' +
-          '光点一下不算数';
+        : `。⚠ 其中 ${dead.length} 条**点了但状态没变 / 本地动作做了但服务端未完成**（#${dead.join('、')}）—— ` +
+          'HTTP 200 / 本机已上传都不算成功，只有矩阵回 FINISH 才算；下一趟会重试';
     return { ok: dead.length === 0, note: `待办都走完了（这一趟点了 ${clicked.length} 条）${warn}` };
   }
   // 434 需要“手里有文件”。本趟传过就直接用；没有就先传一个。
-  let phase: TaskPhase = next.needUpload ? 'upload' : 'visit';
+  // ⚠ 上传族顺序照参考实现：`currStep=0` ⇒ **先打卡，再传文件**；
+  //   已经走起来（currStep!=0）⇒ 不打卡，直接传。
+  const clickFirst = next.needUpload && (next.currStep === undefined || next.currStep === 0);
+  let phase: TaskPhase = next.needUpload ? (clickFirst ? 'click' : 'upload') : 'click';
   if (next.step.kind === 'share') {
     const up = (() => {
       try {
@@ -334,7 +376,7 @@ function advance(deps: TaskDeps, st: TaskState): TaskOutcome {
       phase = 'upload';
     }
   }
-  if (next.needUpload) beginUpload(deps, next.itemId, next.name);
+  if (next.needUpload && !clickFirst) beginUpload(deps, next.itemId, next.name);
   const special: Special | undefined =
     next.step.kind === 'entry'
       ? 'entry'
@@ -354,17 +396,25 @@ function advance(deps: TaskDeps, st: TaskState): TaskOutcome {
   ) {
     phase = phaseOfSpecial(special) ?? phase;
   }
+  // 参考实现 `should_click()`：`currstep == 0` 才打卡；已经走起来的不再打，
+  // 但门照样通过、动作照做。上传族（106/113/522）在 `currstep=1` 时就是这一档。
+  const skipClick = next.step.kind === 'upload' && next.currStep !== undefined && next.currStep !== 0;
+  // currStep != 0 的上传任务不打卡；先把它记成"动作已做"，否则传完会再走一遍 visit/click。
+  const markHandled = skipClick && !clicked.includes(next.itemId);
   save(deps, {
     gi: next.gi,
     ii: next.ii,
     phase,
     itemId: next.itemId,
     special,
+    skipClick,
+    uploadAfter: clickFirst,
+    currStep: next.currStep,
     data: {
       marketName: next.marketName,
       link: next.buttonEmailLink ?? next.buttonAppLink ?? '',
     },
-    clicked,
+    clicked: markHandled ? [...clicked, next.itemId] : clicked,
     day: today(deps),
   });
   return { ok: true, note: `下一条 #${next.itemId}（「${next.name}」）` };
@@ -455,9 +505,19 @@ export function pendingItems(deps: TaskDeps): Pending[] {
  *  ⚠ 这一步不能省：`runUploadStep` 是"推进一步"的语义 —— 没有排队的上传时它回
  *  `idle`，于是"传文件"那条腿会**一步都不走**，而流程却以为已经传完了。 */
 function beginUpload(deps: TaskDeps, itemId: number, name: string): void {
+  // ⚠ 随机名 + 随机内容（mcloud 的 `random_plan_with_ext`）：固定内容会命中秒传，
+  //    固定名字会撞用户文件；这一条要的是“真的传一个文件”。
+  const seed = randomHex(16);
+  void itemId;
+  void name;
   startUpload(deps, {
-    name: `${name}.bin`,
-    bytes: deterministicFile(`app-task-${itemId}`, 256),
+    name: `asign-${randomHex(8)}.bin`,
+    bytes: deterministicFile(seed, 256),
+    seed,
+    renameMode: 'force_rename',
+    parallelUpload: false,
+    // ⚠ 手动上传支**不带** localCreatedAt（备份支才带；见 Rust app_task.rs）。
+    op: 'upload',
   });
 }
 
@@ -485,13 +545,32 @@ function beginPdfUpload(deps: TaskDeps): number {
   return ts;
 }
 
+/** 今天这一趟是否已经有状态。跨天的 `done` 不算 —— 否则昨天的「做完了」会把今天永远挡住。 */
+export function appTaskFresh(deps: TaskDeps): boolean {
+  const st = load(deps);
+  if (st === null || st.day !== today(deps)) return false;
+  // 本机动过、服务端仍是待办 ⇒ 不能算"今天做完了"。
+  // ⚠ 用户口径：**不限制重试次数** —— 只要服务端没确认，下一趟就继续试。
+  //   重试次数只用于日志/诊断，不参与"今天做完了"的判断。
+  const pend = pendingItems(deps);
+  const stillTodo = (id: number): boolean => pend.some((p) => p.itemId === id);
+  const dead = [
+    ...clickedButIneffective(deps, st),
+    ...(st.unconfirmed ?? []).filter(stillTodo),
+  ];
+  return dead.length === 0;
+}
+
 /** 起一趟（**一个请求都不发**）。 */
 export function startAppTask(deps: TaskDeps): TaskOutcome {
   // ⚠ **今天的"已点过"名单要接着用**：矩阵读数是慢的（8 个 group 轮着读），
   //   所以同一份读数会被反复消费 —— 起新一趟时若把名单清成 `[]`，
   //   那些今天已经点过的条目就会被**重复点**（而 `task/click` 不可回滚）。
   const prev = load(deps);
-  const clicked = prev ? freshClicked(prev, deps) : [];
+  // ⚠ 上一趟"点过"不等于成功：仍待办的必须从名单里剔掉，否则会走进
+  //   `todo.length===0` 的 idle 分支，永远不重试（106 的现场就是这样）。
+  const dead = prev ? clickedButIneffective(deps, prev) : [];
+  const clicked = (prev ? freshClicked(prev, deps) : []).filter((id) => !dead.includes(id));
   const all = pendingItems(deps);
   // 说人话：能替你做的一条都没有；剩下的要么得你去 App 里点，要么还没搬。
   // ⚠ 这个数以前永远是 0（`lastSkipped` 只读不写），于是日志把“没搬”说成了“没有”。
@@ -511,7 +590,9 @@ export function startAppTask(deps: TaskDeps): TaskOutcome {
     };
   }
   const first = todo[0]!;
-  let phase: TaskPhase = first.needUpload ? 'upload' : 'visit';
+  // 与 `advance` 同一条顺序：上传族先打卡，再上传。
+  const clickFirst = first.needUpload && (first.currStep === undefined || first.currStep === 0);
+  let phase: TaskPhase = first.needUpload ? (clickFirst ? 'click' : 'upload') : 'click';
   if (first.step.kind === 'share') {
     const up = (() => {
       try {
@@ -525,7 +606,7 @@ export function startAppTask(deps: TaskDeps): TaskOutcome {
       phase = 'upload';
     }
   }
-  if (first.needUpload) beginUpload(deps, first.itemId, first.name);
+  if (first.needUpload && !clickFirst) beginUpload(deps, first.itemId, first.name);
   const special: Special | undefined =
     first.step.kind === 'entry'
       ? 'entry'
@@ -543,17 +624,23 @@ export function startAppTask(deps: TaskDeps): TaskOutcome {
   ) {
     phase = phaseOfSpecial(special) ?? phase;
   }
+  // 同 `advance`：上传族已经走起来（currStep != 0）⇒ 不打卡。
+  const skipClick = first.step.kind === 'upload' && first.currStep !== undefined && first.currStep !== 0;
+  const markHandled = skipClick && !clicked.includes(first.itemId);
   save(deps, {
     gi: first.gi,
     ii: first.ii,
     phase,
     itemId: first.itemId,
     special,
+    skipClick,
+    uploadAfter: clickFirst,
+    currStep: first.currStep,
     data: {
       marketName: first.marketName,
       link: first.buttonEmailLink ?? first.buttonAppLink ?? '',
     },
-    clicked,
+    clicked: markHandled ? [...clicked, first.itemId] : clicked,
     day: today(deps),
   });
   return { ok: true, note: `已排队 ${todo.length} 条待办（今天已点过 ${clicked.length} 条），从 #${first.itemId} 开始` };
@@ -628,11 +715,25 @@ function specialPhase(st: TaskState): TaskPhase | undefined {
 
 /** 推进一步，一次调用一个请求。 */
 export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
-  const st = load(deps);
-  if (!st) return { ok: true, idle: true, note: '没有在跑的 app-task' };
+  const loaded = load(deps);
+  if (!loaded) return { ok: true, idle: true, note: '没有在跑的 app-task' };
+  let st: TaskState = loaded;
   if (st.phase === 'done') {
-    // 括号里那句是给排查用的，用户不需要 —— 只说做完了
-    return { ok: true, idle: true, note: '这一趟做完了' };
+    // ⚠ 不能只说"做完了"：本地动作做了、服务端仍未确认的，要如实说出来。
+    //   否则日志会把"106 还没完成"报成成功（用户现场就是这么被误导的）。
+    const pend = pendingItems(deps);
+    const stillTodo = (id: number): boolean => pend.some((p) => p.itemId === id);
+    const dead = [
+      ...clickedButIneffective(deps, st),
+      ...(st.unconfirmed ?? []).filter(stillTodo),
+    ];
+    return dead.length === 0
+      ? { ok: true, idle: true, note: '这一趟做完了（服务端已确认）' }
+      : {
+          ok: false,
+          idle: true,
+          note: `这一趟没有全确认：${dead.length} 条本机动过、服务端仍是待办（#${dead.join('、')}）—— 下一趟继续重试（不设上限）`,
+        };
   }
 
   const pend = pendingItems(deps);
@@ -644,19 +745,45 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
 
   // ① 传文件（需要时才走；它自己是三枪的状态机）
   if (st.phase === 'upload') {
-    if (uploadDone(deps)) {
-      const up = JSON.parse(deps.store.getState('mcloud.upload.state') ?? '{}') as { fileId?: string };
-      save(deps, { ...st, phase: 'visit', fileId: up.fileId, day: today(deps) });
-      return { ok: true, note: `文件已传完（收尾要用它的 id）—— 下一步记访问日志` };
+    // currStep != 0 的上传族没有打卡这一发；visitlog 仍补一次（best-effort）。
+    if (st.journaled !== true) {
+      const j = journalOnce(deps, st);
+      st = j.state;
+      save(deps, st);
+      if (j.note !== '') return { ok: true, note: j.note };
     }
-    const out = runUploadStep(deps, deterministicFile(`app-task-${st.itemId}`, 256));
+    // 上传族是「先打卡、再传」：打完卡后 `clicked` 已经包含这一条。
+    // 传完不该再去 visit/click（那会重复打），有我们造的文件就收尾，否则换下一条。
+    const base = st;
+    const afterClick = freshClicked(base, deps).includes(base.itemId);
+    const finishUpload = (ours: string | undefined): TaskOutcome => {
+      if (afterClick) {
+        if (ours !== undefined) {
+          save(deps, { ...base, phase: 'trash', fileId: ours, day: today(deps) });
+          return { ok: true, note: '文件已传完 —— 下一步收尾' };
+        }
+        const out = advance(deps, base);
+        return { ok: true, note: `文件已传完（不是我们造的）—— ${out.note}` };
+      }
+      save(deps, { ...base, phase: 'visit', fileId: ours, day: today(deps) });
+      return {
+        ok: true,
+        note: ours ? '文件已传完（收尾要用它的 id）—— 下一步记访问日志' : '文件已传完，但不是我们造的 ⇒ 不收尾',
+      };
+    };
+    if (uploadDone(deps)) {
+      const up = loadUpload(deps);
+      return finishUpload(up?.ownedByUs === true ? up.fileId : undefined);
+    }
+    const out = runUploadStep(deps);
     if (out.idle) {
-      save(deps, { ...st, phase: 'visit', day: today(deps) });
-      return { ok: true, note: '没有待传的 —— 下一步记访问日志' };
+      // 没有上传状态（或旧的已失效）：重新起一个，不能当成传完。
+      beginUpload(deps, st.itemId, '');
+      return { ok: true, note: '没有在排队的上传 —— 重新起一个' };
     }
     if (uploadDone(deps)) {
-      const up = JSON.parse(deps.store.getState('mcloud.upload.state') ?? '{}') as { fileId?: string };
-      save(deps, { ...st, phase: 'visit', fileId: up.fileId, day: today(deps) });
+      const up = loadUpload(deps);
+      return finishUpload(up?.ownedByUs === true ? up.fileId : undefined);
     }
     return out;
   }
@@ -671,41 +798,75 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
 
   // ② 打卡
   if (st.phase === 'click') {
+    if (st.skipClick === true) {
+      // ⚠ 参考实现：已经走起来的条目不再打卡，但动作照做。
+      //   106 `currstep=1` 属于这一档；以前我们照点，结果服务端一直 WAIT。
+      // 不打卡也要把它记成"这条动作做过了"，否则 advance 会立刻又选中同一条，
+      // 上传会无限重来。后续仍未 FINISH ⇒ 收摊时进 unconfirmed，下一趟重试。
+      const handled = [...freshClicked(st, deps), st.itemId];
+      beginUpload(deps, st.itemId, '');
+      save(deps, {
+        ...st,
+        phase: 'upload',
+        clicked: handled,
+        skipClick: undefined,
+        uploadAfter: false,
+        day: today(deps),
+      });
+      return { ok: true, note: `#${st.itemId} 已走到第 ${st.currStep ?? '?'} 步 —— 按参考实现不打卡，直接传文件` };
+    }
     if (freshClicked(st, deps).includes(st.itemId)) {
       // ⚠ 不重发（`task/click` 不可回滚），而且**必须换下一条** ——
       //   早先这里把 phase 又设回 `click`，于是永远停在同一条上（真机上一眼看出来的）。
-      const sp = specialPhase(st);
+      const j = journalOnce(deps, st);
+      const stj = j.state;
+      const jn = j.note !== '' ? `；${j.note}` : '';
+      if (stj.uploadAfter === true) {
+        beginUpload(deps, stj.itemId, '');
+        save(deps, { ...stj, phase: 'upload', uploadAfter: false, day: today(deps) });
+        return { ok: true, note: `#${stj.itemId} 今天已经点过了 —— 不重发，去传文件${jn}` };
+      }
+      const sp = specialPhase(stj);
       if (sp !== undefined) {
-        save(deps, { ...st, phase: sp, day: today(deps) });
-        return { ok: true, note: `#${st.itemId} 今天已经点过了 —— 不重发，去做「${sp}」` };
+        save(deps, { ...stj, phase: sp, day: today(deps) });
+        return { ok: true, note: `#${stj.itemId} 今天已经点过了 —— 不重发，去做「${sp}」${jn}` };
       }
-      if (st.fileId) {
-        save(deps, { ...st, phase: 'trash', day: today(deps) });
-        return { ok: true, note: `#${st.itemId} 今天已经点过了 —— 不重发，去收尾` };
+      if (stj.fileId) {
+        save(deps, { ...stj, phase: 'trash', day: today(deps) });
+        return { ok: true, note: `#${stj.itemId} 今天已经点过了 —— 不重发，去收尾${jn}` };
       }
-      const out = advance(deps, st);
-      return { ok: true, note: `#${st.itemId} 今天已经点过了 —— 不重发。${out.note}` };
+      const out = advance(deps, stj);
+      return { ok: true, note: `#${stj.itemId} 今天已经点过了 —— 不重发。${jn}${out.note}` };
     }
     const res = callRawText(deps.transport, clickRequest(deps, st.itemId));
     if (!res.ok) return { ok: false, note: `打卡 #${st.itemId} 失败：${res.error ?? '未知失败'}` };
     // 点了就记下来（哪怕响应不理想 —— 不可回滚的东西不能"当没发过"）
     const clicked = [...freshClicked(st, deps), st.itemId];
-    const sp = specialPhase(st);
+    // 参考实现：`task/click` 之后补一发 visitlog（`click_with_key` 的第二发）。
+    const j = journalOnce(deps, { ...st, clicked });
+    const stj = j.state;
+    const jn = j.note !== '' ? `；${j.note}` : '';
+    const sp = specialPhase(stj);
     if (sp !== undefined) {
-      save(deps, { ...st, phase: sp, clicked, day: today(deps) });
-      return { ok: true, note: `打卡 #${st.itemId}（HTTP ${res.status}）—— 下一步「${sp}」` };
+      save(deps, { ...stj, phase: sp, day: today(deps) });
+      return { ok: true, note: `打卡 #${stj.itemId}（HTTP ${res.status}）${jn} —— 下一步「${sp}」` };
     }
-    if (st.fileId) {
-      save(deps, { ...st, phase: 'trash', clicked, day: today(deps) });
-      return { ok: true, note: `打卡 #${st.itemId}（HTTP ${res.status}）—— 下一步收尾` };
+    if (stj.uploadAfter === true) {
+      beginUpload(deps, stj.itemId, '');
+      save(deps, { ...stj, phase: 'upload', uploadAfter: false, day: today(deps) });
+      return { ok: true, note: `打卡 #${stj.itemId}（HTTP ${res.status}）${jn} —— 下一步传文件` };
     }
-    const out = advance(deps, { ...st, clicked });
+    if (stj.fileId) {
+      save(deps, { ...stj, phase: 'trash', day: today(deps) });
+      return { ok: true, note: `打卡 #${stj.itemId}（HTTP ${res.status}）${jn} —— 下一步收尾` };
+    }
+    const out = advance(deps, stj);
     // ⚠ **要把 `advance` 的结论带出去**：这一趟可能以"有条目点了没生效"收摊，
     //   那时 `advance` 回 `ok: false` —— 吞掉它就会把"没生效"报成成功。
     //   （打卡本身回 200 是真的，但**整趟的结论**不是"成功"。）
     return {
       ok: out.ok,
-      note: `打卡 #${st.itemId}（HTTP ${res.status}）—— 这条没有要收尾的文件。${out.note}`,
+      note: `打卡 #${st.itemId}（HTTP ${res.status}）${jn} —— 这条没有要收尾的文件。${out.note}`,
     };
   }
 

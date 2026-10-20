@@ -9,11 +9,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { STATE_STAGE, runSign } from '../src/mcloud/tasks/sign.ts';
+import { STATE_SIGN_DONE, STATE_STAGE, runSign } from '../src/mcloud/tasks/sign.ts';
 import { STATE_QUEUE, readAcceptDate, receiveV3Body, runReceive } from '../src/mcloud/tasks/receive.ts';
-import { runMultiple } from '../src/mcloud/tasks/multiple.ts';
+import { STATE_MULTIPLE_DONE, runMultiple } from '../src/mcloud/tasks/multiple.ts';
 import {
   REVIVAL_SKIP_AFTER_MS,
+  STATE_REVIVAL_DONE,
   revivalMessageAlreadyClaimed,
   runRevival,
 } from '../src/mcloud/tasks/revival.ts';
@@ -123,13 +124,13 @@ test('sign：三段式（问 → 提交 → 回查），判据是 infoV3 不是�
   assert.match(s2.note, /回查.*确认今日已签/);
   assert.equal(store.getState(STATE_STAGE), '', '完成了要把阶段清掉');
 
-  // ③ 已经签过了 → 只问一次状态，不发动作
+  // ③ 已经签过了 → 一个请求都不发（今天已签的标记直接挡住）
   r.sent.length = 0;
   const s3 = runSign({ store, transport, nowIso: NOW, lateMs: 0 });
   assert.equal(s3.ok, true);
+  assert.equal(s3.idle, true);
   assert.match(s3.note, /网盘今日已签到/);
-  assert.equal(r.sent.length, 1);
-  assert.match(r.sent[0]!, /infoV3/);
+  assert.equal(r.sent.length, 0, '今天已签就不该再问一次');
 });
 
 test('sign：提交了但状态没变 → 如实报失败（不能自我安慰）', () => {
@@ -160,6 +161,12 @@ test('multiple：门槛不成立时一个请求都不发', () => {
   const ob = runMultiple({ store: b, transport: rb.transport, nowIso: NOW, lateMs: 0 });
   assert.equal(ob.skipped, true);
   assert.equal(rb.sent.filter((u) => /page\/multiple/.test(u)).length, 0, '已用过就不该再发');
+  assert.equal(b.getState(STATE_MULTIPLE_DONE), NOW.slice(0, 7), '记下这个月已翻倍');
+  // 记下之后，同一月后面几趟连 infoV3 都不该再问
+  const rbBefore = rb.sent.length;
+  const ob2 = runMultiple({ store: b, transport: rb.transport, nowIso: NOW, lateMs: 0 });
+  assert.equal(ob2.skipped, true);
+  assert.equal(rb.sent.length, rbBefore, '整月不再发请求');
 
   // 有机会且没用过 → 发
   const c = seeded();
@@ -199,21 +206,45 @@ test('revival：不可逆 —— 晚太久不发；「已领取」算完成不�
 
   // 上游回「已领取复活卡」→ 算完成
   const done = seeded();
-  const outDone = runRevival({
-    store: done,
-    transport: () => ({
+  let doneCalls = 0;
+  const doneTransport: Transport = () => {
+    doneCalls += 1;
+    return {
       status: 200,
       headers: {},
       body: JSON.stringify({ code: 4001, msg: '复活卡已领取' }),
-    }),
-    nowIso: NOW,
-    lateMs: 0,
-  });
+    };
+  };
+  const outDone = runRevival({ store: done, transport: doneTransport, nowIso: NOW, lateMs: 0 });
   assert.equal(outDone.ok, true, '「已领取」是完成，不是失败');
   // 文案换了：不写 `okWhenError` 这种代码里的名字，也不糊 `code=… msg=…`
   assert.match(outDone.note, /已经做过了/);
   assert.ok(!/okWhenError/.test(outDone.note), '不许把代码里的名字给用户看');
   assert.equal(done.getState('mcloud.last_error.revival'), '', '不该留下失败记录');
+  assert.equal(done.getState(STATE_REVIVAL_DONE), NOW.slice(0, 7), '记下这个月已领过');
+
+  // 记下之后，同一月后面几趟一个请求都不发
+  const outDone2 = runRevival({ store: done, transport: doneTransport, nowIso: NOW, lateMs: 0 });
+  assert.equal(outDone2.skipped, true);
+  assert.equal(doneCalls, 1, '整月不再发请求');
+
+  // 「上一年无云朵记录」= 没得领，不是失败；但本月记下，别再每趟问
+  const noRecord = seeded();
+  let noRecordCalls = 0;
+  const noRecordTransport: Transport = () => {
+    noRecordCalls += 1;
+    return { status: 200, headers: {}, body: JSON.stringify({ code: 500, msg: '2025年无云朵记录' }) };
+  };
+  const outNoRecord = runRevival({ store: noRecord, transport: noRecordTransport, nowIso: NOW, lateMs: 0 });
+  assert.equal(outNoRecord.ok, true, '没记录不是失败');
+  assert.equal(outNoRecord.skipped, true);
+  assert.match(outNoRecord.note, /没有可复活的记录/);
+  assert.doesNotMatch(outNoRecord.note, /没成/);
+  assert.equal(noRecord.getState('mcloud.last_error.revival'), '', '不该留下失败标记');
+  assert.equal(noRecord.getState(STATE_REVIVAL_DONE), NOW.slice(0, 7), '本月记下，不再问');
+  const outNoRecord2 = runRevival({ store: noRecord, transport: noRecordTransport, nowIso: NOW, lateMs: 0 });
+  assert.equal(outNoRecord2.skipped, true);
+  assert.equal(noRecordCalls, 1, '当前月不再发请求');
 
   // 其它错误仍算失败
   const bad = seeded();
@@ -285,6 +316,37 @@ test('receive：清单入队 → 逐条领（一次一条，两种 cloudType 各
   assert.match(r4.note, /无待领取的云朵/);
 });
 
+test('receive：队头的「下月可领」不许挡住后面今天可领的', () => {
+  const store = seeded();
+  store.setState(
+    STATE_QUEUE,
+    JSON.stringify([
+      { recordId: 'next', cloudType: 2, raw: { cloudType: 2, cloudNum: 164 } },
+      { recordId: 'now', cloudType: 0, raw: { cloudType: 0, cloudNum: 6 } },
+    ]),
+    NOW,
+  );
+  const received: string[] = [];
+  const transport: Transport = (req) => {
+    if (/receiveV3/.test(req.url)) {
+      const b = JSON.parse(req.body ?? '{}') as { cloudId?: string };
+      received.push(b.cloudId ?? '');
+      return {
+        status: 200,
+        headers: {},
+        body: JSON.stringify({ code: 0, msg: 'success', result: { receive: 6, total: 9000 } }),
+      };
+    }
+    return { status: 404, headers: {}, body: '{}' };
+  };
+  const out = runReceive({ store, transport, nowIso: NOW, lateMs: 0 });
+  assert.equal(out.ok, true);
+  assert.equal(out.skipped, undefined, '不能因为队头是下月就停掉');
+  assert.deepEqual(received, ['now'], '要跨过下月那条，领到今天可领的');
+  assert.match(out.note, /领到 6 个云朵/);
+  assert.equal(JSON.parse(store.getState(STATE_QUEUE)!).length, 0);
+});
+
 test('延期领取：裸 GET（绝不发出 ?acceptDate=），且 dig 掉队列里那一条', () => {
   // `acceptDate` 有才带 —— 真实清单里没有这个字段，所以缺省路径是"裸 GET"。
   // 写成空串会发出 `?acceptDate=`，那是另一个请求（原实现专门警告过）。
@@ -338,7 +400,8 @@ test('⚠ 动作响应明确说「今天已签」时，别死等 infoV3（现场
   // 紧接着 `infoV3` 还是 `false`，用户手机上打开 App 一看**确实签上了**。
   // 只认 infoV3 的结果是 `need-verify` 卡死、每一趟报一次失败。
   const store = seeded();
-  const { transport } = router([
+  let calls = 0;
+  const { transport: base } = router([
     [/infoV3/, () => infoOk({ signed: false })],
     [
       /startSignIn/,
@@ -346,9 +409,21 @@ test('⚠ 动作响应明确说「今天已签」时，别死等 infoV3（现场
         JSON.stringify({ code: 0, msg: 'success', result: { todaySignIn: true, signInPoints: 3, signCount: 17 } }),
     ],
   ]);
+  const transport: Transport = (req) => {
+    calls += 1;
+    return base(req);
+  };
   const out = runSign({ store, transport, nowIso: NOW } as never);
   assert.equal(out.ok, true, '响应说签上了就是成了');
-  assert.match(out.note, /网盘签到成功/);
+  assert.match(out.note, /网盘签到成功，获得 3 云朵/);
   // 不再挂"待回查"（挂着就会下一趟再回查、再报失败）
   assert.equal(store.getState(STATE_STAGE) ?? '', '', '不该留 need-verify');
+  assert.equal(store.getState(STATE_SIGN_DONE), NOW.slice(0, 10), '记下今天已签');
+
+  // 第二趟：只报「已签到」，不再发 startSignIn、也不再刷 success
+  const before = calls;
+  const again = runSign({ store, transport, nowIso: NOW } as never);
+  assert.equal(again.idle, true);
+  assert.match(again.note, /网盘今日已签到/);
+  assert.equal(calls, before, '今天已签就不该再发请求');
 });

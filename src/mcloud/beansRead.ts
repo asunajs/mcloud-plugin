@@ -38,6 +38,36 @@ import {
   type BeanRecords,
 } from './beans.ts';
 
+/** 今日汇总 / 当前余额的缓存时长。用户口径：2 小时。 */
+export const BEANS_CACHE_TTL_MS = 2 * 60 * 60 * 1000;
+
+/** 缓存落在**账号自己的袋**里（余额和流水都是这个账号的）。 */
+export const STATE_BEANS_CACHE = 'mcloud.beans.cache';
+
+export interface BeansCache {
+  day?: { atMs: number; dayStart: number; day: BeanDay };
+  balance?: { atMs: number; value: number | null; reason?: string };
+}
+
+export function loadBeansCache(store: Pick<Store, 'getState'>): BeansCache {
+  const raw = store.getState(STATE_BEANS_CACHE);
+  if (raw === null || raw === '') return {};
+  try {
+    const x = JSON.parse(raw) as unknown;
+    return typeof x === 'object' && x !== null ? (x as BeansCache) : {};
+  } catch {
+    return {};
+  }
+}
+
+export function saveBeansCache(
+  store: Pick<Store, 'setState'>,
+  cache: BeansCache,
+  nowIso: string,
+): void {
+  store.setState(STATE_BEANS_CACHE, JSON.stringify(cache), nowIso);
+}
+
 /** 这一层要用的东西：一个已经作用到某账号的 store，加传输与基址。 */
 export interface BeanAccountDeps {
   /** ⚠ **必须是 `scoped(rawStoreOf(base), acctId)` 出来的那一份** ——

@@ -24,6 +24,11 @@ import {
   buildCompleteRequest,
   buildCreateRequest,
   buildPutRequest,
+  buildSnapshotCompleteRequest,
+  buildSnapshotCreateRequest,
+  parseSnapshotComplete,
+  parseSnapshotCreate,
+  snapshotCreateBody,
   completeBody,
   contentHashOf,
   createBody,
@@ -243,4 +248,71 @@ test('`latin1FromBytes`：每字符一字节，且**大体不炸**（沙箱里 a
 test('渠道是枚举的两个真值（没有"未识别走 web 兜底"那一档）', () => {
   assert.equal(CHANNEL_ANDROID, '10000023');
   assert.equal(CHANNEL_PC, '10200153');
+});
+
+
+test('⚠ 快照 createSnapshot：体 7 键，partInfos 没有 parallelHashCtx', () => {
+  const body = JSON.parse(
+    snapshotCreateBody({
+      fileExtension: 'zip',
+      count: 1,
+      size: 22,
+      contentHash: 'H',
+      timestampMs: 123,
+    }),
+  ) as Record<string, unknown>;
+  assert.deepEqual(Object.keys(body).sort(), [
+    'contentHash',
+    'contentHashAlgorithm',
+    'count',
+    'fileExtension',
+    'partInfos',
+    'size',
+    'timestamp',
+  ]);
+  assert.equal(body.contentHashAlgorithm, HASH_ALGORITHM);
+  assert.deepEqual(body.partInfos, [{ partNumber: 1, partSize: 22 }]);
+  const req = buildSnapshotCreateRequest({
+    fileExtension: 'zip',
+    count: 1,
+    size: 22,
+    contentHash: 'H',
+    timestampMs: 123,
+  });
+  assert.equal(req.method, 'POST');
+  assert.match(req.url, /\/hcy\/backup\/createSnapshot$/);
+  assert.equal(req.headers['x-yun-api-version'], 'v2');
+});
+
+test('快照 create 解析：三格必须齐；complete 的 data:null 也算成功', () => {
+  const create = parseSnapshotCreate(
+    JSON.stringify({
+      code: '0000',
+      data: { fileId: 'S', uploadId: 'U', rapidUpload: false, partInfos: [{ uploadUrl: 'https://s/x' }] },
+    }),
+  );
+  assert.equal(create.ok, true, create.error);
+  assert.equal(create.created?.fileId, 'S');
+  const bad = parseSnapshotCreate(JSON.stringify({ code: '0000', data: { fileId: 'S', rapidUpload: false } }));
+  assert.equal(bad.ok, false, '缺 uploadId/uploadUrl 必须报错');
+  assert.equal(parseSnapshotComplete(JSON.stringify({ code: '0000', data: null })).ok, true);
+  assert.equal(parseSnapshotComplete(JSON.stringify({ code: '500', data: null })).ok, false);
+});
+
+test('快照 PUT：op 0/0（不是照片的 2/200）', () => {
+  const { req } = buildPutRequest('https://s/x', new Uint8Array([1]), 'snapshot');
+  assert.equal(req.headers['x-yun-op-type'], '0');
+  assert.equal(req.headers['x-yun-sub-op-type'], '0');
+});
+
+test('⚠ create 的 exist：true=用户的 / false=我们的 / null 看有没有新上传会话', () => {
+  const base = { fileId: 'F', uploadId: 'U', rapidUpload: false, partInfos: [{ uploadUrl: 'https://s/x' }] };
+  const own = parseCreate(JSON.stringify({ code: 0, data: { ...base, exist: false } }));
+  assert.equal(own.created?.ownedByUs, true);
+  const user = parseCreate(JSON.stringify({ code: 0, data: { ...base, exist: true } }));
+  assert.equal(user.created?.ownedByUs, false);
+  const nil = parseCreate(JSON.stringify({ code: 0, data: { ...base, exist: null } }));
+  assert.equal(nil.created?.ownedByUs, true, 'null + 新上传会话 ⇒ 我们造的');
+  const none = parseCreate(JSON.stringify({ code: 0, data: { fileId: 'F', rapidUpload: true, exist: null } }));
+  assert.equal(none.created?.ownedByUs, undefined, '没有 uploadId 就判不了，按不删');
 });

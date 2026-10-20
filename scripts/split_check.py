@@ -267,13 +267,12 @@ def main() -> int:
             print("\n界面（脚本断言）")
             code, page = http(f"{base}/plugins/mcloud/index.html")
             check("插件页面能取到", code == 200 and "<html" in page.lower(), f"http {code}")
-            for word in ["账号", "日常", "兑换", "直播", "数据", "推送"]:
+            # 用户口径：不再维护 WebUI 的「推送」页；推送仍只作为内部能力存在。
+            for word in ["账号", "日常", "兑换", "直播", "数据"]:
                 check(f"菜单栏有「{word}」", f'>{word}</button>' in page, "菜单里找不到这个词")
-            # ⚠ 原来是 7 项（含「设置」）。那一页整个删掉了（六个地址口子 + 自检
-            #   都是搭测试环境用的，用户看不懂还会把面板指到错的地方 —— 见 F-068）。
             check(
-                "菜单栏恰好 6 项（「设置」那一页已删）",
-                page.count('class="menu-item') == 6,
+                "菜单栏恰好 5 项（「设置」「推送」两页都删了）",
+                page.count('class="menu-item') == 5,
                 f"实际 {page.count('class=\"menu-item')} 项",
             )
             check("没有「高级」开关", "adv-toggle" not in page)

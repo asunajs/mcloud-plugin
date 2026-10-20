@@ -4,10 +4,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { lineLevel } from '../src/mcloud/tasks/stepLog.ts';
+import { lineLevel, userLine } from '../src/mcloud/tasks/stepLog.ts';
 
 test('lineLevel：做了事 + 明确拿到奖励才 success', () => {
   assert.equal(lineLevel('签到：领到 3 云朵'), 'success');
+  assert.equal(lineLevel('签到：网盘签到成功，获得 3 云朵'), 'success');
+  // 参考 mcloud-sign：除第一次外，签到回的是「今日已签到」状态，不是 success
+  assert.equal(lineLevel('签到：网盘今日已签到，获得 3 云朵'), 'info');
+  assert.equal(lineLevel('签到：网盘今日已签到'), 'info');
   assert.equal(lineLevel('兑换：兑换成功！【10 元话费】'), 'success');
   assert.equal(lineLevel('领取AI豆：获得 1 个'), 'success');
   assert.equal(lineLevel('领取AI豆：领取到 146 个云朵'), 'success');
@@ -29,6 +33,12 @@ test('lineLevel：普通读数/状态是 info，不是 success', () => {
     lineLevel('消息推送奖励（问状态）：通知已被关闭，需要你在 App 里手动打开（这一步我们做不了）'),
     'warn',
   );
+});
+
+test('每月一次的任务做过之后，日志不再反复出现', () => {
+  assert.equal(userLine({ name: '签到翻倍', ok: true, note: '这个月已经翻倍过了' }), null);
+  assert.equal(userLine({ name: '复活卡', ok: true, note: '这个月已经领过复活卡了' }), null);
+  assert.notEqual(userLine({ name: '复活卡', ok: true, note: '已用掉一张卡' }), null);
 });
 
 test('lineLevel：跳过/今天已经做过是 debug', () => {

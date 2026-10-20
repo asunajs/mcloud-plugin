@@ -1,13 +1,25 @@
 {
   "name": "mcloud-plugin",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "private": true,
   "type": "module",
-  "description": "mcloud 的 JS/TS 重写版 —— 作为 rust-plugin-panel 的插件运行",
+  "description": "mcloud 的 JS/TS 重写版 —— 可作为面板插件，也可独立运行（替代 mcloud-sign）",
+  "bin": {
+    "mcloud-sign": "./dist/standalone/mcloud-sign.mjs"
+  },
+  "exports": {
+    "./standalone": "./dist/standalone/mcloud-sign.mjs",
+    "./daily": "./dist/standalone/daily.mjs",
+    "./exchange": "./dist/standalone/exchange.mjs",
+    "./redflower": "./dist/standalone/redflower.mjs"
+  },
   "scripts": {
     "build": "node scripts/build.mjs",
+    "build:standalone": "node scripts/build-standalone.mjs",
     "check-build": "node scripts/check-build.mjs",
+    "check-build:standalone": "node scripts/check-build-standalone.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "typecheck:standalone": "tsc -p tsconfig.standalone.json --noEmit",
     "test": "node --test \"test/*.test.ts\"",
     "all": "npm run gen && npm run typecheck && npm test && npm run check-build && npm run check-split",
     "gen": "node scripts/gen-constants.mjs",
@@ -23,6 +35,7 @@
     "typescript": "^5.7.0"
   },
   "dependencies": {
-    "fflate": "^0.8.3"
+    "fflate": "^0.8.3",
+    "ws": "^8.22.0"
   }
 }

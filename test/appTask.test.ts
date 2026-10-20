@@ -12,6 +12,7 @@ import {
   CLICK_HOST,
   CLICK_PATH,
   STATE_TASK,
+  appTaskFresh,
   clickRequest,
   pendingItems,
   runAppTaskStep,
@@ -31,12 +32,13 @@ const NOW = '2026-10-14T01:00:00.000Z';
 /** 推进一步，并把 `visit`（记访问日志 —— "我点了哪条任务"）那一枪带过。
  *  它是打卡的**前置**，测试关心的是"点了没点"，所以默认带过。 */
 function step(deps: TaskDeps): { ok?: boolean; idle?: boolean; note: string } {
-  const phase = (): string =>
-    (JSON.parse(deps.store.getState(STATE_TASK) ?? '{}') as { phase?: string }).phase ?? '';
+  const parse = (): { phase?: string; itemId?: number } =>
+    JSON.parse(deps.store.getState(STATE_TASK) ?? '{}') as { phase?: string; itemId?: number };
+  const before = parse().itemId;
   const r = runAppTaskStep(deps);
-  // ⚠ `phase` 的语义是"**下一步**要做什么"。做完 `visit` 之后它变成 `click`
-  //   ⇒ 想真的点到，得**再推一步**（这正是我第一版辅助写错的地方：等 `visit` 就永远不点）。
-  if (phase() === 'click') return runAppTaskStep(deps);
+  // 老流程是 `visit` → `click`：同一条要**再推一步**才真的点到。
+  // 现在是先 click：点完已经换到下一条（itemId 变了），不能再替下一条点一枪。
+  if (parse().phase === 'click' && parse().itemId === before) return runAppTaskStep(deps);
   return r;
 }
 /** 打卡那一枪发了几次（别数总数 —— visit 也是请求）。 */
@@ -63,7 +65,7 @@ function mkDeps(groups: Record<string, unknown[]>) {
     sent.push(req);
     if (req.url.includes('task/click')) return { status: 200, headers: {}, body: JSON.stringify({ code: 0 }) };
     if (req.url.includes('batchTrash')) return { status: 200, headers: {}, body: JSON.stringify({ code: '0000', success: true }) };
-    if (req.url.includes('file/create')) return { status: 200, headers: {}, body: JSON.stringify({ code: 0, data: { fileId: 'F1', rapidUpload: true } }) };
+    if (req.url.includes('file/create')) return { status: 200, headers: {}, body: JSON.stringify({ code: 0, data: { fileId: 'F1', rapidUpload: true, exist: false } }) };
     if (req.url.includes('getOutLink')) {
       return {
         status: 200,
@@ -171,6 +173,23 @@ test('起一趟**一个请求都不发**；没有待办 ⇒ idle', () => {
   assert.equal(out.idle, true);
   assert.match(out.note, /没有能替你做的了/);
   assert.equal(sent.length, 0);
+});
+
+test('跨天的 done 不算今天起过（否则上传任务会被永远跳过）', () => {
+  const { deps } = mkDeps({
+    [MATRIX_MARKETS[0]!]: [{ taskId: 106, state: 'WAIT', enable: 1, groupId: 'day', name: '手动上传一个文件' }],
+  });
+  deps.store.setState(
+    STATE_TASK,
+    JSON.stringify({ gi: 0, ii: 0, phase: 'done', itemId: 106, clicked: [], day: '2026-10-13' }),
+    NOW,
+  );
+  assert.equal(appTaskFresh(deps), false);
+  const out = startAppTask(deps);
+  assert.equal(out.idle, undefined, '旧状态必须能重新起一趟');
+  assert.equal(appTaskFresh(deps), true);
+  const st = JSON.parse(deps.store.getState(STATE_TASK) ?? '{}') as { day?: string };
+  assert.equal(st.day, NOW.slice(0, 10));
 });
 
 test('月门：本月备份确认没开且 <20 号 ⇒ 跳过 month 任务；true/没读到不跳', () => {
@@ -474,23 +493,41 @@ test('收尾那一枪：体是 `{fileIds:[…]}`，信封是**字符串 code + s
   assert.deepEqual(JSON.parse(req.body!), { fileIds: ['F1'] });
 });
 
-test('走完一条带收尾的（需要传文件的那条）：传 → 点 → 收尾', () => {
+test('走完一条带收尾的（需要传文件的那条）：**点 → 传 → 收尾**（参考实现 106 的顺序）', () => {
   const { deps, sent, store } = mkDeps({
     [MATRIX_MARKETS[0]!]: [{ taskId: 106, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '上传文件' }],
   });
   startAppTask(deps);
-  assert.equal((JSON.parse(store.getState(STATE_TASK)!) as { phase: string }).phase, 'upload');
-  const r1 = runAppTaskStep(deps); // 传（秒传 ⇒ 一枪就完）
+  assert.equal((JSON.parse(store.getState(STATE_TASK)!) as { phase: string }).phase, 'click');
+  const r1 = runAppTaskStep(deps); // 先打卡
   assert.equal(r1.ok, true, r1.note);
-  assert.equal((JSON.parse(store.getState(STATE_TASK)!) as { phase: string }).phase, 'visit', '传完先记访问日志');
-  const r2 = step(deps); // 记日志 + 点
+  assert.equal((JSON.parse(store.getState(STATE_TASK)!) as { phase: string }).phase, 'upload', '打完卡才传文件');
+  const clickAt = sent.findIndex((r) => r.url.includes('task/click'));
+  const r2 = runAppTaskStep(deps); // 传（秒传 ⇒ 一枪就完）
   assert.equal(r2.ok, true, r2.note);
-  assert.equal((JSON.parse(store.getState(STATE_TASK)!) as { phase: string }).phase, 'trash', '有 fileId ⇒ 要收尾');
+  const createAt = sent.findIndex((r) => r.url.includes('file/create'));
+  assert.ok(clickAt >= 0 && createAt > clickAt, '所有任务都先 click，再上传');
+  assert.equal((JSON.parse(store.getState(STATE_TASK)!) as { phase: string }).phase, 'trash', '传完直接收尾，不能再点一次');
   const r3 = runAppTaskStep(deps); // 收尾
   assert.equal(r3.ok, true, r3.note);
   assert.match(r3.note, /回收站/);
   assert.equal(sent.filter((r) => r.url.includes('batchTrash')).length, 1);
   assert.deepEqual(JSON.parse(sent.at(-1)!.body!), { fileIds: ['F1'] }, '收尾带的就是刚传上去的那个 id');
+});
+
+test('上传族 currStep != 0：按参考实现不打卡（106 走起来后不再点）', () => {
+  const { deps, sent } = mkDeps({
+    [MATRIX_MARKETS[0]!]: [
+      { taskId: 106, state: 'WAIT', enable: 1, groupId: 'day', name: '手动上传一个文件', currStep: 1 },
+    ],
+  });
+  startAppTask(deps);
+  for (let i = 0; i < 10; i++) {
+    const r = runAppTaskStep(deps);
+    if (r.idle) break;
+  }
+  assert.equal(clicks(sent), 0, 'currStep=1 的上传任务按 should_click 不该打卡');
+  assert.equal(sent.filter((r) => r.url.includes('file/create')).length, 1, '但文件还要照传');
 });
 
 test('⚠ 点过的名单**按天重置**（矩阵读数是慢的，同一份读数会被反复消费）', () => {
@@ -500,21 +537,26 @@ test('⚠ 点过的名单**按天重置**（矩阵读数是慢的，同一份读
   startAppTask(deps);
   step(deps);
   assert.equal(clicks(sent), 1);
-  // 读数没刷新（还是 todo）⇒ 再跑也不会重复点
-  startAppTask(deps); // ⚠ 起新一趟**不能**把今天的名单抹掉
+  // ⚠ 读数没刷新（还是 todo）⇒ 上一发**没有服务端确认**，不能被当成"今天做完了"。
+  //   本地动作不是成功，下一趟必须能重试。
   const out2 = startAppTask(deps);
-  assert.equal(out2.idle, true, out2.note);
-  assert.match(out2.note, /今天这 \d+ 条都点过了/);
-  assert.equal(clicks(sent), 1, '同一天不许重复点');
-  // 换一天 ⇒ 名单清掉（但读数还是 todo ⇒ 会再点一次，这是**期望**的：
-  //   那天的新读数本来就该让它再做一遍）
+  assert.notEqual(out2.idle, true, `未确认的任务必须能重试：${out2.note}`);
+  step(deps);
+  assert.equal(clicks(sent), 2, '未确认的任务要能重试');
+  const after = JSON.parse(store.getState(STATE_TASK)!) as {
+    clicked: number[];
+    unconfirmed: number[];
+  };
+  assert.equal(after.clicked.includes(115), false, '服务端没确认，不能留在成功名单');
+  assert.ok(after.unconfirmed.includes(115), '要记成未确认，留给下一趟重试');
+  // 换一天 ⇒ 昨天那份状态不再影响今天（每日任务的有效期）
   const nextDay = { ...deps, nowIso: '2026-10-15T01:00:00.000Z' } as TaskDeps;
   const st = JSON.parse(store.getState(STATE_TASK) ?? '{}') as Record<string, unknown>;
   store.setState(STATE_TASK, JSON.stringify({ ...st, day: '2026-10-14' }), NOW);
   const out3 = startAppTask(nextDay);
   assert.equal(out3.idle, undefined, `换一天该能再做：${out3.note}`);
   step(nextDay);
-  assert.equal(clicks(sent), 2, '换一天就该能再做');
+  assert.equal(clicks(sent), 3, '换一天就该能再做');
 });
 
 test('⚠ **只做"知道该做什么"的那些**（mcloud 账本里"未实现"的一律不动）', () => {
@@ -537,7 +579,7 @@ test('⚠ **只做"知道该做什么"的那些**（mcloud 账本里"未实现"�
   const out = startAppTask(deps);
   assert.equal(out.ok, true, out.note);
   assert.match(out.note, /从 #115 开始/, `实际：${out.note}`);
-  step(deps);
+  runAppTaskStep(deps);
   assert.equal(clicks(sent), 1, '只点 115 那一发');
   assert.equal(sent.filter((r) => /id=(548|549|550|551|607)/.test(r.url)).length, 0, '⚠ 那五条一个都不许碰');
 });
@@ -555,7 +597,8 @@ test('⚠ **判据是状态变了，不是 HTTP 200** —— 点了没生效要�
     JSON.stringify({ gi: 0, ii: 0, phase: 'visit', itemId: 431, clicked: [115], day: NOW.slice(0, 10) }),
     NOW,
   );
-  startAppTask(deps);
+  // ⚠ 不重新 start：那会先把未确认的 115 剔掉再从 115 起；这里要验的是
+  //   已经在 431 上、收摊时回头报 115 的那一步。
   // ⚠ 辅助 `step()` 已经把 `visit` + `click` 一起做掉了，而"点了没生效"的警告
   //   就在**点完换下一条**那一步报出来 ⇒ 结论看**这一下**，不用再推一步。
   const r = step(deps);

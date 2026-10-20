@@ -12,7 +12,7 @@
 插件对应：
 
 - `src/mcloud/tasks/appTaskMatrix.ts` —— 只读矩阵
-- `src/mcloud/tasks/appTask.ts` —— 状态机：上传 → 访问日志 → 打卡 → 特殊动作 → 收尾
+- `src/mcloud/tasks/appTask.ts` —— 状态机：**先打卡**（`currstep==0`）→ 上传/特殊动作 → 收尾；`currstep!=0` 不打卡，动作照做
 - `src/mcloud/tasks/appTaskExtra.ts` —— 入口 / 外链 / 邮箱 / 笔记 / AI / 账单的请求与解析
 - `src/mcloud/appTaskRules.ts` —— 纯判据
 
@@ -39,6 +39,37 @@
 | 609 和 AI 助手对话 | 登录 → queryUserToken → 状态 → SSE 对话 |
 | 115 / 431 / 435 / 1009 / 1010 / 1013 / 1016 / 447 / 547 | 只点一下 |
 | 117 / 437 / 991 / 406 / 385 / 480 / 1022 / 1018 / 603 / 1021 / 120 | 刻意不做 |
+
+## 打卡顺序
+
+照 Rust `should_click()` + 旧 TS `_handleClick()`：
+
+- `currstep == 0`：**先打 `task/click`，再补 `visitlog/journaling`，最后做动作**（106 是打卡后才上传）
+- `currstep != 0`：不打卡，但门照样通过、动作照做（上传族尤其）；visitlog 仍补一次
+- 打完卡之后不再走 `visit`/`click`，直接上传/特殊动作/收尾
+
+### 106 实机对照（2026-10-20 23:09）
+
+同一小号（159****7542）上直接跑参考 `mcloud app-task --onlyTaskIds=106`：
+
+```text
+106：currStep=1 ⇒ clicked:false（参考自己也不打卡）
+上传 1 个文件、随即回收
+跑完后矩阵仍是 WAIT / currStep=1
+```
+
+⇒ 本插件当前的 `currStep!=0 不打卡 + 上传` 与参考一致；106 不翻 FINISH
+不是本插件少做了一步，而是该账号上游当前就不入账。
+
+旧版 `mcloud-sign` 同一账号也跑了 `appTask`（只留 106）：
+
+```text
+上传文件成功 1
+上传文件成功 2
+失败 需前往云盘完成 手动上传一个文件
+```
+
+⇒ 三份实现（Rust mcloud / 旧 TS / 本插件）在该账号上都是“文件传得上去、任务不入账”。
 
 ## 月门
 

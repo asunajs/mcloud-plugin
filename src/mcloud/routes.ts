@@ -72,7 +72,8 @@ import {
 import { STATE_TARGET_HOUR, targetHourOf } from './exchangeTiming.ts';
 import { APP_AUTH_PREFIX, parseAuth } from './auth.ts';
 import { drawReport } from './tasks/liveDraw.ts';
-import { MATRIX_MARKETS, readMatrix } from './tasks/appTaskMatrix.ts';
+import { MATRIX_MARKETS, readMatrix, runAppTaskMatrix } from './tasks/appTaskMatrix.ts';
+import { STATE_EXPAND, STATE_MONTH_BACKUP } from './tasks/taskExpansion.ts';
 import { DAILY_DONE_KEY, readDailyRun } from './dailyState.ts';
 import {
   VERDICT_TEXT,
@@ -244,7 +245,16 @@ import { readBag } from '../store/keys.ts';
 import type { BuiltRequest } from './h5.ts';
 import type { Transport } from './client.ts';
 import type { HostWs } from './tasks/base.ts';
-import { normalizeDays, readDayForAccount, readRecordsForAccount } from './beansRead.ts';
+import { dayStartMs, type BeanDay } from './beans.ts';
+import {
+  BEANS_CACHE_TTL_MS,
+  loadBeansCache,
+  normalizeDays,
+  readDayForAccount,
+  readRecordsForAccount,
+  saveBeansCache,
+} from './beansRead.ts';
+import { fetchInfoV3 } from './tasks/info.ts';
 
 /** 插件名（= 文件名去掉扩展名）。路由路径要用它。 */
 export const PLUGIN = 'mcloud';
@@ -434,6 +444,81 @@ function readBody(req: RouteRequest): Record<string, unknown> {
  *  （日常 / 直播 / 兑换），或者用区块里的「现在跑一次」按钮。
  *  这样「打开页面」永远不会因为上游慢而卡住。
  */
+/** 本机对 App 任务做过什么（只读本地状态，不发请求）。
+ *
+ * ⚠ 106 这类上传任务：`task/click` 回 200、本机也确实传完了，
+ *  但上游 `state` 仍可能是 `WAIT`（mcloud 的 `app_task.rs` 里有同一条真机记录）：
+ *  "106 clicked:true 而上游 state 恒 WAIT"。所以本机证据要**单独给出来**，
+ *  不能让它看起来像"根本没做"。 */
+function readMatrixLocal(one: Store): {
+  clicked: number[];
+  unconfirmed: number[];
+  uploadDone: boolean;
+  uploadName: string;
+} {
+  let clicked: number[] = [];
+  let unconfirmed: number[] = [];
+  try {
+    const st = JSON.parse(one.getState('mcloud.apptask.state') ?? 'null') as {
+      clicked?: unknown;
+      unconfirmed?: unknown;
+    } | null;
+    if (st !== null && Array.isArray(st.clicked)) clicked = st.clicked.filter((x): x is number => typeof x === 'number');
+    if (st !== null && Array.isArray(st.unconfirmed)) {
+      unconfirmed = st.unconfirmed.filter((x): x is number => typeof x === 'number');
+    }
+  } catch {
+    clicked = [];
+    unconfirmed = [];
+  }
+  let uploadDone = false;
+  let uploadName = '';
+  try {
+    const up = JSON.parse(one.getState('mcloud.upload.state') ?? 'null') as {
+      step?: unknown;
+      name?: unknown;
+    } | null;
+    if (up !== null && up.step === 'done') {
+      uploadDone = true;
+      uploadName = typeof up.name === 'string' ? up.name : '';
+    }
+  } catch {
+    uploadDone = false;
+  }
+  return { clicked, unconfirmed, uploadDone, uploadName };
+}
+
+/** 备份进度（只读本地状态）。任务拓展的 `step` + 本月备份开关。 */
+function readBackupState(
+  one: Store,
+  nowIso: string,
+): { step: string; day: string; enabled?: boolean | undefined } | null {
+  try {
+    const ex = JSON.parse(one.getState(STATE_EXPAND) ?? 'null') as {
+      step?: unknown;
+      day?: unknown;
+      curMonthBackup?: unknown;
+    } | null;
+    if (ex === null || typeof ex !== 'object') return null;
+    let enabled: boolean | undefined =
+      typeof ex.curMonthBackup === 'boolean' ? ex.curMonthBackup : undefined;
+    const mb = JSON.parse(one.getState(STATE_MONTH_BACKUP) ?? 'null') as {
+      month?: unknown;
+      backup?: unknown;
+    } | null;
+    if (mb !== null && mb.month === nowIso.slice(0, 7) && typeof mb.backup === 'boolean') {
+      enabled = mb.backup;
+    }
+    return {
+      step: typeof ex.step === 'string' ? ex.step : '',
+      day: typeof ex.day === 'string' ? ex.day : '',
+      enabled,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function buildReadings(deps: RouteDeps): Record<string, unknown> {
   const nowMs = Date.parse(deps.now());
   const nowIso = deps.now();
@@ -560,11 +645,19 @@ function buildReadings(deps: RouteDeps): Record<string, unknown> {
     },
     data: {
       hasBigInt: hasBigInt(),
-      matrix: {
-        groups: readMatrix(deps.store).map((r, i) => ({ group: MATRIX_MARKETS[i], reading: r })),
-        read: readMatrix(deps.store).filter(Boolean).length,
-        total: MATRIX_MARKETS.length,
-      },
+      // ⚠ 矩阵读数按账号存在各自的袋里；`deps.store` 是**默认袋**，
+      //   直接 `readMatrix(deps.store)` 会让数据页永远显示另一个号的状态。
+      matrix: (() => {
+        const one = view.current === '' ? deps.store : scoped(rawStoreOf(deps.store), view.current);
+        const rows = readMatrix(one);
+        return {
+          groups: rows.map((r, i) => ({ group: MATRIX_MARKETS[i], reading: r })),
+          read: rows.filter(Boolean).length,
+          total: MATRIX_MARKETS.length,
+          backup: readBackupState(one, nowIso),
+          local: readMatrixLocal(one),
+        };
+      })(),
     },
     // ⚠ 推送（10 渠道）在**阶段 ⑤**。这里给一个诚实的空壳而不是编一个假读数 ——
     //    界面据此显示「还没做」，而不是显示一个看着像好的空表。
@@ -1807,9 +1900,35 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
       // 界面要能看见，否则"只读"就只是日志里的一行数。
       path: `${base}/matrix`,
       method: 'GET',
-      handler: () => {
-        const rows = readMatrix(deps.store);
-        return json(200, {
+      // 点「刷新」会真打移动云盘（两个市场各一发）——必须自己声明预算。
+      budget_ms: 60_000,
+      handler: (req) => {
+        // **按账号读本地缓存**，默认当前账号；`?account=<id>` 切到别的号。
+        // ⚠ 这一条**不发上游请求** —— 只读日常任务已经落下的矩阵读数。
+        const q = parseQuery(req.query ?? '');
+        const wanted = q['account'] ?? '';
+        const accounts = loadAccounts(deps.store);
+        const found = wanted === '' ? currentAccount(deps.store) : accounts.find((a) => a.id === wanted);
+        if (!found) return json(400, { error: `列表里没有这个账号：${wanted || '（没给 id）'}` });
+        const one = scoped(rawStoreOf(deps.store), found.id);
+        // 默认只读本地；`refresh=1` 才真去请求（用户点「刷新」）。
+        const refresh = q['refresh'] === '1';
+        const refreshErrors: string[] = [];
+        if (refresh) {
+          for (const _ of MATRIX_MARKETS) {
+            const out = runAppTaskMatrix({
+              store: one,
+              transport: deps.transport,
+              nowIso: deps.now(),
+              baseUrl: loadBaseUrl(deps.store),
+            });
+            if (!out.ok) refreshErrors.push(out.note);
+          }
+        }
+        const rows = readMatrix(one);
+        return json(200,{
+          account: found.id,
+          label: found.label,
           // ⚠ 标签必须跟着 **market** 走，不是 group：`readMatrix` 返回的是
           //   按市场的两条（游标早就从 group 改成 market 了，见 appTaskMatrix.ts
           //   里那句「游标现在是**市场**（不是 group）」）。
@@ -1820,6 +1939,11 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
           groups: rows.map((r, i) => ({ group: MATRIX_MARKETS[i], reading: r })),
           read: rows.filter(Boolean).length,
           total: MATRIX_MARKETS.length,
+          at: deps.now(),
+          backup: readBackupState(one, deps.now()),
+          local: readMatrixLocal(one),
+          refreshed: refresh,
+          refreshErrors,
         });
       },
     },
@@ -2686,7 +2810,8 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
       //     翻不到底 / 解不出 `insertTime`）只让它那一行进 `failed[]`，
       //     其余账号照常出数。这一条**不返回错误状态** —— 一个账号挂了不该
       //     把整张卡打成"服务挂了"。
-      //   · **点了才取**：界面上那一格不做自动刷新；这一条路由每次点都真打上游。
+      //   · **缓存 2 小时**：余额和当日汇总都缓存（用户口径）；手动「刷新」带
+      //     `?refresh=1` 强刷。缓存按账号存在各自的袋里。
       path: `${base}/beans/today`,
       method: 'GET',
       // 逐账号 × 翻页 + **当场续票**的只读链：一发上游的超时就有 1500ms，
@@ -2695,13 +2820,16 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
       // 按最坏一档留预算：几个账号各可能"读失败→换票→再读"若干轮。健康路径秒回，
       // 这一档只在票全烂时才顶到。
       budget_ms: 60_000,
-      handler: () => {
+      handler: (req) => {
+        const q = parseQuery(req.query ?? '');
+        const refresh = q['refresh'] === '1';
         const raw = rawStoreOf(deps.store);
         const nowIso = deps.now();
         const nowMs = Date.parse(nowIso);
         // 同一趟**所有账号共用同一个 `nowMs`**：不然跨零点那一瞬间两个账号会按
         //   不同的日界算（照参考实现 `BeansEnv::clock` 那一条）。
         const baseUrl = loadBaseUrl(deps.store);
+        const todayStart = dayStartMs(nowMs);
         const rows: {
           id: string;
           label: string;
@@ -2709,6 +2837,10 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
           gained: number;
           spent: number;
           count: number;
+          balance?: number | undefined;
+          balanceReason?: string | undefined;
+          cached: boolean;
+          cachedAt?: number | undefined;
         }[] = [];
         const failed: { id: string; label: string; reason: string }[] = [];
         for (const a of loadAccounts(deps.store)) {
@@ -2717,21 +2849,74 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
           //   用户看到一行"停用里的账号读失败"就是纯噪声。
           if (a.disabled === true) continue;
           const one = scoped(raw, a.id);
-          try {
-            const day = readDayForAccount(
-              { store: one, transport: deps.transport, baseUrl, nowIso },
-              nowMs,
-            );
-            rows.push({ id: a.id, label: a.label, ...day });
-          } catch (e) {
-            failed.push({
-              id: a.id,
-              label: a.label,
-              reason: e instanceof Error ? e.message : String(e),
-            });
+          const cache = loadBeansCache(one);
+          const dayFresh =
+            !refresh &&
+            cache.day !== undefined &&
+            nowMs - cache.day.atMs < BEANS_CACHE_TTL_MS &&
+            cache.day.dayStart === todayStart;
+          let day: BeanDay;
+          let cached = false;
+          if (dayFresh) {
+            day = cache.day!.day;
+            cached = true;
+          } else {
+            try {
+              day = readDayForAccount(
+                { store: one, transport: deps.transport, baseUrl, nowIso },
+                nowMs,
+              );
+              cache.day = { atMs: nowMs, dayStart: todayStart, day };
+            } catch (e) {
+              failed.push({
+                id: a.id,
+                label: a.label,
+                reason: e instanceof Error ? e.message : String(e),
+              });
+              continue;
+            }
           }
+
+          // 当前余额：`infoV3.result.total`。缓存和当日汇总独立过期——
+          // 余额读失败不影响今日流水已经拿到的数。
+          const balanceFresh =
+            !refresh &&
+            cache.balance !== undefined &&
+            nowMs - cache.balance.atMs < BEANS_CACHE_TTL_MS;
+          let balance: number | undefined;
+          let balanceReason: string | undefined;
+          if (balanceFresh) {
+            balance = cache.balance!.value ?? undefined;
+            balanceReason = cache.balance!.reason;
+          } else {
+            const info = fetchInfoV3({ store: one, transport: deps.transport, baseUrl });
+            if (info.ok && info.info.total !== undefined) {
+              balance = info.info.total;
+              cache.balance = { atMs: nowMs, value: balance };
+            } else {
+              balanceReason = info.ok ? '服务端没给余额字段' : info.error;
+              // 读失败不缓存：下一次刷新还要再试，不能把一次网络抖动冻两小时。
+              cache.balance = undefined;
+            }
+          }
+          saveBeansCache(one, cache, nowIso);
+          rows.push({
+            id: a.id,
+            label: a.label,
+            ...day,
+            balance,
+            balanceReason,
+            cached,
+            cachedAt: cached ? cache.day?.atMs : undefined,
+          });
         }
-        return json(200, { nowMs, accounts: rows, failed });
+        return json(200, {
+          nowMs,
+          accounts: rows,
+          failed,
+          cached: rows.length > 0 && rows.every((r) => r.cached),
+          cacheTtlMs: BEANS_CACHE_TTL_MS,
+        });
       },
     },
     {
