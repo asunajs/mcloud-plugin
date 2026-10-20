@@ -48,6 +48,8 @@ import { rawStoreOf, scoped } from '../store/scoped.ts';
 import { resolveTaskAccounts } from '../mcloud/taskAccounts.ts';
 import { migrateFlatKeys } from '../store/keys.ts';
 import { loadBaseUrl } from '../mcloud/session.ts';
+import { loadAuthRaw } from '../mcloud/sessionExchange.ts';
+import { authorizeRequest } from '../mcloud/cloudUpload.ts';
 import {
   configuredChannels,
   sendPush,
@@ -179,9 +181,13 @@ export function taskDeps(
   transport: Transport,
   payload: { lateMs: number },
 ): TaskDeps {
+  // 云盘 / 邮箱那几族靠 `Authorization` 鉴权；构造器只给 x-yun-* 头。
+  // ⚠ **按账号包一层**：transport 是四个入口共用的，注入时必须读**这个 deps 的 store**，
+  //   否则多账号遍历会拿当前界面的号去发别人的请求。
+  const authorized: Transport = (req) => transport(authorizeRequest(req, loadAuthRaw(store)));
   return {
     store,
-    transport,
+    transport: authorized,
     nowIso: new Date().toISOString(),
     // 基址**每次触发时从 state 读**，不用启动时的快照 ——
     // 否则「刚把基址指到 mock，任务却还在打真上游」

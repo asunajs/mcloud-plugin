@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.0 · 插件 `mcloud-live`
+//   mcloud-plugin 0.2.1 · 插件 `mcloud-live`
 
 // src/entries/live.ts
 import { debug as debug2, register_cron } from "host-api";
@@ -4148,6 +4148,34 @@ function hostStore() {
   };
 }
 
+// src/mcloud/cloudUpload.ts
+var AUTH_DOMAINS = [
+  "yun.139.com",
+  "mcloud.139.com",
+  "feixin.10086.cn",
+  "mail.10086.cn"
+];
+function hostOf(rawUrl) {
+  const m = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/([^/?#]+)/.exec(rawUrl);
+  if (!m) return "";
+  let host2 = m[1].toLowerCase();
+  const at = host2.lastIndexOf("@");
+  if (at >= 0) host2 = host2.slice(at + 1);
+  const colon = host2.lastIndexOf(":");
+  if (colon >= 0) host2 = host2.slice(0, colon);
+  return host2;
+}
+function sendsAuthorizationTo(rawUrl) {
+  const host2 = hostOf(rawUrl);
+  if (host2 === "") return false;
+  return AUTH_DOMAINS.some((suffix) => host2.endsWith(suffix));
+}
+function authorizeRequest(req, auth) {
+  const hasAuth = Object.keys(req.headers).some((k) => k.toLowerCase() === "authorization");
+  if (auth === "" || hasAuth || !sendsAuthorizationTo(req.url)) return req;
+  return { ...req, headers: { ...req.headers, Authorization: auth } };
+}
+
 // src/entries/shared.ts
 var DEFAULT_REQUEST_TIMEOUT_MS = 1500;
 var LONG_REQUEST_TIMEOUT_MS = 2e4;
@@ -4186,9 +4214,10 @@ function forEachTaskAccount(base, task, payload, transport2, fn) {
   return out;
 }
 function taskDeps(store2, transport2, payload) {
+  const authorized = (req) => transport2(authorizeRequest(req, loadAuthRaw(store2)));
   return {
     store: store2,
-    transport: transport2,
+    transport: authorized,
     nowIso: (/* @__PURE__ */ new Date()).toISOString(),
     // 基址**每次触发时从 state 读**，不用启动时的快照 ——
     // 否则「刚把基址指到 mock，任务却还在打真上游」
