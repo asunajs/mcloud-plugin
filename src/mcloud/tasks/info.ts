@@ -56,6 +56,8 @@ export interface InfoV3 {
   curMonthBackup: boolean;
   /** 本月翻倍机会用没用 */
   curMonthBackupSignAccept: boolean;
+  /** 当前 AI豆余额。`infoV3.result.total`（真机实测字段）；读不出就是 `undefined`。 */
+  total?: number | undefined;
   raw: unknown;
 }
 
@@ -84,11 +86,20 @@ export function parseInfoV3(result: unknown): InfoV3 {
       })
     : [];
 
+  const totalRaw = pick('total', 'point', 'balance');
+  const total =
+    typeof totalRaw === 'number'
+      ? totalRaw
+      : typeof totalRaw === 'string' && /^\d+$/.test(totalRaw)
+        ? Number(totalRaw)
+        : undefined;
+
   return {
     todaySigned: bool(pick('todaySignIn', 'today_sign_in')),
     receiveList,
     curMonthBackup: bool(pick('curMonthBackup', 'cur_month_backup')),
     curMonthBackupSignAccept: bool(pick('curMonthBackupSignAccept', 'cur_month_backup_sign_accept')),
+    total,
     raw: result ?? null,
   };
 }

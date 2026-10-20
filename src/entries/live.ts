@@ -133,7 +133,11 @@ function collectOnce(
     deadlineMs: 40_000,
     startedAt: runStartMs,
   });
-  const gate = readGateReading(store);
+  // ⚠ 必须读**这个账号**的袋（deps.store），不能读模块级 `store`：
+  //   模块级是 `default` 袋，直播检查/池子都写在第一个账号的袋里；读错袋
+  //   就会拿旧读数说「没有一间是目标」—— 2026-10-20 实拍：159 的读数已经
+  //   active=true，日志却还在报 2 间福建移动。
+  const gate = readGateReading(deps.store);
   const liveCount = gate === null ? 0 : gate.liveCount;
 
   // ⚠ **门自己失败 ≠ 今天没直播**（"我们凭据坏了"与"今天没开播"是两件事）。
@@ -165,7 +169,7 @@ function collectOnce(
   step('主播发口令没有', () => runLiveRoom(deps));
 
   // ③ 听弹幕 —— 池里够 2 条有效就不听了（再听只是重复撞同一批）
-  const poolNow = loadPoolFrom(store).pool;
+  const poolNow = loadPoolFrom(deps.store).pool;
   const enough = stopScraping(poolNow);
   if (enough) {
     steps.push({
@@ -191,7 +195,7 @@ function collectOnce(
   if (frames > 0) {
     steps.push({ name: '听弹幕', ok: true, note: listenNote || `听了 ${frames} 轮`, idle: false });
   }
-  const after = loadPoolFrom(store).pool;
+  const after = loadPoolFrom(deps.store).pool;
   return done(true, `池里现在有 ${validCount(after)} 条能用的口令`);
 }
 

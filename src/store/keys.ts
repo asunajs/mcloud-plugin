@@ -133,6 +133,7 @@ export const KEY_SCOPE: Readonly<Record<string, KeyScope>> = {
   'mcloud.login.userDomainId': 'global',
   'mcloud.sign.stage': 'account',
   'mcloud.sign.last': 'account',
+  'mcloud.sign.done': 'account',
   'mcloud.upload.state': 'account',
   'mcloud.taskexpansion.state': 'account',
   'mcloud.month.backup': 'account',
@@ -147,6 +148,8 @@ export const KEY_SCOPE: Readonly<Record<string, KeyScope>> = {
   'mcloud.msgpush.last': 'account',
   'mcloud.prizes.last': 'account',
   'mcloud.multiple.last': 'account',
+  'mcloud.multiple.done': 'account',
+  'mcloud.revival.done': 'account',
   'mcloud.revival.last': 'account',
   'mcloud.receive.last': 'account',
   'mcloud.receive.queue': 'account',
@@ -227,6 +230,8 @@ export const KEY_SCOPE: Readonly<Record<string, KeyScope>> = {
   'mcloud.run.log': 'global',
   /** 任务清单缓存。 */
   'mcloud.tasklist.last': 'global',
+  /** 数据页 AI豆读数缓存（余额 + 当日汇总，按账号；用户口径 2 小时）。 */
+  'mcloud.beans.cache': 'account',
 };
 
 /** **前缀式**的键（末尾带点，如 `mcloud.last_error.` + 任务名）。

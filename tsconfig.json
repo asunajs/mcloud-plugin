@@ -31,5 +31,6 @@
       "host-api": ["./src/host-api.d.ts"]
     }
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/standalone/**"]
 }

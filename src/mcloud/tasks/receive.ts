@@ -173,6 +173,32 @@ export function runReceive(deps: TaskDeps): TaskOutcome {
   }
 
   let queue = loadQueue(deps.store);
+  const hadQueue = queue.length > 0;
+
+  // ①a 先把队头的「下月可领」摘掉，**不能让它把后面今天可领的挡住**。
+  //   现场（2026-10-20）：移动的队列是 `[下月 164, 今天可领 6]`，旧代码处理队头
+  //   直接返回 `skipped`，`drain` 见 `skipped` 就停 —— 后面那 6 个一个请求都没发，
+  //   日志却只说「下月可领取」。
+  const nextMonth: ReceiveItem[] = [];
+  while (queue.length > 0 && queue[0]!.cloudType === CLOUD_TYPE.NEXT_MONTH) {
+    nextMonth.push(queue[0]!);
+    queue = queue.slice(1);
+  }
+  if (nextMonth.length > 0) saveQueue(deps.store, queue, deps.nowIso);
+  // 队列本来就是空的 ⇒ 还要去问上游清单（下面 ①）；只有"本来有、摘完没了"才收工。
+  if (hadQueue && queue.length === 0) {
+    const nums = nextMonth
+      .map((x) => numOf(x.raw))
+      .filter((n): n is number => n !== undefined);
+    return {
+      ok: true,
+      skipped: true,
+      note:
+        nums.length > 0
+          ? `下月可领取（${nums.join('、')} 个）—— 今天不发请求`
+          : '无待领取的云朵',
+    };
+  }
 
   // ① 队列空 → 去问一下清单（这一步**只读**，不领东西）
   if (queue.length === 0) {
@@ -201,18 +227,6 @@ export function runReceive(deps: TaskDeps): TaskOutcome {
   // ③ 领一条
   const item = queue[0]!;
   const rest = queue.slice(1);
-
-  // 「下月可领」：**一个请求都不发**（H5 只弹一句提示）。旧代码把这类也当"现在可领"，
-  // 于是每天发一枪注定领到 0 的请求，还报"领取到 N 个云朵"。
-  if (item.cloudType === CLOUD_TYPE.NEXT_MONTH) {
-    saveQueue(deps.store, rest, deps.nowIso);
-    const n = numOf(item.raw);
-    return {
-      ok: true,
-      skipped: true,
-      note: n === undefined ? '下月可领取 —— 今天不发请求' : `下月可领取（${n} 个）—— 今天不发请求`,
-    };
-  }
 
   if (item.cloudType === CLOUD_TYPE.EXPANSION) {
     // 延期领取：另一口端点，GET。`acceptDate` **有才带**（真实清单里没有这个字段，

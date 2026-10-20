@@ -72,6 +72,8 @@ test('⚠ 解析：按钮那一格按**端**优先取（email → app → out）
     button: { out: { text: '开启中', day: '5', total: 31, canReceive: 0 } },
   })!;
   assert.equal(only.buttonOutText, '开启中');
+  assert.equal(only.buttonOutDay, '5');
+  assert.equal(only.buttonOutTotal, '31');
   // 1029 那种：两份都在，取 `buttonProperty`
   const both = parseMatrixItem({
     id: 1029,

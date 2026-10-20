@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.4 · 插件 `mcloud-exchange`
+//   mcloud-plugin 0.2.5 · 插件 `mcloud-exchange`
 
 // src/entries/exchange.ts
 import { debug as debug2, log as log3, register_cron, worker_hint } from "host-api";
@@ -117,6 +117,7 @@ var KEY_SCOPE = {
   "mcloud.login.userDomainId": "global",
   "mcloud.sign.stage": "account",
   "mcloud.sign.last": "account",
+  "mcloud.sign.done": "account",
   "mcloud.upload.state": "account",
   "mcloud.taskexpansion.state": "account",
   "mcloud.month.backup": "account",
@@ -131,6 +132,8 @@ var KEY_SCOPE = {
   "mcloud.msgpush.last": "account",
   "mcloud.prizes.last": "account",
   "mcloud.multiple.last": "account",
+  "mcloud.multiple.done": "account",
+  "mcloud.revival.done": "account",
   "mcloud.revival.last": "account",
   "mcloud.receive.last": "account",
   "mcloud.receive.queue": "account",
@@ -209,7 +212,9 @@ var KEY_SCOPE = {
   /** 运行日志（每条记录里自己带账号）。 */
   "mcloud.run.log": "global",
   /** 任务清单缓存。 */
-  "mcloud.tasklist.last": "global"
+  "mcloud.tasklist.last": "global",
+  /** 数据页 AI豆读数缓存（余额 + 当日汇总，按账号；用户口径 2 小时）。 */
+  "mcloud.beans.cache": "account"
 };
 var KEY_PREFIX_SCOPE = [
   // 每条任务"跑哪些账号"（`mcloud.task.accounts.日常`）—— 键里带任务名，
@@ -2599,6 +2604,7 @@ function drain(step, deps, opts) {
     steps++;
     lastNote = r.note;
     notes.push(r.note);
+    opts.onStep?.(r.note, steps);
     if (!r.ok) {
       return { ok: false, idle: false, steps, note: `${opts.label}：第 ${steps} 步失败 —— ${r.note}`, notes };
     }
@@ -4676,6 +4682,7 @@ function authorizeRequest(req, auth) {
   if (auth === "" || hasAuth || !sendsAuthorizationTo(req.url)) return req;
   return { ...req, headers: { ...req.headers, Authorization: auth } };
 }
+var EMPTY_ZIP = utf8("PK\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0");
 
 // src/entries/shared.ts
 var DEFAULT_REQUEST_TIMEOUT_MS = 1500;
@@ -5027,6 +5034,7 @@ function lineLevel(line) {
   )) {
     return "info";
   }
+  if (/已签到|已经签到/.test(line)) return "info";
   const gotReward = /(领到|领取到|获得|中奖|抽到|成功获得|兑换成功.*【)/.test(line) && !/未获得|没获得|没领到|未领到/.test(line);
   if (gotReward) return "success";
   if (/跳过|已经|已领|没有可|没有能|无需|今天|未开启|没开|不发|不领|没问过|走完|做完了|暂无|无待领取|无可领|无.*可领|都领过了/.test(line)) {

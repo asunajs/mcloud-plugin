@@ -25,6 +25,8 @@ import { runTask } from './base.ts';
 import type { TaskDeps, TaskOutcome } from './base.ts';
 
 export const STATE_REVIVAL = 'mcloud.revival.last';
+/** 这个月已经领过复活卡的月份（`YYYY-MM`）—— 之后整月不再发请求。 */
+export const STATE_REVIVAL_DONE = 'mcloud.revival.done';
 
 /** 比计划晚超过这个时间就不做了（不可逆动作的安全边界）。
  *  取 2 小时：早上那波触发因故错过，中午想起来还来得及；隔夜就不碰了。 */
@@ -36,10 +38,23 @@ export function revivalMessageAlreadyClaimed(message: string): boolean {
   return message.includes('复活卡') || message.includes('回馈卡') || message.includes('奖励');
 }
 
+/** 文案判「没有可复活的记录」（原文：`2025年无云朵记录`）。
+ *
+ *  这不是失败：复活卡复活的是**上一年失效的 AI豆**，这个号上一年没有云朵 ⇒ 没东西可复活。
+ *  Rust mcloud 对它的处置是 `TaskOutcome::skipped`（不报红、不触发 onlyError）。 */
+export function revivalMessageNothingToRevive(message: string): boolean {
+  return message.includes('无云朵记录');
+}
+
 export function runRevival(deps: TaskDeps): TaskOutcome {
+  const month = deps.nowIso.slice(0, 7);
+  if (deps.store.getState(STATE_REVIVAL_DONE) === month) {
+    return { ok: true, skipped: true, note: '这个月的复活卡已经处理过了' };
+  }
+
   // 「已领取」是**业务上的完成**，不是失败 —— 所以不能走 runTask 的失败路径。
   // 这里直接发请求、自己判。
-  return runTask(
+  const out = runTask(
     deps,
     {
       task: 'revival',
@@ -58,6 +73,25 @@ export function runRevival(deps: TaskDeps): TaskOutcome {
       snapshot: env.result ?? null,
     }),
   );
+  // 「上一年没有云朵记录」是**没得领**，不是故障：改成 skipped，别画成红。
+  // 但**本月记下**：这个月不必每趟都问一次；下个月自动失效、会再试。
+  if (!out.ok && revivalMessageNothingToRevive(out.note)) {
+    const why = out.note.replace(/^.*?服务端说：/, '');
+    // 这不是故障：把 runTask 落下的失败标记擦掉，否则状态页/推送还会当红的。
+    deps.store.setState('mcloud.last_error.revival', '', deps.nowIso);
+    deps.store.setState(STATE_REVIVAL_DONE, month, deps.nowIso);
+    return {
+      ok: true,
+      skipped: true,
+      note: `没有可复活的记录${why === out.note ? '' : `（服务端说：${why}）`}`,
+    };
+  }
+  // 真领到了、或服务端说本月已领取 ⇒ 这个月不用再发。
+  // ⚠ 「晚太久主动跳过」不能记成已完成（那会把本月机会白白吞掉）。
+  if (out.ok && out.skipped !== true) {
+    deps.store.setState(STATE_REVIVAL_DONE, month, deps.nowIso);
+  }
+  return out;
 }
 
 // 注：早先我在这里放过一个 `isAlreadyClaimedError()` 包装，但没有任何地方调用它 ——

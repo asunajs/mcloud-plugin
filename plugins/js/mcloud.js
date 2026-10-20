@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.4 · 插件 `mcloud`
+//   mcloud-plugin 0.2.5 · 插件 `mcloud`
 
 // src/entries/mcloud.ts
 import {
@@ -62,6 +62,7 @@ var KEY_SCOPE = {
   "mcloud.login.userDomainId": "global",
   "mcloud.sign.stage": "account",
   "mcloud.sign.last": "account",
+  "mcloud.sign.done": "account",
   "mcloud.upload.state": "account",
   "mcloud.taskexpansion.state": "account",
   "mcloud.month.backup": "account",
@@ -76,6 +77,8 @@ var KEY_SCOPE = {
   "mcloud.msgpush.last": "account",
   "mcloud.prizes.last": "account",
   "mcloud.multiple.last": "account",
+  "mcloud.multiple.done": "account",
+  "mcloud.revival.done": "account",
   "mcloud.revival.last": "account",
   "mcloud.receive.last": "account",
   "mcloud.receive.queue": "account",
@@ -154,7 +157,9 @@ var KEY_SCOPE = {
   /** 运行日志（每条记录里自己带账号）。 */
   "mcloud.run.log": "global",
   /** 任务清单缓存。 */
-  "mcloud.tasklist.last": "global"
+  "mcloud.tasklist.last": "global",
+  /** 数据页 AI豆读数缓存（余额 + 当日汇总，按账号；用户口径 2 小时）。 */
+  "mcloud.beans.cache": "account"
 };
 var KEY_PREFIX_SCOPE = [
   // 每条任务"跑哪些账号"（`mcloud.task.accounts.日常`）—— 键里带任务名，
@@ -1266,6 +1271,7 @@ function nonce() {
 // src/mcloud/h5.ts
 var MARKET_NAME = "sign_in_3";
 var H5_APP_VERSION = "12.6.0.0";
+var TASK_CLIENT_VERSION = "12.6.0";
 function buildH5Request(spec) {
   const ts = spec.signInputs?.timestampMs ?? String(Date.now());
   const sign = signHeadersWith(
@@ -1759,8 +1765,10 @@ var TASK_META = [
   { name: "backup-gift", title: "备份好礼", group: "signin", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["jwt"], batch: true, hidden: false, implemented: true, evidence: "captured", note: "**GET 却是写**；两步：先问能不能领，能领才领" },
   { name: "revival", title: "用复活卡/回馈卡", group: "signin", kind: "Action", risk: "irreversible", missed: "skip", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "captured", note: "**不可逆** —— 晚超过 2 小时就不做" },
   { name: "prizes", title: "待领取奖品", group: "query", kind: "Query", risk: "none", missed: "catch-up", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "captured" },
-  { name: "task-list", title: "任务清单", group: "query", kind: "Query", risk: "none", missed: "catch-up", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "captured" },
-  { name: "cloud-snapshot", title: "AI豆余额快照", group: "query", kind: "Query", risk: "none", missed: "catch-up", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "captured", note: "只取第一页；一页装满会如实说可能还有下一页" },
+  // mcloud 2026-10-07 已把这两条从任务注册里摘掉（数据改在「上游状态」页按需读）；
+  // 插件保留模块/路由，但不再当日常任务跑、也不在任务列表里露出来。
+  { name: "task-list", title: "任务清单", group: "query", kind: "Query", risk: "none", missed: "catch-up", deps: ["jwt"], batch: false, hidden: true, implemented: true, evidence: "captured" },
+  { name: "cloud-snapshot", title: "AI豆余额快照", group: "query", kind: "Query", risk: "none", missed: "catch-up", deps: ["jwt"], batch: false, hidden: true, implemented: true, evidence: "captured", note: "只取第一页；一页装满会如实说可能还有下一页。mcloud 已摘掉任务注册，数据在数据页按需取" },
   // ── 通知与趣玩（未实现）──
   // 它用**签到页那张票**（`SessionRecipe::SignInPage`）—— 就是本插件手里已有的会话，
   // 所以「只依赖 jwt」这条是对的。`getTaskInfo` 有实拍；`reward` 只实拍到成功那一枪。
@@ -1821,23 +1829,10 @@ var TASK_META = [
   //    ⚠ 传上去的文件**必须收尾**（移回收站）—— 不收，用户网盘里就会慢慢堆垃圾。
   //    ⚠ `task/click` **不可回滚** ⇒ 同一轮不重发；`batchTrash` **不许发空 fileIds**。
   { name: "app-task", title: "App 任务（做任务）", group: "activity", kind: "Action", risk: "write-cloud", missed: "skip", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "partial", note: "一枪一步：传文件（需要时）→ `task/click`（不可回滚，同一轮不重发）→ 收尾移回收站。判据是纯函数（106/113/522 与 beiyong1 两道门）；矩阵得先跑过" },
-  // ⚠ 实现时两处**照抓包、别照 TS**：
-  //   ① `receiveTaskExpansion` 发的是**裸 GET**，不许写 `?acceptDate=`。
-  //      抓包 §3.6.6 实测：H5 传的是 `{acceptDate: t.acceptDate}`，而两个真实账号的
-  //      `receiveList[]` 里**根本没有 acceptDate 这个字段**（只有 cloudNum/cloudType）
-  //      ⇒ 值是 undefined ⇒ axios 把整个键丢掉 ⇒ 线上是**一个查询参数都没有**。
-  //      多一个空参数就是**另一个请求**。（`receive` 那条同坑，那边已经照做了。）
-  //   ② 云朵与「云盘专属 AI豆」是**同一个东西的两个名字**（2026-07-31 按 1:1 改名），
-  //      不是两种货币 —— 别把它们当两笔账记。
-  // ✅ 2026-10-14 实现：读状态 → （**严格**读到 curMonthBackup===false 才）传文件触发备份
-  //    → 裸 GET 领云朵。⚠ 领那枪缺成功样本（两个测试号本月都已领过，见 app_signin.rs:28），
-  //    所以成功形状没被实拍验过 —— 实现照源码逐字，不假装验过。
-  //    ⚠ 与 mcloud 一处刻意分歧：它只在 `curMonthTaskRecordCount > 0` 才发领那一枪；
-  //    本插件**不判**（用户定的口径）：那枪只读、成了有云朵、败了什么也不花 ⇒ 直接发。
-  //    ⚠ 领那一枪**必须带 `?acceptDate=`**（值可空，键必须在）—— 真机实测：裸 GET 回 404。
-  //      抓包 §3.6.6 说"要裸 GET"那条被真机推翻了，见 F-021（抓包记的是"客户端发了什么"，
-  //      而那个请求本身是失败的）。
-  { name: "task-expansion", title: "任务拓展", group: "cloud-write", kind: "Action", risk: "write-cloud", missed: "skip", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "partial", note: "三件：读状态 → 传一个文件触发本月备份 → 领云朵（**裸 GET**）。传上去的文件**不留 id、不删**（删了就是删用户的东西）" },
+  //   ① `acceptDate` 键必须在（值可空）：真机裸 GET 回 404，见 F-021。
+  //   ② 云朵与「云盘专属 AI豆」是**同一个东西的两个名字**（1:1 改名），别当两笔账。
+  //   ③ 现在按 mcloud：随机文件 + refuse_duplicate_content + 快照三枪 + 只删自己造的。
+  { name: "task-expansion", title: "任务拓展", group: "cloud-write", kind: "Action", risk: "write-cloud", missed: "skip", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "partial", note: "读状态 → 随机文件上传（refuse_duplicate_content）→ 快照三枪 → **只清理自己造的**文件（撞同名/判不了不删）；不领云朵" },
   // ❌ 2026-10-14 真机探过：**整族 404/405**，且**不是**签名或 marketName 的问题
   //    （带签名/不带签名、两个 marketName 各试一遍，读数一字不差；与 mcloud 2026-09-25
   //    的读数逐条一致）。405 说明网关**认得** `/market/rabactive/ai/image/` 这个 location
@@ -5970,6 +5965,7 @@ function drain(step, deps, opts) {
     steps++;
     lastNote = r.note;
     notes.push(r.note);
+    opts.onStep?.(r.note, steps);
     if (!r.ok) {
       return { ok: false, idle: false, steps, note: `${opts.label}：第 ${steps} 步失败 —— ${r.note}`, notes };
     }
@@ -7196,7 +7192,79 @@ function drawReport(st) {
 }
 
 // src/mcloud/tasks/appTaskMatrix.ts
+var STATE_GROUP_INDEX = "mcloud.apptaskmatrix.group_index";
+var STATE_LAST2 = "mcloud.apptaskmatrix.last";
 var MATRIX_MARKETS = ["sign_in_3", "newsign_139mail"];
+function asInt2(v) {
+  if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
+  if (typeof v === "string" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
+  return void 0;
+}
+function asStr2(v) {
+  return typeof v === "string" && v !== "" ? v : void 0;
+}
+function nestedLink(button, end = "app") {
+  if (button === null || typeof button !== "object") return void 0;
+  const one = button[end];
+  if (one === null || typeof one !== "object") return void 0;
+  return asStr2(one.link);
+}
+function buttonEnds(o) {
+  const obj = (v) => v !== null && typeof v === "object" ? v : void 0;
+  const shapes = [obj(o.buttonProperty), obj(o.button)];
+  for (const end of ["email", "app", "out"]) {
+    for (const s of shapes) {
+      const hit = s === void 0 ? void 0 : obj(s[end]);
+      if (hit !== void 0) return hit;
+    }
+  }
+  return void 0;
+}
+function parseMatrixItem(raw) {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return void 0;
+  const o = raw;
+  const btn = buttonEnds(o);
+  const at = (k) => btn === void 0 ? void 0 : asStr2(btn[k]);
+  const atText = (k) => {
+    const v = btn === void 0 ? void 0 : btn[k];
+    return typeof v === "number" ? String(v) : asStr2(v);
+  };
+  const it = {
+    taskId: asInt2(o.id ?? o.taskId ?? o.task_id),
+    name: asStr2(o.name),
+    description: asStr2(o.description),
+    groupId: asStr2(o.groupid ?? o.groupId),
+    state: asStr2(o.state),
+    limitType: asStr2(o.limitType ?? o.limit_type),
+    enable: asInt2(o.enable),
+    currStep: asInt2(o.currstep ?? o.currStep),
+    buttonAppLink: asStr2(o.buttonAppLink ?? o.button_app_link) ?? nestedLink(o.button, "app"),
+    buttonEmailLink: asStr2(o.buttonEmailLink ?? o.button_email_link) ?? nestedLink(o.button, "email"),
+    buttonOutText: at("text"),
+    buttonOutDay: atText("day"),
+    buttonOutTotal: atText("total"),
+    buttonTextMiddle: at("textMiddle"),
+    buttonTextFinish: at("textFinish"),
+    buttonActionMiddle: at("actionMiddle")
+  };
+  const any = it.taskId !== void 0 || it.name !== void 0 || it.state !== void 0 || it.enable !== void 0;
+  return any ? it : void 0;
+}
+function parseMatrix(result, group) {
+  let list = result;
+  if (list !== null && typeof list === "object" && !Array.isArray(list)) {
+    const o = list;
+    if (group !== void 0 && Array.isArray(o[group])) list = o[group];
+    else list = o.list ?? o.tasks ?? o.taskList ?? o.items ?? [];
+  }
+  if (!Array.isArray(list)) return [];
+  return list.map(parseMatrixItem).filter((x) => !!x);
+}
+function judgeItem(i) {
+  if (i.state === "FINISH") return "done";
+  if (i.enable === 1) return "todo";
+  return "skip";
+}
 function matrixKey(group) {
   return `mcloud.apptaskmatrix.g.${group}`;
 }
@@ -7212,6 +7280,76 @@ function readMatrix(store2) {
     }
   });
 }
+function summarize2(items) {
+  let done = 0;
+  let todo = 0;
+  let skip = 0;
+  const todoNames = [];
+  for (const i of items) {
+    const j = judgeItem(i);
+    if (j === "done") done += 1;
+    else if (j === "todo") {
+      todo += 1;
+      if (todoNames.length < 3) todoNames.push(i.name ?? i.description ?? `#${i.taskId ?? "?"}`);
+    } else skip += 1;
+  }
+  return { done, todo, skip, todoNames };
+}
+function runAppTaskMatrix(deps) {
+  const raw = deps.store.getState(STATE_GROUP_INDEX);
+  const parsed = raw === void 0 || raw === null ? 0 : Number(raw);
+  const idx = Number.isFinite(parsed) && parsed >= 0 && parsed < MATRIX_MARKETS.length ? parsed : 0;
+  const market = MATRIX_MARKETS[idx];
+  const out = runTask(
+    deps,
+    {
+      task: "app-task-matrix",
+      endpoint: "taskListV3",
+      method: "POST",
+      // ⚠ `activityid` 跟着**本次的 marketname** 走（mcloud 的 V3 构造器：先剥再补）
+      marketName: market,
+      isDeviceId: false,
+      stateKey: STATE_LAST2,
+      // 实拍体：{"clientVersion":"12.6.0","group":<group>,"marketname":"sign_in_3"}
+      // 体是**字符串**（与 receiveV3Body 同一约定）
+      // ⚠ V3：`group` 是**空串** = 一次拿整个市场（实拍 content-length 62 逐字节对出来的）
+      body: JSON.stringify({ marketname: market, clientVersion: TASK_CLIENT_VERSION, group: "" })
+    },
+    (env) => {
+      const items = parseMatrix(env.result, market);
+      const s = summarize2(items);
+      deps.store.setState(STATE_GROUP_INDEX, String((idx + 1) % MATRIX_MARKETS.length), deps.nowIso);
+      const reading = {
+        group: market,
+        at: deps.nowIso,
+        ...s,
+        items,
+        groupState: env.groupState
+      };
+      deps.store.setState(matrixKey(market), JSON.stringify(reading), deps.nowIso);
+      const names = "";
+      return {
+        ok: true,
+        // 说人话：做了几条、还剩几条（`market=`/`[1/2]` 是给排查用的，进日志没人看）
+        idle: s.todo === 0,
+        note: s.todo === 0 ? `已完成 ${s.done} 条，没有还能做的` : (
+          // ⚠ 别说成"要在 App 里手动做"：这一桶里混着「下月再来」「次月可领」
+          //   这类**这个月做不了**的（§12.10），而"怎么做"上游是逐条写在按钮上的。
+          `已完成 ${s.done} 条，另有 ${s.todo} 条没做完（哪一条能不能做，看它自己那句）`
+        ),
+        snapshot: { group: market, ...s, items: items.slice(0, 20) }
+      };
+    }
+  );
+  return out;
+}
+
+// src/mcloud/cloudUpload.ts
+var EMPTY_ZIP = utf8("PK\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0");
+
+// src/mcloud/tasks/taskExpansion.ts
+var STATE_EXPAND = "mcloud.taskexpansion.state";
+var STATE_MONTH_BACKUP = "mcloud.month.backup";
 
 // src/mcloud/dailyState.ts
 var DAILY_DONE_KEY = "mcloud.daily.done_date";
@@ -10136,6 +10274,21 @@ function readRecords(fetch, sinceMs, limit) {
 }
 
 // src/mcloud/beansRead.ts
+var BEANS_CACHE_TTL_MS = 2 * 60 * 60 * 1e3;
+var STATE_BEANS_CACHE = "mcloud.beans.cache";
+function loadBeansCache(store2) {
+  const raw = store2.getState(STATE_BEANS_CACHE);
+  if (raw === null || raw === "") return {};
+  try {
+    const x = JSON.parse(raw);
+    return typeof x === "object" && x !== null ? x : {};
+  } catch {
+    return {};
+  }
+}
+function saveBeansCache(store2, cache, nowIso) {
+  store2.setState(STATE_BEANS_CACHE, JSON.stringify(cache), nowIso);
+}
 function makeFetchPage(deps) {
   const nowIso = deps.nowIso ?? (/* @__PURE__ */ new Date()).toISOString();
   const base = hostBase({ baseUrl: deps.baseUrl }, "");
@@ -10188,6 +10341,54 @@ function readRecordsForAccount(deps, nowMs, days) {
     gateDeps(deps),
     () => readRecords(makeFetchPage(deps), rangeSinceMs(days, nowMs), MAX_DETAIL_RECORDS)
   );
+}
+
+// src/mcloud/tasks/info.ts
+var bool = (v, dflt = false) => typeof v === "boolean" ? v : dflt;
+function parseInfoV3(result) {
+  const o = resultObject({ code: 0, message: "", result, ok: true });
+  const pick2 = (...keys) => {
+    for (const k of keys) if (o[k] !== void 0) return o[k];
+    return void 0;
+  };
+  const listRaw = pick2("receiveList", "receive_list");
+  const receiveList = Array.isArray(listRaw) ? listRaw.map((x) => {
+    const it = typeof x === "object" && x !== null ? x : {};
+    const rid = it.recordId ?? it.record_id ?? it.cloudId ?? it.cloud_id;
+    const ct = it.cloudType ?? it.cloud_type;
+    return {
+      recordId: typeof rid === "string" ? rid : rid === void 0 || rid === null ? "" : String(rid),
+      cloudType: typeof ct === "number" ? ct : void 0,
+      raw: x
+    };
+  }) : [];
+  const totalRaw = pick2("total", "point", "balance");
+  const total = typeof totalRaw === "number" ? totalRaw : typeof totalRaw === "string" && /^\d+$/.test(totalRaw) ? Number(totalRaw) : void 0;
+  return {
+    todaySigned: bool(pick2("todaySignIn", "today_sign_in")),
+    receiveList,
+    curMonthBackup: bool(pick2("curMonthBackup", "cur_month_backup")),
+    curMonthBackupSignAccept: bool(pick2("curMonthBackupSignAccept", "cur_month_backup_sign_accept")),
+    total,
+    raw: result ?? null
+  };
+}
+function fetchInfoV3(deps) {
+  const session = loadSession(deps.store);
+  if (!session) return { ok: false, error: "还没有网页会话 —— 上面「换票」那一步说了原因" };
+  const req = buildH5Request({
+    url: `${resolveUrl("infoV3", deps.baseUrl)}?${CLIENT_QUERY}`,
+    method: EP_METHOD.infoV3 === "GET" ? "GET" : "POST",
+    referer: REFERER_SIGN_IN,
+    showLoading: SHOW_LOADING,
+    isDeviceId: !!session.deviceId,
+    saltKey: 1,
+    session: sessionHeaders(session)
+  });
+  const res = callOnce(deps.transport, req);
+  if (!res.ok) return { ok: false, error: res.error ?? "未知失败" };
+  const env = res.env;
+  return { ok: true, info: parseInfoV3(env.result), tookMs: res.tookMs };
 }
 
 // src/mcloud/routes.ts
@@ -10255,6 +10456,50 @@ function readBody(req) {
     return typeof v === "object" && v !== null && !Array.isArray(v) ? v : {};
   } catch {
     return { session: raw };
+  }
+}
+function readMatrixLocal(one) {
+  let clicked = [];
+  let unconfirmed = [];
+  try {
+    const st = JSON.parse(one.getState("mcloud.apptask.state") ?? "null");
+    if (st !== null && Array.isArray(st.clicked)) clicked = st.clicked.filter((x) => typeof x === "number");
+    if (st !== null && Array.isArray(st.unconfirmed)) {
+      unconfirmed = st.unconfirmed.filter((x) => typeof x === "number");
+    }
+  } catch {
+    clicked = [];
+    unconfirmed = [];
+  }
+  let uploadDone2 = false;
+  let uploadName = "";
+  try {
+    const up = JSON.parse(one.getState("mcloud.upload.state") ?? "null");
+    if (up !== null && up.step === "done") {
+      uploadDone2 = true;
+      uploadName = typeof up.name === "string" ? up.name : "";
+    }
+  } catch {
+    uploadDone2 = false;
+  }
+  return { clicked, unconfirmed, uploadDone: uploadDone2, uploadName };
+}
+function readBackupState(one, nowIso) {
+  try {
+    const ex = JSON.parse(one.getState(STATE_EXPAND) ?? "null");
+    if (ex === null || typeof ex !== "object") return null;
+    let enabled = typeof ex.curMonthBackup === "boolean" ? ex.curMonthBackup : void 0;
+    const mb = JSON.parse(one.getState(STATE_MONTH_BACKUP) ?? "null");
+    if (mb !== null && mb.month === nowIso.slice(0, 7) && typeof mb.backup === "boolean") {
+      enabled = mb.backup;
+    }
+    return {
+      step: typeof ex.step === "string" ? ex.step : "",
+      day: typeof ex.day === "string" ? ex.day : "",
+      enabled
+    };
+  } catch {
+    return null;
   }
 }
 function buildReadings(deps) {
@@ -10376,11 +10621,19 @@ function buildReadings(deps) {
     },
     data: {
       hasBigInt: hasBigInt(),
-      matrix: {
-        groups: readMatrix(deps.store).map((r, i) => ({ group: MATRIX_MARKETS[i], reading: r })),
-        read: readMatrix(deps.store).filter(Boolean).length,
-        total: MATRIX_MARKETS.length
-      }
+      // ⚠ 矩阵读数按账号存在各自的袋里；`deps.store` 是**默认袋**，
+      //   直接 `readMatrix(deps.store)` 会让数据页永远显示另一个号的状态。
+      matrix: (() => {
+        const one = view.current === "" ? deps.store : scoped(rawStoreOf(deps.store), view.current);
+        const rows = readMatrix(one);
+        return {
+          groups: rows.map((r, i) => ({ group: MATRIX_MARKETS[i], reading: r })),
+          read: rows.filter(Boolean).length,
+          total: MATRIX_MARKETS.length,
+          backup: readBackupState(one, nowIso),
+          local: readMatrixLocal(one)
+        };
+      })()
     },
     // ⚠ 推送（10 渠道）在**阶段 ⑤**。这里给一个诚实的空壳而不是编一个假读数 ——
     //    界面据此显示「还没做」，而不是显示一个看着像好的空表。
@@ -11352,9 +11605,32 @@ function mcloudRoutes(deps) {
       // 界面要能看见，否则"只读"就只是日志里的一行数。
       path: `${base}/matrix`,
       method: "GET",
-      handler: () => {
-        const rows = readMatrix(deps.store);
+      // 点「刷新」会真打移动云盘（两个市场各一发）——必须自己声明预算。
+      budget_ms: 6e4,
+      handler: (req) => {
+        const q = parseQuery(req.query ?? "");
+        const wanted = q["account"] ?? "";
+        const accounts = loadAccounts(deps.store);
+        const found = wanted === "" ? currentAccount(deps.store) : accounts.find((a) => a.id === wanted);
+        if (!found) return json(400, { error: `列表里没有这个账号：${wanted || "（没给 id）"}` });
+        const one = scoped(rawStoreOf(deps.store), found.id);
+        const refresh = q["refresh"] === "1";
+        const refreshErrors = [];
+        if (refresh) {
+          for (const _ of MATRIX_MARKETS) {
+            const out = runAppTaskMatrix({
+              store: one,
+              transport: deps.transport,
+              nowIso: deps.now(),
+              baseUrl: loadBaseUrl(deps.store)
+            });
+            if (!out.ok) refreshErrors.push(out.note);
+          }
+        }
+        const rows = readMatrix(one);
         return json(200, {
+          account: found.id,
+          label: found.label,
           // ⚠ 标签必须跟着 **market** 走，不是 group：`readMatrix` 返回的是
           //   按市场的两条（游标早就从 group 改成 market 了，见 appTaskMatrix.ts
           //   里那句「游标现在是**市场**（不是 group）」）。
@@ -11364,7 +11640,12 @@ function mcloudRoutes(deps) {
           //   （这个 bug 是给 readings 写测试时顺带发现的。）
           groups: rows.map((r, i) => ({ group: MATRIX_MARKETS[i], reading: r })),
           read: rows.filter(Boolean).length,
-          total: MATRIX_MARKETS.length
+          total: MATRIX_MARKETS.length,
+          at: deps.now(),
+          backup: readBackupState(one, deps.now()),
+          local: readMatrixLocal(one),
+          refreshed: refresh,
+          refreshErrors
         });
       }
     },
@@ -12089,7 +12370,8 @@ function mcloudRoutes(deps) {
       //     翻不到底 / 解不出 `insertTime`）只让它那一行进 `failed[]`，
       //     其余账号照常出数。这一条**不返回错误状态** —— 一个账号挂了不该
       //     把整张卡打成"服务挂了"。
-      //   · **点了才取**：界面上那一格不做自动刷新；这一条路由每次点都真打上游。
+      //   · **缓存 2 小时**：余额和当日汇总都缓存（用户口径）；手动「刷新」带
+      //     `?refresh=1` 强刷。缓存按账号存在各自的袋里。
       path: `${base}/beans/today`,
       method: "GET",
       // 逐账号 × 翻页 + **当场续票**的只读链：一发上游的超时就有 1500ms，
@@ -12098,31 +12380,76 @@ function mcloudRoutes(deps) {
       // 按最坏一档留预算：几个账号各可能"读失败→换票→再读"若干轮。健康路径秒回，
       // 这一档只在票全烂时才顶到。
       budget_ms: 6e4,
-      handler: () => {
+      handler: (req) => {
+        const q = parseQuery(req.query ?? "");
+        const refresh = q["refresh"] === "1";
         const raw = rawStoreOf(deps.store);
         const nowIso = deps.now();
         const nowMs = Date.parse(nowIso);
         const baseUrl = loadBaseUrl(deps.store);
+        const todayStart = dayStartMs(nowMs);
         const rows = [];
         const failed = [];
         for (const a of loadAccounts(deps.store)) {
           if (a.disabled === true) continue;
           const one = scoped(raw, a.id);
-          try {
-            const day = readDayForAccount(
-              { store: one, transport: deps.transport, baseUrl, nowIso },
-              nowMs
-            );
-            rows.push({ id: a.id, label: a.label, ...day });
-          } catch (e) {
-            failed.push({
-              id: a.id,
-              label: a.label,
-              reason: e instanceof Error ? e.message : String(e)
-            });
+          const cache = loadBeansCache(one);
+          const dayFresh = !refresh && cache.day !== void 0 && nowMs - cache.day.atMs < BEANS_CACHE_TTL_MS && cache.day.dayStart === todayStart;
+          let day;
+          let cached = false;
+          if (dayFresh) {
+            day = cache.day.day;
+            cached = true;
+          } else {
+            try {
+              day = readDayForAccount(
+                { store: one, transport: deps.transport, baseUrl, nowIso },
+                nowMs
+              );
+              cache.day = { atMs: nowMs, dayStart: todayStart, day };
+            } catch (e) {
+              failed.push({
+                id: a.id,
+                label: a.label,
+                reason: e instanceof Error ? e.message : String(e)
+              });
+              continue;
+            }
           }
+          const balanceFresh = !refresh && cache.balance !== void 0 && nowMs - cache.balance.atMs < BEANS_CACHE_TTL_MS;
+          let balance;
+          let balanceReason;
+          if (balanceFresh) {
+            balance = cache.balance.value ?? void 0;
+            balanceReason = cache.balance.reason;
+          } else {
+            const info = fetchInfoV3({ store: one, transport: deps.transport, baseUrl });
+            if (info.ok && info.info.total !== void 0) {
+              balance = info.info.total;
+              cache.balance = { atMs: nowMs, value: balance };
+            } else {
+              balanceReason = info.ok ? "服务端没给余额字段" : info.error;
+              cache.balance = void 0;
+            }
+          }
+          saveBeansCache(one, cache, nowIso);
+          rows.push({
+            id: a.id,
+            label: a.label,
+            ...day,
+            balance,
+            balanceReason,
+            cached,
+            cachedAt: cached ? cache.day?.atMs : void 0
+          });
         }
-        return json(200, { nowMs, accounts: rows, failed });
+        return json(200, {
+          nowMs,
+          accounts: rows,
+          failed,
+          cached: rows.length > 0 && rows.every((r) => r.cached),
+          cacheTtlMs: BEANS_CACHE_TTL_MS
+        });
       }
     },
     {

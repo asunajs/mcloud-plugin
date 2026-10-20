@@ -189,8 +189,10 @@ export const TASK_META: TaskMeta[] = [
   { name: 'backup-gift', title: '备份好礼', group: 'signin', kind: 'Action', risk: 'ledger', missed: 'catch-up', deps: ['jwt'], batch: true, hidden: false, implemented: true, evidence: 'captured', note: '**GET 却是写**；两步：先问能不能领，能领才领' },
   { name: 'revival', title: '用复活卡/回馈卡', group: 'signin', kind: 'Action', risk: 'irreversible', missed: 'skip', deps: ['jwt'], batch: false, hidden: false, implemented: true, evidence: 'captured', note: '**不可逆** —— 晚超过 2 小时就不做' },
   { name: 'prizes', title: '待领取奖品', group: 'query', kind: 'Query', risk: 'none', missed: 'catch-up', deps: ['jwt'], batch: false, hidden: false, implemented: true, evidence: 'captured' },
-  { name: 'task-list', title: '任务清单', group: 'query', kind: 'Query', risk: 'none', missed: 'catch-up', deps: ['jwt'], batch: false, hidden: false, implemented: true, evidence: 'captured' },
-  { name: 'cloud-snapshot', title: 'AI豆余额快照', group: 'query', kind: 'Query', risk: 'none', missed: 'catch-up', deps: ['jwt'], batch: false, hidden: false, implemented: true, evidence: 'captured', note: '只取第一页；一页装满会如实说可能还有下一页' },
+  // mcloud 2026-10-07 已把这两条从任务注册里摘掉（数据改在「上游状态」页按需读）；
+  // 插件保留模块/路由，但不再当日常任务跑、也不在任务列表里露出来。
+  { name: 'task-list', title: '任务清单', group: 'query', kind: 'Query', risk: 'none', missed: 'catch-up', deps: ['jwt'], batch: false, hidden: true, implemented: true, evidence: 'captured' },
+  { name: 'cloud-snapshot', title: 'AI豆余额快照', group: 'query', kind: 'Query', risk: 'none', missed: 'catch-up', deps: ['jwt'], batch: false, hidden: true, implemented: true, evidence: 'captured', note: '只取第一页；一页装满会如实说可能还有下一页。mcloud 已摘掉任务注册，数据在数据页按需取' },
 
   // ── 通知与趣玩（未实现）──
   // 它用**签到页那张票**（`SessionRecipe::SignInPage`）—— 就是本插件手里已有的会话，
@@ -254,23 +256,10 @@ export const TASK_META: TaskMeta[] = [
   //    ⚠ 传上去的文件**必须收尾**（移回收站）—— 不收，用户网盘里就会慢慢堆垃圾。
   //    ⚠ `task/click` **不可回滚** ⇒ 同一轮不重发；`batchTrash` **不许发空 fileIds**。
   { name: 'app-task', title: 'App 任务（做任务）', group: 'activity', kind: 'Action', risk: 'write-cloud', missed: 'skip', deps: ['jwt'], batch: false, hidden: false, implemented: true, evidence: 'partial', note: '一枪一步：传文件（需要时）→ `task/click`（不可回滚，同一轮不重发）→ 收尾移回收站。判据是纯函数（106/113/522 与 beiyong1 两道门）；矩阵得先跑过' },
-    // ⚠ 实现时两处**照抓包、别照 TS**：
-  //   ① `receiveTaskExpansion` 发的是**裸 GET**，不许写 `?acceptDate=`。
-  //      抓包 §3.6.6 实测：H5 传的是 `{acceptDate: t.acceptDate}`，而两个真实账号的
-  //      `receiveList[]` 里**根本没有 acceptDate 这个字段**（只有 cloudNum/cloudType）
-  //      ⇒ 值是 undefined ⇒ axios 把整个键丢掉 ⇒ 线上是**一个查询参数都没有**。
-  //      多一个空参数就是**另一个请求**。（`receive` 那条同坑，那边已经照做了。）
-  //   ② 云朵与「云盘专属 AI豆」是**同一个东西的两个名字**（2026-07-31 按 1:1 改名），
-  //      不是两种货币 —— 别把它们当两笔账记。
-    // ✅ 2026-10-14 实现：读状态 → （**严格**读到 curMonthBackup===false 才）传文件触发备份
-  //    → 裸 GET 领云朵。⚠ 领那枪缺成功样本（两个测试号本月都已领过，见 app_signin.rs:28），
-  //    所以成功形状没被实拍验过 —— 实现照源码逐字，不假装验过。
-  //    ⚠ 与 mcloud 一处刻意分歧：它只在 `curMonthTaskRecordCount > 0` 才发领那一枪；
-  //    本插件**不判**（用户定的口径）：那枪只读、成了有云朵、败了什么也不花 ⇒ 直接发。
-  //    ⚠ 领那一枪**必须带 `?acceptDate=`**（值可空，键必须在）—— 真机实测：裸 GET 回 404。
-  //      抓包 §3.6.6 说"要裸 GET"那条被真机推翻了，见 F-021（抓包记的是"客户端发了什么"，
-  //      而那个请求本身是失败的）。
-  { name: 'task-expansion', title: '任务拓展', group: 'cloud-write', kind: 'Action', risk: 'write-cloud', missed: 'skip', deps: ['jwt'], batch: false, hidden: false, implemented: true, evidence: 'partial', note: '三件：读状态 → 传一个文件触发本月备份 → 领云朵（**裸 GET**）。传上去的文件**不留 id、不删**（删了就是删用户的东西）' },
+  //   ① `acceptDate` 键必须在（值可空）：真机裸 GET 回 404，见 F-021。
+  //   ② 云朵与「云盘专属 AI豆」是**同一个东西的两个名字**（1:1 改名），别当两笔账。
+  //   ③ 现在按 mcloud：随机文件 + refuse_duplicate_content + 快照三枪 + 只删自己造的。
+  { name: 'task-expansion', title: '任务拓展', group: 'cloud-write', kind: 'Action', risk: 'write-cloud', missed: 'skip', deps: ['jwt'], batch: false, hidden: false, implemented: true, evidence: 'partial', note: '读状态 → 随机文件上传（refuse_duplicate_content）→ 快照三枪 → **只清理自己造的**文件（撞同名/判不了不删）；不领云朵' },
     // ❌ 2026-10-14 真机探过：**整族 404/405**，且**不是**签名或 marketName 的问题
   //    （带签名/不带签名、两个 marketName 各试一遍，读数一字不差；与 mcloud 2026-09-25
   //    的读数逐条一致）。405 说明网关**认得** `/market/rabactive/ai/image/` 这个 location
