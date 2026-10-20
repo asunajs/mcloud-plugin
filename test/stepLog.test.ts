@@ -17,7 +17,13 @@ test('lineLevel：普通读数/状态是 info，不是 success', () => {
   assert.equal(lineLevel('消息推送奖励（问状态）：暂无，已开启 10 天'), 'info');
   assert.equal(lineLevel('App 任务矩阵（只看）：已完成 11 条，另有 3 条没做完'), 'info');
   assert.equal(lineLevel('待领取奖品：无待领取奖品'), 'debug');
+  assert.equal(lineLevel('AI豆快照：流水 0 条'), 'info');
+  assert.equal(lineLevel('App 任务：这一趟做完了'), 'debug');
   assert.equal(lineLevel('任务拓展：这一趟已经走完'), 'debug');
+  assert.equal(
+    lineLevel('消息推送奖励（问状态）：通知已被关闭，需要你在 App 里手动打开（这一步我们做不了）'),
+    'warn',
+  );
 });
 
 test('lineLevel：跳过/今天已经做过是 debug', () => {

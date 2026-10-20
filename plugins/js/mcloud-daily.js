@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.2 · 插件 `mcloud-daily`
+//   mcloud-plugin 0.2.3 · 插件 `mcloud-daily`
 
 // src/entries/daily.ts
 import { debug as debug2, register_cron } from "host-api";
@@ -3664,14 +3664,14 @@ function lineLevel(line) {
     return "debug";
   }
   if (line.includes("没成")) return "fail";
-  if (/需手动|手动完成|需前往/.test(line)) return "warn";
+  if (/需手动|手动完成|需前往|需要你|手动打开|这一步我们做不了/.test(line)) return "warn";
   if (/（只看）|快照|问状态|流水|本月排名|已开启|有效期|剩余|当前云朵|登录账号|过期时间|已完成 \d+ 条|另有 \d+ 条/.test(
     line
   )) {
     return "info";
   }
   if (/已完成|领到|成功|好了|获得|签到成功/.test(line)) return "success";
-  if (/跳过|已经|已领|没有可|没有能|无需|今天|未开启|没开|不发|不领|没问过|走完|暂无|无待领取/.test(line)) {
+  if (/跳过|已经|已领|没有可|没有能|无需|今天|未开启|没开|不发|不领|没问过|走完|做完了|暂无|无待领取|无可领|无.*可领|都领过了/.test(line)) {
     return "debug";
   }
   return "info";
@@ -7417,7 +7417,7 @@ var LAST_KEY = DAILY_LAST_KEY;
 function once(name, fn, deps) {
   try {
     const r = fn(deps);
-    return { name, ok: r.ok, note: r.note, idle: r.idle === true };
+    return { name, ok: r.ok, note: r.note, idle: r.idle === true || r.skipped === true };
   } catch (e) {
     return { name, ok: false, note: `抛异常：${e instanceof Error ? e.message : String(e)}` };
   }
@@ -7507,7 +7507,7 @@ function runDaily(deps) {
         deadlineMs: 25e3,
         startedAt: started
       });
-      return { name: "App 任务矩阵（只看）", ok: r.ok, note: r.note, idle: false };
+      return { name: "App 任务矩阵（只看）", ok: r.ok, note: r.note, idle: true };
     })()
   );
   const kick = deps.store.getState("mcloud.apptask.state") ? null : startAppTask(deps);
@@ -7532,11 +7532,11 @@ function runDaily(deps) {
       deadlineMs: 2e4,
       startedAt: started
     });
-    push({ name, ok: r.ok, note: r.note, idle: r.idle });
+    push({ name, ok: r.ok, note: r.note, idle: name.includes("问状态") ? true : r.idle });
   }
   push(once("凭据续期", (d) => runAuthRefresh(d), deps));
-  push(once("待领取奖品", runPrizes, deps));
-  push(once("AI豆快照", runCloudSnapshot, deps));
+  push({ ...once("待领取奖品", runPrizes, deps), idle: true });
+  push({ ...once("AI豆快照", runCloudSnapshot, deps), idle: true });
   const failed = steps.filter((s) => !s.ok);
   const elapsed = Date.now() - started;
   const done = steps.filter((s) => !s.idle).length;

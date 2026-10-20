@@ -154,7 +154,8 @@ function once(
 ): StepResult {
   try {
     const r = fn(deps);
-    return { name, ok: r.ok, note: r.note, idle: r.idle === true };
+    // `skipped` 也是「这一步什么都没做」—— 运行记录里要显示成灰色，不是绿勾。
+    return { name, ok: r.ok, note: r.note, idle: r.idle === true || r.skipped === true };
   } catch (e) {
     return { name, ok: false, note: `抛异常：${e instanceof Error ? e.message : String(e)}` };
   }
@@ -308,8 +309,9 @@ function runDaily(deps: TaskDeps): {
         deadlineMs: 25_000,
         startedAt: started,
       });
-      // 它不报 idle（每读一个市场都是"有事做"），所以 drain 会正好跑满 maxSteps
-      return { name: 'App 任务矩阵（只看）', ok: r.ok, note: r.note, idle: false };
+      // 它不报 idle（每读一个市场都是"有事做"），所以 drain 会正好跑满 maxSteps。
+      // 但对用户来说它是**只读**，不是这一趟做成了什么 ⇒ 运行记录里标 idle。
+      return { name: 'App 任务矩阵（只看）', ok: r.ok, note: r.note, idle: true };
     })(),
   );
   // 没有在跑的就起一趟（起单只写字、不发请求）。
@@ -340,15 +342,17 @@ function runDaily(deps: TaskDeps): {
       deadlineMs: 20_000,
       startedAt: started,
     });
-    push({ name, ok: r.ok, note: r.note, idle: r.idle });
+    // 「问状态」是只读，不是动作；「领」才可能真的做成一件事。
+    push({ name, ok: r.ok, note: r.note, idle: name.includes('问状态') ? true : r.idle });
   }
 
   // ⑥ 凭据续期（每天判一次，离过期还远时一个请求都不发）
   push(once('凭据续期', (d) => runAuthRefresh(d), deps));
 
   // ⑦ 收尾读数
-  push(once('待领取奖品', runPrizes, deps));
-  push(once('AI豆快照', runCloudSnapshot, deps));
+  // 收尾两发都是**只读**：它们回答"现在有什么"，不是"这一趟做成了什么"。
+  push({ ...once('待领取奖品', runPrizes, deps), idle: true });
+  push({ ...once('AI豆快照', runCloudSnapshot, deps), idle: true });
 
   const failed = steps.filter((s) => !s.ok);
   const elapsed = Date.now() - started;

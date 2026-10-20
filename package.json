@@ -1,6 +1,6 @@
 {
   "name": "mcloud-plugin",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "private": true,
   "type": "module",
   "description": "mcloud 的 JS/TS 重写版 —— 作为 rust-plugin-panel 的插件运行",
