@@ -20,6 +20,7 @@ import {
   PUT_ORIGIN,
   PUT_UPLOAD_COMPLETE,
   RENAME_FORCE,
+  authorizeRequest,
   buildCompleteRequest,
   buildCreateRequest,
   buildPutRequest,
@@ -53,6 +54,26 @@ test('⚠ 凭据判据：控制面带、**存储主机不带**（逐字照 mclou
   assert.equal(sendsAuthorizationTo('不是 URL'), false);
   assert.equal(sendsAuthorizationTo('/relative/path'), false);
   assert.equal(hostOf('https://u:p@Host.Example.com:8443/x'), 'host.example.com', '去 userinfo 与端口、转小写');
+});
+
+test('发送层注入 Authorization：控制面带、存储主机不带、显式的不覆盖', () => {
+  const auth = 'Basic abc';
+  const create = authorizeRequest(
+    { url: `${PERSONAL_KD}${FILE_CREATE_PATH}`, headers: {} as Record<string, string> },
+    auth,
+  );
+  assert.equal(create.headers.Authorization, auth);
+  const storage = authorizeRequest(
+    { url: 'https://oss-cn-xyz.aliyuncs.com/b/k', headers: {} as Record<string, string> },
+    auth,
+  );
+  assert.equal(storage.headers.Authorization, undefined);
+  const explicit = authorizeRequest(
+    { url: `${PERSONAL_KD}${FILE_CREATE_PATH}`, headers: { authorization: 'Basic x' } as Record<string, string> },
+    auth,
+  );
+  assert.equal(explicit.headers.authorization, 'Basic x');
+  assert.equal(explicit.headers.Authorization, undefined);
 });
 
 test('⚠ `uploadUrl` 是**另一台主机**，PUT 那一枪必须被认出来"不带凭据"', () => {
@@ -169,6 +190,9 @@ test('① 的响应解析：正常 / 秒传（不用 PUT）/ 缺件 / 错码', (
   assert.equal(parseCreate(JSON.stringify({ code: 0, data: { fileId: 'F', rapidUpload: false } })).ok, false);
   assert.equal(parseCreate(JSON.stringify({ code: 0, data: {} })).ok, false);
   assert.equal(parseCreate(JSON.stringify({ code: 400 })).ok, false);
+  const authFail = parseCreate(JSON.stringify({ code: '04000005' }));
+  assert.equal(authFail.ok, false);
+  assert.match(authFail.error ?? '', /认证失败.*Authorization/);
   assert.equal(parseCreate('不是 JSON').ok, false);
 });
 

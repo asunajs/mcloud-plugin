@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.0 · 插件 `mcloud-exchange`
+//   mcloud-plugin 0.2.1 · 插件 `mcloud-exchange`
 
 // src/entries/exchange.ts
 import { debug as debug2, log as log3, register_cron, worker_hint } from "host-api";
@@ -2810,371 +2810,6 @@ function shortLabel(label) {
   return label;
 }
 
-// src/entries/shared.ts
-var DEFAULT_REQUEST_TIMEOUT_MS = 1500;
-var LONG_REQUEST_TIMEOUT_MS = 2e4;
-function makeTransport(timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
-  return (req) => {
-    const r = applyDefaultContentType(req);
-    return http_fetch(r.url, hostFetchOptions(r, timeoutMs));
-  };
-}
-function makeStore() {
-  const store2 = hostStore();
-  store2.ensureSchema();
-  const { moved } = migrateFlatKeys(store2, (/* @__PURE__ */ new Date()).toISOString());
-  const s = scoped(store2);
-  if (moved.length > 0) {
-    log(`状态迁移：${moved.length} 个键搬进账号袋（${moved.join(", ")}）`);
-  }
-  return s;
-}
-function depsForAccount(base, acctId, payload, transport2) {
-  return taskDeps(scoped(rawStoreOf(base), acctId), transport2, payload);
-}
-function taskDeps(store2, transport2, payload) {
-  return {
-    store: store2,
-    transport: transport2,
-    nowIso: (/* @__PURE__ */ new Date()).toISOString(),
-    // 基址**每次触发时从 state 读**，不用启动时的快照 ——
-    // 否则「刚把基址指到 mock，任务却还在打真上游」
-    baseUrl: loadBaseUrl(store2),
-    lateMs: payload.lateMs
-  };
-}
-
-// src/mcloud/scheduleCron.ts
-var MIN = 0;
-var MAX_HOUR = 23;
-function parseNum(s, min, max2) {
-  if (!/^\d+$/.test(s)) throw new Error(`不是数字：${s}`);
-  const n = Number(s);
-  if (n < min || n > max2) throw new Error(`超出范围：${s}`);
-  return n;
-}
-function parseField(field, min, max2) {
-  const f = field.trim();
-  if (f === "") throw new Error("cron 字段不能为空");
-  if (f === "*") return null;
-  const out = /* @__PURE__ */ new Set();
-  for (const part of f.split(",")) {
-    const p = part.trim();
-    if (p === "") throw new Error("cron 字段里有空项");
-    const base = p.split("/")[0];
-    const stepRaw = p.split("/")[1];
-    const step = stepRaw === void 0 ? 1 : parseNum(stepRaw, 1, 999);
-    let start2 = min;
-    let end = max2;
-    if (base !== "*") {
-      if (base.includes("-")) {
-        const [a, b] = base.split("-");
-        start2 = parseNum(a, min, max2);
-        end = parseNum(b, min, max2);
-        if (start2 > end) throw new Error(`范围反了：${base}`);
-      } else {
-        start2 = parseNum(base, min, max2);
-        end = start2;
-      }
-    }
-    for (let n = start2; n <= end; n += step) out.add(n);
-  }
-  return [...out].sort((a, b) => a - b);
-}
-function parseCron(expr) {
-  const parts = expr.trim().split(/\s+/);
-  if (parts.length !== 5) throw new Error("cron 要 5 段：分 时 日 月 周");
-  const minute = parseField(parts[0], 0, 59);
-  if (minute === null || minute.length !== 1 || minute[0] !== 0) {
-    throw new Error("分钟只能是 0（抢兑点都是整点）");
-  }
-  const hoursRaw = parseField(parts[1], MIN, MAX_HOUR);
-  const hours = hoursRaw ?? Array.from({ length: MAX_HOUR + 1 }, (_, i) => i);
-  const dom = parseField(parts[2], 1, 31);
-  const month = parseField(parts[3], 1, 12);
-  const dow = parseField(parts[4], 0, 7);
-  return {
-    hours,
-    dom,
-    month,
-    dow: dow === null ? null : [...new Set(dow.map((d) => d === 7 ? 0 : d))].sort((a, b) => a - b)
-  };
-}
-function dayMatches(spec, d) {
-  if (spec.month !== null && !spec.month.includes(d.getMonth() + 1)) return false;
-  const domOk = spec.dom === null || spec.dom.includes(d.getDate());
-  const dowOk = spec.dow === null || spec.dow.includes(d.getDay());
-  if (spec.dom !== null && spec.dow !== null) return domOk || dowOk;
-  return domOk && dowOk;
-}
-function cronMatchesAt(expr, ms) {
-  const spec = parseCron(expr);
-  const d = new Date(ms);
-  if (d.getMinutes() !== 0) return false;
-  return dayMatches(spec, d) && spec.hours.includes(d.getHours());
-}
-function nextCronTargetMs(expr, nowMs) {
-  const spec = parseCron(expr);
-  const base = new Date(nowMs);
-  for (let day = 0; day < 370; day += 1) {
-    const d = new Date(base.getTime());
-    d.setDate(base.getDate() + day);
-    if (!dayMatches(spec, d)) continue;
-    for (const h of spec.hours) {
-      const t = new Date(d.getTime());
-      t.setHours(h, 0, 0, 0);
-      if (t.getTime() >= nowMs) return t.getTime();
-    }
-  }
-  return null;
-}
-
-// src/mcloud/exchangePlans.ts
-var STATE_PLANS = "mcloud.exchange.plans";
-var STATE_PLAN_RUNS = "mcloud.exchange.plan.runs";
-var STATE_PLANS_MIGRATED = "mcloud.exchange.plans.migrated";
-function newPlanId() {
-  return "p" + Date.now().toString(36) + Math.floor(Math.random() * 1e6).toString(36);
-}
-function loadPlans(store2) {
-  const raw = (store2.getState(STATE_PLANS) ?? "").trim();
-  if (raw === "") return [];
-  try {
-    const v = JSON.parse(raw);
-    if (!Array.isArray(v)) return [];
-    return v.filter((x) => {
-      if (x === null || typeof x !== "object") return false;
-      const p = x;
-      return typeof p.id === "string" && typeof p.accountId === "string" && typeof p.prizeName === "string" && typeof p.cron === "string" && typeof p.leadSec === "number" && typeof p.until === "string" && typeof p.maxRuns === "number" && typeof p.enabled === "boolean";
-    });
-  } catch {
-    return [];
-  }
-}
-function savePlans(store2, plans, nowIso) {
-  store2.setState(STATE_PLANS, JSON.stringify(plans), nowIso);
-}
-function planTarget(plan) {
-  return plan.prizeId !== void 0 ? String(plan.prizeId) : plan.prizeName;
-}
-function enabledPlans(plans) {
-  return plans.filter((p) => p.enabled);
-}
-function unionCron(plans) {
-  const hours = /* @__PURE__ */ new Set();
-  for (const p of plans) {
-    if (!p.enabled) continue;
-    try {
-      for (const h of parseCron(p.cron).hours) hours.add(h);
-    } catch {
-    }
-  }
-  if (hours.size === 0) return "0 10 * * *";
-  return "0 " + [...hours].sort((a, b) => a - b).join(",") + " * * *";
-}
-function maxLeadMs(plans) {
-  let ms = 6e4;
-  for (const p of plans) {
-    if (!p.enabled) continue;
-    ms = Math.max(ms, Math.min(300, Math.max(60, p.leadSec)) * 1e3);
-  }
-  return ms;
-}
-function nextPlanTargetMs(plans, afterMs) {
-  let best = null;
-  for (const p of plans) {
-    if (!p.enabled) continue;
-    const t = nextCronTargetMs(p.cron, afterMs);
-    if (t === null) continue;
-    if (best === null || t < best) best = t;
-  }
-  return best;
-}
-function duePlans(plans, targetMs) {
-  return plans.filter((p) => {
-    if (!p.enabled) return false;
-    try {
-      return cronMatchesAt(p.cron, targetMs);
-    } catch {
-      return false;
-    }
-  });
-}
-function fmtLocal(ms) {
-  const d = new Date(ms);
-  const p2 = (n) => String(n).padStart(2, "0");
-  return `${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:00`;
-}
-function planSummary(store2, nowMs = Date.now()) {
-  const plans = loadPlans(store2);
-  const on = enabledPlans(plans);
-  if (on.length === 0) return plans.length === 0 ? "还没设定时计划" : `${plans.length} 个计划（都未启用）`;
-  const next = nextPlanTargetMs(on, nowMs);
-  const head = `${on.length} 个计划`;
-  return next === null ? head : `${head} · 下次 ${fmtLocal(next)}`;
-}
-function loadPlanRuns(store2) {
-  const raw = (store2.getState(STATE_PLAN_RUNS) ?? "").trim();
-  if (raw === "") return {};
-  try {
-    const v = JSON.parse(raw);
-    return v !== null && typeof v === "object" ? v : {};
-  } catch {
-    return {};
-  }
-}
-function planRuns(store2, planId) {
-  return loadPlanRuns(store2)[planId] ?? 0;
-}
-function bumpPlanRuns(store2, planId, nowIso) {
-  const all = loadPlanRuns(store2);
-  all[planId] = (all[planId] ?? 0) + 1;
-  store2.setState(STATE_PLAN_RUNS, JSON.stringify(all), nowIso);
-}
-function migrateLegacyPlan(store2, nowIso) {
-  if (store2.getState(STATE_PLANS_MIGRATED) === "1") return false;
-  if (loadPlans(store2).length > 0) {
-    store2.setState(STATE_PLANS_MIGRATED, "1", nowIso);
-    return false;
-  }
-  const target = (store2.getState("mcloud.exchange.schedule.plan") ?? "").trim();
-  if (target === "") {
-    store2.setState(STATE_PLANS_MIGRATED, "1", nowIso);
-    return false;
-  }
-  const name = (store2.getState("mcloud.exchange.schedule.plan_name") ?? "").trim();
-  const cron = (store2.getState("mcloud.exchange.schedule.cron") ?? "").trim() || "0 10 * * *";
-  const leadSec = Number(store2.getState("mcloud.exchange.lead_sec") ?? "120") || 120;
-  const until = (store2.getState("mcloud.exchange.schedule.until") ?? "").trim();
-  const maxRuns = Number(store2.getState("mcloud.exchange.schedule.max_runs") ?? "0") || 0;
-  const enabledKey = (store2.getState("mcloud.exchange.schedule.enabled") ?? "").trim();
-  const enabled = enabledKey === "1" || enabledKey === "" && target !== "";
-  let accounts = resolveTaskAccounts(store2, "兑换");
-  if (accounts.length === 0) {
-    accounts = loadAccounts(store2).filter((a) => a.disabled !== true).map((a) => a.id);
-  }
-  const plans = accounts.slice(0, 8).map((accountId) => ({
-    id: newPlanId(),
-    accountId,
-    .../^\d+$/.test(target) ? { prizeId: Number(target) } : {},
-    prizeName: name !== "" ? name : target,
-    cron,
-    leadSec,
-    until,
-    maxRuns,
-    enabled
-  }));
-  store2.setState(STATE_PLANS_MIGRATED, "1", nowIso);
-  if (plans.length === 0) return false;
-  savePlans(store2, plans, nowIso);
-  return true;
-}
-
-// src/mcloud/taskReadiness.ts
-var H = globalThis.host ?? globalThis.host_api ?? {};
-function enabledAccountCount(store2) {
-  return loadAccounts(store2).filter((a) => a.disabled !== true).length;
-}
-function blockersFor(store2, task) {
-  if (task === "兑换") {
-    const plans = loadPlans(store2);
-    if (plans.length === 0) return ["还没设定时计划"];
-    const on = plans.filter((p) => p.enabled);
-    if (on.length === 0) return ["所有计划都未启用"];
-    const accounts = loadAccounts(store2);
-    const bad = on.filter((p) => {
-      const a = accounts.find((x) => x.id === p.accountId);
-      return !a || a.disabled === true;
-    });
-    if (bad.length === on.length) return ["计划里的账号都不可用"];
-    return [];
-  }
-  return enabledAccountCount(store2) === 0 ? ["还没有账号"] : [];
-}
-
-// src/mcloud/log.ts
-import { debug, error, fail, fatal, log as log2, start, success, warn as warn2 } from "host-api";
-
-// src/mcloud/logRing.ts
-var RING_KEY = "mcloud.log.ring";
-var RING_MAX = 400;
-function parse(raw) {
-  if (raw === "") return [];
-  try {
-    const v = JSON.parse(raw);
-    if (!Array.isArray(v)) return [];
-    return v.filter(
-      (x) => typeof x === "object" && x !== null && typeof x.m === "string"
-    );
-  } catch {
-    return [];
-  }
-}
-function appendRing(store2, nowIso, level, msg) {
-  const all = parse(store2.getState(RING_KEY) ?? "");
-  all.push({ t: nowIso, l: level, m: msg });
-  const kept = all.length > RING_MAX ? all.slice(all.length - RING_MAX) : all;
-  store2.setState(RING_KEY, JSON.stringify(kept), nowIso);
-}
-
-// src/mcloud/log.ts
-function logBoth(store2, level, msg, nowIso) {
-  switch (level) {
-    case "debug":
-      debug(msg);
-      break;
-    case "warn":
-      warn2(msg);
-      break;
-    case "error":
-      error(msg);
-      break;
-    case "fatal":
-      fatal(msg);
-      break;
-    case "start":
-      start(msg);
-      break;
-    case "success":
-      success(msg);
-      break;
-    case "fail":
-      fail(msg);
-      break;
-    default:
-      log2(msg);
-  }
-  appendRing(store2, nowIso, level, msg);
-}
-
-// src/mcloud/tasks/stepLog.ts
-function lineLevel(line) {
-  if (line.includes("没成") && /还没有网页会话|上面「换票」|没有会话|未登录|90001|票没被认/.test(line)) {
-    return "debug";
-  }
-  if (line.includes("没成")) return "fail";
-  if (/需手动|手动完成|需前往/.test(line)) return "warn";
-  if (/已完成|领到|成功|好了|获得|签到成功/.test(line)) return "success";
-  if (/跳过|已经|已领|没有可|没有能|无需|今天|未开启|没开|不发|不领|没问过|走完/.test(line)) {
-    return "debug";
-  }
-  return "success";
-}
-function lineText(line) {
-  if (line.includes("还没有网页会话") || line.includes("上面「换票」")) {
-    const m = /^(.+?)：没成 —— /.exec(line);
-    if (m !== null) return `${m[1]}：跳过（没有网页会话）`;
-  }
-  return line;
-}
-function stepTally(steps) {
-  const failed = steps.filter((x) => !x.ok);
-  const hard = failed.filter(
-    (x) => !/还没有网页会话|上面「换票」|没有会话|未登录|90001|票没被认/.test(x.note)
-  ).length;
-  return { bad: failed.length, hard };
-}
-
 // src/crypto/aes.ts
 function gfMul(a, b) {
   let r = 0;
@@ -4795,7 +4430,7 @@ var STATE_EXCHANGE = "mcloud.h5.exchange";
 var STATE_JWT = "mcloud.h5.jwt";
 var STATE_DEVICE_ID = "mcloud.smid.deviceId";
 var JWT_TTL_MS = 100 * 60 * 1e3;
-function parse2(raw) {
+function parse(raw) {
   if (!raw) return null;
   try {
     return JSON.parse(raw);
@@ -4847,10 +4482,10 @@ function exchangeKey(store2, recipe = FALLBACK_RECIPE) {
   return scopedKey(STATE_EXCHANGE, store2, recipe);
 }
 function loadExchange(store2, recipe = FALLBACK_RECIPE) {
-  return parse2(store2.getState(exchangeKey(store2, recipe)));
+  return parse(store2.getState(exchangeKey(store2, recipe)));
 }
 function loadJwt(store2, recipe = FALLBACK_RECIPE) {
-  return parse2(store2.getState(jwtKey(store2, recipe)));
+  return parse(store2.getState(jwtKey(store2, recipe)));
 }
 function jwtFresh(store2, nowMs, recipe = FALLBACK_RECIPE) {
   const r = loadJwt(store2, recipe);
@@ -5012,6 +4647,400 @@ function failStep(deps, st, note) {
 var RETRY_AFTER_MS = 30 * 60 * 1e3;
 function maskMobile(m) {
   return m.length >= 7 ? `${m.slice(0, 3)}****${m.slice(-4)}` : "***";
+}
+
+// src/mcloud/cloudUpload.ts
+var AUTH_DOMAINS = [
+  "yun.139.com",
+  "mcloud.139.com",
+  "feixin.10086.cn",
+  "mail.10086.cn"
+];
+function hostOf(rawUrl) {
+  const m = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/([^/?#]+)/.exec(rawUrl);
+  if (!m) return "";
+  let host = m[1].toLowerCase();
+  const at = host.lastIndexOf("@");
+  if (at >= 0) host = host.slice(at + 1);
+  const colon = host.lastIndexOf(":");
+  if (colon >= 0) host = host.slice(0, colon);
+  return host;
+}
+function sendsAuthorizationTo(rawUrl) {
+  const host = hostOf(rawUrl);
+  if (host === "") return false;
+  return AUTH_DOMAINS.some((suffix) => host.endsWith(suffix));
+}
+function authorizeRequest(req, auth) {
+  const hasAuth = Object.keys(req.headers).some((k) => k.toLowerCase() === "authorization");
+  if (auth === "" || hasAuth || !sendsAuthorizationTo(req.url)) return req;
+  return { ...req, headers: { ...req.headers, Authorization: auth } };
+}
+
+// src/entries/shared.ts
+var DEFAULT_REQUEST_TIMEOUT_MS = 1500;
+var LONG_REQUEST_TIMEOUT_MS = 2e4;
+function makeTransport(timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
+  return (req) => {
+    const r = applyDefaultContentType(req);
+    return http_fetch(r.url, hostFetchOptions(r, timeoutMs));
+  };
+}
+function makeStore() {
+  const store2 = hostStore();
+  store2.ensureSchema();
+  const { moved } = migrateFlatKeys(store2, (/* @__PURE__ */ new Date()).toISOString());
+  const s = scoped(store2);
+  if (moved.length > 0) {
+    log(`状态迁移：${moved.length} 个键搬进账号袋（${moved.join(", ")}）`);
+  }
+  return s;
+}
+function depsForAccount(base, acctId, payload, transport2) {
+  return taskDeps(scoped(rawStoreOf(base), acctId), transport2, payload);
+}
+function taskDeps(store2, transport2, payload) {
+  const authorized = (req) => transport2(authorizeRequest(req, loadAuthRaw(store2)));
+  return {
+    store: store2,
+    transport: authorized,
+    nowIso: (/* @__PURE__ */ new Date()).toISOString(),
+    // 基址**每次触发时从 state 读**，不用启动时的快照 ——
+    // 否则「刚把基址指到 mock，任务却还在打真上游」
+    baseUrl: loadBaseUrl(store2),
+    lateMs: payload.lateMs
+  };
+}
+
+// src/mcloud/scheduleCron.ts
+var MIN = 0;
+var MAX_HOUR = 23;
+function parseNum(s, min, max2) {
+  if (!/^\d+$/.test(s)) throw new Error(`不是数字：${s}`);
+  const n = Number(s);
+  if (n < min || n > max2) throw new Error(`超出范围：${s}`);
+  return n;
+}
+function parseField(field, min, max2) {
+  const f = field.trim();
+  if (f === "") throw new Error("cron 字段不能为空");
+  if (f === "*") return null;
+  const out = /* @__PURE__ */ new Set();
+  for (const part of f.split(",")) {
+    const p = part.trim();
+    if (p === "") throw new Error("cron 字段里有空项");
+    const base = p.split("/")[0];
+    const stepRaw = p.split("/")[1];
+    const step = stepRaw === void 0 ? 1 : parseNum(stepRaw, 1, 999);
+    let start2 = min;
+    let end = max2;
+    if (base !== "*") {
+      if (base.includes("-")) {
+        const [a, b] = base.split("-");
+        start2 = parseNum(a, min, max2);
+        end = parseNum(b, min, max2);
+        if (start2 > end) throw new Error(`范围反了：${base}`);
+      } else {
+        start2 = parseNum(base, min, max2);
+        end = start2;
+      }
+    }
+    for (let n = start2; n <= end; n += step) out.add(n);
+  }
+  return [...out].sort((a, b) => a - b);
+}
+function parseCron(expr) {
+  const parts = expr.trim().split(/\s+/);
+  if (parts.length !== 5) throw new Error("cron 要 5 段：分 时 日 月 周");
+  const minute = parseField(parts[0], 0, 59);
+  if (minute === null || minute.length !== 1 || minute[0] !== 0) {
+    throw new Error("分钟只能是 0（抢兑点都是整点）");
+  }
+  const hoursRaw = parseField(parts[1], MIN, MAX_HOUR);
+  const hours = hoursRaw ?? Array.from({ length: MAX_HOUR + 1 }, (_, i) => i);
+  const dom = parseField(parts[2], 1, 31);
+  const month = parseField(parts[3], 1, 12);
+  const dow = parseField(parts[4], 0, 7);
+  return {
+    hours,
+    dom,
+    month,
+    dow: dow === null ? null : [...new Set(dow.map((d) => d === 7 ? 0 : d))].sort((a, b) => a - b)
+  };
+}
+function dayMatches(spec, d) {
+  if (spec.month !== null && !spec.month.includes(d.getMonth() + 1)) return false;
+  const domOk = spec.dom === null || spec.dom.includes(d.getDate());
+  const dowOk = spec.dow === null || spec.dow.includes(d.getDay());
+  if (spec.dom !== null && spec.dow !== null) return domOk || dowOk;
+  return domOk && dowOk;
+}
+function cronMatchesAt(expr, ms) {
+  const spec = parseCron(expr);
+  const d = new Date(ms);
+  if (d.getMinutes() !== 0) return false;
+  return dayMatches(spec, d) && spec.hours.includes(d.getHours());
+}
+function nextCronTargetMs(expr, nowMs) {
+  const spec = parseCron(expr);
+  const base = new Date(nowMs);
+  for (let day = 0; day < 370; day += 1) {
+    const d = new Date(base.getTime());
+    d.setDate(base.getDate() + day);
+    if (!dayMatches(spec, d)) continue;
+    for (const h of spec.hours) {
+      const t = new Date(d.getTime());
+      t.setHours(h, 0, 0, 0);
+      if (t.getTime() >= nowMs) return t.getTime();
+    }
+  }
+  return null;
+}
+
+// src/mcloud/exchangePlans.ts
+var STATE_PLANS = "mcloud.exchange.plans";
+var STATE_PLAN_RUNS = "mcloud.exchange.plan.runs";
+var STATE_PLANS_MIGRATED = "mcloud.exchange.plans.migrated";
+function newPlanId() {
+  return "p" + Date.now().toString(36) + Math.floor(Math.random() * 1e6).toString(36);
+}
+function loadPlans(store2) {
+  const raw = (store2.getState(STATE_PLANS) ?? "").trim();
+  if (raw === "") return [];
+  try {
+    const v = JSON.parse(raw);
+    if (!Array.isArray(v)) return [];
+    return v.filter((x) => {
+      if (x === null || typeof x !== "object") return false;
+      const p = x;
+      return typeof p.id === "string" && typeof p.accountId === "string" && typeof p.prizeName === "string" && typeof p.cron === "string" && typeof p.leadSec === "number" && typeof p.until === "string" && typeof p.maxRuns === "number" && typeof p.enabled === "boolean";
+    });
+  } catch {
+    return [];
+  }
+}
+function savePlans(store2, plans, nowIso) {
+  store2.setState(STATE_PLANS, JSON.stringify(plans), nowIso);
+}
+function planTarget(plan) {
+  return plan.prizeId !== void 0 ? String(plan.prizeId) : plan.prizeName;
+}
+function enabledPlans(plans) {
+  return plans.filter((p) => p.enabled);
+}
+function unionCron(plans) {
+  const hours = /* @__PURE__ */ new Set();
+  for (const p of plans) {
+    if (!p.enabled) continue;
+    try {
+      for (const h of parseCron(p.cron).hours) hours.add(h);
+    } catch {
+    }
+  }
+  if (hours.size === 0) return "0 10 * * *";
+  return "0 " + [...hours].sort((a, b) => a - b).join(",") + " * * *";
+}
+function maxLeadMs(plans) {
+  let ms = 6e4;
+  for (const p of plans) {
+    if (!p.enabled) continue;
+    ms = Math.max(ms, Math.min(300, Math.max(60, p.leadSec)) * 1e3);
+  }
+  return ms;
+}
+function nextPlanTargetMs(plans, afterMs) {
+  let best = null;
+  for (const p of plans) {
+    if (!p.enabled) continue;
+    const t = nextCronTargetMs(p.cron, afterMs);
+    if (t === null) continue;
+    if (best === null || t < best) best = t;
+  }
+  return best;
+}
+function duePlans(plans, targetMs) {
+  return plans.filter((p) => {
+    if (!p.enabled) return false;
+    try {
+      return cronMatchesAt(p.cron, targetMs);
+    } catch {
+      return false;
+    }
+  });
+}
+function fmtLocal(ms) {
+  const d = new Date(ms);
+  const p2 = (n) => String(n).padStart(2, "0");
+  return `${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:00`;
+}
+function planSummary(store2, nowMs = Date.now()) {
+  const plans = loadPlans(store2);
+  const on = enabledPlans(plans);
+  if (on.length === 0) return plans.length === 0 ? "还没设定时计划" : `${plans.length} 个计划（都未启用）`;
+  const next = nextPlanTargetMs(on, nowMs);
+  const head = `${on.length} 个计划`;
+  return next === null ? head : `${head} · 下次 ${fmtLocal(next)}`;
+}
+function loadPlanRuns(store2) {
+  const raw = (store2.getState(STATE_PLAN_RUNS) ?? "").trim();
+  if (raw === "") return {};
+  try {
+    const v = JSON.parse(raw);
+    return v !== null && typeof v === "object" ? v : {};
+  } catch {
+    return {};
+  }
+}
+function planRuns(store2, planId) {
+  return loadPlanRuns(store2)[planId] ?? 0;
+}
+function bumpPlanRuns(store2, planId, nowIso) {
+  const all = loadPlanRuns(store2);
+  all[planId] = (all[planId] ?? 0) + 1;
+  store2.setState(STATE_PLAN_RUNS, JSON.stringify(all), nowIso);
+}
+function migrateLegacyPlan(store2, nowIso) {
+  if (store2.getState(STATE_PLANS_MIGRATED) === "1") return false;
+  if (loadPlans(store2).length > 0) {
+    store2.setState(STATE_PLANS_MIGRATED, "1", nowIso);
+    return false;
+  }
+  const target = (store2.getState("mcloud.exchange.schedule.plan") ?? "").trim();
+  if (target === "") {
+    store2.setState(STATE_PLANS_MIGRATED, "1", nowIso);
+    return false;
+  }
+  const name = (store2.getState("mcloud.exchange.schedule.plan_name") ?? "").trim();
+  const cron = (store2.getState("mcloud.exchange.schedule.cron") ?? "").trim() || "0 10 * * *";
+  const leadSec = Number(store2.getState("mcloud.exchange.lead_sec") ?? "120") || 120;
+  const until = (store2.getState("mcloud.exchange.schedule.until") ?? "").trim();
+  const maxRuns = Number(store2.getState("mcloud.exchange.schedule.max_runs") ?? "0") || 0;
+  const enabledKey = (store2.getState("mcloud.exchange.schedule.enabled") ?? "").trim();
+  const enabled = enabledKey === "1" || enabledKey === "" && target !== "";
+  let accounts = resolveTaskAccounts(store2, "兑换");
+  if (accounts.length === 0) {
+    accounts = loadAccounts(store2).filter((a) => a.disabled !== true).map((a) => a.id);
+  }
+  const plans = accounts.slice(0, 8).map((accountId) => ({
+    id: newPlanId(),
+    accountId,
+    .../^\d+$/.test(target) ? { prizeId: Number(target) } : {},
+    prizeName: name !== "" ? name : target,
+    cron,
+    leadSec,
+    until,
+    maxRuns,
+    enabled
+  }));
+  store2.setState(STATE_PLANS_MIGRATED, "1", nowIso);
+  if (plans.length === 0) return false;
+  savePlans(store2, plans, nowIso);
+  return true;
+}
+
+// src/mcloud/taskReadiness.ts
+var H = globalThis.host ?? globalThis.host_api ?? {};
+function enabledAccountCount(store2) {
+  return loadAccounts(store2).filter((a) => a.disabled !== true).length;
+}
+function blockersFor(store2, task) {
+  if (task === "兑换") {
+    const plans = loadPlans(store2);
+    if (plans.length === 0) return ["还没设定时计划"];
+    const on = plans.filter((p) => p.enabled);
+    if (on.length === 0) return ["所有计划都未启用"];
+    const accounts = loadAccounts(store2);
+    const bad = on.filter((p) => {
+      const a = accounts.find((x) => x.id === p.accountId);
+      return !a || a.disabled === true;
+    });
+    if (bad.length === on.length) return ["计划里的账号都不可用"];
+    return [];
+  }
+  return enabledAccountCount(store2) === 0 ? ["还没有账号"] : [];
+}
+
+// src/mcloud/log.ts
+import { debug, error, fail, fatal, log as log2, start, success, warn as warn2 } from "host-api";
+
+// src/mcloud/logRing.ts
+var RING_KEY = "mcloud.log.ring";
+var RING_MAX = 400;
+function parse2(raw) {
+  if (raw === "") return [];
+  try {
+    const v = JSON.parse(raw);
+    if (!Array.isArray(v)) return [];
+    return v.filter(
+      (x) => typeof x === "object" && x !== null && typeof x.m === "string"
+    );
+  } catch {
+    return [];
+  }
+}
+function appendRing(store2, nowIso, level, msg) {
+  const all = parse2(store2.getState(RING_KEY) ?? "");
+  all.push({ t: nowIso, l: level, m: msg });
+  const kept = all.length > RING_MAX ? all.slice(all.length - RING_MAX) : all;
+  store2.setState(RING_KEY, JSON.stringify(kept), nowIso);
+}
+
+// src/mcloud/log.ts
+function logBoth(store2, level, msg, nowIso) {
+  switch (level) {
+    case "debug":
+      debug(msg);
+      break;
+    case "warn":
+      warn2(msg);
+      break;
+    case "error":
+      error(msg);
+      break;
+    case "fatal":
+      fatal(msg);
+      break;
+    case "start":
+      start(msg);
+      break;
+    case "success":
+      success(msg);
+      break;
+    case "fail":
+      fail(msg);
+      break;
+    default:
+      log2(msg);
+  }
+  appendRing(store2, nowIso, level, msg);
+}
+
+// src/mcloud/tasks/stepLog.ts
+function lineLevel(line) {
+  if (line.includes("没成") && /还没有网页会话|上面「换票」|没有会话|未登录|90001|票没被认/.test(line)) {
+    return "debug";
+  }
+  if (line.includes("没成")) return "fail";
+  if (/需手动|手动完成|需前往/.test(line)) return "warn";
+  if (/已完成|领到|成功|好了|获得|签到成功/.test(line)) return "success";
+  if (/跳过|已经|已领|没有可|没有能|无需|今天|未开启|没开|不发|不领|没问过|走完/.test(line)) {
+    return "debug";
+  }
+  return "success";
+}
+function lineText(line) {
+  if (line.includes("还没有网页会话") || line.includes("上面「换票」")) {
+    const m = /^(.+?)：没成 —— /.exec(line);
+    if (m !== null) return `${m[1]}：跳过（没有网页会话）`;
+  }
+  return line;
+}
+function stepTally(steps) {
+  const failed = steps.filter((x) => !x.ok);
+  const hard = failed.filter(
+    (x) => !/还没有网页会话|上面「换票」|没有会话|未登录|90001|票没被认/.test(x.note)
+  ).length;
+  return { bad: failed.length, hard };
 }
 
 // src/mcloud/tokenGate.ts

@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.0 · 插件 `mcloud-daily`
+//   mcloud-plugin 0.2.1 · 插件 `mcloud-daily`
 
 // src/entries/daily.ts
 import { debug as debug2, register_cron } from "host-api";
@@ -4223,6 +4223,11 @@ function sendsAuthorizationTo(rawUrl) {
   if (host === "") return false;
   return AUTH_DOMAINS.some((suffix) => host.endsWith(suffix));
 }
+function authorizeRequest(req, auth) {
+  const hasAuth = Object.keys(req.headers).some((k) => k.toLowerCase() === "authorization");
+  if (auth === "" || hasAuth || !sendsAuthorizationTo(req.url)) return req;
+  return { ...req, headers: { ...req.headers, Authorization: auth } };
+}
 function contentHashOf(bytes) {
   return sha256Hex(bytes);
 }
@@ -4264,7 +4269,11 @@ function parseCreate(body) {
     return { ok: false, error: `create 响应不是 JSON：${e instanceof Error ? e.message : String(e)}` };
   }
   if (v.code !== void 0 && v.code !== 0 && v.code !== "0000" && v.code !== "0") {
-    return { ok: false, error: `create 失败：code=${String(v.code)}` };
+    const code = String(v.code);
+    if (code === "04000005") {
+      return { ok: false, error: "create 失败：认证失败（code=04000005，Authorization 缺失或过期）" };
+    }
+    return { ok: false, error: `create 失败：code=${code}` };
   }
   const data = v.data ?? v.result;
   if (!data || typeof data !== "object") return { ok: false, error: "create 响应没有 data/result" };
@@ -7325,9 +7334,10 @@ function forEachTaskAccount(base, task, payload, transport2, fn) {
   return out;
 }
 function taskDeps(store2, transport2, payload) {
+  const authorized = (req) => transport2(authorizeRequest(req, loadAuthRaw(store2)));
   return {
     store: store2,
-    transport: transport2,
+    transport: authorized,
     nowIso: (/* @__PURE__ */ new Date()).toISOString(),
     // 基址**每次触发时从 state 读**，不用启动时的快照 ——
     // 否则「刚把基址指到 mock，任务却还在打真上游」
