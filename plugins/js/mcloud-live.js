@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.3 · 插件 `mcloud-live`
+//   mcloud-plugin 0.2.4 · 插件 `mcloud-live`
 
 // src/entries/live.ts
 import { debug as debug2, register_cron } from "host-api";
@@ -909,7 +909,8 @@ function lineLevel(line) {
   )) {
     return "info";
   }
-  if (/已完成|领到|成功|好了|获得|签到成功/.test(line)) return "success";
+  const gotReward = /(领到|领取到|获得|中奖|抽到|成功获得|兑换成功.*【)/.test(line) && !/未获得|没获得|没领到|未领到/.test(line);
+  if (gotReward) return "success";
   if (/跳过|已经|已领|没有可|没有能|无需|今天|未开启|没开|不发|不领|没问过|走完|做完了|暂无|无待领取|无可领|无.*可领|都领过了/.test(line)) {
     return "debug";
   }

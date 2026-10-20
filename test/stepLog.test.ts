@@ -6,10 +6,15 @@ import assert from 'node:assert/strict';
 
 import { lineLevel } from '../src/mcloud/tasks/stepLog.ts';
 
-test('lineLevel：真正的成功才 success', () => {
+test('lineLevel：做了事 + 明确拿到奖励才 success', () => {
   assert.equal(lineLevel('签到：领到 3 云朵'), 'success');
   assert.equal(lineLevel('兑换：兑换成功！【10 元话费】'), 'success');
   assert.equal(lineLevel('领取AI豆：获得 1 个'), 'success');
+  assert.equal(lineLevel('领取AI豆：领取到 146 个云朵'), 'success');
+  // 只有“成功”两个字不算：动作发出去了，但没拿到东西
+  assert.equal(lineLevel('签到：网盘签到成功'), 'info');
+  assert.equal(lineLevel('分享文件成功'), 'info');
+  assert.equal(lineLevel('领取AI豆：未获得奖励'), 'info');
 });
 
 test('lineLevel：普通读数/状态是 info，不是 success', () => {
