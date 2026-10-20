@@ -127,6 +127,17 @@ export function sendsAuthorizationTo(rawUrl: string): boolean {
   return AUTH_DOMAINS.some((suffix) => host.endsWith(suffix));
 }
 
+/** 发送层按主机后缀注入 `Authorization`。已显式带 Authorization 的请求不覆盖；
+ *  存储主机的预签名 URL 不注入（与参考实现的 `sends_authorization_to` 同口径）。 */
+export function authorizeRequest<T extends { url: string; headers: Record<string, string> }>(
+  req: T,
+  auth: string,
+): T {
+  const hasAuth = Object.keys(req.headers).some((k) => k.toLowerCase() === 'authorization');
+  if (auth === '' || hasAuth || !sendsAuthorizationTo(req.url)) return req;
+  return { ...req, headers: { ...req.headers, Authorization: auth } };
+}
+
 // ───────────────────────── ① create ─────────────────────────
 
 export interface CreateInput {
@@ -206,7 +217,13 @@ export function parseCreate(body: string): { ok: boolean; created?: Created; err
     return { ok: false, error: `create 响应不是 JSON：${e instanceof Error ? e.message : String(e)}` };
   }
   if (v.code !== undefined && v.code !== 0 && v.code !== '0000' && v.code !== '0') {
-    return { ok: false, error: `create 失败：code=${String(v.code)}` };
+    const code = String(v.code);
+    // 04000005 是云盘那族的**认证失败**（缺 Authorization / 凭据过期），不是文件名/容量问题。
+    // 照原样报 code 会让人以为“文件传坏了”，实际要去账号页重导这个号。
+    if (code === '04000005') {
+      return { ok: false, error: 'create 失败：认证失败（code=04000005，Authorization 缺失或过期）' };
+    }
+    return { ok: false, error: `create 失败：code=${code}` };
   }
   const data = (v.data ?? v.result) as Record<string, unknown> | undefined;
   if (!data || typeof data !== 'object') return { ok: false, error: 'create 响应没有 data/result' };
