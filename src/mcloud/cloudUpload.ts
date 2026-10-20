@@ -206,6 +206,12 @@ export interface Created {
   /** ⚠ 预签名直传地址 —— 按**凭据**对待：绝不进日志、夹具、错误文本。 */
   uploadUrl: string;
   rapidUpload: boolean;
+  /** `data.exist`：`true` = 撞上用户已有文件；`false` = 这次是我们造的；
+   *  `undefined` = 这一格缺席/形状变了。 */
+  exist?: boolean | undefined;
+  /** 这个 fileId 是不是**我们造的**（决定能不能进清理名单）。
+   *  `exist` 缺席/null 时按“有没有新上传会话”判：有 uploadId + (uploadUrl|秒传) 就算我们的。 */
+  ownedByUs?: boolean | undefined;
 }
 
 /** 解析 ① 的响应。`rapidUpload === true` ⇒ 秒传（**不用再 PUT**）。 */
@@ -242,6 +248,20 @@ export function parseCreate(body: string): { ok: boolean; created?: Created; err
       : undefined;
   const uploadUrl = nested ?? (data.uploadUrl as string | undefined);
   const rapid = data.rapidUpload === true;
+  // ⚠ `exist` 三种状态要分清：true（用户的文件）/ false（我们造的）/ 读不出来。
+  //   上游 2026-10-05 起会把“没撞同名”回成 `null` ⇒ 不能把 null 当 false。
+  //   exist 判不了时用“有没有新上传会话”补判（与 Rust 的 owned_by_us 同一口径）。
+  const existRaw = data.exist;
+  const exist =
+    existRaw === true ? true : existRaw === false ? false : undefined;
+  const ownedByUs =
+    exist === true
+      ? false
+      : exist === false
+        ? true
+        : typeof uploadId === 'string' && uploadId !== '' && (typeof uploadUrl === 'string' || rapid)
+          ? true
+          : undefined;
   if (typeof fileId !== 'string' || fileId === '') return { ok: false, error: 'create 响应缺 fileId' };
   if (!rapid) {
     if (typeof uploadId !== 'string' || uploadId === '') {
@@ -258,6 +278,8 @@ export function parseCreate(body: string): { ok: boolean; created?: Created; err
       uploadId: typeof uploadId === 'string' ? uploadId : '',
       uploadUrl: typeof uploadUrl === 'string' ? uploadUrl : '',
       rapidUpload: rapid,
+      exist,
+      ownedByUs,
     },
   };
 }
@@ -269,8 +291,15 @@ export function parseCreate(body: string): { ok: boolean; created?: Created; err
 export function buildPutRequest(
   uploadUrl: string,
   bytes: Uint8Array,
-  backup = false,
+  op: CloudOp | boolean = false,
 ): { req: BuiltRequest; leaksCredential: boolean } {
+  const kind: CloudOp = op === true ? 'backup' : op === false ? 'upload' : op;
+  const codes =
+    kind === 'backup'
+      ? { op: OP_TYPE_BACKUP, sub: SUB_OP_TYPE_BACKUP }
+      : kind === 'snapshot'
+        ? { op: '0', sub: '0' }
+        : { op: OP_TYPE_UPLOAD, sub: SUB_OP_TYPE_UPLOAD };
   const req: BuiltRequest = {
     url: uploadUrl,
     method: 'PUT',
@@ -281,8 +310,8 @@ export function buildPutRequest(
       // ⚠ 值是**带问号**的 `?1`
       'upload-complete': PUT_UPLOAD_COMPLETE,
       'upload-draft-interop-version': PUT_UPLOAD_DRAFT_INTEROP_VERSION,
-      'x-yun-op-type': backup ? OP_TYPE_BACKUP : OP_TYPE_UPLOAD,
-      'x-yun-sub-op-type': backup ? SUB_OP_TYPE_BACKUP : SUB_OP_TYPE_UPLOAD,
+      'x-yun-op-type': codes.op,
+      'x-yun-sub-op-type': codes.sub,
     },
     // 二进制体：插件里用 latin1 字符串承载（每个字符一个字节）
     body: latin1FromBytes(bytes),
@@ -343,6 +372,159 @@ export function parseComplete(body: string): { ok: boolean; error?: string } {
   } catch (e) {
     return { ok: false, error: `complete 响应不是 JSON：${e instanceof Error ? e.message : String(e)}` };
   }
+}
+
+
+// ───────────────────────── 备份快照（task-expansion 的后三枪） ─────────────────────────
+
+/** 最小合法 ZIP（只有 22 字节 EOCD）。mcloud 的 `EMPTY_ZIP` 逐字同值：
+ *  快照体里装什么没有读数，只要求形状是合法 zip。 */
+export const EMPTY_ZIP = utf8('PK\x05\x06\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00');
+
+const SNAPSHOT_CONTENT_TYPE = 'application/json;charset=UTF-8';
+
+/** 快照那两发的头画像：`x-yun-api-version: v2` + 服务标识 + App UA。
+ *  与文件那三枪的 v1/六枚头**不是同一套**，别复用 `cloudFileOpHeaders`。 */
+function snapshotHeaders(): Record<string, string> {
+  return {
+    Pragma: 'no-cache',
+    service_identifier_key: 'service_identifier_cloudDisk',
+    'x-yun-api-version': 'v2',
+    'x-yun-app-channel': CHANNEL_ANDROID,
+    'x-huawei-channelSrc': CHANNEL_ANDROID,
+    'x-yun-net-type': '1',
+    'x-yun-svc-type': '1',
+    'x-SvcType': '1',
+    'x-UserAgent': '412|iPad|ios 26.6|12.6.0-200',
+    'x-yun-user-agent': 'iPad|iPad|ios 26.6|mCloud12.6.0-200',
+    'x-DeviceName': 'aVBhZA==',
+    'Accept-Language': 'zh-CN',
+    'Content-Type': SNAPSHOT_CONTENT_TYPE,
+  };
+}
+
+export interface SnapshotCreateInput {
+  fileExtension: string;
+  count: number;
+  size: number;
+  contentHash: string;
+  timestampMs: number;
+}
+
+export function snapshotCreateBody(input: SnapshotCreateInput): string {
+  return JSON.stringify({
+    fileExtension: input.fileExtension,
+    count: input.count,
+    contentHash: input.contentHash,
+    contentHashAlgorithm: HASH_ALGORITHM,
+    size: input.size,
+    partInfos: [{ partNumber: 1, partSize: input.size }],
+    timestamp: input.timestampMs,
+  });
+}
+
+export function buildSnapshotCreateRequest(input: SnapshotCreateInput): BuiltRequest {
+  return {
+    url: `${PERSONAL_KD}${BACKUP_CREATE_SNAPSHOT_PATH}`,
+    method: 'POST',
+    headers: snapshotHeaders(),
+    body: snapshotCreateBody(input),
+  };
+}
+
+export function parseSnapshotCreate(
+  body: string,
+): { ok: boolean; created?: Created; error?: string } {
+  let v: Record<string, unknown>;
+  try {
+    v = JSON.parse(body) as Record<string, unknown>;
+  } catch (e) {
+    return { ok: false, error: `createSnapshot 响应不是 JSON：${e instanceof Error ? e.message : String(e)}` };
+  }
+  const code = v.code;
+  if (v.success === false || (code !== undefined && code !== '0000' && code !== 0 && code !== '0')) {
+    return { ok: false, error: `createSnapshot 失败：code=${String(code)} ${String(v.msg ?? '')}`.trim() };
+  }
+  const data = v.data;
+  if (!data || typeof data !== 'object') {
+    return { ok: false, error: 'createSnapshot 响应没有 data 对象' };
+  }
+  const d = data as Record<string, unknown>;
+  const fileId = d.fileId;
+  if (typeof fileId !== 'string' || fileId === '') {
+    return { ok: false, error: 'createSnapshot 响应缺 fileId' };
+  }
+  const rapid = d.rapidUpload === true;
+  const uploadId = typeof d.uploadId === 'string' ? d.uploadId : '';
+  const parts = Array.isArray(d.partInfos) ? (d.partInfos as unknown[]) : [];
+  const first = parts[0];
+  const uploadUrl =
+    first !== null && typeof first === 'object'
+      ? ((first as Record<string, unknown>).uploadUrl as string | undefined)
+      : undefined;
+  if (!rapid) {
+    if (uploadId === '') return { ok: false, error: 'createSnapshot 缺 uploadId（且不是秒传）' };
+    if (typeof uploadUrl !== 'string' || uploadUrl === '') {
+      return { ok: false, error: 'createSnapshot 缺 partInfos[0].uploadUrl（且不是秒传）' };
+    }
+  }
+  return {
+    ok: true,
+    created: {
+      fileId,
+      uploadId,
+      uploadUrl: typeof uploadUrl === 'string' ? uploadUrl : '',
+      rapidUpload: rapid,
+    },
+  };
+}
+
+export interface SnapshotCompleteInput {
+  fileId: string;
+  uploadId: string;
+  count: number;
+  contentHash: string;
+  size: number;
+  timestampMs: number;
+}
+
+export function buildSnapshotCompleteRequest(input: SnapshotCompleteInput): BuiltRequest {
+  return {
+    url: `${PERSONAL_KD}${BACKUP_COMPLETE_SNAPSHOT_PATH}`,
+    method: 'POST',
+    headers: snapshotHeaders(),
+    body: JSON.stringify({
+      fileId: input.fileId,
+      uploadId: input.uploadId,
+      count: input.count,
+      contentHash: input.contentHash,
+      contentHashAlgorithm: HASH_ALGORITHM,
+      size: input.size,
+      timestamp: input.timestampMs,
+    }),
+  };
+}
+
+/** 快照完成：`data:null` 也算成功 —— 只看信封。 */
+export function parseSnapshotComplete(body: string): { ok: boolean; error?: string } {
+  try {
+    const v = JSON.parse(body) as Record<string, unknown>;
+    const code = v.code;
+    if (v.success === false) return { ok: false, error: 'completeSnapshot 失败：success=false' };
+    if (code === undefined || code === '0000' || code === 0 || code === '0') return { ok: true };
+    return { ok: false, error: `completeSnapshot 失败：code=${String(code)}` };
+  } catch (e) {
+    return { ok: false, error: `completeSnapshot 响应不是 JSON：${e instanceof Error ? e.message : String(e)}` };
+  }
+}
+
+/** 16 字节十六进制随机串（Math.random；沙箱没有更强随机源）。 */
+export function randomHex(bytes = 16): string {
+  let s = '';
+  for (let i = 0; i < bytes; i += 1) {
+    s += Math.floor(Math.random() * 256).toString(16).padStart(2, '0');
+  }
+  return s;
 }
 
 /** 一个小的确定性文件体 —— `task-expansion` 只要"触发备份"，内容不必随机。

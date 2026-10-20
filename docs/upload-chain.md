@@ -77,8 +77,11 @@ mcloud 的原话：它与凭据同类 —— **绝不进日志、夹具、错误
 面板执行预算 2000ms，而这条链是 3（或 6）枪、中间还要传字节 ⇒ **必须是可恢复的状态机**，
 状态落 SQLite，`step` 当游标（与 `exchangeOrder.ts`、`sessionExchange.ts` 同构）。
 
-- 传的字节从哪来：`task-expansion` 只要"触发备份"⇒ 传一个**小**的确定内容即可
-  （mcloud-sign 是"随机文件"；本仓宜用确定内容，这样夹具与日志可复现）
+- 传的字节从哪来：`task-expansion` / `app-task` 都按 mcloud 用**随机名 + 随机内容**
+  （固定内容会命中秒传、固定名字会撞用户文件）；字节不落库，只落 `seed`，需要时用
+  `deterministicFile(seed, size)` 重建 —— 夹具仍可复现。
+- `task-expansion` 还要走**快照三枪**（`createSnapshot` → PUT 0/0 → `completeSnapshot`），
+  链尾用 `batchTrash` 只清理**自己造的**文件（`exist:true` / 判不了的不删）。
 - 尺寸/内容要**落库**：第 ③ 枪 `complete` 要 `contentHash`，它在第 ① 枪之前就得算好
 
 ## 八、证据在哪

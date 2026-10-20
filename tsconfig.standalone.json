@@ -1,0 +1,11 @@
+{
+  // 独立运行层可以用 Node 类型；核心任务源码仍由 tsconfig.json 的 types:[] 约束。
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "lib": ["ES2022"],
+    "noEmit": true
+  },
+  "include": ["src/standalone/**/*.ts"],
+  "exclude": ["src/standalone/**/*.mjs"]
+}

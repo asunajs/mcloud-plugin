@@ -101,6 +101,14 @@ test('⚠ 每个按钮都**真的挂上了**处理器（不只是被 `$()` 取�
   assert.deepEqual(unhandled, [], `这些按钮没有 addEventListener：${unhandled.join(', ')}`);
 });
 
+test('数据页「刷新」强取，自动进页走缓存', () => {
+  const js = srcOf('plugins/mcloud/app.js');
+  assert.ok(/async function fetchBeans\(force = false\)/.test(js), 'fetchBeans 要能区分强刷');
+  assert.ok(/refresh=1/.test(js), '刷新要带 refresh=1');
+  assert.ok(/当前 \$\{esc\(bal\)\} 豆/.test(js), '每行要显示当前余额');
+  assert.ok(/来自缓存/.test(js), '命中缓存要说明');
+});
+
 test('⚠ 每个动作都走 `act(...)`（统一提示 + 失败可见 + 之后重画）', () => {
   // 旧版每个按钮各写一遍 try/catch + 提示 + 刷新，于是有的忘了刷新
   // （点了没反应）、有的错误只 console.log（用户看不见）。
@@ -224,16 +232,15 @@ test('动作接口都是**写**（带 `x-panel: 1`），否则会被面板挡成
 
 // ── ⑤ 菜单栏与区块一一对应 ────────────────────────────────────────────
 
-test('⚠ 菜单栏六块，与六个区块一一对应（少一块 = 用户点不到）', () => {
+test('⚠ 菜单栏五块，与五个区块一一对应（少一块 = 用户点不到）', () => {
   const items = [...html.matchAll(/class="menu-item[^"]*" data-block="([a-z]+)"/g)].map(
     (m) => m[1] as string,
   );
-  // ⚠ 原来是七块，**「设置」那一块删掉了**（用户：「这些 mock 内容压根不能交给用户
-  //   使用，用户看不懂，还会导致一堆问题」）。六个词就是用户看到的全部区块。
+  // ⚠ 原来是七块：「设置」和「推送」都按用户要求删掉了。五个词就是用户看到的全部区块。
   assert.deepEqual(
     items,
-    ['account', 'daily', 'exchange', 'live', 'data', 'push'],
-    '菜单栏的顺序与名字就是用户看到的那六个词，别随手改',
+    ['account', 'daily', 'exchange', 'live', 'data'],
+    '菜单栏的顺序与名字就是用户看到的那五个词，别随手改',
   );
   for (const name of items) {
     assert.ok(html.includes(`id="block-${name}"`), `菜单里有「${name}」，但没有对应的区块`);
@@ -745,7 +752,7 @@ test('⚠ 界面上**没有**「连接」这种按钮（参考实现里换票是
 });
 
 test('⚠ 任务自己**开一轮**换票（`runExchangeStep` 只接着走，不会开始）', () => {
-  const daily = srcOf('src/entries/daily.ts');
+  const daily = srcOf('src/entries/daily.ts') + srcOf('src/mcloud/dailyRun.ts');
   // ⚠ 两种情况都要开新的：没有那一轮（`null`）、上一轮已经 `done`（票过期要再换）
   // ⚠ 必须用**这一趟这个账号**的 store（多账号下模块级那份会读到别的号的票 —— F-095）
   assert.ok(/const st = loadExchange\(deps\.store, page\);/.test(daily), '先看那一轮的状态（按账号）');
@@ -758,7 +765,7 @@ test('⚠ 任务自己**开一轮**换票（`runExchangeStep` 只接着走，不
 });
 
 test('⚠ 日志一行一步，形状照参考实现（成功 / 跳过 / 失败 + 原因）', () => {
-  const daily = srcOf('src/entries/daily.ts');
+  const daily = srcOf('src/entries/daily.ts') + srcOf('src/mcloud/dailyRun.ts');
   // `mcloud-sign` 的 logger 有 start/success/fail 三种类型，控制台打 `[success] … 成功 签到`
   // 一行一个用户认得的任务，结论只有三种说法（`tasks/stepLog.ts::userLine`）
   assert.ok(/const line = userLine\(one\);/.test(daily), '日志行走 userLine');
@@ -809,6 +816,21 @@ test('⚠ 「跑一次」要**等它真跑完**再说结果（面板那个接口
   assert.ok(/await waitRun\('mcloud-live', '直播', t0, null\)/.test(js), '贴口令那条也要等');
   // 超时**不许**假装成功
   assert.ok(/if \(one === null\) \{\n\s+toast\('还没跑完/.test(js), '超时要老实说没跑完');
+});
+
+test('⚠ 跑的时候有「停止」，且触发请求不能挡住按钮状态', () => {
+  const js = srcOf('plugins/mcloud/app.js');
+  const html = srcOf('plugins/mcloud/index.html');
+  for (const id of ['daily-stop', 'live-stop']) {
+    assert.ok(html.includes(`id="${id}"`), `缺 ${id}`);
+    assert.ok(js.includes(`$('${id}').addEventListener`), `${id} 没挂处理器`);
+  }
+  assert.ok(/async function stopRunning\(/.test(js), '缺 stopRunning');
+  assert.ok(/\/stop`/.test(js), '要调面板的 stop 路由');
+  const start = js.indexOf('async function runTaskAndWait(');
+  const body = js.slice(start, js.indexOf('async function stopRunning(', start));
+  assert.ok(/run\?async=1/.test(body), '触发要走进队模式，不能等任务跑完');
+  assert.ok(/stopBtn\.hidden = false;/.test(body), '跑起来要显示停止按钮');
 });
 
 test('⚠ 每个号一个 chip，点开看那一次的每一步（三块任务页都有）', () => {
@@ -878,9 +900,11 @@ test('⚠ 运行日志重启后还在（面板的内存环重启就空，插件�
   for (const f of ['src/entries/daily.ts', 'src/entries/exchange.ts', 'src/entries/live.ts']) {
     assert.ok(/logBoth\(store,/.test(srcOf(f)), `${f} 还没走 logBoth`);
   }
-  // 界面：先铺历史，再接实时流
+  // 界面：**先连实时流，再异步补历史**。`/log/tail` 是插件路由，任务在跑时
+  // 会排队到任务结束；等它回来才 connect 就是"日志要等任务跑完才出现"。
   assert.ok(/async function seed\(\)/.test(js), '缺"铺历史"');
-  assert.ok(/void seed\(\)\.then\(\(\) => \{[\s\S]{0,120}?connect\(q\);/.test(js), '顺序必须是先历史后实时');
+  assert.ok(/connect\(q\);\s*void seed\(\);/.test(js), '顺序必须是先实时后历史');
+  assert.ok(/if \(shown > 0\) return;/.test(js), '历史回来时实时已有行就不许清屏');
   assert.ok(/上面是上次留下的，下面是新的/.test(js), '要标出"这里是分界"');
   // ⚠ 分界线不能用 `.term-empty`：`paint()` 每画一行都会把它删掉
   assert.ok(/gap\.className = 'term-gap';/.test(js), '分界线要自己的类');
@@ -999,6 +1023,20 @@ test('⚠ 直播：口令只收**一次**（一个账号听到，所有账号都
   assert.ok(/const listenDeadline = runStartMs \+ BUDGET_MS - 20_000;/.test(live), '截止按整趟算');
   // 收口令那一段的日志不挂在某个账号名下
   assert.ok(/logBoth\(store, 'start', '口令', at\)/.test(live), '收口令要单独一段');
+});
+
+test('⚠ 直播收口令读**第一个账号的袋**，不能读模块级 store', () => {
+  const live = srcOf('src/entries/live.ts');
+  const start = live.indexOf('function collectOnce(');
+  const end = live.indexOf('function drawOnce(');
+  assert.ok(start >= 0 && end > start, '两段要能切开');
+  const body = live.slice(start, end);
+  // 模块级 store 是 default 袋；直播读数/池子写在 159 的袋里。
+  // 读错袋的实拍：159 的读数 active=true，日志却报「2 间福建移动」然后跳过。
+  assert.ok(/readGateReading\(deps\.store\)/.test(body), '门读数必须从 deps.store 读');
+  assert.ok(/loadPoolFrom\(deps\.store\)/.test(body), '池子必须从 deps.store 读');
+  assert.ok(!/readGateReading\(store\)/.test(body), '不许再读模块级 store');
+  assert.ok(!/loadPoolFrom\(store\)/.test(body), '不许再读模块级 store');
 });
 
 test('⚠ 每行日志都带账号短名前缀（昵称原样，手机号 3+4）', () => {
@@ -1120,7 +1158,7 @@ test('⚠ 票的事内部处理：界面不提"手机端凭据几点过期"（�
   // 卡片上不许出现这条 —— 那是机制，不是用户要做的事
   assert.ok(!/手机端凭据/.test(js), '账号卡不许写"手机端凭据…"');
   // 续不上时才给下一步，且不提时间
-  const d = srcOf('src/entries/daily.ts');
+  const d = srcOf('src/entries/daily.ts') + srcOf('src/mcloud/dailyRun.ts');
   assert.ok(/登录状态失效了，去「账号」页重新导入会话/.test(d), '走投无路时给动作');
   assert.ok(!/手机端凭据 \$\{clock\} 过期了/.test(d), '别把"几点过期"摆给用户');
   // 续票本身要按账号（F-095）
@@ -1198,17 +1236,41 @@ test('⚠ 「数据」页第一格是主动请求的：开这一页自己取，�
   assert.ok(/id="beans-refresh"[^>]*>刷新</.test(html), '按钮要叫「刷新」');
   assert.ok(!/取一次/.test(html), '不许再让人"点一下才取"');
   // 卡片式布局：数据页里每格各自一张 card（沙箱能力那张已删，现在两张）
-  const dataBlock = html.slice(html.indexOf('id="block-data"'), html.indexOf('id="block-push"'));
+  const dataBlock = html.slice(html.indexOf('id="block-data"'), html.indexOf('</main>'));
   const cards = (dataBlock.match(/<div class="card">/g) || []).length;
   assert.ok(cards >= 2, `数据页要卡片式（现在 ${cards} 张）`);
-  assert.ok(/<span class="card-title">今日AI豆<\/span>/.test(html), '标题用面板的 card-title');
+  assert.ok(/<span class="card-title">AI豆<\/span>/.test(html), '标题用面板的 card-title');
+  assert.ok(/当前余额/.test(html) && /缓存 2 小时/.test(html), '数据页要说清当前余额和 2 小时缓存');
+});
+
+test('WebUI 里不再有「推送」这一块（配置/试发/规则全删）', () => {
+  const html = srcOf('plugins/mcloud/index.html');
+  const js = srcOf('plugins/mcloud/app.js');
+  assert.ok(!html.includes('data-block="push"'), '菜单里不该还有推送');
+  assert.ok(!html.includes('id="block-push"'), '不该还有推送区块');
+  assert.ok(!/id="push-/.test(html), '不该还有 push-* 输入/按钮');
+  assert.ok(!/function renderPush\(/.test(js), '渲染函数要删');
+  assert.ok(!/const PUSH_FIELDS/.test(js), '渠道表单定义要删');
+  assert.ok(!/post\('push\//.test(js), '不该再从界面调 push 接口');
+});
+
+test('⚠ 日志终端先连 SSE，再异步补历史（否则任务跑完才看到日志）', () => {
+  const js = srcOf('plugins/mcloud/app.js');
+  const start = js.indexOf('function open() {', js.indexOf('function makeTerm('));
+  const end = js.indexOf('function connect(q) {', start);
+  assert.ok(start >= 0 && end > start, '要能切开 open()');
+  const body = js.slice(start, end);
+  assert.ok(/connect\(q\);\s*void seed\(\);/.test(body), '顺序必须是先 connect、再 seed');
+  assert.ok(!/seed\(\)\.then\(/.test(body), '不许再等 /log/tail 回来才连流');
+  assert.ok(/if \(shown > 0\) return;/.test(js), '历史回来时实时已有行就不许清屏');
 });
 
 test('⚠ 日常**不设"今天跑过就跳过"**：一天两趟都跑，第二趟是兜底', () => {
   const d = srcOf('src/entries/daily.ts');
   // 那道闸必须没了 —— 插件没法证明所有小任务都到了预期，跳过就等于放弃兜底
   assert.ok(!/doneToday && !manual/.test(d), '不许再有"今天跑过就跳过"');
-  assert.ok(/forEachTaskAccount\(store, '日常', p, transport, \(deps\) => runDaily\(deps\)\)/.test(d), '每个账号都照跑');
+  assert.ok(/forEachTaskAccount\(store, '日常', p, transport, \(deps, acctId\) =>/.test(d), '每个账号都照跑');
+  assert.ok(/runDaily\(deps, \{\s*onPhase/.test(d), '步骤/阶段要边跑边打');
   assert.ok(/第二次跑是容错/.test(d), '理由要写在代码里（下次别又加回去）');
   // 面板侧那一格 `manual` 仍然有用（别的地方要判"谁触发的"）
   const t = srcOf('src/host-api.d.ts');
@@ -1228,6 +1290,23 @@ test('⚠ App 任务：已完成默认折叠、点开是按组展开的', () => 
   const todoAt = js.indexOf('for (const it of todoItems) rows.push(line(it, false));');
   const moreAt = js.indexOf('data-more="1"', todoAt);
   assert.ok(todoAt > 0 && moreAt > todoAt, '折叠行要排在"没做完"那几条之后');
+});
+
+test('任务状态可切账号；每条带 taskId 和未完成时的步进', () => {
+  const html = srcOf('plugins/mcloud/index.html');
+  const js = srcOf('plugins/mcloud/app.js');
+  assert.ok(/id="matrix-account"/.test(html), '任务状态卡要有账号下拉');
+  assert.ok(/id="matrix-refresh"/.test(html), '任务状态卡要有刷新按钮');
+  assert.ok(/\/matrix\?account=/.test(js), '切账号读 /matrix?account=');
+  assert.ok(/refresh=1/.test(js), '刷新按钮必须真请求（refresh=1）');
+  assert.ok(!/totalSteps/.test(js), '不许再猜 24 这种总步数');
+  assert.ok(/本机已上传/.test(js) && /本机已点过/.test(js), '本机证据要显示出来');
+  assert.ok(/matrixAccountId/.test(js), '要记住用户选的账号');
+  assert.ok(/taskId/.test(js) && /第 \$\{typeof it\.currStep === 'number' \? it\.currStep : 0\} 步/.test(js), '每条任务要带 id 和步号');
+  assert.ok(/完成进度/.test(js) && /buttonOutDay/.test(js), '通知任务要显示完成进度');
+  assert.ok(/本月备份/.test(js) && /BACKUP_STEP_TEXT/.test(js), '备份进度要显示出来');
+  assert.ok(/只读本地缓存，不发新请求/.test(js), '默认不请求上游要说清');
+  assert.ok(/renderData\(r\.data \|\| \{\}, r\.account \|\| \{\}\)/.test(js), 'renderData 必须拿到账号表（否则下拉是空的）');
 });
 
 test('⚠ App 任务徽章**照抄上游那句**，不许一刀切印成「待做」（mcloud 的同一个错：`694e35f`）', () => {

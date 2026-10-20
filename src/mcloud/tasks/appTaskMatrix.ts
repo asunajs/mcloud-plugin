@@ -94,6 +94,10 @@ export interface MatrixItem {
    *  ⚠ 走 **V3** 时这一格**就是 App 上那个词**（§12.10 判读 1：V3 直接把当前阶段
    *  那一档写进 `text` ✓，V2 才给三档让客户端自己挑 ✗）。 */
   buttonOutText?: string;
+  /** `button.*.day` —— 通知任务走了几天（实拍 1021 是字符串 `"5"`）。 */
+  buttonOutDay?: string;
+  /** `button.*.total` —— 通知任务总共几天（实拍 551 是 `31`）。 */
+  buttonOutTotal?: string;
   /** `textMiddle` —— V2 那三档里的"进行中"。V3 通常不给（`text` 已经挑好）。 */
   buttonTextMiddle?: string;
   /** `textFinish` —— V2 三档里的"已完成"（实拍 550 是「已领取」、551 是「领AI豆」）。 */
@@ -147,6 +151,10 @@ export function parseMatrixItem(raw: unknown): MatrixItem | undefined {
   const o = raw as Record<string, unknown>;
   const btn = buttonEnds(o);
   const at = (k: string) => (btn === undefined ? undefined : asStr(btn[k]));
+  const atText = (k: string): string | undefined => {
+    const v = btn === undefined ? undefined : btn[k];
+    return typeof v === 'number' ? String(v) : asStr(v);
+  };
   const it: MatrixItem = {
     taskId: asInt(o.id ?? o.taskId ?? o.task_id),
     name: asStr(o.name),
@@ -159,6 +167,8 @@ export function parseMatrixItem(raw: unknown): MatrixItem | undefined {
     buttonAppLink: asStr(o.buttonAppLink ?? o.button_app_link) ?? nestedLink(o.button, 'app'),
     buttonEmailLink: asStr(o.buttonEmailLink ?? o.button_email_link) ?? nestedLink(o.button, 'email'),
     buttonOutText: at('text'),
+    buttonOutDay: atText('day'),
+    buttonOutTotal: atText('total'),
     buttonTextMiddle: at('textMiddle'),
     buttonTextFinish: at('textFinish'),
     buttonActionMiddle: at('actionMiddle'),

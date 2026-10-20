@@ -62,86 +62,84 @@ test('起一趟**一个请求都不发**', () => {
   assert.equal(sent.length, 0);
 });
 
-test('⚠ 备份已开（`true`）⇒ **不传文件**，直接去领', () => {
+test('⚠ 当天 done 不重跑；跨天必须重新起（不能永久 done）', () => {
+  const { deps, store } = mkDeps({});
+  store.setState(STATE_EXPAND, JSON.stringify({ step: 'done', day: NOW.slice(0, 10) }), NOW);
+  const same = startExpansion(deps);
+  assert.equal(same.idle, true);
+  assert.equal((JSON.parse(store.getState(STATE_EXPAND)!) as { step: string }).step, 'done');
+  const nextDay = { ...deps, nowIso: '2026-10-15T01:00:00.000Z' } as TaskDeps;
+  const next = startExpansion(nextDay);
+  assert.notEqual(next.idle, true);
+  assert.equal((JSON.parse(store.getState(STATE_EXPAND)!) as { step: string }).step, 'read');
+});
+
+test('⚠ 备份已开（`true`）⇒ 不传文件、不领云朵，直接清理收尾', () => {
   const { deps, sent } = mkDeps({
     taskExpansion: { code: 0, result: { curMonthBackup: true, curMonthTaskRecordCount: 1 } },
-    receiveTaskExpansion: { code: 0, result: 100 },
   });
   startExpansion(deps);
   const r1 = runExpansionStep(deps);
   assert.equal(r1.ok, true, r1.note);
   assert.doesNotMatch(r1.note, /传一个文件/);
   assert.equal(sent.length, 1);
-  assert.equal((JSON.parse(deps.store.getState(STATE_EXPAND)!) as { step: string }).step, 'claim');
-  // 第二步：领（裸 GET）
+  assert.equal((JSON.parse(deps.store.getState(STATE_EXPAND)!) as { step: string }).step, 'cleanup');
   const r2 = runExpansionStep(deps);
   assert.equal(r2.ok, true, r2.note);
-  assert.match(r2.note, /100/);
-  // ⚠ **必须带这个参数**：真机实测裸 GET 回 404、带 `?acceptDate=` 才 200。
-  //   抓包 §3.6.6 那条"别写成 ?acceptDate="被真机推翻了（见 F-021）。
-  assert.match(sent[1]!.url, /\?acceptDate=/, '参数必须在（空值也行）—— 裸 GET 会 404');
+  assert.equal((JSON.parse(deps.store.getState(STATE_EXPAND)!) as { step: string }).step, 'done');
+  assert.equal(sent.filter((x) => x.url.includes('receiveTaskExpansion')).length, 0, '不再领云朵');
 });
 
-test('⚠ 未开启备份（`false`）⇒ 起上传；上传三枪走完后再复查', () => {
+test('⚠ 未开启备份（`false`）⇒ 起上传；上传三枪 + 快照三枪 + 清理', () => {
   const { deps, sent } = mkDeps({
     taskExpansion: { code: 0, result: { curMonthBackup: false, curMonthTaskRecordCount: 0 } },
-    'hcy/file/create': { code: 0, data: { fileId: 'F', uploadId: 'U', uploadUrl: 'https://s.example/k', rapidUpload: false } },
+    'hcy/file/create': {
+      code: 0,
+      data: { fileId: 'F', uploadId: 'U', uploadUrl: 'https://s.example/k', rapidUpload: false, exist: false },
+    },
     'hcy/file/complete': { code: 0 },
+    'backup/createSnapshot': {
+      code: '0000',
+      data: { fileId: 'S', uploadId: 'SU', partInfos: [{ uploadUrl: 'https://s.example/snap' }], rapidUpload: false },
+    },
+    'backup/completeSnapshot': { code: '0000', data: null },
+    'recyclebin/batchTrash': { code: '0000', success: true },
     receiveTaskExpansion: { code: 0, result: 100 },
   });
   startExpansion(deps);
   const r1 = runExpansionStep(deps); // ① 读 → 起上传
   assert.match(r1.note, /未开启备份/);
   assert.ok(deps.store.getState(STATE_UPLOAD), '上传那台状态机被起了');
-  // ② 上传三枪（一次一枪）
-  const r2 = runExpansionStep(deps); // create
-  assert.equal(r2.ok, true, r2.note);
-  const r3 = runExpansionStep(deps); // put
-  assert.equal(r3.ok, true, r3.note);
-  const r4 = runExpansionStep(deps); // complete
-  assert.equal(r4.ok, true, r4.note);
-  // ②b 复查
-  const r5 = runExpansionStep(deps);
-  assert.equal(r5.ok, true, r5.note);
-  assert.equal((JSON.parse(deps.store.getState(STATE_EXPAND)!) as { step: string }).step, 'claim');
-  // ③ 领
-  const r6 = runExpansionStep(deps);
-  assert.equal(r6.ok, true, r6.note);
-  assert.equal(sent.length, 6, '读 / 建 / 传 / 确认 / 复查 / 领 —— 正好六枪，一枪不多');
+  // 上传三枪 + 快照三枪 + 复查 + 清理（一次一枪）
+  for (let i = 0; i < 8; i += 1) {
+    const out = runExpansionStep(deps);
+    assert.equal(out.ok, true, out.note);
+  }
+  assert.equal((JSON.parse(deps.store.getState(STATE_EXPAND)!) as { step: string }).step, 'done');
+  assert.equal(sent.length, 9, '读 / 建 / 传 / 确认 / 快照建 / 快照传 / 快照确认 / 复查 / 清理 —— 九枪');
+  assert.equal(sent.filter((x) => x.url.includes('receiveTaskExpansion')).length, 0, '不再领云朵');
+  assert.ok(sent.some((x) => x.url.includes('backup/createSnapshot')), '要建快照');
+  assert.ok(sent.some((x) => x.url.includes('recyclebin/batchTrash')), '要清理自己传的文件');
 });
 
-test('⚠ **不判**：可领次数是 0 也照样发那一枪（发出去有可能成功）', () => {
+test('⚠ 撞上用户已有同名文件（exist:true）⇒ 不建快照、不清理', () => {
   const { deps, sent } = mkDeps({
-    taskExpansion: { code: 0, result: { curMonthBackup: true, curMonthTaskRecordCount: 0 } },
-    receiveTaskExpansion: { code: 0, result: 100 },
+    taskExpansion: { code: 0, result: { curMonthBackup: false } },
+    'hcy/file/create': {
+      code: 0,
+      data: { fileId: 'F', uploadId: 'U', uploadUrl: 'https://s.example/k', rapidUpload: false, exist: true },
+    },
   });
   startExpansion(deps);
-  runExpansionStep(deps);
-  const r = runExpansionStep(deps);
-  assert.equal(r.ok, true, r.note);
-  assert.equal(sent.filter((x) => x.url.includes('receiveTaskExpansion')).length, 1, '照发');
-});
-
-test('⚠ 领的 `result` 是**裸数字**；认不出来就回显原文，**不编份数**', () => {
-  const { deps } = mkDeps({
-    taskExpansion: { code: 0, result: { curMonthBackup: true } },
-    receiveTaskExpansion: { code: 0, result: 100 },
-  });
-  startExpansion(deps);
-  runExpansionStep(deps);
-  const r = runExpansionStep(deps);
-  assert.match(r.note, /100/);
-  assert.match(r.note, /裸数字/);
-  // 形状不认识时
-  const { deps: d2 } = mkDeps({
-    taskExpansion: { code: 0, result: { curMonthBackup: true } },
-    receiveTaskExpansion: { code: 0, message: 'ok' },
-  });
-  startExpansion(d2);
-  runExpansionStep(d2);
-  const r2 = runExpansionStep(d2);
-  assert.match(r2.note, /缺成功样本/, '拿不到成功样本就说明白，别假装验过');
-  assert.doesNotMatch(r2.note, /领到 \d+ 个/);
+  runExpansionStep(deps); // read → upload queued
+  runExpansionStep(deps); // create → exist:true ⇒ done
+  runExpansionStep(deps); // uploadDone → recheck
+  runExpansionStep(deps); // recheck → cleanup
+  const out = runExpansionStep(deps); // cleanup skips
+  assert.equal(out.ok, true, out.note);
+  assert.equal((JSON.parse(deps.store.getState(STATE_EXPAND)!) as { step: string }).step, 'done');
+  assert.equal(sent.filter((x) => x.url.includes('backup/createSnapshot')).length, 0, '不是我们的文件，不建快照');
+  assert.equal(sent.filter((x) => x.url.includes('batchTrash')).length, 0, '不是我们的文件，绝不删');
 });
 
 test('失败**不推进游标**（读那一步失败就停在那）', () => {
@@ -150,5 +148,5 @@ test('失败**不推进游标**（读那一步失败就停在那）', () => {
   const r = runExpansionStep(deps);
   assert.equal(r.ok, true, '这一族的信封里 code 不看就往下走 —— 但游标该停');
   void r;
-  assert.equal((JSON.parse(deps.store.getState(STATE_EXPAND)!) as { step: string }).step, 'claim');
+  assert.equal((JSON.parse(deps.store.getState(STATE_EXPAND)!) as { step: string }).step, 'cleanup');
 });
