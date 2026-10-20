@@ -131,13 +131,26 @@ export function lineLevel(line: string): LineLevel {
   if (line.includes('没成')) return 'fail';
   // 需要用户动手的，黄一下（不是错误，但不该被当成"成了"）
   if (/需手动|手动完成|需前往/.test(line)) return 'warn';
-  // 真的做成了
+
+  // 读数 / 状态：这些不是"这一趟做成了什么"，别涂成 success。
+  // mcloud-sign 的日志里这类行是 info 或 debug，不是 success。
+  if (
+    /（只看）|快照|问状态|流水|本月排名|已开启|有效期|剩余|当前云朵|登录账号|过期时间|已完成 \d+ 条|另有 \d+ 条/.test(
+      line,
+    )
+  ) {
+    return 'info';
+  }
+
+  // 真的做成了（"已完成 11 条"那种读数已经在上面拦掉了）
   if (/已完成|领到|成功|好了|获得|签到成功/.test(line)) return 'success';
+
   // 今天已经做过 / 没有可领的 / 跳过 —— 过程信息，别用绿色假装是这次做的
-  if (/跳过|已经|已领|没有可|没有能|无需|今天|未开启|没开|不发|不领|没问过|走完/.test(line)) {
+  if (/跳过|已经|已领|没有可|没有能|无需|今天|未开启|没开|不发|不领|没问过|走完|暂无|无待领取/.test(line)) {
     return 'debug';
   }
-  return 'success';
+  // 其余是普通信息，不是成功 —— 这就是"大部分日志都是 success"的根因。
+  return 'info';
 }
 
 /** 级联失败的那一行改成"跳过"：不要每行都把根因抄一遍。 */

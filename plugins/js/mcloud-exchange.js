@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.1 · 插件 `mcloud-exchange`
+//   mcloud-plugin 0.2.2 · 插件 `mcloud-exchange`
 
 // src/entries/exchange.ts
 import { debug as debug2, log as log3, register_cron, worker_hint } from "host-api";
@@ -5022,11 +5022,16 @@ function lineLevel(line) {
   }
   if (line.includes("没成")) return "fail";
   if (/需手动|手动完成|需前往/.test(line)) return "warn";
+  if (/（只看）|快照|问状态|流水|本月排名|已开启|有效期|剩余|当前云朵|登录账号|过期时间|已完成 \d+ 条|另有 \d+ 条/.test(
+    line
+  )) {
+    return "info";
+  }
   if (/已完成|领到|成功|好了|获得|签到成功/.test(line)) return "success";
-  if (/跳过|已经|已领|没有可|没有能|无需|今天|未开启|没开|不发|不领|没问过|走完/.test(line)) {
+  if (/跳过|已经|已领|没有可|没有能|无需|今天|未开启|没开|不发|不领|没问过|走完|暂无|无待领取/.test(line)) {
     return "debug";
   }
-  return "success";
+  return "info";
 }
 function lineText(line) {
   if (line.includes("还没有网页会话") || line.includes("上面「换票」")) {
