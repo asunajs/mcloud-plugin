@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.5 · 插件 `mcloud-daily`
+//   mcloud-plugin 0.2.6 · 插件 `mcloud-daily`
 
 // src/entries/daily.ts
 import { debug as debug2, register_cron } from "host-api";
@@ -3290,6 +3290,9 @@ function hostBase(deps, fallback) {
   const b = (deps.baseUrl ?? "").trim();
   return b === "" ? fallback : b.replace(/\/+$/, "");
 }
+function depsNowMs(deps) {
+  return (deps.nowMs ?? Date.now)();
+}
 var ERR_PREFIX = "mcloud.last_error.";
 function recordError(store2, task, note, nowIso) {
   store2.setState(`${ERR_PREFIX}${task}`, `${note} @ ${nowIso}`, nowIso);
@@ -5134,23 +5137,24 @@ function advance(deps, st) {
   const clicked = freshClicked(st, deps);
   const next = pendingItems(deps).find((p) => !clicked.includes(p.itemId));
   if (!next) {
-    const dead = clickedButIneffective(deps, { ...st, clicked });
-    const kept = clicked.filter((id) => !dead.includes(id));
-    const retryCount = dead.length > 0 ? (st.retryCount ?? 0) + 1 : 0;
+    const wait = deps.settleMs ?? 5e3;
     save3(deps, {
       ...st,
-      phase: "done",
+      phase: "settle",
       fileId: void 0,
       special: void 0,
       data: void 0,
-      clicked: kept,
-      unconfirmed: dead,
-      retryDay: today(deps),
-      retryCount,
+      clicked,
+      unconfirmed: [],
+      settleAt: depsNowMs(deps) + wait,
       day: today(deps)
     });
-    const warn4 = dead.length === 0 ? "" : `。⚠ 其中 ${dead.length} 条**点了但状态没变 / 本地动作做了但服务端未完成**（#${dead.join("、")}）—— HTTP 200 / 本机已上传都不算成功，只有矩阵回 FINISH 才算；下一趟会重试`;
-    return { ok: dead.length === 0, note: `待办都走完了（这一趟点了 ${clicked.length} 条）${warn4}` };
+    return {
+      // 动了而还没复查 ⇒ **先不报成功**（同一瞬间的旧矩阵不能证明它成了）。
+      ok: clicked.length === 0,
+      idle: false,
+      note: `动作走完，等 ${wait}ms 后复查服务端（不在动作前/动作后同一瞬间下结论）`
+    };
   }
   const clickFirst = next.needUpload && (next.currStep === void 0 || next.currStep === 0);
   let phase = next.needUpload ? clickFirst ? "click" : "upload" : "click";
@@ -5302,6 +5306,7 @@ function beginPdfUpload(deps) {
 function appTaskFresh(deps) {
   const st = load2(deps);
   if (st === null || st.day !== today(deps)) return false;
+  if (st.phase === "settle") return true;
   const pend = pendingItems(deps);
   const stillTodo = (id) => pend.some((p) => p.itemId === id);
   const dead = [
@@ -5442,6 +5447,38 @@ function runAppTaskStep(deps) {
       ok: false,
       idle: true,
       note: `这一趟没有全确认：${dead.length} 条本机动过、服务端仍是待办（#${dead.join("、")}）—— 下一趟继续重试（不设上限）`
+    };
+  }
+  if (st.phase === "settle") {
+    const wait = (st.settleAt ?? 0) - depsNowMs(deps);
+    if (wait > 0) {
+      return {
+        ok: false,
+        idle: true,
+        note: `动作做完了，等服务端确认（还要 ${Math.ceil(wait / 1e3)} 秒）—— 到点后会重新拉矩阵，不是拿动作前的旧读数判`
+      };
+    }
+    if ((deps.settleMs ?? 5e3) > 0) {
+      for (let i = 0; i < MATRIX_MARKETS.length; i++) runAppTaskMatrix(deps);
+    }
+    const dead = clickedButIneffective(deps, st);
+    const kept = st.clicked.filter((id) => !dead.includes(id));
+    const retryCount = dead.length > 0 ? (st.retryCount ?? 0) + 1 : 0;
+    save3(deps, {
+      ...st,
+      phase: "done",
+      clicked: kept,
+      unconfirmed: dead,
+      settleAt: void 0,
+      retryDay: today(deps),
+      retryCount,
+      day: today(deps)
+    });
+    const warn4 = dead.length === 0 ? "" : `；⚠ ${dead.length} 条本机动过、服务端仍是待办（#${dead.join("、")}）—— 只有矩阵回 FINISH 才算成功，下一趟会重试`;
+    return {
+      ok: dead.length === 0,
+      idle: true,
+      note: `复查完成（已等 ${deps.settleMs ?? 5e3}ms，重新拉过矩阵）${warn4}`
     };
   }
   const pend = pendingItems(deps);

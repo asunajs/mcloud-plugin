@@ -69,6 +69,8 @@ export interface TaskDeps {
   /** 自旋一小会儿（毫秒级等待用，沙箱里没有计时器）。
    *  注入的理由同上：测试里换成"把假时钟往前推"。 */
   spin?: (() => void) | undefined;
+  /** 动作做完到复查上游之间等多久（毫秒）。默认 5 秒；测试传 0。 */
+  settleMs?: number | undefined;
 }
 
 /** 取当前毫秒时刻（没注入就用真时钟）。 */

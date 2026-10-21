@@ -133,7 +133,7 @@ function mkDeps(groups: Record<string, unknown[]>) {
     }
     return { status: 200, headers: {}, body: JSON.stringify({ code: 0, result: {} }) };
   }) as never;
-  return { deps: { store, transport, nowIso: NOW, baseUrl: undefined } as TaskDeps, sent, store };
+  return { deps: { store, transport, nowIso: NOW, baseUrl: undefined, settleMs: 0 } as TaskDeps, sent, store };
 }
 
 test('待办：只挑 `todo`，**"不做"名单里的不发**', () => {
@@ -542,6 +542,7 @@ test('⚠ 点过的名单**按天重置**（矩阵读数是慢的，同一份读
   const out2 = startAppTask(deps);
   assert.notEqual(out2.idle, true, `未确认的任务必须能重试：${out2.note}`);
   step(deps);
+  runAppTaskStep(deps); // settle：用新矩阵复查（测试 settleMs=0）
   assert.equal(clicks(sent), 2, '未确认的任务要能重试');
   const after = JSON.parse(store.getState(STATE_TASK)!) as {
     clicked: number[];
@@ -584,6 +585,26 @@ test('⚠ **只做"知道该做什么"的那些**（mcloud 账本里"未实现"�
   assert.equal(sent.filter((r) => /id=(548|549|550|551|607)/.test(r.url)).length, 0, '⚠ 那五条一个都不许碰');
 });
 
+test('动作和复查之间必须有间隔：settle 前不拿旧矩阵判成功/失败', () => {
+  const { deps: base, store } = mkDeps({
+    [MATRIX_MARKETS[0]!]: [{ taskId: 115, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '点一下' }],
+  });
+  let t = Date.parse(NOW);
+  const deps = { ...base, settleMs: 5000, nowMs: () => t } as TaskDeps;
+  startAppTask(deps);
+  step(deps);
+  const phase = (): string => (JSON.parse(store.getState(STATE_TASK)!) as { phase: string }).phase;
+  assert.equal(phase(), 'settle', '动作完必须先进入 settle');
+  const early = runAppTaskStep(deps);
+  assert.equal(early.ok, false, '没到时间不能报成功');
+  assert.match(early.note, /等.*确认/);
+  assert.equal(phase(), 'settle', '没到时间不许复查');
+  t += 5001;
+  const late = runAppTaskStep(deps);
+  assert.equal(phase(), 'done', '到点后才复查并收摊');
+  assert.match(late.note, /复查完成/);
+});
+
 test('⚠ **判据是状态变了，不是 HTTP 200** —— 点了没生效要如实报出来', () => {
   // 115 记成"今天已点过"、再加 431 ⇒ 这一趟走 431，收摊时回头报 115（状态没变）
   const { deps } = mkDeps({
@@ -601,8 +622,10 @@ test('⚠ **判据是状态变了，不是 HTTP 200** —— 点了没生效要�
   //   已经在 431 上、收摊时回头报 115 的那一步。
   // ⚠ 辅助 `step()` 已经把 `visit` + `click` 一起做掉了，而"点了没生效"的警告
   //   就在**点完换下一条**那一步报出来 ⇒ 结论看**这一下**，不用再推一步。
-  const r = step(deps);
+  step(deps);
+  // 动作完先进入 settle；**等复查那一步**才拿新矩阵判"没生效"。
+  const r = runAppTaskStep(deps);
   assert.equal(r.ok, false, `有"点了没生效"的 ⇒ 不能报成 ok：${r.note}`);
-  assert.match(r.note, /点了但状态没变/);
+  assert.match(r.note, /本机动过|点了但状态没变/);
   assert.match(r.note, /#115/);
 });
