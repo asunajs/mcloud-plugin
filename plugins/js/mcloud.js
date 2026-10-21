@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.7 · 插件 `mcloud`
+//   mcloud-plugin 0.2.8 · 插件 `mcloud`
 
 // src/entries/mcloud.ts
 import {
@@ -1744,9 +1744,11 @@ function taskAccountsView(store2, task) {
   const auto = loadTaskAccounts(store2, task);
   const manual = loadManualTaskAccounts(store2, task);
   const resolvedAuto = expand(store2, auto);
+  const legacyAuto = (store2.getState(taskAccountsKey(task, "auto")) ?? "").trim() === "" && (store2.getState(legacyTaskAccountsKey(task)) ?? "").trim() !== "";
   return {
     auto,
     manual,
+    legacyAuto,
     resolvedAuto,
     resolvedManual: expand(store2, effectiveTaskAccounts(store2, task, "manual")),
     all: auto.all,
