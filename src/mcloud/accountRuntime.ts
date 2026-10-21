@@ -2,7 +2,7 @@
 
 import type { Store } from '../store/types.ts';
 import { rawStoreOf, scoped } from '../store/scoped.ts';
-import { resolveTaskAccounts } from './taskAccounts.ts';
+import { resolveTaskAccounts, type TaskAccountMode } from './taskAccounts.ts';
 import { loadBaseUrl } from './session.ts';
 import { loadAuthRaw } from './sessionExchange.ts';
 import { authorizeRequest } from './cloudUpload.ts';
@@ -12,12 +12,14 @@ import type { TaskDeps } from './tasks/base.ts';
 export function forEachTaskAccount<T>(
   base: Store,
   task: string,
-  payload: { lateMs: number },
+  payload: { lateMs: number; manual?: boolean | undefined },
   transport: Transport,
   fn: (deps: TaskDeps, acctId: string, index: number, total: number) => T,
 ): { acctId: string; result: T }[] {
   // ⚠ `all` 在**这里**展开（不是存的时候）—— 以后新登录的账号也进得来。
-  const targets = resolveTaskAccounts(rawStoreOf(base), task);
+  const mode: TaskAccountMode =
+    payload.manual === true || payload.lateMs < 0 ? 'manual' : 'auto';
+  const targets = resolveTaskAccounts(rawStoreOf(base), task, mode);
   const out: { acctId: string; result: T }[] = [];
   for (const [i, acctId] of targets.entries()) {
     // ⚠ **每个账号一个 store**：`scoped(base, acctId)` 让这一趟里所有按账号的

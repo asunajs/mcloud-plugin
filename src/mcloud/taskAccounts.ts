@@ -34,9 +34,24 @@ export const SCHEDULED_TASKS = ['日常', '兑换', '直播'] as const;
 /** 一条任务选的账号。**按任务**存（键里带任务名），与账号袋无关。
  *
  *  ⚠ 这个键是 `global` 作用域：它说的是"日常这条任务用哪些号"，
- *  而**不是**"某个号自己的设置"。放进账号袋的话，A 号的任务名单会被 B 号读到。 */
-export function taskAccountsKey(task: string): string {
+ *  而**不是**"某个号自己的设置"。放进账号袋的话，A 号的任务名单会被 B 号读到。
+ *
+ *  # 自动 / 本次必须分开
+ *
+ *  旧版本只有一个 `mcloud.task.accounts.日常`：界面勾一下就写它，手动跑和定时
+ *  读的是同一份。用户为了手动跑小号勾小号 ⇒ 第二天的定时也只跑小号。
+ *  所以现在每个任务两份：`.<task>.auto` 给定时，`.<task>.manual` 只给手动；
+ *  manual 缺省 `{follow:true}`（跟随自动），且**绝不回写 auto**。 */
+export type TaskAccountMode = 'auto' | 'manual';
+
+/** 旧版本的单一键。只用于迁移/兼容读，**不要**再写它。 */
+export function legacyTaskAccountsKey(task: string): string {
   return `mcloud.task.accounts.${task}`;
+}
+
+/** 按任务 + 模式取键。 */
+export function taskAccountsKey(task: string, mode: TaskAccountMode = 'auto'): string {
+  return `mcloud.task.accounts.${task}.${mode}`;
 }
 
 export interface TaskAccounts {
@@ -46,7 +61,17 @@ export interface TaskAccounts {
   ids: string[];
 }
 
+/** 手动选择多一格：跟随自动。 */
+export interface TaskManualAccounts extends TaskAccounts {
+  follow: boolean;
+}
+
 export const DEFAULT_TASK_ACCOUNTS: TaskAccounts = { all: true, ids: [] };
+export const DEFAULT_TASK_MANUAL_ACCOUNTS: TaskManualAccounts = {
+  follow: true,
+  all: false,
+  ids: [],
+};
 
 /** 按任务给默认值。
  *
@@ -62,29 +87,85 @@ export function defaultTaskAccounts(task: string): TaskAccounts {
   return v ? { ...v } : { ...DEFAULT_TASK_ACCOUNTS };
 }
 
-/** 读一条任务的账号选择。没设过 ⇒ 按任务取默认（日常/直播全部，兑换空）。 */
-export function loadTaskAccounts(store: ReadableState, task: string): TaskAccounts {
-  const raw = (store.getState(taskAccountsKey(task)) ?? '').trim();
-  if (raw === '') return defaultTaskAccounts(task);
+function parseSelection(raw: string): TaskAccounts | null {
   try {
     const v = JSON.parse(raw) as { all?: unknown; ids?: unknown };
     const ids = Array.isArray(v.ids) ? v.ids.filter((x): x is string => typeof x === 'string') : [];
     return { all: v.all === true, ids };
   } catch {
-    // 库里那段坏了（手改过 / 老版本写的）⇒ 按任务默认，
-    // **不是**当作"没有账号" —— 后者会让任务静默不跑，而用户什么都看不出来。
-    return defaultTaskAccounts(task);
+    return null;
   }
 }
 
-/** 写一条任务的账号选择。 */
+/** 读**自动**选择：新键优先；没有就读旧键（迁移），再没有才取任务默认。 */
+export function loadTaskAccounts(store: ReadableState, task: string): TaskAccounts {
+  const raw = (store.getState(taskAccountsKey(task, 'auto')) ?? '').trim();
+  if (raw !== '') {
+    const v = parseSelection(raw);
+    return v ?? defaultTaskAccounts(task);
+  }
+  const legacy = (store.getState(legacyTaskAccountsKey(task)) ?? '').trim();
+  if (legacy !== '') {
+    const v = parseSelection(legacy);
+    if (v !== null) return v;
+  }
+  return defaultTaskAccounts(task);
+}
+
+/** 读**本次**选择；缺省/坏值 ⇒ 跟随自动（不是"没账号"）。 */
+export function loadManualTaskAccounts(store: ReadableState, task: string): TaskManualAccounts {
+  const raw = (store.getState(taskAccountsKey(task, 'manual')) ?? '').trim();
+  if (raw === '') return { ...DEFAULT_TASK_MANUAL_ACCOUNTS };
+  try {
+    const v = JSON.parse(raw) as { follow?: unknown; all?: unknown; ids?: unknown };
+    if (v.follow === true) return { ...DEFAULT_TASK_MANUAL_ACCOUNTS };
+    const ids = Array.isArray(v.ids) ? v.ids.filter((x): x is string => typeof x === 'string') : [];
+    return { follow: false, all: v.all === true, ids };
+  } catch {
+    return { ...DEFAULT_TASK_MANUAL_ACCOUNTS };
+  }
+}
+
+/** 写选择。`mode` 默认 auto，旧调用点不受影响。 */
 export function saveTaskAccounts(
   store: { setState: (k: string, v: string, nowIso: string) => void },
   task: string,
-  v: TaskAccounts,
+  v: TaskAccounts | TaskManualAccounts,
   nowIso: string,
+  mode: TaskAccountMode = 'auto',
 ): void {
-  store.setState(taskAccountsKey(task), JSON.stringify({ all: v.all, ids: v.ids }), nowIso);
+  if (mode === 'manual') {
+    const follow = (v as TaskManualAccounts).follow === true;
+    const body = follow
+      ? { follow: true }
+      : { follow: false, all: v.all, ids: v.ids };
+    store.setState(taskAccountsKey(task, 'manual'), JSON.stringify(body), nowIso);
+    return;
+  }
+  store.setState(
+    taskAccountsKey(task, 'auto'),
+    JSON.stringify({ all: v.all, ids: v.ids }),
+    nowIso,
+  );
+}
+
+/** 实际生效的选择：手动 `follow` ⇒ 回落到自动。 */
+export function effectiveTaskAccounts(
+  store: ReadableState,
+  task: string,
+  mode: TaskAccountMode = 'auto',
+): TaskAccounts {
+  if (mode !== 'manual') return loadTaskAccounts(store, task);
+  const m = loadManualTaskAccounts(store, task);
+  return m.follow ? loadTaskAccounts(store, task) : { all: m.all, ids: m.ids };
+}
+
+function expand(store: ReadableState, sel: TaskAccounts): string[] {
+  const all = loadAccounts(store as never);
+  const enabled = all.filter((a) => a.disabled !== true);
+  if (sel.all) return enabled.map((a) => a.id);
+  const want = new Set(sel.ids);
+  return enabled.filter((a) => want.has(a.id)).map((a) => a.id);
 }
 
 /** 把选择**展开成具体账号**（按账号表里的顺序，串行执行时就是那个顺序）。
@@ -93,25 +174,37 @@ export function saveTaskAccounts(
  *  ⚠ 展开结果里**不含停用的账号**：停用就是"别拿它跑"（见 `accounts.ts` 里
  *  `disabled` 的说明）。但**选中的具体 id** 如果被停用了，也会被滤掉 ——
  *  否则"停用"这个动作对已经选好的任务不起作用。 */
-export function resolveTaskAccounts(store: ReadableState, task: string): string[] {
-  const sel = loadTaskAccounts(store, task);
-  const all = loadAccounts(store as never);
-  const enabled = all.filter((a) => a.disabled !== true);
-  if (sel.all) return enabled.map((a) => a.id);
-  const want = new Set(sel.ids);
-  return enabled.filter((a) => want.has(a.id)).map((a) => a.id);
-}
-
-/** 界面上要显示的那一份：账号表 + 当前选择。 */
-export function taskAccountsView(
+export function resolveTaskAccounts(
   store: ReadableState,
   task: string,
-): { all: boolean; picked: string[]; resolved: string[]; accounts: { id: string; label: string; disabled: boolean }[] } {
-  const sel = loadTaskAccounts(store, task);
+  mode: TaskAccountMode = 'auto',
+): string[] {
+  return expand(store, effectiveTaskAccounts(store, task, mode));
+}
+
+/** 界面上要显示的那一份：账号表 + 自动/本次两份选择。 */
+export function taskAccountsView(store: ReadableState, task: string): {
+  auto: TaskAccounts;
+  manual: TaskManualAccounts;
+  resolvedAuto: string[];
+  resolvedManual: string[];
+  /** 兼容旧界面字段（自动那份）。 */
+  all: boolean;
+  picked: string[];
+  resolved: string[];
+  accounts: { id: string; label: string; disabled: boolean }[];
+} {
+  const auto = loadTaskAccounts(store, task);
+  const manual = loadManualTaskAccounts(store, task);
+  const resolvedAuto = expand(store, auto);
   return {
-    all: sel.all,
-    picked: sel.ids,
-    resolved: resolveTaskAccounts(store, task),
+    auto,
+    manual,
+    resolvedAuto,
+    resolvedManual: expand(store, effectiveTaskAccounts(store, task, 'manual')),
+    all: auto.all,
+    picked: auto.ids,
+    resolved: resolvedAuto,
     accounts: loadAccounts(store as never).map((a) => ({
       id: a.id,
       label: a.label,

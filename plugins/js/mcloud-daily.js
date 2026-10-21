@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.6 · 插件 `mcloud-daily`
+//   mcloud-plugin 0.2.7 · 插件 `mcloud-daily`
 
 // src/entries/daily.ts
 import { debug as debug2, register_cron } from "host-api";
@@ -7076,10 +7076,18 @@ function runDaily(deps, opts = {}) {
 }
 
 // src/mcloud/taskAccounts.ts
-function taskAccountsKey(task) {
+function legacyTaskAccountsKey(task) {
   return `mcloud.task.accounts.${task}`;
 }
+function taskAccountsKey(task, mode = "auto") {
+  return `mcloud.task.accounts.${task}.${mode}`;
+}
 var DEFAULT_TASK_ACCOUNTS = { all: true, ids: [] };
+var DEFAULT_TASK_MANUAL_ACCOUNTS = {
+  follow: true,
+  all: false,
+  ids: []
+};
 var DEFAULT_TASK_ACCOUNTS_BY_TASK = {
   兑换: { all: false, ids: [] }
 };
@@ -7087,24 +7095,54 @@ function defaultTaskAccounts(task) {
   const v = DEFAULT_TASK_ACCOUNTS_BY_TASK[task];
   return v ? { ...v } : { ...DEFAULT_TASK_ACCOUNTS };
 }
-function loadTaskAccounts(store2, task) {
-  const raw = (store2.getState(taskAccountsKey(task)) ?? "").trim();
-  if (raw === "") return defaultTaskAccounts(task);
+function parseSelection(raw) {
   try {
     const v = JSON.parse(raw);
     const ids = Array.isArray(v.ids) ? v.ids.filter((x) => typeof x === "string") : [];
     return { all: v.all === true, ids };
   } catch {
-    return defaultTaskAccounts(task);
+    return null;
   }
 }
-function resolveTaskAccounts(store2, task) {
-  const sel = loadTaskAccounts(store2, task);
+function loadTaskAccounts(store2, task) {
+  const raw = (store2.getState(taskAccountsKey(task, "auto")) ?? "").trim();
+  if (raw !== "") {
+    const v = parseSelection(raw);
+    return v ?? defaultTaskAccounts(task);
+  }
+  const legacy = (store2.getState(legacyTaskAccountsKey(task)) ?? "").trim();
+  if (legacy !== "") {
+    const v = parseSelection(legacy);
+    if (v !== null) return v;
+  }
+  return defaultTaskAccounts(task);
+}
+function loadManualTaskAccounts(store2, task) {
+  const raw = (store2.getState(taskAccountsKey(task, "manual")) ?? "").trim();
+  if (raw === "") return { ...DEFAULT_TASK_MANUAL_ACCOUNTS };
+  try {
+    const v = JSON.parse(raw);
+    if (v.follow === true) return { ...DEFAULT_TASK_MANUAL_ACCOUNTS };
+    const ids = Array.isArray(v.ids) ? v.ids.filter((x) => typeof x === "string") : [];
+    return { follow: false, all: v.all === true, ids };
+  } catch {
+    return { ...DEFAULT_TASK_MANUAL_ACCOUNTS };
+  }
+}
+function effectiveTaskAccounts(store2, task, mode = "auto") {
+  if (mode !== "manual") return loadTaskAccounts(store2, task);
+  const m = loadManualTaskAccounts(store2, task);
+  return m.follow ? loadTaskAccounts(store2, task) : { all: m.all, ids: m.ids };
+}
+function expand(store2, sel) {
   const all = loadAccounts(store2);
   const enabled = all.filter((a) => a.disabled !== true);
   if (sel.all) return enabled.map((a) => a.id);
   const want = new Set(sel.ids);
   return enabled.filter((a) => want.has(a.id)).map((a) => a.id);
+}
+function resolveTaskAccounts(store2, task, mode = "auto") {
+  return expand(store2, effectiveTaskAccounts(store2, task, mode));
 }
 function labelOf(store2, acctId) {
   const a = loadAccounts(store2).find((x) => x.id === acctId);
@@ -7913,7 +7951,8 @@ function makeStore() {
   return s;
 }
 function forEachTaskAccount(base, task, payload, transport2, fn) {
-  const targets = resolveTaskAccounts(rawStoreOf(base), task);
+  const mode = payload.manual === true || payload.lateMs < 0 ? "manual" : "auto";
+  const targets = resolveTaskAccounts(rawStoreOf(base), task, mode);
   const out = [];
   for (const [i, acctId] of targets.entries()) {
     const one = scoped(rawStoreOf(base), acctId);

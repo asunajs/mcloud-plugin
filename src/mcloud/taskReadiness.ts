@@ -25,7 +25,7 @@
 //   一个静态 import 就会让所有 import 了 routes 的测试整套挂掉。
 
 import { loadAccounts } from './accounts.ts';
-import { resolveTaskAccounts, saveTaskAccounts, taskAccountsKey } from './taskAccounts.ts';
+import { legacyTaskAccountsKey, resolveTaskAccounts, saveTaskAccounts, taskAccountsKey } from './taskAccounts.ts';
 import { loadPlans, planSummary } from './exchangePlans.ts';
 
 type Store = { getState(k: string): string | null | undefined };
@@ -139,7 +139,12 @@ export function setTaskPaused(task: string, paused: boolean): void {
 export function migrateLegacyExchange(store: Store & { setState(k: string, v: string, now: string): void }, nowIso: string): boolean {
   if (exchangePlanTarget(store) === '') return false;
   if ((store.getState('mcloud.exchange.schedule.enabled') ?? '').trim() !== '') return false;
-  if ((store.getState(taskAccountsKey('兑换')) ?? '').trim() !== '') return false;
+  if (
+    (store.getState(taskAccountsKey('兑换')) ?? '').trim() !== '' ||
+    (store.getState(legacyTaskAccountsKey('兑换')) ?? '').trim() !== ''
+  ) {
+    return false;
+  }
   saveTaskAccounts(store as never, '兑换', { all: true, ids: [] }, nowIso);
   store.setState('mcloud.exchange.schedule.enabled', '1', nowIso);
   return true;

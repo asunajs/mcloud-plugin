@@ -1396,3 +1396,14 @@ test('CI 的 state 断言脚本：正例过、反例必须红（别让 CI 断言
     '自检没过：必须红',
   );
 });
+
+test('每个任务都有独立的自动/本次账号选择器，手动不回写自动', () => {
+  const html = srcOf('plugins/mcloud/index.html');
+  for (const id of ['daily-acct-btn', 'daily-manual-btn', 'live-acct-btn', 'live-manual-btn']) {
+    assert.ok(html.includes(`id="${id}"`), `缺少 ${id}`);
+  }
+  assert.ok(/mode: 'manual'/.test(js), '前端要标明写的是 manual');
+  assert.ok(/daily-manual-follow/.test(js), '本次要能跟随自动');
+  assert.ok(/body: \{ task: cfg\.task, mode: cfg\.mode, all, ids, follow: follow === true \}/.test(js), '保存时要带 mode/follow');
+  assert.ok(/auto: TaskAccounts/.test(srcOf('src/mcloud/taskAccounts.ts')), '视图要分 auto/manual');
+});
