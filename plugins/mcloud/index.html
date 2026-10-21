@@ -431,16 +431,32 @@
              —— 存的是 `{all:true}`，展开时**当下**去读账号表；勾名单的话以后新登录的
              账号就永远进不来了（参考实现的原话：「勾每一项就锁死了当时的名单」）。
              ⚠ 切账号属于**任务**，不属于账号管理 —— 见账号页那段说明。 -->
-        <div class="picker" data-picker="日常">
+        <div class="picker" data-picker="日常-自动">
           <button class="btn picker-btn" id="daily-acct-btn" aria-expanded="false">
-            <span id="daily-acct-label">全部账号</span> ▾
+            自动运行：<span id="daily-acct-label">全部账号</span> ▾
           </button>
           <div class="picker-panel" id="daily-acct-panel" hidden>
             <label class="picker-row picker-all">
               <input type="checkbox" id="daily-acct-all" />
-              <span><b>全部账号</b><br /><span class="hint">以后新登录的账号也一起跑</span></span>
+              <span><b>全部账号</b><br /><span class="hint">定时触发用这一份；以后新登录的账号也一起跑</span></span>
             </label>
             <div class="picker-list" id="daily-acct-list"></div>
+          </div>
+        </div>
+        <div class="picker" data-picker="日常-本次">
+          <button class="btn picker-btn" id="daily-manual-btn" aria-expanded="false">
+            本次运行：<span id="daily-manual-label">跟随自动</span> ▾
+          </button>
+          <div class="picker-panel" id="daily-manual-panel" hidden>
+            <label class="picker-row picker-all">
+              <input type="checkbox" id="daily-manual-follow" />
+              <span><b>跟随自动</b><br /><span class="hint">不改自动设置；手动跑时用同一份</span></span>
+            </label>
+            <label class="picker-row picker-all">
+              <input type="checkbox" id="daily-manual-all" />
+              <span><b>全部账号</b><br /><span class="hint">只影响这一次手动运行</span></span>
+            </label>
+            <div class="picker-list" id="daily-manual-list"></div>
           </div>
         </div>
         <!-- 上一次**每个号**的结果：多账号时"哪个号成了"一眼看到，不用翻日志。
@@ -587,16 +603,32 @@
              —— 存的是 `{all:true}`，展开时**当下**去读账号表；勾名单的话以后新登录的
              账号就永远进不来了（参考实现的原话：「勾每一项就锁死了当时的名单」）。
              ⚠ 切账号属于**任务**，不属于账号管理 —— 见账号页那段说明。 -->
-        <div class="picker" data-picker="直播">
+        <div class="picker" data-picker="直播-自动">
           <button class="btn picker-btn" id="live-acct-btn" aria-expanded="false">
-            <span id="live-acct-label">全部账号</span> ▾
+            自动运行：<span id="live-acct-label">全部账号</span> ▾
           </button>
           <div class="picker-panel" id="live-acct-panel" hidden>
             <label class="picker-row picker-all">
               <input type="checkbox" id="live-acct-all" />
-              <span><b>全部账号</b><br /><span class="hint">以后新登录的账号也一起跑</span></span>
+              <span><b>全部账号</b><br /><span class="hint">定时触发用这一份；以后新登录的账号也一起跑</span></span>
             </label>
             <div class="picker-list" id="live-acct-list"></div>
+          </div>
+        </div>
+        <div class="picker" data-picker="直播-本次">
+          <button class="btn picker-btn" id="live-manual-btn" aria-expanded="false">
+            本次运行：<span id="live-manual-label">跟随自动</span> ▾
+          </button>
+          <div class="picker-panel" id="live-manual-panel" hidden>
+            <label class="picker-row picker-all">
+              <input type="checkbox" id="live-manual-follow" />
+              <span><b>跟随自动</b><br /><span class="hint">不改自动设置；手动跑时用同一份</span></span>
+            </label>
+            <label class="picker-row picker-all">
+              <input type="checkbox" id="live-manual-all" />
+              <span><b>全部账号</b><br /><span class="hint">只影响这一次手动运行</span></span>
+            </label>
+            <div class="picker-list" id="live-manual-list"></div>
           </div>
         </div>
 <div class="acct-chips" id="live-accounts"></div>

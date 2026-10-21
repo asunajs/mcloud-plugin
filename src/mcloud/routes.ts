@@ -1392,8 +1392,15 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
       path: `${base}/task/accounts`,
       method: 'POST',
       handler: (req) => {
-        const b = readBody(req) as { task?: unknown; all?: unknown; ids?: unknown };
+        const b = readBody(req) as {
+          task?: unknown;
+          mode?: unknown;
+          follow?: unknown;
+          all?: unknown;
+          ids?: unknown;
+        };
         const task = typeof b.task === 'string' ? b.task : '';
+        const mode = b.mode === 'manual' ? 'manual' : 'auto';
         // ⚠ 校验的是**排期任务名**（`日常`/`兑换`/`直播`），不是内部步骤名。
         //   这里曾经误用 `TASK_NAMES`（那是 `sign`/`receive` 那一套）⇒ 保存账号选择
         //   每次都回「不认识的任务：日常」，而界面上只看到"点了没反应"。
@@ -1401,16 +1408,35 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
           return json(400, { error: `不认识的任务：${task || '(空)'}` });
         }
         const all = b.all === true;
+        const follow = b.follow === true;
         const known = new Set(loadAccounts(deps.store).map((a) => a.id));
         const ids = Array.isArray(b.ids)
           ? b.ids.filter((x): x is string => typeof x === 'string' && known.has(x))
           : [];
-        saveTaskAccounts(deps.store, task, { all, ids }, deps.now());
-        deps.log(`任务账号（${task}）：${all ? '全部' : `${ids.length} 个`}`);
+        if (mode === 'manual') {
+          saveTaskAccounts(
+            deps.store,
+            task,
+            follow ? { follow: true, all: false, ids: [] } : { follow: false, all, ids },
+            deps.now(),
+            'manual',
+          );
+        } else {
+          saveTaskAccounts(deps.store, task, { all, ids }, deps.now(), 'auto');
+        }
+        const label = mode === 'manual' ? `${task}·本次` : `${task}·自动`;
+        deps.log(
+          `任务账号（${label}）：${mode === 'manual' && follow ? '跟随自动' : all ? '全部' : `${ids.length} 个`}`,
+        );
         syncTaskReadiness(deps.store, [task]);
         return json(200, {
           ...taskAccountsView(deps.store as unknown as Store, task),
-          note: all ? `${task}：全部账号` : `${task}：${ids.length} 个账号`,
+          note:
+            mode === 'manual' && follow
+              ? `${label}：跟随自动`
+              : all
+                ? `${label}：全部账号`
+                : `${label}：${ids.length} 个账号`,
         });
       },
     },

@@ -2719,57 +2719,64 @@ $('acct-refresh-all').addEventListener('click', (e) =>
 //   「任务页与直播页各有一张'选账号再运行'的表单，两处必须是**同一套控件、
 //    同一套口径**，否则迟早一处改了、另一处没改」。
 const PICKERS = [
-  { task: '日常', key: 'daily', btn: 'daily-acct-btn', panel: 'daily-acct-panel', all: 'daily-acct-all', list: 'daily-acct-list' },
-  { task: '直播', key: 'live', btn: 'live-acct-btn', panel: 'live-acct-panel', all: 'live-acct-all', list: 'live-acct-list' },
+  // 每个任务两份：auto 给定时，manual 只给手动。不要合成一份（见 taskAccounts.ts）。
+  { task: '日常', mode: 'auto', key: 'daily', btn: 'daily-acct-btn', panel: 'daily-acct-panel', all: 'daily-acct-all', list: 'daily-acct-list' },
+  { task: '日常', mode: 'manual', key: 'daily-manual', btn: 'daily-manual-btn', panel: 'daily-manual-panel', all: 'daily-manual-all', list: 'daily-manual-list', follow: 'daily-manual-follow' },
+  { task: '直播', mode: 'auto', key: 'live', btn: 'live-acct-btn', panel: 'live-acct-panel', all: 'live-acct-all', list: 'live-acct-list' },
+  { task: '直播', mode: 'manual', key: 'live-manual', btn: 'live-manual-btn', panel: 'live-manual-panel', all: 'live-manual-all', list: 'live-manual-list', follow: 'live-manual-follow' },
 ];
 
-/** 选择器按钮上那行字。⚠ 「全部」要**说出来**，不能只靠"都勾上了"表示。 */
-function pickerLabel(v) {
+function pickerLabel(v, follow) {
+  if (follow === true) return '跟随自动';
   if (!v) return '…';
   if (v.all) return '全部账号';
-  const n = (v.picked || []).length;
+  const picked = v.ids || v.picked || [];
+  const n = picked.length;
   if (n === 0) return '没选账号';
   if (n === 1) {
-    const a = (v.accounts || []).find((x) => x.id === v.picked[0]);
-    return (a && a.label) || v.picked[0];
+    const a = (v.accounts || []).find((x) => x.id === picked[0]);
+    return (a && a.label) || picked[0];
   }
   return `${n} 个账号`;
 }
 
 function renderPicker(cfg) {
   const all = (last && last.taskAccounts && last.taskAccounts[cfg.task]) || null;
-  const v = all || { all: true, picked: [], accounts: [] };
-  setText(`${cfg.key}-acct-label`, pickerLabel(v));
-  $(`${cfg.key}-acct-all`).checked = v.all === true;
+  const v = cfg.mode === 'manual'
+    ? ((all && all.manual) || { follow: true, all: false, ids: [] })
+    : ((all && all.auto) || { all: true, ids: [] });
+  const accounts = (all && all.accounts) || [];
+  const follow = cfg.mode === 'manual' && v.follow === true;
+  setText(`${cfg.key}-acct-label`, pickerLabel({ ...v, accounts }, follow));
+  if (cfg.follow) $(cfg.follow).checked = follow;
+  $(cfg.all).checked = follow ? false : v.all === true;
+  $(cfg.all).disabled = follow;
 
   // 名单。⚠ 「全部」勾着时下面那些**不禁用** —— 用户可以先挑几个，
   //   取消「全部」时就带着这份名单继续，不用从头勾一遍。
-  const list = $(`${cfg.key}-acct-list`);
-  list.innerHTML = (v.accounts || [])
+  const list = $(cfg.list);
+  list.innerHTML = accounts
     .map((a) => {
-      const on = v.all || (v.picked || []).includes(a.id);
+      const on = !follow && (v.all || (v.ids || []).includes(a.id));
       return `<label class="picker-row${a.disabled ? ' is-off' : ''}">
-        <input type="checkbox" data-pick="${esc(a.id)}"${on ? ' checked' : ''}${a.disabled ? ' disabled' : ''} />
+        <input type="checkbox" data-pick="${esc(a.id)}"${on ? ' checked' : ''}${a.disabled || follow ? ' disabled' : ''} />
         <span>${esc(a.label || a.id)}${a.disabled ? '（已停用）' : ''}</span>
       </label>`;
     })
     .join('') || '<p class="hint">还没有已登录的账号。先去「账号」页加一个。</p>';
 }
 
-/** 把当前勾选存下来。 */
-async function savePicker(cfg, all, ids) {
+/** 把当前勾选存下来。manual 只写 .manual，绝不改 .auto。 */
+async function savePicker(cfg, all, ids, follow) {
   const r = await api('/task/accounts', {
     method: 'POST',
     write: true,
-    body: { task: cfg.task, all, ids },
+    body: { task: cfg.task, mode: cfg.mode, all, ids, follow: follow === true },
   });
   toast(r.note || '已存下');
   await load();
 }
 
-// ── 共用的三个动作（三条任务**同一套口径**）──
-
-/** 展开 / 收起。⚠ 同时只开一个 —— 开着两个会让人分不清在改哪条任务。 */
 function pickerToggle(cfg, ev) {
   ev.stopPropagation();
   const panel = $(cfg.panel);
@@ -2779,22 +2786,22 @@ function pickerToggle(cfg, ev) {
   $(cfg.btn).setAttribute('aria-expanded', String(open));
 }
 
-/** 「全部」那个开关。⚠ 它是**独立开关**，不是"把每一项都勾上"（见文件头）。 */
 function pickerToggleAll(cfg, checked) {
-  const cur = (last && last.taskAccounts && last.taskAccounts[cfg.task]) || { picked: [] };
-  void savePicker(cfg, checked, cur.picked || []).catch((e) =>
+  const all = (last && last.taskAccounts && last.taskAccounts[cfg.task]) || {};
+  const cur = cfg.mode === 'manual' ? (all.manual || {}) : (all.auto || {});
+  void savePicker(cfg, checked, cur.ids || [], false).catch((e) =>
     toast(e.message || '没存上', true),
   );
 }
 
-/** 名单里勾一项。
- *
- *  ⚠ **以"点完之后 DOM 里哪些是勾着的"为准**，不要自己推。
- *
- *  推的版本踩过一个很实的坑：`all: true` 时每一格都是勾着的，用户**取消**
- *  一格（比如「移动」），代码却按"他勾了移动"处理 ⇒ 存下 `ids:['移动']`，
- *  于是界面从"全部账号"变成"只有移动"，正好反了。
- *  按 DOM 读就没有这个歧义：取消一格 ⇒ 存的是剩下那两个。 */
+function pickerFollow(cfg, checked) {
+  const all = (last && last.taskAccounts && last.taskAccounts[cfg.task]) || {};
+  const cur = all.manual || {};
+  void savePicker(cfg, checked ? false : cur.all === true, checked ? [] : (cur.ids || []), checked).catch(
+    (e) => toast(e.message || '没存上', true),
+  );
+}
+
 function pickerPick(cfg, ev) {
   const box = ev.target.closest('[data-pick]');
   if (!box) return;
@@ -2802,33 +2809,32 @@ function pickerPick(cfg, ev) {
   const ids = [...panel.querySelectorAll('input[data-pick]')]
     .filter((b) => b.checked && !b.disabled)
     .map((b) => b.dataset.pick);
-  // 手动动一格 = **取消「全部」**：用户的意思很清楚（"不是全部，是这几个"）。
-  // 留着「全部」的话勾选会被忽略 —— 那看起来像"点了没反应"。
-  void savePicker(cfg, false, ids).catch((e) => toast(e.message || '没存上', true));
+  // 手动动一格 = 取消「全部」；manual 还要取消「跟随自动」。
+  void savePicker(cfg, false, ids, false).catch((e) => toast(e.message || '没存上', true));
 }
 
-// ── 绑定：三条任务**各写一行**（字面 id，不套模板）──
-//
-// ⚠ 为什么不用 `for (const cfg of PICKERS) $(`${cfg.key}-btn`)…` 那种循环绑定：
-//   那样静态检查**看不出**"这个按钮到底绑没绑"（`test/webui.test.ts` 里那两条
-//   就是钉这件事的，而它们当初正是为了抓"绑了但点了没反应"）。
-//   共用的是**逻辑**（上面三个函数），绑定保持显式 —— 两边都要。
+// ── 绑定：每个任务两份，字面 id（静态检查能看出有没有绑）──
 $('daily-acct-btn').addEventListener('click', (ev) => pickerToggle(PICKERS[0], ev));
-$('daily-acct-all').addEventListener('change', (ev) =>
-  pickerToggleAll(PICKERS[0], ev.currentTarget.checked),
-);
+$('daily-acct-all').addEventListener('change', (ev) => pickerToggleAll(PICKERS[0], ev.currentTarget.checked));
 $('daily-acct-list').addEventListener('change', (ev) => pickerPick(PICKERS[0], ev));
 
-$('live-acct-btn').addEventListener('click', (ev) => pickerToggle(PICKERS[1], ev));
-$('live-acct-all').addEventListener('change', (ev) =>
-  pickerToggleAll(PICKERS[1], ev.currentTarget.checked),
-);
-$('live-acct-list').addEventListener('change', (ev) => pickerPick(PICKERS[1], ev));
+$('daily-manual-btn').addEventListener('click', (ev) => pickerToggle(PICKERS[1], ev));
+$('daily-manual-follow').addEventListener('change', (ev) => pickerFollow(PICKERS[1], ev.currentTarget.checked));
+$('daily-manual-all').addEventListener('change', (ev) => pickerToggleAll(PICKERS[1], ev.currentTarget.checked));
+$('daily-manual-list').addEventListener('change', (ev) => pickerPick(PICKERS[1], ev));
 
-// 点外部关闭（浮层的基本礼貌 —— 参考实现特意点过这一条）
+$('live-acct-btn').addEventListener('click', (ev) => pickerToggle(PICKERS[2], ev));
+$('live-acct-all').addEventListener('change', (ev) => pickerToggleAll(PICKERS[2], ev.currentTarget.checked));
+$('live-acct-list').addEventListener('change', (ev) => pickerPick(PICKERS[2], ev));
+
+$('live-manual-btn').addEventListener('click', (ev) => pickerToggle(PICKERS[3], ev));
+$('live-manual-follow').addEventListener('change', (ev) => pickerFollow(PICKERS[3], ev.currentTarget.checked));
+$('live-manual-all').addEventListener('change', (ev) => pickerToggleAll(PICKERS[3], ev.currentTarget.checked));
+$('live-manual-list').addEventListener('change', (ev) => pickerPick(PICKERS[3], ev));
+
 document.addEventListener('click', (ev) => {
   if (ev.target.closest('.picker')) return;
-  for (const o of PICKERS) $(`${o.key}-acct-panel`).hidden = true;
+  for (const o of PICKERS) $(o.panel).hidden = true;
 });
 
 // ══════════ 每账号设置（复刻 mcloud 的「设置」） ══════════
