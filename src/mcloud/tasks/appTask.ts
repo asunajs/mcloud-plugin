@@ -25,14 +25,14 @@
 
 
 import { callRawText } from '../client.ts';
-import { sessionHeaders } from './base.ts';
+import { depsNowMs, sessionHeaders } from './base.ts';
 import { REFERER_SIGN_IN, SHOW_LOADING, buildH5Request } from '../h5.ts';
 import { loadSession } from '../../store/types.ts';
 import { loadAuthRaw } from '../sessionExchange.ts';
 import { parseAuth } from '../auth.ts';
 import { uuidV4 } from '../rand.ts';
 import { utf8 } from '../../crypto/bytes.ts';
-import { judgeItem, readMatrix } from './appTaskMatrix.ts';
+import { MATRIX_MARKETS, judgeItem, readMatrix, runAppTaskMatrix } from './appTaskMatrix.ts';
 import { loadUpload, runUploadStep, startUpload, uploadDone } from './upload.ts';
 import { readMonthBackup } from './taskExpansion.ts';
 import { cloudFileOpHeaders, deterministicFile, randomHex } from '../cloudUpload.ts';
@@ -134,6 +134,7 @@ export type TaskPhase =
   | 'pdfUpload'
   | 'pdfConvert'
   | 'billViewAction'
+  | 'settle'
   | 'done';
 
 /** 这一条除了“点一下”之外还要做的动作。 */
@@ -177,6 +178,8 @@ interface TaskState {
   journaled?: boolean | undefined;
   /** 起这条时的 `currStep`（日志里说"已走到第 N 步"要用）。 */
   currStep?: number | undefined;
+  /** 动作做完后，到这个毫秒时刻再拉矩阵复查（不能刚做完就问）。 */
+  settleAt?: number | undefined;
   /** `unconfirmed` 记录属于哪一天；跨天别拿昨天的"未确认"挡今天。 */
   retryDay?: string | undefined;
   /** 当天已经重试过几次（**只做日志/诊断**，不参与封顶）。 */
@@ -214,6 +217,7 @@ const PHASE_TEXT: Record<TaskPhase, string> = {
   pdfUpload: '传 PDF',
   pdfConvert: 'PDF 转换',
   billViewAction: '我的账单（8 发）',
+  settle: '等服务端确认',
   done: '这一趟走完了',
 };
 
@@ -333,30 +337,28 @@ function advance(deps: TaskDeps, st: TaskState): TaskOutcome {
   const clicked = freshClicked(st, deps);
   const next = pendingItems(deps).find((p) => !clicked.includes(p.itemId));
   if (!next) {
-    // ⚠⚠ **本地动作 ≠ 成功**：只有上游矩阵回 `FINISH` 才算。
-    //   先算"点了但仍是待办"的，把它们从 `clicked` 里**移出去**，否则下一趟会
-    //   以为"今天已经点过"而永远不重试（106 上传就是这么被卡住的）。
-    const dead = clickedButIneffective(deps, { ...st, clicked });
-    const kept = clicked.filter((id) => !dead.includes(id));
-    const retryCount = dead.length > 0 ? (st.retryCount ?? 0) + 1 : 0;
+    // ⚠⚠ **不能刚做完就问上游**：动作和检查之间要有间隔。
+    //   矩阵读数是动作前的快照，立刻拿它判"没变"会把每一次成功都误判成失败。
+    //   先进入 `settle`，等 `settleMs`（默认 5 秒）后重新拉矩阵再判。
+    //   `clicked` 先原样保留；复查时才把仍未 FINISH 的移进 `unconfirmed`。
+    const wait = deps.settleMs ?? 5000;
     save(deps, {
       ...st,
-      phase: 'done',
+      phase: 'settle',
       fileId: undefined,
       special: undefined,
       data: undefined,
-      clicked: kept,
-      unconfirmed: dead,
-      retryDay: today(deps),
-      retryCount,
+      clicked,
+      unconfirmed: [],
+      settleAt: depsNowMs(deps) + wait,
       day: today(deps),
     });
-    const warn =
-      dead.length === 0
-        ? ''
-        : `。⚠ 其中 ${dead.length} 条**点了但状态没变 / 本地动作做了但服务端未完成**（#${dead.join('、')}）—— ` +
-          'HTTP 200 / 本机已上传都不算成功，只有矩阵回 FINISH 才算；下一趟会重试';
-    return { ok: dead.length === 0, note: `待办都走完了（这一趟点了 ${clicked.length} 条）${warn}` };
+    return {
+      // 动了而还没复查 ⇒ **先不报成功**（同一瞬间的旧矩阵不能证明它成了）。
+      ok: clicked.length === 0,
+      idle: false,
+      note: `动作走完，等 ${wait}ms 后复查服务端（不在动作前/动作后同一瞬间下结论）`,
+    };
   }
   // 434 需要“手里有文件”。本趟传过就直接用；没有就先传一个。
   // ⚠ 上传族顺序照参考实现：`currStep=0` ⇒ **先打卡，再传文件**；
@@ -549,6 +551,8 @@ function beginPdfUpload(deps: TaskDeps): number {
 export function appTaskFresh(deps: TaskDeps): boolean {
   const st = load(deps);
   if (st === null || st.day !== today(deps)) return false;
+  // 正在等复查：不要把它当成"没起过"再起一条，让日常去跑 settle。
+  if (st.phase === 'settle') return true;
   // 本机动过、服务端仍是待办 ⇒ 不能算"今天做完了"。
   // ⚠ 用户口径：**不限制重试次数** —— 只要服务端没确认，下一趟就继续试。
   //   重试次数只用于日志/诊断，不参与"今天做完了"的判断。
@@ -734,6 +738,44 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
           idle: true,
           note: `这一趟没有全确认：${dead.length} 条本机动过、服务端仍是待办（#${dead.join('、')}）—— 下一趟继续重试（不设上限）`,
         };
+  }
+
+  // ①′ 动作与复查之间必须隔一段时间；到点后**重新拉矩阵**再判。
+  if (st.phase === 'settle') {
+    const wait = (st.settleAt ?? 0) - depsNowMs(deps);
+    if (wait > 0) {
+      return {
+        ok: false,
+        idle: true,
+        note: `动作做完了，等服务端确认（还要 ${Math.ceil(wait / 1000)} 秒）—— 到点后会重新拉矩阵，不是拿动作前的旧读数判`,
+      };
+    }
+    // 生产环境默认 5 秒；测试传 0 时直接用它手里的 mock 矩阵。
+    if ((deps.settleMs ?? 5000) > 0) {
+      for (let i = 0; i < MATRIX_MARKETS.length; i++) runAppTaskMatrix(deps);
+    }
+    const dead = clickedButIneffective(deps, st);
+    const kept = st.clicked.filter((id) => !dead.includes(id));
+    const retryCount = dead.length > 0 ? (st.retryCount ?? 0) + 1 : 0;
+    save(deps, {
+      ...st,
+      phase: 'done',
+      clicked: kept,
+      unconfirmed: dead,
+      settleAt: undefined,
+      retryDay: today(deps),
+      retryCount,
+      day: today(deps),
+    });
+    const warn =
+      dead.length === 0
+        ? ''
+        : `；⚠ ${dead.length} 条本机动过、服务端仍是待办（#${dead.join('、')}）—— 只有矩阵回 FINISH 才算成功，下一趟会重试`;
+    return {
+      ok: dead.length === 0,
+      idle: true,
+      note: `复查完成（已等 ${deps.settleMs ?? 5000}ms，重新拉过矩阵）${warn}`,
+    };
   }
 
   const pend = pendingItems(deps);
