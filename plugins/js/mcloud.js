@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.6 · 插件 `mcloud`
+//   mcloud-plugin 0.2.7 · 插件 `mcloud`
 
 // src/entries/mcloud.ts
 import {
@@ -1659,10 +1659,18 @@ var STATE_LAST_TASKLIST = "mcloud.tasklist.last";
 
 // src/mcloud/taskAccounts.ts
 var SCHEDULED_TASKS = ["日常", "兑换", "直播"];
-function taskAccountsKey(task) {
+function legacyTaskAccountsKey(task) {
   return `mcloud.task.accounts.${task}`;
 }
+function taskAccountsKey(task, mode = "auto") {
+  return `mcloud.task.accounts.${task}.${mode}`;
+}
 var DEFAULT_TASK_ACCOUNTS = { all: true, ids: [] };
+var DEFAULT_TASK_MANUAL_ACCOUNTS = {
+  follow: true,
+  all: false,
+  ids: []
+};
 var DEFAULT_TASK_ACCOUNTS_BY_TASK = {
   兑换: { all: false, ids: [] }
 };
@@ -1670,34 +1678,80 @@ function defaultTaskAccounts(task) {
   const v = DEFAULT_TASK_ACCOUNTS_BY_TASK[task];
   return v ? { ...v } : { ...DEFAULT_TASK_ACCOUNTS };
 }
-function loadTaskAccounts(store2, task) {
-  const raw = (store2.getState(taskAccountsKey(task)) ?? "").trim();
-  if (raw === "") return defaultTaskAccounts(task);
+function parseSelection(raw) {
   try {
     const v = JSON.parse(raw);
     const ids = Array.isArray(v.ids) ? v.ids.filter((x) => typeof x === "string") : [];
     return { all: v.all === true, ids };
   } catch {
-    return defaultTaskAccounts(task);
+    return null;
   }
 }
-function saveTaskAccounts(store2, task, v, nowIso) {
-  store2.setState(taskAccountsKey(task), JSON.stringify({ all: v.all, ids: v.ids }), nowIso);
+function loadTaskAccounts(store2, task) {
+  const raw = (store2.getState(taskAccountsKey(task, "auto")) ?? "").trim();
+  if (raw !== "") {
+    const v = parseSelection(raw);
+    return v ?? defaultTaskAccounts(task);
+  }
+  const legacy = (store2.getState(legacyTaskAccountsKey(task)) ?? "").trim();
+  if (legacy !== "") {
+    const v = parseSelection(legacy);
+    if (v !== null) return v;
+  }
+  return defaultTaskAccounts(task);
 }
-function resolveTaskAccounts(store2, task) {
-  const sel = loadTaskAccounts(store2, task);
+function loadManualTaskAccounts(store2, task) {
+  const raw = (store2.getState(taskAccountsKey(task, "manual")) ?? "").trim();
+  if (raw === "") return { ...DEFAULT_TASK_MANUAL_ACCOUNTS };
+  try {
+    const v = JSON.parse(raw);
+    if (v.follow === true) return { ...DEFAULT_TASK_MANUAL_ACCOUNTS };
+    const ids = Array.isArray(v.ids) ? v.ids.filter((x) => typeof x === "string") : [];
+    return { follow: false, all: v.all === true, ids };
+  } catch {
+    return { ...DEFAULT_TASK_MANUAL_ACCOUNTS };
+  }
+}
+function saveTaskAccounts(store2, task, v, nowIso, mode = "auto") {
+  if (mode === "manual") {
+    const follow = v.follow === true;
+    const body = follow ? { follow: true } : { follow: false, all: v.all, ids: v.ids };
+    store2.setState(taskAccountsKey(task, "manual"), JSON.stringify(body), nowIso);
+    return;
+  }
+  store2.setState(
+    taskAccountsKey(task, "auto"),
+    JSON.stringify({ all: v.all, ids: v.ids }),
+    nowIso
+  );
+}
+function effectiveTaskAccounts(store2, task, mode = "auto") {
+  if (mode !== "manual") return loadTaskAccounts(store2, task);
+  const m = loadManualTaskAccounts(store2, task);
+  return m.follow ? loadTaskAccounts(store2, task) : { all: m.all, ids: m.ids };
+}
+function expand(store2, sel) {
   const all = loadAccounts(store2);
   const enabled = all.filter((a) => a.disabled !== true);
   if (sel.all) return enabled.map((a) => a.id);
   const want = new Set(sel.ids);
   return enabled.filter((a) => want.has(a.id)).map((a) => a.id);
 }
+function resolveTaskAccounts(store2, task, mode = "auto") {
+  return expand(store2, effectiveTaskAccounts(store2, task, mode));
+}
 function taskAccountsView(store2, task) {
-  const sel = loadTaskAccounts(store2, task);
+  const auto = loadTaskAccounts(store2, task);
+  const manual = loadManualTaskAccounts(store2, task);
+  const resolvedAuto = expand(store2, auto);
   return {
-    all: sel.all,
-    picked: sel.ids,
-    resolved: resolveTaskAccounts(store2, task),
+    auto,
+    manual,
+    resolvedAuto,
+    resolvedManual: expand(store2, effectiveTaskAccounts(store2, task, "manual")),
+    all: auto.all,
+    picked: auto.ids,
+    resolved: resolvedAuto,
     accounts: loadAccounts(store2).map((a) => ({
       id: a.id,
       label: a.label,
@@ -10070,7 +10124,9 @@ function setTaskPaused(task, paused) {
 function migrateLegacyExchange(store2, nowIso) {
   if (exchangePlanTarget(store2) === "") return false;
   if ((store2.getState("mcloud.exchange.schedule.enabled") ?? "").trim() !== "") return false;
-  if ((store2.getState(taskAccountsKey("兑换")) ?? "").trim() !== "") return false;
+  if ((store2.getState(taskAccountsKey("兑换")) ?? "").trim() !== "" || (store2.getState(legacyTaskAccountsKey("兑换")) ?? "").trim() !== "") {
+    return false;
+  }
   saveTaskAccounts(store2, "兑换", { all: true, ids: [] }, nowIso);
   store2.setState("mcloud.exchange.schedule.enabled", "1", nowIso);
   return true;
@@ -11169,18 +11225,33 @@ function mcloudRoutes(deps) {
       handler: (req) => {
         const b = readBody(req);
         const task = typeof b.task === "string" ? b.task : "";
+        const mode = b.mode === "manual" ? "manual" : "auto";
         if (!SCHEDULED_TASKS.includes(task)) {
           return json(400, { error: `不认识的任务：${task || "(空)"}` });
         }
         const all = b.all === true;
+        const follow = b.follow === true;
         const known = new Set(loadAccounts(deps.store).map((a) => a.id));
         const ids = Array.isArray(b.ids) ? b.ids.filter((x) => typeof x === "string" && known.has(x)) : [];
-        saveTaskAccounts(deps.store, task, { all, ids }, deps.now());
-        deps.log(`任务账号（${task}）：${all ? "全部" : `${ids.length} 个`}`);
+        if (mode === "manual") {
+          saveTaskAccounts(
+            deps.store,
+            task,
+            follow ? { follow: true, all: false, ids: [] } : { follow: false, all, ids },
+            deps.now(),
+            "manual"
+          );
+        } else {
+          saveTaskAccounts(deps.store, task, { all, ids }, deps.now(), "auto");
+        }
+        const label = mode === "manual" ? `${task}·本次` : `${task}·自动`;
+        deps.log(
+          `任务账号（${label}）：${mode === "manual" && follow ? "跟随自动" : all ? "全部" : `${ids.length} 个`}`
+        );
         syncTaskReadiness(deps.store, [task]);
         return json(200, {
           ...taskAccountsView(deps.store, task),
-          note: all ? `${task}：全部账号` : `${task}：${ids.length} 个账号`
+          note: mode === "manual" && follow ? `${label}：跟随自动` : all ? `${label}：全部账号` : `${label}：${ids.length} 个账号`
         });
       }
     },

@@ -45,7 +45,7 @@ import { applyDefaultContentType, hostFetchOptions, isFetchError } from '../mclo
 import type { Store } from '../store/types.ts';
 import { hostStore } from '../store/host.ts';
 import { rawStoreOf, scoped } from '../store/scoped.ts';
-import { resolveTaskAccounts } from '../mcloud/taskAccounts.ts';
+import { resolveTaskAccounts, type TaskAccountMode } from '../mcloud/taskAccounts.ts';
 import { migrateFlatKeys } from '../store/keys.ts';
 import { loadBaseUrl } from '../mcloud/session.ts';
 import { loadAuthRaw } from '../mcloud/sessionExchange.ts';
@@ -148,12 +148,16 @@ export function makeHost(): HostWs {
 export function forEachTaskAccount<T>(
   base: Store,
   task: string,
-  payload: { lateMs: number },
+  payload: { lateMs: number; manual?: boolean | undefined },
   transport: Transport,
   fn: (deps: TaskDeps, acctId: string, index: number, total: number) => T,
 ): { acctId: string; result: T }[] {
   // ⚠ `all` 在**这里**展开（不是存的时候）—— 以后新登录的账号也进得来。
-  const targets = resolveTaskAccounts(rawStoreOf(base), task);
+  // 手动触发（`manual=true`，老面板用 lateMs<0 兜底）只读 .manual；
+  // 定时触发只读 .auto —— 手动勾小号绝不会改到第二天的自动账号。
+  const mode: TaskAccountMode =
+    payload.manual === true || payload.lateMs < 0 ? 'manual' : 'auto';
+  const targets = resolveTaskAccounts(rawStoreOf(base), task, mode);
   const out: { acctId: string; result: T }[] = [];
   for (const [i, acctId] of targets.entries()) {
     // ⚠ **每个账号一个 store**：`scoped(base, acctId)` 让这一趟里所有按账号的
