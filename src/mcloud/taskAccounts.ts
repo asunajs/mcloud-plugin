@@ -186,6 +186,8 @@ export function resolveTaskAccounts(
 export function taskAccountsView(store: ReadableState, task: string): {
   auto: TaskAccounts;
   manual: TaskManualAccounts;
+  /** auto 是从旧版单一键继承来的（界面要标一下，别让用户以为手动选择还在生效）。 */
+  legacyAuto: boolean;
   resolvedAuto: string[];
   resolvedManual: string[];
   /** 兼容旧界面字段（自动那份）。 */
@@ -197,9 +199,13 @@ export function taskAccountsView(store: ReadableState, task: string): {
   const auto = loadTaskAccounts(store, task);
   const manual = loadManualTaskAccounts(store, task);
   const resolvedAuto = expand(store, auto);
+  const legacyAuto =
+    (store.getState(taskAccountsKey(task, 'auto')) ?? '').trim() === '' &&
+    (store.getState(legacyTaskAccountsKey(task)) ?? '').trim() !== '';
   return {
     auto,
     manual,
+    legacyAuto,
     resolvedAuto,
     resolvedManual: expand(store, effectiveTaskAccounts(store, task, 'manual')),
     all: auto.all,
