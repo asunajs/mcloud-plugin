@@ -2747,7 +2747,11 @@ function renderPicker(cfg) {
     : ((all && all.auto) || { all: true, ids: [] });
   const accounts = (all && all.accounts) || [];
   const follow = cfg.mode === 'manual' && v.follow === true;
-  setText(`${cfg.key}-acct-label`, pickerLabel({ ...v, accounts }, follow));
+  const label = pickerLabel({ ...v, accounts }, follow);
+  setText(
+    `${cfg.key}-acct-label`,
+    cfg.mode === 'auto' && all && all.legacyAuto === true ? `${label}（旧版设置）` : label,
+  );
   if (cfg.follow) $(cfg.follow).checked = follow;
   $(cfg.all).checked = follow ? false : v.all === true;
   $(cfg.all).disabled = follow;
