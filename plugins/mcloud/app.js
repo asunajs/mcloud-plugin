@@ -1597,14 +1597,15 @@ function renderLive(l) {
     bits.push(next ? `正在听 ${next} 那场` : '正在听');
   } else {
     const g = l.gate || {};
+    const target = String(g.target || '目标主播');
     const why =
       g.at === undefined || g.at === null
         ? ''
         : g.active === true
-          ? '它正在播'
+          ? `「${target}」正在播`
           : (g.liveCount || 0) === 0
             ? '谁都没开播'
-            : `有 ${g.liveCount} 间在播，但都不是它`;
+            : `有 ${g.liveCount} 间在播，但没有「${target}」的房间`;
     bits.push(why === '' ? '现在没在听' : `现在没在听：${why}`);
   }
   setText('live-sub', bits.join(' · ') || '还没有日程 —— 它探到下一场就会自己开始听。');

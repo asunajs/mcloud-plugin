@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.10 · 插件 `mcloud`
+//   mcloud-plugin 0.2.11 · 插件 `mcloud`
 
 // src/entries/mcloud.ts
 import {
@@ -7751,7 +7751,8 @@ function roomsStep(deps, st, base, nowMs) {
     active: hit.length > 0,
     liveCount: rooms.filter((r) => r.status === 1).length,
     rooms: toProbeRooms(rooms),
-    note: note2
+    note: note2,
+    target: KOULING_ANCHOR
   };
   deps.store.setState(STATE_READING2, JSON.stringify(reading), deps.nowIso);
   delete st.jwt;
@@ -8581,7 +8582,7 @@ function roomsStep2(deps, st, nowMs) {
     st.closedReason = "那个主播没在播";
     st.finishedAt = deps.nowIso;
     st.probedAt = deps.nowIso;
-    st.note = forced !== void 0 ? `指定的房间 ${forced} 不在这次探到的 ${merged.length} 间房里（诊断口子）` : coolMs > IDLE_RECHECK_MS ? `现在没在听（看到 ${merged.length} 间房，都不是它）—— 到下一场之后再去看（${hours(coolMs)}）` : `现在没在听（看到 ${merged.length} 间房，都不是它）—— 隔 ${hours(coolMs)}再看（上次真探 ${deps.nowIso.slice(11, 19)}）`;
+    st.note = forced !== void 0 ? `指定的房间 ${forced} 不在这次探到的 ${merged.length} 间房里（诊断口子）` : coolMs > IDLE_RECHECK_MS ? `现在没在听（看到 ${merged.length} 间房，但没有「${KOULING_ANCHOR}」的）—— 到下一场之后再去看（${hours(coolMs)}）` : `现在没在听（看到 ${merged.length} 间房，但没有「${KOULING_ANCHOR}」的）—— 隔 ${hours(coolMs)}再看（上次真探 ${deps.nowIso.slice(11, 19)}）`;
     persist(deps, st);
     return { ok: true, note: humanNote(st.note) };
   }

@@ -59,7 +59,7 @@ import { parseSsoToken } from '../h5session.ts';
 import { STATE_AUTH, loadAuthRaw } from '../sessionExchange.ts';
 import { parseAuthorization } from '../authRefresh.ts';
 import { extractKouling, hasKouling, isKoulingHead, isKoulingMarker } from '../liveKouling.ts';
-import { loadFreshPool, note, savePoolTo } from '../koulingPool.ts';
+import { KOULING_ANCHOR, loadFreshPool, note, savePoolTo } from '../koulingPool.ts';
 import { createListener, sockjsDataFrames } from '../liveWs.ts';
 import { CMD_ACK, decodeMsync } from '../msync.ts';
 import type { Listener } from '../liveWs.ts';
@@ -517,8 +517,8 @@ function roomsStep(deps: ListenDeps, st: ListenState, nowMs: number): TaskOutcom
         ? `指定的房间 ${forced} 不在这次探到的 ${merged.length} 间房里（诊断口子）`
         : coolMs > IDLE_RECHECK_MS
           // 「门」是内部说法；用户看到的是"现在没在听，为什么、什么时候再看"
-          ? `现在没在听（看到 ${merged.length} 间房，都不是它）—— 到下一场之后再去看（${hours(coolMs)}）`
-          : `现在没在听（看到 ${merged.length} 间房，都不是它）—— 隔 ${hours(coolMs)}再看` +
+          ? `现在没在听（看到 ${merged.length} 间房，但没有「${KOULING_ANCHOR}」的）—— 到下一场之后再去看（${hours(coolMs)}）`
+          : `现在没在听（看到 ${merged.length} 间房，但没有「${KOULING_ANCHOR}」的）—— 隔 ${hours(coolMs)}再看` +
             // ⚠ 带上"上次真探"的时刻：空闲时这条任务每 10 秒醒一次、读数**一模一样**，
             //   日志去重之后一个窗口只会留一行 —— 那一行必须能回答"这次是真探过，还是
             //   只是把旧读数重复了一遍"（2026-10-14 soak 里我就是靠数 ①/② 那两行才分清的）。
