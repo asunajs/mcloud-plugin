@@ -355,8 +355,9 @@ function advance(deps: TaskDeps, st: TaskState): TaskOutcome {
     });
     return {
       // 动了而还没复查 ⇒ **先不报成功**（同一瞬间的旧矩阵不能证明它成了）。
-      ok: clicked.length === 0,
+      ok: true,
       idle: false,
+      pending: clicked.length > 0,
       note: `动作走完，等 ${wait}ms 后复查服务端（不在动作前/动作后同一瞬间下结论）`,
     };
   }
@@ -736,6 +737,7 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
       : {
           ok: false,
           idle: true,
+          pending: true,
           note: `这一趟没有全确认：${dead.length} 条本机动过、服务端仍是待办（#${dead.join('、')}）—— 下一趟继续重试（不设上限）`,
         };
   }
@@ -745,8 +747,9 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
     const wait = (st.settleAt ?? 0) - depsNowMs(deps);
     if (wait > 0) {
       return {
-        ok: false,
+        ok: true,
         idle: true,
+        pending: true,
         note: `动作做完了，等服务端确认（还要 ${Math.ceil(wait / 1000)} 秒）—— 到点后会重新拉矩阵，不是拿动作前的旧读数判`,
       };
     }
@@ -774,6 +777,7 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
     return {
       ok: dead.length === 0,
       idle: true,
+      pending: dead.length > 0,
       note: `复查完成（已等 ${deps.settleMs ?? 5000}ms，重新拉过矩阵）${warn}`,
     };
   }

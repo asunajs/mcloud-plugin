@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.8 · 插件 `mcloud`
+//   mcloud-plugin 0.2.9 · 插件 `mcloud`
 
 // src/entries/mcloud.ts
 import {
@@ -5958,9 +5958,10 @@ function summarize(r) {
     ms: r.ms,
     ok: r.ok,
     note: r.note,
-    okCount: r.steps.filter((s) => s.ok && !s.idle).length,
-    badCount: r.steps.filter((s) => !s.ok).length,
-    idleCount: r.steps.filter((s) => s.idle).length,
+    okCount: r.steps.filter((s) => s.ok && !s.idle && s.pending !== true).length,
+    badCount: r.steps.filter((s) => !s.ok && s.pending !== true).length,
+    idleCount: r.steps.filter((s) => s.idle && s.pending !== true).length,
+    pendingCount: r.steps.filter((s) => s.pending === true).length,
     truncated: r.truncated
   };
 }
@@ -6022,11 +6023,18 @@ function drain(step, deps, opts) {
     lastNote = r.note;
     notes.push(r.note);
     opts.onStep?.(r.note, steps);
-    if (!r.ok) {
+    if (!r.ok && r.pending !== true) {
       return { ok: false, idle: false, steps, note: `${opts.label}：第 ${steps} 步失败 —— ${r.note}`, notes };
     }
     if (r.idle || r.skipped) {
-      return { ok: true, idle: true, steps, note: brief(r.note, opts.label), notes };
+      return {
+        ok: true,
+        idle: true,
+        pending: r.pending === true,
+        steps,
+        note: brief(r.note, opts.label),
+        notes
+      };
     }
   }
   return {
