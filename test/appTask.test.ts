@@ -590,20 +590,25 @@ test('动作和复查之间必须有间隔：settle 前不拿旧矩阵判成功/
     [MATRIX_MARKETS[0]!]: [{ taskId: 115, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '点一下' }],
   });
   let t = Date.parse(NOW);
-  const deps = { ...base, settleMs: 5000, nowMs: () => t } as TaskDeps;
+  let spins = 0;
+  const deps = {
+    ...base,
+    settleMs: 5000,
+    nowMs: () => t,
+    spin: () => {
+      spins += 1;
+      t += 1000;
+    },
+  } as TaskDeps;
   startAppTask(deps);
   step(deps);
   const phase = (): string => (JSON.parse(store.getState(STATE_TASK)!) as { phase: string }).phase;
   assert.equal(phase(), 'settle', '动作完必须先进入 settle');
-  const early = runAppTaskStep(deps);
-  assert.equal(early.ok, true, '等待不是失败');
-  assert.equal(early.pending, true, '要明确标成 pending');
-  assert.match(early.note, /等.*确认/);
-  assert.equal(phase(), 'settle', '没到时间不许复查');
-  t += 5001;
-  const late = runAppTaskStep(deps);
-  assert.equal(phase(), 'done', '到点后才复查并收摊');
-  assert.match(late.note, /复查完成/);
+  const out = runAppTaskStep(deps);
+  assert.ok(spins >= 5, `必须等满 5 秒再复查（实际 spin ${spins} 次）`);
+  assert.equal(phase(), 'done', '等完才复查并收摊');
+  assert.match(out.note, /复查完成/);
+  assert.notEqual(out.ok, false, '等待本身不能报失败');
 });
 
 test('⚠ **判据是状态变了，不是 HTTP 200** —— 点了没生效要如实报出来', () => {

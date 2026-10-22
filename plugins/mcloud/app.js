@@ -803,6 +803,7 @@ function stepLine(step) {
   why = why.replace(/（服务端回 \{[^）]*\}）/g, '（服务端确认了）').trim();
   // ⚠ 与后端 `userLine` 同一套：不写"成了/成功/跳过"这种抽象词，
   //   直接把这一步**发生了什么**说出来（用户的原话：「成了是啥啊」）。
+  if (step.pending === true) return `${name}：${why === '' ? '等服务端确认' : why}`;
   if (!step.ok) return `${name}：没成${why === '' ? '' : ` —— ${why}`}`;
   return `${name}：${why === '' ? '好了' : why}`;
 }
@@ -830,7 +831,7 @@ async function toggleRunDetail(box, runId, chip) {
     for (const step of steps) {
       const line = stepLine(step);
       if (line === null) continue; // 管道步骤成了就不提
-      const row = el('li', step.ok ? '' : 'is-bad');
+      const row = el('li', step.pending === true ? 'is-idle' : step.ok ? '' : 'is-bad');
       row.textContent = line;
       box.appendChild(row);
       shown += 1;
@@ -2164,7 +2165,7 @@ async function loadRunDetail(stepsId, id) {
   try {
     const r = await api(`/runs?id=${encodeURIComponent(id)}`);
     for (const s of r.steps || []) {
-      const li = el('li', s.ok ? (s.idle ? 'is-idle' : 'is-ok') : 'is-bad');
+      const li = el('li', s.pending === true ? 'is-idle' : s.ok ? (s.idle ? 'is-idle' : 'is-ok') : 'is-bad');
       const n = el('span', 'step-name');
       n.textContent = s.name;
       const t = el('span', 'step-note');

@@ -248,6 +248,21 @@ export function clickRequest(
  *  ⚠ 这一枪我一开始**整个漏了** —— 少了它，打卡回 200 但状态不变。 */
 /** 打卡之后补访问日志（参考实现 `click_with_key()` 的第二发）。
  *  只发一次；失败也只记明细，不挡后面的动作。 */
+/** 同步等一小会儿。沙箱没有计时器；`spin` 是测试注入的假时钟推进器。 */
+function waitMs(deps: TaskDeps, ms: number): void {
+  if (ms <= 0) return;
+  const end = depsNowMs(deps) + Math.min(ms, 10_000);
+  while (depsNowMs(deps) < end) {
+    if (deps.spin) deps.spin();
+    else {
+      const t0 = Date.now();
+      while (Date.now() - t0 < 2) {
+        /* 忙等 2ms */
+      }
+    }
+  }
+}
+
 function journalOnce(deps: TaskDeps, st: TaskState): { note: string; state: TaskState } {
   if (st.journaled === true) return { note: '', state: st };
   const market = st.data?.marketName ?? 'sign_in_3';
@@ -745,14 +760,9 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
   // ①′ 动作与复查之间必须隔一段时间；到点后**重新拉矩阵**再判。
   if (st.phase === 'settle') {
     const wait = (st.settleAt ?? 0) - depsNowMs(deps);
-    if (wait > 0) {
-      return {
-        ok: true,
-        idle: true,
-        pending: true,
-        note: `动作做完了，等服务端确认（还要 ${Math.ceil(wait / 1000)} 秒）—— 到点后会重新拉矩阵，不是拿动作前的旧读数判`,
-      };
-    }
+    // 真等：动作和复查之间必须有间隔，不能同一瞬间拿旧矩阵下结论。
+    // 面板是同步沙箱，没有 setTimeout，所以这里同步等（有 10 秒硬上限）。
+    waitMs(deps, wait);
     // 生产环境默认 5 秒；测试传 0 时直接用它手里的 mock 矩阵。
     if ((deps.settleMs ?? 5000) > 0) {
       for (let i = 0; i < MATRIX_MARKETS.length; i++) runAppTaskMatrix(deps);

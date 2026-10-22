@@ -1,6 +1,6 @@
 {
   "name": "mcloud-plugin",
-  "version": "0.2.9",
+  "version": "0.2.10",
   "private": true,
   "type": "module",
   "description": "mcloud 的 JS/TS 重写版 —— 可作为面板插件，也可独立运行（替代 mcloud-sign）",
