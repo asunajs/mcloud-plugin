@@ -72,6 +72,50 @@ test('⚠ 源码里（非注释）不许再出现内部黑话', () => {
   assert.deepEqual(hits, [], `这些地方还有黑话：\n${hits.join('\n')}`);
 });
 
+// ── 界面那一侧 ─────────────────────────────────────────────────────────
+//
+// ⚠ 上面那条扫的是 `src/`（后端）。界面是**手写**的静态文件
+//   （`plugins/mcloud/index.html` / `app.js`），不在打包链上，所以一句黑话
+//   能直接印到按钮上 —— 用户看到的就是「自动运行：全部账号（旧版设置）」。
+//
+//   那句话的本意是"这一版还没单独设过、读的是旧键"，属于**实现状态**。
+//   用户读到它只会猜两件事：这设置过期了？还有一份新版设置我没找到？
+//   要说的其实是"这份账号是从你以前的设置沿用过来的"（说人话 + 放在展开
+//   面板里，那儿有地方解释"那时定时和手动共用一份"）。
+
+const UI_BANNED = ['旧版'];
+
+test('⚠ 插件界面里（非注释）也不许出现「旧版」这种仓库里的词', () => {
+  const html = fs
+    .readFileSync('plugins/mcloud/index.html', 'utf8')
+    .replace(/<!--[\s\S]*?-->/g, '');
+  const js = stripComments(fs.readFileSync('plugins/mcloud/app.js', 'utf8'));
+  const hits: string[] = [];
+  for (const [name, text] of [
+    ['plugins/mcloud/index.html', html],
+    ['plugins/mcloud/app.js', js],
+  ] as const) {
+    text.split('\n').forEach((line, i) => {
+      for (const w of UI_BANNED) {
+        if (line.includes(w)) hits.push(`${name}:${i + 1}: 「${w}」 ${line.trim().slice(0, 90)}`);
+      }
+    });
+  }
+  assert.deepEqual(hits, [], `界面文案里还有黑话：\n${hits.join('\n')}`);
+});
+
+test('「这份是沿用的」要说在展开面板里，不在按钮标签上', () => {
+  const html = fs.readFileSync('plugins/mcloud/index.html', 'utf8');
+  const js = fs.readFileSync('plugins/mcloud/app.js', 'utf8');
+  // 两份自动选择器（日常 / 直播）各有一条说明
+  for (const id of ['daily-acct-legacy', 'live-acct-legacy']) {
+    assert.ok(html.includes(`id="${id}"`), `缺 ${id} 那条说明`);
+  }
+  // 按钮标签只由 `pickerLabel` 决定；沿用的说明靠 `hidden` 翻
+  assert.ok(/\$\{cfg\.key\}-acct-legacy/.test(js), '说明节点要由 `renderPicker` 控制显隐');
+  assert.ok(!/acct-label`,?\s*`?\$\{label\}（/.test(js), '按钮标签里不许拼括号说明');
+});
+
 test('⚠ 续期那几句提示是**人话**（且长短合适）', () => {
   // 用户点一次「刷新」，看到的就是这几个字之一。
   const ok = '已续期，还能用 30 天';

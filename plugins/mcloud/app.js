@@ -1609,6 +1609,13 @@ function renderLive(l) {
     bits.push(why === '' ? '现在没在听' : `现在没在听：${why}`);
   }
   setText('live-sub', bits.join(' · ') || '还没有日程 —— 它探到下一场就会自己开始听。');
+  // 听弹幕时长：任务级参数（照 mcloud Rust 的「听弹幕时长」）。
+  // 正在输入时不要被刷新覆盖。
+  const secs = Number(l.listenSeconds ?? (last.settings && last.settings.listenSeconds));
+  const secsBox = $('live-listen-seconds');
+  if (secsBox && document.activeElement !== secsBox) {
+    secsBox.value = Number.isFinite(secs) && secs > 0 ? String(secs) : '';
+  }
   // ⚠ 「领小红花没开」是**全局开关**的状态，不是某个账号跑出来的结果。
   //   口令池那一行已经把它说全了（还带"这里的开关只是允许插件去领"），
   //   再在账号 chip 上重复一次就是同一句话说两遍 —— 而且会让人以为每个号各出了一件事。
@@ -2750,11 +2757,14 @@ function renderPicker(cfg) {
     : ((all && all.auto) || { all: true, ids: [] });
   const accounts = (all && all.accounts) || [];
   const follow = cfg.mode === 'manual' && v.follow === true;
-  const label = pickerLabel({ ...v, accounts }, follow);
-  setText(
-    `${cfg.key}-acct-label`,
-    cfg.mode === 'auto' && all && all.legacyAuto === true ? `${label}（旧版设置）` : label,
-  );
+  // ⚠ 按钮上只说**跑哪些号**，别印内部状态。
+  //   这里以前印的是「全部账号（旧版设置）」——「旧版」是仓库里的说法
+  //   （`legacyAuto` = 这一版还没单独设过、读的是旧键），用户看到它只会猜
+  //   "这设置过期了？"或"还有一份新版设置我没找到"。所以按钮保持干净，
+  //   "这份是从你以前的设置沿用的"挪进展开面板，那儿有地方说清楚。
+  setText(`${cfg.key}-acct-label`, pickerLabel({ ...v, accounts }, follow));
+  const note = $(`${cfg.key}-acct-legacy`);
+  if (note) note.hidden = !(cfg.mode === 'auto' && all && all.legacyAuto === true);
   if (cfg.follow) $(cfg.follow).checked = follow;
   $(cfg.all).checked = follow ? false : v.all === true;
   $(cfg.all).disabled = follow;
@@ -3387,6 +3397,24 @@ $('live-claim').addEventListener('click', (e) =>
 // 同「日常」：这个也是异步触发的任务，要说真话就得等它跑完
 $('live-run').addEventListener('click', (e) => runTaskAndWait('live', e.currentTarget));
 $('live-stop').addEventListener('click', (e) => stopRunning('live', e.currentTarget));
+
+$('live-listen-save').addEventListener('click', (e) =>
+  act(
+    e.currentTarget,
+    async () => {
+      const n = Number($('live-listen-seconds').value);
+      if (!Number.isInteger(n) || n < 5 || n > 1800) {
+        throw new Error('听弹幕时长要给 5–1800 之间的整数（秒）');
+      }
+      return api('/live/listen-seconds', {
+        method: 'POST',
+        write: true,
+        body: { seconds: n },
+      });
+    },
+    (r) => r.note || `听弹幕时长已设为 ${r.listenSeconds} 秒`,
+  ),
+);
 
 // ⚠ 「设置」那一页的保存按钮（`cfg-save`）与「跑自检」（`selftest-run`）跟着那一页
 //   一起删了。自检那条**路由**还在（`/selftest`，e2e 与 `scripts/split_check.py`

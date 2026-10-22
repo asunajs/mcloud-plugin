@@ -119,6 +119,9 @@ export const BASE_VIDEO_IM_WS = 'wss://videoim.cmcc-cs.cn:20102';
 
 /** 默认监听窗口（秒）。窗口到点就断开、把状态归零；下一次触发重新走一遍门。 */
 export const DEFAULT_LISTEN_SECONDS = 600;
+/** 直播页上「听弹幕时长」的范围（照 mcloud Rust 的 ParamSpec：5–1800 秒）。 */
+export const MIN_TASK_LISTEN_SECONDS = 5;
+export const MAX_TASK_LISTEN_SECONDS = 1800;
 /** 没开播时**默认**过多久再看一次（毫秒）。
  *
  *  ⚠ 它只是**兜底**。有「直播自动定时」的计划时，冷却会睡到那一刻
@@ -420,11 +423,26 @@ export function runLiveListen(deps: ListenDeps): TaskOutcome {
 
 /** 监听窗口（秒）的配置口子 —— 与 `gateBase` 同源：一个 state 键就够。 */
 export const STATE_LISTEN_SECONDS = 'mcloud.live.listen_seconds';
+/** 直播页上的任务级听弹幕时长（全局，所有账号共用）。 */
+export const STATE_LISTEN_SECONDS_TASK = 'mcloud.live.listen_seconds.task';
 
 export function loadListenSeconds(store: Pick<Store, 'getState'>): number {
+  // 直播页设的任务级时长优先；没设才回落到这个账号的旧设置，再回落到默认。
+  const taskRaw = store.getState(STATE_LISTEN_SECONDS_TASK);
+  const task = taskRaw ? Number.parseInt(taskRaw, 10) : Number.NaN;
+  if (Number.isFinite(task) && task >= MIN_TASK_LISTEN_SECONDS) {
+    return Math.min(task, MAX_TASK_LISTEN_SECONDS);
+  }
   const raw = store.getState(STATE_LISTEN_SECONDS);
   const n = raw ? Number.parseInt(raw, 10) : Number.NaN;
   return Number.isFinite(n) && n > 0 ? Math.min(n, 3600) : DEFAULT_LISTEN_SECONDS;
+}
+
+export function saveTaskListenSeconds(store: Store, seconds: number, nowIso: string): number {
+  const n = Math.round(seconds);
+  const clamped = Math.min(MAX_TASK_LISTEN_SECONDS, Math.max(MIN_TASK_LISTEN_SECONDS, n));
+  store.setState(STATE_LISTEN_SECONDS_TASK, String(clamped), nowIso);
+  return clamped;
 }
 
 function persist(deps: ListenDeps, st: ListenState): void {

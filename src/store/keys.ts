@@ -180,6 +180,9 @@ export const KEY_SCOPE: Readonly<Record<string, KeyScope>> = {
   'mcloud.live.listen': 'account',
   'mcloud.live.listen_room': 'account',
   'mcloud.live.listen_seconds': 'account',
+  // 直播页上那个「听弹幕时长」是**任务级**的（所有账号用同一段），
+  // 与账号级诊断口子分开；账号级仍可作为没设任务级时的回落。
+  'mcloud.live.listen_seconds.task': 'global',
   'mcloud.live.url': 'account',
   'mcloud.live.wake_plan': 'account',
   'mcloud.live.ws_base': 'account',

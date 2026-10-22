@@ -123,6 +123,7 @@ import {
   runLiveListen,
   saveImBase,
   saveListenRoom,
+  saveTaskListenSeconds,
   saveWsBase,
   saveWsHeartbeat,
 } from './tasks/liveListen.ts';
@@ -611,6 +612,7 @@ function buildReadings(deps: RouteDeps): Record<string, unknown> {
       url: loadLiveUrl(deps.store),
       pool: readPoolSummary(deps.store, localStamp(nowMs), nowMs),
       gate: readGateReading(deps.store),
+      listenSeconds: loadListenSeconds(deps.store),
       listen: {
         reading: loadListenState(deps.store),
         line: listenReadingLine(loadListenState(deps.store)),
@@ -1746,6 +1748,24 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
           imBase: loadImBase(deps.store) || '(真主机)',
           listenSeconds: loadListenSeconds(deps.store),
         }),
+    },
+    {
+      path: `${base}/listen-seconds`,
+      method: 'POST',
+      handler: (req) => {
+        const body = readBody(req);
+        const n = Number(body.seconds ?? body.listenSeconds);
+        if (!Number.isInteger(n) || n < 5 || n > 1800) {
+          return json(400, { error: '听弹幕时长要给 5..1800 之间的整数（秒）' });
+        }
+        const saved = saveTaskListenSeconds(deps.store, n, deps.now());
+        deps.log(`听弹幕时长改为 ${saved} 秒`);
+        return json(200, {
+          ok: true,
+          listenSeconds: saved,
+          note: `听弹幕时长已设为 ${saved} 秒`,
+        });
+      },
     },
     {
       path: `${base}/config`,
