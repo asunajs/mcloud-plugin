@@ -163,7 +163,11 @@ export type ListenStep =
 
 /** 这个任务**额外**需要宿主的长连接能力（`ws_*`）。
  *  用"交叉类型"而不是往公共 `TaskDeps` 里加字段：这样只有它自己知道这个前提。 */
-export type ListenDeps = TaskDeps & { host: HostWs };
+export type ListenDeps = TaskDeps & {
+  host: HostWs;
+  /** 每读到一条弹幕就回调一次（界面日志用；测试不传）。 */
+  onDanmaku?: (text: string) => void;
+};
 
 export interface ListenState {
   step: ListenStep;
@@ -821,6 +825,10 @@ function listenStep(deps: ListenDeps, st: ListenState, nowMs: number, windowMs: 
     if (actions.texts.length > 0) {
       st.danmakuFrames += 1;
       for (const text of actions.texts) {
+        // 用户要看到“到底听到了什么”，不只是计数。原文照 mcloud-sign 的
+        // `[WS] 弹幕: ...`（只在 debug，不刷 info）。换行折成 \\n，避免一条弹幕
+        // 把日志切碎。
+        deps.onDanmaku?.(text.replace(/\r?\n/g, '\\n').slice(0, 200));
         // ① 上一帧是"口令头"（`复制口令1：`）⇒ 这一帧就是口令内容
         //   （参考实现同一套：`pendingKouling` → 下一帧直接收下）
         if (st.pendingHead === true) {

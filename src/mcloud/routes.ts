@@ -112,7 +112,6 @@ import {
 } from './accounts.ts';
 import {
   BASE_VIDEO_IM_WS,
-  STATE_LISTEN_SECONDS,
   listenReadingLine,
   loadImBase,
   loadListenRoom,
@@ -606,20 +605,28 @@ function buildReadings(deps: RouteDeps): Record<string, unknown> {
       subs: readSubscriptions(deps.store),
       verdictText: VERDICT_TEXT,
     },
-    live: {
-      reading: readLiveReading(deps.store),
-      codes: loadLiveCodes(deps.store),
-      url: loadLiveUrl(deps.store),
+    live: (() => {
+      // ⚠ 直播的「收口令」只用**第一个选中账号**（口令是共享的），所以界面也必须
+      //   读那个号的袋。读当前账号会把「移动」10 月 17 日的旧读数印到今天的卡片上
+      //   —— 实际直播正在 小号 的袋里 active=true，界面却报「没有目标主播的房间」。
+      const first = resolveTaskAccounts(deps.store, '直播', 'auto')[0] ?? '';
+      const liveOne = first === '' ? deps.store : scoped(rawStoreOf(deps.store), first);
+      const liveGate = readGateReading(liveOne);
+      const liveListen = loadListenState(liveOne);
+      return {
+      reading: readLiveReading(liveOne),
+      codes: loadLiveCodes(liveOne),
+      url: loadLiveUrl(liveOne),
       pool: readPoolSummary(deps.store, localStamp(nowMs), nowMs),
-      gate: readGateReading(deps.store),
+      gate: liveGate,
       listenSeconds: loadListenSeconds(deps.store),
       listen: {
-        reading: loadListenState(deps.store),
-        line: listenReadingLine(loadListenState(deps.store)),
+        reading: liveListen,
+        line: listenReadingLine(liveListen),
       },
       recent: recentRuns(deps.store, 'live'),
       auto: (() => {
-        const plan = loadWakePlan(deps.store);
+        const plan = loadWakePlan(liveOne);
         return {
           wakeAt: plan?.wakeAt ?? '',
           wakeInMs: plan === null ? 0 : Math.max(0, plan.wakeAtMs - nowMs),
@@ -644,7 +651,8 @@ function buildReadings(deps: RouteDeps): Record<string, unknown> {
               : r.line,
         };
       })(),
-    },
+      };
+    })(),
     data: {
       hasBigInt: hasBigInt(),
       // ⚠ 矩阵读数按账号存在各自的袋里；`deps.store` 是**默认袋**，
@@ -1911,12 +1919,12 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
 
         if ('listenSeconds' in body) {
           const n = Number.parseInt(String(body.listenSeconds), 10);
-          if (!Number.isFinite(n) || n <= 0 || n > 3600) {
-            return json(400, { error: 'listenSeconds 要给 1..3600 之间的整数（秒）' });
+          if (!Number.isInteger(n) || n < 5 || n > 1800) {
+            return json(400, { error: 'listenSeconds 要给 5..1800 之间的整数（秒）' });
           }
-          deps.store.setState(STATE_LISTEN_SECONDS, String(n), deps.now());
-          deps.log(`听弹幕的窗口改为 ${n} 秒`);
-          out.listenSeconds = String(n);
+          const saved = saveTaskListenSeconds(deps.store, n, deps.now());
+          deps.log(`听弹幕的窗口改为 ${saved} 秒`);
+          out.listenSeconds = String(saved);
         }
 
         if (Object.keys(out).length === 0) {

@@ -1576,11 +1576,28 @@ function renderLive(l) {
 
   // ⚠ 第一行要回答"它现在在干什么"，不是"池子里有几条口令"（用户的原话：
   //   这两件事接不上）。顺序：正在听 > 下一场几点 > 还没探到。
-  const listening = !!(l.listen && l.listen.reading && l.listen.reading.step === 'listen');
+  const lr = (l.listen && l.listen.reading) || null;
+  const listenWindowMs = Math.max(1, Number(l.listenSeconds || 600)) * 1000;
+  // ⚠ 不能只看 `step === 'listen'`：窗口到点后如果没有下一拍来收尾，状态会
+  //   一直停在 listen，界面就会在几小时后仍说「正在听」。用窗口起点 + 时长判活。
+  const listening = !!(
+    lr &&
+    lr.step === 'listen' &&
+    !lr.finishedAt &&
+    Number(lr.windowStartMs || 0) + listenWindowMs > Date.now()
+  );
   const next = shortWhen(pool.nextStart || (l.auto && l.auto.nextStart) || '');
+  const gateNow = l.gate || {};
+  const liveNow = gateNow.active === true;
   setText(
     'live-hero',
-    listening ? `正在听${next ? ` ${next} 那场` : ''}` : next ? `下一场 ${next}` : '还没探到下一场',
+    listening
+      ? `正在听${next ? ` ${next} 那场` : ''}`
+      : liveNow
+        ? `「${String(gateNow.target || '目标主播')}」正在直播`
+        : next
+          ? `下一场 ${next}`
+          : '还没探到下一场',
   );
   // 第二行只回答两件事：**下次什么时候跑**、**现在在不在听（为什么）**。
   //
@@ -1596,7 +1613,7 @@ function renderLive(l) {
   if (listening) {
     bits.push(next ? `正在听 ${next} 那场` : '正在听');
   } else {
-    const g = l.gate || {};
+    const g = gateNow;
     const target = String(g.target || '目标主播');
     const why =
       g.at === undefined || g.at === null
@@ -3406,10 +3423,10 @@ $('live-listen-save').addEventListener('click', (e) =>
       if (!Number.isInteger(n) || n < 5 || n > 1800) {
         throw new Error('听弹幕时长要给 5–1800 之间的整数（秒）');
       }
-      return api('/live/listen-seconds', {
+      return api('/config', {
         method: 'POST',
         write: true,
-        body: { seconds: n },
+        body: { listenSeconds: n },
       });
     },
     (r) => r.note || `听弹幕时长已设为 ${r.listenSeconds} 秒`,
