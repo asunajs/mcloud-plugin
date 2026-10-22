@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.12 · 插件 `mcloud-live`
+//   mcloud-plugin 0.2.13 · 插件 `mcloud-live`
 
 // src/entries/live.ts
 import { debug as debug2, register_cron } from "host-api";
@@ -4376,12 +4376,25 @@ function collectOnce(deps, runStartMs) {
   }
   let frames = 0;
   let listenNote = "";
+  let listenPushed = false;
   const ld = listenDeps(deps);
   const listenDeadline = runStartMs + BUDGET_MS - 2e4;
   while (Date.now() < listenDeadline) {
-    const r = step("听弹幕", () => runLiveListen(ld));
+    let r;
+    try {
+      r = runLiveListen(ld);
+    } catch (e) {
+      const note2 = `抛异常 ${e instanceof Error ? e.message : String(e)}`;
+      steps.push({ name: "听弹幕", ok: false, note: note2, idle: false });
+      listenPushed = true;
+      break;
+    }
     listenNote = r.note;
-    if (!r.ok || r.idle) break;
+    if (!r.ok || r.idle) {
+      steps.push({ name: "听弹幕", ok: r.ok, note: r.note, idle: r.idle === true });
+      listenPushed = true;
+      break;
+    }
     frames++;
     if (frames === 1 || frames % 5 === 0) {
       logBoth(
@@ -4393,11 +4406,15 @@ function collectOnce(deps, runStartMs) {
     }
     if (frames > 60) break;
   }
-  if (frames > 0) {
+  if (frames > 0 && !listenPushed) {
     steps.push({ name: "听弹幕", ok: true, note: listenNote || `听了 ${frames} 轮`, idle: false });
   }
   const after = loadPoolFrom(deps.store).pool;
-  return done(true, `池里现在有 ${validCount(after)} 条能用的口令`);
+  const valid = validCount(after);
+  if (valid === 0) {
+    return done(false, `没捡到能用的口令（听了 ${frames} 拍）`, true);
+  }
+  return done(true, `池里现在有 ${valid} 条能用的口令`);
 }
 function drawOnce(deps, runStartMs) {
   const r = drain(runLiveDraw, deps, {
@@ -4406,7 +4423,7 @@ function drawOnce(deps, runStartMs) {
     deadlineMs: Math.max(15e3, runStartMs + BUDGET_MS - Date.now() - 3e3),
     startedAt: runStartMs
   });
-  const steps = [{ name: "领小红花", ok: r.ok, note: r.note, idle: false }];
+  const steps = [{ name: "领小红花", ok: r.ok, note: r.note, idle: r.idle === true, pending: r.pending === true }];
   return {
     steps,
     detail: steps.map((s) => userLine(s)).filter((x) => x !== null),
@@ -4439,7 +4456,7 @@ register_cron(
     const c = collected;
     const capOnly = c !== null && c.steps.length === 1 && !c.ok && c.steps[0]?.name === "这个面板能不能直播";
     if (c !== null && c.stopped) {
-      const reason = c.steps[0]?.note ?? c.note;
+      const reason = c.note;
       if (capOnly) {
         logBoth(store, "error", c.detail[0] ?? c.note, at);
       } else {
@@ -4451,8 +4468,8 @@ register_cron(
         scheduledAt: p.scheduledAt,
         firedAt: p.firedAt,
         lateMs: p.lateMs,
-        ok: !capOnly,
-        note: capOnly ? c.note : `直播没开始，跳过 ${runs.length} 个账号`
+        ok: c.ok && !capOnly,
+        note: c.note
       });
       setTaskBlockers("直播", blockersFor(store, "直播"));
       setTaskSummary("直播", summaryFor(store, "直播"));
@@ -4472,7 +4489,7 @@ register_cron(
           logBoth(store, lineLevel(shown), shown, at);
         }
         const cBad = c.steps.filter((x) => !x.ok).length;
-        logBoth(store, cBad > 0 ? "warn" : "success", `口令：${c.note}`, at);
+        logBoth(store, !c.ok || cBad > 0 ? "warn" : "success", `口令：${c.note}`, at);
       }
     }
     logBoth(store, "start", `直播 · ${runs.length} 个账号`, at);
@@ -4523,14 +4540,18 @@ register_cron(
         );
       }
       const { bad, hard } = stepTally(r.steps);
-      const tail = bad === 0 ? "都成了" : hard === 0 ? `${bad} 项跳过（没有网页会话）` : `${hard} 项没成${bad > hard ? `、${bad - hard} 项跳过` : ""}`;
+      const allIdle = r.steps.length > 0 && r.steps.every((s) => s.idle === true);
+      const tail = bad === 0 ? allIdle ? `跳过：${r.steps[0]?.note ?? "这一步没做"}` : "都成了" : hard === 0 ? `${bad} 项跳过（没有网页会话）` : `${hard} 项没成${bad > hard ? `、${bad - hard} 项跳过` : ""}`;
       logBoth(store, hard > 0 ? "warn" : "debug", `${tag} ${tail}`, at);
     }
     const okCount = runs.filter((x) => x.result.ok).length;
+    const idleAll = runs.length > 0 && runs.every(
+      (x) => x.result.ok && x.result.steps.length > 0 && x.result.steps.every((s) => s.idle === true)
+    );
     logBoth(
       store,
-      okCount === runs.length ? "success" : "warn",
-      `直播完成：${okCount}/${runs.length} 个账号好了`,
+      okCount === runs.length && !idleAll ? "success" : "warn",
+      idleAll ? `直播：${runs.length} 个账号都没领 —— ${runs[0]?.result.note ?? ""}` : `直播完成：${okCount}/${runs.length} 个账号好了`,
       at
     );
     setTaskBlockers("直播", blockersFor(store, "直播"));
