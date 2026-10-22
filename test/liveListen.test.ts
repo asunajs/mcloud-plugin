@@ -397,7 +397,12 @@ test('弹幕帧 ⇒ 文本解出来、**口令进池且来源是 `danmaku`**、�
   const f = fakeHost(['o', provisionAckFrame(), danmakuFrame('小红花口令：一键9图出圈')]);
   advanceToListen(store, up.transport, f.host);
   // 再推一拍：弹幕在这一拍里被读到
-  const out = runLiveListen(deps(store, up.transport, f.host));
+  const seen: string[] = [];
+  const out = runLiveListen({
+    ...deps(store, up.transport, f.host),
+    onDanmaku: (t) => seen.push(t),
+  });
+  assert.deepEqual(seen, ['小红花口令：一键9图出圈'], '界面要能拿到弹幕原文');
 
   const { pool } = loadPoolFrom(store);
   const code = pool.codes.find((c) => c.value === '一键9图出圈');

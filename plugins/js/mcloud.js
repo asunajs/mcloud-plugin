@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.13 · 插件 `mcloud`
+//   mcloud-plugin 0.2.14 · 插件 `mcloud`
 
 // src/entries/mcloud.ts
 import {
@@ -8815,6 +8815,7 @@ function listenStep(deps, st, nowMs, windowMs) {
     if (actions.texts.length > 0) {
       st.danmakuFrames += 1;
       for (const text of actions.texts) {
+        deps.onDanmaku?.(text.replace(/\r?\n/g, "\\n").slice(0, 200));
         if (st.pendingHead === true) {
           const t = text.trim();
           if (t !== "" && !isKoulingHead(t) && !isKoulingMarker(t)) {
@@ -10670,40 +10671,46 @@ function buildReadings(deps) {
       subs: readSubscriptions(deps.store),
       verdictText: VERDICT_TEXT
     },
-    live: {
-      reading: readLiveReading(deps.store),
-      codes: loadLiveCodes(deps.store),
-      url: loadLiveUrl(deps.store),
-      pool: readPoolSummary(deps.store, localStamp(nowMs), nowMs),
-      gate: readGateReading(deps.store),
-      listenSeconds: loadListenSeconds(deps.store),
-      listen: {
-        reading: loadListenState(deps.store),
-        line: listenReadingLine(loadListenState(deps.store))
-      },
-      recent: recentRuns(deps.store, "live"),
-      auto: (() => {
-        const plan = loadWakePlan(deps.store);
-        return {
-          wakeAt: plan?.wakeAt ?? "",
-          wakeInMs: plan === null ? 0 : Math.max(0, plan.wakeAtMs - nowMs)
-        };
-      })(),
-      // 领小红花的**结论**（四栏 + 进账）。界面第一行显示的就是 `line`。
-      // ⚠ 「本场已结束」与「口令无效」分栏的理由见 liveDraw.drawReport 的注释 ——
-      //   分错的后果是用户去重抄一条本来就对的口令。
-      draw: (() => {
-        const st = loadDrawState(deps.store);
-        const r = drawReport(st);
-        return {
-          enabled: claimEnabled(deps.store),
-          step: st?.step ?? "",
-          report: r,
-          // 这个开关只是"允许插件去领"；功能本身要服务端那边开（用户口径 2026-10-17）
-          line: r === null ? claimEnabled(deps.store) ? "还没领过" : "领小红花没开 —— 要先在服务端那边开启（这里的开关只是允许插件去领）" : r.line
-        };
-      })()
-    },
+    live: (() => {
+      const first = resolveTaskAccounts(deps.store, "直播", "auto")[0] ?? "";
+      const liveOne = first === "" ? deps.store : scoped(rawStoreOf(deps.store), first);
+      const liveGate = readGateReading(liveOne);
+      const liveListen = loadListenState(liveOne);
+      return {
+        reading: readLiveReading(liveOne),
+        codes: loadLiveCodes(liveOne),
+        url: loadLiveUrl(liveOne),
+        pool: readPoolSummary(deps.store, localStamp(nowMs), nowMs),
+        gate: liveGate,
+        listenSeconds: loadListenSeconds(deps.store),
+        listen: {
+          reading: liveListen,
+          line: listenReadingLine(liveListen)
+        },
+        recent: recentRuns(deps.store, "live"),
+        auto: (() => {
+          const plan = loadWakePlan(liveOne);
+          return {
+            wakeAt: plan?.wakeAt ?? "",
+            wakeInMs: plan === null ? 0 : Math.max(0, plan.wakeAtMs - nowMs)
+          };
+        })(),
+        // 领小红花的**结论**（四栏 + 进账）。界面第一行显示的就是 `line`。
+        // ⚠ 「本场已结束」与「口令无效」分栏的理由见 liveDraw.drawReport 的注释 ——
+        //   分错的后果是用户去重抄一条本来就对的口令。
+        draw: (() => {
+          const st = loadDrawState(deps.store);
+          const r = drawReport(st);
+          return {
+            enabled: claimEnabled(deps.store),
+            step: st?.step ?? "",
+            report: r,
+            // 这个开关只是"允许插件去领"；功能本身要服务端那边开（用户口径 2026-10-17）
+            line: r === null ? claimEnabled(deps.store) ? "还没领过" : "领小红花没开 —— 要先在服务端那边开启（这里的开关只是允许插件去领）" : r.line
+          };
+        })()
+      };
+    })(),
     data: {
       hasBigInt: hasBigInt(),
       // ⚠ 矩阵读数按账号存在各自的袋里；`deps.store` 是**默认袋**，
@@ -11689,12 +11696,12 @@ function mcloudRoutes(deps) {
         }
         if ("listenSeconds" in body) {
           const n = Number.parseInt(String(body.listenSeconds), 10);
-          if (!Number.isFinite(n) || n <= 0 || n > 3600) {
-            return json(400, { error: "listenSeconds 要给 1..3600 之间的整数（秒）" });
+          if (!Number.isInteger(n) || n < 5 || n > 1800) {
+            return json(400, { error: "listenSeconds 要给 5..1800 之间的整数（秒）" });
           }
-          deps.store.setState(STATE_LISTEN_SECONDS, String(n), deps.now());
-          deps.log(`听弹幕的窗口改为 ${n} 秒`);
-          out.listenSeconds = String(n);
+          const saved = saveTaskListenSeconds(deps.store, n, deps.now());
+          deps.log(`听弹幕的窗口改为 ${saved} 秒`);
+          out.listenSeconds = String(saved);
         }
         if (Object.keys(out).length === 0) {
           return json(400, {

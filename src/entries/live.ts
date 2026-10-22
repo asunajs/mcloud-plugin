@@ -51,7 +51,7 @@ import { readGateReading, runLiveGate } from '../mcloud/tasks/liveGateTask.ts';
 import { KOULING_ANCHOR, loadPoolFrom, stopScraping, validCount } from '../mcloud/koulingPool.ts';
 import { loadListenSeconds, runLiveListen } from '../mcloud/tasks/liveListen.ts';
 import type { ListenDeps } from '../mcloud/tasks/liveListen.ts';
-import { runLiveRoom } from '../mcloud/tasks/liveRoom.ts';
+import { loadLiveCodes, runLiveRoom } from '../mcloud/tasks/liveRoom.ts';
 import type { TaskDeps, TaskOutcome } from '../mcloud/tasks/base.ts';
 import { capNote, hostNativeTls } from '../mcloud/hostCap.ts';
 import {
@@ -77,7 +77,13 @@ const host = makeHost();
 const BUDGET_MS = 300_000;
 
 function listenDeps(deps: TaskDeps): ListenDeps {
-  return { ...deps, host };
+  return {
+    ...deps,
+    host,
+    // 照 mcloud-sign：`[WS] 弹幕: ...` 只放 debug —— 用户能看到听到了什么，
+    // 又不至于把正常日志刷成 info。
+    onDanmaku: (text) => logBoth(store, 'debug', `弹幕：${text}`, new Date().toISOString()),
+  };
 }
 
 /** 一趟直播。 */
@@ -269,7 +275,11 @@ register_cron(
     //   不能按账号分：分着跑就是 3 倍请求、3 倍时间，还会重复撞同一批弹幕。
     // ⚠ **手里有口令（人贴的）就不收** —— 省两个请求，且避免门偶发失败把一趟
     //   本来能跑完的领取拖黄（参考实现 `task-inventory.md:354`）。
-    const manual = collectCodes(store, startedMs).length > 0;
+    // ⚠ 只看**人贴的** `mcloud.live.codes`，不能看 `collectCodes()`：后者会把池里
+    //   上一轮听到的候选也算进来，于是自动任务永远走“手动领取”，跳过开播检查
+    //   和听弹幕 —— 2026-10-22 现场：池里一条未验证的「AI模拟练面试」让直播正在
+    //   进行时都没去听。
+    const manual = (loadLiveCodes(store)?.codes ?? []).some((c) => c.trim() !== '');
     let collected: { steps: RunStep[]; detail: string[]; ok: boolean; note: string; stopped: boolean } | null =
       null;
     // 第一段（收口令）说“别领”时，后面的账号**一个请求都不发**：
