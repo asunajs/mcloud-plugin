@@ -632,6 +632,9 @@ function buildReadings(deps: RouteDeps): Record<string, unknown> {
           wakeInMs: plan === null ? 0 : Math.max(0, plan.wakeAtMs - nowMs),
         };
       })(),
+      // 写那半的本地闸门（默认关）。界面要能看见并打开它，否则永远只会说
+      // 「领小红花没开」，而用户找不到开关。
+      claim: { enabled: claimEnabled(deps.store) },
       // 领小红花的**结论**（四栏 + 进账）。界面第一行显示的就是 `line`。
       // ⚠ 「本场已结束」与「口令无效」分栏的理由见 liveDraw.drawReport 的注释 ——
       //   分错的后果是用户去重抄一条本来就对的口令。

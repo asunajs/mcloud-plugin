@@ -46,7 +46,7 @@ import { appendRun, type RunStep } from '../mcloud/runLog.ts';
 import { labelOf, shortLabel } from '../mcloud/taskAccounts.ts';
 import { logBoth } from '../mcloud/log.ts';
 import { lineLevel, lineText, onceHint, stepTally, userLine } from '../mcloud/tasks/stepLog.ts';
-import { collectCodes, runLiveDraw } from '../mcloud/tasks/liveDraw.ts';
+import { collectCodes, loadDrawState, runLiveDraw } from '../mcloud/tasks/liveDraw.ts';
 import { readGateReading, runLiveGate } from '../mcloud/tasks/liveGateTask.ts';
 import { KOULING_ANCHOR, loadPoolFrom, stopScraping, validCount } from '../mcloud/koulingPool.ts';
 import { loadListenSeconds, runLiveListen } from '../mcloud/tasks/liveListen.ts';
@@ -74,7 +74,7 @@ const host = makeHost();
 
 /** 听窗口预算。一天只来两次（10:30 / 15:30），所以每次听久一点：
  *  5 分钟。面板对预算的上限是 10 分钟（`MAX_DECLARED_BUDGET_MS`）。 */
-const BUDGET_MS = 300_000;
+const BUDGET_MS = 600_000;
 
 function listenDeps(deps: TaskDeps): ListenDeps {
   return {
@@ -194,7 +194,11 @@ function collectOnce(
   let listenNote = '';
   let listenPushed = false;
   const ld = listenDeps(deps);
-  const listenDeadline = runStartMs + BUDGET_MS - 20_000;
+  // 听满用户设的窗口（默认 600 秒），但给后面的领取留 20 秒。
+  // ⚠ 原来还有一道 `frames > 60`（约 100 秒）的硬上限，会把 600 秒设置
+  //   悄悄截成 100 秒 —— 主播过一会儿才发口令时，就永远等不到。
+  const listenDeadline =
+    runStartMs + Math.min(loadListenSeconds(deps.store) * 1000, BUDGET_MS - 20_000);
   while (Date.now() < listenDeadline) {
     // ⚠ 这里**不能**用 `step()`：它每拍都往 `steps` 里塞一条，30 拍就是 30 行
     //   「听弹幕：正在听…」——用户看到的是刷屏，不是进度。只在收尾时落一条。
@@ -224,17 +228,25 @@ function collectOnce(
         deps.nowIso,
       );
     }
-    if (frames > 60) break;
   }
   if (frames > 0 && !listenPushed) {
     steps.push({ name: '听弹幕', ok: true, note: listenNote || `听了 ${frames} 轮`, idle: false });
   }
   const after = loadPoolFrom(deps.store).pool;
   const valid = validCount(after);
-  if (valid === 0) {
+  // ⚠ 未知 ≠ 无效：池里的 unknown 就是“抓到了但还没验过”，验证的唯一途径
+  //   就是拿去领（mcloud-sign 也是这么做）。只要还有非无效候选，就该继续；
+  //   否则会把刚听到的口令永远晾在池里。
+  const candidates = after.codes.filter((c) => c.state !== 'invalid');
+  if (candidates.length === 0) {
     return done(false, `没捡到能用的口令（听了 ${frames} 拍）`, true);
   }
-  return done(true, `池里现在有 ${valid} 条能用的口令`);
+  return done(
+    true,
+    valid > 0
+      ? `池里现在有 ${valid} 条已验证的口令`
+      : `池里现在有 ${candidates.length} 条待验证口令（拿去领就会验）`,
+  );
 }
 
 /** 每个账号：拿**共享池**里的口令去领。
@@ -251,12 +263,21 @@ function drawOnce(
     deadlineMs: Math.max(15_000, runStartMs + BUDGET_MS - Date.now() - 3_000),
     startedAt: runStartMs,
   });
-  const steps: RunStep[] = [{ name: '领小红花', ok: r.ok, note: r.note, idle: r.idle === true, pending: r.pending === true }];
+  // `drain` 的 `brief` 对超长 note 会退成「领小红花：好了」，用户根本不知道
+  // 领没领到。这里直接读本轮落盘的 summary（`3 条领到 2 条，进账 10 朵`）。
+  const st = loadDrawState(deps.store);
+  const finalNote = st?.step === 'done' && st.summary ? st.summary : r.note;
+  // `drain` 收尾时 `idle` 常为 true（状态机“走完”），不能拿它当“没领”。
+  // 只有明确说没开/跳过才算 idle；领到/好了是实打实的结果。
+  const noClaim = /没开|跳过|没有可|不用领|无需/.test(finalNote);
+  const steps: RunStep[] = [
+    { name: '领小红花', ok: r.ok, note: finalNote, idle: r.idle === true && noClaim, pending: r.pending === true },
+  ];
   return {
     steps,
     detail: steps.map((s) => userLine(s)).filter((x): x is string => x !== null),
     ok: r.ok,
-    note: r.note,
+    note: finalNote,
   };
 }
 

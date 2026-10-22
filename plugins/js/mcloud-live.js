@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.14 · 插件 `mcloud-live`
+//   mcloud-plugin 0.2.15 · 插件 `mcloud-live`
 
 // src/entries/live.ts
 import { debug as debug2, register_cron } from "host-api";
@@ -2333,7 +2333,6 @@ function parseJson(raw) {
 
 // src/mcloud/tasks/liveDraw.ts
 var STATE_DRAW = "mcloud.live.draw";
-var STATE_CLAIM_ENABLED = "mcloud.live.claim_enabled";
 function collectCodes(store2, nowMs = Date.now()) {
   const human = loadLiveCodes(store2)?.codes ?? [];
   const { pool } = loadFreshPool(store2, nowMs);
@@ -2348,9 +2347,6 @@ function loadDrawState(store2) {
   } catch {
     return null;
   }
-}
-function claimEnabled(store2) {
-  return store2.getState(STATE_CLAIM_ENABLED) === "1";
 }
 function stepRequest(s, base) {
   switch (s.step) {
@@ -2381,9 +2377,7 @@ function stepRequest(s, base) {
 }
 function runLiveDraw(deps, opts = {}) {
   const TASK = "live-room";
-  if (!opts.force && !claimEnabled(deps.store)) {
-    return { ok: true, idle: true, note: "领小红花没开（要先在服务端那边开启）" };
-  }
+  void opts;
   let s = loadDrawState(deps.store);
   const codes = collectCodes(deps.store, Date.parse(deps.nowIso));
   if (!s || s.step === "done") {
@@ -4306,7 +4300,7 @@ function taskDeps(store2, transport2, payload) {
 var store = makeStore();
 var transport = makeTransport(LONG_REQUEST_TIMEOUT_MS);
 var host = makeHost();
-var BUDGET_MS = 3e5;
+var BUDGET_MS = 6e5;
 function listenDeps(deps) {
   return {
     ...deps,
@@ -4385,7 +4379,7 @@ function collectOnce(deps, runStartMs) {
   let listenNote = "";
   let listenPushed = false;
   const ld = listenDeps(deps);
-  const listenDeadline = runStartMs + BUDGET_MS - 2e4;
+  const listenDeadline = runStartMs + Math.min(loadListenSeconds(deps.store) * 1e3, BUDGET_MS - 2e4);
   while (Date.now() < listenDeadline) {
     let r;
     try {
@@ -4411,17 +4405,20 @@ function collectOnce(deps, runStartMs) {
         deps.nowIso
       );
     }
-    if (frames > 60) break;
   }
   if (frames > 0 && !listenPushed) {
     steps.push({ name: "听弹幕", ok: true, note: listenNote || `听了 ${frames} 轮`, idle: false });
   }
   const after = loadPoolFrom(deps.store).pool;
   const valid = validCount(after);
-  if (valid === 0) {
+  const candidates = after.codes.filter((c) => c.state !== "invalid");
+  if (candidates.length === 0) {
     return done(false, `没捡到能用的口令（听了 ${frames} 拍）`, true);
   }
-  return done(true, `池里现在有 ${valid} 条能用的口令`);
+  return done(
+    true,
+    valid > 0 ? `池里现在有 ${valid} 条已验证的口令` : `池里现在有 ${candidates.length} 条待验证口令（拿去领就会验）`
+  );
 }
 function drawOnce(deps, runStartMs) {
   const r = drain(runLiveDraw, deps, {
@@ -4430,12 +4427,17 @@ function drawOnce(deps, runStartMs) {
     deadlineMs: Math.max(15e3, runStartMs + BUDGET_MS - Date.now() - 3e3),
     startedAt: runStartMs
   });
-  const steps = [{ name: "领小红花", ok: r.ok, note: r.note, idle: r.idle === true, pending: r.pending === true }];
+  const st = loadDrawState(deps.store);
+  const finalNote = st?.step === "done" && st.summary ? st.summary : r.note;
+  const noClaim = /没开|跳过|没有可|不用领|无需/.test(finalNote);
+  const steps = [
+    { name: "领小红花", ok: r.ok, note: finalNote, idle: r.idle === true && noClaim, pending: r.pending === true }
+  ];
   return {
     steps,
     detail: steps.map((s) => userLine(s)).filter((x) => x !== null),
     ok: r.ok,
-    note: r.note
+    note: finalNote
   };
 }
 register_cron(

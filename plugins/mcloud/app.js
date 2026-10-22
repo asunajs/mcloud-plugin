@@ -1660,16 +1660,6 @@ function renderLive(l) {
   } else {
     setText('live-pool-line', `${poolHead} · ${draw.line || pool.line || pool.note || ''}`);
   }
-  // 用户口径（2026-10-17）：「领小红花需要服务端开启才能用」——
-  // 这里那个开关只是**允许插件去领**，功能本身得服务端那边开。
-  if (l.claim && l.claim.enabled === false) {
-    const cur = $('live-pool-line');
-    if (cur && !/服务端/.test(cur.textContent || '')) {
-      cur.textContent = `领小红花没开 —— 要先在服务端那边开启（这里的开关只是允许插件去领）。${
-        cur.textContent || ''
-      }`;
-    }
-  }
   paintList(
     'live-codes',
     codes.map((c) => [
@@ -3401,11 +3391,13 @@ $('live-claim').addEventListener('click', (e) =>
       const raw = $('live-paste').value.trim();
       if (!raw) throw new Error('先把口令贴进来');
       await api('/live/codes', { method: 'POST', write: true, body: { codes: raw } });
-      $('live-paste').value = '';
       const t0 = Date.now();
       await runTask('live');
       toast('口令收下了 —— 它正在领');
       await waitRun('mcloud-live', '直播', t0, null);
+      // 跑完再清**保存的**口令；输入框留着，用户能看到自己贴了什么。
+      // 保存的旧口令不清会让下一次自动运行误判成“手动领取”。
+      await api('/live/codes', { method: 'POST', write: true, body: { clear: true } });
       return null;
     },
     '这一轮领完了 —— 结果看下面的日志',
