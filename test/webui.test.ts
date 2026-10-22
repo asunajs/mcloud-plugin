@@ -979,6 +979,14 @@ test('直播页能设听弹幕时长（照 mcloud Rust 的 5–1800 秒）', () 
   assert.ok(/听弹幕中/.test(srcOf('src/entries/live.ts')), '长连接期间要打进度，不能 70 秒零日志');
 });
 
+test('直播日志不刷屏：听弹幕每拍不落一条，零口令不报成功', () => {
+  const live = srcOf('src/entries/live.ts');
+  assert.ok(!/while \(Date\.now\(\) < listenDeadline\)[\s\S]{0,300}step\('听弹幕'/.test(live), '循环里不能每拍 push 一条步骤');
+  assert.ok(/listenPushed/.test(live), '听完只落一条结论');
+  assert.ok(/没捡到能用的口令/.test(live), '零口令要如实说');
+  assert.ok(/跳过：/.test(live), '全都没领时不能写成都成了');
+});
+
 test('⚠ 听弹幕那行只说人关心的：几条弹幕、几条口令', () => {
   const src = srcOf('src/mcloud/tasks/liveListen.ts');
   assert.ok(/收到 \$\{st\.danmakuFrames\} 条弹幕/.test(src), '要报弹幕数');

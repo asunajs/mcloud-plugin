@@ -186,12 +186,27 @@ function collectOnce(
 
   let frames = 0;
   let listenNote = '';
+  let listenPushed = false;
   const ld = listenDeps(deps);
   const listenDeadline = runStartMs + BUDGET_MS - 20_000;
   while (Date.now() < listenDeadline) {
-    const r = step('听弹幕', () => runLiveListen(ld));
+    // ⚠ 这里**不能**用 `step()`：它每拍都往 `steps` 里塞一条，30 拍就是 30 行
+    //   「听弹幕：正在听…」——用户看到的是刷屏，不是进度。只在收尾时落一条。
+    let r: TaskOutcome;
+    try {
+      r = runLiveListen(ld);
+    } catch (e) {
+      const note = `抛异常 ${e instanceof Error ? e.message : String(e)}`;
+      steps.push({ name: '听弹幕', ok: false, note, idle: false });
+      listenPushed = true;
+      break;
+    }
     listenNote = r.note;
-    if (!r.ok || r.idle) break;
+    if (!r.ok || r.idle) {
+      steps.push({ name: '听弹幕', ok: r.ok, note: r.note, idle: r.idle === true });
+      listenPushed = true;
+      break;
+    }
     frames++;
     // 长连接是同步循环，不在这里打点的话界面上整段时间一行日志都没有 ——
     // 用户只能看到一个「跑着呢 70s」，以为卡死了。每 5 拍报一次进度。
@@ -205,11 +220,15 @@ function collectOnce(
     }
     if (frames > 60) break;
   }
-  if (frames > 0) {
+  if (frames > 0 && !listenPushed) {
     steps.push({ name: '听弹幕', ok: true, note: listenNote || `听了 ${frames} 轮`, idle: false });
   }
   const after = loadPoolFrom(deps.store).pool;
-  return done(true, `池里现在有 ${validCount(after)} 条能用的口令`);
+  const valid = validCount(after);
+  if (valid === 0) {
+    return done(false, `没捡到能用的口令（听了 ${frames} 拍）`, true);
+  }
+  return done(true, `池里现在有 ${valid} 条能用的口令`);
 }
 
 /** 每个账号：拿**共享池**里的口令去领。
@@ -226,7 +245,7 @@ function drawOnce(
     deadlineMs: Math.max(15_000, runStartMs + BUDGET_MS - Date.now() - 3_000),
     startedAt: runStartMs,
   });
-  const steps: RunStep[] = [{ name: '领小红花', ok: r.ok, note: r.note, idle: false }];
+  const steps: RunStep[] = [{ name: '领小红花', ok: r.ok, note: r.note, idle: r.idle === true, pending: r.pending === true }];
   return {
     steps,
     detail: steps.map((s) => userLine(s)).filter((x): x is string => x !== null),
@@ -276,7 +295,7 @@ register_cron(
     // 没开播（或面板根本不支持直播）⇒ **整趟到此为止**。
     // 用户的原话：「实际上是因为直播未开始，所以跳过就好了，结果她每个账号都输出」。
     if (c !== null && c.stopped) {
-      const reason = c.steps[0]?.note ?? c.note;
+      const reason = c.note;
       if (capOnly) {
         logBoth(store, 'error', c.detail[0] ?? c.note, at);
       } else {
@@ -288,8 +307,8 @@ register_cron(
         scheduledAt: p.scheduledAt,
         firedAt: p.firedAt,
         lateMs: p.lateMs,
-        ok: !capOnly,
-        note: capOnly ? c.note : `直播没开始，跳过 ${runs.length} 个账号`,
+        ok: c.ok && !capOnly,
+        note: c.note,
       });
       setTaskBlockers('直播', blockersFor(store, '直播'));
       setTaskSummary('直播', summaryFor(store, '直播'));
@@ -312,7 +331,7 @@ register_cron(
           logBoth(store, lineLevel(shown), shown, at);
         }
         const cBad = c.steps.filter((x) => !x.ok).length;
-        logBoth(store, cBad > 0 ? 'warn' : 'success', `口令：${c.note}`, at);
+        logBoth(store, !c.ok || cBad > 0 ? 'warn' : 'success', `口令：${c.note}`, at);
       }
     }
 
@@ -370,9 +389,12 @@ register_cron(
         );
       }
       const { bad, hard } = stepTally(r.steps);
+      const allIdle = r.steps.length > 0 && r.steps.every((s) => s.idle === true);
       const tail =
         bad === 0
-          ? '都成了'
+          ? allIdle
+            ? `跳过：${r.steps[0]?.note ?? '这一步没做'}`
+            : '都成了'
           : hard === 0
             ? `${bad} 项跳过（没有网页会话）`
             : `${hard} 项没成${bad > hard ? `、${bad - hard} 项跳过` : ''}`;
@@ -380,10 +402,17 @@ register_cron(
     }
 
     const okCount = runs.filter((x) => x.result.ok).length;
+    const idleAll =
+      runs.length > 0 &&
+      runs.every(
+        (x) => x.result.ok && x.result.steps.length > 0 && x.result.steps.every((s) => s.idle === true),
+      );
     logBoth(
       store,
-      okCount === runs.length ? 'success' : 'warn',
-      `直播完成：${okCount}/${runs.length} 个账号好了`,
+      okCount === runs.length && !idleAll ? 'success' : 'warn',
+      idleAll
+        ? `直播：${runs.length} 个账号都没领 —— ${runs[0]?.result.note ?? ''}`
+        : `直播完成：${okCount}/${runs.length} 个账号好了`,
       at,
     );
 
