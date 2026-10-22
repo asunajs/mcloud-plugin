@@ -155,12 +155,13 @@ export function loadDrawState(store: Pick<Store, 'getState'>): DrawState | null 
   }
 }
 
-export function claimEnabled(store: Pick<Store, 'getState'>): boolean {
-  return store.getState(STATE_CLAIM_ENABLED) === '1';
+export function claimEnabled(_store: Pick<Store, 'getState'>): boolean {
+  // 领取没有本地限制：有口令就领。保留函数只是兼容旧读数/路由。
+  return true;
 }
 
-export function setClaimEnabled(store: Store, on: boolean, nowIso: string): void {
-  store.setState(STATE_CLAIM_ENABLED, on ? '1' : '0', nowIso);
+export function setClaimEnabled(_store: Store, _on: boolean, _nowIso: string): void {
+  // 旧的开关已废弃；保留空实现，避免旧面板调用报错。
 }
 
 /** **只读探针**：发一枪 `user/info`，回答"这一族能不能通"。
@@ -235,11 +236,10 @@ export function stepRequest(
 export function runLiveDraw(deps: TaskDeps, opts: { force?: boolean } = {}): TaskOutcome {
   const TASK = 'live-room';
 
-  if (!opts.force && !claimEnabled(deps.store)) {
-    // 关着的时候**一个请求都不发**，而且不写失败 —— 这不是错误状态
-    // 这个开关只是允许插件去领；功能本身要服务端那边开
-    return { ok: true, idle: true, note: '领小红花没开（要先在服务端那边开启）' };
-  }
+  // 不再做本地领取限制：有口令就去领。
+  // 只有上游明确回“没开/没资格”时，才由上游的结果说话。
+  // `opts.force` 保留给旧调用方，语义已无差别。
+  void opts;
 
   let s = loadDrawState(deps.store);
   const codes = collectCodes(deps.store, Date.parse(deps.nowIso));

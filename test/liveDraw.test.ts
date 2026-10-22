@@ -87,15 +87,13 @@ function fakeUpstream(over: { draw?: Record<string, unknown> } = {}) {
   return { transport, sent };
 }
 
-test('默认**关**：一个请求都不发，而且标成 idle（否则每 5 分钟刷一行）', () => {
+test('没有本地开关：有口令就直接起一轮（手动/自动都不拦）', () => {
   const store = seeded({ codes: ['A'] });
   const { transport, sent } = fakeUpstream();
   const out = runLiveDraw({ store, transport, nowIso: NOW });
   assert.equal(out.ok, true);
-  assert.equal(out.idle, true);
-  assert.equal(sent.length, 0);
-  assert.equal(store.getState(STATE_DRAW), null, '关着时连状态都不该起');
-  assert.match(out.note, /没开/);
+  assert.equal(sent.length, 1, '必须真的发请求');
+  assert.ok(store.getState(STATE_DRAW) !== null, '要起一轮状态');
 });
 
 test('没有口令 ⇒ idle、不发请求（cron 每 5 分钟跑一次，不能刷噪声）', () => {
@@ -267,18 +265,16 @@ test('这个账号领过的口令**不再投**（回 200112 不是新结果，�
   assert.deepEqual(pickFor(pool, '另一个账号'), ['甲', '乙']);
 });
 
-test('开关：默认关；`force` 只给手动那一枪（开关只管 cron）', () => {
+test('领小红花没有本地开关：有口令就发请求（手动/自动都一样）', () => {
   const store = seeded({ codes: ['甲'] });
-  assert.equal(claimEnabled(store), false);
-  assert.equal(store.getState(STATE_CLAIM_ENABLED), null, '默认连键都没有 ⇒ 关');
+  assert.equal(claimEnabled(store), true, '不再有“默认关”');
+  assert.equal(store.getState(STATE_CLAIM_ENABLED), null, '旧键不存在也不影响');
 
   const { transport, sent } = fakeUpstream();
-  // 手动那一枪不受开关限制
-  runLiveDraw({ store, transport, nowIso: NOW }, { force: true });
-  assert.equal(sent.length, 1);
-
-  setClaimEnabled(store, true, NOW);
-  assert.equal(claimEnabled(store), true);
+  runLiveDraw({ store, transport, nowIso: NOW });
+  assert.equal(sent.length, 1, '不传 force 也必须真的去领');
+  setClaimEnabled(store, false, NOW);
+  assert.equal(claimEnabled(store), true, '旧开关调用不会再把领取关掉');
 });
 
 // ── 池：draw 的结论**写回**（池里状态跃迁的唯一入口）

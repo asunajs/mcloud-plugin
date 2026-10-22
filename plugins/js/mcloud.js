@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.14 · 插件 `mcloud`
+//   mcloud-plugin 0.2.15 · 插件 `mcloud`
 
 // src/entries/mcloud.ts
 import {
@@ -7009,7 +7009,6 @@ function parseJson(raw) {
 
 // src/mcloud/tasks/liveDraw.ts
 var STATE_DRAW = "mcloud.live.draw";
-var STATE_CLAIM_ENABLED = "mcloud.live.claim_enabled";
 function collectCodes(store2, nowMs = Date.now()) {
   const human = loadLiveCodes(store2)?.codes ?? [];
   const { pool } = loadFreshPool(store2, nowMs);
@@ -7025,11 +7024,10 @@ function loadDrawState(store2) {
     return null;
   }
 }
-function claimEnabled(store2) {
-  return store2.getState(STATE_CLAIM_ENABLED) === "1";
+function claimEnabled(_store) {
+  return true;
 }
-function setClaimEnabled(store2, on, nowIso) {
-  store2.setState(STATE_CLAIM_ENABLED, on ? "1" : "0", nowIso);
+function setClaimEnabled(_store, _on, _nowIso) {
 }
 function probeLiveRoom(deps) {
   const session = loadSession(deps.store);
@@ -7083,9 +7081,7 @@ function stepRequest(s, base) {
 }
 function runLiveDraw(deps, opts = {}) {
   const TASK = "live-room";
-  if (!opts.force && !claimEnabled(deps.store)) {
-    return { ok: true, idle: true, note: "领小红花没开（要先在服务端那边开启）" };
-  }
+  void opts;
   let s = loadDrawState(deps.store);
   const codes = collectCodes(deps.store, Date.parse(deps.nowIso));
   if (!s || s.step === "done") {
@@ -10695,6 +10691,9 @@ function buildReadings(deps) {
             wakeInMs: plan === null ? 0 : Math.max(0, plan.wakeAtMs - nowMs)
           };
         })(),
+        // 写那半的本地闸门（默认关）。界面要能看见并打开它，否则永远只会说
+        // 「领小红花没开」，而用户找不到开关。
+        claim: { enabled: claimEnabled(deps.store) },
         // 领小红花的**结论**（四栏 + 进账）。界面第一行显示的就是 `line`。
         // ⚠ 「本场已结束」与「口令无效」分栏的理由见 liveDraw.drawReport 的注释 ——
         //   分错的后果是用户去重抄一条本来就对的口令。

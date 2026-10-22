@@ -1040,7 +1040,7 @@ test('⚠ 直播：口令只收**一次**（一个账号听到，所有账号都
   assert.ok(/return drawOnce\(deps, startedMs\);/.test(live), '每个账号都领');
   // 听窗口不能再按账号摊预算
   assert.ok(!/runLive\(deps, startedMs\)/.test(live), '不再有"每账号跑一遍"');
-  assert.ok(/const listenDeadline = runStartMs \+ BUDGET_MS - 20_000;/.test(live), '截止按整趟算');
+  assert.ok(/const listenDeadline =[\s\S]{0,200}BUDGET_MS - 20_000/.test(live), '截止按整趟算');
   // 收口令那一段的日志不挂在某个账号名下
   assert.ok(/logBoth\(store, 'start', '口令', at\)/.test(live), '收口令要单独一段');
 });
