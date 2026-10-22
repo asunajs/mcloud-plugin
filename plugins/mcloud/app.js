@@ -706,6 +706,7 @@ function renderDaily(d) {
   if (run) {
     const cnt = [];
     if (run.badCount > 0) cnt.push(`${run.badCount} 步失败`);
+    if (run.pendingCount > 0) cnt.push(`${run.pendingCount} 项等服务端确认`);
     if (run.okCount > 0) cnt.push(`${run.okCount} 步完成`);
     if (run.idleCount > 0) cnt.push(`${run.idleCount} 步跳过`);
     bits.push(`上次 ${when(run.at)}${cnt.length ? `：${cnt.join('、')}` : ''}`);

@@ -198,7 +198,7 @@ register_cron(
         steps: r.steps,
       });
 
-      if (r.ok) {
+      if (r.ok && !r.steps.some((s) => s.pending === true)) {
         // ⚠ 标记落在**这一条自己的袋里**（`deps.store` 已经按账号路由过了）
         // ⚠ 标记必须落在**这一条自己的袋里** —— `deps.store` 已经按账号路由过了，
         //   但它在闭包里，所以这里现取一个"作用在指定账号上"的 store。
@@ -208,11 +208,14 @@ register_cron(
       // 这里只补段尾结论。
       const tag = `[${shortLabel(who)}]`;
       const { bad, hard } = stepTally(r.steps);
+      const pending = r.steps.filter((s) => s.pending === true).length;
       // 段尾只说"几项没成"（用户要的是结论）；都成了就一句"都成了"。
       // 级联失败单独说"跳过"，否则 1 个根因会被写成 11 项没成。
       const tail =
         bad === 0
-          ? '都成了'
+          ? pending > 0
+            ? `${pending} 项等服务端确认`
+            : '都成了'
           : hard === 0
             ? `${bad} 项跳过（没有网页会话）`
             : `${hard} 项没成${bad > hard ? `、${bad - hard} 项跳过` : ''}`;

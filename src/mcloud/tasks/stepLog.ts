@@ -101,6 +101,7 @@ export function userLine(step: {
   name: string;
   ok: boolean;
   idle?: boolean | undefined;
+  pending?: boolean | undefined;
   note: string;
 }): string | null {
   if (isPlumbing(step.name) && step.ok) return null; // 内部的事，成了就不提
@@ -112,6 +113,8 @@ export function userLine(step: {
   // ⚠ 不写"成了/成功/跳过"这种抽象词（用户的原话：「成了是啥啊」）——
   //   直接把这一步**发生了什么**说出来：`签到：今天已经签过了`、
   //   `领取AI豆：今天没有可领的`、`复活卡：没成 —— 服务端说：2025年无云朵记录`。
+  // 等服务端确认不是失败：不要写成「没成」，也不要打红。
+  if (step.pending === true) return `${step.name}：${why === '' ? '等服务端确认' : why}`;
   if (!step.ok) return `${step.name}：没成${why === '' ? '' : ` —— ${why}`}`;
   return `${step.name}：${why === '' ? '好了' : why}`;
 }
@@ -178,11 +181,11 @@ export function lineText(line: string): string {
  *
  *  一个票过期会拖垮十步；段尾写「11 项没成」会让人以为要做 11 件事，
  *  实际只有「换票」那一件。分开报才读得懂。 */
-export function stepTally(steps: { ok: boolean; note: string }[]): {
+export function stepTally(steps: { ok: boolean; pending?: boolean; note: string }[]): {
   bad: number;
   hard: number;
 } {
-  const failed = steps.filter((x) => !x.ok);
+  const failed = steps.filter((x) => !x.ok && x.pending !== true);
   const hard = failed.filter(
     (x) => !/还没有网页会话|上面「换票」|没有会话|未登录|90001|票没被认/.test(x.note),
   ).length;

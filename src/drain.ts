@@ -111,14 +111,20 @@ export function drain(
     lastNote = r.note;
     notes.push(r.note);
     opts.onStep?.(r.note, steps);
-    if (!r.ok) {
+    if (!r.ok && r.pending !== true) {
       return { ok: false, idle: false, steps, note: `${opts.label}：第 ${steps} 步失败 —— ${r.note}`, notes };
     }
     if (r.idle || r.skipped) {
       // 两种「不用继续」：`idle`（没得做/已经走完）、`skipped`（条件不成立）。
-      // 对 drain 来说都是「停下」。
-      // 用最后一步自己的话（它是具体的：「今天没有可领的」「领到了」）
-      return { ok: true, idle: true, steps, note: brief(r.note, opts.label), notes };
+      // `pending` = 动作做了、等服务端确认 —— 也要停，但**不算失败**。
+      return {
+        ok: true,
+        idle: true,
+        pending: r.pending === true,
+        steps,
+        note: brief(r.note, opts.label),
+        notes,
+      };
     }
   }
 
@@ -147,8 +153,10 @@ function brief(s: string, label: string): string {
 
 export interface DrainResult {
   ok: boolean;
-  /** 状态机说「没得做了 / 已经走完」 */
+  /** 状态机说「没得做 / 已经走完」 */
   idle: boolean;
+  /** 动作做了、还在等服务端确认（不是失败） */
+  pending?: boolean;
   steps: number;
   /** 一行摘要（进 runs 表的 note） */
   note: string;

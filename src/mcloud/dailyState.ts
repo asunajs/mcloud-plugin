@@ -42,6 +42,8 @@ export interface DailyStep {
   note: string;
   /** 这一步什么都没做（条件不成立）—— 界面据此把它显示成灰色而不是绿勾 */
   idle: boolean;
+  /** 动作做了、等服务端确认（不是失败；界面不要打红） */
+  pending?: boolean;
 }
 
 /** 一次运行的结果。**这是「按一次运行组织的日志」的落点**：

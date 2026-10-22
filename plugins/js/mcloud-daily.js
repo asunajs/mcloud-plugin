@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.8 · 插件 `mcloud-daily`
+//   mcloud-plugin 0.2.9 · 插件 `mcloud-daily`
 
 // src/entries/daily.ts
 import { debug as debug2, register_cron } from "host-api";
@@ -43,11 +43,18 @@ function drain(step, deps, opts) {
     lastNote = r.note;
     notes.push(r.note);
     opts.onStep?.(r.note, steps);
-    if (!r.ok) {
+    if (!r.ok && r.pending !== true) {
       return { ok: false, idle: false, steps, note: `${opts.label}：第 ${steps} 步失败 —— ${r.note}`, notes };
     }
     if (r.idle || r.skipped) {
-      return { ok: true, idle: true, steps, note: brief(r.note, opts.label), notes };
+      return {
+        ok: true,
+        idle: true,
+        pending: r.pending === true,
+        steps,
+        note: brief(r.note, opts.label),
+        notes
+      };
     }
   }
   return {
@@ -108,6 +115,7 @@ function userLine(step) {
   if (isPlumbing(step.name) && step.ok) return null;
   const why = trimNote(step.name, step.note);
   if (/^(签到翻倍|复活卡)$/.test(step.name) && /(这个月|本月)/.test(why)) return null;
+  if (step.pending === true) return `${step.name}：${why === "" ? "等服务端确认" : why}`;
   if (!step.ok) return `${step.name}：没成${why === "" ? "" : ` —— ${why}`}`;
   return `${step.name}：${why === "" ? "好了" : why}`;
 }
@@ -138,7 +146,7 @@ function lineText(line) {
   return line;
 }
 function stepTally(steps) {
-  const failed = steps.filter((x) => !x.ok);
+  const failed = steps.filter((x) => !x.ok && x.pending !== true);
   const hard = failed.filter(
     (x) => !/还没有网页会话|上面「换票」|没有会话|未登录|90001|票没被认/.test(x.note)
   ).length;
@@ -5151,8 +5159,9 @@ function advance(deps, st) {
     });
     return {
       // 动了而还没复查 ⇒ **先不报成功**（同一瞬间的旧矩阵不能证明它成了）。
-      ok: clicked.length === 0,
+      ok: true,
       idle: false,
+      pending: clicked.length > 0,
       note: `动作走完，等 ${wait}ms 后复查服务端（不在动作前/动作后同一瞬间下结论）`
     };
   }
@@ -5446,6 +5455,7 @@ function runAppTaskStep(deps) {
     return dead.length === 0 ? { ok: true, idle: true, note: "这一趟做完了（服务端已确认）" } : {
       ok: false,
       idle: true,
+      pending: true,
       note: `这一趟没有全确认：${dead.length} 条本机动过、服务端仍是待办（#${dead.join("、")}）—— 下一趟继续重试（不设上限）`
     };
   }
@@ -5453,8 +5463,9 @@ function runAppTaskStep(deps) {
     const wait = (st.settleAt ?? 0) - depsNowMs(deps);
     if (wait > 0) {
       return {
-        ok: false,
+        ok: true,
         idle: true,
+        pending: true,
         note: `动作做完了，等服务端确认（还要 ${Math.ceil(wait / 1e3)} 秒）—— 到点后会重新拉矩阵，不是拿动作前的旧读数判`
       };
     }
@@ -5478,6 +5489,7 @@ function runAppTaskStep(deps) {
     return {
       ok: dead.length === 0,
       idle: true,
+      pending: dead.length > 0,
       note: `复查完成（已等 ${deps.settleMs ?? 5e3}ms，重新拉过矩阵）${warn4}`
     };
   }
@@ -6902,7 +6914,13 @@ var PAGE_LABEL = {
 function once(name, fn, deps) {
   try {
     const r = fn(deps);
-    return { name, ok: r.ok, note: r.note, idle: r.idle === true || r.skipped === true };
+    return {
+      name,
+      ok: r.ok,
+      note: r.note,
+      idle: r.idle === true || r.skipped === true,
+      pending: r.pending === true
+    };
   } catch (e) {
     return { name, ok: false, note: `抛异常：${e instanceof Error ? e.message : String(e)}` };
   }
@@ -7003,7 +7021,7 @@ function runDaily(deps, opts = {}) {
       // 「这一趟没有全确认」，用户看不到文件到底传没传。
       onStep: (note) => opts.onNote?.(`App 任务：${note}`)
     });
-    push({ name: "App 任务", ok: r.ok, note: r.note, idle: r.idle });
+    push({ name: "App 任务", ok: r.ok, note: r.note, idle: r.idle, pending: r.pending === true });
   }
   for (const [name, fn] of [
     ["消息推送奖励（问状态）", runMsgPushStatus],
@@ -7035,20 +7053,22 @@ function runDaily(deps, opts = {}) {
   }
   push(once("凭据续期", (d) => runAuthRefresh(d), deps));
   push({ ...once("待领取奖品", runPrizes, deps), idle: true });
-  const failed = steps.filter((s) => !s.ok);
+  const pendingCount = steps.filter((s) => s.pending === true).length;
+  const failed = steps.filter((s) => !s.ok && s.pending !== true);
   const elapsed = Date.now() - started;
-  const done = steps.filter((s) => !s.idle).length;
+  const done = steps.filter((s) => !s.idle && s.pending !== true).length;
   const shape = (r) => ({
     name: r.name,
     ok: r.ok,
     note: r.note,
     idle: r.idle === true,
+    pending: r.pending === true,
     ...isPlumbing(r.name) ? { plumb: true } : {}
   });
   if (failed.length === 0) {
     return {
       ok: true,
-      note: `${steps.length} 步全部完成（${done} 步有动作，用时 ${(elapsed / 1e3).toFixed(1)}s）`,
+      note: pendingCount > 0 ? `${steps.length} 步都有结果（${done} 步有动作，${pendingCount} 项等服务端确认，用时 ${(elapsed / 1e3).toFixed(1)}s）` : `${steps.length} 步全部完成（${done} 步有动作，用时 ${(elapsed / 1e3).toFixed(1)}s）`,
       detail,
       steps: steps.map(shape)
     };
@@ -7065,7 +7085,7 @@ function runDaily(deps, opts = {}) {
     note: (() => {
       const { bad, hard } = stepTally(steps);
       const skipped = bad - hard;
-      const base = `${steps.length - bad} 项好了、${hard} 项没成${skipped > 0 ? `、${skipped} 项跳过` : ""}`;
+      const base = `${steps.length - bad - pendingCount} 项好了、${hard} 项没成${pendingCount > 0 ? `、${pendingCount} 项等服务端确认` : ""}${skipped > 0 ? `、${skipped} 项跳过` : ""}`;
       const allLogin = failed.every((x) => /未登录|没登录|90001|凭据过期|票没被认/.test(x.note));
       if (!allLogin) return base;
       return `${base} —— 登录状态失效了，去「账号」页重新导入会话`;
@@ -7346,6 +7366,7 @@ function cleanStep(s) {
     ok: s.ok === true,
     note: clip(s.note),
     idle: s.idle === true,
+    ...s.pending === true ? { pending: true } : {},
     // ⚠ 这个标记要跟着走：界面靠它把"内部管道"（换票之类）成功时藏起来。
     //   漏掉的话，界面上会冒出「换票（签到族）：没有待换票的任务」这种话。
     ...s.plumb === true ? { plumb: true } : {}
@@ -8102,12 +8123,13 @@ register_cron(
         note,
         steps: r2.steps
       });
-      if (r2.ok) {
+      if (r2.ok && !r2.steps.some((s) => s.pending === true)) {
         scoped(rawStoreOf(store), one.acctId).setState(DONE_KEY, today2, nowIso);
       }
       const tag = `[${shortLabel(who)}]`;
       const { bad: bad2, hard } = stepTally(r2.steps);
-      const tail = bad2 === 0 ? "都成了" : hard === 0 ? `${bad2} 项跳过（没有网页会话）` : `${hard} 项没成${bad2 > hard ? `、${bad2 - hard} 项跳过` : ""}`;
+      const pending = r2.steps.filter((s) => s.pending === true).length;
+      const tail = bad2 === 0 ? pending > 0 ? `${pending} 项等服务端确认` : "都成了" : hard === 0 ? `${bad2} 项跳过（没有网页会话）` : `${hard} 项没成${bad2 > hard ? `、${bad2 - hard} 项跳过` : ""}`;
       logBoth(store, hard > 0 ? "warn" : "debug", `${tag} ${tail}`, nowIso);
     }
     if (results.length === 0) return;

@@ -52,6 +52,8 @@ export interface RunStep {
   note: string;
   /** 这一步什么都没做（条件不成立）—— 界面据此显示成灰色而不是绿勾 */
   idle: boolean;
+  /** 动作做了、等服务端确认（不是失败） */
+  pending?: boolean;
   /** 内部管道步骤（换票、凭据续期之类）—— **成了就不该出现在用户眼前**。
    *
    *  由后端标（`tasks/stepLog.ts` 是唯一知道"哪些算管道"的地方）：
@@ -98,6 +100,7 @@ function cleanStep(s: RunStep): RunStep {
     ok: s.ok === true,
     note: clip(s.note),
     idle: s.idle === true,
+    ...(s.pending === true ? { pending: true } : {}),
     // ⚠ 这个标记要跟着走：界面靠它把"内部管道"（换票之类）成功时藏起来。
     //   漏掉的话，界面上会冒出「换票（签到族）：没有待换票的任务」这种话。
     ...(s.plumb === true ? { plumb: true } : {}),
@@ -214,6 +217,8 @@ export interface RunSummary {
   okCount: number;
   badCount: number;
   idleCount: number;
+  /** 动作做了、等服务端确认（不是失败） */
+  pendingCount: number;
   truncated: boolean;
 }
 
@@ -226,9 +231,10 @@ export function summarize(r: RunRecord): RunSummary {
     ms: r.ms,
     ok: r.ok,
     note: r.note,
-    okCount: r.steps.filter((s) => s.ok && !s.idle).length,
-    badCount: r.steps.filter((s) => !s.ok).length,
-    idleCount: r.steps.filter((s) => s.idle).length,
+    okCount: r.steps.filter((s) => s.ok && !s.idle && s.pending !== true).length,
+    badCount: r.steps.filter((s) => !s.ok && s.pending !== true).length,
+    idleCount: r.steps.filter((s) => s.idle && s.pending !== true).length,
+    pendingCount: r.steps.filter((s) => s.pending === true).length,
     truncated: r.truncated,
   };
 }
