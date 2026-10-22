@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.8 · 插件 `mcloud-exchange`
+//   mcloud-plugin 0.2.9 · 插件 `mcloud-exchange`
 
 // src/entries/exchange.ts
 import { debug as debug2, log as log3, register_cron, worker_hint } from "host-api";
@@ -628,6 +628,7 @@ function cleanStep(s) {
     ok: s.ok === true,
     note: clip(s.note),
     idle: s.idle === true,
+    ...s.pending === true ? { pending: true } : {},
     // ⚠ 这个标记要跟着走：界面靠它把"内部管道"（换票之类）成功时藏起来。
     //   漏掉的话，界面上会冒出「换票（签到族）：没有待换票的任务」这种话。
     ...s.plumb === true ? { plumb: true } : {}
@@ -2605,11 +2606,18 @@ function drain(step, deps, opts) {
     lastNote = r.note;
     notes.push(r.note);
     opts.onStep?.(r.note, steps);
-    if (!r.ok) {
+    if (!r.ok && r.pending !== true) {
       return { ok: false, idle: false, steps, note: `${opts.label}：第 ${steps} 步失败 —— ${r.note}`, notes };
     }
     if (r.idle || r.skipped) {
-      return { ok: true, idle: true, steps, note: brief(r.note, opts.label), notes };
+      return {
+        ok: true,
+        idle: true,
+        pending: r.pending === true,
+        steps,
+        note: brief(r.note, opts.label),
+        notes
+      };
     }
   }
   return {
@@ -5088,7 +5096,7 @@ function lineText(line) {
   return line;
 }
 function stepTally(steps) {
-  const failed = steps.filter((x) => !x.ok);
+  const failed = steps.filter((x) => !x.ok && x.pending !== true);
   const hard = failed.filter(
     (x) => !/还没有网页会话|上面「换票」|没有会话|未登录|90001|票没被认/.test(x.note)
   ).length;

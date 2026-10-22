@@ -596,7 +596,8 @@ test('动作和复查之间必须有间隔：settle 前不拿旧矩阵判成功/
   const phase = (): string => (JSON.parse(store.getState(STATE_TASK)!) as { phase: string }).phase;
   assert.equal(phase(), 'settle', '动作完必须先进入 settle');
   const early = runAppTaskStep(deps);
-  assert.equal(early.ok, false, '没到时间不能报成功');
+  assert.equal(early.ok, true, '等待不是失败');
+  assert.equal(early.pending, true, '要明确标成 pending');
   assert.match(early.note, /等.*确认/);
   assert.equal(phase(), 'settle', '没到时间不许复查');
   t += 5001;

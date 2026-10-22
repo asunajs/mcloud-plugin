@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { lineLevel, userLine } from '../src/mcloud/tasks/stepLog.ts';
+import { lineLevel, stepTally, userLine } from '../src/mcloud/tasks/stepLog.ts';
 
 test('lineLevel：做了事 + 明确拿到奖励才 success', () => {
   assert.equal(lineLevel('签到：领到 3 云朵'), 'success');
@@ -45,6 +45,18 @@ test('lineLevel：跳过/今天已经做过是 debug', () => {
   assert.equal(lineLevel('签到：今天已经签过了'), 'debug');
   assert.equal(lineLevel('领取AI豆：今天没有可领的'), 'debug');
   assert.equal(lineLevel('备份好礼：跳过（今天领过了）'), 'debug');
+});
+
+test('等服务端确认不是失败：日志不许写没成、段尾不许算没成', () => {
+  const line = userLine({
+    name: 'App 任务',
+    ok: true,
+    pending: true,
+    note: '动作做完了，等服务端确认（还要 5 秒）',
+  });
+  assert.ok(line !== null && !line.includes('没成'), line ?? '');
+  assert.notEqual(lineLevel(line!), 'fail');
+  assert.deepEqual(stepTally([{ ok: true, pending: true, note: line! }]), { bad: 0, hard: 0 });
 });
 
 test('lineLevel：没成是 fail，要用户动手是 warn', () => {

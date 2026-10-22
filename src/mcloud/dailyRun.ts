@@ -48,6 +48,8 @@ interface StepResult {
   ok: boolean;
   note: string;
   idle?: boolean;
+  /** 动作做了、等服务端确认（不是失败） */
+  pending?: boolean;
   /** 内部管道步骤（成功时不进用户日志）—— 见 `tasks/stepLog.ts` */
   plumb?: boolean;
 }
@@ -60,7 +62,13 @@ function once(
   try {
     const r = fn(deps);
     // `skipped` 也是「这一步什么都没做」—— 运行记录里要显示成灰色，不是绿勾。
-    return { name, ok: r.ok, note: r.note, idle: r.idle === true || r.skipped === true };
+    return {
+      name,
+      ok: r.ok,
+      note: r.note,
+      idle: r.idle === true || r.skipped === true,
+      pending: r.pending === true,
+    };
   } catch (e) {
     return { name, ok: false, note: `抛异常：${e instanceof Error ? e.message : String(e)}` };
   }
@@ -241,7 +249,7 @@ export function runDaily(
       // 「这一趟没有全确认」，用户看不到文件到底传没传。
       onStep: (note) => opts.onNote?.(`App 任务：${note}`),
     });
-    push({ name: 'App 任务', ok: r.ok, note: r.note, idle: r.idle });
+    push({ name: 'App 任务', ok: r.ok, note: r.note, idle: r.idle, pending: r.pending === true });
   }
 
   // ⑤ 消息推送奖励：**两步**（问状态 → 领）。
@@ -289,22 +297,28 @@ export function runDaily(
   // mcloud 2026-10-07 起把 `cloud-snapshot` / `task-list` 从任务注册里摘掉，
   // 读数改由「上游状态 / 数据」页按需取 —— 这里不再作为日常一步跑。
 
-  const failed = steps.filter((s) => !s.ok);
+  // ⚠ `pending` 不是失败：动作做了、服务端还没确认，不能把整趟染红。
+  const pendingCount = steps.filter((s) => s.pending === true).length;
+  const failed = steps.filter((s) => !s.ok && s.pending !== true);
   const elapsed = Date.now() - started;
-  const done = steps.filter((s) => !s.idle).length;
+  const done = steps.filter((s) => !s.idle && s.pending !== true).length;
 
   const shape = (r: StepResult): DailyStep => ({
     name: r.name,
     ok: r.ok,
     note: r.note,
     idle: r.idle === true,
+    pending: r.pending === true,
     ...(isPlumbing(r.name) ? { plumb: true } : {}),
   });
 
   if (failed.length === 0) {
     return {
       ok: true,
-      note: `${steps.length} 步全部完成（${done} 步有动作，用时 ${(elapsed / 1000).toFixed(1)}s）`,
+      note:
+        pendingCount > 0
+          ? `${steps.length} 步都有结果（${done} 步有动作，${pendingCount} 项等服务端确认，用时 ${(elapsed / 1000).toFixed(1)}s）`
+          : `${steps.length} 步全部完成（${done} 步有动作，用时 ${(elapsed / 1000).toFixed(1)}s）`,
       detail,
       steps: steps.map(shape),
     };
@@ -321,7 +335,9 @@ export function runDaily(
     note: (() => {
       const { bad, hard } = stepTally(steps);
       const skipped = bad - hard;
-      const base = `${steps.length - bad} 项好了、${hard} 项没成${skipped > 0 ? `、${skipped} 项跳过` : ''}`;
+      const base = `${steps.length - bad - pendingCount} 项好了、${hard} 项没成${
+        pendingCount > 0 ? `、${pendingCount} 项等服务端确认` : ''
+      }${skipped > 0 ? `、${skipped} 项跳过` : ''}`;
       const allLogin = failed.every((x) => /未登录|没登录|90001|凭据过期|票没被认/.test(x.note));
       if (!allLogin) return base;
       return `${base} —— 登录状态失效了，去「账号」页重新导入会话`;
