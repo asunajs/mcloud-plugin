@@ -970,6 +970,15 @@ test('⚠ 直播页第一行说"在听什么"，不是"池子里有几条口令"
   assert.ok(/g\.target \|\| '目标主播'/.test(js), '旧读数没有名字时要有个不别扭的兜底');
 });
 
+test('直播页能设听弹幕时长（照 mcloud Rust 的 5–1800 秒）', () => {
+  const html = srcOf('plugins/mcloud/index.html');
+  assert.ok(html.includes('id="live-listen-seconds"'), '要有输入框');
+  assert.ok(/id="live-listen-seconds"[^>]*min="5"[^>]*max="1800"/.test(html), '范围要写清 5–1800');
+  assert.ok(/\/live\/listen-seconds/.test(js), '保存走任务级接口');
+  assert.ok(/live-listen-save/.test(js), '要有保存按钮');
+  assert.ok(/听弹幕中/.test(srcOf('src/entries/live.ts')), '长连接期间要打进度，不能 70 秒零日志');
+});
+
 test('⚠ 听弹幕那行只说人关心的：几条弹幕、几条口令', () => {
   const src = srcOf('src/mcloud/tasks/liveListen.ts');
   assert.ok(/收到 \$\{st\.danmakuFrames\} 条弹幕/.test(src), '要报弹幕数');

@@ -186,7 +186,12 @@ export function resolveTaskAccounts(
 export function taskAccountsView(store: ReadableState, task: string): {
   auto: TaskAccounts;
   manual: TaskManualAccounts;
-  /** auto 是从旧版单一键继承来的（界面要标一下，别让用户以为手动选择还在生效）。 */
+  /** auto 是从旧版单一键继承来的（这一版还没单独设过，读的是旧键）。
+   *
+   *  ⚠ 界面**不要**把它印成「全部账号（旧版设置）」——「旧版」是仓库里的词，
+   *  用户读到只会猜"这设置过期了？"或者"还有一份新版设置我没找到"。
+   *  要说人话：「这份账号是从你以前的设置沿用过来的」，而且放在**展开面板**里
+   *  （有地方解释"那时定时和手动共用一份"），别塞进按钮标签。 */
   legacyAuto: boolean;
   resolvedAuto: string[];
   resolvedManual: string[];

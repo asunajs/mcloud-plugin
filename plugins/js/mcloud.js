@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.11 · 插件 `mcloud`
+//   mcloud-plugin 0.2.12 · 插件 `mcloud`
 
 // src/entries/mcloud.ts
 import {
@@ -109,6 +109,9 @@ var KEY_SCOPE = {
   "mcloud.live.listen": "account",
   "mcloud.live.listen_room": "account",
   "mcloud.live.listen_seconds": "account",
+  // 直播页上那个「听弹幕时长」是**任务级**的（所有账号用同一段），
+  // 与账号级诊断口子分开；账号级仍可作为没设任务级时的回落。
+  "mcloud.live.listen_seconds.task": "global",
   "mcloud.live.url": "account",
   "mcloud.live.wake_plan": "account",
   "mcloud.live.ws_base": "account",
@@ -8389,6 +8392,8 @@ function saveWsHeartbeat(store2, v, nowIso) {
 }
 var BASE_VIDEO_IM_WS = "wss://videoim.cmcc-cs.cn:20102";
 var DEFAULT_LISTEN_SECONDS = 600;
+var MIN_TASK_LISTEN_SECONDS = 5;
+var MAX_TASK_LISTEN_SECONDS = 1800;
 var IDLE_RECHECK_MS = 5 * 60 * 1e3;
 var MAX_IDLE_RECHECK_MS = 12 * 60 * 60 * 1e3;
 function idleCooldownMs(deps, nowMs) {
@@ -8512,10 +8517,22 @@ function runLiveListen(deps) {
   }
 }
 var STATE_LISTEN_SECONDS = "mcloud.live.listen_seconds";
+var STATE_LISTEN_SECONDS_TASK = "mcloud.live.listen_seconds.task";
 function loadListenSeconds(store2) {
+  const taskRaw = store2.getState(STATE_LISTEN_SECONDS_TASK);
+  const task = taskRaw ? Number.parseInt(taskRaw, 10) : Number.NaN;
+  if (Number.isFinite(task) && task >= MIN_TASK_LISTEN_SECONDS) {
+    return Math.min(task, MAX_TASK_LISTEN_SECONDS);
+  }
   const raw = store2.getState(STATE_LISTEN_SECONDS);
   const n = raw ? Number.parseInt(raw, 10) : Number.NaN;
   return Number.isFinite(n) && n > 0 ? Math.min(n, 3600) : DEFAULT_LISTEN_SECONDS;
+}
+function saveTaskListenSeconds(store2, seconds, nowIso) {
+  const n = Math.round(seconds);
+  const clamped = Math.min(MAX_TASK_LISTEN_SECONDS, Math.max(MIN_TASK_LISTEN_SECONDS, n));
+  store2.setState(STATE_LISTEN_SECONDS_TASK, String(clamped), nowIso);
+  return clamped;
 }
 function persist(deps, st) {
   deps.store.setState(STATE_LISTEN, JSON.stringify(st), deps.nowIso);
@@ -10659,6 +10676,7 @@ function buildReadings(deps) {
       url: loadLiveUrl(deps.store),
       pool: readPoolSummary(deps.store, localStamp(nowMs), nowMs),
       gate: readGateReading(deps.store),
+      listenSeconds: loadListenSeconds(deps.store),
       listen: {
         reading: loadListenState(deps.store),
         line: listenReadingLine(loadListenState(deps.store))
@@ -11541,6 +11559,24 @@ function mcloudRoutes(deps) {
         imBase: loadImBase(deps.store) || "(真主机)",
         listenSeconds: loadListenSeconds(deps.store)
       })
+    },
+    {
+      path: `${base}/listen-seconds`,
+      method: "POST",
+      handler: (req) => {
+        const body = readBody(req);
+        const n = Number(body.seconds ?? body.listenSeconds);
+        if (!Number.isInteger(n) || n < 5 || n > 1800) {
+          return json(400, { error: "听弹幕时长要给 5..1800 之间的整数（秒）" });
+        }
+        const saved = saveTaskListenSeconds(deps.store, n, deps.now());
+        deps.log(`听弹幕时长改为 ${saved} 秒`);
+        return json(200, {
+          ok: true,
+          listenSeconds: saved,
+          note: `听弹幕时长已设为 ${saved} 秒`
+        });
+      }
     },
     {
       path: `${base}/config`,

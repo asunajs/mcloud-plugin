@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.11 · 插件 `mcloud-live`
+//   mcloud-plugin 0.2.12 · 插件 `mcloud-live`
 
 // src/entries/live.ts
 import { debug as debug2, register_cron } from "host-api";
@@ -102,6 +102,9 @@ var KEY_SCOPE = {
   "mcloud.live.listen": "account",
   "mcloud.live.listen_room": "account",
   "mcloud.live.listen_seconds": "account",
+  // 直播页上那个「听弹幕时长」是**任务级**的（所有账号用同一段），
+  // 与账号级诊断口子分开；账号级仍可作为没设任务级时的回落。
+  "mcloud.live.listen_seconds.task": "global",
   "mcloud.live.url": "account",
   "mcloud.live.wake_plan": "account",
   "mcloud.live.ws_base": "account",
@@ -3467,6 +3470,8 @@ function loadWsHeartbeat(store2) {
 }
 var BASE_VIDEO_IM_WS = "wss://videoim.cmcc-cs.cn:20102";
 var DEFAULT_LISTEN_SECONDS = 600;
+var MIN_TASK_LISTEN_SECONDS = 5;
+var MAX_TASK_LISTEN_SECONDS = 1800;
 var IDLE_RECHECK_MS = 5 * 60 * 1e3;
 var MAX_IDLE_RECHECK_MS = 12 * 60 * 60 * 1e3;
 function idleCooldownMs(deps, nowMs) {
@@ -3587,7 +3592,13 @@ function runLiveListen(deps) {
   }
 }
 var STATE_LISTEN_SECONDS = "mcloud.live.listen_seconds";
+var STATE_LISTEN_SECONDS_TASK = "mcloud.live.listen_seconds.task";
 function loadListenSeconds(store2) {
+  const taskRaw = store2.getState(STATE_LISTEN_SECONDS_TASK);
+  const task = taskRaw ? Number.parseInt(taskRaw, 10) : Number.NaN;
+  if (Number.isFinite(task) && task >= MIN_TASK_LISTEN_SECONDS) {
+    return Math.min(task, MAX_TASK_LISTEN_SECONDS);
+  }
   const raw = store2.getState(STATE_LISTEN_SECONDS);
   const n = raw ? Number.parseInt(raw, 10) : Number.NaN;
   return Number.isFinite(n) && n > 0 ? Math.min(n, 3600) : DEFAULT_LISTEN_SECONDS;
@@ -4318,6 +4329,7 @@ function collectOnce(deps, runStartMs) {
     note: note2,
     stopped
   });
+  logBoth(store, "start", "直播口令：开始查开播", deps.nowIso);
   const cap = hostNativeTls(deps.store, deps.nowIso, deps.transport);
   if (cap.verdict === "no") {
     steps.push({ name: "这个面板能不能直播", ok: false, note: capNote(cap.verdict), idle: false });
@@ -4348,6 +4360,7 @@ function collectOnce(deps, runStartMs) {
       idle: false,
       note: `「${KOULING_ANCHOR}」开播了（${liveCount} 间在播）`
     });
+    logBoth(store, "start", `开播了，开始听弹幕（窗口 ${loadListenSeconds(deps.store)} 秒）`, deps.nowIso);
   }
   step("主播发口令没有", () => runLiveRoom(deps));
   const poolNow = loadPoolFrom(deps.store).pool;
@@ -4370,6 +4383,14 @@ function collectOnce(deps, runStartMs) {
     listenNote = r.note;
     if (!r.ok || r.idle) break;
     frames++;
+    if (frames === 1 || frames % 5 === 0) {
+      logBoth(
+        store,
+        "debug",
+        `听弹幕中：第 ${frames} 拍（已听约 ${Math.round((Date.now() - runStartMs) / 1e3)} 秒）`,
+        deps.nowIso
+      );
+    }
     if (frames > 60) break;
   }
   if (frames > 0) {
