@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.9 · 插件 `mcloud-daily`
+//   mcloud-plugin 0.2.10 · 插件 `mcloud-daily`
 
 // src/entries/daily.ts
 import { debug as debug2, register_cron } from "host-api";
@@ -5083,6 +5083,18 @@ function clickRequest(deps, id, key = "task") {
     session: session ? sessionHeaders(session) : {}
   });
 }
+function waitMs(deps, ms) {
+  if (ms <= 0) return;
+  const end = depsNowMs(deps) + Math.min(ms, 1e4);
+  while (depsNowMs(deps) < end) {
+    if (deps.spin) deps.spin();
+    else {
+      const t0 = Date.now();
+      while (Date.now() - t0 < 2) {
+      }
+    }
+  }
+}
 function journalOnce(deps, st) {
   if (st.journaled === true) return { note: "", state: st };
   const market = st.data?.marketName ?? "sign_in_3";
@@ -5461,14 +5473,7 @@ function runAppTaskStep(deps) {
   }
   if (st.phase === "settle") {
     const wait = (st.settleAt ?? 0) - depsNowMs(deps);
-    if (wait > 0) {
-      return {
-        ok: true,
-        idle: true,
-        pending: true,
-        note: `动作做完了，等服务端确认（还要 ${Math.ceil(wait / 1e3)} 秒）—— 到点后会重新拉矩阵，不是拿动作前的旧读数判`
-      };
-    }
+    waitMs(deps, wait);
     if ((deps.settleMs ?? 5e3) > 0) {
       for (let i = 0; i < MATRIX_MARKETS.length; i++) runAppTaskMatrix(deps);
     }
