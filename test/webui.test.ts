@@ -955,9 +955,11 @@ test('⚠ 页头那个数报**屏上摆了几行**，不再报服务端环（用
 
 test('⚠ 直播页第一行说"在听什么"，不是"池子里有几条口令"', () => {
   // 用户的原话：这两件事接不上。顺序必须是：正在听 > 下一场几点 > 还没探到。
-  assert.ok(/const listening = !!\(l\.listen && l\.listen\.reading && l\.listen\.reading\.step === 'listen'\)/.test(js), '先判在不在听');
-  assert.ok(/listening \? `正在听/.test(js), '在听就说在听');
-  assert.ok(/next \? `下一场 \$\{next\}` : '还没探到下一场'/.test(js), '没在听就说下一场');
+  assert.ok(/const listening = !!\s*\(/.test(js), '先判在不在听');
+  assert.ok(/lr\.step === 'listen'/.test(js) && /windowStartMs/.test(js), '用窗口起点判活，不拿过期状态');
+  assert.ok(/listening[\s\S]{0,40}\? `正在听/.test(js), '在听就说在听');
+  assert.ok(/下一场 \$\{next\}/.test(js) && /还没探到下一场/.test(js), '没在听就说下一场');
+  assert.ok(/正在直播/.test(js), '正在播时第一行要说在播');
   assert.ok(!/setText\('live-hero', valid > 0/.test(js), '第一行不许是口令条数');
   // 口令条数降级到第二行，并且说清"要人贴"
   // 口令条数**不在**第二行（那是口令池那一块的属性）
@@ -974,7 +976,7 @@ test('直播页能设听弹幕时长（照 mcloud Rust 的 5–1800 秒）', () 
   const html = srcOf('plugins/mcloud/index.html');
   assert.ok(html.includes('id="live-listen-seconds"'), '要有输入框');
   assert.ok(/id="live-listen-seconds"[^>]*min="5"[^>]*max="1800"/.test(html), '范围要写清 5–1800');
-  assert.ok(/\/live\/listen-seconds/.test(js), '保存走任务级接口');
+  assert.ok(/api\('\/config'/.test(js), '保存走已有的 /config 任务级接口');
   assert.ok(/live-listen-save/.test(js), '要有保存按钮');
   assert.ok(/听弹幕中/.test(srcOf('src/entries/live.ts')), '长连接期间要打进度，不能 70 秒零日志');
 });

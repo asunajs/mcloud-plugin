@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.13 · 插件 `mcloud-live`
+//   mcloud-plugin 0.2.14 · 插件 `mcloud-live`
 
 // src/entries/live.ts
 import { debug as debug2, register_cron } from "host-api";
@@ -3884,6 +3884,7 @@ function listenStep(deps, st, nowMs, windowMs) {
     if (actions.texts.length > 0) {
       st.danmakuFrames += 1;
       for (const text of actions.texts) {
+        deps.onDanmaku?.(text.replace(/\r?\n/g, "\\n").slice(0, 200));
         if (st.pendingHead === true) {
           const t = text.trim();
           if (t !== "" && !isKoulingHead(t) && !isKoulingMarker(t)) {
@@ -4307,7 +4308,13 @@ var transport = makeTransport(LONG_REQUEST_TIMEOUT_MS);
 var host = makeHost();
 var BUDGET_MS = 3e5;
 function listenDeps(deps) {
-  return { ...deps, host };
+  return {
+    ...deps,
+    host,
+    // 照 mcloud-sign：`[WS] 弹幕: ...` 只放 debug —— 用户能看到听到了什么，
+    // 又不至于把正常日志刷成 info。
+    onDanmaku: (text) => logBoth(store, "debug", `弹幕：${text}`, (/* @__PURE__ */ new Date()).toISOString())
+  };
 }
 function collectOnce(deps, runStartMs) {
   const steps = [];
@@ -4440,7 +4447,7 @@ register_cron(
   (p) => {
     const startedMs = Date.now();
     const at = new Date(startedMs).toISOString();
-    const manual = collectCodes(store, startedMs).length > 0;
+    const manual = (loadLiveCodes(store)?.codes ?? []).some((c2) => c2.trim() !== "");
     let collected = null;
     let stopAll = false;
     const runs = forEachTaskAccount(store, "直播", p, transport, (deps, _acct, index) => {
