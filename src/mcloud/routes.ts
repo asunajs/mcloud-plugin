@@ -94,7 +94,7 @@ import {
   saveLiveUrl,
 } from './tasks/liveRoom.ts';
 import { XIAOHONGSHU_KOULING_PROFILE_URL } from './liveKouling.ts';
-import { localStamp } from './koulingPool.ts';
+import { loadFreshPool, localStamp } from './koulingPool.ts';
 import {
   loadGateBase,
   loadGateState,
@@ -615,7 +615,26 @@ function buildReadings(deps: RouteDeps): Record<string, unknown> {
       const liveListen = loadListenState(liveOne);
       return {
       reading: readLiveReading(liveOne),
-      codes: loadLiveCodes(liveOne),
+      // 界面要看到**所有抓到的口令**（包括无效的），不能只显示人贴的那一份；
+      // 也不能把 `LiveCodes` 这个对象直接丢给界面（它要的是数组）。
+      codes: (() => {
+        const human = loadLiveCodes(liveOne)?.codes ?? [];
+        const poolCodes = loadFreshPool(deps.store, nowMs).pool.codes;
+        const seen = new Set<string>();
+        const out: Array<{ code: string; state?: string; source?: string; reason?: string }> = [];
+        for (const c of human) {
+          const code = c.trim();
+          if (code === '' || seen.has(code)) continue;
+          seen.add(code);
+          out.push({ code, source: '手动' });
+        }
+        for (const c of poolCodes) {
+          if (seen.has(c.value)) continue;
+          seen.add(c.value);
+          out.push({ code: c.value, state: c.state, source: c.source, reason: c.reason });
+        }
+        return out;
+      })(),
       url: loadLiveUrl(liveOne),
       pool: readPoolSummary(deps.store, localStamp(nowMs), nowMs),
       gate: liveGate,

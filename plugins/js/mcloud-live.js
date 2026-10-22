@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.16 · 插件 `mcloud-live`
+//   mcloud-plugin 0.2.17 · 插件 `mcloud-live`
 
 // src/entries/live.ts
 import { debug as debug2, register_cron } from "host-api";
@@ -2379,7 +2379,7 @@ function runLiveDraw(deps, opts = {}) {
   const TASK = "live-room";
   void opts;
   let s = loadDrawState(deps.store);
-  const codes = collectCodes(deps.store, Date.parse(deps.nowIso));
+  const codes = opts.codes ? [...opts.codes] : collectCodes(deps.store, Date.parse(deps.nowIso));
   if (!s || s.step === "done") {
     const done = s?.codes ?? [];
     const { pool } = loadFreshPool(deps.store, Date.parse(deps.nowIso));
@@ -4420,15 +4420,20 @@ function collectOnce(deps, runStartMs) {
     valid > 0 ? `池里现在有 ${valid} 条已验证的口令` : `池里现在有 ${candidates.length} 条待验证口令（拿去领就会验）`
   );
 }
-function drawOnce(deps, runStartMs) {
-  const r = drain(runLiveDraw, deps, {
-    label: "领小红花",
-    maxSteps: 12,
-    deadlineMs: Math.max(15e3, runStartMs + BUDGET_MS - Date.now() - 3e3),
-    startedAt: runStartMs
-  });
+function drawOnce(deps, runStartMs, onlyCodes) {
+  const before = loadDrawState(deps.store);
+  const r = drain(
+    (d) => runLiveDraw(d, onlyCodes ? { codes: onlyCodes } : {}),
+    deps,
+    {
+      label: "领小红花",
+      maxSteps: 12,
+      deadlineMs: Math.max(15e3, runStartMs + BUDGET_MS - Date.now() - 3e3),
+      startedAt: runStartMs
+    }
+  );
   const st = loadDrawState(deps.store);
-  const replay = r.idle === true && /已跑完|没有口令可领|口令没变|不重复领/.test(r.notes.join(" "));
+  const replay = before?.step === "done" && st?.startedAt === before.startedAt;
   const prefix = replay ? "上次：" : "";
   const rows = st?.results ?? [];
   const steps = rows.map((row) => {
@@ -4476,7 +4481,8 @@ register_cron(
         if (one.stopped) stopAll = true;
       }
       if (stopAll) return { steps: [], detail: [], ok: true, note: "没在播，跳过" };
-      return drawOnce(deps, startedMs);
+      const onlyCodes = manual ? (loadLiveCodes(store)?.codes ?? []).map((c2) => c2.trim()).filter(Boolean) : null;
+      return drawOnce(deps, startedMs, onlyCodes);
     });
     if (runs.length === 0) return;
     const c = collected;

@@ -256,8 +256,13 @@ function collectOnce(
 function drawOnce(
   deps: TaskDeps,
   runStartMs: number,
+  onlyCodes: readonly string[] | null,
 ): { steps: RunStep[]; detail: string[]; ok: boolean; note: string } {
-  const r = drain(runLiveDraw, deps, {
+  const before = loadDrawState(deps.store);
+  const r = drain(
+    (d) => runLiveDraw(d, onlyCodes ? { codes: onlyCodes } : {}),
+    deps,
+    {
     label: '领小红花',
     maxSteps: 12,
     deadlineMs: Math.max(15_000, runStartMs + BUDGET_MS - Date.now() - 3_000),
@@ -268,8 +273,9 @@ function drawOnce(
   const st = loadDrawState(deps.store);
   // 这一趟是“新领”还是“口令没变、没重复发请求”：后者把上次结果标成「上次」，
   // 免得用户连点几次都看到同一段，以为在报假数据。
-  const replay =
-    r.idle === true && /已跑完|没有口令可领|口令没变|不重复领/.test(r.notes.join(' '));
+  // 是否“没发新请求”：看**跑之前和跑完之后是不是同一轮**（startedAt 不变），
+  // 不能看 drain 的收尾 note —— 新跑完的一轮也会被状态机写成“已跑完”。
+  const replay = before?.step === 'done' && st?.startedAt === before.startedAt;
   const prefix = replay ? '上次：' : '';
   const rows = st?.results ?? [];
   const steps: RunStep[] = rows.map((row) => {
@@ -335,7 +341,9 @@ register_cron(
         if (one.stopped) stopAll = true;
       }
       if (stopAll) return { steps: [] as RunStep[], detail: [] as string[], ok: true, note: '没在播，跳过' };
-      return drawOnce(deps, startedMs);
+      // 人贴了口令就**只领他贴的那一条**，别把池里的旧候选混进来。
+      const onlyCodes = manual ? (loadLiveCodes(store)?.codes ?? []).map((c) => c.trim()).filter(Boolean) : null;
+      return drawOnce(deps, startedMs, onlyCodes);
     });
     // 没选到账号 ⇒ 静默返回（那不是失败，是"这条任务没配账号"）
     if (runs.length === 0) return;

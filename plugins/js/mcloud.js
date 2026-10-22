@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.16 · 插件 `mcloud`
+//   mcloud-plugin 0.2.17 · 插件 `mcloud`
 
 // src/entries/mcloud.ts
 import {
@@ -7083,7 +7083,7 @@ function runLiveDraw(deps, opts = {}) {
   const TASK = "live-room";
   void opts;
   let s = loadDrawState(deps.store);
-  const codes = collectCodes(deps.store, Date.parse(deps.nowIso));
+  const codes = opts.codes ? [...opts.codes] : collectCodes(deps.store, Date.parse(deps.nowIso));
   if (!s || s.step === "done") {
     const done = s?.codes ?? [];
     const { pool } = loadFreshPool(deps.store, Date.parse(deps.nowIso));
@@ -10674,7 +10674,26 @@ function buildReadings(deps) {
       const liveListen = loadListenState(liveOne);
       return {
         reading: readLiveReading(liveOne),
-        codes: loadLiveCodes(liveOne),
+        // 界面要看到**所有抓到的口令**（包括无效的），不能只显示人贴的那一份；
+        // 也不能把 `LiveCodes` 这个对象直接丢给界面（它要的是数组）。
+        codes: (() => {
+          const human = loadLiveCodes(liveOne)?.codes ?? [];
+          const poolCodes = loadFreshPool(deps.store, nowMs).pool.codes;
+          const seen = /* @__PURE__ */ new Set();
+          const out = [];
+          for (const c of human) {
+            const code = c.trim();
+            if (code === "" || seen.has(code)) continue;
+            seen.add(code);
+            out.push({ code, source: "手动" });
+          }
+          for (const c of poolCodes) {
+            if (seen.has(c.value)) continue;
+            seen.add(c.value);
+            out.push({ code: c.value, state: c.state, source: c.source, reason: c.reason });
+          }
+          return out;
+        })(),
         url: loadLiveUrl(liveOne),
         pool: readPoolSummary(deps.store, localStamp(nowMs), nowMs),
         gate: liveGate,

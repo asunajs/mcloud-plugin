@@ -1037,7 +1037,7 @@ test('⚠ 直播：口令只收**一次**（一个账号听到，所有账号都
   assert.ok(/function drawOnce\(/.test(live), '领取才是按账号的那一支');
   assert.ok(/if \(index === 0 && !manual\) \{[\s\S]{0,160}?collectOnce\(deps, startedMs\)/.test(live),
     '只有第一个账号去收，且人贴了口令就不收');
-  assert.ok(/return drawOnce\(deps, startedMs\);/.test(live), '每个账号都领');
+  assert.ok(/return drawOnce\(deps, startedMs, onlyCodes\);/.test(live), '每个账号都领（手动只领贴的那条）');
   // 听窗口不能再按账号摊预算
   assert.ok(!/runLive\(deps, startedMs\)/.test(live), '不再有"每账号跑一遍"');
   assert.ok(/const listenDeadline =[\s\S]{0,200}BUDGET_MS - 20_000/.test(live), '截止按整趟算');

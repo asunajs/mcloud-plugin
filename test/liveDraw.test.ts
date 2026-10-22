@@ -253,6 +253,19 @@ test('池里判过无效的口令**不再投**（否则每轮白跑一枪 200108
   assert.deepEqual(collectCodes(store, Date.parse(NOW)), ['甲'], '乙 已判无效 ⇒ 不再进这一轮');
 });
 
+test('手动只贴一条 ⇒ 这一轮只领这一条，池里的旧候选不混进来', () => {
+  const store = seeded({ codes: ['我贴的'] });
+  const { pool } = loadPoolFrom(store);
+  note(pool, ['池里旧的'], 'danmaku', Date.parse(NOW));
+  savePoolTo(store, pool, NOW);
+
+  const { transport } = fakeUpstream();
+  runLiveDraw({ store, transport, nowIso: NOW }, { codes: ['我贴的'] });
+  const st = loadDrawState(store);
+  assert.deepEqual(st?.codes, ['我贴的'], '只准出现人贴的那一条');
+  assert.ok(!(st?.codes ?? []).includes('池里旧的'));
+});
+
 test('这个账号领过的口令**不再投**（回 200112 不是新结果，却会把归因搅浑）', () => {
   const store = seeded({ codes: ['甲'] });
   const { pool } = loadPoolFrom(store);

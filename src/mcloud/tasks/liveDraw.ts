@@ -233,7 +233,10 @@ export function stepRequest(
 }
 
 /** 推进一步。**一次调用最多发一个请求。** */
-export function runLiveDraw(deps: TaskDeps, opts: { force?: boolean } = {}): TaskOutcome {
+export function runLiveDraw(
+  deps: TaskDeps,
+  opts: { force?: boolean; codes?: readonly string[] } = {},
+): TaskOutcome {
   const TASK = 'live-room';
 
   // 不再做本地领取限制：有口令就去领。
@@ -242,7 +245,9 @@ export function runLiveDraw(deps: TaskDeps, opts: { force?: boolean } = {}): Tas
   void opts;
 
   let s = loadDrawState(deps.store);
-  const codes = collectCodes(deps.store, Date.parse(deps.nowIso));
+  // 手动贴进来的那一轮：**只用他这次贴的**。池里以前听来的候选不能混进来，
+  // 否则“我输入一条，结果两条” —— 用户不知道另一条是哪来的。
+  const codes = opts.codes ? [...opts.codes] : collectCodes(deps.store, Date.parse(deps.nowIso));
 
   if (!s || s.step === 'done') {
     // 跑完了、或还没开始 ⇒ 看要不要起一轮新的。
