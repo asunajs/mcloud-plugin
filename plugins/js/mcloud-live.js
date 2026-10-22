@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.15 · 插件 `mcloud-live`
+//   mcloud-plugin 0.2.16 · 插件 `mcloud-live`
 
 // src/entries/live.ts
 import { debug as debug2, register_cron } from "host-api";
@@ -4428,11 +4428,28 @@ function drawOnce(deps, runStartMs) {
     startedAt: runStartMs
   });
   const st = loadDrawState(deps.store);
-  const finalNote = st?.step === "done" && st.summary ? st.summary : r.note;
+  const replay = r.idle === true && /已跑完|没有口令可领|口令没变|不重复领/.test(r.notes.join(" "));
+  const prefix = replay ? "上次：" : "";
+  const rows = st?.results ?? [];
+  const steps = rows.map((row) => {
+    const head = `口令「${row.code}」`;
+    const detail = row.note.startsWith(head) ? row.note.slice(head.length).trim() : row.note;
+    return {
+      name: head,
+      ok: row.kind === "succeeded",
+      note: `${prefix}${detail}`,
+      idle: false
+    };
+  });
+  const finalNote = st?.step === "done" && st.summary ? `${prefix}${st.summary}` : r.note;
   const noClaim = /没开|跳过|没有可|不用领|无需/.test(finalNote);
-  const steps = [
-    { name: "领小红花", ok: r.ok, note: finalNote, idle: r.idle === true && noClaim, pending: r.pending === true }
-  ];
+  steps.push({
+    name: "领小红花",
+    ok: r.ok,
+    note: finalNote,
+    idle: r.idle === true && noClaim,
+    pending: r.pending === true
+  });
   return {
     steps,
     detail: steps.map((s) => userLine(s)).filter((x) => x !== null),
