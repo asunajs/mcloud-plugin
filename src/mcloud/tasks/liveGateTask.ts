@@ -75,7 +75,7 @@ import {
 import type { LiveRoom } from '../liveGate.ts';
 import { parseSsoToken } from '../h5session.ts';
 import { STATE_AUTH, loadAuthRaw } from '../sessionExchange.ts';
-import { loadPoolFrom, noteProbe, normalize, poolSummary, savePoolTo } from '../koulingPool.ts';
+import { KOULING_ANCHOR, loadPoolFrom, noteProbe, normalize, poolSummary, savePoolTo } from '../koulingPool.ts';
 import type { PoolSummary, ProbeRoom } from '../koulingPool.ts';
 import type { Store } from '../../store/types.ts';
 
@@ -110,6 +110,8 @@ export interface GateReading {
   rooms: ProbeRoom[];
   /** 门那两种"没有"的人话。 */
   note: string;
+  /** 要听的主播名（界面说"不是它的"时要用名字，不能只写代词）。 */
+  target: string;
 }
 
 /** 门的上游基址：**一个口子同时替换两台主机**。
@@ -245,6 +247,7 @@ function roomsStep(
     liveCount: rooms.filter((r) => r.status === 1).length,
     rooms: toProbeRooms(rooms),
     note,
+    target: KOULING_ANCHOR,
   };
   deps.store.setState(STATE_READING, JSON.stringify(reading), deps.nowIso);
 
