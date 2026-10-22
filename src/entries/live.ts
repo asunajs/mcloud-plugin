@@ -266,13 +266,35 @@ function drawOnce(
   // `drain` 的 `brief` 对超长 note 会退成「领小红花：好了」，用户根本不知道
   // 领没领到。这里直接读本轮落盘的 summary（`3 条领到 2 条，进账 10 朵`）。
   const st = loadDrawState(deps.store);
-  const finalNote = st?.step === 'done' && st.summary ? st.summary : r.note;
+  // 这一趟是“新领”还是“口令没变、没重复发请求”：后者把上次结果标成「上次」，
+  // 免得用户连点几次都看到同一段，以为在报假数据。
+  const replay =
+    r.idle === true && /已跑完|没有口令可领|口令没变|不重复领/.test(r.notes.join(' '));
+  const prefix = replay ? '上次：' : '';
+  const rows = st?.results ?? [];
+  const steps: RunStep[] = rows.map((row) => {
+    const head = `口令「${row.code}」`;
+    const detail = row.note.startsWith(head) ? row.note.slice(head.length).trim() : row.note;
+    return {
+      name: head,
+      ok: row.kind === 'succeeded',
+      note: `${prefix}${detail}`,
+      idle: false,
+    };
+  });
+  const finalNote = st?.step === 'done' && st.summary
+    ? `${prefix}${st.summary}`
+    : r.note;
   // `drain` 收尾时 `idle` 常为 true（状态机“走完”），不能拿它当“没领”。
   // 只有明确说没开/跳过才算 idle；领到/好了是实打实的结果。
   const noClaim = /没开|跳过|没有可|不用领|无需/.test(finalNote);
-  const steps: RunStep[] = [
-    { name: '领小红花', ok: r.ok, note: finalNote, idle: r.idle === true && noClaim, pending: r.pending === true },
-  ];
+  steps.push({
+    name: '领小红花',
+    ok: r.ok,
+    note: finalNote,
+    idle: r.idle === true && noClaim,
+    pending: r.pending === true,
+  });
   return {
     steps,
     detail: steps.map((s) => userLine(s)).filter((x): x is string => x !== null),
