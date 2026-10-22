@@ -436,6 +436,12 @@
             自动运行：<span id="daily-acct-label">全部账号</span> ▾
           </button>
           <div class="picker-panel" id="daily-acct-panel" hidden>
+            <!-- 这一条只在"这份账号是从你以前的设置沿用的"时出现（JS 翻 `hidden`）。
+                 ⚠ 措辞别写成「旧版设置」：那是仓库里的词（`legacyAuto`），
+                 用户读到只会以为"这设置过期了"或"还有一份新版设置我没找到"。 -->
+            <p class="hint picker-note" id="daily-acct-legacy" hidden>
+              这份账号沿用你以前的设置（那时定时和手动共用一份）。改一次，以后就分开记。
+            </p>
             <label class="picker-row picker-all">
               <input type="checkbox" id="daily-acct-all" />
               <span><b>全部账号</b><br /><span class="hint">定时触发用这一份；以后新登录的账号也一起跑</span></span>
@@ -608,6 +614,9 @@
             自动运行：<span id="live-acct-label">全部账号</span> ▾
           </button>
           <div class="picker-panel" id="live-acct-panel" hidden>
+            <p class="hint picker-note" id="live-acct-legacy" hidden>
+              这份账号沿用你以前的设置（那时定时和手动共用一份）。改一次，以后就分开记。
+            </p>
             <label class="picker-row picker-all">
               <input type="checkbox" id="live-acct-all" />
               <span><b>全部账号</b><br /><span class="hint">定时触发用这一份；以后新登录的账号也一起跑</span></span>
@@ -630,6 +639,17 @@
             </label>
             <div class="picker-list" id="live-manual-list"></div>
           </div>
+        </div>
+        <!-- 听弹幕时长：照 mcloud Rust 的「听弹幕时长」参数（5–1800 秒）。
+             放在直播卡片上，因为它就是这一条任务的参数；不是账号设置。 -->
+        <div class="row">
+          <label class="field">
+            <span class="field-label">听弹幕时长</span>
+            <input id="live-listen-seconds" type="number" min="5" max="1800" step="5" inputmode="numeric" />
+            <span class="hint">秒（5–1800，默认 600）</span>
+          </label>
+          <button class="btn" id="live-listen-save">保存时长</button>
+          <span class="hint" id="live-listen-note">所有账号统一使用</span>
         </div>
 <div class="acct-chips" id="live-accounts"></div>
         <ul class="steps" id="live-account-detail"></ul>

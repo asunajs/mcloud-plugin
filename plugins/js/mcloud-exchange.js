@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.11 · 插件 `mcloud-exchange`
+//   mcloud-plugin 0.2.12 · 插件 `mcloud-exchange`
 
 // src/entries/exchange.ts
 import { debug as debug2, log as log3, register_cron, worker_hint } from "host-api";
@@ -164,6 +164,9 @@ var KEY_SCOPE = {
   "mcloud.live.listen": "account",
   "mcloud.live.listen_room": "account",
   "mcloud.live.listen_seconds": "account",
+  // 直播页上那个「听弹幕时长」是**任务级**的（所有账号用同一段），
+  // 与账号级诊断口子分开；账号级仍可作为没设任务级时的回落。
+  "mcloud.live.listen_seconds.task": "global",
   "mcloud.live.url": "account",
   "mcloud.live.wake_plan": "account",
   "mcloud.live.ws_base": "account",

@@ -49,7 +49,7 @@ import { lineLevel, lineText, onceHint, stepTally, userLine } from '../mcloud/ta
 import { collectCodes, runLiveDraw } from '../mcloud/tasks/liveDraw.ts';
 import { readGateReading, runLiveGate } from '../mcloud/tasks/liveGateTask.ts';
 import { KOULING_ANCHOR, loadPoolFrom, stopScraping, validCount } from '../mcloud/koulingPool.ts';
-import { runLiveListen } from '../mcloud/tasks/liveListen.ts';
+import { loadListenSeconds, runLiveListen } from '../mcloud/tasks/liveListen.ts';
 import type { ListenDeps } from '../mcloud/tasks/liveListen.ts';
 import { runLiveRoom } from '../mcloud/tasks/liveRoom.ts';
 import type { TaskDeps, TaskOutcome } from '../mcloud/tasks/base.ts';
@@ -113,6 +113,8 @@ function collectOnce(
     stopped,
   });
 
+  logBoth(store, 'start', '直播口令：开始查开播', deps.nowIso);
+
   // ⓪ 先问一次**这个面板构建支不支持直播**。
   //
   //   为什么放在最前面：不支持的时候，后面每一条（门、小红书、弹幕）都会
@@ -163,6 +165,7 @@ function collectOnce(
       idle: false,
       note: `「${KOULING_ANCHOR}」开播了（${liveCount} 间在播）`,
     });
+    logBoth(store, 'start', `开播了，开始听弹幕（窗口 ${loadListenSeconds(deps.store)} 秒）`, deps.nowIso);
   }
 
   // ② 小红书（公开 GET，封控要求 ≥30 分钟一次）
@@ -190,6 +193,16 @@ function collectOnce(
     listenNote = r.note;
     if (!r.ok || r.idle) break;
     frames++;
+    // 长连接是同步循环，不在这里打点的话界面上整段时间一行日志都没有 ——
+    // 用户只能看到一个「跑着呢 70s」，以为卡死了。每 5 拍报一次进度。
+    if (frames === 1 || frames % 5 === 0) {
+      logBoth(
+        store,
+        'debug',
+        `听弹幕中：第 ${frames} 拍（已听约 ${Math.round((Date.now() - runStartMs) / 1000)} 秒）`,
+        deps.nowIso,
+      );
+    }
     if (frames > 60) break;
   }
   if (frames > 0) {

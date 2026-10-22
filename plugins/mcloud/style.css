@@ -886,6 +886,14 @@ textarea:focus {
   padding-bottom: var(--sp-2);
 }
 
+/* 「这份账号是沿用的」那条说明。放在「全部账号」开关**上面**：先说这份值
+   是怎么来的，再说能改成什么。字号/颜色沿用面板的 `.hint`，这里只补浮层
+   里的左右留白（浮层自身只有 `--sp-1` 的内边距，文字会贴到边上）。 */
+.picker-note {
+  padding: var(--sp-1) var(--sp-2) 0;
+  line-height: 1.5;
+}
+
 .picker-list .picker-row {
   font-size: 13px;
 }
