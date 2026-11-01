@@ -56,3 +56,32 @@ test('没有配置 / 没有 caiyun 时给出明确错误', async () => {
   writeFileSync(p, JSON.stringify({ version: 2 }));
   await assert.rejects(() => loadConfig(p), /caiyun/);
 });
+
+test('「红包派对.开启」只在**明确写了**时才读成值：没写 / 形状不对都是 `undefined`', async () => {
+  const d = dir();
+  const p = join(d, 'asign.json');
+  writeFileSync(
+    p,
+    JSON.stringify({
+      version: 2,
+      caiyun: [
+        { auth: 'Basic dGVzdDoxMjM=', nickname: '写了关', 红包派对: { 开启: false } },
+        { auth: 'Basic dGVzdDoxMjQ=', nickname: '没写' },
+      ],
+      common: { 红包派对: { 开启: false } },
+    }),
+  );
+  const c = await loadConfig(p);
+  assert.equal(c.accounts[0]!.redpackEnabled, false);
+  // ⚠ 第二账号是 `undefined` 而不是 `false`：那一层留给 runtime 去合 common，
+  //   在这里就折成 false 的话，「没写过」与「写过关掉」再也分不开 —— 重启会把
+  //   用户在面板上开的号偷偷关掉。
+  assert.equal(c.accounts[1]!.redpackEnabled, undefined);
+  assert.equal(c.commonRedpackEnabled, false);
+
+  // 形状不对（写成布尔 / 字符串）⇒ 也当没写，不猜一个 false 出来
+  writeFileSync(p, JSON.stringify({ version: 2, caiyun: [{ auth: 'Basic dGVzdDoxMjM=' }], common: { 红包派对: false } }));
+  const bad = await loadConfig(p);
+  assert.equal(bad.commonRedpackEnabled, undefined);
+  assert.equal(bad.accounts[0]!.redpackEnabled, undefined);
+});

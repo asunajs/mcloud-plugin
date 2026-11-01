@@ -22,6 +22,18 @@
 // # 两种定位
 //
 // 按 id（`parentFileId`）或按路径（`parentPath`）—— **两支不同**，由调用方给。
+//
+// # ⚠ 一台状态机 = 一个**槽位**，槽位按任务分
+//
+// 这个文件原来是"一个账号一格"（`mcloud.upload.state`），于是**两条任务共用一格**：
+// `task-expansion`（备份支）与 `app-task`（手动上传支）都往同一格写游标，
+// 而 `uploadDone()` 只问"这格是不是 done"。现场（2026-11-01）三条账号上都是
+// 「App 任务的 `asign-*.bin` 躺在格子里，而任务拓展记着自己的 `uploadFileId`」——
+// 两边都对不上，"到底是谁传的、传完没有"从读数里判不出来。
+//
+// 所以所有函数都收一个 `key`：**调用方按任务给槽位**（默认仍是老那格，
+// App 任务不用改）。槽位本身是**账号袋里的键** ⇒ 账号那一维由 `scoped()` 负责，
+// 这里只多出"任务"这一维。
 
 
 import { callRawText } from '../client.ts';
@@ -35,6 +47,7 @@ import {
   parseCreate,
 } from '../cloudUpload.ts';
 import type { CloudOp } from '../cloudUpload.ts';
+import { registerOwnedFile } from './ownedFiles.ts';
 import type { TaskDeps, TaskOutcome } from './base.ts';
 
 export const STATE_UPLOAD = 'mcloud.upload.state';
@@ -56,6 +69,8 @@ export interface UploadState {
   rapidUpload?: boolean | undefined;
   /** 重建字节用的种子（不落原始字节；`runUploadStep` 缺 bytes 时用它重算）。 */
   seed?: string | undefined;
+  /** 走哪一档（`android` 缺省 / `pc` 给 113）—— 头画像整组跟着变。 */
+  channel?: 'android' | 'pc' | undefined;
   /** 改名模式 / 并行上传 / localCreatedAt / op：由调用方按支路口径给。 */
   renameMode?: string | undefined;
   parallelUpload?: boolean | undefined;
@@ -73,8 +88,8 @@ const STEP_TEXT: Record<UploadStep, string> = {
   done: '完成',
 };
 
-export function loadUpload(deps: TaskDeps): UploadState | null {
-  const raw = deps.store.getState(STATE_UPLOAD);
+export function loadUpload(deps: TaskDeps, key: string = STATE_UPLOAD): UploadState | null {
+  const raw = deps.store.getState(key);
   if (!raw) return null;
   try {
     const v = JSON.parse(raw) as UploadState;
@@ -84,12 +99,13 @@ export function loadUpload(deps: TaskDeps): UploadState | null {
   }
 }
 
-function save(deps: TaskDeps, st: UploadState): void {
-  deps.store.setState(STATE_UPLOAD, JSON.stringify(st), deps.nowIso);
+function save(deps: TaskDeps, st: UploadState, key: string): void {
+  deps.store.setState(key, JSON.stringify(st), deps.nowIso);
 }
 
-export function clearUpload(deps: TaskDeps): void {
-  deps.store.setState(STATE_UPLOAD, '', deps.nowIso);
+/** 清掉一个槽位（`key` 缺省 = App 任务那一格）。 */
+export function clearUpload(deps: TaskDeps, key: string = STATE_UPLOAD): void {
+  deps.store.setState(key, '', deps.nowIso);
 }
 
 /** 排队的上传（**一个请求都不发**：只是把"要传什么"与摘要写下来）。 */
@@ -105,8 +121,13 @@ export function startUpload(
     parallelUpload?: boolean;
     localCreatedAt?: string;
     op?: CloudOp;
+    /** `pc` = 113 那档（头画像整组不同，见 `cloudFileOpHeaders`）。 */
+    channel?: 'android' | 'pc';
+    /** 哪个槽位（**按任务分**，见文件头。缺省 = App 任务那格）。 */
+    key?: string;
   },
 ): TaskOutcome {
+  const key = opts.key ?? STATE_UPLOAD;
   if (opts.name.trim() === '') return { ok: false, note: '上传要有文件名' };
   if (opts.bytes.length === 0) return { ok: false, note: '上传的内容是空的' };
   const st: UploadState = {
@@ -122,8 +143,9 @@ export function startUpload(
     parallelUpload: opts.parallelUpload,
     localCreatedAt: opts.localCreatedAt,
     op: opts.op,
+    channel: opts.channel,
   };
-  save(deps, st);
+  save(deps, st, key);
   // ⚠ 字节本身**不落库**：它在第 ② 枪时要重新给（由调用方从"确定的文件体"重建，
   //   见 `deterministicFile`）—— 把 1 KB 的 base64 塞进 state 只会让库变脏。
   return {
@@ -133,8 +155,12 @@ export function startUpload(
 }
 
 /** 推进一步。`bytes` 只在 `put` 那一步需要（第 ① ③ 枪只用摘要）。 */
-export function runUploadStep(deps: TaskDeps, bytes?: Uint8Array): TaskOutcome {
-  const st = loadUpload(deps);
+export function runUploadStep(
+  deps: TaskDeps,
+  bytes?: Uint8Array,
+  key: string = STATE_UPLOAD,
+): TaskOutcome {
+  const st = loadUpload(deps, key);
   if (!st) return { ok: true, idle: true, note: '没有在排队的上传' };
   if (st.step === 'done') return { ok: true, idle: true, note: '这一次上传已经走完' };
   const label = STEP_TEXT[st.step];
@@ -149,6 +175,7 @@ export function runUploadStep(deps: TaskDeps, bytes?: Uint8Array): TaskOutcome {
       parallelUpload: st.parallelUpload,
       localCreatedAt: st.localCreatedAt,
       op: st.op,
+      channel: st.channel,
     });
     const res = callRawText(deps.transport, req);
     if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? '未知失败'}` };
@@ -162,21 +189,23 @@ export function runUploadStep(deps: TaskDeps, bytes?: Uint8Array): TaskOutcome {
       // 撞上用户已有同名文件：上游按 refuse 语义把那一枚交回来 ⇒ **不是我们造的**，
       // 既不 PUT 也不进清理名单。
       next.step = 'done';
-      save(deps, next);
+      save(deps, next, key);
       return { ok: true, note: `${label}：撞上已有同名文件（不是我们造的，不覆盖、不删）` };
     }
     if (c.rapidUpload) {
       // 秒传 ⇒ **没有 PUT 可发**（真机那一支就是 `uploadId: null`）
       next.step = 'done';
       next.rapidUpload = true;
-      save(deps, next);
+      save(deps, next, key);
+      // 只有明确“是我们造的”才登记；撞同名/判不了不进兜底名单。
+      if (ownedByUs === true) registerOwnedFile(deps, c.fileId);
       return { ok: true, note: `${label}：秒传命中（fileId ${c.fileId.length} 字符）⇒ 不用传字节，这次上传已完成` };
     }
     next.step = 'put';
     next.uploadId = c.uploadId;
     next.uploadUrl = c.uploadUrl;
     next.rapidUpload = false;
-    save(deps, next);
+    save(deps, next, key);
     // ⚠ 不打印 uploadUrl（按凭据对待），只说长度
     return { ok: true, note: `${label}：拿到 fileId 与预签名地址（${c.uploadUrl.length} 字符）—— 下一步传字节` };
   }
@@ -203,23 +232,27 @@ export function runUploadStep(deps: TaskDeps, bytes?: Uint8Array): TaskOutcome {
     }
     const res = callRawText(deps.transport, req);
     if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? '未知失败'}` };
-    save(deps, { ...st, step: 'complete' });
+    save(deps, { ...st, step: 'complete' }, key);
     return { ok: true, note: `${label}：${body.length} 字节已发（HTTP ${res.status}）—— 下一步确认` };
   }
 
   // complete
   const res = callRawText(
     deps.transport,
-    buildCompleteRequest(st.fileId!, st.uploadId!, st.contentHash, st.op ?? 'backup'),
+    buildCompleteRequest(st.fileId!, st.uploadId!, st.contentHash, st.op ?? 'backup', st.channel ?? 'android'),
   );
   if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? '未知失败'}` };
   const parsed = parseComplete(res.text);
   if (!parsed.ok) return { ok: false, note: `${label}：${parsed.error}` };
-  save(deps, { ...st, step: 'done' });
+  save(deps, { ...st, step: 'done' }, key);
+  if (st.ownedByUs === true) registerOwnedFile(deps, st.fileId);
   return { ok: true, note: `${label}：已确认（fileId ${(st.fileId ?? '').length} 字符）—— 这次上传完成` };
 }
 
-/** 上传是否已经走完（`task-expansion` 靠它决定要不要进入"等一会儿再复查"那一步）。 */
-export function uploadDone(deps: TaskDeps): boolean {
-  return loadUpload(deps)?.step === 'done';
+/** 上传是否已经走完（`task-expansion` 靠它决定要不要进入"等一会儿再复查"那一步）。
+ *
+ *  ⚠ 只问**自己那个槽位**：按任务分槽之前，这里会把 App 任务传完的那一格
+ *  当成"任务拓展也传完了"（反之亦然）—— 见文件头那段现场。 */
+export function uploadDone(deps: TaskDeps, key: string = STATE_UPLOAD): boolean {
+  return loadUpload(deps, key)?.step === 'done';
 }

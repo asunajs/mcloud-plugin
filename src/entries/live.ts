@@ -41,6 +41,7 @@
 //   的 `MAX_DECLARED_BUDGET_MS`），5 分钟留足了余量。
 
 import { debug, register_cron, warn } from 'host-api';
+import { runAuthRefresh } from '../mcloud/authRefresh.ts';
 import { blockersFor, setTaskBlockers, setTaskSummary, summaryFor } from '../mcloud/taskReadiness.ts';
 import { appendRun, type RunStep } from '../mcloud/runLog.ts';
 import { labelOf, shortLabel } from '../mcloud/taskAccounts.ts';
@@ -120,6 +121,11 @@ function collectOnce(
   });
 
   logBoth(store, 'start', '直播口令：开始查开播', deps.nowIso);
+
+  // ⓪ 原生 token 先判一次：到期自动续；不新鲜时门和 WS 都会一起失败。
+  const auth = step('凭据续期', () => runAuthRefresh(deps));
+  // 管道步骤成功时不进用户日志；这里给排查留一行 debug，证明自动判过。
+  debug(`凭据续期：${auth.note}`);
 
   // ⓪ 先问一次**这个面板构建支不支持直播**。
   //
@@ -258,6 +264,8 @@ function drawOnce(
   runStartMs: number,
   onlyCodes: readonly string[] | null,
 ): { steps: RunStep[]; detail: string[]; ok: boolean; note: string } {
+  // 每次领取前先判一次原生 token：到期就自动续，离到期还远则零请求。
+  const auth = runAuthRefresh(deps);
   const before = loadDrawState(deps.store);
   const r = drain(
     (d) => runLiveDraw(d, onlyCodes ? { codes: onlyCodes } : {}),
@@ -278,7 +286,15 @@ function drawOnce(
   const replay = before?.step === 'done' && st?.startedAt === before.startedAt;
   const prefix = replay ? '上次：' : '';
   const rows = st?.results ?? [];
-  const steps: RunStep[] = rows.map((row) => {
+  const steps: RunStep[] = [
+    {
+      name: '凭据续期',
+      ok: auth.ok,
+      note: auth.note,
+      idle: auth.idle === true || auth.skipped === true,
+    },
+  ];
+  steps.push(...rows.map((row) => {
     const head = `口令「${row.code}」`;
     const detail = row.note.startsWith(head) ? row.note.slice(head.length).trim() : row.note;
     return {
@@ -287,7 +303,7 @@ function drawOnce(
       note: `${prefix}${detail}`,
       idle: false,
     };
-  });
+  }));
   const finalNote = st?.step === 'done' && st.summary
     ? `${prefix}${st.summary}`
     : r.note;

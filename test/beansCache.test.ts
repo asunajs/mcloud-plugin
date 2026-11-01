@@ -19,6 +19,7 @@ const NOW = '2026-10-20T12:00:00.000Z';
 const DAY = {
   net: 12,
   gained: 30,
+  gainedCount: 3,
   spent: 18,
   count: 4,
 };

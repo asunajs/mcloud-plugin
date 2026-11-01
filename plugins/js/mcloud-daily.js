@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.17 · 插件 `mcloud-daily`
+//   mcloud-plugin 0.2.18 · 插件 `mcloud-daily`
 
 // src/entries/daily.ts
 import { debug as debug2, register_cron } from "host-api";
@@ -74,7 +74,8 @@ function drain(step, deps, opts) {
 var BRIEF_MAX = 40;
 function brief(s, label) {
   const t = s.trim();
-  return t.length === 0 || t.length > BRIEF_MAX ? `${label}：好了` : t;
+  if (t.length === 0) return `${label}：好了`;
+  return t.length > BRIEF_MAX ? `${t.slice(0, BRIEF_MAX - 1)}…` : t;
 }
 
 // src/mcloud/tasks/stepLog.ts
@@ -125,7 +126,7 @@ function lineLevel(line) {
   }
   if (line.includes("没成")) return "fail";
   if (/需手动|手动完成|需前往|需要你|手动打开|这一步我们做不了/.test(line)) return "warn";
-  if (/（只看）|快照|问状态|流水|本月排名|已开启|有效期|剩余|当前云朵|登录账号|过期时间|已完成 \d+ 条|另有 \d+ 条/.test(
+  if (/（只看）|快照|问状态|流水|本月排名|已开启|有效期|剩余|当前云朵|今日云朵|今日获得|登录账号|过期时间|已完成 \d+ 条|另有 \d+ 条/.test(
     line
   )) {
     return "info";
@@ -204,7 +205,7 @@ function hostFetchOptions(req, timeoutMs) {
 }
 function callOnce(transport2, req) {
   const t0 = Date.now();
-  const fail2 = (error3) => ({
+  const fail3 = (error3) => ({
     status: 0,
     tookMs: Date.now() - t0,
     env: void 0,
@@ -218,11 +219,11 @@ function callOnce(transport2, req) {
   try {
     res = transport2(req);
   } catch (e) {
-    return fail2(`请求失败：${e instanceof Error ? e.message : String(e)}`);
+    return fail3(`请求失败：${e instanceof Error ? e.message : String(e)}`);
   }
-  if (isFetchError(res)) return fail2(pickError(res.error));
+  if (isFetchError(res)) return fail3(pickError(res.error));
   if (typeof res !== "object" || res === null || typeof res.body !== "string") {
-    return fail2(`请求返回的形状不认识：${JSON.stringify(res)?.slice(0, 200) ?? String(res)}`);
+    return fail3(`请求返回的形状不认识：${JSON.stringify(res)?.slice(0, 200) ?? String(res)}`);
   }
   const tookMs = Date.now() - t0;
   const raw = res.body.length > 500 ? `${res.body.slice(0, 500)}…` : res.body;
@@ -258,7 +259,7 @@ function applyDefaultContentType(req) {
 }
 function callRawText(transport2, req) {
   const t0 = Date.now();
-  const fail2 = (error2) => ({
+  const fail3 = (error2) => ({
     ok: false,
     status: 0,
     text: "",
@@ -270,13 +271,13 @@ function callRawText(transport2, req) {
   try {
     res = transport2(req);
   } catch (e) {
-    return fail2(`请求失败：${e instanceof Error ? e.message : String(e)}`);
+    return fail3(`请求失败：${e instanceof Error ? e.message : String(e)}`);
   }
   const tookMs = Date.now() - t0;
-  if (isFetchError(res)) return { ...fail2(pickError(res.error)), tookMs };
+  if (isFetchError(res)) return { ...fail3(pickError(res.error)), tookMs };
   if (typeof res !== "object" || res === null || typeof res.body !== "string") {
     return {
-      ...fail2(`请求返回的形状不认识：${JSON.stringify(res)?.slice(0, 200) ?? String(res)}`),
+      ...fail3(`请求返回的形状不认识：${JSON.stringify(res)?.slice(0, 200) ?? String(res)}`),
       tookMs
     };
   }
@@ -380,7 +381,12 @@ var KEY_SCOPE = {
   "mcloud.sign.stage": "account",
   "mcloud.sign.last": "account",
   "mcloud.sign.done": "account",
+  // 上传那台状态机**按任务分槽**：`mcloud.upload.state` 是 App 任务那一格，
+  // `mcloud.upload.state.expansion` 是任务拓展那一格（见 tasks/upload.ts 文件头）。
+  // 槽位名带任务 ⇒ 整串是拼出来的，静态扫描扫不到，所以按前缀也登记一条。
   "mcloud.upload.state": "account",
+  // 我们自己传上去、还没收尾的云盘文件（按账号；链尾兜底清理用）。
+  "mcloud.cloud.owned": "account",
   "mcloud.taskexpansion.state": "account",
   "mcloud.month.backup": "account",
   "mcloud.apptask.state": "account",
@@ -393,6 +399,10 @@ var KEY_SCOPE = {
   "mcloud.msgpush.can": "account",
   "mcloud.msgpush.last": "account",
   "mcloud.prizes.last": "account",
+  // 「领奖」页：待领取列表的缓存与进行中的那一单。
+  // 按账号 —— 奖品记录、单号、手机号都是某一个号的；串了号就是拿 A 的单号去领 B 的东西。
+  "mcloud.prizes.cache": "account",
+  "mcloud.prizes.claim": "account",
   "mcloud.multiple.last": "account",
   "mcloud.multiple.done": "account",
   "mcloud.revival.done": "account",
@@ -437,6 +447,16 @@ var KEY_SCOPE = {
   "mcloud.smid.deviceId": "account",
   "mcloud.smid.fingerprint": "account",
   "mcloud.auth.refresh.last": "account",
+  // ── 红包派对（移动云手机的活动站，另一套凭据：它自己的 `token` 头）──
+  // 整趟的进度台账：一次 drain 里跨步活着的只有它（活动站票与华为侧的票**跑完就抹**，
+  // 见 `tasks/redpackState.ts` 文件头）。按账号 —— 队列、按天的写账（`written`）
+  // 与给用户看的那几行都属于某一个号；串了号就是拿 A 的队列去发 B 的写请求。
+  "mcloud.redpack.state": "account",
+  // 开没开。**按账号**：参照实现那份默认配置就是每个号一格
+  // （`红包派对.开启`，默认 true），所以"这一个号开没开"确实是账号的属性。
+  "mcloud.redpack.enabled": "account",
+  // 指到别处用的口子（CI / 只读探针）。与 `mcloud.live.gate_base` 同一类，按账号。
+  "mcloud.redpack.base": "account",
   // ── 实例级配置 / 跨账号共享 ────────────────────────────────
   /** 账号表本身。 */
   "mcloud.accounts": "global",
@@ -494,7 +514,11 @@ var KEY_PREFIX_SCOPE = [
   ["mcloud.h5.exchange.", "account"],
   // 矩阵按**市场**分（`mcloud.apptaskmatrix.g.sign_in_3`）—— 动态拼出来的，
   // 静态扫描扫不到整串，所以按前缀登记。
-  ["mcloud.apptaskmatrix.g.", "account"]
+  ["mcloud.apptaskmatrix.g.", "account"],
+  // 上传状态机**按任务分槽**（`mcloud.upload.state.expansion`）。槽位名是拼出来的，
+  // 精确表里只有 App 任务那一格 ⇒ 这里补前缀。⚠ 不能落成 global：
+  // 它记的是"这个号传了什么、传到哪"，串号就会拿 A 的 fileId 去收尾。
+  ["mcloud.upload.state.", "account"]
 ];
 function scopeOf(key) {
   const exact = KEY_SCOPE[key];
@@ -2149,6 +2173,17 @@ function desEcbDecrypt(key, cipher) {
 function desDecryptBase64(cipherB64, key) {
   const raw = desEcbDecrypt(fitKey8(key), fromBase64(cipherB64));
   let end = raw.length;
+  const pad = end === 0 ? 0 : raw[end - 1];
+  if (pad >= 1 && pad <= 8 && pad <= end) {
+    let allPad = true;
+    for (let i = end - pad; i < end; i++) {
+      if (raw[i] !== pad) {
+        allPad = false;
+        break;
+      }
+    }
+    if (allPad) end -= pad;
+  }
   while (end > 0 && raw[end - 1] === 0) end--;
   return fromUtf8(raw.subarray(0, end));
 }
@@ -3304,6 +3339,18 @@ function hostBase(deps, fallback) {
 function depsNowMs(deps) {
   return (deps.nowMs ?? Date.now)();
 }
+function waitMs(deps, ms) {
+  if (ms <= 0) return;
+  const end = depsNowMs(deps) + Math.min(ms, 1e4);
+  while (depsNowMs(deps) < end) {
+    if (deps.spin) deps.spin();
+    else {
+      const t0 = Date.now();
+      while (Date.now() - t0 < 2) {
+      }
+    }
+  }
+}
 var ERR_PREFIX = "mcloud.last_error.";
 function recordError(store2, task, note, nowIso) {
   store2.setState(`${ERR_PREFIX}${task}`, `${note} @ ${nowIso}`, nowIso);
@@ -3491,6 +3538,13 @@ function summarize(items) {
   return { done, todo, skip, todoNames };
 }
 function runAppTaskMatrix(deps) {
+  const exp = jwtExpiry(deps.store, deps.nowIso);
+  if (exp !== null && exp.expired) {
+    return {
+      ok: false,
+      note: `凭据已过期（${exp.atIso.slice(0, 16).replace("T", " ")}）—— 先「刷新/重新导入」再读任务清单，这一趟不发请求（免得把好读数盖成全零）`
+    };
+  }
   const raw = deps.store.getState(STATE_GROUP_INDEX);
   const parsed = raw === void 0 || raw === null ? 0 : Number(raw);
   const idx = Number.isFinite(parsed) && parsed >= 0 && parsed < MATRIX_MARKETS.length ? parsed : 0;
@@ -3554,6 +3608,7 @@ var PUT_UPLOAD_DRAFT_INTEROP_VERSION = "6";
 var HASH_ALGORITHM = "SHA256";
 var FILE_TYPE_FILE = "file";
 var CHANNEL_ANDROID = "10000023";
+var CHANNEL_PC = "10200153";
 var RENAME_FORCE = "force_rename";
 var RENAME_REFUSE_DUPLICATE_CONTENT = "refuse_duplicate_content";
 var OP_TYPE_UPLOAD = "2";
@@ -3565,15 +3620,27 @@ function androidOpCodes(op) {
   const code = op === "backup" ? 2 : op === "upload" ? 1 : 0;
   return { opType: String(code), subOpType: String(code * 100) };
 }
-function cloudFileOpHeaders(op, channel = CHANNEL_ANDROID) {
+var CLIENT_INFO_PC = "||11|8.3.3.20250521|PC|TGktMjAyNDA5MTcxMDA2||| Windows 11 (11.0)|1920X1020|Q2hpbmVzZSAoU2ltcGxpZmllZCk=|||";
+function cloudFileOpHeaders(op, channel = "android") {
+  if (channel === "pc") {
+    return {
+      "x-yun-api-version": "v1",
+      "x-yun-app-channel": CHANNEL_PC,
+      "x-yun-op-type": "1",
+      "x-yun-market-source": "001",
+      "x-yun-module-type": "100",
+      "x-yun-svc-type": "1",
+      "x-yun-client-info": CLIENT_INFO_PC
+    };
+  }
   const { opType, subOpType } = androidOpCodes(op);
   return {
     // base 三枚（三档都有）
     "x-yun-api-version": "v1",
-    "x-yun-app-channel": channel,
+    "x-yun-app-channel": CHANNEL_ANDROID,
     "x-yun-op-type": opType,
     // Android 档那三枚
-    "x-huawei-channelSrc": channel,
+    "x-huawei-channelSrc": CHANNEL_ANDROID,
     "x-yun-client-info": CLIENT_INFO_ANDROID,
     "x-yun-sub-op-type": subOpType
   };
@@ -3633,7 +3700,10 @@ function buildCreateRequest(input) {
     //   写成 `application/oct-stream` / `octet-stream` 会回 `04000018 请求体媒体格式不支持`。
     //   ⚠ 我一开始把 404 归因成 content-type —— **认错了**：那次同时改了两样（头画像 +
     //   content-type），而真因是**缺头画像**。一次只改一样才分得清。
-    headers: { "Content-Type": "application/json", ...cloudFileOpHeaders(input.op ?? "backup") },
+    headers: {
+      "Content-Type": "application/json",
+      ...cloudFileOpHeaders(input.op ?? "backup", input.channel ?? "android")
+    },
     body: createBody(input)
   };
 }
@@ -3724,11 +3794,14 @@ function completeBody(fileId, uploadId, contentHash) {
     contentHashAlgorithm: HASH_ALGORITHM
   });
 }
-function buildCompleteRequest(fileId, uploadId, contentHash, op = "backup") {
+function buildCompleteRequest(fileId, uploadId, contentHash, op = "backup", channel = "android") {
   return {
     url: `${PERSONAL_KD}${FILE_COMPLETE_PATH}`,
     method: "POST",
-    headers: { "Content-Type": "application/json", ...cloudFileOpHeaders(op) },
+    headers: {
+      "Content-Type": "application/json",
+      ...cloudFileOpHeaders(op, channel)
+    },
     body: completeBody(fileId, uploadId, contentHash)
   };
 }
@@ -3864,6 +3937,88 @@ function deterministicFile(seed, bytes = 1024) {
   return out;
 }
 
+// src/mcloud/tasks/cloudTrash.ts
+var BATCH_TRASH_URL = "https://personal-kd-njs.yun.139.com/hcy/recyclebin/batchTrash";
+function trashRequest(fileIds) {
+  if (fileIds.length === 0) throw new Error("batchTrash 不许发空 fileIds");
+  return {
+    url: BATCH_TRASH_URL,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...cloudFileOpHeaders("upload") },
+    body: JSON.stringify({ fileIds })
+  };
+}
+function parseTrashResult(text) {
+  let v;
+  try {
+    v = JSON.parse(text);
+  } catch {
+    return { ok: false, code: "", why: "响应不是 JSON" };
+  }
+  const code = typeof v.code === "string" ? v.code : String(v.code ?? "");
+  const ok = v.success === true || code === "0000" || code === "0";
+  const msg = typeof v.msg === "string" ? v.msg : "";
+  return { ok, code, why: ok ? "" : `code=${code}${msg === "" ? "" : ` ${msg}`}` };
+}
+
+// src/mcloud/tasks/ownedFiles.ts
+var STATE_OWNED_FILES = "mcloud.cloud.owned";
+function load(deps) {
+  const raw = deps.store.getState(STATE_OWNED_FILES);
+  if (!raw) return [];
+  try {
+    const v = JSON.parse(raw);
+    if (!Array.isArray(v)) return [];
+    return v.filter((x) => typeof x === "string" && x !== "");
+  } catch {
+    return [];
+  }
+}
+function save(deps, ids) {
+  deps.store.setState(STATE_OWNED_FILES, JSON.stringify(ids), deps.nowIso);
+}
+function registerOwnedFile(deps, fileId) {
+  if (fileId === void 0 || fileId === "") return;
+  const ids = load(deps);
+  if (ids.includes(fileId)) return;
+  save(deps, [...ids, fileId]);
+}
+function unregisterOwnedFile(deps, fileId) {
+  if (fileId === void 0 || fileId === "") return;
+  const ids = load(deps);
+  const next = ids.filter((x) => x !== fileId);
+  if (next.length !== ids.length) save(deps, next);
+}
+function runOwnedCleanup(deps, opts = {}) {
+  const all = load(deps);
+  const skip = new Set(opts.skip ?? []);
+  const ids = all.filter((id) => !skip.has(id));
+  if (ids.length === 0) {
+    return {
+      ok: true,
+      idle: true,
+      note: skip.size > 0 ? `没有要清理的文件（${skip.size} 个还在任务里用）` : "没有要清理的文件"
+    };
+  }
+  const res = callRawText(deps.transport, trashRequest(ids));
+  if (!res.ok) {
+    return {
+      ok: false,
+      note: `清理 ${ids.length} 个文件没成 —— ${res.error ?? "请求失败"}（下一趟再试）`
+    };
+  }
+  const parsed = parseTrashResult(res.text);
+  if (!parsed.ok) {
+    return {
+      ok: false,
+      note: `清理 ${ids.length} 个文件被拒 —— ${parsed.why}（下一趟再试）`
+    };
+  }
+  save(deps, all.filter((id) => skip.has(id)));
+  const tail = skip.size > 0 ? `；${skip.size} 个还在任务里用，没动` : "";
+  return { ok: true, note: `已把 ${ids.length} 个自己传的文件移进回收站${tail}` };
+}
+
 // src/mcloud/tasks/upload.ts
 var STATE_UPLOAD = "mcloud.upload.state";
 var STEP_TEXT = {
@@ -3872,8 +4027,8 @@ var STEP_TEXT = {
   complete: "③ 告诉服务端传完了",
   done: "完成"
 };
-function loadUpload(deps) {
-  const raw = deps.store.getState(STATE_UPLOAD);
+function loadUpload(deps, key = STATE_UPLOAD) {
+  const raw = deps.store.getState(key);
   if (!raw) return null;
   try {
     const v = JSON.parse(raw);
@@ -3882,10 +4037,14 @@ function loadUpload(deps) {
     return null;
   }
 }
-function save(deps, st) {
-  deps.store.setState(STATE_UPLOAD, JSON.stringify(st), deps.nowIso);
+function save2(deps, st, key) {
+  deps.store.setState(key, JSON.stringify(st), deps.nowIso);
+}
+function clearUpload(deps, key = STATE_UPLOAD) {
+  deps.store.setState(key, "", deps.nowIso);
 }
 function startUpload(deps, opts) {
+  const key = opts.key ?? STATE_UPLOAD;
   if (opts.name.trim() === "") return { ok: false, note: "上传要有文件名" };
   if (opts.bytes.length === 0) return { ok: false, note: "上传的内容是空的" };
   const st = {
@@ -3900,16 +4059,17 @@ function startUpload(deps, opts) {
     renameMode: opts.renameMode,
     parallelUpload: opts.parallelUpload,
     localCreatedAt: opts.localCreatedAt,
-    op: opts.op
+    op: opts.op,
+    channel: opts.channel
   };
-  save(deps, st);
+  save2(deps, st, key);
   return {
     ok: true,
     note: `已排队上传「${opts.name}」（${st.size} 字节，摘要 ${st.contentHash.slice(0, 12)}…）—— 每次触发走一步`
   };
 }
-function runUploadStep(deps, bytes) {
-  const st = loadUpload(deps);
+function runUploadStep(deps, bytes, key = STATE_UPLOAD) {
+  const st = loadUpload(deps, key);
   if (!st) return { ok: true, idle: true, note: "没有在排队的上传" };
   if (st.step === "done") return { ok: true, idle: true, note: "这一次上传已经走完" };
   const label = STEP_TEXT[st.step];
@@ -3922,7 +4082,8 @@ function runUploadStep(deps, bytes) {
       renameMode: st.renameMode,
       parallelUpload: st.parallelUpload,
       localCreatedAt: st.localCreatedAt,
-      op: st.op
+      op: st.op,
+      channel: st.channel
     });
     const res2 = callRawText(deps.transport, req);
     if (!res2.ok) return { ok: false, note: `${label}失败：${res2.error ?? "未知失败"}` };
@@ -3933,20 +4094,21 @@ function runUploadStep(deps, bytes) {
     const next = { ...st, fileId: c.fileId, ownedByUs };
     if (ownedByUs === false) {
       next.step = "done";
-      save(deps, next);
+      save2(deps, next, key);
       return { ok: true, note: `${label}：撞上已有同名文件（不是我们造的，不覆盖、不删）` };
     }
     if (c.rapidUpload) {
       next.step = "done";
       next.rapidUpload = true;
-      save(deps, next);
+      save2(deps, next, key);
+      if (ownedByUs === true) registerOwnedFile(deps, c.fileId);
       return { ok: true, note: `${label}：秒传命中（fileId ${c.fileId.length} 字符）⇒ 不用传字节，这次上传已完成` };
     }
     next.step = "put";
     next.uploadId = c.uploadId;
     next.uploadUrl = c.uploadUrl;
     next.rapidUpload = false;
-    save(deps, next);
+    save2(deps, next, key);
     return { ok: true, note: `${label}：拿到 fileId 与预签名地址（${c.uploadUrl.length} 字符）—— 下一步传字节` };
   }
   if (st.step === "put") {
@@ -3969,33 +4131,22 @@ function runUploadStep(deps, bytes) {
     }
     const res2 = callRawText(deps.transport, req);
     if (!res2.ok) return { ok: false, note: `${label}失败：${res2.error ?? "未知失败"}` };
-    save(deps, { ...st, step: "complete" });
+    save2(deps, { ...st, step: "complete" }, key);
     return { ok: true, note: `${label}：${body.length} 字节已发（HTTP ${res2.status}）—— 下一步确认` };
   }
   const res = callRawText(
     deps.transport,
-    buildCompleteRequest(st.fileId, st.uploadId, st.contentHash, st.op ?? "backup")
+    buildCompleteRequest(st.fileId, st.uploadId, st.contentHash, st.op ?? "backup", st.channel ?? "android")
   );
   if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? "未知失败"}` };
   const parsed = parseComplete(res.text);
   if (!parsed.ok) return { ok: false, note: `${label}：${parsed.error}` };
-  save(deps, { ...st, step: "done" });
+  save2(deps, { ...st, step: "done" }, key);
+  if (st.ownedByUs === true) registerOwnedFile(deps, st.fileId);
   return { ok: true, note: `${label}：已确认（fileId ${(st.fileId ?? "").length} 字符）—— 这次上传完成` };
 }
-function uploadDone(deps) {
-  return loadUpload(deps)?.step === "done";
-}
-
-// src/mcloud/tasks/cloudTrash.ts
-var BATCH_TRASH_URL = "https://personal-kd-njs.yun.139.com/hcy/recyclebin/batchTrash";
-function trashRequest(fileIds) {
-  if (fileIds.length === 0) throw new Error("batchTrash 不许发空 fileIds");
-  return {
-    url: BATCH_TRASH_URL,
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...cloudFileOpHeaders("upload") },
-    body: JSON.stringify({ fileIds })
-  };
+function uploadDone(deps, key = STATE_UPLOAD) {
+  return loadUpload(deps, key)?.step === "done";
 }
 
 // src/mcloud/tasks/taskExpansion.ts
@@ -4040,15 +4191,20 @@ function readMonthBackup(deps) {
     return void 0;
   }
 }
+var STATE_UPLOAD_EXPANSION = "mcloud.upload.state.expansion";
+var BACKUP_WAIT_MS = 5e3;
 var STEP_TEXT2 = {
   read: "① 读任务拓展状态",
   upload: "② 传一个文件触发本月备份",
   "snapshot-create": "②a 建备份快照",
   "snapshot-put": "②a 传快照体",
   "snapshot-complete": "②a 确认快照",
+  wait: "②b 等移动云盘记账",
   recheck: "②b 再过一遍状态",
   cleanup: "③ 清理自己传的文件",
-  done: "完成"
+  done: "完成",
+  blocked: "没成",
+  unknown: "判不了"
 };
 function shouldUpload(read) {
   return read.curMonthBackup === false;
@@ -4067,7 +4223,7 @@ function parseExpand(result) {
     nextMonthTaskRecordCount: asInt2(o.nextMonthTaskRecordCount)
   };
 }
-function load(deps) {
+function load2(deps) {
   const raw = deps.store.getState(STATE_EXPAND);
   if (!raw) return null;
   try {
@@ -4077,30 +4233,101 @@ function load(deps) {
     return null;
   }
 }
-var save2 = (deps, st) => deps.store.setState(STATE_EXPAND, JSON.stringify(st), deps.nowIso);
+var save3 = (deps, st) => deps.store.setState(STATE_EXPAND, JSON.stringify(st), deps.nowIso);
+function activeExpansionFileId(deps) {
+  const st = load2(deps);
+  if (st === null) return void 0;
+  if (st.day !== deps.nowIso.slice(0, 10)) return void 0;
+  if (st.step === "done" || st.step === "blocked" || st.step === "unknown") return void 0;
+  return st.uploadOwned === true ? st.uploadFileId : void 0;
+}
 function startExpansion(deps) {
   const day = deps.nowIso.slice(0, 10);
-  const cur = load(deps);
+  const cur = load2(deps);
+  const manual = (deps.lateMs ?? 0) < 0;
   if (cur && cur.day === day) {
-    if (cur.step === "done") return { ok: true, idle: true, note: "今天这一趟已经走完" };
+    const goal = cur.backupOn ?? cur.curMonthBackup;
+    if (cur.step === "done" && goal === true) return { ok: true, idle: true, note: "今天这一趟已经走完" };
+    if (cur.step === "done" || cur.step === "blocked" || cur.step === "unknown") {
+      const why = cur.blockedWhy ?? (goal === false ? "上一趟记下的读数是「未开启」" : "上一趟没记下复查读数");
+      if (manual) {
+        save3(deps, { step: "read", day });
+        return { ok: true, note: `手动再来一次：再读一遍，需要时重新凑一次 —— ${why}` };
+      }
+      const cleaned = cur.step === "done" ? true : cur.cleanupDone;
+      save3(deps, { ...cur, step: "read", retryMode: "recheck", cleanupDone: cleaned, attempted: true });
+      return { ok: true, note: "上一趟没成，这一趟只复查（不再传文件）" };
+    }
     return { ok: true, note: "今天这一趟还在走，接着推" };
   }
-  save2(deps, { step: "read", day });
+  save3(deps, { step: "read", day });
   return { ok: true, note: "已排队：读状态 → （需要时）传文件+快照触发备份 → 清理" };
 }
+function backupWaitMs(deps) {
+  return deps.settleMs ?? BACKUP_WAIT_MS;
+}
+function startExpansionUpload(deps) {
+  const seed = randomHex(16);
+  return startUpload(deps, {
+    name: `${randomHex(8)}.bin`,
+    bytes: deterministicFile(seed, 256),
+    seed,
+    // 备份支：按路径定位根目录 + refuse_duplicate_content + parallelUpload。
+    locateKey: "parentPath",
+    locateValue: "/",
+    renameMode: RENAME_REFUSE_DUPLICATE_CONTENT,
+    parallelUpload: true,
+    localCreatedAt: deps.nowIso,
+    op: "backup",
+    key: STATE_UPLOAD_EXPANSION
+  });
+}
+function afterUpload(deps, st, label) {
+  const up = loadUpload(deps, STATE_UPLOAD_EXPANSION);
+  const owned = up?.ownedByUs;
+  const step = owned === true ? "snapshot-create" : "wait";
+  save3(deps, {
+    ...st,
+    step,
+    uploadFileId: up?.fileId,
+    uploadOwned: owned,
+    waitAt: owned === true ? void 0 : depsNowMs(deps) + backupWaitMs(deps)
+  });
+  const why = owned === true ? "文件已传完" : owned === false ? "撞上已有同名文件（不是我们造的，不覆盖、不删）" : "文件已传完，但 exist 判不了（按不是我们造的算，不删）";
+  return { ok: true, note: `${label}：${why} —— 下一步${owned === true ? "建快照" : "等一会儿再复查"}` };
+}
+function verdictOf(st) {
+  const on = st.backupOn ?? st.curMonthBackup;
+  if (on === true) return { step: "done", why: "" };
+  const bits = [];
+  if (on === false) {
+    bits.push(st.attempted === true ? "凑过一次备份，重读仍是「未开启」" : "重读仍是「未开启」");
+  } else {
+    bits.push("重读时没读到本月备份状态");
+  }
+  if (st.snapError !== void 0 && st.snapError !== "") bits.push(`快照没建上：${st.snapError}`);
+  if (st.uploadOwned === false) bits.push("撞上你已有的同名文件（没覆盖、也没删）");
+  return { step: on === void 0 ? "unknown" : "blocked", why: bits.join("；") };
+}
 function runExpansionStep(deps) {
-  const st = load(deps) ?? { step: "read" };
+  let st = load2(deps) ?? { step: "read" };
   if (st.step === "done") return { ok: true, idle: true, note: "这一趟已经走完" };
   const label = STEP_TEXT2[st.step];
+  if (st.step === "blocked" || st.step === "unknown") {
+    return {
+      ok: true,
+      skipped: true,
+      idle: true,
+      note: st.blockedWhy === void 0 || st.blockedWhy === "" ? label : st.blockedWhy
+    };
+  }
   if (st.step === "upload") {
-    const out = uploadDone(deps) ? { ok: true, idle: true, note: "" } : runUploadStep(deps);
-    if (out.idle || uploadDone(deps)) {
-      const up = loadUpload(deps);
-      const owned = up?.ownedByUs;
-      const step = owned === true ? "snapshot-create" : "recheck";
-      save2(deps, { ...st, step, uploadFileId: up?.fileId, uploadOwned: owned });
-      const why = owned === true ? "文件已传完" : owned === false ? "撞上已有同名文件（不是我们造的，不覆盖、不删）" : "文件已传完，但 exist 判不了（按不是我们造的算，不删）";
-      return { ok: true, note: `${label}：${why} —— 下一步${owned === true ? "建快照" : "再复查"}` };
+    if (uploadDone(deps, STATE_UPLOAD_EXPANSION)) return afterUpload(deps, st, label);
+    const out = runUploadStep(deps, void 0, STATE_UPLOAD_EXPANSION);
+    if (uploadDone(deps, STATE_UPLOAD_EXPANSION)) return afterUpload(deps, st, label);
+    if (out.idle) {
+      startExpansionUpload(deps);
+      return { ok: true, note: `${label}：上传状态没了 ⇒ 重新起一个（不是传完了）` };
     }
     return out;
   }
@@ -4116,17 +4343,17 @@ function runExpansionStep(deps) {
     });
     const res = callRawText(deps.transport, req);
     if (!res.ok) {
-      save2(deps, { ...st, step: "recheck", snapError: `建快照失败：${res.error ?? "未知失败"}` });
-      return { ok: true, note: `${label}：没成（${res.error ?? "未知失败"}）—— 不挡领取，继续复查` };
+      save3(deps, { ...st, step: "recheck", snapError: `建快照失败：${res.error ?? "未知失败"}` });
+      return { ok: true, note: `${label}：没成（${res.error ?? "未知失败"}）—— 照实记下，继续复查` };
     }
     const parsed = parseSnapshotCreate(res.text);
     if (!parsed.ok || !parsed.created) {
-      save2(deps, { ...st, step: "recheck", snapError: parsed.error ?? "快照响应解析不了" });
-      return { ok: true, note: `${label}：没成（${parsed.error ?? "响应解析不了"}）—— 不挡领取，继续复查` };
+      save3(deps, { ...st, step: "recheck", snapError: parsed.error ?? "快照响应解析不了" });
+      return { ok: true, note: `${label}：没成（${parsed.error ?? "响应解析不了"}）—— 照实记下，继续复查` };
     }
     const c = parsed.created;
     const step = c.rapidUpload ? "snapshot-complete" : "snapshot-put";
-    save2(deps, {
+    save3(deps, {
       ...st,
       step,
       snapFileId: c.fileId,
@@ -4140,22 +4367,22 @@ function runExpansionStep(deps) {
   }
   if (st.step === "snapshot-put") {
     if (!st.snapUploadUrl || !st.snapUploadId) {
-      save2(deps, { ...st, step: "recheck", snapError: "快照状态缺 uploadUrl/uploadId" });
-      return { ok: true, note: `${label}：没成（状态缺 uploadUrl/uploadId）—— 不挡领取，继续复查` };
+      save3(deps, { ...st, step: "recheck", snapError: "快照状态缺 uploadUrl/uploadId" });
+      return { ok: true, note: `${label}：没成（状态缺 uploadUrl/uploadId）—— 照实记下，继续复查` };
     }
     const { req } = buildPutRequest(st.snapUploadUrl, EMPTY_ZIP, "snapshot");
     const res = callRawText(deps.transport, req);
     if (!res.ok) {
-      save2(deps, { ...st, step: "recheck", snapError: `快照 PUT 失败：${res.error ?? "未知失败"}` });
-      return { ok: true, note: `${label}：没成（${res.error ?? "未知失败"}）—— 不挡领取，继续复查` };
+      save3(deps, { ...st, step: "recheck", snapError: `快照 PUT 失败：${res.error ?? "未知失败"}` });
+      return { ok: true, note: `${label}：没成（${res.error ?? "未知失败"}）—— 照实记下，继续复查` };
     }
-    save2(deps, { ...st, step: "snapshot-complete" });
+    save3(deps, { ...st, step: "snapshot-complete" });
     return { ok: true, note: `${label}：快照体已传完 —— 下一步确认` };
   }
   if (st.step === "snapshot-complete") {
     if (!st.snapFileId || !st.snapHash) {
-      save2(deps, { ...st, step: "recheck", snapError: "快照状态缺 fileId/contentHash" });
-      return { ok: true, note: `${label}：没成（状态缺 fileId/contentHash）—— 不挡领取，继续复查` };
+      save3(deps, { ...st, step: "recheck", snapError: "快照状态缺 fileId/contentHash" });
+      return { ok: true, note: `${label}：没成（状态缺 fileId/contentHash）—— 照实记下，继续复查` };
     }
     const req = buildSnapshotCompleteRequest({
       fileId: st.snapFileId,
@@ -4167,22 +4394,47 @@ function runExpansionStep(deps) {
     });
     const res = callRawText(deps.transport, req);
     const parsed = res.ok ? parseSnapshotComplete(res.text) : { ok: false, error: res.error };
-    save2(deps, { ...st, step: "recheck", snapError: parsed.ok ? void 0 : parsed.error });
-    return {
-      ok: true,
-      note: parsed.ok ? `${label}：快照已确认 —— 下一步复查` : `${label}：没成（${parsed.error ?? "未知失败"}）—— 不挡领取，继续复查`
-    };
+    if (!parsed.ok) {
+      save3(deps, { ...st, step: "recheck", snapError: parsed.error });
+      return { ok: true, note: `${label}：没成（${parsed.error ?? "未知失败"}）—— 照实记下，继续复查` };
+    }
+    const waitAt = depsNowMs(deps) + backupWaitMs(deps);
+    save3(deps, { ...st, step: "wait", snapError: void 0, waitAt });
+    return { ok: true, note: `${label}：快照已确认 —— 等 ${backupWaitMs(deps)}ms 再看备份开没开` };
+  }
+  if (st.step === "wait") {
+    const wait = (st.waitAt ?? 0) - depsNowMs(deps);
+    if (wait > 0) waitMs(deps, wait);
+    save3(deps, { ...st, step: "recheck", waitAt: void 0 });
+    return { ok: true, note: `${label}：等满了（${Math.max(0, wait)}ms）—— 下一步复查` };
   }
   if (st.step === "cleanup") {
     const fileId = st.uploadFileId;
-    if (st.uploadOwned !== true || !fileId) {
-      save2(deps, { ...st, step: "done" });
-      return { ok: true, note: `${label}：没有该由我们清的文件（不是我们造的 / 判不了）` };
+    const v = verdictOf(st);
+    const soft = st.retryMode === "recheck" && v.step !== "done";
+    const finish = (note) => {
+      save3(deps, { ...st, step: v.step, blockedWhy: v.why, retryMode: void 0 });
+      return { ok: v.step === "done" || soft, skipped: soft, note };
+    };
+    if (st.uploadOwned !== true || !fileId || st.cleanupDone === true) {
+      return finish(
+        v.step === "done" ? `${label}：没有该由我们清的文件（不是我们造的 / 判不了 / 上一趟已经清过）` : (
+          // ⚠ 结算这句**先说结论**：它会原样进用户日志（userLine 只剥掉步骤名前缀），
+          //   "③ 清理自己传的文件：…" 那种开头会让人以为失败的是清理。
+          soft ? `复查仍是「未开启」（${v.why}）—— 下一趟再读` : `备份仍未开启（${v.why}）—— 上传已发，下一趟再读`
+        )
+      );
     }
     const res = callRawText(deps.transport, trashRequest([fileId]));
-    save2(deps, { ...st, step: "done" });
-    if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? "未知失败"}` };
-    return { ok: true, note: `${label}：已移进回收站` };
+    if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? "未知失败"}（文件先留着，下一趟再清）` };
+    const parsed = parseTrashResult(res.text);
+    if (!parsed.ok) return { ok: false, note: `${label}被拒：${parsed.why}（文件先留着，下一趟再清）` };
+    unregisterOwnedFile(deps, fileId);
+    st = { ...st, cleanupDone: true };
+    if (v.step === "done") return finish(`${label}：已移进回收站`);
+    return finish(
+      soft ? `复查仍是「未开启」（${v.why}）—— 下一趟再读` : `备份仍未开启（${v.why}）—— 上传已发，下一趟再读`
+    );
   }
   if (st.step === "read" || st.step === "recheck") {
     const res = callRawText(deps.transport, signedGet(deps, "/ycloud/signin/page/taskExpansion"));
@@ -4198,32 +4450,22 @@ function runExpansionStep(deps) {
       ...st,
       step: "cleanup",
       curMonthBackup: read.curMonthBackup,
+      // 复查那一次的读数就是**收尾判据**（不是"步骤走完"）。
+      backupOn: read.curMonthBackup,
       curMonthTaskRecordCount: read.curMonthTaskRecordCount,
       nextMonthTaskRecordCount: read.nextMonthTaskRecordCount
     };
-    if (st.step === "read" && shouldUpload(read)) {
-      const seed = randomHex(16);
-      const name = `${randomHex(8)}.bin`;
-      save2(deps, { ...next, step: "upload" });
-      startUpload(deps, {
-        name,
-        bytes: deterministicFile(seed, 256),
-        seed,
-        // 备份支：按路径定位根目录 + refuse_duplicate_content + parallelUpload。
-        locateKey: "parentPath",
-        locateValue: "/",
-        renameMode: RENAME_REFUSE_DUPLICATE_CONTENT,
-        parallelUpload: true,
-        localCreatedAt: deps.nowIso,
-        op: "backup"
-      });
+    if (st.step === "read" && shouldUpload(read) && st.attempted !== true) {
+      save3(deps, { ...next, step: "upload", attempted: true });
+      startExpansionUpload(deps);
       return { ok: true, note: `${label}：本月**未开启备份** ⇒ 传一个文件把它做出来 —— 下一步开始传` };
     }
-    save2(deps, next);
+    save3(deps, next);
     const tail = read.nextMonthTaskRecordCount === void 0 ? "" : `；下月可领 ${read.nextMonthTaskRecordCount} 个`;
+    const only = st.attempted === true ? "（这一趟只复查，不再传文件）" : "";
     return {
       ok: true,
-      note: `${label}：备份=${read.curMonthBackup === void 0 ? "没读到" : String(read.curMonthBackup)}，可领次数=${read.curMonthTaskRecordCount ?? "没读到"}${tail} —— 下一步清理`
+      note: `${label}：备份=${read.curMonthBackup === void 0 ? "没读到" : String(read.curMonthBackup)}，可领次数=${read.curMonthTaskRecordCount ?? "没读到"}${tail}${only} —— 下一步清理`
     };
   }
   return { ok: false, note: `${label}：不认识的步骤` };
@@ -4339,7 +4581,7 @@ function stepFor(item) {
   if (needsPortalEntry(item.taskId)) return { kind: "portal" };
   if (isShare(item.taskId)) return { kind: "share" };
   if (item.taskId === 1020) return { kind: "runner", runner: "mailBackup" };
-  if (item.taskId === 609) return { kind: "runner", runner: "aiAssistant" };
+  if (item.taskId === 609 || item.taskId === 1075) return { kind: "runner", runner: "aiAssistant" };
   if (item.taskId === 1028 || item.taskId === 1057) return { kind: "runner", runner: "aiWorkbench" };
   if (item.taskId === 585 || item.taskId === 618) return { kind: "runner", runner: "aiCamera" };
   if (item.taskId === 107) return { kind: "runner", runner: "note" };
@@ -4474,18 +4716,18 @@ function parseLinkIds(body) {
     return [];
   }
   const out = [];
-  const walk = (x) => {
+  const walk2 = (x) => {
     if (Array.isArray(x)) {
-      for (const it of x) walk(it);
+      for (const it of x) walk2(it);
       return;
     }
     if (x === null || typeof x !== "object") return;
     for (const [k, val] of Object.entries(x)) {
       if ((k === "linkID" || k === "linkId") && typeof val === "string" && val !== "") out.push(val);
-      else walk(val);
+      else walk2(val);
     }
   };
-  walk(v);
+  walk2(v);
   return [...new Set(out)];
 }
 var MAIL_UA = "Mozilla/5.0 (Linux; Android 14; 22041216C Build/TP1A.220624.014; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/120.0.0.0 Mobile Safari/537.36";
@@ -4528,7 +4770,10 @@ function parseMailSession(body) {
 }
 function mailHeaders(session, extra = {}) {
   return {
-    Cookie: `RMKEY=${session.rmkey}`,
+    // ⚠ 参考实现（`mail139.rs` 的 `MailSession::cookie`）是**两枚**：
+    //   `RMKEY=<rmkey>; Os_Sso_Sid=<sid>`。只给 RMKEY 时 `disk:convertPdfFromYunFile`
+    //   回 `FA_INVALID_SESSION User Session Expired`（现场 2026-11-01 自测：1014 卡在这）。
+    Cookie: `RMKEY=${session.rmkey}; Os_Sso_Sid=${session.sid}`,
     "Content-Type": "application/xml;charset=UTF-8",
     Accept: "*/*",
     "User-Agent": MAIL_UA,
@@ -4571,21 +4816,44 @@ function mailBackupRequest(session, cguid, mid, directoryId) {
   };
 }
 function firstField(body, key) {
-  const re = new RegExp(`name=["']${key}["']\\s*>([^<]*)<`, "i");
+  const re = new RegExp(`name=["']${key}["']\\s*>([^<]*)`, "i");
   const m = re.exec(body);
-  if (m !== null && m[1] !== void 0 && m[1] !== "") return m[1];
-  const j = new RegExp(`"${key}"\\s*:\\s*"([^"]*)"`, "i");
-  const mj = j.exec(body);
-  return mj?.[1];
+  if (m !== null && m[1] !== void 0) {
+    const v = m[1].trim();
+    if (v !== "") return v;
+  }
+  for (const re2 of [
+    new RegExp(`"${key}"\\s*:\\s*"([^"]*)"`, "i"),
+    new RegExp(`'${key}'\\s*:\\s*"([^"]*)"`, "i"),
+    new RegExp(`'${key}'\\s*:\\s*'([^']*)'`, "i"),
+    // 值**不带引号**那一支：参考实现 `first_mail_id` 专门补过（实拍的壳混着用）
+    new RegExp(`"${key}"\\s*:\\s*([^,}\\s]+)`, "i")
+  ]) {
+    const mj = re2.exec(body);
+    const v = mj?.[1];
+    if (v !== void 0 && v !== "") return v;
+  }
+  return void 0;
 }
 function mailCode(body) {
-  try {
-    const v = JSON.parse(body);
+  const tryParse = (t) => {
+    try {
+      return JSON.parse(t);
+    } catch {
+      return void 0;
+    }
+  };
+  const v = tryParse(body);
+  if (v !== void 0) {
     const code = typeof v.code === "string" ? v.code : String(v.code ?? "");
     return { ok: code === "S_OK", code, summary: typeof v.summary === "string" ? v.summary : "" };
-  } catch {
-    return { ok: false, code: "", summary: "响应不是 JSON" };
   }
+  const loose = /['"]?code['"]?\s*:\s*['"]([^'"]*)['"]/i.exec(body)?.[1];
+  const looseSum = /['"]?summary['"]?\s*:\s*['"]([^'"]*)['"]/i.exec(body)?.[1];
+  if (loose !== void 0) {
+    return { ok: loose === "S_OK", code: loose, summary: looseSum ?? "" };
+  }
+  return { ok: false, code: "", summary: `响应不是 JSON：${body.slice(0, 80)}` };
 }
 function newCguid() {
   return uuidV4().replace(/-/g, "");
@@ -4630,7 +4898,7 @@ function deriveAiAuth(t) {
   } catch {
     return void 0;
   }
-  if (phone === "") return void 0;
+  if (!/^\d{11}$/.test(phone)) return void 0;
   const authorization = `Basic ${toBase64(utf8(`mobile:${phone}:${t.token}`))}`;
   return { phone, authorization, userDomainId: t.userDomainId ?? "" };
 }
@@ -4726,6 +4994,8 @@ function aiChatRequest(auth, userId, message) {
 function parseSse(body) {
   let events = 0;
   let text = "";
+  let code;
+  let message;
   for (const raw of body.split(/\r?\n/)) {
     const line = raw.trim();
     if (line === "" || line === "[DONE]") continue;
@@ -4738,10 +5008,14 @@ function parseSse(body) {
       const b = ev.data?.outContent;
       if (typeof a === "string") text += a;
       if (typeof b === "string") text += b;
+      const c = ev.code ?? ev.data?.code;
+      const m = ev.message ?? ev.data?.message;
+      if (c !== void 0 && c !== null && c !== "") code = String(c);
+      if (typeof m === "string" && m !== "") message = m;
     } catch {
     }
   }
-  return { events, text };
+  return { events, text, code, message };
 }
 var NOTE_AUTH_URL = "https://note.mcloud.139.com/noteServer/api/authTokenRefresh.do";
 var MNOTE = "https://mnote.caiyun.feixin.10086.cn";
@@ -4843,6 +5117,48 @@ function marketClickRequest(taskId, marketname) {
     body: JSON.stringify({ marketname, clientVersion: "11.2.1", taskId })
   };
 }
+function peActiveReportRequest(session, cguid, nowMs) {
+  const p = (n) => String(n).padStart(2, "0");
+  const d = new Date(nowMs + 8 * 3600 * 1e3);
+  const y = d.getUTCFullYear();
+  const mo = p(d.getUTCMonth() + 1);
+  const da = p(d.getUTCDate());
+  const h = p(d.getUTCHours());
+  const mi = p(d.getUTCMinutes());
+  const se = p(d.getUTCSeconds());
+  const ts = `${y}${mo}${da}${h}${mi}${se}`;
+  const payload = {
+    body: { logDatas: [{ eventTime: `${y}-${mo}-${da} ${h}:${mi}:${se}`, eventType: "3" }] },
+    head: {
+      appCode: "2a76b8c7-e9c4-478b-b1fd-0b2516cffd86",
+      comeFrom: "4027001",
+      eMode: "1",
+      installPack: "139PushEmail_AC20X_10.3.2B20240906.4027001.apk",
+      manufacturers: "Xiaomi",
+      model: "MIX 2",
+      netType: "1",
+      os: "Android",
+      osVersion: "9",
+      version: "10.3.2"
+    }
+  };
+  return {
+    url: `https://pesupport.mail.10086.cn/logreport/s?func=user:activeAction&cguid=${cguid}&sid=${session.sid}`,
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${md5HexOf(ts + PE_SECRET)}`,
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      Cookie: `RMKEY=${session.rmkey}`,
+      "User-Agent": "Apache-HttpClient/UNAVAILABLE (java 1.4)"
+    },
+    body: JSON.stringify(payload)
+  };
+}
+var PE_SECRET = ":5f4dcc3b5aa765d61d8327deb882cf99";
+function md5HexOf(text) {
+  return toHex(md5(utf8(text)));
+}
 function getComposeIdRequest(session) {
   return {
     url: `${APPMAIL}/RmWeb/mail?func=mbox:getComposeId&sid=${session.sid}`,
@@ -4852,19 +5168,26 @@ function getComposeIdRequest(session) {
   };
 }
 function parseComposeId(body) {
-  try {
-    const v = JSON.parse(body);
-    if (typeof v.var === "string" && v.var !== "") return v.var;
-    if (v.var !== null && typeof v.var === "object") {
-      const o = v.var;
+  const fromObj = (v) => {
+    if (typeof v === "string" && v !== "") return v;
+    if (v !== null && typeof v === "object") {
+      const o = v;
       for (const k of ["m", "id"]) {
         if (typeof o[k] === "string" && o[k] !== "") return o[k];
       }
     }
     return void 0;
-  } catch {
-    return void 0;
+  };
+  for (const t of [body, body.replace(/'/g, '"')]) {
+    try {
+      const v = JSON.parse(t);
+      const hit = fromObj(v.var);
+      if (hit !== void 0) return hit;
+    } catch {
+    }
   }
+  const m = /['"]var['"]\s*:\s*['"]([^'"]+)['"]/.exec(body);
+  return m?.[1];
 }
 function composeMailRequest(session, mail) {
   const e = xmlEscape;
@@ -5086,18 +5409,6 @@ function clickRequest(deps, id, key = "task") {
     session: session ? sessionHeaders(session) : {}
   });
 }
-function waitMs(deps, ms) {
-  if (ms <= 0) return;
-  const end = depsNowMs(deps) + Math.min(ms, 1e4);
-  while (depsNowMs(deps) < end) {
-    if (deps.spin) deps.spin();
-    else {
-      const t0 = Date.now();
-      while (Date.now() - t0 < 2) {
-      }
-    }
-  }
-}
 function journalOnce(deps, st) {
   if (st.journaled === true) return { note: "", state: st };
   const market = st.data?.marketName ?? "sign_in_3";
@@ -5133,7 +5444,7 @@ function trashRequest2(deps, fileIds) {
     body: JSON.stringify({ fileIds })
   };
 }
-function load2(deps) {
+function load3(deps) {
   const raw = deps.store.getState(STATE_TASK);
   if (!raw) return null;
   try {
@@ -5143,7 +5454,7 @@ function load2(deps) {
     return null;
   }
 }
-var save3 = (deps, st) => deps.store.setState(STATE_TASK, JSON.stringify(st), deps.nowIso);
+var save4 = (deps, st) => deps.store.setState(STATE_TASK, JSON.stringify(st), deps.nowIso);
 function today(deps) {
   return deps.nowIso.slice(0, 10);
 }
@@ -5158,17 +5469,22 @@ function clickedButIneffective(deps, st) {
 }
 function advance(deps, st) {
   const clicked = freshClicked(st, deps);
-  const next = pendingItems(deps).find((p) => !clicked.includes(p.itemId));
+  const failedIds = (st.failed ?? []).map((f) => f.id);
+  const next = pendingItems(deps).find(
+    (p) => !clicked.includes(p.itemId) && !failedIds.includes(p.itemId)
+  );
   if (!next) {
     const wait = deps.settleMs ?? 5e3;
-    save3(deps, {
+    save4(deps, {
       ...st,
       phase: "settle",
       fileId: void 0,
+      fileOwned: void 0,
       special: void 0,
       data: void 0,
       clicked,
       unconfirmed: [],
+      failed: st.failed ?? [],
       settleAt: depsNowMs(deps) + wait,
       day: today(deps)
     });
@@ -5183,14 +5499,9 @@ function advance(deps, st) {
   const clickFirst = next.needUpload && (next.currStep === void 0 || next.currStep === 0);
   let phase = next.needUpload ? clickFirst ? "click" : "upload" : "click";
   if (next.step.kind === "share") {
-    const up = (() => {
-      try {
-        return JSON.parse(deps.store.getState("mcloud.upload.state") ?? "{}");
-      } catch {
-        return {};
-      }
-    })();
-    if (!up.fileId) {
+    if (next.currStep === void 0 || next.currStep === 0) {
+      phase = "click";
+    } else {
       beginUpload(deps, next.itemId, next.name);
       phase = "upload";
     }
@@ -5200,9 +5511,10 @@ function advance(deps, st) {
   if (next.currStep !== void 0 && next.currStep !== 0 && special !== void 0) {
     phase = phaseOfSpecial(special) ?? phase;
   }
-  const skipClick = next.step.kind === "upload" && next.currStep !== void 0 && next.currStep !== 0;
+  const started = next.currStep !== void 0 && next.currStep !== 0;
+  const skipClick = started && (next.step.kind === "upload" || special !== void 0);
   const markHandled = skipClick && !clicked.includes(next.itemId);
-  save3(deps, {
+  save4(deps, {
     gi: next.gi,
     ii: next.ii,
     phase,
@@ -5216,9 +5528,24 @@ function advance(deps, st) {
       link: next.buttonEmailLink ?? next.buttonAppLink ?? ""
     },
     clicked: markHandled ? [...clicked, next.itemId] : clicked,
+    // ⚠ 把"这一趟失败过的那几条"带过去：不带的话下一条选回同一条，又撞一次。
+    failed: st.failed ?? [],
     day: today(deps)
   });
   return { ok: true, note: `下一条 #${next.itemId}（「${next.name}」）` };
+}
+function itemFailed(deps, st, why) {
+  const keep = (st.failed ?? []).filter((f) => f.id !== st.itemId);
+  const failed = [...keep, { id: st.itemId, why }];
+  if (st.fileId !== void 0 && st.fileOwned !== false) {
+    save4(deps, { ...st, phase: "trash", failed, day: today(deps) });
+    return { ok: true, note: `#${st.itemId}：「${why}」—— 先把这个文件收尾，再换下一条` };
+  }
+  const out = advance(deps, { ...st, failed });
+  return {
+    ok: true,
+    note: `#${st.itemId}：「${why}」—— 这一条先记下，继续下一条。${out.note}`
+  };
 }
 var lastSkipped = [];
 function pendingItems(deps) {
@@ -5266,20 +5593,24 @@ function pendingItems(deps) {
     }
   });
   lastSkipped = skipped;
-  return out;
+  const rank = (id) => id === SHARE_TASK_ID ? 1 : 0;
+  out.sort((a, b) => rank(a.itemId) - rank(b.itemId) || a.itemId - b.itemId);
+  const seen = /* @__PURE__ */ new Set();
+  return out.filter((p) => seen.has(p.itemId) ? false : (seen.add(p.itemId), true));
 }
 function beginUpload(deps, itemId, name) {
   const seed = randomHex(16);
-  void itemId;
   void name;
+  const shape = uploadShapeFor({ taskId: itemId });
   startUpload(deps, {
-    name: `asign-${randomHex(8)}.bin`,
+    name: `asign-${randomHex(8)}${shape?.fileExt ?? ".bin"}`,
     bytes: deterministicFile(seed, 256),
     seed,
     renameMode: "force_rename",
     parallelUpload: false,
     // ⚠ 手动上传支**不带** localCreatedAt（备份支才带；见 Rust app_task.rs）。
-    op: "upload"
+    op: "upload",
+    channel: shape?.channel ?? "android"
   });
 }
 function makePdf(ts) {
@@ -5328,7 +5659,7 @@ function beginPdfUpload(deps) {
   return ts;
 }
 function appTaskFresh(deps) {
-  const st = load2(deps);
+  const st = load3(deps);
   if (st === null || st.day !== today(deps)) return false;
   if (st.phase === "settle") return true;
   const pend = pendingItems(deps);
@@ -5340,7 +5671,7 @@ function appTaskFresh(deps) {
   return dead.length === 0;
 }
 function startAppTask(deps) {
-  const prev = load2(deps);
+  const prev = load3(deps);
   const dead = prev ? clickedButIneffective(deps, prev) : [];
   const clicked = (prev ? freshClicked(prev, deps) : []).filter((id) => !dead.includes(id));
   const all = pendingItems(deps);
@@ -5379,7 +5710,7 @@ function startAppTask(deps) {
   }
   const skipClick = first.step.kind === "upload" && first.currStep !== void 0 && first.currStep !== 0;
   const markHandled = skipClick && !clicked.includes(first.itemId);
-  save3(deps, {
+  save4(deps, {
     gi: first.gi,
     ii: first.ii,
     phase,
@@ -5427,21 +5758,22 @@ function phaseOfSpecial(s) {
       return "portal";
     case "share":
       return "share";
+    // ⚠ **凡是要邮箱会话的，入口一律先 `mailLogin`**。
+    //   `st.data`（sid/rmkey）在 `advance` 换条目时就没了 —— 直接进
+    //   `sendMailAction`/`pdfUpload` 这些"用会话"的阶段，带出去的是**空 sid**：
+    //   现场 2026-11-01 自测就是这么挂的（1004 回 `FA_INVALID_PARAMETER`、
+    //   1014 回 `FA_INVALID_SESSION User Session Expired`）。
     case "mailBackup":
     case "aiAssistant":
     case "aiWorkbench":
     case "aiCamera":
+    case "mailActive":
+    case "sendMail":
+    case "pdfConvert":
+    case "billView":
       return "mailLogin";
     case "note":
       return "noteAuth";
-    case "mailActive":
-      return "mailActiveAction";
-    case "sendMail":
-      return "sendMailAction";
-    case "pdfConvert":
-      return "pdfUpload";
-    case "billView":
-      return "billViewAction";
     default:
       return void 0;
   }
@@ -5457,7 +5789,7 @@ function specialPhase(st) {
   return phaseOfSpecial(st.special);
 }
 function runAppTaskStep(deps) {
-  const loaded = load2(deps);
+  const loaded = load3(deps);
   if (!loaded) return { ok: true, idle: true, note: "没有在跑的 app-task" };
   let st = loaded;
   if (st.phase === "done") {
@@ -5467,11 +5799,13 @@ function runAppTaskStep(deps) {
       ...clickedButIneffective(deps, st),
       ...(st.unconfirmed ?? []).filter(stillTodo)
     ];
-    return dead.length === 0 ? { ok: true, idle: true, note: "这一趟做完了（服务端已确认）" } : {
+    const deadSet = new Set(dead);
+    const failedWhy = (st.failed ?? []).filter((f) => stillTodo(f.id) && !deadSet.has(f.id));
+    return dead.length === 0 && failedWhy.length === 0 ? { ok: true, idle: true, note: "这一趟做完了（服务端已确认）" } : {
       ok: false,
       idle: true,
       pending: true,
-      note: `这一趟没有全确认：${dead.length} 条本机动过、服务端仍是待办（#${dead.join("、")}）—— 下一趟继续重试（不设上限）`
+      note: `这一趟没有全确认：${dead.length} 条本机动过、服务端仍是待办（#${dead.join("、")}）${failedWhy.length === 0 ? "" : `；${failedWhy.length} 条没做成（${failedWhy.map((f) => `#${f.id} ${f.why}`).join("；")}）`} —— 下一趟继续重试（不设上限）`
     };
   }
   if (st.phase === "settle") {
@@ -5481,23 +5815,32 @@ function runAppTaskStep(deps) {
       for (let i = 0; i < MATRIX_MARKETS.length; i++) runAppTaskMatrix(deps);
     }
     const dead = clickedButIneffective(deps, st);
+    const failed = st.failed ?? [];
+    const failedIds = failed.map((f) => f.id);
     const kept = st.clicked.filter((id) => !dead.includes(id));
-    const retryCount = dead.length > 0 ? (st.retryCount ?? 0) + 1 : 0;
-    save3(deps, {
+    const retryCount = dead.length > 0 || failed.length > 0 ? (st.retryCount ?? 0) + 1 : 0;
+    save4(deps, {
       ...st,
       phase: "done",
       clicked: kept,
-      unconfirmed: dead,
+      unconfirmed: [...dead, ...failedIds.filter((id) => !dead.includes(id))],
       settleAt: void 0,
       retryDay: today(deps),
       retryCount,
       day: today(deps)
     });
-    const warn4 = dead.length === 0 ? "" : `；⚠ ${dead.length} 条本机动过、服务端仍是待办（#${dead.join("、")}）—— 只有矩阵回 FINISH 才算成功，下一趟会重试`;
+    const bits = [];
+    if (dead.length > 0) {
+      bits.push(`${dead.length} 条本机动过、服务端仍是待办（#${dead.join("、")}）`);
+    }
+    if (failed.length > 0) {
+      bits.push(`${failed.length} 条没做成（${failed.map((f) => `#${f.id} ${f.why}`).join("；")}）`);
+    }
+    const warn4 = bits.length === 0 ? "" : `；⚠ ${bits.join("；")} —— 只有矩阵回 FINISH 才算成功，下一趟会重试`;
     return {
-      ok: dead.length === 0,
+      ok: bits.length === 0,
       idle: true,
-      pending: dead.length > 0,
+      pending: bits.length > 0,
       note: `复查完成（已等 ${deps.settleMs ?? 5e3}ms，重新拉过矩阵）${warn4}`
     };
   }
@@ -5510,21 +5853,25 @@ function runAppTaskStep(deps) {
     if (st.journaled !== true) {
       const j = journalOnce(deps, st);
       st = j.state;
-      save3(deps, st);
+      save4(deps, st);
       if (j.note !== "") return { ok: true, note: j.note };
     }
     const base = st;
     const afterClick = freshClicked(base, deps).includes(base.itemId);
     const finishUpload = (ours) => {
+      if (base.special === "share" && ours !== void 0) {
+        save4(deps, { ...base, phase: "share", fileId: ours, fileOwned: true, day: today(deps) });
+        return { ok: true, note: "文件已传完 —— 下一步分享它" };
+      }
       if (afterClick) {
         if (ours !== void 0) {
-          save3(deps, { ...base, phase: "trash", fileId: ours, day: today(deps) });
+          save4(deps, { ...base, phase: "trash", fileId: ours, fileOwned: true, day: today(deps) });
           return { ok: true, note: "文件已传完 —— 下一步收尾" };
         }
         const out3 = advance(deps, base);
         return { ok: true, note: `文件已传完（不是我们造的）—— ${out3.note}` };
       }
-      save3(deps, { ...base, phase: "visit", fileId: ours, day: today(deps) });
+      save4(deps, { ...base, phase: "visit", fileId: ours, fileOwned: true, day: today(deps) });
       return {
         ok: true,
         note: ours ? "文件已传完（收尾要用它的 id）—— 下一步记访问日志" : "文件已传完，但不是我们造的 ⇒ 不收尾"
@@ -5541,21 +5888,22 @@ function runAppTaskStep(deps) {
     }
     if (uploadDone(deps)) {
       const up = loadUpload(deps);
-      return finishUpload(up?.ownedByUs === true ? up.fileId : void 0);
+      return finishUpload(up !== null && up.ownedByUs !== false ? up.fileId : void 0);
     }
+    if (!out2.ok) return itemFailed(deps, st, out2.note);
     return out2;
   }
   if (st.phase === "visit") {
     const res2 = callRawText(deps.transport, journalingRequest(deps, st.itemId));
-    if (!res2.ok) return { ok: false, note: `记访问日志 #${st.itemId} 失败：${res2.error ?? "未知失败"}` };
-    save3(deps, { ...st, phase: "click", day: today(deps) });
+    if (!res2.ok) return itemFailed(deps, st, `记访问日志失败：${res2.error ?? "未知失败"}`);
+    save4(deps, { ...st, phase: "click", day: today(deps) });
     return { ok: true, note: `已记访问日志 #${st.itemId}（HTTP ${res2.status}）—— 下一步打卡` };
   }
   if (st.phase === "click") {
     if (st.skipClick === true) {
       const handled = [...freshClicked(st, deps), st.itemId];
       beginUpload(deps, st.itemId, "");
-      save3(deps, {
+      save4(deps, {
         ...st,
         phase: "upload",
         clicked: handled,
@@ -5571,44 +5919,44 @@ function runAppTaskStep(deps) {
       const jn2 = j2.note !== "" ? `；${j2.note}` : "";
       if (stj2.uploadAfter === true) {
         beginUpload(deps, stj2.itemId, "");
-        save3(deps, { ...stj2, phase: "upload", uploadAfter: false, day: today(deps) });
+        save4(deps, { ...stj2, phase: "upload", uploadAfter: false, day: today(deps) });
         return { ok: true, note: `#${stj2.itemId} 今天已经点过了 —— 不重发，去传文件${jn2}` };
       }
       const sp2 = specialPhase(stj2);
       if (sp2 !== void 0) {
-        save3(deps, { ...stj2, phase: sp2, day: today(deps) });
+        save4(deps, { ...stj2, phase: sp2, day: today(deps) });
         return { ok: true, note: `#${stj2.itemId} 今天已经点过了 —— 不重发，去做「${sp2}」${jn2}` };
       }
       if (stj2.fileId) {
-        save3(deps, { ...stj2, phase: "trash", day: today(deps) });
+        save4(deps, { ...stj2, phase: "trash", fileOwned: stj2.fileOwned ?? true, day: today(deps) });
         return { ok: true, note: `#${stj2.itemId} 今天已经点过了 —— 不重发，去收尾${jn2}` };
       }
       const out3 = advance(deps, stj2);
       return { ok: true, note: `#${stj2.itemId} 今天已经点过了 —— 不重发。${jn2}${out3.note}` };
     }
     const res2 = callRawText(deps.transport, clickRequest(deps, st.itemId));
-    if (!res2.ok) return { ok: false, note: `打卡 #${st.itemId} 失败：${res2.error ?? "未知失败"}` };
+    if (!res2.ok) return itemFailed(deps, st, `打卡失败：${res2.error ?? "未知失败"}`);
     const clicked = [...freshClicked(st, deps), st.itemId];
     const j = journalOnce(deps, { ...st, clicked });
     const stj = j.state;
     const jn = j.note !== "" ? `；${j.note}` : "";
     const sp = specialPhase(stj);
     if (sp !== void 0) {
-      save3(deps, { ...stj, phase: sp, day: today(deps) });
+      save4(deps, { ...stj, phase: sp, day: today(deps) });
       return { ok: true, note: `打卡 #${stj.itemId}（HTTP ${res2.status}）${jn} —— 下一步「${sp}」` };
     }
     if (stj.uploadAfter === true) {
       beginUpload(deps, stj.itemId, "");
-      save3(deps, { ...stj, phase: "upload", uploadAfter: false, day: today(deps) });
+      save4(deps, { ...stj, phase: "upload", uploadAfter: false, day: today(deps) });
       return { ok: true, note: `打卡 #${stj.itemId}（HTTP ${res2.status}）${jn} —— 下一步传文件` };
     }
     if (stj.fileId) {
-      save3(deps, { ...stj, phase: "trash", day: today(deps) });
+      save4(deps, { ...stj, phase: "trash", fileOwned: stj.fileOwned ?? true, day: today(deps) });
       return { ok: true, note: `打卡 #${stj.itemId}（HTTP ${res2.status}）${jn} —— 下一步收尾` };
     }
     const out2 = advance(deps, stj);
     return {
-      ok: out2.ok,
+      ok: true,
       note: `打卡 #${st.itemId}（HTTP ${res2.status}）${jn} —— 这条没有要收尾的文件。${out2.note}`
     };
   }
@@ -5621,7 +5969,8 @@ function runAppTaskStep(deps) {
     if (!c.ok) bits.push(`补打卡没成：${c.error ?? "未知失败"}`);
     const out2 = advance(deps, doneState(deps, st));
     return {
-      ok: out2.ok,
+      // `advance` 现在只回 `ok:true`；这里写死 true，别让人以为还有判死逻辑（评审 2026-11-01）。
+      ok: true,
       note: `固定入口 #${st.itemId}（${bits.join("；")}）。${out2.note}`
     };
   }
@@ -5642,38 +5991,42 @@ function runAppTaskStep(deps) {
     }
     const bits = [a.ok ? "doTaskPost ok" : "doTaskPost 没成", b.ok ? "page/doTask ok" : "page/doTask 没成", page];
     const out2 = advance(deps, doneState(deps, st));
-    return { ok: out2.ok, note: `入口页 #${st.itemId}（${bits.join("；")}）。${out2.note}` };
+    return { ok: true, note: `入口页 #${st.itemId}（${bits.join("；")}）。${out2.note}` };
   }
   if (st.phase === "share") {
-    const fileId = st.fileId ?? (() => {
-      try {
-        return JSON.parse(deps.store.getState("mcloud.upload.state") ?? "{}").fileId;
-      } catch {
-        return void 0;
+    let fileId2 = st.fileId;
+    let fileOwned = st.fileOwned ?? (fileId2 === void 0 ? void 0 : true);
+    if (!fileId2) {
+      beginUpload(deps, st.itemId, "");
+      save4(deps, { ...st, phase: "upload", fileId: void 0, fileOwned: void 0, day: today(deps) });
+      return { ok: true, note: `分享 #${st.itemId}：手里没有文件 —— 自己传一个再分享` };
+    }
+    const trashNext = (ok, note) => {
+      if (fileOwned === true) {
+        save4(deps, { ...st, phase: "trash", fileId: fileId2, fileOwned: true, day: today(deps) });
+        return { ok, note: `${note} —— 下一步收尾` };
       }
-    })();
-    if (!fileId) {
-      const out2 = advance(deps, { ...st, fileId: void 0 });
-      return { ok: true, note: `分享 #${st.itemId}：手里没有文件 —— 不发空外链。${out2.note}` };
-    }
-    const req = getOutLinkRequest(deps, [fileId]);
-    if (!req) {
-      const out2 = advance(deps, st);
-      return { ok: true, note: `分享 #${st.itemId}：请求没造出来。${out2.note}` };
-    }
+      const out2 = advance(deps, doneState(deps, { ...st, fileId: void 0, fileOwned: void 0 }));
+      return { ok, note: `${note}${out2.note}` };
+    };
+    const req = getOutLinkRequest(deps, [fileId2]);
+    if (!req) return trashNext(true, `分享 #${st.itemId}：请求没造出来`);
     const res2 = callRawText(deps.transport, req);
     if (!res2.ok) {
-      const out2 = advance(deps, st);
-      return { ok: false, note: `分享 #${st.itemId} 建外链失败：${res2.error ?? "未知失败"}。${out2.note}` };
+      return trashNext(true, `分享 #${st.itemId} 建外链失败：${res2.error ?? "未知失败"}`);
     }
     const ids = parseLinkIds(res2.text);
     if (ids.length === 0) {
-      const out2 = advance(deps, st);
-      return { ok: false, note: `分享 #${st.itemId}：响应里没有 linkID，没法删外链。${out2.note}` };
+      return trashNext(
+        true,
+        `分享 #${st.itemId}：响应里没有 linkID（${res2.text.slice(0, 80).replace(/\s+/g, " ")}）`
+      );
     }
-    save3(deps, {
+    save4(deps, {
       ...st,
       phase: "shareDel",
+      fileId: fileId2,
+      fileOwned: fileOwned ?? true,
       data: { ...st.data ?? {}, linkIds: JSON.stringify(ids) },
       day: today(deps)
     });
@@ -5687,28 +6040,33 @@ function runAppTaskStep(deps) {
       ids = [];
     }
     const req = delOutLinkRequest(deps, ids);
-    if (!req) {
-      const out3 = advance(deps, st);
-      return { ok: true, note: `分享 #${st.itemId}：没有 linkID 可删。${out3.note}` };
+    const res2 = req ? callRawText(deps.transport, req) : void 0;
+    if (st.fileId !== void 0 && st.fileOwned === true) {
+      save4(deps, { ...st, phase: "trash", fileOwned: true, day: today(deps) });
+      return {
+        ok: res2?.ok ?? true,
+        note: !req ? `分享 #${st.itemId}：没有 linkID 可删 —— 下一步收尾` : res2.ok ? `分享 #${st.itemId}：外链已删 —— 下一步收尾` : `分享 #${st.itemId}：删外链失败（${res2.error ?? "未知失败"}）—— 下一步收尾`
+      };
     }
-    const res2 = callRawText(deps.transport, req);
-    const out2 = advance(deps, { ...st, fileId: void 0 });
+    const out2 = advance(deps, doneState(deps, { ...st, fileId: void 0, fileOwned: void 0 }));
     return {
-      ok: res2.ok,
-      note: res2.ok ? `分享 #${st.itemId}：外链已删。${out2.note}` : `分享 #${st.itemId}：删外链失败（${res2.error ?? "未知失败"}）。${out2.note}`
+      // ⚠ 删外链失败**不许判死**：`trash` 已经排在下一步，判死会让它这一趟根本不执行
+      //   （评审 2026-11-01）。失败写进 note，文件照旧收尾。
+      ok: true,
+      note: !req ? `分享 #${st.itemId}：没有 linkID 可删。${out2.note}` : res2.ok ? `分享 #${st.itemId}：外链已删。${out2.note}` : `分享 #${st.itemId}：删外链失败（${res2.error ?? "未知失败"}）。${out2.note}`
     };
   }
   if (st.phase === "mailLogin") {
     const res2 = callRawText(deps.transport, mailSpecTokenRequest(deps));
-    if (!res2.ok) return { ok: false, note: `邮箱 SSO token 失败：${res2.error ?? "未知失败"}` };
-    const parsed = parseSsoToken(res2.text);
-    if (!parsed.ok || parsed.value === void 0) {
-      return { ok: false, note: `邮箱 SSO token 没换到：${parsed.error}` };
+    if (!res2.ok) return itemFailed(deps, st, `邮箱 SSO token 失败：${res2.error ?? "未知失败"}`);
+    const parsed2 = parseSsoToken(res2.text);
+    if (!parsed2.ok || parsed2.value === void 0) {
+      return itemFailed(deps, st, `邮箱 SSO token 没换到：${parsed2.error}`);
     }
-    save3(deps, {
+    save4(deps, {
       ...st,
       phase: "mailLogin2",
-      data: { ...st.data ?? {}, sso: parsed.value },
+      data: { ...st.data ?? {}, sso: parsed2.value },
       day: today(deps)
     });
     return { ok: true, note: "邮箱 SSO token 已换到 —— 下一步登录邮箱" };
@@ -5716,11 +6074,11 @@ function runAppTaskStep(deps) {
   if (st.phase === "mailLogin2") {
     const sso = st.data?.sso ?? "";
     const res2 = callRawText(deps.transport, mailLoginRequest(sso));
-    if (!res2.ok) return { ok: false, note: `邮箱登录失败：${res2.error ?? "未知失败"}` };
+    if (!res2.ok) return itemFailed(deps, st, `邮箱登录失败：${res2.error ?? "未知失败"}`);
     const sess = parseMailSession(res2.text);
-    if (!sess) return { ok: false, note: "邮箱登录响应里没有 var.sid / var.rmkey" };
+    if (!sess) return itemFailed(deps, st, "邮箱登录响应里没有 var.sid / var.rmkey");
     const nextPhase = st.special === "aiAssistant" || st.special === "aiWorkbench" || st.special === "aiCamera" ? "aiQuery" : st.special === "mailActive" ? "mailActiveAction" : st.special === "sendMail" ? "sendMailAction" : st.special === "pdfConvert" ? "pdfUpload" : st.special === "billView" ? "billViewAction" : "mailDirs";
-    save3(deps, {
+    save4(deps, {
       ...st,
       phase: nextPhase,
       data: { ...st.data ?? {}, sso: "", sid: sess.sid, rmkey: sess.rmkey, cguid: newCguid() },
@@ -5738,14 +6096,14 @@ function runAppTaskStep(deps) {
       return { ok: true, note: `云笔记 #${st.itemId}：没有 authToken，跳过。${out2.note}` };
     }
     const res2 = callRawText(deps.transport, noteAuthRequest(auth.token, auth.phone));
-    if (!res2.ok) return { ok: false, note: `云笔记鉴权失败：${res2.error ?? "未知失败"}` };
+    if (!res2.ok) return itemFailed(deps, st, `云笔记鉴权失败：${res2.error ?? "未知失败"}`);
     const headers = parseNoteHeaders(res2.text);
     if (!headers) {
       const out2 = advance(deps, doneState(deps, st));
       return { ok: true, note: `云笔记 #${st.itemId}：鉴权响应没有 headers.app_auth，跳过。${out2.note}` };
     }
     const noteId = uuidV4().replace(/-/g, "").padEnd(32, "0").slice(0, 32);
-    save3(deps, {
+    save4(deps, {
       ...st,
       phase: "noteCreate",
       data: { ...st.data ?? {}, noteId, title: noteId.slice(0, 3), headers: JSON.stringify(headers) },
@@ -5765,7 +6123,7 @@ function runAppTaskStep(deps) {
       deps.transport,
       noteCreateRequest(st.data?.noteId ?? "", st.data?.title ?? "", auth?.phone ?? "", headers, Date.now())
     );
-    save3(deps, { ...st, phase: "noteDelete", day: today(deps) });
+    save4(deps, { ...st, phase: "noteDelete", day: today(deps) });
     return {
       ok: true,
       note: res2.ok ? "云笔记已创建 —— 下一步移进回收站" : `建笔记没成（旧实现也忽略）：${res2.error ?? ""} —— 下一步移进回收站`
@@ -5800,8 +6158,11 @@ function runAppTaskStep(deps) {
     const a = callRawText(deps.transport, getComposeIdRequest(sess));
     const composeId = a.ok ? parseComposeId(a.text) : void 0;
     if (!composeId) {
-      const out3 = advance(deps, doneState(deps, st));
-      return { ok: false, note: `发邮件 #${st.itemId}：取不到 composeId。${out3.note}` };
+      return itemFailed(
+        deps,
+        { ...st },
+        `发邮件：取不到 composeId（HTTP ${a.status}，原文 ${a.text.slice(0, 80).replace(/\s+/g, " ")}）`
+      );
     }
     const auth = parseAuth(loadAuthRaw(deps.store));
     const account = `${auth?.phone ?? ""}@139.com`;
@@ -5816,11 +6177,14 @@ function runAppTaskStep(deps) {
       })
     );
     const code = b.ok ? mailCode(b.text) : { ok: false, code: "", summary: b.error ?? "" };
-    const c = callRawText(deps.transport, marketClickRequest(1004, "newsign_139mail"));
+    const pe = code.ok ? callRawText(deps.transport, peActiveReportRequest(sess, st.data?.cguid ?? newCguid(), Date.now())) : void 0;
+    const c = freshClicked(st, deps).includes(1004) ? { ok: true, status: 0, text: "", chars: 0, tookMs: 0, error: void 0 } : callRawText(deps.transport, clickRequest(deps, 1004));
     const out2 = advance(deps, doneState(deps, st));
     return {
-      ok: code.ok,
-      note: code.ok ? `邮件已发送到 ${account}（市场打卡 ${c.ok ? "ok" : "没成"}）。${out2.note}` : `发邮件没成（code=${code.code} ${code.summary}）。${out2.note}`
+      // ⚠ 业务失败**不停整趟**（参考实现里 runner 失败只记账，continue 下一条）：
+      //   这一条进 `clicked`、收尾那段复查会把它列进"本机动过、服务端仍是待办"。
+      ok: true,
+      note: code.ok ? `邮件已发送到 ${account}（PE 上报 ${pe?.ok ? "ok" : `没成：${pe?.error ?? "未知"}`}；市场打卡 ${c.ok ? "ok" : "没成"}）。${out2.note}` : `发邮件没成（code=${code.code} ${code.summary}）—— 记下，收尾看服务端认不认。${out2.note}`
     };
   }
   if (st.phase === "camRecognize") {
@@ -5833,10 +6197,9 @@ function runAppTaskStep(deps) {
     );
     const rec = res2.ok ? parseAiRecognize(res2.text) : void 0;
     if (!rec || !rec.success || !rec.fileId) {
-      const out2 = advance(deps, doneState(deps, st));
-      return { ok: false, note: `AI 相机识图没成：${rec?.message ?? res2.error ?? "没有 fileId"}。${out2.note}` };
+      return itemFailed(deps, st, `AI 相机识图没成：${rec?.message ?? res2.error ?? "没有 fileId"}`);
     }
-    save3(deps, {
+    save4(deps, {
       ...st,
       phase: "camChat",
       data: { ...st.data ?? {}, fileId: rec.fileId, camTaskId: rec.taskId ?? "" },
@@ -5858,11 +6221,11 @@ function runAppTaskStep(deps) {
       )
     );
     const sse = res2.ok ? parseSse(res2.text) : { events: 0, text: "" };
-    const ok2 = sse.events > 0 || sse.text !== "" || res2.ok && res2.text.includes('"success":true');
+    const got = sse.events > 0 || sse.text !== "" || res2.ok && res2.text.includes('"success":true');
     const out2 = advance(deps, doneState(deps, st));
     return {
-      ok: ok2,
-      note: ok2 ? `AI 相机对话完成（events=${sse.events}）。${out2.note}` : `AI 相机对话没成（events=${sse.events}）。${out2.note}`
+      ok: true,
+      note: got ? `AI 相机对话完成（events=${sse.events}）。${out2.note}` : `AI 相机对话没取到输出（events=${sse.events}）—— 记下，等到收尾看服务端认不认。${out2.note}`
     };
   }
   if (st.phase === "aiQuery") {
@@ -5871,13 +6234,13 @@ function runAppTaskStep(deps) {
       deps.transport,
       queryUserTokenRequest(sess, st.data?.cguid ?? newCguid())
     );
-    if (!res2.ok) return { ok: false, note: `AI 鉴权 queryUserToken 失败：${res2.error ?? "未知失败"}` };
+    if (!res2.ok) return itemFailed(deps, st, `AI 鉴权 queryUserToken 失败：${res2.error ?? "未知失败"}`);
     const t = parseQueryUserToken(res2.text);
     const auth = t ? deriveAiAuth(t) : void 0;
-    if (!t || !auth) return { ok: false, note: "queryUserToken 没给全 account/token 或解不出手机号" };
-    if (auth.userDomainId === "") return { ok: false, note: "queryUserToken 没给 userDomainId" };
+    if (!t || !auth) return itemFailed(deps, st, "queryUserToken 没给全 account/token 或解不出手机号");
+    if (auth.userDomainId === "") return itemFailed(deps, st, "queryUserToken 没给 userDomainId");
     const next = st.special === "aiCamera" ? "camRecognize" : "aiStatus";
-    save3(deps, {
+    save4(deps, {
       ...st,
       phase: next,
       data: {
@@ -5898,7 +6261,7 @@ function runAppTaskStep(deps) {
     const rsa = encryptPhone(phone);
     const res2 = callRawText(deps.transport, cloudTaskStatusRequest(rsa, st.itemId));
     const cs = res2.ok ? parseCloudTaskStatus(res2.text) : void 0;
-    save3(deps, { ...st, phase: "aiChat", day: today(deps) });
+    save4(deps, { ...st, phase: "aiChat", day: today(deps) });
     return {
       ok: true,
       note: cs ? `AI 状态读数（taskId=${st.itemId}）：taskStatus=${String(cs.taskStatus)} cloudStatus=${String(cs.cloudStatus)} —— 下一步对话` : `AI 状态没读到（不影响对话）—— 下一步对话`
@@ -5911,27 +6274,36 @@ function runAppTaskStep(deps) {
     const sse = res2.ok ? parseSse(res2.text) : { events: 0, text: "" };
     const out2 = advance(deps, doneState(deps, st));
     return {
-      ok: res2.ok && sse.events > 0 && sse.text !== "",
-      note: sse.events > 0 && sse.text !== "" ? `AI 对话成功（events=${sse.events}，回复 ${sse.text.slice(0, 20)}…）。${out2.note}` : `AI 对话没取到输出（events=${sse.events}）${res2.ok ? "" : `：${res2.error ?? ""}`}。${out2.note}`
+      // ⚠⚠ **这里不许判死**：参考实现（`runners.rs:453-465`）遇到"没回话"只记一条
+      //   note（`acted` 不算），整趟照常往下走；而这一条到底成没成，由收尾那次
+      //   矩阵复查说（用户口径：成功与否看状态变化，不看我们发了啥）。
+      //   以前这里 `ok:false` ⇒ `drain` 当场停 ⇒ 后面每条都没机会做
+      //   （现场 2026-11-01：三账号全停在 #609，`已完成 0 条`）。
+      ok: true,
+      note: sse.events > 0 && sse.text !== "" ? `AI 对话成功（events=${sse.events}，回复 ${sse.text.slice(0, 20)}…）。${out2.note}` : `AI 对话没取到输出（events=${sse.events}${sse.code === void 0 ? "" : ` code=${sse.code}`}${sse.message === void 0 ? "" : ` ${sse.message}`}）${res2.ok ? "" : `：${res2.error ?? ""}`} —— 记下，等到收尾看服务端认不认。${out2.note}`
     };
   }
   if (st.phase === "pdfUpload") {
     let ts = Number(st.data?.pdfTs ?? 0);
     if (ts === 0) {
       ts = beginPdfUpload(deps);
-      save3(deps, { ...st, data: { ...st.data ?? {}, pdfTs: String(ts) }, day: today(deps) });
+      save4(deps, { ...st, data: { ...st.data ?? {}, pdfTs: String(ts) }, day: today(deps) });
     }
-    if (uploadDone(deps)) {
+    const pdfUploaded = () => {
       const up = JSON.parse(deps.store.getState("mcloud.upload.state") ?? "{}");
-      save3(deps, { ...st, phase: "pdfConvert", fileId: up.fileId, day: today(deps) });
+      save4(deps, {
+        ...st,
+        phase: "pdfConvert",
+        fileId: up.fileId,
+        fileOwned: up.ownedByUs === true,
+        day: today(deps)
+      });
       return { ok: true, note: "PDF 已传完 —— 下一步转换" };
-    }
+    };
+    if (uploadDone(deps)) return pdfUploaded();
     const out2 = runUploadStep(deps, utf8(makePdf(ts)));
-    if (uploadDone(deps)) {
-      const up = JSON.parse(deps.store.getState("mcloud.upload.state") ?? "{}");
-      save3(deps, { ...st, phase: "pdfConvert", fileId: up.fileId, day: today(deps) });
-      return { ok: true, note: "PDF 已传完 —— 下一步转换" };
-    }
+    if (uploadDone(deps)) return pdfUploaded();
+    if (!out2.ok) return itemFailed(deps, st, out2.note);
     return out2;
   }
   if (st.phase === "pdfConvert") {
@@ -5949,10 +6321,17 @@ function runAppTaskStep(deps) {
       )
     );
     const code = res2.ok ? mailCode(res2.text) : { ok: false, code: "", summary: res2.error ?? "未知失败" };
+    if (st.fileId !== void 0) {
+      save4(deps, { ...st, phase: "trash", day: today(deps) });
+      return {
+        ok: true,
+        note: code.ok ? "PDF 转换完成 —— 下一步收尾" : `PDF 转换没成（code=${code.code} ${code.summary}）—— 仍然先收尾（文件不能留在网盘里）`
+      };
+    }
     const out2 = advance(deps, doneState(deps, st));
     return {
-      ok: code.ok,
-      note: code.ok ? `PDF 转换完成。${out2.note}` : `PDF 转换没成（code=${code.code} ${code.summary}）。${out2.note}`
+      ok: true,
+      note: code.ok ? `PDF 转换完成。${out2.note}` : `PDF 转换没成（code=${code.code} ${code.summary}）—— 记下，收尾看服务端认不认。${out2.note}`
     };
   }
   if (st.phase === "billViewAction") {
@@ -5962,8 +6341,7 @@ function runAppTaskStep(deps) {
     const b = callRawText(deps.transport, billMailsSearchRequest(sess, cguid));
     const mid = b.ok ? firstField(b.text, "mid") : void 0;
     if (!mid) {
-      const out3 = advance(deps, doneState(deps, st));
-      return { ok: false, note: `账单 #${st.itemId}：邮件列表里取不到 mid。${out3.note}` };
+      return itemFailed(deps, st, "账单：邮件列表里取不到 mid");
     }
     const c = callRawText(deps.transport, markMailReadRequest(sess, cguid, mid));
     const d = callRawText(deps.transport, readMessageRequest(sess, cguid, mid));
@@ -5982,15 +6360,15 @@ function runAppTaskStep(deps) {
     const e = callRawText(deps.transport, logBehaviorActionRequest(sess, 111631, 261, cguid, "110542_6"));
     const out2 = advance(deps, doneState(deps, st));
     return {
-      ok: d.ok && mq.every(Boolean) && e.ok,
-      note: `账单 #${st.itemId}（页 ${a.ok ? "ok" : "没成"}；mid 已取；标读 ${c.ok ? "ok" : "没成"}；读信 ${d.ok ? "ok" : "没成"}；MQ ${mq.filter(Boolean).length}/3；像素 ${e.ok ? "ok" : "没成"}）。${out2.note}`
+      ok: true,
+      note: `账单 #${st.itemId}（页 ${a.ok ? "ok" : "没成"}；mid 已取；标读 ${c.ok ? "ok" : "没成"}；读信 ${d.ok ? "ok" : "没成"}；MQ ${mq.filter(Boolean).length}/3；像素 ${e.ok ? "ok" : "没成"}）—— 记下，收尾看服务端认不认。${out2.note}`
     };
   }
   if (st.phase === "mailDirs") {
     const sess = { sid: st.data?.sid ?? "", rmkey: st.data?.rmkey ?? "" };
     const res2 = callRawText(deps.transport, mailDirsRequest(sess, st.data?.cguid ?? newCguid()));
     const dir = res2.ok ? firstField(res2.text, "directoryId") : void 0;
-    save3(deps, {
+    save4(deps, {
       ...st,
       phase: "mailSearch",
       data: { ...st.data ?? {}, directoryId: dir ?? "" },
@@ -6006,13 +6384,9 @@ function runAppTaskStep(deps) {
     const res2 = callRawText(deps.transport, mailSearchRequest(sess, st.data?.cguid ?? newCguid()));
     const mid = res2.ok ? firstField(res2.text, "mid") : void 0;
     if (!mid) {
-      const out2 = advance(deps, doneState(deps, st));
-      return {
-        ok: false,
-        note: `邮件列表里取不到 mid：${res2.error ?? "响应里没有 mid"}。${out2.note}`
-      };
+      return itemFailed(deps, st, `邮件列表里取不到 mid：${res2.error ?? "响应里没有 mid"}`);
     }
-    save3(deps, { ...st, phase: "mailBackup", data: { ...st.data ?? {}, mid }, day: today(deps) });
+    save4(deps, { ...st, phase: "mailBackup", data: { ...st.data ?? {}, mid }, day: today(deps) });
     return { ok: true, note: `找到邮件 mid（${mid.length} 字符）—— 下一步转存` };
   }
   if (st.phase === "mailBackup") {
@@ -6024,29 +6398,42 @@ function runAppTaskStep(deps) {
     const code = res2.ok ? mailCode(res2.text) : { ok: false, code: "", summary: res2.error ?? "未知失败" };
     const out2 = advance(deps, doneState(deps, st));
     return {
-      ok: res2.ok && code.ok,
-      note: code.ok ? `邮件转存已提交（服务端认了）。${out2.note}` : `邮件转存没成（code=${code.code} ${code.summary}）。${out2.note}`
+      ok: true,
+      note: code.ok ? `邮件转存已提交（服务端认了）。${out2.note}` : `邮件转存没成（code=${code.code} ${code.summary}）—— 记下，收尾看服务端认不认。${out2.note}`
     };
   }
   if (!st.fileId) {
     const out2 = advance(deps, st);
     return { ok: true, note: `这条没有要收尾的文件 —— 不发空数组那一枪。${out2.note}` };
   }
-  const res = callRawText(deps.transport, trashRequest2(deps, [st.fileId]));
-  if (!res.ok) return { ok: false, note: `收尾 #${st.itemId} 失败：${res.error ?? "未知失败"}` };
-  let ok = true;
-  let why = "";
-  try {
-    const v = JSON.parse(res.text);
-    const code = typeof v.code === "string" ? v.code : String(v.code ?? "");
-    ok = v.success === true || code === "0000" || code === "0";
-    if (!ok) why = `（code=${code}${typeof v.msg === "string" ? ` ${v.msg}` : ""}）`;
-  } catch {
-    ok = false;
-    why = "（响应不是 JSON）";
+  if (st.fileOwned === false) {
+    const out2 = advance(deps, doneState(deps, { ...st, fileId: void 0, fileOwned: void 0 }));
+    return { ok: true, note: `这条的文件不是我们造的 ⇒ 不删。${out2.note}` };
   }
-  const out = advance(deps, { ...st, fileId: void 0 });
-  return ok ? { ok: true, note: `收尾 #${st.itemId}：文件已移进回收站。${out.note}` } : { ok: false, note: `收尾 #${st.itemId} 被拒 ${why}` };
+  const fileId = st.fileId;
+  const res = callRawText(deps.transport, trashRequest2(deps, [fileId]));
+  const parsed = res.ok ? parseTrashResult(res.text) : { ok: false, code: "", why: res.error ?? "未知失败" };
+  if (!parsed.ok) {
+    const out0 = advance(deps, doneState(deps, { ...st, fileId: void 0, fileOwned: void 0 }));
+    return { ok: true, note: `收尾 #${st.itemId} 被拒（${parsed.why}）—— 文件留着，链尾再清。${out0.note}` };
+  }
+  unregisterOwnedFile(deps, fileId);
+  try {
+    if (JSON.parse(deps.store.getState("mcloud.upload.state") ?? "{}").fileId === fileId) {
+      clearUpload(deps);
+    }
+  } catch {
+  }
+  const out = advance(deps, doneState(deps, { ...st, fileId: void 0, fileOwned: void 0 }));
+  return { ok: true, note: `收尾 #${st.itemId}：文件已移进回收站。${out.note}` };
+}
+function activeAppTaskFileId(deps) {
+  const st = load3(deps);
+  if (st === null) return void 0;
+  if (st.day !== today(deps)) return void 0;
+  if (st.phase === "done" || st.phase === "settle") return void 0;
+  if (st.fileId === void 0) return void 0;
+  return st.fileOwned === false ? void 0 : st.fileId;
 }
 
 // src/mcloud/tasks/backupGift.ts
@@ -6446,6 +6833,1027 @@ function runPrizes(deps, market = "sign_in_3") {
       };
     }
   );
+}
+
+// src/mcloud/redpackApi.ts
+var REDPACK_BASE = "https://cpactiv.buy.139.com/cloudphone-market";
+var REDPACK_ORIGIN = "https://cpactiv.buy.139.com/#/redEnvelopeParty/home?loginType=0&enableShare=1&channelSrc=red-mcloudapp-001";
+var REDPACK_VERSION = "SYS_CONFIG_Y";
+var REDPACK_TOKEN_VALIDATE_VERSION = "1.0";
+var REDPACK_APP_ID = "12345681";
+var REDPACK_CHANNEL_SRC = "red-mcloudapp-001";
+var REDPACK_SIGN_SALT = "e10adc3949ba59abbe56e057f20f883e";
+var REDPACK_DEVICE_INFO_HEAD = "|h5|1.0.0|v1.0.0||Mozilla/5.0 (iPad; CPU OS 18_5) AppleWebKit/605.1.15 (KHTML, like Gecko) MCloudApp/12.6.0 iPad AppLanguage/zh-CN|";
+var REDPACK_DEVICE_INFO_TAIL = "|||375X667|zh||";
+var REDPACK_HTTP_UA = "Mozilla/5.0 (Linux; Android 14; 22041216C Build/TP1A.220624.014; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/128.0.6613.88 Mobile Safari/537.36";
+var REDPACK_PINTYPE = 13;
+var REDPACK_LOGIN_CONFIG = "redpacketLoginConfig";
+var REDPACK_PLATFORM_TYPE = 1;
+var REDPACK_STATUS_OK = "200";
+var REDPACK_SSO_SOURCE_ID = "001216";
+function redpackSign(requestId, token, timestampMs) {
+  return md5Hex(`${requestId}${REDPACK_APP_ID}${token}${REDPACK_SIGN_SALT}${timestampMs}`);
+}
+function localStamp(ms) {
+  const d = new Date(ms);
+  const pad2 = (n) => String(n).padStart(2, "0");
+  return String(d.getFullYear()) + pad2(d.getMonth() + 1) + pad2(d.getDate()) + pad2(d.getHours()) + pad2(d.getMinutes()) + pad2(d.getSeconds());
+}
+function base36(len) {
+  const alphabet = "0123456789abcdefghijklmnopqrstuvwxyz";
+  let s = "";
+  for (let i = 0; i < len; i += 1) s += alphabet[Math.floor(Math.random() * 36)];
+  return s;
+}
+function makeRedpackCall(token, nowMs, inputs = {}) {
+  const requestId = inputs.requestId ?? `${localStamp(nowMs)}${nowMs}${base36(8)}`;
+  return { token, timestampMs: nowMs, requestId, deviceRand: inputs.deviceRand ?? base36(16) };
+}
+function redpackHeaders(call2, deviceId = "") {
+  const ts = String(call2.timestampMs);
+  return {
+    appId: REDPACK_APP_ID,
+    token: call2.token,
+    sign: redpackSign(call2.requestId, call2.token, call2.timestampMs),
+    timestamp: ts,
+    requestId: call2.requestId,
+    xChannelSrc: REDPACK_CHANNEL_SRC,
+    "x-DeviceInfo": `${REDPACK_DEVICE_INFO_HEAD}${ts}${call2.deviceRand}${REDPACK_DEVICE_INFO_TAIL}`,
+    "x-origin": REDPACK_ORIGIN,
+    Referer: "https://cpactiv.buy.139.com/",
+    Origin: "https://cpactiv.buy.139.com",
+    // 下面两枚是参照实现那层 HTTP 的默认头（见 `REDPACK_HTTP_UA` 的注释）。
+    "user-agent": REDPACK_HTTP_UA,
+    ...deviceId === "" ? {} : { deviceid: deviceId }
+  };
+}
+function redpackUrl(base, path) {
+  return `${rootOrDefault(base, REDPACK_BASE)}${path}`;
+}
+function redpackPost(call2, path, data, opts = {}) {
+  const version = opts.version ?? REDPACK_VERSION;
+  return {
+    url: redpackUrl(opts.base, path),
+    method: "POST",
+    headers: redpackHeaders(call2, opts.deviceId ?? ""),
+    body: JSON.stringify({ version, ...data })
+  };
+}
+function tokenValidateRequest(call2, ssoToken, deviceId, base) {
+  const anon = { ...call2, token: "" };
+  return redpackPost(
+    anon,
+    "/user/tokenValidate",
+    {
+      version: REDPACK_TOKEN_VALIDATE_VERSION,
+      pintype: REDPACK_PINTYPE,
+      token: ssoToken,
+      deviceId,
+      loginConfig: REDPACK_LOGIN_CONFIG
+    },
+    { base, version: REDPACK_TOKEN_VALIDATE_VERSION, deviceId }
+  );
+}
+var taskListRequest = (call2, base) => redpackPost(call2, "/redpacket/configTaskLoginList", {}, { base });
+var accountInfoRequest = (call2, base) => redpackPost(call2, "/redpacket/userAccountInfo", { platformType: REDPACK_PLATFORM_TYPE }, { base });
+var userSignRequest = (call2, base) => redpackPost(call2, "/redpacket/userSign", { platformType: REDPACK_PLATFORM_TYPE }, { base });
+var completeTaskRequest = (call2, taskId, base) => redpackPost(
+  call2,
+  "/redpacket/userCompleteTask",
+  { platformType: REDPACK_PLATFORM_TYPE, taskId },
+  { base }
+);
+var browseRequest = (call2, taskCode, base) => redpackPost(call2, "/redpacket/userBrowse", { taskCode }, { base });
+var toastInfoRequest = (call2, taskCode, base) => redpackPost(call2, "/redpacket/userToastInfo", { configTaskCode: taskCode }, { base });
+var topicListRequest = (call2, base) => redpackPost(call2, "/redpacket/configTopicList", {}, { base });
+var topicAnswerRequest = (call2, taskId, topicId, answer, base) => redpackPost(
+  call2,
+  "/redpacket/userTopicAnswer",
+  { taskId, topicId, answer, platformType: REDPACK_PLATFORM_TYPE },
+  { base }
+);
+var cloudPhonesRequest = (call2, status, base) => redpackPost(
+  call2,
+  "/thirdapi/huawei/thirdQueryUserRelationshipV2",
+  { pageNumber: 1, pageSize: 10, status },
+  { base }
+);
+var hwTokenRequest = (call2, base) => redpackPost(call2, "/user/gethwToken", {}, { base });
+var rcsTokenRequest = (call2, targetSourceId = "0", base) => redpackPost(call2, "/user/getRcsToken", { targetSourceId }, { base });
+var appListRequest = (call2, base) => redpackPost(call2, "/redpacket/configAppList", { platformType: REDPACK_PLATFORM_TYPE }, { base });
+var installStatusRequest = (call2, hwToken, instanceId, packageName, base) => redpackPost(
+  call2,
+  "/app/activity/instanceApkInstallStatus",
+  { hwToken, apkList: [packageName], instanceIdList: [instanceId] },
+  { base }
+);
+var installTaskStatusRequest = (call2, hwToken, installTaskId, base) => redpackPost(call2, "/app/activity/appInstallTaskStatus", { taskId: installTaskId, hwToken }, { base });
+var apkInstallRequest = (call2, instanceId, packageId, hwToken, base) => redpackPost(call2, "/app/activity/apkInstall", { instanceId, appId: packageId, hwToken }, { base });
+var reportInstallRequest = (call2, taskId, appId, existed, base) => {
+  const data = { taskId, appId, platformType: REDPACK_PLATFORM_TYPE };
+  if (existed !== void 0) data.existed = existed;
+  return redpackPost(call2, "/redpacket/userInstallApp", data, { base });
+};
+var isRecord2 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+function redpackError(env, fallback = "活动站没给原因") {
+  if (!isRecord2(env)) return fallback;
+  const data = env.data;
+  const fromData = isRecord2(data) ? data.errorMsg : void 0;
+  const header = isRecord2(env.header) ? env.header : {};
+  const first = [fromData, header.errMsg, header.respMsg].find(
+    (x) => typeof x === "string" && x.trim() !== ""
+  );
+  return typeof first === "string" ? first.trim() : fallback;
+}
+function parseRedpackEnvelope(body) {
+  let v;
+  try {
+    v = JSON.parse(body);
+  } catch (e) {
+    return {
+      ok: false,
+      status: void 0,
+      data: void 0,
+      error: `活动站回的不是 JSON：${e instanceof Error ? e.message : String(e)}`,
+      raw: body
+    };
+  }
+  if (!isRecord2(v)) {
+    return { ok: false, status: void 0, data: void 0, error: "活动站回的不是对象", raw: body };
+  }
+  const header = isRecord2(v.header) ? v.header : {};
+  const status = header.status;
+  const ok = String(status) === REDPACK_STATUS_OK;
+  return { ok, status, data: v.data, error: ok ? void 0 : redpackError(v), raw: body };
+}
+function callRedpack(transport2, req) {
+  const res = callRawText(transport2, req);
+  if (!res.ok) {
+    const why = res.error ?? "未知失败";
+    const env = res.text === "" ? void 0 : parseRedpackEnvelope(res.text);
+    return {
+      ok: false,
+      status: env?.status,
+      data: env?.data,
+      error: env && !env.ok && env.error !== void 0 ? `${why} ${env.error}` : why,
+      raw: res.text,
+      httpError: why
+    };
+  }
+  return { ...parseRedpackEnvelope(res.text), httpError: void 0 };
+}
+function rpNum(data, key) {
+  if (!isRecord2(data)) return void 0;
+  const v = data[key];
+  if (typeof v === "number") return Number.isFinite(v) ? v : void 0;
+  if (typeof v === "string" && v.trim() !== "" && !Number.isNaN(Number(v))) return Number(v);
+  return void 0;
+}
+function rpStr(data, key) {
+  if (!isRecord2(data)) return void 0;
+  const v = data[key];
+  return typeof v === "string" && v !== "" ? v : void 0;
+}
+function rpArr(data, key) {
+  if (!isRecord2(data)) return [];
+  const v = data[key];
+  return Array.isArray(v) ? v : [];
+}
+
+// src/mcloud/redpackRules.ts
+function classify(status) {
+  if (status === void 0 || status === 0) return "todo";
+  if (status === 1) return "done";
+  if (status === 3 || status === 4) return "blocked";
+  return "unknown";
+}
+function statusText(status) {
+  if (status === 0) return "未完成";
+  if (status === 1) return "已完成";
+  if (status === 3) return "奖品已兑完";
+  if (status === 4) return "明天再来";
+  return void 0;
+}
+function statusLabel(status) {
+  if (status === void 0) return "未完成";
+  return statusText(status) ?? `没见过的状态 ${status}`;
+}
+function yuanRaw(cents) {
+  return String((Number(cents) || 0) / 100);
+}
+function yuan2(cents) {
+  return `${((Number(cents) || 0) / 100).toFixed(2)}元`;
+}
+var REDPACK_GROUPS = [
+  { key: "configTaskNoviceList", title: "新手任务" },
+  { key: "configTaskDailyList", title: "每日任务" },
+  { key: "configTaskMonthlyList", title: "每月任务" }
+];
+function toTask(v) {
+  if (!isRecord2(v)) return void 0;
+  const code = rpStr(v, "taskCode") ?? "";
+  return {
+    id: v.id,
+    taskCode: code,
+    taskName: rpStr(v, "taskName") ?? "",
+    status: rpNum(v, "userStatus"),
+    amount: rpNum(v, "prizeAmount") ?? rpNum(v, "taskAmount"),
+    raw: v
+  };
+}
+function parseTaskList(data) {
+  const groups = REDPACK_GROUPS.map(({ key, title }) => ({
+    title,
+    tasks: rpArr(data, key).map(toTask).filter((t) => t !== void 0)
+  }));
+  const today2 = rpArr(data, "configTaskSignList").find((x) => rpNum(x, "isToday") === 1);
+  return {
+    sign: isRecord2(today2) ? {
+      isToday: rpNum(today2, "isToday"),
+      status: rpNum(today2, "status"),
+      amount: rpNum(today2, "signAmount")
+    } : void 0,
+    tasks: groups.flatMap((g) => g.tasks),
+    groups
+  };
+}
+function sendableId(id) {
+  if (typeof id === "number") return Number.isFinite(id) ? id : void 0;
+  if (typeof id === "string" && id.trim() !== "") return id;
+  return void 0;
+}
+function amountSuffix(task) {
+  const t = yuan2(task.amount);
+  return task.amount === void 0 ? "" : ` (${t})`;
+}
+var BROWSE_TASKS = ["NOVICE_2", "NOVICE_3", "MONTHLY_1"];
+var DIRECT_TASKS = ["MONTHLY_4", "MONTHLY_5"];
+var MANUAL_TASKS = { NOVICE_1: "需跳转领取定向流量" };
+var CLOUD_USE_CODE = "DAILY_1";
+var INSTALL_CODE = "MONTHLY_2";
+var TOPIC_CODE = "MONTHLY_3";
+function dispatchKind(taskCode) {
+  if (BROWSE_TASKS.includes(taskCode)) return "browse";
+  if (DIRECT_TASKS.includes(taskCode)) return "direct";
+  if (taskCode === CLOUD_USE_CODE) return "cloudUse";
+  if (taskCode === INSTALL_CODE) return "install";
+  if (taskCode === TOPIC_CODE) return "topic";
+  return "manual";
+}
+function manualReason(taskCode) {
+  return MANUAL_TASKS[taskCode] ?? "未知任务";
+}
+var KNOWN_ANSWERS = {
+  "如何查看并更新移动云手机客户端最新版本？": "进入'我的'-点击'关于云手机'-点击'检查新版本'",
+  "移动云手机可领取定向流量，每月赠送的定向流量是（  ）。": "30GB",
+  "移动云手机端内订购的专业版分辨率已升级到1080P，该说法是否正确？": "正确",
+  "移动云手机支持视频录制，该说法是否正确？": "正确",
+  "云手机支持通过手机、平板、电脑等多种终端设备登录使用，该说法是否正确？": "正确",
+  "使用中国移动号码登录移动云手机，是否支持手机号一键登录？": "支持",
+  "只有中国移动运营商号码能使用移动云手机？": "不正确",
+  "移动云手机是否需要充电使用？": "不需要",
+  "移动云手机支持截图，该说法是否正确？": "正确",
+  "移动云手机AI灵犀助手已接入DeepSeek，是否正确？": "正确",
+  "移动云手机内支持画面清晰度切换，该说法是否正确？": "正确",
+  "移动云手机支持连接蓝牙使用吗？": "不支持",
+  "在云手机内安装游戏应用是否占本地手机存储空间？": "否，不占本地空间",
+  "如何更换云机内的桌面主题或壁纸？": "云机内-【设置】-壁纸/个性主题",
+  "如何将云手机里的应用添加至本地手机桌面？": "云手机桌面-长按应用-发送图标到本地"
+};
+var ANSWER_LETTERS = "ABCD";
+function parseTopicOptions(v) {
+  if (Array.isArray(v)) return v.filter((x) => typeof x === "string");
+  if (typeof v !== "string") return [];
+  try {
+    const parsed = JSON.parse(v);
+    return Array.isArray(parsed) ? parsed.filter((x) => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+function parseTopic(data) {
+  const first = rpArr(data, "list")[0];
+  if (!isRecord2(first)) return void 0;
+  return {
+    id: first.id,
+    question: String(first.topicContent ?? ""),
+    options: parseTopicOptions(first.topicOption)
+  };
+}
+function knownAnswer(question) {
+  return KNOWN_ANSWERS[question] ?? "";
+}
+function answerLetter(topic) {
+  const text = knownAnswer(topic.question);
+  if (text === "") return void 0;
+  const at = topic.options.indexOf(text);
+  if (at < 0) return void 0;
+  return ANSWER_LETTERS[at];
+}
+function toPhone(v) {
+  if (!isRecord2(v)) return void 0;
+  const instances = Array.isArray(v.subsProdInstances) ? v.subsProdInstances : [{}];
+  const first = isRecord2(instances[0]) ? instances[0] : {};
+  return {
+    instanceId: rpStr(v, "instanceId") ?? "",
+    locked: first.lockStatus === "Y"
+  };
+}
+function parsePhones(data) {
+  const nested = isRecord2(data) && isRecord2(data.data) ? data.data : data;
+  return rpArr(nested, "subscribeDetails").map(toPhone).filter((p) => p !== void 0);
+}
+function pickPhone(phones2) {
+  return phones2.find((p) => !p.locked) ?? phones2[0];
+}
+function phoneUsable(phone) {
+  return phone !== void 0 && phone.instanceId !== "" && !phone.locked;
+}
+function parseApps(data) {
+  return rpArr(data, "list").filter(isRecord2).map((v) => ({
+    id: v.id,
+    packageId: String(v.packageId ?? ""),
+    packageName: rpStr(v, "packageName") ?? "",
+    apkName: rpStr(v, "apkName") ?? ""
+  })).filter((a) => a.packageName !== "");
+}
+function readInstallStatus(data) {
+  const list = Array.isArray(data) ? data : isRecord2(data) && Array.isArray(data.list) ? data.list : [];
+  const first = list[0];
+  if (!isRecord2(first)) return void 0;
+  const instances = Array.isArray(first.instanceList) ? first.instanceList : [];
+  const one = instances[0];
+  if (!isRecord2(one)) return void 0;
+  return rpNum(one, "installStatus");
+}
+var INSTALL_STATUS_EXISTS = 2;
+var INSTALL_TASK_DONE = 2;
+var INSTALL_TASK_FAILED = 3;
+function readInstallStart(data) {
+  if (!isRecord2(data)) return { started: false, taskId: "" };
+  return {
+    started: data.success === true,
+    taskId: data.taskId === void 0 ? "" : String(data.taskId)
+  };
+}
+function readInstallProgress(data) {
+  return rpNum(data, "taskStatus");
+}
+function readBalance(data) {
+  const info = isRecord2(data) && isRecord2(data.info) ? data.info : {};
+  return { can: rpNum(info, "canAmount"), total: rpNum(info, "totalAmount") };
+}
+function readReward(data) {
+  const prize = isRecord2(data) && isRecord2(data.lastUserPrize) ? data.lastUserPrize : void 0;
+  if (prize === void 0) return void 0;
+  const cents = rpNum(prize, "prizeAmount");
+  if (cents === void 0 || cents === 0) return void 0;
+  return { name: rpStr(prize, "prizeName") ?? "", cents };
+}
+function readRedpackToken(data) {
+  return rpStr(data, "token");
+}
+function readWriteStatus(data) {
+  return rpNum(data, "status");
+}
+
+// src/mcloud/tasks/redpackState.ts
+var STATE_REDPACK = "mcloud.redpack.state";
+var STATE_REDPACK_ENABLED = "mcloud.redpack.enabled";
+var STATE_REDPACK_BASE = "mcloud.redpack.base";
+function redpackEnabled(store2) {
+  return (store2.getState(STATE_REDPACK_ENABLED) ?? "").trim() !== "0";
+}
+function loadRedpackBase(store2) {
+  const v = store2.getState(STATE_REDPACK_BASE);
+  return v && v.trim() ? v.trim().replace(/\/+$/, "") : void 0;
+}
+function redpackDay(nowIso) {
+  const d = new Date(nowIso);
+  if (Number.isNaN(d.getTime())) return nowIso.slice(0, 10);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+function newRedpackState(day, nowIso, written = []) {
+  return {
+    day,
+    startedAt: nowIso,
+    phase: "login",
+    queue: [],
+    cursor: 0,
+    groupsShown: [],
+    written,
+    lines: [],
+    reported: 0,
+    board: { counts: { todo: 0, done: 0, blocked: 0, unknown: 0 }, writes: 0, manual: 0 }
+  };
+}
+function loadRedpackState(store2, day) {
+  const raw = store2.getState(STATE_REDPACK);
+  if (!raw) return null;
+  let v;
+  try {
+    v = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return null;
+  const o = v;
+  if (o.day !== day) return null;
+  const st = v;
+  return {
+    ...st,
+    phase: typeof st.phase === "string" ? st.phase : "login",
+    queue: Array.isArray(st.queue) ? st.queue : [],
+    cursor: typeof st.cursor === "number" ? st.cursor : 0,
+    groupsShown: Array.isArray(st.groupsShown) ? st.groupsShown : [],
+    written: Array.isArray(st.written) ? st.written : [],
+    lines: Array.isArray(st.lines) ? st.lines : [],
+    reported: typeof st.reported === "number" ? st.reported : 0,
+    board: typeof st.board === "object" && st.board !== null ? { ...st.board, counts: padCounts(st.board.counts) } : { counts: padCounts(void 0), writes: 0, manual: 0 }
+  };
+}
+function padCounts(v) {
+  const o = typeof v === "object" && v !== null ? v : {};
+  const one = (x) => typeof x === "number" && Number.isFinite(x) ? x : 0;
+  return { todo: one(o.todo), done: one(o.done), blocked: one(o.blocked), unknown: one(o.unknown) };
+}
+function saveRedpackState(store2, st, nowIso) {
+  store2.setState(STATE_REDPACK, JSON.stringify(st), nowIso);
+}
+function rpLine(st, line) {
+  if (line.trim() === "") return;
+  st.lines.push(line);
+}
+function takeRedpackLines(store2, nowIso) {
+  const day = redpackDay(nowIso);
+  const st = loadRedpackState(store2, day);
+  if (st === null || st.lines.length <= st.reported) return [];
+  const out = st.lines.slice(st.reported);
+  st.reported = st.lines.length;
+  saveRedpackState(store2, st, nowIso);
+  return out;
+}
+function redpackSummary(store2, day) {
+  const st = loadRedpackState(store2, day);
+  if (st === null) return void 0;
+  return summarize2(st);
+}
+function summarize2(st) {
+  const c = st.board.counts;
+  const parts = [`未完成 ${c.todo}`, `已完成 ${c.done}`];
+  if (c.blocked > 0) parts.push(`暂不可做 ${c.blocked}`);
+  if (c.unknown > 0) parts.push(`状态不认识 ${c.unknown}`);
+  if (st.board.sign?.done === true) parts.push("每日签到好了");
+  if (st.board.manual > 0) parts.push(`需手动完成 ${st.board.manual} 项`);
+  const can = (st.board.balanceAfter ?? st.board.balance)?.can;
+  if (can !== void 0) parts.push(`余额可用 ${String((Number(can) || 0) / 100)} 元`);
+  return parts.join("、");
+}
+function alreadyWritten(st, taskCode) {
+  return st.written.includes(taskCode);
+}
+function markWritten(st, taskCode) {
+  if (taskCode === "") return;
+  if (!st.written.includes(taskCode)) st.written.push(taskCode);
+}
+function finishRedpack(st) {
+  delete st.token;
+  delete st.job;
+  st.phase = "done";
+}
+
+// src/mcloud/tasks/redpackJobs.ts
+var REDPACK_PLAN = {
+  browseWaitMs: 15e3,
+  browseSliceMs: 3e3,
+  topicTries: 15,
+  topicGapMs: 150,
+  pollTries: 60,
+  pollGapMs: 1e3
+};
+function callOf(ctx) {
+  return makeRedpackCall(ctx.st.token ?? "", depsNowMs(ctx.deps));
+}
+function send(ctx, req) {
+  return callRedpack(ctx.deps.transport, req);
+}
+var suffixOf = (job) => amountSuffix({ amount: job.amount });
+function runRedpackJob(ctx) {
+  const job = ctx.st.job;
+  if (job === void 0) return { kind: "done" };
+  switch (job.stage) {
+    case "begin":
+      return begin(ctx, job);
+    case "complete": {
+      const id = sendableId(job.id);
+      if (id === void 0) {
+        return fail(ctx, `任务失败: ${job.taskName} 活动站没给编号`);
+      }
+      if (alreadyWritten(ctx.st, job.taskCode)) {
+        const recheck = readOnlyConfirm(job.kind);
+        if (recheck === void 0) {
+          rpLine(ctx.st, `已登记: ${job.taskName} (${statusLabel(job.status ?? 0)})`);
+          return { kind: "done" };
+        }
+        return go(ctx, job, recheck);
+      }
+      const env = send(ctx, completeTaskRequest(callOf(ctx), id, ctx.base));
+      if (!env.ok) return fail(ctx, `任务失败: ${job.taskName} ${env.error ?? "接口没回来"}`);
+      const status = readWriteStatus(env.data);
+      if (status !== void 0 && status !== 1) {
+        return fail(ctx, `任务失败: ${job.taskName} ${env.error ?? "活动站说没成"}`);
+      }
+      markWritten(ctx.st, job.taskCode);
+      ctx.st.board.writes += 1;
+      return go(ctx, job, nextAfterComplete(job.kind));
+    }
+    case "waitBrowse": {
+      const slept = job.sleptMs ?? 0;
+      if (slept >= REDPACK_PLAN.browseWaitMs) return go(ctx, job, "browse");
+      waitMs(ctx.deps, REDPACK_PLAN.browseSliceMs);
+      ctx.st.job = { ...job, sleptMs: slept + REDPACK_PLAN.browseSliceMs };
+      return { kind: "again" };
+    }
+    case "browse": {
+      const env = send(ctx, browseRequest(callOf(ctx), job.taskCode, ctx.base));
+      if (!env.ok) return fail(ctx, `浏览确认失败: ${job.taskName}`);
+      ctx.st.board.writes += 1;
+      return go(ctx, job, "confirm");
+    }
+    case "phones":
+      return phones(ctx, job);
+    case "rcs": {
+      send(ctx, rcsTokenRequest(callOf(ctx), "0", ctx.base));
+      return go(ctx, job, "confirmUse");
+    }
+    case "apps": {
+      const env = send(ctx, appListRequest(callOf(ctx), ctx.base));
+      const apps = env.ok ? parseApps(env.data) : [];
+      if (apps.length === 0) return fail(ctx, `应用列表为空: ${job.taskName}`);
+      ctx.st.job = { ...job, apps, appIndex: 0, stage: "hw" };
+      return { kind: "again" };
+    }
+    case "hw": {
+      const env = send(ctx, hwTokenRequest(callOf(ctx), ctx.base));
+      const hwToken = env.ok ? rpStr(env.data, "hwToken") : void 0;
+      if (hwToken === void 0) return fail(ctx, `hwToken获取失败: ${job.taskName}`);
+      ctx.st.job = { ...job, hwToken, stage: "status" };
+      return { kind: "again" };
+    }
+    case "status":
+      return installStatus(ctx, job);
+    case "installStart":
+      return installStart(ctx, job);
+    case "installPoll":
+      return installPoll(ctx, job);
+    case "report": {
+      const app = (job.apps ?? [])[job.appIndex ?? 0];
+      if (app === void 0) return notFoundApp(ctx, job);
+      const taskId = sendableId(job.id);
+      const appId = sendableId(app.id);
+      if (taskId === void 0 || appId === void 0) {
+        return fail(ctx, `上报装机结果没成: ${job.taskName} 活动站没给编号`);
+      }
+      const env = send(
+        ctx,
+        reportInstallRequest(callOf(ctx), taskId, appId, job.reportedExists === true ? 1 : void 0, ctx.base)
+      );
+      if (env.ok) ctx.st.board.writes += 1;
+      return go(ctx, job, "confirmInstall");
+    }
+    case "topicList":
+      return topicList(ctx, job);
+    case "topicAnswer":
+      return topicAnswer(ctx, job);
+    case "confirm":
+      return confirm(ctx, job);
+    case "confirmUse":
+      return confirmUse(ctx, job);
+    case "confirmInstall":
+      return confirmInstall(ctx, job);
+    case "reward":
+      return reward(ctx, job);
+    default:
+      return fail(ctx, `任务失败: ${job.taskName} 走到了不认识的一段`);
+  }
+}
+function begin(ctx, job) {
+  const state = classify(job.status);
+  const name = job.taskName;
+  if (state === "done") {
+    rpLine(ctx.st, `已完成: ${name}${suffixOf(job)}`);
+    return { kind: "done" };
+  }
+  if (state === "blocked" || state === "unknown") {
+    rpLine(ctx.st, `暂不可做: ${name} (${statusLabel(job.status)})`);
+    return { kind: "done" };
+  }
+  rpLine(ctx.st, `去完成: ${name}${suffixOf(job)}`);
+  if (job.kind === "manual") {
+    rpLine(ctx.st, `需手动完成: ${name}${suffixOf(job)} (${manualReason(job.taskCode)})`);
+    ctx.st.board.manual += 1;
+    return { kind: "done" };
+  }
+  return go(ctx, job, "complete");
+}
+function nextAfterComplete(kind) {
+  if (kind === "browse") return "waitBrowse";
+  if (kind === "direct") return "confirm";
+  if (kind === "topic") return "topicList";
+  return "phones";
+}
+function readOnlyConfirm(kind) {
+  if (kind === "install") return void 0;
+  if (kind === "cloudUse") return "confirmUse";
+  return "confirm";
+}
+function phones(ctx, job) {
+  const found = [];
+  for (const status of ["ACTIVE", "PENDING"]) {
+    const env = send(ctx, cloudPhonesRequest(callOf(ctx), status, ctx.base));
+    if (env.ok) found.push(...parsePhones(env.data));
+  }
+  if (job.kind === "cloudUse") {
+    return go(ctx, job, found.length > 0 ? "rcs" : "confirmUse");
+  }
+  if (found.length === 0) {
+    rpLine(ctx.st, `需手动完成: ${job.taskName} (无云手机)`);
+    ctx.st.board.manual += 1;
+    return { kind: "done" };
+  }
+  const one = pickPhone(found);
+  if (one === void 0 || !phoneUsable(one)) {
+    rpLine(ctx.st, `需手动完成: ${job.taskName} (云机锁屏)`);
+    ctx.st.board.manual += 1;
+    return { kind: "done" };
+  }
+  return go(ctx, { ...job, instanceId: one.instanceId }, "apps");
+}
+function installStatus(ctx, job) {
+  if ((job.hwToken ?? "") === "" && (job.apps?.length ?? 0) > 0) return go(ctx, job, "hw");
+  const app = (job.apps ?? [])[job.appIndex ?? 0];
+  if (app === void 0 || (job.hwToken ?? "") === "") return notFoundApp(ctx, job);
+  const env = send(
+    ctx,
+    installStatusRequest(callOf(ctx), job.hwToken ?? "", job.instanceId ?? "", app.packageName, ctx.base)
+  );
+  const status = env.ok ? readInstallStatus(env.data) : void 0;
+  return status === INSTALL_STATUS_EXISTS ? go(ctx, { ...job, reportedExists: true }, "report") : go(ctx, job, "installStart");
+}
+function installStart(ctx, job) {
+  const app = (job.apps ?? [])[job.appIndex ?? 0];
+  if (app === void 0) return notFoundApp(ctx, job);
+  const env = send(
+    ctx,
+    apkInstallRequest(callOf(ctx), job.instanceId ?? "", String(app.packageId), job.hwToken ?? "", ctx.base)
+  );
+  const started = env.ok ? readInstallStart(env.data) : { started: false, taskId: "" };
+  if (!started.started) {
+    return go(ctx, { ...job, appIndex: (job.appIndex ?? 0) + 1 }, "status");
+  }
+  ctx.st.board.writes += 1;
+  return go(ctx, { ...job, installTaskId: started.taskId, pollTries: 0 }, "installPoll");
+}
+function installPoll(ctx, job) {
+  const env = send(ctx, installTaskStatusRequest(callOf(ctx), job.hwToken ?? "", job.installTaskId ?? "", ctx.base));
+  const progress = env.ok ? readInstallProgress(env.data) : void 0;
+  if (progress === INSTALL_TASK_DONE) return go(ctx, { ...job, reportedExists: void 0 }, "report");
+  if (progress === INSTALL_TASK_FAILED) {
+    return go(ctx, { ...job, appIndex: (job.appIndex ?? 0) + 1, installTaskId: void 0 }, "status");
+  }
+  const tries = (job.pollTries ?? 0) + 1;
+  if (tries >= REDPACK_PLAN.pollTries) {
+    return go(ctx, { ...job, appIndex: (job.appIndex ?? 0) + 1, pollTries: 0, installTaskId: void 0 }, "status");
+  }
+  waitMs(ctx.deps, REDPACK_PLAN.pollGapMs);
+  ctx.st.job = { ...job, pollTries: tries };
+  return { kind: "again" };
+}
+function topicList(ctx, job) {
+  const env = send(ctx, topicListRequest(callOf(ctx), ctx.base));
+  const topic = env.ok ? parseTopic(env.data) : void 0;
+  if (topic === void 0) return fail(ctx, `题库为空: ${job.taskName}`);
+  const letter = answerLetter(topic);
+  if (letter !== void 0) {
+    return go(ctx, { ...job, topicId: topic.id, topicQuestion: topic.question, topicAnswer: letter }, "topicAnswer");
+  }
+  const tries = (job.topicTries ?? 0) + 1;
+  if (tries >= REDPACK_PLAN.topicTries) return unknownTopic(ctx, job, topic.question);
+  waitMs(ctx.deps, REDPACK_PLAN.topicGapMs);
+  ctx.st.job = { ...job, topicTries: tries };
+  return { kind: "again" };
+}
+function topicAnswer(ctx, job) {
+  const letter = job.topicAnswer ?? "";
+  if (letter === "") return unknownTopic(ctx, job, job.topicQuestion ?? "");
+  const taskId = Number(job.id);
+  const topicId = Number(job.topicId);
+  if (!Number.isFinite(taskId) || !Number.isFinite(topicId)) {
+    return fail(ctx, `答题失败: ${job.taskName} 活动站给的编号不是数字`);
+  }
+  const env = send(ctx, topicAnswerRequest(callOf(ctx), taskId, topicId, letter, ctx.base));
+  const status = env.ok ? readWriteStatus(env.data) : void 0;
+  if (!env.ok || status !== 1) return fail(ctx, `答题失败: ${job.taskName} ${env.error ?? "活动站说没成"}`);
+  markWritten(ctx.st, job.taskCode);
+  ctx.st.board.writes += 1;
+  rpLine(ctx.st, `已完成: ${job.taskName}`);
+  return go(ctx, job, "reward");
+}
+function confirm(ctx, job) {
+  const status = reRead(ctx, job);
+  if (status === 1) {
+    rpLine(ctx.st, `已完成: ${job.taskName}`);
+    return go(ctx, { ...job, status }, "reward");
+  }
+  rpLine(ctx.st, `已登记: ${job.taskName} (${statusLabel(status)})`);
+  return { kind: "done" };
+}
+function confirmUse(ctx, job) {
+  const status = reRead(ctx, job);
+  if (status === 1) {
+    rpLine(ctx.st, `已完成: ${job.taskName}`);
+    return go(ctx, { ...job, status }, "reward");
+  }
+  rpLine(ctx.st, `需手动完成: ${job.taskName} (需云机内实际使用)`);
+  ctx.st.board.manual += 1;
+  return { kind: "done" };
+}
+function confirmInstall(ctx, job) {
+  const status = reRead(ctx, job);
+  if (status === 1) {
+    rpLine(ctx.st, `已完成: ${job.taskName}`);
+    return go(ctx, { ...job, status }, "reward");
+  }
+  if (job.reportedExists === true) {
+    return go(
+      ctx,
+      { ...job, reportedExists: void 0, appIndex: (job.appIndex ?? 0) + 1, installTaskId: void 0 },
+      "status"
+    );
+  }
+  const app = (job.apps ?? [])[job.appIndex ?? 0];
+  rpLine(ctx.st, `已安装应用: ${appName(app)}`);
+  return { kind: "done" };
+}
+function appName(app) {
+  if (app === void 0) return "";
+  return app.apkName !== "" ? app.apkName : app.packageName;
+}
+function reRead(ctx, job) {
+  const env = send(ctx, taskListRequest(callOf(ctx), ctx.base));
+  if (!env.ok) return job.status ?? 0;
+  const found = parseTaskList(env.data).tasks.find((t) => t.taskCode === job.taskCode);
+  const status = found?.status ?? 0;
+  const item = ctx.st.queue.find((q) => q.taskCode === job.taskCode);
+  if (item !== void 0) item.status = status;
+  return status;
+}
+function reward(ctx, job) {
+  const line = readRewardLine(ctx, job.taskCode, job.taskName);
+  if (line !== void 0) rpLine(ctx.st, line);
+  return { kind: "done" };
+}
+function readRewardLine(ctx, taskCode, defaultName) {
+  const env = send(ctx, toastInfoRequest(callOf(ctx), taskCode, ctx.base));
+  if (!env.ok) return void 0;
+  const prize = readReward(env.data);
+  if (prize === void 0) return void 0;
+  return `奖励: ${prize.name === "" ? defaultName : prize.name} +${yuan2(prize.cents)}`;
+}
+function notFoundApp(ctx, job) {
+  return fail(ctx, `未找到可安装应用: ${job.taskName}`);
+}
+function unknownTopic(ctx, job, question) {
+  rpLine(ctx.st, `需手动完成: ${job.taskName} (未知题目: ${question})`);
+  ctx.st.board.manual += 1;
+  return { kind: "done" };
+}
+function fail(ctx, note) {
+  rpLine(ctx.st, note);
+  return { kind: "failed", note };
+}
+function go(ctx, job, stage) {
+  ctx.st.job = { ...job, stage };
+  return { kind: "again" };
+}
+function readBalanceLine(deps, st, base) {
+  const env = callRedpack(deps.transport, accountInfoRequest(makeRedpackCall(st.token ?? "", depsNowMs(deps)), base));
+  if (!env.ok) return void 0;
+  const { can, total } = readBalance(env.data);
+  return `余额: 可用${yuanRaw(can)}元，累计${yuanRaw(total)}元`;
+}
+
+// src/mcloud/tasks/redpack.ts
+var REDPACK_BUDGET = { maxSteps: 90, deadlineMs: 6e4 };
+function redpackOn(deps) {
+  return redpackEnabled(deps.store);
+}
+function redpackGate(deps) {
+  if (redpackOn(deps)) return { ok: true, idle: false, note: "" };
+  return { ok: true, idle: true, skipped: true, note: "这一族没开（账号设置里可以开）" };
+}
+function save5(deps, st) {
+  saveRedpackState(deps.store, st, deps.nowIso);
+}
+function callOf2(deps, st) {
+  return makeRedpackCall(st.token ?? "", depsNowMs(deps));
+}
+function redpackStep(deps) {
+  const day = redpackDay(deps.nowIso);
+  const base = loadRedpackBase(deps.store);
+  const st = beginLeg(deps, day);
+  switch (st.phase) {
+    case "login":
+      return login(deps, st, base);
+    case "list":
+      return readList(deps, st, base);
+    case "balanceBefore": {
+      const line = readBalanceLine(deps, st, base);
+      if (line !== void 0) rpLine(st, line);
+      st.phase = "sign";
+      save5(deps, st);
+      return { ok: true, note: "读了进来的余额" };
+    }
+    case "sign":
+      return dailySign(deps, st, base);
+    case "signReward":
+      return signReward(deps, st, base);
+    case "walk":
+      return walk(deps, st, base);
+    case "balanceAfter": {
+      const line = readBalanceLine(deps, st, base);
+      if (line !== void 0) rpLine(st, line);
+      finishRedpack(st);
+      save5(deps, st);
+      return { ok: true, idle: true, note: summarize2(st) };
+    }
+    case "done":
+      return { ok: true, idle: true, note: summarize2(st) };
+  }
+}
+function beginLeg(deps, day) {
+  const prev = loadRedpackState(deps.store, day);
+  if (prev === null) {
+    const fresh = newRedpackState(day, deps.nowIso);
+    save5(deps, fresh);
+    return fresh;
+  }
+  if (prev.phase === "done") {
+    const fresh = newRedpackState(day, deps.nowIso, prev.written);
+    save5(deps, fresh);
+    return fresh;
+  }
+  return prev;
+}
+function login(deps, st, base) {
+  const auth = loadAuthRaw(deps.store);
+  if (auth === "") return badLogin(deps, st, "这个号还没有原生凭据，先在账号页把它加上");
+  const ssoRes = callRawText(
+    deps.transport,
+    specTokenRequest({ toSourceId: REDPACK_SSO_SOURCE_ID }, auth)
+  );
+  if (!ssoRes.ok) return badLogin(deps, st, `换 SSO 票没回来（${ssoRes.error ?? "未知失败"}）`);
+  const sso = parseSsoToken(ssoRes.text);
+  if (!sso.ok || sso.value === void 0) {
+    return badLogin(deps, st, `换 SSO 票没成（${sso.error ?? "响应里没有 token"}）`);
+  }
+  const deviceId = deps.store.getState(STATE_DEVICE_ID) ?? "";
+  const env = callRedpack(
+    deps.transport,
+    tokenValidateRequest(callOf2(deps, st), sso.value, deviceId, base)
+  );
+  const token = env.ok ? readRedpackToken(env.data) : void 0;
+  if (token === void 0) {
+    return badLogin(deps, st, `活动站不认这张票（${env.error ?? "响应里没有 token"}）`);
+  }
+  st.token = token;
+  st.phase = "list";
+  save5(deps, st);
+  return { ok: true, note: "活动站的票拿到了" };
+}
+function badLogin(deps, st, why) {
+  rpLine(st, `红包派对登录失败: ${why}`);
+  finishRedpack(st);
+  save5(deps, st);
+  return { ok: false, note: why };
+}
+function readList(deps, st, base) {
+  const env = callRedpack(deps.transport, taskListRequest(callOf2(deps, st), base));
+  if (!env.ok) {
+    finishRedpack(st);
+    save5(deps, st);
+    return { ok: false, note: `没读到任务表（${env.error ?? "活动站没回来"}）` };
+  }
+  const list = parseTaskList(env.data);
+  st.queue = toQueue(list);
+  for (const t of list.tasks) st.board.counts[classify(t.status)] += 1;
+  st.board.sign = list.sign === void 0 ? void 0 : { status: list.sign.status, amount: list.sign.amount, wrote: false, done: false };
+  if (st.queue.length === 0) rpLine(st, "任务表里一条都没有");
+  st.phase = "balanceBefore";
+  save5(deps, st);
+  return { ok: true, note: `读到 ${st.queue.length} 条任务` };
+}
+function toQueue(list) {
+  const out = [];
+  for (const g of list.groups) {
+    if (g.tasks.length === 0) continue;
+    for (const t of g.tasks) {
+      out.push({
+        taskCode: t.taskCode,
+        taskName: t.taskName,
+        id: t.id,
+        status: t.status,
+        amount: t.amount,
+        group: g.title
+      });
+    }
+  }
+  return out;
+}
+function dailySign(deps, st, base) {
+  const sign = st.board.sign;
+  if (sign === void 0) {
+    st.phase = "walk";
+    save5(deps, st);
+    return { ok: true, note: "今天没有签到那一格" };
+  }
+  const state = classify(sign.status);
+  if (state === "done") {
+    rpLine(st, `已完成: 每日签到${suffixOf2(sign.amount)}`);
+    sign.done = true;
+    st.phase = "walk";
+    save5(deps, st);
+    return { ok: true, note: "今天已经签过了" };
+  }
+  if (state !== "todo") {
+    rpLine(st, `暂不可做: 每日签到 (${statusLabel(sign.status)})`);
+    st.phase = "walk";
+    save5(deps, st);
+    return { ok: true, note: "今天这条签到先不做" };
+  }
+  rpLine(st, `去完成: 每日签到${suffixOf2(sign.amount)}`);
+  const env = callRedpack(deps.transport, userSignRequest(callOf2(deps, st), base));
+  const status = env.ok ? readWriteStatus(env.data) : void 0;
+  if (!env.ok || status !== 1) {
+    rpLine(st, `签到失败: ${env.error ?? "活动站说没成"}`);
+    st.phase = "walk";
+    save5(deps, st);
+    return { ok: true, note: "签到没成，继续后面的任务" };
+  }
+  sign.wrote = true;
+  sign.done = true;
+  st.board.writes += 1;
+  rpLine(st, "已完成: 每日签到");
+  st.phase = "signReward";
+  save5(deps, st);
+  return { ok: true, note: "签到成了" };
+}
+function signReward(deps, st, base) {
+  const line = readRewardLine({ deps, st, base }, "SIGN_1", "每日签到");
+  if (line !== void 0) rpLine(st, line);
+  st.phase = "walk";
+  save5(deps, st);
+  return { ok: true, note: "读了签到那条奖" };
+}
+function suffixOf2(amount) {
+  return amountSuffix({ amount });
+}
+function walk(deps, st, base) {
+  const job = st.job;
+  if (job === void 0) {
+    if (st.cursor >= st.queue.length) {
+      st.phase = "balanceAfter";
+      save5(deps, st);
+      return { ok: true, note: `${st.queue.length} 条都过了一遍` };
+    }
+    const item = st.queue[st.cursor];
+    if (!st.groupsShown.includes(item.group)) {
+      st.groupsShown.push(item.group);
+      rpLine(st, item.group);
+    }
+    st.job = {
+      taskCode: item.taskCode,
+      taskName: item.taskName,
+      id: item.id,
+      amount: item.amount,
+      status: item.status,
+      kind: dispatchKind(item.taskCode),
+      stage: "begin"
+    };
+    save5(deps, st);
+    return { ok: true, note: `开始: ${item.taskName}` };
+  }
+  const ctx = { deps, st, base };
+  const step = runRedpackJob(ctx);
+  if (step.kind === "again") {
+    save5(deps, st);
+    return { ok: true, note: `进行中: ${job.taskName}` };
+  }
+  st.job = void 0;
+  st.cursor += 1;
+  save5(deps, st);
+  return { ok: true, note: step.kind === "failed" ? `${job.taskName}：这一条没成` : `${job.taskName}：过了` };
 }
 
 // src/mcloud/tasks/receive.ts
@@ -6913,6 +8321,278 @@ function runAuthRefresh(deps, force = false, leadDays = DEFAULT_LEAD_DAYS, targe
   };
 }
 
+// src/mcloud/tokenGate.ts
+var LoginExpiredError = class extends Error {
+  constructor(message = "这一环要的票没被认（90001）") {
+    super(message);
+    this.name = "LoginExpiredError";
+  }
+};
+var MAX_RESETS = 2;
+function exchangeOnce(deps, recipe) {
+  const auth = loadAuthRaw(deps.store);
+  if (auth === "") return { ok: false, note: "没有可换票的原生凭据 —— 先加一个账号" };
+  const started = startExchange(deps.store, auth, deps.nowIso, recipe);
+  if (!started.ok) return { ok: false, note: started.error ?? "这串登录信息用不了" };
+  const taskDeps2 = {
+    store: deps.store,
+    transport: deps.transport,
+    nowIso: deps.nowIso,
+    baseUrl: deps.baseUrl
+  };
+  const r = drain(
+    (d) => {
+      const x = runExchangeStep(d, recipe);
+      return { ok: x.ok, note: x.note, idle: x.done };
+    },
+    taskDeps2,
+    { label: `换票（${recipe}）`, maxSteps: 4, deadlineMs: 3e4, startedAt: Date.now() }
+  );
+  return { ok: r.ok && jwtFresh(deps.store, Date.now(), recipe), note: r.note };
+}
+function withTokenGate(deps, read, recipe = FALLBACK_RECIPE) {
+  const doRefresh = deps.refreshToken ?? ((rp) => exchangeOnce(deps, rp));
+  if (!jwtFresh(deps.store, Date.now(), recipe)) doRefresh(recipe);
+  let resets = 0;
+  for (; ; ) {
+    try {
+      return read();
+    } catch (e) {
+      if (!(e instanceof LoginExpiredError)) throw e;
+      if (resets >= MAX_RESETS) {
+        throw new Error("这个号读不到：换了两次票还是不认 —— 多半是登录信息坏了，去「账号」页重新登录一次");
+      }
+      resets++;
+      doRefresh(recipe);
+    }
+  }
+}
+
+// src/mcloud/beans.ts
+var LEDGER_AI_DOU = 1;
+var TYPE_ALL = 0;
+var PAGE_SIZE = 100;
+var MAX_PAGES = 20;
+var DAY_MS = 864e5;
+var BEIJING_OFFSET_SECS = 8 * 3600;
+function beanQuery(pageNumber) {
+  return `aiDou=${LEDGER_AI_DOU}&type=${TYPE_ALL}&pageNumber=${pageNumber}&pageSize=${PAGE_SIZE}`;
+}
+function dayStartMs(nowMs) {
+  const offsetMs = BEIJING_OFFSET_SECS * 1e3;
+  const local = Math.floor((nowMs + offsetMs) / DAY_MS) * DAY_MS;
+  return local - offsetMs;
+}
+function isToday(tsMs, nowMs) {
+  const start2 = dayStartMs(nowMs);
+  return tsMs >= start2 && tsMs < start2 + DAY_MS;
+}
+function parseInsertTimeMs(raw) {
+  const s = raw.trim();
+  const tAt = s.indexOf("T");
+  if (tAt < 0) return void 0;
+  const date = s.slice(0, tAt);
+  const rest = s.slice(tAt + 1);
+  let time;
+  let offsetSecs;
+  if (rest.endsWith("Z") || rest.endsWith("z")) {
+    time = rest.slice(0, -1);
+    offsetSecs = 0;
+  } else {
+    const signAt = Math.max(rest.lastIndexOf("+"), rest.lastIndexOf("-"));
+    if (signAt <= 0) return void 0;
+    time = rest.slice(0, signAt);
+    const off = rest.slice(signAt);
+    const sign = off.startsWith("-") ? -1 : 1;
+    const [hhRaw, mmRaw] = off.slice(1).split(":");
+    const hh = Number(hhRaw);
+    const mm = Number(mmRaw);
+    if (!Number.isInteger(hh) || !Number.isInteger(mm) || hh > 23 || mm > 59) return void 0;
+    offsetSecs = sign * (hh * 3600 + mm * 60);
+  }
+  const dotAt = time.indexOf(".");
+  const hms = dotAt < 0 ? time : time.slice(0, dotAt);
+  const frac = dotAt < 0 ? "" : time.slice(dotAt + 1);
+  if (frac !== "" && !/^\d+$/.test(frac)) return void 0;
+  const millis = frac === "" ? 0 : Number((frac + "000").slice(0, 3));
+  const tp = hms.split(":");
+  if (tp.length !== 3) return void 0;
+  const hour = Number(tp[0]);
+  const minute = Number(tp[1]);
+  const second = Number(tp[2]);
+  if (!Number.isInteger(hour) || !Number.isInteger(minute) || !Number.isInteger(second)) {
+    return void 0;
+  }
+  if (hour > 23 || minute > 59 || second > 59) return void 0;
+  const dp = date.split("-");
+  if (dp.length !== 3) return void 0;
+  const year = Number(dp[0]);
+  const month = Number(dp[1]);
+  const day = Number(dp[2]);
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) {
+    return void 0;
+  }
+  if (month < 1 || month > 12 || day < 1 || day > daysInMonth(year, month)) return void 0;
+  const days = daysFromCivil(year, month, day);
+  const utcSecs = days * 86400 + hour * 3600 + minute * 60 + second - offsetSecs;
+  return utcSecs * 1e3 + millis;
+}
+function daysFromCivil(year, month, day) {
+  const y = month <= 2 ? year - 1 : year;
+  const era = y >= 0 ? Math.floor(y / 400) : Math.floor((y - 399) / 400);
+  const yoe = y - era * 400;
+  const mp = (month + 9) % 12;
+  const doy = Math.floor((153 * mp + 2) / 5) + day - 1;
+  const doe = yoe * 365 + Math.floor(yoe / 4) - Math.floor(yoe / 100) + doy;
+  return era * 146097 + doe - 719468;
+}
+function daysInMonth(year, month) {
+  if (month === 1 || month === 3 || month === 5 || month === 7 || month === 8 || month === 10 || month === 12) {
+    return 31;
+  }
+  if (month === 4 || month === 6 || month === 9 || month === 11) return 30;
+  const leap = year % 4 === 0 && year % 100 !== 0 || year % 400 === 0;
+  return leap ? 29 : 28;
+}
+var isRecord3 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+function numAt(o, key) {
+  const v = o[key];
+  if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
+  if (typeof v === "string" && v.trim() !== "" && !Number.isNaN(Number(v))) return Number(v);
+  return 0;
+}
+function strAt(o, key) {
+  const v = o[key];
+  return typeof v === "string" ? v : "";
+}
+function parseCloudRecords(result) {
+  if (!isRecord3(result)) {
+    throw new Error("cloudRecordV2 响应缺少 result 对象");
+  }
+  const records = result.records;
+  if (!Array.isArray(records)) {
+    throw new Error("cloudRecordV2 响应缺少 result.records 数组");
+  }
+  return records.map((x) => {
+    const o = isRecord3(x) ? x : {};
+    const it = o.inserttime ?? o.insertTime;
+    return {
+      num: numAt(o, "num"),
+      summary: strAt(o, "summary"),
+      mark: strAt(o, "mark"),
+      insertTime: typeof it === "string" ? it : void 0
+    };
+  });
+}
+function aggregateToday(records, nowMs) {
+  let gained = 0;
+  let gainedCount = 0;
+  let spent = 0;
+  let count = 0;
+  for (const r of records) {
+    if (r.insertTime === void 0) {
+      throw new Error(`流水里有一笔没有 insertTime（${r.summary || "（无摘要）"}），读不出它是不是今天`);
+    }
+    const ts = parseInsertTimeMs(r.insertTime);
+    if (ts === void 0) {
+      throw new Error(`流水的 insertTime 解不出（${r.insertTime}）—— 不猜它属于哪一天`);
+    }
+    if (!isToday(ts, nowMs)) continue;
+    count += 1;
+    if (r.num >= 0) gained += r.num;
+    else spent += -r.num;
+    if (r.num > 0) gainedCount += 1;
+  }
+  return { net: gained - spent, gained, gainedCount, spent, count };
+}
+function fetchAll(fetch) {
+  const all = [];
+  for (let page = 1; page <= MAX_PAGES; page += 1) {
+    const batch = fetch(page);
+    const full = batch.length === PAGE_SIZE;
+    all.push(...batch);
+    if (!full) return { all, truncated: false };
+    if (page === MAX_PAGES) return { all, truncated: true };
+  }
+  return { all, truncated: true };
+}
+function readDay(fetch, nowMs) {
+  const { all, truncated } = fetchAll(fetch);
+  if (truncated) {
+    throw new Error(`AI豆流水翻满 ${MAX_PAGES} 页仍是满页，读不到底 —— 不报一个可能少算的数`);
+  }
+  return aggregateToday(all, nowMs);
+}
+
+// src/mcloud/beansRead.ts
+var BEANS_CACHE_TTL_MS = 2 * 60 * 60 * 1e3;
+function makeFetchPage(deps) {
+  const nowIso = deps.nowIso ?? (/* @__PURE__ */ new Date()).toISOString();
+  const base = hostBase({ baseUrl: deps.baseUrl }, "");
+  return (pageNumber) => {
+    const session = loadSession(deps.store);
+    if (session === null) throw new LoginExpiredError("这个账号还没有网页会话");
+    const url = resolveUrl("cloudRecordV2", base === "" ? void 0 : base) + `?${beanQuery(pageNumber)}`;
+    const req = buildH5Request({
+      url,
+      method: "GET",
+      referer: REFERER_SIGN_IN,
+      showLoading: SHOW_LOADING,
+      isDeviceId: false,
+      saltKey: 1,
+      session: sessionHeaders(session)
+    });
+    const res = callOnce(deps.transport, req);
+    if (res.setCookies.length > 0) {
+      saveSession(
+        deps.store,
+        { ...session, cookie: mergeCookieJar(session.cookie, res.setCookies) },
+        nowIso
+      );
+    }
+    if (res.env?.code === 90001) throw new LoginExpiredError();
+    if (!res.ok) {
+      throw new Error(res.error ?? "cloudRecordV2 请求失败");
+    }
+    const env = res.env ?? parseSignInEnvelope(res.body);
+    return parseCloudRecords(resultObject(env));
+  };
+}
+function gateDeps(deps) {
+  return {
+    store: deps.store,
+    transport: deps.transport,
+    nowIso: deps.nowIso ?? (/* @__PURE__ */ new Date()).toISOString(),
+    baseUrl: deps.baseUrl
+  };
+}
+function readDayForAccount(deps, nowMs) {
+  return withTokenGate(gateDeps(deps), () => readDay(makeFetchPage(deps), nowMs));
+}
+
+// src/mcloud/tasks/todayCloud.ts
+function runTodayCloud(deps) {
+  let gained;
+  let gainedCount;
+  try {
+    const day = readDayForAccount(
+      {
+        store: deps.store,
+        transport: deps.transport,
+        nowIso: deps.nowIso,
+        baseUrl: deps.baseUrl
+      },
+      depsNowMs(deps)
+    );
+    gained = day.gained;
+    gainedCount = day.gainedCount;
+  } catch (e) {
+    const why = e instanceof Error ? e.message : String(e);
+    return { ok: true, idle: true, note: `没读到云朵记录（${why}）` };
+  }
+  return { ok: true, idle: true, note: `今日获得${gainedCount}次云朵数量共：${gained}` };
+}
+
 // src/mcloud/dailyRun.ts
 var DAILY_PAGES = ["sign-in", "msg-push-on"];
 var PAGE_LABEL = {
@@ -6940,6 +8620,10 @@ function runDaily(deps, opts = {}) {
   const push = (r) => {
     const one = isPlumbing(r.name) ? { ...r, plumb: true } : r;
     steps.push(one);
+    for (const line2 of one.lines ?? []) {
+      detail.push(line2);
+      opts.onLine?.(line2);
+    }
     const line = userLine(one);
     if (line !== null) {
       detail.push(line);
@@ -6947,6 +8631,8 @@ function runDaily(deps, opts = {}) {
     }
     return one;
   };
+  opts.onPhase?.("凭据续期");
+  push(once("凭据续期", (d) => runAuthRefresh(d), deps));
   opts.onPhase?.("正在检查登录票");
   for (const page of DAILY_PAGES) {
     opts.onPhase?.(`换票（${PAGE_LABEL[page]}）`);
@@ -7022,7 +8708,11 @@ function runDaily(deps, opts = {}) {
   } else {
     const r = drain(runAppTaskStep, deps, {
       label: "App 任务",
-      maxSteps: 20,
+      // ⚠ 20 步是"一条没成整趟停"那会儿的数：那时候每次最多做到第 10 步就收工了。
+      //   现在逐条失败**不再中止**（2026-11-01，见 docs/app-task-ids.md），
+      //   十来条各自 2~6 步 ⇒ 20 步会在半路截断（截断不报错，下一次接着走，
+      //   但用户看到的是"这一趟只做了一半"）。时间上限仍是 60s 那道硬闸。
+      maxSteps: 40,
       deadlineMs: 6e4,
       startedAt: started,
       // 上传 / 访问日志 / 打卡 / 重试逐步打出来；否则日志只剩最后一句
@@ -7030,6 +8720,27 @@ function runDaily(deps, opts = {}) {
       onStep: (note) => opts.onNote?.(`App 任务：${note}`)
     });
     push({ name: "App 任务", ok: r.ok, note: r.note, idle: r.idle, pending: r.pending === true });
+  }
+  const rpKick = redpackGate(deps);
+  if (rpKick.idle === true || rpKick.skipped === true) {
+    push({ name: "红包派对", ok: true, note: rpKick.note, idle: true });
+  } else {
+    const r = drain(redpackStep, deps, {
+      label: "红包派对",
+      maxSteps: REDPACK_BUDGET.maxSteps,
+      deadlineMs: REDPACK_BUDGET.deadlineMs,
+      startedAt: started,
+      // 「进行中: X」这种内部进度走 debug（逐行的用户读数是上面那条通道）
+      onStep: (note) => opts.onNote?.(`红包派对：${note}`)
+    });
+    const tally = redpackSummary(deps.store, redpackDay(deps.nowIso));
+    push({
+      name: "红包派对",
+      ok: r.ok,
+      note: r.ok && tally !== void 0 ? tally : r.note,
+      idle: r.idle,
+      lines: takeRedpackLines(deps.store, deps.nowIso)
+    });
   }
   for (const [name, fn] of [
     ["消息推送奖励（问状态）", runMsgPushStatus],
@@ -7059,8 +8770,12 @@ function runDaily(deps, opts = {}) {
     });
     push({ name, ok: r.ok, note: r.note, idle: r.idle });
   }
-  push(once("凭据续期", (d) => runAuthRefresh(d), deps));
   push({ ...once("待领取奖品", runPrizes, deps), idle: true });
+  const inUse = [activeAppTaskFileId(deps), activeExpansionFileId(deps)].filter(
+    (x) => x !== void 0
+  );
+  push(once("清理临时文件", (d) => runOwnedCleanup(d, { skip: inUse }), deps));
+  push(once("今日云朵", runTodayCloud, deps));
   const pendingCount = steps.filter((s) => s.pending === true).length;
   const failed = steps.filter((s) => !s.ok && s.pending !== true);
   const elapsed = Date.now() - started;
@@ -7071,6 +8786,10 @@ function runDaily(deps, opts = {}) {
     note: r.note,
     idle: r.idle === true,
     pending: r.pending === true,
+    // 逐行读数也要进运行记录（历史那一页得能看到"这一族今天看到了什么"），
+    // 但**空的就不带** —— 一堆 `lines: []` 会让记录里的每一步长得一样，
+    // 而"这一步没有逐行"本身就是信息。
+    ...r.lines && r.lines.length > 0 ? { lines: r.lines } : {},
     ...isPlumbing(r.name) ? { plumb: true } : {}
   });
   if (failed.length === 0) {
@@ -7429,7 +9148,7 @@ function appendRun(store2, rec) {
 }
 
 // src/mcloud/log.ts
-import { debug, error, fail, fatal, log, start, success, warn } from "host-api";
+import { debug, error, fail as fail2, fatal, log, start, success, warn } from "host-api";
 
 // src/mcloud/logRing.ts
 var RING_KEY = "mcloud.log.ring";
@@ -7475,7 +9194,7 @@ function logBoth(store2, level, msg, nowIso) {
       success(msg);
       break;
     case "fail":
-      fail(msg);
+      fail2(msg);
       break;
     default:
       log(msg);
@@ -8057,7 +9776,7 @@ function pickChannels(cfg, channels) {
 // src/entries/daily.ts
 var store = makeStore();
 var transport = makeTransport(LONG_REQUEST_TIMEOUT_MS);
-var BUDGET_MS = 12e4;
+var BUDGET_MS = 3e5;
 var DONE_KEY = DAILY_DONE_KEY;
 var LAST_KEY = DAILY_LAST_KEY;
 register_cron(

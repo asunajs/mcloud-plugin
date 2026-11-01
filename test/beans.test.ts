@@ -149,6 +149,8 @@ test('aggregateToday：进 `>=0` 走 gained、`<0` 走 spent（取正数），ne
   assert.equal(day.spent, 3);
   assert.equal(day.net, 7);
   assert.equal(day.count, 3);
+  // 「获得 N 次」只数 `num > 0`：10 那一笔算，0 与支出都不算
+  assert.equal(day.gainedCount, 1);
 });
 
 test('aggregateToday：解不出的流水 ⇒ **抛**，不静默丢', () => {
@@ -184,6 +186,8 @@ test('readDay：不满一页只取第一页；装满就取下一页', () => {
   // 今日 = 100 页满 + 第二页那一条 `+5` = 105；支 = 0；昨天那条**不算**
   assert.equal(day.gained, 105);
   assert.equal(day.net, 105);
+  // 101 笔进账（100 + 第二页那 1 笔）
+  assert.equal(day.gainedCount, 101);
 });
 
 test('readDay：翻满 `MAX_PAGES` 还是满页 ⇒ 抛（不报可能少算的数）', () => {
