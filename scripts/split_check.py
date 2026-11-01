@@ -191,6 +191,18 @@ def main() -> int:
                 print(logpath.read_text(errors="replace")[-2000:])
                 return 2
 
+            # ⚠ 接口通了**不等于**四个插件都装好了：`mcloud` 最大、最后加载，
+            #   在慢一点的机器上 `/api/state` 会先给出另外三个（2026-11-01 本机
+            #   与 CI 都撞到过「插件 mcloud 已加载 ✗」这种假红）。这里等齐再断言。
+            deadline = time.time() + 30.0
+            while time.time() < deadline:
+                code, body = http(f"{base}/api/state")
+                if code == 200:
+                    got = {p.get("name") for p in (json.loads(body).get("plugins") or [])}
+                    if set(PLUGIN_NAMES) <= got:
+                        break
+                time.sleep(0.25)
+
             print("插件拆分（阶段 ②-1）· 验收\n")
 
             code, body = http(f"{base}/api/state")
@@ -499,22 +511,35 @@ def main() -> int:
                 str(ta0.get("resolved")),
             )
 
-            # 真跑一次日常，然后看记录里有没有它
+            # 真跑一次日常，然后看记录里有没有它。
+            #
+            # ⚠ **用 `?async=1` 入队，再轮询读数**（2026-11-01 CI 上挂在这条）：
+            #   面板那个同步口会一直等到"任务声明的预算 + 1s"，而日常这一条现在
+            #   最多能跑几十秒（App 任务那一支的 deadline 就 60s）。同步口径下
+            #   客户端的 20 秒超时会先炸 —— 炸的其实是**检查脚本**，不是插件。
+            #   界面本来就是走 async + 轮询 `/api/runs`，这里跟它对齐。
+            before = len((d0.get("daily") or {}).get("recent") or [])
             code, body = http(
-                f"{base}/api/tasks/mcloud-daily/%E6%97%A5%E5%B8%B8/run",
+                f"{base}/api/tasks/mcloud-daily/%E6%97%A5%E5%B8%B8/run?async=1",
                 method="POST",
                 body=b"{}",
                 headers={"content-type": "application/json", "x-panel": "1"},
+                timeout=30.0,
             )
-            check("能触发一次日常", code == 200, f"http {code} {body[:100]}")
-            time.sleep(2)
-            code, body = http(f"{base}/plugins/mcloud/api/readings")
-            d2 = json.loads(body) if code == 200 else {}
-            recent = (d2.get("daily") or {}).get("recent") or []
+            check("能触发一次日常（入队）", code == 200, f"http {code} {body[:100]}")
+            recent = []
+            deadline = time.time() + 120
+            while time.time() < deadline:
+                time.sleep(2)
+                code, body = http(f"{base}/plugins/mcloud/api/readings")
+                d2 = json.loads(body) if code == 200 else {}
+                recent = (d2.get("daily") or {}).get("recent") or []
+                if len(recent) > before:
+                    break
             check(
                 "⚠ 跑完之后「最近几次」里真的多了一条",
-                len(recent) >= 1,
-                f"拿到 {len(recent)} 条",
+                len(recent) > before,
+                f"跑之前 {before} 条，等了 120 秒仍是 {len(recent)} 条",
             )
             # ⚠ 把刚才那个"前置账号"删掉：下面的断言按 `accounts[0]` 取，
             #   留着它会把那些断言指到另一个账号上（跑一次就串一次）。
