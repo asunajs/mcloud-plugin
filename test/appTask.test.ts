@@ -12,6 +12,7 @@ import {
   CLICK_HOST,
   CLICK_PATH,
   STATE_TASK,
+  activeAppTaskFileId,
   appTaskFresh,
   clickRequest,
   pendingItems,
@@ -21,6 +22,10 @@ import {
 } from '../src/mcloud/tasks/appTask.ts';
 import { MATRIX_MARKETS, matrixKey } from '../src/mcloud/tasks/appTaskMatrix.ts';
 import { STATE_MONTH_BACKUP } from '../src/mcloud/tasks/taskExpansion.ts';
+import {
+  ownedFileIds,
+  registerOwnedFile,
+} from '../src/mcloud/tasks/ownedFiles.ts';
 import { SESSION_KEY } from '../src/store/types.ts';
 import { memStore } from '../src/store/memory.ts';
 import type { BuiltRequest } from '../src/mcloud/h5.ts';
@@ -313,7 +318,7 @@ test('472 邮箱活跃：autologin + 市场打卡', () => {
   assert.ok(urls.some((u) => u.includes('taskClickV2')));
 });
 
-test('1004 发邮件：composeId → compose → 市场打卡', () => {
+test('1004 发邮件：composeId → compose → **PE 活跃上报** → 打卡', () => {
   const { deps, sent } = mkDeps({
     [MATRIX_MARKETS[0]!]: [{ taskId: 1004, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '给好友发邮件' }],
   });
@@ -325,7 +330,12 @@ test('1004 发邮件：composeId → compose → 市场打卡', () => {
   const urls = sent.map((r) => r.url);
   assert.ok(urls.some((u) => u.includes('mbox:getComposeId')));
   assert.ok(urls.some((u) => u.includes('mbox:compose')));
-  assert.ok(urls.some((u) => u.includes('taskClickV2')));
+  // ⚠ PE 活跃上报（`eventType=3`）：少了这一枪，1004 在真机上一直停在第 1 步。
+  assert.ok(urls.some((u) => u.includes('logreport/s?func=user:activeAction')), '要有 PE 上报');
+  // 打卡打的是**已知能用**的那一口（`taskClickV2` 已经 404/405 死了）
+  const clicks = urls.filter((u) => u.includes('/ycloud/signin/task/click') && u.includes('id=1004'));
+  assert.equal(clicks.length, 1, `同一趟只许打一发 id=1004 的 task/click（实际 ${clicks.length} 发）`);
+  assert.equal(urls.some((u) => u.includes('taskClickV2')), false, 'taskClickV2 已经死了，别再打');
 });
 
 test('585 AI 相机：识图 → 对话', () => {
@@ -575,11 +585,13 @@ test('⚠ **只做"知道该做什么"的那些**（mcloud 账本里"未实现"�
       { taskId: 106, state: 'WAIT', enable: 1, groupId: 'day', name: '手动上传一个文件' },
     ],
   });
-  // 只有 115（click-only）与 106（上传）该做 —— 其余五条"未实现"
-  assert.deepEqual(pendingItems(deps).map((p) => p.itemId), [115, 106]);
+  // 只有 106（上传）与 115（click-only）该做 —— 其余五条"未实现"。
+  // ⚠ 顺序是 **taskId 升序**（参考实现 `app_task.rs` 的 `merge_pages` 排序），
+  //   不是上游返回的原序 —— 以前这里按原序取了 115，现在 106 在前。
+  assert.deepEqual(pendingItems(deps).map((p) => p.itemId), [106, 115]);
   const out = startAppTask(deps);
   assert.equal(out.ok, true, out.note);
-  assert.match(out.note, /从 #115 开始/, `实际：${out.note}`);
+  assert.match(out.note, /从 #106 开始/, `实际：${out.note}`);
   runAppTaskStep(deps);
   assert.equal(clicks(sent), 1, '只点 115 那一发');
   assert.equal(sent.filter((r) => /id=(548|549|550|551|607)/.test(r.url)).length, 0, '⚠ 那五条一个都不许碰');
@@ -634,4 +646,393 @@ test('⚠ **判据是状态变了，不是 HTTP 200** —— 点了没生效要�
   assert.equal(r.ok, false, `有"点了没生效"的 ⇒ 不能报成 ok：${r.note}`);
   assert.match(r.note, /本机动过|点了但状态没变/);
   assert.match(r.note, /#115/);
+});
+
+// ───────────────────────── 收尾的两条漏（PDF / 分享） ─────────────────────────
+
+test('PDF 转换完**不能直接换下一条**：先收尾，再 advance', () => {
+  const { deps, sent } = mkDeps({
+    [MATRIX_MARKETS[0]!]: [{ taskId: 1014, state: 'UNFINISH', enable: 1, groupId: 'g1', name: 'PDF 转换' }],
+  });
+  registerOwnedFile(deps, 'FPDF');
+  deps.store.setState(
+    STATE_TASK,
+    JSON.stringify({
+      gi: 0,
+      ii: 0,
+      phase: 'pdfConvert',
+      itemId: 1014,
+      fileId: 'FPDF',
+      fileOwned: true,
+      clicked: [1014],
+      data: { pdfTs: '1700000000000', sid: 's', rmkey: 'r' },
+      day: NOW.slice(0, 10),
+    }),
+    NOW,
+  );
+  const r1 = runAppTaskStep(deps);
+  assert.match(r1.note, /下一步收尾/);
+  assert.equal(
+    (JSON.parse(deps.store.getState(STATE_TASK)!) as { phase: string }).phase,
+    'trash',
+    '转换完必须进收尾，不能把 fileId 丢掉',
+  );
+  const r2 = runAppTaskStep(deps);
+  assert.match(r2.note, /回收站/);
+  assert.equal(sent.filter((r) => r.url.includes('batchTrash')).length, 1);
+  assert.deepEqual(JSON.parse(sent.at(-1)!.body!), { fileIds: ['FPDF'] });
+  assert.deepEqual(ownedFileIds(deps), [], '收尾成功后要注销');
+});
+
+test('分享：删完外链再收尾；判不了归属的文件绝不删', () => {
+  const { deps, sent } = mkDeps({
+    [MATRIX_MARKETS[0]!]: [{ taskId: 434, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '分享' }],
+  });
+  registerOwnedFile(deps, 'FSHARE');
+  deps.store.setState(
+    STATE_TASK,
+    JSON.stringify({
+      gi: 0,
+      ii: 0,
+      phase: 'shareDel',
+      itemId: 434,
+      fileId: 'FSHARE',
+      fileOwned: true,
+      clicked: [434],
+      data: { linkIds: '["L1"]' },
+      day: NOW.slice(0, 10),
+    }),
+    NOW,
+  );
+  const r1 = runAppTaskStep(deps);
+  assert.match(r1.note, /下一步收尾/);
+  assert.equal((JSON.parse(deps.store.getState(STATE_TASK)!) as { phase: string }).phase, 'trash');
+  const r2 = runAppTaskStep(deps);
+  assert.match(r2.note, /回收站/);
+  assert.equal(sent.filter((r) => r.url.includes('batchTrash')).length, 1);
+  assert.deepEqual(ownedFileIds(deps), []);
+
+  // 不是我们造的（撞同名）⇒ 只删外链，不发 batchTrash
+  const other = mkDeps({
+    [MATRIX_MARKETS[0]!]: [{ taskId: 434, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '分享' }],
+  });
+  other.deps.store.setState(
+    STATE_TASK,
+    JSON.stringify({
+      gi: 0,
+      ii: 0,
+      phase: 'shareDel',
+      itemId: 434,
+      fileId: 'FUSER',
+      fileOwned: false,
+      clicked: [434],
+      data: { linkIds: '["L1"]' },
+      day: NOW.slice(0, 10),
+    }),
+    NOW,
+  );
+  const r3 = runAppTaskStep(other.deps);
+  assert.match(r3.note, /外链已删/);
+  assert.equal(other.sent.filter((r) => r.url.includes('batchTrash')).length, 0, '❌ 不能删用户的文件');
+});
+
+test('收尾阶段：fileOwned === false ⇒ 一枪 batchTrash 都不发', () => {
+  const { deps, sent } = mkDeps({
+    [MATRIX_MARKETS[0]!]: [{ taskId: 106, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '上传文件' }],
+  });
+  deps.store.setState(
+    STATE_TASK,
+    JSON.stringify({
+      gi: 0,
+      ii: 0,
+      phase: 'trash',
+      itemId: 106,
+      fileId: 'FUSER',
+      fileOwned: false,
+      clicked: [434],
+      day: NOW.slice(0, 10),
+    }),
+    NOW,
+  );
+  const out = runAppTaskStep(deps);
+  assert.equal(out.ok, true, out.note);
+  assert.match(out.note, /不是我们造的/);
+  assert.equal(sent.filter((r) => r.url.includes('batchTrash')).length, 0);
+});
+
+test('链尾清理要跳过“今天还在任务里用”的文件', () => {
+  const { deps, store } = mkDeps({});
+  const put = (st: Record<string, unknown>) =>
+    store.setState(STATE_TASK, JSON.stringify({ gi: 0, ii: 0, itemId: 106, clicked: [], ...st }), NOW);
+
+  put({ phase: 'trash', fileId: 'F1', fileOwned: true, day: NOW.slice(0, 10) });
+  assert.equal(activeAppTaskFileId(deps), 'F1');
+  put({ phase: 'share', fileId: 'F1', fileOwned: true, day: NOW.slice(0, 10) });
+  assert.equal(activeAppTaskFileId(deps), 'F1');
+  // 收摊/跨天/不是我们造的 ⇒ 不该再占着
+  put({ phase: 'done', fileId: 'F1', fileOwned: true, day: NOW.slice(0, 10) });
+  assert.equal(activeAppTaskFileId(deps), undefined);
+  put({ phase: 'trash', fileId: 'F1', fileOwned: true, day: '2026-10-22' });
+  assert.equal(activeAppTaskFileId(deps), undefined);
+  put({ phase: 'trash', fileId: 'F-USER', fileOwned: false, day: NOW.slice(0, 10) });
+  assert.equal(activeAppTaskFileId(deps), undefined);
+});
+
+// ── 逐条隔离（2026-11-01 现场：三账号全停在 #609，「已完成 0 条」） ──
+//
+// 参考实现（`mcloud/crates/mcloud-tasks/src/app_task.rs` 的逐条循环）**从不因为
+// 某一条没成而中止整趟** —— 打卡失败 / runner 失败都只是 `continue` 下一条，
+// 整趟只有"取消"才停。我们原先是 `return {ok:false}` ⇒ `drain` 当场停 ⇒
+// 第 10 步那条 AI 对话一没回话，后面 10 条永远轮不到。
+
+/** 让某个 URL 片段挂掉（其余照旧走 mkDeps 的 mock）。 */
+function failOn(deps: TaskDeps, match: string): TaskDeps {
+  const orig = deps.transport;
+  (deps as unknown as { transport: typeof orig }).transport = (req) =>
+    req.url.includes(match) ? { error: 'mock 让它挂' } : orig(req);
+  return deps;
+}
+
+test('⚠ 某一条没成**不拖垮整趟**：AI 对话没回话只记一笔，接着做下一条', () => {
+  const { deps, store } = mkDeps({
+    [MATRIX_MARKETS[0]!]: [
+      { taskId: 609, state: 'UNFINISH', enable: 1, groupId: 'time', name: '和AI助手对话' },
+      { taskId: 547, state: 'UNFINISH', enable: 1, groupId: 'time', name: '加入一个知识库' },
+    ],
+  });
+  // 直接停在「AI 对话」这一步（前面几步的登录/鉴权不在这一条要钉的范围里）
+  store.setState(
+    STATE_TASK,
+    JSON.stringify({
+      gi: 0,
+      ii: 0,
+      phase: 'aiChat',
+      itemId: 609,
+      special: 'aiAssistant',
+      data: { auth: 'Basic x', domain: 'D' },
+      clicked: [609],
+      day: NOW.slice(0, 10),
+    }),
+    NOW,
+  );
+  failOn(deps, 'chat/v2/add');
+  const out = runAppTaskStep(deps);
+  assert.equal(out.ok, true, '⚠ 以前这里回 false ⇒ drain 当场停，后面每条都没机会做');
+  assert.match(out.note, /没取到输出/);
+  assert.match(out.note, /下一条 #547/, '这一条记下之后就换下一条');
+});
+
+test('⚠ 某一条的鉴权失败只跳过这一条（`failed` 记原因，不拖垮整趟）', () => {
+  const { deps, store } = mkDeps({
+    [MATRIX_MARKETS[0]!]: [
+      { taskId: 1020, state: 'UNFINISH', enable: 1, groupId: 'month', name: '完成一次邮件转存' },
+      { taskId: 547, state: 'UNFINISH', enable: 1, groupId: 'time', name: '加入一个知识库' },
+    ],
+  });
+  store.setState(
+    STATE_TASK,
+    JSON.stringify({
+      gi: 0,
+      ii: 0,
+      phase: 'mailLogin',
+      itemId: 1020,
+      special: 'mailBackup',
+      data: {},
+      clicked: [],
+      day: NOW.slice(0, 10),
+    }),
+    NOW,
+  );
+  failOn(deps, 'querySpecToken');
+  const out = runAppTaskStep(deps);
+  assert.equal(out.ok, true, '鉴权失败是"这一条没成"，不是"整趟别做了"');
+  assert.match(out.note, /邮箱 SSO token/);
+  assert.match(out.note, /继续下一条/);
+  assert.match(out.note, /下一条 #547/);
+  const st = JSON.parse(store.getState(STATE_TASK)!) as { failed?: { id: number; why: string }[] };
+  assert.deepEqual((st.failed ?? []).map((f) => f.id), [1020], '原因要留下（收尾如实报）');
+});
+
+test('⚠ 这一趟失败过的那几条**不回头再撞**（同一天、同一趟）', () => {
+  // ⚠ 失败那条必须是**最小的 id**（409 < 547）：不然 `advance` 里就算不滤掉 `failed`，
+  //   按 id 升序也会先挑到 547 —— 那种用例恒过，抓不住任何东西（评审 2026-11-01）。
+  const { deps, store } = mkDeps({
+    [MATRIX_MARKETS[0]!]: [
+      { taskId: 409, state: 'UNFINISH', enable: 1, groupId: 'month', name: '体验云盘小程序' },
+      { taskId: 547, state: 'UNFINISH', enable: 1, groupId: 'time', name: '加入一个知识库' },
+    ],
+  });
+  store.setState(
+    STATE_TASK,
+    JSON.stringify({
+      gi: 0,
+      ii: 0,
+      phase: 'mailLogin',
+      itemId: 409,
+      special: 'mailBackup',
+      data: {},
+      clicked: [],
+      failed: [],
+      day: NOW.slice(0, 10),
+    }),
+    NOW,
+  );
+  failOn(deps, 'querySpecToken');
+  runAppTaskStep(deps); // 409 挂 ⇒ failed=[409]，换到 547（**不许**再挑回 409）
+  const st = JSON.parse(store.getState(STATE_TASK)!) as { itemId: number };
+  assert.equal(st.itemId, 547);
+});
+
+test('逐条台账：434 必须排在**最后**（它只消费"这一趟传上去的文件"）', () => {
+  // 参考实现 `app_task.rs:1727-1731`：计划按 taskId 升序，然后把 434 挪到末尾。
+  // 434 的 id 比 522/106 都小 —— 不挪的话它永远排在"传文件"前面 ⇒ 手里空着 ⇒
+  // 每次都「没有可分享的文件，跳过分享任务」。
+  const { deps } = mkDeps({
+    [MATRIX_MARKETS[0]!]: [
+      { taskId: 434, state: 'WAIT', enable: 1, groupId: 'month', name: '分享文件领好礼' },
+      { taskId: 522, state: 'WAIT', enable: 1, groupId: 'time', name: '当月上传文件满100个' },
+      { taskId: 106, state: 'WAIT', enable: 1, groupId: 'day', name: '手动上传一个文件' },
+    ],
+  });
+  assert.deepEqual(pendingItems(deps).map((p) => p.itemId), [106, 522, 434], '106 → 522 → **434 垫底**');
+});
+
+test('同一个 taskId 在两个市场各出现一次 ⇒ 待办里只算一条（重影会骗人）', () => {
+  // 现场：522 在 sign_in_3 与 newsign_139mail 都有。打卡那一枪只带 `id`、不带市场，
+  // 点一次两处都算 ⇒ 列表里留一条就够，否则"待办 17 条"里有一条是影子。
+  const { deps } = mkDeps({
+    [MATRIX_MARKETS[0]!]: [{ taskId: 522, state: 'WAIT', enable: 1, groupId: 'time', name: '当月上传文件满100个' }],
+    [MATRIX_MARKETS[1]!]: [{ taskId: 522, state: 'WAIT', enable: 1, groupId: 'time', name: '当月上传文件满100个' }],
+  });
+  assert.deepEqual(pendingItems(deps).map((p) => p.itemId), [522]);
+});
+
+test('⚠ 要邮箱会话的 runner 一律**先登录**（否则带空 sid 出去）', () => {
+  // 现场 2026-11-01 自测：`advance` 换条目时 `data` 会丢，直接进 `sendMailAction`
+  // / `pdfUpload`/`billViewAction` 的话带出去的是**空 sid** —— 1004 回
+  // `FA_INVALID_PARAMETER`、1014 回 `FA_INVALID_SESSION User Session Expired`。
+  const { deps, store } = mkDeps({
+    [MATRIX_MARKETS[0]!]: [
+      { taskId: 1004, state: 'WAIT', enable: 1, groupId: 'month', name: '给好友发邮件' },
+      { taskId: 1014, state: 'WAIT', enable: 1, groupId: 'month', name: '体验PDF转换' },
+      { taskId: 1020, state: 'WAIT', enable: 1, groupId: 'month', name: '完成一次邮件转存' },
+      { taskId: 1029, state: 'WAIT', enable: 1, groupId: 'month', name: '查看我的账单' },
+    ],
+  });
+  for (const id of [1004, 1014, 1020, 1029]) {
+    store.setState(
+      STATE_TASK,
+      JSON.stringify({
+        gi: 0,
+        ii: 0,
+        phase: 'click',
+        itemId: id,
+        special: id === 1004 ? 'sendMail' : id === 1014 ? 'pdfConvert' : id === 1020 ? 'mailBackup' : 'billView',
+        data: { marketName: 'sign_in_3', link: '' },
+        clicked: [],
+        day: NOW.slice(0, 10),
+      }),
+      NOW,
+    );
+    const out = runAppTaskStep(deps); // 打卡那一发
+    const st = JSON.parse(store.getState(STATE_TASK)!) as { phase?: string };
+    assert.equal(st.phase, 'mailLogin', `#${id} 打完卡必须先去登邮箱（实际 ${String(st.phase)}）`);
+    assert.match(out.note, /mailLogin|邮箱|登录/);
+  }
+});
+
+test('113 使用PC客户端：上传按 **PC 档**发头（不是把安卓档换个渠道号）', () => {
+  // 参考实现 `app_task.rs` 为 113 单开 `UPLOAD_ONE_PC`，头画像整组不同：
+  // 少 `x-huawei-channelSrc` / `x-yun-sub-op-type`，多 `x-yun-market-source` /
+  // `x-yun-module-type` / `x-yun-svc-type`，client-info 也换成 PC 那串。
+  // 拿安卓档去传，上游当我们是手机 ⇒ 这条永远 WAIT。
+  const { deps, sent } = mkDeps({
+    [MATRIX_MARKETS[0]!]: [
+      { taskId: 113, state: 'WAIT', enable: 1, groupId: 'month', name: '使用PC客户端' },
+    ],
+  });
+  startAppTask(deps);
+  for (let i = 0; i < 12; i++) {
+    const out = runAppTaskStep(deps);
+    if (out.idle) break;
+  }
+  const create = sent.find((r) => r.url.includes('file/create'));
+  assert.ok(create !== undefined, '要真发 create');
+  assert.equal(create.headers['x-yun-app-channel'], '10200153', 'PC 渠道号');
+  assert.equal(create.headers['x-yun-market-source'], '001');
+  assert.equal(create.headers['x-yun-module-type'], '100');
+  assert.equal(create.headers['x-yun-svc-type'], '1');
+  assert.match(create.headers['x-yun-client-info'] ?? '', /\|PC\|/, 'PC 的 client-info');
+  assert.equal(create.headers['x-huawei-channelSrc'], undefined, 'PC 档没有这一枚');
+  assert.equal(create.headers['x-yun-sub-op-type'], undefined, 'PC 档没有这一枚');
+  // 106（普通上传）仍走安卓档 —— 别一刀切
+  const { deps: d2, sent: s2 } = mkDeps({
+    [MATRIX_MARKETS[0]!]: [{ taskId: 106, state: 'WAIT', enable: 1, groupId: 'day', name: '手动上传一个文件' }],
+  });
+  startAppTask(d2);
+  for (let i = 0; i < 12; i++) {
+    const out = runAppTaskStep(d2);
+    if (out.idle) break;
+  }
+  const c2 = s2.find((r) => r.url.includes('file/create'));
+  assert.ok(c2 !== undefined);
+  assert.notEqual(c2.headers['x-yun-app-channel'], '10200153', '106 还是安卓档');
+  assert.ok(c2.headers['x-yun-sub-op-type'] !== undefined, '安卓档有 sub-op-type');
+});
+
+test('分享建链失败 / 没 linkID：仍要收尾（文件不许留在网盘）', () => {
+  // 评审 2026-11-01：这条支路原来没用例 —— 建链失败就 advance，`trash` 永远不跑。
+  const { deps, store, sent } = mkDeps({
+    [MATRIX_MARKETS[0]!]: [{ taskId: 434, state: 'UNFINISH', enable: 1, groupId: 'month', name: '分享文件领好礼' }],
+  });
+  store.setState(
+    STATE_TASK,
+    JSON.stringify({
+      gi: 0,
+      ii: 0,
+      phase: 'share',
+      itemId: 434,
+      special: 'share',
+      fileId: 'F1',
+      fileOwned: true,
+      clicked: [434],
+      failed: [],
+      day: NOW.slice(0, 10),
+    }),
+    NOW,
+  );
+  failOn(deps, 'getOutLink');
+  let sawTrash = false;
+  for (let i = 0; i < 8; i++) {
+    const r = runAppTaskStep(deps);
+    if (sent.some((x) => x.url.includes('batchTrash'))) sawTrash = true;
+    if (r.idle) break;
+  }
+  assert.equal(sawTrash, true, '建链挂了也必须把文件收尾（batchTrash 要发出去）');
+  const st = JSON.parse(store.getState(STATE_TASK) ?? '{}') as { fileId?: string };
+  assert.equal(st.fileId, undefined, '收尾之后不许还留着 fileId');
+});
+
+test('`currstep != 0` 的条目：**不打卡**，收尾后也不再被挑回来（1014 那次 60 步死循环）', () => {
+  const { deps, sent } = mkDeps({
+    [MATRIX_MARKETS[0]!]: [
+      { taskId: 1014, state: 'UNFINISH', enable: 1, groupId: 'time', name: '体验PDF转换', currStep: 1 },
+    ],
+  });
+  startAppTask(deps);
+  for (let i = 0; i < 25; i++) {
+    const r = runAppTaskStep(deps);
+    if (r.idle) break;
+  }
+  assert.equal(
+    sent.filter((x) => x.url.includes('task/click') && x.url.includes('id=1014')).length,
+    0,
+    'currstep=1 的条目按参考实现不打卡',
+  );
+  // 收尾之后不许再挑回同一条（旧 bug：收完尾 advance 又选它，60 步循环）
+  assert.equal(
+    sent.filter((x) => x.url.includes('convertPdfFromYunFile')).length,
+    1,
+    '转换只许发一次',
+  );
 });

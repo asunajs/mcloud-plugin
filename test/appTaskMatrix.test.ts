@@ -21,6 +21,7 @@ import {
 import { SESSION_KEY } from '../src/store/types.ts';
 import { memStore } from '../src/store/memory.ts';
 import type { Transport } from '../src/mcloud/client.ts';
+import type { TaskDeps } from '../src/mcloud/tasks/base.ts';
 
 const NOW = '2026-10-13T08:05:00.000Z';
 const SESSION = { cookie: 'c=1', jwt: 'J', deviceId: 'dev-1', savedAt: NOW };
@@ -201,4 +202,28 @@ test('⚠ `result` 按**组名分键**（真机形状）—— 组名对上才�
   assert.deepEqual(parseMatrix(real, 'nope'), []);
   // 兼容老形状（list/tasks/taskList/items）
   assert.equal(parseMatrix({ list: [{ id: 1, enable: 1 }] }, 'day').length, 1);
+});
+
+test('凭据过期：**不发** taskListV3（否则把读数盖成全零的"游客清单"）', () => {
+  // 现场 2026-11-01：过期会话下 taskListV3 回 `{"code":0,…20 条全 WAIT}`，
+  // 三个号读出来**一模一样** —— 那是游客清单，不是各自的数据。
+  const expired = `${btoa(JSON.stringify({ alg: 'HS256' }))}.${btoa(JSON.stringify({ exp: 1700000000 }))}.sig`;
+  const store = memStore();
+  store.ensureSchema();
+  store.setState(SESSION_KEY, JSON.stringify({ cookie: '', jwt: expired, savedAt: NOW }), NOW);
+  const sent: string[] = [];
+  const deps = {
+    store,
+    transport: ((req: { url: string }) => {
+      sent.push(req.url);
+      return { status: 200, headers: {}, body: JSON.stringify({ code: 0, result: [] }) };
+    }) as never,
+    nowIso: NOW,
+    baseUrl: undefined,
+    settleMs: 0,
+  } as TaskDeps;
+  const out = runAppTaskMatrix(deps);
+  assert.equal(out.ok, false);
+  assert.match(out.note, /凭据已过期/);
+  assert.deepEqual(sent, [], '一个请求都不许发');
 });

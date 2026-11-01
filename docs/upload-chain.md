@@ -84,6 +84,23 @@ mcloud 的原话：它与凭据同类 —— **绝不进日志、夹具、错误
   链尾用 `batchTrash` 只清理**自己造的**文件（`exist:true` / 判不了的不删）。
 - 尺寸/内容要**落库**：第 ③ 枪 `complete` 要 `contentHash`，它在第 ① 枪之前就得算好
 
+### 一台状态机 = 一个槽位，**槽位按任务分**
+
+`mcloud.upload.state` 原来是"一个账号一格"，于是 `task-expansion`（备份支）与
+`app-task`（手动上传支）**共用同一格游标**。而 `uploadDone()` 只问"这格是不是 done"
+⇒ 两条任务会互相把对方的文件当成"自己传完了"（现场 2026-11-01：三个号的格子里都躺着
+App 任务的 `asign-*.bin`，而任务拓展记的是另一个 fileId —— 谁传的、传完没有，都判不出来）。
+
+现在 `loadUpload/startUpload/runUploadStep/uploadDone` 都收一个 `key`：
+
+| 槽位 | 谁用 |
+| --- | --- |
+| `mcloud.upload.state` | App 任务（历史数据也在这格，没动） |
+| `mcloud.upload.state.expansion` | 任务拓展（`STATE_UPLOAD_EXPANSION`） |
+
+`key` 本身是**账号袋里的键** ⇒ 账号那一维仍由 `scoped()` 管，这里只多出"任务"这一维。
+前缀 `mcloud.upload.state.` 在 `store/keys.ts` 里登记成 `account`。
+
 ## 八、证据在哪
 
 ```

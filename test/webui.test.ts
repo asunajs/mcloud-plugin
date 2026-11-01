@@ -232,15 +232,16 @@ test('动作接口都是**写**（带 `x-panel: 1`），否则会被面板挡成
 
 // ── ⑤ 菜单栏与区块一一对应 ────────────────────────────────────────────
 
-test('⚠ 菜单栏五块，与五个区块一一对应（少一块 = 用户点不到）', () => {
+test('⚠ 菜单栏六块，与六个区块一一对应（少一块 = 用户点不到）', () => {
   const items = [...html.matchAll(/class="menu-item[^"]*" data-block="([a-z]+)"/g)].map(
     (m) => m[1] as string,
   );
-  // ⚠ 原来是七块：「设置」和「推送」都按用户要求删掉了。五个词就是用户看到的全部区块。
+  // ⚠ 原来是七块：「设置」和「推送」都按用户要求删掉了；2026-10-31 加了「领奖」
+  //   （待领取奖品 → 点领取 → 短信验证码）。六个词就是用户看到的全部区块。
   assert.deepEqual(
     items,
-    ['account', 'daily', 'exchange', 'live', 'data'],
-    '菜单栏的顺序与名字就是用户看到的那五个词，别随手改',
+    ['account', 'daily', 'exchange', 'live', 'prizes', 'data'],
+    '菜单栏的顺序与名字就是用户看到的那六个词，别随手改',
   );
   for (const name of items) {
     assert.ok(html.includes(`id="block-${name}"`), `菜单里有「${name}」，但没有对应的区块`);
@@ -1329,6 +1330,30 @@ test('任务状态可切账号；每条带 taskId 和未完成时的步进', () 
   assert.ok(/renderData\(r\.data \|\| \{\}, r\.account \|\| \{\}\)/.test(js), 'renderData 必须拿到账号表（否则下拉是空的）');
 });
 
+test('⚠「本次运行」按钮上的账号要真的更新（manual 那两个 id 不是按 key 拼的）', () => {
+  const js = srcOf('plugins/mcloud/app.js');
+  const html = srcOf('plugins/mcloud/index.html');
+  // 现场 2026-11-01 截图：按钮写「本次运行：跟随自动」，展开面板里只有「测试」打勾。
+  // 根因：`setText(`${cfg.key}-acct-label`, …)` 拼出来是 `daily-manual-acct-label`，
+  // 而 HTML 里的元素叫 `daily-manual-label` ⇒ `setText` 找不到就静默不写，
+  // 按钮永远停在 HTML 的默认文案，用户看不出这一趟到底要跑谁。
+  assert.ok(!/\$\{cfg\.key\}-acct-label/.test(js), '不许再按 key 拼 label 的 id');
+  for (const id of ['daily-manual-label', 'live-manual-label']) {
+    assert.ok(js.includes(`'${id}'`), `PICKERS 里要写死 ${id}`);
+    assert.ok(new RegExp(`id="${id}"`).test(html), `HTML 里要有 ${id}`);
+  }
+});
+
+test('⚠ 备份那一行不许自相矛盾：没成要写「没成」并带上原因', () => {
+  const js = srcOf('plugins/mcloud/app.js');
+  // 现场 2026-11-01：「本月备份：未开启（任务拓展：已完成）」—— 两句互相打脸。
+  // 现在 done 只在复查读到备份已开启时成立；没成/判不了各有自己的词。
+  assert.ok(/blocked: '没成'/.test(js), 'blocked 那档要显示「没成」');
+  assert.ok(/unknown: '判不了'/.test(js), '读不到那一档要显示「判不了」');
+  assert.ok(/backup\.why/.test(js), '要把原因带出来（否则只看到"没成"不知道为啥）');
+  assert.ok(/shortWhy\(backup\.why, 60\)/.test(js), '这一行是副标题，原因要截短');
+});
+
 test('⚠ App 任务徽章**照抄上游那句**，不许一刀切印成「待做」（mcloud 的同一个错：`694e35f`）', () => {
   const js = srcOf('plugins/mcloud/app.js');
   // 一刀切那个词不许回来（用户原话：「这个待做容易误导，请与原接口文案一致」）
@@ -1426,4 +1451,51 @@ test('每个任务都有独立的自动/本次账号选择器，手动不回写�
   assert.ok(/daily-manual-follow/.test(js), '本次要能跟随自动');
   assert.ok(/body: \{ task: cfg\.task, mode: cfg\.mode, all, ids, follow: follow === true \}/.test(js), '保存时要带 mode/follow');
   assert.ok(/auto: TaskAccounts/.test(srcOf('src/mcloud/taskAccounts.ts')), '视图要分 auto/manual');
+});
+
+
+test('⚠ 领奖块与弹窗里不许出现滑块图 / 偏移量 / 像素输入（人眼分不出像素）', () => {
+  const h = stripComments(html);
+  const from = h.indexOf('id="block-prizes"');
+  const to = h.indexOf('id="block-data"');
+  assert.ok(from >= 0 && to > from, '找不到领奖块（或它的顺序变了）');
+  const block = h.slice(from, to);
+  assert.ok(block.includes('id="prize-list"'), '领奖要有待领取列表');
+
+  const dFrom = h.indexOf('id="prize-dialog"');
+  const dTo = h.indexOf('id="add-dialog"') > dFrom ? h.indexOf('id="add-dialog"') : h.length;
+  assert.ok(dFrom >= 0 && dTo > dFrom, '找不到领奖弹窗');
+  const dlg = h.slice(dFrom, dTo);
+  assert.ok(dlg.includes('id="prize-code"'), '领奖弹窗要能填短信验证码');
+
+  // ⚠ 判据是**用户能看见/能操作**的东西：图片、画布、拖动条、偏移/像素输入。
+  //   滑块是后端自己解的 —— 这里出现任何一张图都说明"又想让人肉眼对齐"。
+  const banned = ['<img', '<canvas', 'type="range"', 'pixel', 'offset', '偏移', '像素'];
+  for (const [name, text] of [['领奖块', block], ['领奖弹窗', dlg]] as const) {
+    const low = text.toLowerCase();
+    for (const b of banned) {
+      assert.ok(!low.includes(b.toLowerCase()), `${name}里出现了「${b}」—— 滑块必须后端自己解`);
+    }
+  }
+});
+
+test('顶栏要印插件版本（跑的是哪一版）', () => {
+  const html = srcOf('plugins/mcloud/index.html');
+  const js = srcOf('plugins/mcloud/app.js');
+  assert.match(html, /id="plugin-ver"/, '顶栏要有版本位');
+  assert.match(js, /setText\('plugin-ver',\s*r\.version/, '要拿 /readings 的 version 去填');
+  assert.equal(/v0\.\d+\.\d+/.test(html), false, '界面里不许写死版本号');
+});
+
+test('版本那一格：空时整格消失，颜色走本文件的 token', () => {
+  const css = srcOf('plugins/mcloud/style.css');
+  assert.match(css, /#plugin-ver:empty\s*\{[^}]*display:\s*none/, '没有版本时不许留空药丸');
+  assert.equal(/var\(--muted/.test(css), false, '本文件没有 --muted，别自造一个恒等于硬编码的变量');
+});
+
+test('account picker 的 legacy 说明也写死 id（拼出来在 manual 上不存在）', () => {
+  const js = srcOf('plugins/mcloud/app.js');
+  assert.equal(/\$\x60\$\{cfg\.key\}-acct-/.test(js), false, '别再拼 `${cfg.key}-acct-*` 的 id');
+  assert.match(js, /legacy: 'daily-acct-legacy'/, 'daily 那条要有 legacy');
+  assert.match(js, /legacy: 'live-acct-legacy'/, 'live 那条要有 legacy');
 });

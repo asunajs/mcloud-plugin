@@ -9,11 +9,12 @@ import type { Store } from '../store/types.ts';
 import { taskDeps } from '../mcloud/accountRuntime.ts';
 import type { HostWs, TaskDeps } from '../mcloud/tasks/base.ts';
 import { applyDefaultContentType, type Transport } from '../mcloud/client.ts';
+import { setRedpackEnabled } from '../mcloud/tasks/redpackState.ts';
 import type { ListenDeps } from '../mcloud/tasks/liveListen.ts';
 import { loadConfig, type StandaloneConfig } from './config.ts';
 import { FileStore } from './fileStore.ts';
 import { makeNodeFetcher } from './httpBridge.ts';
-import { installFetcher, installWs } from './hostApi.ts';
+import { debug, installFetcher, installWs } from './hostApi.ts';
 import { makeWsBridge, type WsBridge } from './wsBridge.ts';
 
 export interface Runtime {
@@ -34,6 +35,9 @@ function seedAccounts(raw: Store, config: StandaloneConfig): void {
   const existing = loadAccounts(raw);
   const next: Account[] = [];
   const used = new Set<string>();
+  // 账号 id ← 「红包派对.开启」里**明确写了**的那个值。
+  // 攒着统一落：新号要等 `upsertAccount` 之后才有 id 可写。
+  const redpack: { id: string; on: boolean }[] = [];
   for (const [index, seed] of config.accounts.entries()) {
     const phone = phoneOf(seed.auth);
     const hit =
@@ -43,6 +47,9 @@ function seedAccounts(raw: Store, config: StandaloneConfig): void {
       existing.find((a, i) => i === index && !used.has(a.id)) ??
       undefined;
     const label = seed.label ?? seed.nickname ?? hit?.label ?? phone ?? '账号';
+    // 三层合并照参照实现：账号那层赢，其次 `common`，**都没写就不写这一格**
+    // （缺省本来就是"开着"，见 `redpackState.redpackEnabled`）。
+    const on = seed.redpackEnabled ?? config.commonRedpackEnabled;
     if (hit !== undefined) {
       if (used.has(hit.id)) continue;
       used.add(hit.id);
@@ -52,6 +59,7 @@ function seedAccounts(raw: Store, config: StandaloneConfig): void {
         auth: seed.replaceAuth === true || hit.auth === '' ? seed.auth : hit.auth,
         disabled: seed.disabled === true,
       });
+      if (on !== undefined) redpack.push({ id: hit.id, on });
       continue;
     }
     // 新号：走 upsertAccount，id/平台/手机号规则与面板一致
@@ -60,10 +68,16 @@ function seedAccounts(raw: Store, config: StandaloneConfig): void {
     if (used.has(account.id)) continue;
     used.add(account.id);
     next.push({ ...account, label, disabled: seed.disabled === true });
+    if (on !== undefined) redpack.push({ id: account.id, on });
   }
   saveAccounts(raw, next, nowIso);
   if (next.length > 0 && (raw.getState(STATE_CURRENT_ACCOUNT) ?? '') === '') {
     raw.setState(STATE_CURRENT_ACCOUNT, next[0]!.id, nowIso);
+  }
+  // ⚠ 这一格是 **account** 作用域 ⇒ 必须经 `scoped(raw, acctId)` 写，
+  //   直接写 `raw` 会落到"当前账号"上（多账号时就是把 A 的开关写到 B 名下）。
+  for (const one of redpack) {
+    setRedpackEnabled(scoped(raw, one.id), one.on, nowIso);
   }
 }
 
@@ -120,7 +134,13 @@ export async function createRuntime(opts: { configPath?: string; stateFile?: str
       return taskDeps(one, transport, { lateMs: 0 });
     },
     listenDepsFor(acctId?: string): ListenDeps {
-      return { ...runtime.depsFor(acctId), host };
+      return {
+        ...runtime.depsFor(acctId),
+        host,
+        // 照 mcloud-sign 的 `[WS] 弹幕: ...`：用户要看到“到底听到了什么”。
+        // 换行在 liveListen 里已经折成 `\n`，这里只管打。
+        onDanmaku: (text) => debug(`[WS] 弹幕: ${text}`),
+      };
     },
     close() {
       wsBridge?.dispose();

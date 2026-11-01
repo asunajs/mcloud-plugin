@@ -80,15 +80,32 @@ export function androidOpCodes(op: CloudOp): { opType: string; subOpType: string
  *  真机教训：少了这几枚，`/hcy/file/create` 回 **HTTP 404** ——
  *  网关按这些头路由，缺了**看着就像"路径不存在"**（F-015 那个坑的第三次）。
  *  出处：mcloud 的 `cloud_file_op_headers`。 */
-export function cloudFileOpHeaders(op: CloudOp, channel: string = CHANNEL_ANDROID): Record<string, string> {
+/** PC 档的客户端画像（参考实现 `CLOUD_CLIENT_INFO_PC` 逐字）。 */
+export const CLIENT_INFO_PC =
+  '||11|8.3.3.20250521|PC|TGktMjAyNDA5MTcxMDA2||| Windows 11 (11.0)|1920X1020|Q2hpbmVzZSAoU2ltcGxpZmllZCk=|||';
+
+export function cloudFileOpHeaders(op: CloudOp, channel: 'android' | 'pc' = 'android'): Record<string, string> {
+  // ⚠ **PC 档不是"安卓档换个数"**：头画像整组不同（参考实现 `app_cloud_upload.rs:405-438`）。
+  //   113「使用PC客户端」要的就是这一组 —— 拿安卓档去传，上游当我们是手机，任务不翻。
+  if (channel === 'pc') {
+    return {
+      'x-yun-api-version': 'v1',
+      'x-yun-app-channel': CHANNEL_PC,
+      'x-yun-op-type': '1',
+      'x-yun-market-source': '001',
+      'x-yun-module-type': '100',
+      'x-yun-svc-type': '1',
+      'x-yun-client-info': CLIENT_INFO_PC,
+    };
+  }
   const { opType, subOpType } = androidOpCodes(op);
   return {
     // base 三枚（三档都有）
     'x-yun-api-version': 'v1',
-    'x-yun-app-channel': channel,
+    'x-yun-app-channel': CHANNEL_ANDROID,
     'x-yun-op-type': opType,
     // Android 档那三枚
-    'x-huawei-channelSrc': channel,
+    'x-huawei-channelSrc': CHANNEL_ANDROID,
     'x-yun-client-info': CLIENT_INFO_ANDROID,
     'x-yun-sub-op-type': subOpType,
   };
@@ -141,6 +158,8 @@ export function authorizeRequest<T extends { url: string; headers: Record<string
 // ───────────────────────── ① create ─────────────────────────
 
 export interface CreateInput {
+  /** 上传走哪一档（`android` 缺省 / `pc` 给 113 用）。 */
+  channel?: 'android' | 'pc' | undefined;
   /** 文件名（含扩展名）。 */
   name: string;
   /** 字节数。 */
@@ -194,7 +213,10 @@ export function buildCreateRequest(input: CreateInput): BuiltRequest {
     //   写成 `application/oct-stream` / `octet-stream` 会回 `04000018 请求体媒体格式不支持`。
     //   ⚠ 我一开始把 404 归因成 content-type —— **认错了**：那次同时改了两样（头画像 +
     //   content-type），而真因是**缺头画像**。一次只改一样才分得清。
-    headers: { 'Content-Type': 'application/json', ...cloudFileOpHeaders(input.op ?? 'backup') },
+    headers: {
+      'Content-Type': 'application/json',
+      ...cloudFileOpHeaders(input.op ?? 'backup', input.channel ?? 'android'),
+    },
     body: createBody(input),
   };
 }
@@ -352,11 +374,15 @@ export function buildCompleteRequest(
   uploadId: string,
   contentHash: string,
   op: CloudOp = 'backup',
+  channel: 'android' | 'pc' = 'android',
 ): BuiltRequest {
   return {
     url: `${PERSONAL_KD}${FILE_COMPLETE_PATH}`,
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...cloudFileOpHeaders(op) },
+    headers: {
+      'Content-Type': 'application/json',
+      ...cloudFileOpHeaders(op, channel),
+    },
     body: completeBody(fileId, uploadId, contentHash),
   };
 }

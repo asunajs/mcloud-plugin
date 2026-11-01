@@ -26,6 +26,9 @@ export interface AccountSeed {
   label?: string | undefined;
   disabled?: boolean | undefined;
   replaceAuth?: boolean | undefined;
+  /** 配置里**明确写了**的「红包派对.开启」。`undefined` = 没写 ⇒ 不碰状态里那一格
+   *  （面板上的开关可能已经改过，不能被每次启动都覆盖一遍）。 */
+  redpackEnabled?: boolean | undefined;
 }
 
 export interface StandaloneConfig {
@@ -38,6 +41,9 @@ export interface StandaloneConfig {
   ws: WsConfig;
   common: Record<string, unknown>;
   message: unknown;
+  /** `common.红包派对.开启` —— 参照实现是「默认 → 通用 → 账号」三层合并，
+   *  账号那层赢。这里同样只在**明确写了**时才落到账号状态上。 */
+  commonRedpackEnabled?: boolean | undefined;
   raw: Record<string, unknown>;
 }
 
@@ -120,6 +126,17 @@ function mergeLegacyAuth(accounts: AccountSeed[], dir: string): AccountSeed[] {
   });
 }
 
+/** 「红包派对.开启」那种"对象里一个开关"的写法。
+ *
+ *  ⚠ **没写这一格 ⇒ `undefined`**，不是 `false`。参照实现的默认来自
+ *  `defaultAccountConfig`（`红包派对: {开启: true}`）⇒ 缺省是**开**，
+ *  这里要是把"没写"折成 `false`，就等于把整族偷偷关掉，而日志里一句不说。 */
+function switchOn(v: unknown): boolean | undefined {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return undefined;
+  const o = v as Record<string, unknown>;
+  return typeof o['开启'] === 'boolean' ? o['开启'] : undefined;
+}
+
 function accountSeeds(raw: Record<string, unknown>): AccountSeed[] {
   const list = raw.caiyun ?? raw.accounts;
   if (!Array.isArray(list)) throw new Error('配置里没有 caiyun（或 accounts）数组');
@@ -136,6 +153,7 @@ function accountSeeds(raw: Record<string, unknown>): AccountSeed[] {
       label: label ?? nickname,
       disabled: o.disabled === true,
       replaceAuth: o.replaceAuth === true,
+      redpackEnabled: switchOn(o['红包派对']),
     });
   }
   return out;
@@ -184,6 +202,8 @@ export async function loadConfig(path?: string): Promise<StandaloneConfig> {
       timeoutMs: numberOr(ws.timeoutMs, 15_000),
     },
     common: raw.common === undefined ? {} : asObject(raw.common, 'common'),
+    commonRedpackEnabled:
+      raw.common === undefined ? undefined : switchOn(asObject(raw.common, 'common')['红包派对']),
     message: raw.message,
     raw,
   };

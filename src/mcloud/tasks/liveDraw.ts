@@ -49,6 +49,7 @@ import type { CallResult } from '../client.ts';
 import { clearError, recordError } from './base.ts';
 import type { TaskDeps, TaskOutcome } from './base.ts';
 import { loadSession } from '../../store/types.ts';
+import { LoginExpiredError, withTokenGate } from '../tokenGate.ts';
 import type { Store } from '../../store/types.ts';
 import {
   JOURNALING_EVENTS,
@@ -90,6 +91,12 @@ export interface DrawRow {
   kind: DrawKind;
   note: string;
   flowerNum: number;
+  /** 上游回的奖品名（成功那支才有）。CLI 照 mcloud-sign 的句子要用它。 */
+  prizeName?: string | undefined;
+  /** 上游回的原文一句话（失败那支用；CLI 要照 mcloud-sign 原样转述）。 */
+  message?: string | undefined;
+  /** 上游回的原始业务码（与 `code` 区分：`code` 是口令原文）。 */
+  envCode?: number | undefined;
 }
 
 export interface DrawState {
@@ -102,6 +109,11 @@ export interface DrawState {
   balanceBefore?: number | undefined;
   balanceAfter?: number | undefined;
   firstParticipate?: string | undefined;
+  /** ③ 真领到的那几朵（`200110` 已参与过时没有）。CLI 照 mcloud-sign 报「获得 N 朵」用。 */
+  firstParticipateNum?: number | undefined;
+  /** ③ 的原始业务码/原话 —— CLI 照 mcloud-sign 转述失败那支用。 */
+  firstParticipateCode?: number | undefined;
+  firstParticipateMessage?: string | undefined;
   revival?: number | undefined;
   startedAt: string;
   finishedAt?: string | undefined;
@@ -303,7 +315,23 @@ export function runLiveDraw(
     return { ok: true, note: '步骤下标越界，已跳到收尾' };
   }
 
-  const res = callOnce(deps.transport, withSession(step.request, session.jwt));
+  // 每次发请求前重新读会话：换票之后必须拿**新票**重试，不能闭包缓存旧票。
+  // 90001 不是“账号坏了”，而是 H5 的 jwttoken 没被认；这一层会主动换票并重试。
+  const read = () => {
+    const cur = loadSession(deps.store);
+    if (!cur || !cur.jwt) throw new LoginExpiredError('领小红花要先有票 —— 上面「换票」那一步说了原因');
+    const out = callOnce(deps.transport, withSession(step.request, cur.jwt));
+    if (out.env?.code === 90001) throw new LoginExpiredError();
+    return out;
+  };
+  let res: CallResult;
+  try {
+    res = withTokenGate(deps, read);
+  } catch (e) {
+    const note = e instanceof Error ? e.message : String(e);
+    recordError(deps.store, TASK, note, deps.nowIso);
+    return { ok: false, note };
+  }
   const before = s.results.length;
   const advance = judge(s, step.label, res, deps.nowIso);
   deps.store.setState(STATE_DRAW, JSON.stringify(advance.state), deps.nowIso);
@@ -396,6 +424,10 @@ function judge(s: DrawState, label: string, res: CallResult, nowIso: string): Ad
       const code = res.env.code;
       st.firstParticipate =
         code === 0 ? '领到首次参与惊喜奖' : code === 200110 ? '已参与过（正常）' : `服务端回 ${code ?? '?'}`;
+      // 金额只在上游真回了 `result.flowerNum` 时记；没回就是 0（mcloud-sign 也是 `?? 0`）。
+      st.firstParticipateNum = code === 0 ? (classifyDraw(res.env).result?.flowerNum ?? 0) : undefined;
+      st.firstParticipateCode = code;
+      st.firstParticipateMessage = res.env.message ?? '';
       st.step = 'draw';
       return { state: st, ok: true, note: `${label}：${st.firstParticipate}` };
     }
@@ -407,6 +439,9 @@ function judge(s: DrawState, label: string, res: CallResult, nowIso: string): Ad
         kind: out.kind,
         note: drawLine(code, out),
         flowerNum: out.result?.flowerNum ?? 0,
+        prizeName: out.result?.prizeName,
+        message: out.message,
+        envCode: out.code,
       });
       st.drawIndex = s.drawIndex + 1;
       if (st.drawIndex >= st.codes.length) st.step = 'revival';

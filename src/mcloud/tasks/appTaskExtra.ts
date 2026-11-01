@@ -19,7 +19,8 @@ import { specTokenRequest } from '../h5session.ts';
 import { uuidV4 } from '../rand.ts';
 import { desDecryptBase64 } from '../../crypto/des.ts';
 import { rsaEncryptBase64 } from '../../crypto/rsa.ts';
-import { toBase64, utf8 } from '../../crypto/bytes.ts';
+import { toBase64, toHex, utf8 } from '../../crypto/bytes.ts';
+import { md5 } from '../../crypto/md5.ts';
 import type { BuiltRequest } from '../h5.ts';
 import type { TaskDeps } from './base.ts';
 
@@ -239,7 +240,10 @@ export function parseMailSession(body: string): MailSession | undefined {
 
 function mailHeaders(session: MailSession, extra: Record<string, string> = {}): Record<string, string> {
   return {
-    Cookie: `RMKEY=${session.rmkey}`,
+    // ⚠ 参考实现（`mail139.rs` 的 `MailSession::cookie`）是**两枚**：
+    //   `RMKEY=<rmkey>; Os_Sso_Sid=<sid>`。只给 RMKEY 时 `disk:convertPdfFromYunFile`
+    //   回 `FA_INVALID_SESSION User Session Expired`（现场 2026-11-01 自测：1014 卡在这）。
+    Cookie: `RMKEY=${session.rmkey}; Os_Sso_Sid=${session.sid}`,
     'Content-Type': 'application/xml;charset=UTF-8',
     Accept: '*/*',
     'User-Agent': MAIL_UA,
@@ -302,23 +306,65 @@ export function mailBackupRequest(
 
 /** 从 XML/JSON 两种形状里取第一枚键值（参考实现 first_field）。 */
 export function firstField(body: string, key: string): string | undefined {
-  const re = new RegExp(`name=["']${key}["']\\s*>([^<]*)<`, 'i');
+  // XML 那一支：值到 `<` **或到串尾**为止（旧写法要求闭合标签，体被截断就取不到）。
+  const re = new RegExp(`name=["']${key}["']\\s*>([^<]*)`, 'i');
   const m = re.exec(body);
-  if (m !== null && m[1] !== undefined && m[1] !== '') return m[1];
-  const j = new RegExp(`"${key}"\\s*:\\s*"([^"]*)"`, 'i');
-  const mj = j.exec(body);
-  return mj?.[1];
+  if (m !== null && m[1] !== undefined) {
+    const v = m[1].trim();
+    if (v !== '') return v;
+  }
+  // ⚠ 键**可能是单引号**：实测 `mbox:searchMessages`（1029 账单）回的是
+  //   `{'code':'S_OK','var':[{'mid':"d4864e…"}]}` —— 键单引号、值双引号混着用。
+  //   只认 `"mid":"…"` 的话，账单那条永远"取不到 mid"（2026-11-01 现场）。
+  //
+  // ⚠ 但**键和值必须各自配对**：一条 `["']([^"']*)["']` 会在值里带撇号时
+  //   截出半截（`"subject":"it's mine"` → `it`），半截值比取不到更糟 ——
+  //   它会被原样拼进下游请求 URL（评审 2026-11-01）。
+  for (const re of [
+    new RegExp(`"${key}"\\s*:\\s*"([^"]*)"`, 'i'),
+    new RegExp(`'${key}'\\s*:\\s*"([^"]*)"`, 'i'),
+    new RegExp(`'${key}'\\s*:\\s*'([^']*)'`, 'i'),
+    // 值**不带引号**那一支：参考实现 `first_mail_id` 专门补过（实拍的壳混着用）
+    new RegExp(`"${key}"\\s*:\\s*([^,}\\s]+)`, 'i'),
+  ]) {
+    const mj = re.exec(body);
+    const v = mj?.[1];
+    if (v !== undefined && v !== '') return v;
+  }
+  return undefined;
 }
 
 /** 邮箱族 `{code, summary}`：`S_OK` 才算成。 */
 export function mailCode(body: string): { ok: boolean; code: string; summary: string } {
-  try {
-    const v = JSON.parse(body) as { code?: unknown; summary?: unknown };
+  // ⚠ 邮箱那一族**不全是标准 JSON**：实测 `mbox:getComposeId` 回的是
+  //   `{'code':'S_OK','var':'…'}` —— **单引号**。`JSON.parse` 直接抛 ⇒ 以前报
+  //   "响应不是 JSON"（2026-11-01 自测：1004 一直卡在"取不到 composeId"）。
+  //   所以先按标准 JSON 试，失败再按单引号那份兜。
+  const tryParse = (t: string): { code?: unknown; summary?: unknown } | undefined => {
+    try {
+      return JSON.parse(t) as { code?: unknown; summary?: unknown };
+    } catch {
+      return undefined;
+    }
+  };
+  // ⚠ **不要** `body.replace(/'/g,'"')` 上来就全局换：值里本来就有撇号时
+  //   （`{'code':'S_OK','summary':"can't"}`）会把合法体整成非法 JSON，
+  //   然后一次撇号就把 `S_OK` 说成"不是 JSON"（评审 2026-11-01 实测）。
+  //   单引号那一支改成**按字段抽**（与 `firstField` 同一手法，原文原样留在 summary）。
+  const v = tryParse(body);
+  if (v !== undefined) {
     const code = typeof v.code === 'string' ? v.code : String(v.code ?? '');
+    // ⚠ 只认 `S_OK`（参考实现 `is_ok` 逐字就是它）。以前还收 `0000`，
+    //   那会让一个没验证过的码被当成"成了"（评审 2026-11-01）。
     return { ok: code === 'S_OK', code, summary: typeof v.summary === 'string' ? v.summary : '' };
-  } catch {
-    return { ok: false, code: '', summary: '响应不是 JSON' };
   }
+  const loose = /['"]?code['"]?\s*:\s*['"]([^'"]*)['"]/i.exec(body)?.[1];
+  const looseSum = /['"]?summary['"]?\s*:\s*['"]([^'"]*)['"]/i.exec(body)?.[1];
+  if (loose !== undefined) {
+    return { ok: loose === 'S_OK', code: loose, summary: looseSum ?? '' };
+  }
+  // 还解析不了就把原文前 80 字带出来 —— 只说"响应不是 JSON"等于把最该看的那一格丢了。
+  return { ok: false, code: '', summary: `响应不是 JSON：${body.slice(0, 80)}` };
 }
 
 /** 一个新的 cguid（参考实现用随机串；这里用 UUID 的紧凑形式）。 */
@@ -392,7 +438,10 @@ export function deriveAiAuth(t: AiToken):
   } catch {
     return undefined;
   }
-  if (phone === '') return undefined;
+  // ⚠ 解出来必须是**11 位数字**（中国大陆手机号）。DES 的填充去掉之后如果还剩
+  //   乱码（错钥/坏填充），拼进 `Authorization` 只会换来一个"鉴权失败"，
+  //   而那时我们连"是解不出来"还是"上游不认"都分不清（评审 2026-11-01）。
+  if (!/^\d{11}$/.test(phone)) return undefined;
   const authorization = `Basic ${toBase64(utf8(`mobile:${phone}:${t.token}`))}`;
   return { phone, authorization, userDomainId: t.userDomainId ?? '' };
 }
@@ -493,10 +542,22 @@ export function aiChatRequest(auth: string, userId: string, message: string): Bu
   };
 }
 
-/** SSE：收 `flowResult.outContent` / `outContent`，事件数为 0 视为没成。 */
-export function parseSse(body: string): { events: number; text: string } {
+/** SSE：收 `flowResult.outContent` / `outContent`，事件数为 0 视为没成。
+ *
+ *  ⚠ 顺手把 `code` / `message` 也带出来：现场 2026-11-01 只印得出
+ *  「events=1」——那条事件里到底是什么（审核拦截 / 配额 / 参数错）**一个字都没有**，
+ *  等于把最该看的那一格丢了。Rust 那边（`ai_cloud.rs` 的 `SseChat`）留了
+ *  `last_code` / `last_message`，这里照抄。 */
+export function parseSse(body: string): {
+  events: number;
+  text: string;
+  code?: string | undefined;
+  message?: string | undefined;
+} {
   let events = 0;
   let text = '';
+  let code: string | undefined;
+  let message: string | undefined;
   for (const raw of body.split(/\r?\n/)) {
     const line = raw.trim();
     if (line === '' || line === '[DONE]') continue;
@@ -504,18 +565,25 @@ export function parseSse(body: string): { events: number; text: string } {
     if (data === '') continue;
     try {
       const ev = JSON.parse(data) as {
-        data?: { flowResult?: { outContent?: unknown }; outContent?: unknown };
+        code?: unknown;
+        message?: unknown;
+        data?: { code?: unknown; message?: unknown; flowResult?: { outContent?: unknown }; outContent?: unknown };
       };
       events++;
       const a = ev.data?.flowResult?.outContent;
       const b = ev.data?.outContent;
       if (typeof a === 'string') text += a;
       if (typeof b === 'string') text += b;
+      // 最后一条带 code/message 的才算（流里可能先来心跳、后来错）
+      const c = ev.code ?? ev.data?.code;
+      const m = ev.message ?? ev.data?.message;
+      if (c !== undefined && c !== null && c !== '') code = String(c);
+      if (typeof m === 'string' && m !== '') message = m;
     } catch {
       // 非 JSON 行不算事件
     }
   }
-  return { events, text };
+  return { events, text, code, message };
 }
 
 
@@ -638,6 +706,60 @@ export function marketClickRequest(taskId: number, marketname: string): BuiltReq
 
 // ── 1004：发邮件 ────────────────────────────────────────────────────────
 
+/** PE 活跃上报（`eventType "3"` = 发邮件）—— 参考实现的 `report_pe_send_mail`。
+ *
+ *  ⚠ 参考实现把体 **gzip** 了（OS 字节 19）再发。我们发**明文 JSON**：
+ *  2026-11-01 实测同一个口（同 `Authorization`、同 body）明文回 `{"code":"S_OK"}`，
+ *  而我们的 `BuiltRequest.body` 是**字符串**、宿主按 UTF-8 编码 —— 二进制 gzip
+ *  塞进去会被改字节。等哪天真需要压缩再给 transport 加二进制通道，别在这里硬塞。
+ */
+export function peActiveReportRequest(session: MailSession, cguid: string, nowMs: number): BuiltRequest {
+  const p = (n: number): string => String(n).padStart(2, '0');
+  const d = new Date(nowMs + 8 * 3600 * 1000); // 东八区墙钟（参考实现同一个时刻既做 ts 又做 eventTime）
+  const y = d.getUTCFullYear();
+  const mo = p(d.getUTCMonth() + 1);
+  const da = p(d.getUTCDate());
+  const h = p(d.getUTCHours());
+  const mi = p(d.getUTCMinutes());
+  const se = p(d.getUTCSeconds());
+  const ts = `${y}${mo}${da}${h}${mi}${se}`;
+  const payload = {
+    body: { logDatas: [{ eventTime: `${y}-${mo}-${da} ${h}:${mi}:${se}`, eventType: '3' }] },
+    head: {
+      appCode: '2a76b8c7-e9c4-478b-b1fd-0b2516cffd86',
+      comeFrom: '4027001',
+      eMode: '1',
+      installPack: '139PushEmail_AC20X_10.3.2B20240906.4027001.apk',
+      manufacturers: 'Xiaomi',
+      model: 'MIX 2',
+      netType: '1',
+      os: 'Android',
+      osVersion: '9',
+      version: '10.3.2',
+    },
+  };
+  return {
+    url: `https://pesupport.mail.10086.cn/logreport/s?func=user:activeAction&cguid=${cguid}&sid=${session.sid}`,
+    method: 'POST',
+    headers: {
+      Authorization: `Basic ${md5HexOf(ts + PE_SECRET)}`,
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+      Cookie: `RMKEY=${session.rmkey}`,
+      'User-Agent': 'Apache-HttpClient/UNAVAILABLE (java 1.4)',
+    },
+    body: JSON.stringify(payload),
+  };
+}
+
+/** `PE_SECRET`（参考实现 `mail139.rs` 逐字；末尾那个 `:` 也是内容）。 */
+const PE_SECRET = ':5f4dcc3b5aa765d61d8327deb882cf99';
+
+/** MD5 hex（PE 鉴权头要的就是这个）。 */
+function md5HexOf(text: string): string {
+  return toHex(md5(utf8(text)));
+}
+
 export function getComposeIdRequest(session: MailSession): BuiltRequest {
   return {
     url: `${APPMAIL}/RmWeb/mail?func=mbox:getComposeId&sid=${session.sid}`,
@@ -648,19 +770,28 @@ export function getComposeIdRequest(session: MailSession): BuiltRequest {
 }
 
 export function parseComposeId(body: string): string | undefined {
-  try {
-    const v = JSON.parse(body) as { var?: unknown };
-    if (typeof v.var === 'string' && v.var !== '') return v.var;
-    if (v.var !== null && typeof v.var === 'object') {
-      const o = v.var as Record<string, unknown>;
+  const fromObj = (v: unknown): string | undefined => {
+    if (typeof v === 'string' && v !== '') return v;
+    if (v !== null && typeof v === 'object') {
+      const o = v as Record<string, unknown>;
       for (const k of ['m', 'id']) {
         if (typeof o[k] === 'string' && o[k] !== '') return o[k] as string;
       }
     }
     return undefined;
-  } catch {
-    return undefined;
+  };
+  // 标准 JSON 先试；`mbox:getComposeId` 实测回的是**单引号**的 `{'code':'S_OK','var':'…'}`。
+  for (const t of [body, body.replace(/'/g, '"')]) {
+    try {
+      const v = JSON.parse(t) as { var?: unknown };
+      const hit = fromObj(v.var);
+      if (hit !== undefined) return hit;
+    } catch {
+      // 换下一种写法
+    }
   }
+  const m = /['"]var['"]\s*:\s*['"]([^'"]+)['"]/.exec(body);
+  return m?.[1];
 }
 
 export interface ComposeMail {

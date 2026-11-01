@@ -15,6 +15,7 @@
 //   活动站票    需要**另一套凭据**（活动会话票，与 jwt 无关）→ 点了多半是失败，
 //               除非那份票还在
 //   要用网盘    任务本身就是往网盘写（上传/建外链/发邮件）—— 不是副作用；会留下东西
+//               ⚠ 这一档也包括**往用户的云机里装包**（`cloud-phone-redpack` 的装机那条）
 //   高风险      真扣 AI豆、不可回滚 → 默认关，且面板上要二次确认
 //   查询诊断    只读，点多少次都无所谓
 //
@@ -47,8 +48,10 @@
 // 同一个套路：先把能照实写的写完，写的那半等证据或凭据到位。
 // ─────────────────────────────────────────────────────────────────────
 
-// ⚠️ 有一列是**给未来的自己看的**：`implemented`。20 条里目前只接了 8 条
-// （另加 3 条插件自己的：selftest / diag / session-check）。没接的照样列出来 ——
+// ⚠️ 有一列是**给未来的自己看的**：`implemented`。30 条里目前接了 27 条，
+// 没接的只剩三条，而且都卡在证据上：`fun-ai`（换票那步没抓到）、
+// `play-ai-special`（没去源码核对过）、`ai-avatar`（今天真机 404/405）。
+// 没接的照样列出来 ——
 // 一是让你知道**总共有什么**，二是这份表本身就是路线图，免得"还剩什么"要靠记忆。
 
 
@@ -97,14 +100,22 @@ export interface TaskMeta {
  *  `partial`  —— 只实拍到"成功那一枪"，失败形态还没样本
  *  `none`     —— 零样本：方法、非 0 例文全空
  *  `no-ticket` —— **连那张票怎么换都没抓到**，页面的特有取法无从得知
+ *  `ran-elsewhere` —— 我们**零抓包**，但**参照实现在真账号上跑成功过、逐行产出留了档**
  *
  *  `none` / `no-ticket` 两条是**拦路石**：不是难度问题，是没证据就没法照实写。
+ *
+ *  ⚠ `ran-elsewhere` 与 `captured` 的差别要说清：档上的**形状**来自别人那一次的运行，
+ *  不是我们从线上取回来的样本 ⇒ 能照它的**用户可见产出**写（那十行日志是真读数），
+ *  但端点与字段名没有在**我们这一侧**复验过 —— 上游改形状时我们不会响，
+ *  第一次真跑的读数才算数。标这一档时**note 里要写"靠什么跑通的"**。
  */
 export type Evidence =
   | 'captured' // 有实拍样本
   | 'partial' // 部分有样本
   | 'none' // 还没有样本
   | 'no-ticket' // 缺"换票"那一步的配方
+  /** 零抓包，但参照实现真跑成功过、逐行读数留档（见上面那段 ⚠） */
+  | 'ran-elsewhere'
   /** ⚠ 与 `none` **不同**：`none` 是"还没试过"，`dead` 是"**试过了，今天打不通**"
    *  （有明确读数）。标 `dead` 的族**默认关** —— 一跑就 404 的任务开着，
    *  只会每次烧掉一堆请求并让人以为"跑过了"。 */
@@ -217,7 +228,11 @@ export const TASK_META: TaskMeta[] = [
   { name: 'msg-push-obtain', title: '消息推送奖励（领）', group: 'activity', kind: 'Action', risk: 'ledger', missed: 'skip', deps: ['jwt'], batch: false, hidden: true, implemented: true, evidence: 'captured', note: '上一步说可领才发' },
 
   // ── 活动与站票（未实现）──
-  { name: 'cloud-phone-redpack', title: '红包派对', group: 'activity', kind: 'Action', risk: 'ledger', missed: 'catch-up', deps: ['activity-token'], batch: false, hidden: false, implemented: false, note: '⚠ 读到没见过的状态码时**刻意不发写**（旧 TS 会发）' },
+  // 2026-10-23 接上。⚠ 这一族的证据**不是**我们的抓包：`cpactiv.buy.139.com` 在本仓库
+  // 零线格式样本，跑通靠的是参照实现在两个真账号上各 3.7s / 3.9s 成功、**逐行产出留了档**
+  // （那十行就是规格，抄在 `tasks/redpack.ts` 文件头）。⇒ 判据按"用户看到的那几行"对齐，
+  // 端点与字段名没有在**我们这一侧**复验过 —— 第一次真跑的读数才算数。
+  { name: 'cloud-phone-redpack', title: '红包派对', group: 'activity', kind: 'Action', risk: 'write-cloud', missed: 'catch-up', deps: ['activity-token'], batch: false, hidden: false, implemented: true, evidence: 'ran-elsewhere', note: '⚠ 读到没见过的状态码时**刻意不发写**（旧 TS 会发）。⚠ 装机那条会**往用户的云机里装包**（先问装过没有，装过只上报）。零抓包：靠参照实现真跑成功过的逐行读数' },
   { name: 'play-ai-special', title: '拍拍盘点', group: 'activity', kind: 'Query', risk: 'none', missed: 'catch-up', deps: ['jwt', 'activity-token'], batch: false, hidden: false, implemented: false },
   // ⚠️ 这条我**改过两次口径**，第三次才对：
   //   ① 先说「需要 WebSocket ⇒ 做不了」✗

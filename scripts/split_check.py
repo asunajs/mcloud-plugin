@@ -268,11 +268,12 @@ def main() -> int:
             code, page = http(f"{base}/plugins/mcloud/index.html")
             check("插件页面能取到", code == 200 and "<html" in page.lower(), f"http {code}")
             # 用户口径：不再维护 WebUI 的「推送」页；推送仍只作为内部能力存在。
-            for word in ["账号", "日常", "兑换", "直播", "数据"]:
+            # 2026-10-31 加「领奖」（待领取奖品 → 点领取 → 短信验证码）。
+            for word in ["账号", "日常", "兑换", "直播", "领奖", "数据"]:
                 check(f"菜单栏有「{word}」", f'>{word}</button>' in page, "菜单里找不到这个词")
             check(
-                "菜单栏恰好 5 项（「设置」「推送」两页都删了）",
-                page.count('class="menu-item') == 5,
+                "菜单栏恰好 6 项（「设置」「推送」两页都删了，另加「领奖」）",
+                page.count('class="menu-item') == 6,
                 f"实际 {page.count('class=\"menu-item')} 项",
             )
             check("没有「高级」开关", "adv-toggle" not in page)

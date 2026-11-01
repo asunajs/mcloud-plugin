@@ -15,18 +15,22 @@ import {
   startExchange,
 } from './sessionExchange.ts';
 import { MATRIX_MARKETS, runAppTaskMatrix } from './tasks/appTaskMatrix.ts';
-import { appTaskFresh, runAppTaskStep, startAppTask } from './tasks/appTask.ts';
+import { activeAppTaskFileId, appTaskFresh, runAppTaskStep, startAppTask } from './tasks/appTask.ts';
 import { runBackupGift } from './tasks/backupGift.ts';
 import { runMsgPushObtain, runMsgPushStatus } from './tasks/msgPush.ts';
 import { runMultiple } from './tasks/multiple.ts';
 import { runNotice } from './tasks/notice.ts';
 import { runPrizes } from './tasks/prizes.ts';
+import { REDPACK_BUDGET, redpackGate, redpackStep } from './tasks/redpack.ts';
+import { redpackDay, redpackSummary, takeRedpackLines } from './tasks/redpackState.ts';
 import { runReceive } from './tasks/receive.ts';
 import { runRevival } from './tasks/revival.ts';
 import { STATE_STAGE as SIGN_STAGE, runSign } from './tasks/sign.ts';
-import { runExpansionStep, startExpansion } from './tasks/taskExpansion.ts';
+import { activeExpansionFileId, runExpansionStep, startExpansion } from './tasks/taskExpansion.ts';
 import { loadQueue } from './tasks/receive.ts';
 import { runAuthRefresh } from './authRefresh.ts';
+import { runOwnedCleanup } from './tasks/ownedFiles.ts';
+import { runTodayCloud } from './tasks/todayCloud.ts';
 
 /** 这一趟要跑的族**分别落在哪一页** —— 一页一张票，所以按页换。
  *
@@ -52,6 +56,8 @@ interface StepResult {
   pending?: boolean;
   /** 内部管道步骤（成功时不进用户日志）—— 见 `tasks/stepLog.ts` */
   plumb?: boolean;
+  /** 这一步**逐行**给用户看的话（见 `dailyState.ts::DailyStep.lines`） */
+  lines?: string[];
 }
 
 function once(
@@ -98,6 +104,15 @@ export function runDaily(
     //   只给 `shape()` 打的话，换票那两行（本函数自己 push 的）会漏掉。
     const one: StepResult = isPlumbing(r.name) ? { ...r, plumb: true } : r;
     steps.push(one);
+    // ⚠ **先**交逐行、**再**交这一步的小结：那一族给用户看的是一张表
+    //   （红包派对一条任务一行），而小结是"这一趟看完了"的收口句。
+    //   顺序反过来会把表压在小结后面，读的人先看到结论、再看到一堆过程。
+    //   CLI 只打 `detail`（`standalone/mcloudSign.ts`），所以逐行**必须**进 detail，
+    //   否则用户在 CLI 上只能看到一句小结 —— 那就是改动可见输出。
+    for (const line of one.lines ?? []) {
+      detail.push(line);
+      opts.onLine?.(line);
+    }
     // 一行一个用户认得的任务（`userLine` 里定了口径：成了 / 没成+原因 / 跳过）。
     // ⚠ 管道步骤（换票）成功时不出现；「走到第 N 步」这种内部机制也不出现。
     const line = userLine(one);
@@ -109,6 +124,12 @@ export function runDaily(
     }
     return one;
   };
+
+  // ⓪ 凭据续期（原生 token 约 30 天）：**先于所有任务**判一次。
+  // 之前放在最后一步，票到期那天前面所有任务先集体失败、最后才续上；
+  // 现在先续，当前这一趟就能用新 token。离过期还远时一个请求都不发。
+  opts.onPhase?.('凭据续期');
+  push(once('凭据续期', (d) => runAuthRefresh(d), deps));
 
   // ① 换票（H5 的 jwttoken 约 2 小时即废）。票新鲜时 `needExchange` 直接说不用。
   //
@@ -242,7 +263,11 @@ export function runDaily(
   } else {
     const r = drain(runAppTaskStep, deps, {
       label: 'App 任务',
-      maxSteps: 20,
+      // ⚠ 20 步是"一条没成整趟停"那会儿的数：那时候每次最多做到第 10 步就收工了。
+      //   现在逐条失败**不再中止**（2026-11-01，见 docs/app-task-ids.md），
+      //   十来条各自 2~6 步 ⇒ 20 步会在半路截断（截断不报错，下一次接着走，
+      //   但用户看到的是"这一趟只做了一半"）。时间上限仍是 60s 那道硬闸。
+      maxSteps: 40,
       deadlineMs: 60_000,
       startedAt: started,
       // 上传 / 访问日志 / 打卡 / 重试逐步打出来；否则日志只剩最后一句
@@ -250,6 +275,38 @@ export function runDaily(
       onStep: (note) => opts.onNote?.(`App 任务：${note}`),
     });
     push({ name: 'App 任务', ok: r.ok, note: r.note, idle: r.idle, pending: r.pending === true });
+  }
+
+  // ④.5 红包派对（移动云手机的活动站）—— 另一台主机、**另一套凭据**。
+  //
+  // 放在 App 任务之后、消息推送之前：参照实现也是这个相对位置，而且它之后
+  // 还有五步要跑（这一族的时间上限因此**不能超过 App 任务那一档**，见 `REDPACK_BUDGET`）。
+  //
+  // ⚠ 这一族的成败判据**不在 `drain` 的 `note` 上**：一条任务一行，那些行由任务层
+  //   写进台账（`redpackState.takeRedpackLines`），这里取出来交给日志与运行记录。
+  const rpKick = redpackGate(deps);
+  if (rpKick.idle === true || rpKick.skipped === true) {
+    push({ name: '红包派对', ok: true, note: rpKick.note, idle: true });
+  } else {
+    const r = drain(redpackStep, deps, {
+      label: '红包派对',
+      maxSteps: REDPACK_BUDGET.maxSteps,
+      deadlineMs: REDPACK_BUDGET.deadlineMs,
+      startedAt: started,
+      // 「进行中: X」这种内部进度走 debug（逐行的用户读数是上面那条通道）
+      onStep: (note) => opts.onNote?.(`红包派对：${note}`),
+    });
+    // ⚠ 小结用**台账**那一句话，不用 `r.note`：`drain` 会把超过 40 字的原话折成
+    //   「红包派对：好了」（那是给"每步一句"的 runs 表定的口径），而这一族的结论
+    //   就是那几张计数 —— 被折掉就什么都没说了。
+    const tally = redpackSummary(deps.store, redpackDay(deps.nowIso));
+    push({
+      name: '红包派对',
+      ok: r.ok,
+      note: r.ok && tally !== undefined ? tally : r.note,
+      idle: r.idle,
+      lines: takeRedpackLines(deps.store, deps.nowIso),
+    });
   }
 
   // ⑤ 消息推送奖励：**两步**（问状态 → 领）。
@@ -288,14 +345,29 @@ export function runDaily(
     push({ name, ok: r.ok, note: r.note, idle: r.idle });
   }
 
-  // ⑦ 凭据续期（每天判一次，离过期还远时一个请求都不发）
-  push(once('凭据续期', (d) => runAuthRefresh(d), deps));
-
   // ⑧ 收尾读数
-  // 收尾两发都是**只读**：它们回答"现在有什么"，不是"这一趟做成了什么"。
+  // 收尾几发都是**只读**：它们回答"现在有什么"，不是"这一趟做成了什么"。
   push({ ...once('待领取奖品', runPrizes, deps), idle: true });
   // mcloud 2026-10-07 起把 `cloud-snapshot` / `task-list` 从任务注册里摘掉，
   // 读数改由「上游状态 / 数据」页按需取 —— 这里不再作为日常一步跑。
+
+  // ⑨ 清理本账号由我们上传的文件。
+  //
+  // 照参考实现 `afterTask` 的「【清理临时文件】」：任务自己收尾成功时会注销，
+  // 这里兜的是**没收尾的**——上传完链路被打断、跨天状态被重置、或某条路径
+  // 忘了收尾。登记表按账号存，所以昨天的遗留今天还能清。
+  // ⚠ 只登记 `ownedByUs === true` 的 fileId；撞上用户已有文件的那一档绝不进来。
+  // ⚠ 今天这一趟还在用的（任务尚未收尾）跳过：现在删了，下一趟就没有那枚文件了。
+  const inUse = [activeAppTaskFileId(deps), activeExpansionFileId(deps)].filter(
+    (x): x is string => x !== undefined,
+  );
+  push(once('清理临时文件', (d) => runOwnedCleanup(d, { skip: inUse }), deps));
+
+  // ⑩ 今日云朵（参考实现 `afterTask::printTodayCloud` 那一行，但数据源用当前端点）。
+  // 走 `cloudRecordV2`（与面板「今日AI豆」同一条链），不是参考实现的旧 `cloudRecord`；
+  // 理由与真跑读数见 `tasks/todayCloud.ts` 文件头。
+  // 走 `push` ⇒ 面板日志、CLI 日志、运行结束推送三处都会带上这一行。
+  push(once('今日云朵', runTodayCloud, deps));
 
   // ⚠ `pending` 不是失败：动作做了、服务端还没确认，不能把整趟染红。
   const pendingCount = steps.filter((s) => s.pending === true).length;
@@ -309,6 +381,10 @@ export function runDaily(
     note: r.note,
     idle: r.idle === true,
     pending: r.pending === true,
+    // 逐行读数也要进运行记录（历史那一页得能看到"这一族今天看到了什么"），
+    // 但**空的就不带** —— 一堆 `lines: []` 会让记录里的每一步长得一样，
+    // 而"这一步没有逐行"本身就是信息。
+    ...(r.lines && r.lines.length > 0 ? { lines: r.lines } : {}),
     ...(isPlumbing(r.name) ? { plumb: true } : {}),
   });
 

@@ -79,7 +79,9 @@ import type { TaskPayload } from './shared.ts';
 
 const store = makeStore();
 const transport = makeTransport(LONG_REQUEST_TIMEOUT_MS);
-const BUDGET_MS = 120_000;
+// 3 个账号串行时，单账号约 40 秒，120 秒正好在第三个账号中间被宿主强杀
+// （2026-11-01 08:02 现场：不是死循环，是预算太短）。留足多账号余量。
+const BUDGET_MS = 300_000;
 const DONE_KEY = DAILY_DONE_KEY;
 const LAST_KEY = DAILY_LAST_KEY;
 
