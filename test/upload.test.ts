@@ -15,6 +15,7 @@ import {
   uploadDone,
 } from '../src/mcloud/tasks/upload.ts';
 import { deterministicFile } from '../src/mcloud/cloudUpload.ts';
+import { ownedFileIds } from '../src/mcloud/tasks/ownedFiles.ts';
 import { SESSION_KEY } from '../src/store/types.ts';
 import { memStore } from '../src/store/memory.ts';
 import type { BuiltRequest } from '../src/mcloud/h5.ts';
@@ -81,6 +82,7 @@ test('**主线**：create → put → complete，一步一枪', () => {
   assert.equal(sent.length, 3);
   assert.ok(sent[0]!.url.includes('hcy/file/create'));
   assert.ok(sent[2]!.url.includes('hcy/file/complete'));
+  assert.deepEqual(ownedFileIds(deps), ['F1'], '确认完成后要进链尾兜底名单');
   // 走完之后再触发 ⇒ idle
   assert.equal(runUploadStep(deps).idle, true);
 });
@@ -94,6 +96,22 @@ test('⚠ 秒传命中 ⇒ **不发 PUT**，直接完成', () => {
   assert.equal(sent.length, 1, '只发了 create');
   assert.equal(sent[0]!.method, 'POST');
   assert.equal(uploadDone(deps), true);
+});
+
+test('登记只认「明确是我们造的」：exist:true（用户的文件）绝不进名单', () => {
+  const rapidOurs = mkDeps({
+    'file/create': { code: 0, data: { fileId: 'F1', rapidUpload: true, exist: false } },
+  });
+  startUpload(rapidOurs.deps, { name: 'a.txt', bytes: deterministicFile('seed', 64) });
+  runUploadStep(rapidOurs.deps);
+  assert.deepEqual(ownedFileIds(rapidOurs.deps), ['F1']);
+
+  const rapidUsers = mkDeps({
+    'file/create': { code: 0, data: { fileId: 'F2', rapidUpload: true, exist: true } },
+  });
+  startUpload(rapidUsers.deps, { name: 'b.txt', bytes: deterministicFile('seed2', 64) });
+  runUploadStep(rapidUsers.deps);
+  assert.deepEqual(ownedFileIds(rapidUsers.deps), [], '撞同名时那是用户的文件，绝不能登记');
 });
 
 test('⚠ `put` 那一步没带字节 ⇒ **不发**（空体会真传一个 0 字节文件上去）', () => {

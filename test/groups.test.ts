@@ -36,6 +36,16 @@ test('分组：路线图那两列 —— implemented 说做完了没，evidence 
   assert.equal(by('msg-push').group, 'activity', 'msg-push 要另一张票（msgpushon），不属于 daily');
   assert.equal(by('fun-ai').group, 'activity', 'fun-ai 的票换不出来，不属于 daily');
   assert.equal(by('fun-ai').evidence, 'no-ticket');
+  // ⚠ 2026-10-23 新增的一档：`ran-elsewhere` = **本仓库零抓包**，但参照实现在真账号上
+  // 跑成功过、**逐行产出留了档**。它不在"做不了"那两档里（所以标已实现是合法的），
+  // 但它**不等于** `captured`：端点与字段名没在我们这一侧复验过，
+  // 上游改形状时不会响 —— 所以这一档必须同时在 note 里写清"靠什么跑通的"。
+  const rp = by('cloud-phone-redpack');
+  assert.equal(rp.implemented, true, '红包派对已接（逐行文案照参照实现）');
+  assert.equal(rp.evidence, 'ran-elsewhere', '这一族的读数来自别人那一次运行，不是我们的抓包');
+  assert.ok(rp.note !== undefined && rp.note.includes('零抓包'), '标了 ran-elsewhere 就要在 note 里说清证据从哪来');
+  // 装机那条会往**用户的云机里装包** —— 风险档不能停在"记账"
+  assert.equal(rp.risk, 'write-cloud', 'MONTHLY_2 会往云机装 APK');
 });
 
 test('分组视图：带上运行时状态，且不编造面板才知道的东西', () => {

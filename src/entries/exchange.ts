@@ -10,6 +10,7 @@
 // 目标存 **prizeId**（稳定），名字只用于显示；老库只有名字时按名字兼容。
 
 import { debug, log, register_cron, worker_hint } from 'host-api';
+import { runAuthRefresh } from '../mcloud/authRefresh.ts';
 import { hourKey } from '../mcloud/exchangeTiming.ts';
 import { loadAccounts } from '../mcloud/accounts.ts';
 import { appendRun } from '../mcloud/runLog.ts';
@@ -97,6 +98,12 @@ register_cron(
       if (deps.store.getState(STATE_ORDERED_HOUR) === thisHour) {
         skipped += 1;
         continue;
+      }
+
+      // 原生 token 到期就自动续（离到期还远时零请求）—— 兑换和签到共用同一份凭据。
+      const auth = runAuthRefresh(deps);
+      if (!auth.skipped) {
+        logBoth(store, auth.ok ? 'debug' : 'warn', `凭据续期：${auth.note}`, at);
       }
 
       const r = runExchange(deps, {

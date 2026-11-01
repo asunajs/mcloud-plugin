@@ -78,6 +78,27 @@ export function depsNowMs(deps: TaskDeps): number {
   return (deps.nowMs ?? Date.now)();
 }
 
+/** 同步等一小会儿（毫秒级等待用）。
+ *
+ *  ⚠ 面板是**同步沙箱**，没有 `setTimeout`，所以只能忙等；测试里注入 `spin` +
+ *  假 `nowMs`，等待就是"把时钟往前拨"，真秒数一秒都不花。
+ *  `Math.min(ms, 10_000)` 那道硬上限是给**真跑**兜底的：忙等把执行预算吃光，
+ *  后面的步骤就全没了。所以长等待要由调用方自己切成小口（见 `redpackJobs` 的
+ *  `waitBrowse`），而不是这里一次等满。 */
+export function waitMs(deps: TaskDeps, ms: number): void {
+  if (ms <= 0) return;
+  const end = depsNowMs(deps) + Math.min(ms, 10_000);
+  while (depsNowMs(deps) < end) {
+    if (deps.spin) deps.spin();
+    else {
+      const t0 = Date.now();
+      while (Date.now() - t0 < 2) {
+        /* 忙等 2ms */
+      }
+    }
+  }
+}
+
 export interface TaskOutcome {
   ok: boolean;
   /** 一行结果，进 runs 表的 note */

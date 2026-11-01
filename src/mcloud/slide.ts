@@ -30,6 +30,7 @@
 // 而那个量级在滑块的容差里。
 
 import { decodeImage } from '../crypto/png.ts';
+import { decodeJpeg, isJpeg } from '../crypto/jpeg.ts';
 import { fromBase64 } from '../crypto/bytes.ts';
 import type { DecodedImage } from '../crypto/png.ts';
 
@@ -126,11 +127,42 @@ export function matchSlide(
   return { offsetX: bestOffset, confidence: avgScore > 0 ? bestScore / avgScore : 0 };
 }
 
+/** 一张题面图（base64）⇒ 像素。**按魔数选解码器**。
+ *
+ *  # 为什么不能只认 PNG
+ *
+ *  兑换那条链的 `getSlide` 两张都是 PNG；而**领奖**那条（`getSlidePuzzle`）的
+ *  底图 `picture` 是 **JPEG 680×400**、拼图切片才是 PNG（2026-10-31 实拍）。
+ *  只认 PNG 的实现会在领奖那条上直接抛"PNG 签名不对" —— 而那句看起来像
+ *  "题面坏了"，实际是我们只写了一半。
+ *
+ *  ⚠ 按**文件头**判，不按调用方传的 `picType`：实拍里 `picType` 说的是拼图切片
+ *  那一种（`"png"`），不是底图那一种；拿它当全图的格式会判反。 */
+export function decodeSlideImage(bytes: Uint8Array): DecodedImage {
+  if (isJpeg(bytes)) return decodeJpeg(bytes);
+  // PNG 八字节签名。两个都认不出时给一句**说得清**的话 —— 别让上层的
+  // "PNG 签名不对"听起来像题面坏了，实际是上游换了格式。
+  const isPng =
+    bytes.length >= 8 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47;
+  if (isPng) return decodeImage(bytes);
+  throw new Error('滑块题面既不是 PNG 也不是 JPEG（移动云盘换了格式？）');
+}
+
 /** 题面两张图（base64）⇒ offset。`picture` 是底图，`puzzle` 是那块拼图。 */
-export function calcPuzzleOffset(puzzleBase64: string, pictureBase64: string): SlideMatchResult {
-  const puzzle = decodeImage(fromBase64(puzzleBase64));
-  const picture = decodeImage(fromBase64(pictureBase64));
+export function calcSlideOffset(puzzleBase64: string, pictureBase64: string): SlideMatchResult {
+  const puzzle = decodeSlideImage(fromBase64(puzzleBase64));
+  const picture = decodeSlideImage(fromBase64(pictureBase64));
   return matchSlide(picture, puzzle, picture.width, picture.height, puzzle.width, puzzle.height);
+}
+
+/** 老的入口（兑换那条链在用）：语义同 {@link calcSlideOffset}。
+ *  留着这个名字是为了不让调用点跟着改；行为已经能认 JPEG。 */
+export function calcPuzzleOffset(puzzleBase64: string, pictureBase64: string): SlideMatchResult {
+  return calcSlideOffset(puzzleBase64, pictureBase64);
 }
 
 /** 置信度下限。⚠ **这个值是待实测的** —— 真机上要用几张实际题面标定。

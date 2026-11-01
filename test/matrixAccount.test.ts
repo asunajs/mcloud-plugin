@@ -89,3 +89,56 @@ test('/readings 的矩阵默认跟着当前账号（不能再读默认袋）', (
   assert.equal(d.data.matrix.backup.enabled, true);
   assert.equal(d.account.current, b.id);
 });
+
+test('⚠ 备份那一行：跨天的「已完成」不许摆到今天；没成要说清原因', () => {
+  const { store, b } = seeded();
+  const route = mcloudRoutes(testDeps(store, { transport: exploding, now: NOW })).find(
+    (x) => x.path === '/plugins/mcloud/api/matrix' && x.method === 'GET',
+  )!;
+  // 昨天那一趟走完了（day 是昨天的）；月份那一格还在 —— 今天不许把「已完成」抄上来。
+  const oneB = scoped(rawStoreOf(store), b.id);
+  oneB.setState(
+    'mcloud.taskexpansion.state',
+    JSON.stringify({ step: 'done', day: '2026-10-19', curMonthBackup: true }),
+    NOW,
+  );
+  const stale = JSON.parse(route.handler({ query: `account=${b.id}` }).body).backup;
+  assert.equal(stale.step, '', '跨天的 step 不是今天的进度');
+  assert.equal(stale.stale, true);
+  assert.equal(stale.enabled, true, '月份那一格照旧给');
+
+  // 今天试过、没成：`step=blocked` + 原因 —— 界面照它说「任务拓展：没成 —— …」。
+  oneB.setState(
+    'mcloud.taskexpansion.state',
+    JSON.stringify({
+      step: 'blocked',
+      day: NOW.slice(0, 10),
+      backupOn: false,
+      attempted: true,
+      blockedWhy: '凑过一次备份，重读仍是「未开启」；快照没建上：createSnapshot 失败：code=04000003',
+    }),
+    NOW,
+  );
+  oneB.setState('mcloud.month.backup', JSON.stringify({ month: '2026-10', backup: false }), NOW);
+  const now = JSON.parse(route.handler({ query: `account=${b.id}` }).body).backup;
+  assert.equal(now.step, 'blocked');
+  assert.equal(now.enabled, false);
+  assert.match(String(now.why), /04000003/);
+  // 这两个字段拼起来**不能**再出现「未开启（任务拓展：已完成）」那句自相矛盾的话。
+  assert.notEqual(now.step, 'done');
+
+  // 旧版本在库里留下的"done + 备份 false"（快照失败照样写 done）：读数层兜最后一道。
+  oneB.setState(
+    'mcloud.taskexpansion.state',
+    JSON.stringify({
+      step: 'done',
+      day: NOW.slice(0, 10),
+      curMonthBackup: false,
+      snapError: 'createSnapshot 失败：code=04000003',
+    }),
+    NOW,
+  );
+  const legacy = JSON.parse(route.handler({ query: `account=${b.id}` }).body).backup;
+  assert.equal(legacy.step, 'blocked', '旧状态也不许摆成"已完成"');
+  assert.match(String(legacy.why), /04000003/);
+});

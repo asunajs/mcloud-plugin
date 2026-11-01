@@ -26,6 +26,7 @@
 import { resultObject } from '../envelope.ts';
 import { MARKET_NAME, TASK_CLIENT_VERSION } from '../h5.ts';
 import { runTask } from './base.ts';
+import { jwtExpiry } from '../session.ts';
 import type { TaskDeps, TaskOutcome } from './base.ts';
 
 /** 读到第几个 group 了（跨调用推进）。 */
@@ -268,6 +269,17 @@ export function summarize(items: MatrixItem[]): MatrixSummary {
 
 /** 一步：读**一个** group（只读）。读完推进游标；到末尾就回到第一个。 */
 export function runAppTaskMatrix(deps: TaskDeps): TaskOutcome {
+  // ⚠ 凭据过期时**不要**发这一枪：`taskListV3` 对过期会话回的是
+  //   `{"code":0,"msg":"success","result":[…全 WAIT…]}` —— 一份 200 的"游客清单"。
+  //   照单收下就会把好读数覆盖成"一条都没做"（2026-11-01 自测现场：三个号读出
+  //   **一模一样**的全零矩阵，才看出来不是各自的数据）。
+  const exp = jwtExpiry(deps.store, deps.nowIso);
+  if (exp !== null && exp.expired) {
+    return {
+      ok: false,
+      note: `凭据已过期（${exp.atIso.slice(0, 16).replace('T', ' ')}）—— 先「刷新/重新导入」再读任务清单，这一趟不发请求（免得把好读数盖成全零）`,
+    };
+  }
   const raw = deps.store.getState(STATE_GROUP_INDEX);
   const parsed = raw === undefined || raw === null ? 0 : Number(raw);
   const idx = Number.isFinite(parsed) && parsed >= 0 && parsed < MATRIX_MARKETS.length ? parsed : 0;

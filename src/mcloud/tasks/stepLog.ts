@@ -142,7 +142,7 @@ export function lineLevel(line: string): LineLevel {
   // 读数 / 状态：这些不是"这一趟做成了什么"，别涂成 success。
   // mcloud-sign 的日志里这类行是 info 或 debug，不是 success。
   if (
-    /（只看）|快照|问状态|流水|本月排名|已开启|有效期|剩余|当前云朵|登录账号|过期时间|已完成 \d+ 条|另有 \d+ 条/.test(
+    /（只看）|快照|问状态|流水|本月排名|已开启|有效期|剩余|当前云朵|今日云朵|今日获得|登录账号|过期时间|已完成 \d+ 条|另有 \d+ 条/.test(
       line,
     )
   ) {

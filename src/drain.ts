@@ -148,7 +148,12 @@ const BRIEF_MAX = 40;
 
 function brief(s: string, label: string): string {
   const t = s.trim();
-  return t.length === 0 || t.length > BRIEF_MAX ? `${label}：好了` : t;
+  // ⚠ 太长就**截短**，绝不能折成「好了」：长 note 往往是"没成"的详情
+  //   （评审 2026-11-01：任务拓展判 `blocked` 那句 60 多字，被折成
+  //   「任务拓展：好了」，跑一次记录里写着好了、而备份根本没开）。
+  //   `好了` 只留给"真的一句都没说"的那一档。
+  if (t.length === 0) return `${label}：好了`;
+  return t.length > BRIEF_MAX ? `${t.slice(0, BRIEF_MAX - 1)}…` : t;
 }
 
 export interface DrainResult {

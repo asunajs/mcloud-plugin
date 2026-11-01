@@ -230,7 +230,7 @@ export function stepFor(item: AppTaskItem): TaskStep | undefined {
   // 1020：邮件转存。
   if (item.taskId === 1020) return { kind: 'runner', runner: 'mailBackup' };
   // 609：和 AI 助手对话（mcloud 真机验过：打卡不够，必须真对话）。
-  if (item.taskId === 609) return { kind: 'runner', runner: 'aiAssistant' };
+  if (item.taskId === 609 || item.taskId === 1075) return { kind: 'runner', runner: 'aiAssistant' };
   // 1028 / 1057：AI 工作台（mcloud 的 AppRunner::AiWorkbench）。
   if (item.taskId === 1028 || item.taskId === 1057) return { kind: 'runner', runner: 'aiWorkbench' };
   // 585 / 618：AI 相机（mcloud 的 AppRunner::AiCamera）。

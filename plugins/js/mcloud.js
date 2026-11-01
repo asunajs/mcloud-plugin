@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.17 · 插件 `mcloud`
+//   mcloud-plugin 0.2.18 · 插件 `mcloud`
 
 // src/entries/mcloud.ts
 import {
@@ -13,6 +13,9 @@ import {
   register_route,
   worker_hint
 } from "host-api";
+
+// src/version.ts
+var PLUGIN_VERSION = "0.2.18";
 
 // src/store/keys.ts
 var DEFAULT_ACCT = "default";
@@ -63,7 +66,12 @@ var KEY_SCOPE = {
   "mcloud.sign.stage": "account",
   "mcloud.sign.last": "account",
   "mcloud.sign.done": "account",
+  // 上传那台状态机**按任务分槽**：`mcloud.upload.state` 是 App 任务那一格，
+  // `mcloud.upload.state.expansion` 是任务拓展那一格（见 tasks/upload.ts 文件头）。
+  // 槽位名带任务 ⇒ 整串是拼出来的，静态扫描扫不到，所以按前缀也登记一条。
   "mcloud.upload.state": "account",
+  // 我们自己传上去、还没收尾的云盘文件（按账号；链尾兜底清理用）。
+  "mcloud.cloud.owned": "account",
   "mcloud.taskexpansion.state": "account",
   "mcloud.month.backup": "account",
   "mcloud.apptask.state": "account",
@@ -76,6 +84,10 @@ var KEY_SCOPE = {
   "mcloud.msgpush.can": "account",
   "mcloud.msgpush.last": "account",
   "mcloud.prizes.last": "account",
+  // 「领奖」页：待领取列表的缓存与进行中的那一单。
+  // 按账号 —— 奖品记录、单号、手机号都是某一个号的；串了号就是拿 A 的单号去领 B 的东西。
+  "mcloud.prizes.cache": "account",
+  "mcloud.prizes.claim": "account",
   "mcloud.multiple.last": "account",
   "mcloud.multiple.done": "account",
   "mcloud.revival.done": "account",
@@ -120,6 +132,16 @@ var KEY_SCOPE = {
   "mcloud.smid.deviceId": "account",
   "mcloud.smid.fingerprint": "account",
   "mcloud.auth.refresh.last": "account",
+  // ── 红包派对（移动云手机的活动站，另一套凭据：它自己的 `token` 头）──
+  // 整趟的进度台账：一次 drain 里跨步活着的只有它（活动站票与华为侧的票**跑完就抹**，
+  // 见 `tasks/redpackState.ts` 文件头）。按账号 —— 队列、按天的写账（`written`）
+  // 与给用户看的那几行都属于某一个号；串了号就是拿 A 的队列去发 B 的写请求。
+  "mcloud.redpack.state": "account",
+  // 开没开。**按账号**：参照实现那份默认配置就是每个号一格
+  // （`红包派对.开启`，默认 true），所以"这一个号开没开"确实是账号的属性。
+  "mcloud.redpack.enabled": "account",
+  // 指到别处用的口子（CI / 只读探针）。与 `mcloud.live.gate_base` 同一类，按账号。
+  "mcloud.redpack.base": "account",
   // ── 实例级配置 / 跨账号共享 ────────────────────────────────
   /** 账号表本身。 */
   "mcloud.accounts": "global",
@@ -177,7 +199,11 @@ var KEY_PREFIX_SCOPE = [
   ["mcloud.h5.exchange.", "account"],
   // 矩阵按**市场**分（`mcloud.apptaskmatrix.g.sign_in_3`）—— 动态拼出来的，
   // 静态扫描扫不到整串，所以按前缀登记。
-  ["mcloud.apptaskmatrix.g.", "account"]
+  ["mcloud.apptaskmatrix.g.", "account"],
+  // 上传状态机**按任务分槽**（`mcloud.upload.state.expansion`）。槽位名是拼出来的，
+  // 精确表里只有 App 任务那一格 ⇒ 这里补前缀。⚠ 不能落成 global：
+  // 它记的是"这个号传了什么、传到哪"，串号就会拿 A 的 fileId 去收尾。
+  ["mcloud.upload.state.", "account"]
 ];
 function scopeOf(key) {
   const exact = KEY_SCOPE[key];
@@ -1850,7 +1876,11 @@ var TASK_META = [
   { name: "msg-push", title: "消息推送奖励", group: "activity", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "captured", note: "两步：问状态 + 领（`secondTaskStatus===2` 才领）。⚠ `pushOn===0` 与首次奖励都要用户去 App 手动" },
   { name: "msg-push-obtain", title: "消息推送奖励（领）", group: "activity", kind: "Action", risk: "ledger", missed: "skip", deps: ["jwt"], batch: false, hidden: true, implemented: true, evidence: "captured", note: "上一步说可领才发" },
   // ── 活动与站票（未实现）──
-  { name: "cloud-phone-redpack", title: "红包派对", group: "activity", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["activity-token"], batch: false, hidden: false, implemented: false, note: "⚠ 读到没见过的状态码时**刻意不发写**（旧 TS 会发）" },
+  // 2026-10-23 接上。⚠ 这一族的证据**不是**我们的抓包：`cpactiv.buy.139.com` 在本仓库
+  // 零线格式样本，跑通靠的是参照实现在两个真账号上各 3.7s / 3.9s 成功、**逐行产出留了档**
+  // （那十行就是规格，抄在 `tasks/redpack.ts` 文件头）。⇒ 判据按"用户看到的那几行"对齐，
+  // 端点与字段名没有在**我们这一侧**复验过 —— 第一次真跑的读数才算数。
+  { name: "cloud-phone-redpack", title: "红包派对", group: "activity", kind: "Action", risk: "write-cloud", missed: "catch-up", deps: ["activity-token"], batch: false, hidden: false, implemented: true, evidence: "ran-elsewhere", note: "⚠ 读到没见过的状态码时**刻意不发写**（旧 TS 会发）。⚠ 装机那条会**往用户的云机里装包**（先问装过没有，装过只上报）。零抓包：靠参照实现真跑成功过的逐行读数" },
   { name: "play-ai-special", title: "拍拍盘点", group: "activity", kind: "Query", risk: "none", missed: "catch-up", deps: ["jwt", "activity-token"], batch: false, hidden: false, implemented: false },
   // ⚠️ 这条我**改过两次口径**，第三次才对：
   //   ① 先说「需要 WebSocket ⇒ 做不了」✗
@@ -4761,6 +4791,797 @@ function decodeImage(bytes) {
   return { data: rgba, width: w, height: h };
 }
 
+// src/crypto/jpeg.ts
+var ZIGZAG = new Uint8Array([
+  0,
+  1,
+  8,
+  16,
+  9,
+  2,
+  3,
+  10,
+  17,
+  24,
+  32,
+  25,
+  18,
+  11,
+  4,
+  5,
+  12,
+  19,
+  26,
+  33,
+  40,
+  48,
+  41,
+  34,
+  27,
+  20,
+  13,
+  6,
+  7,
+  14,
+  21,
+  28,
+  35,
+  42,
+  49,
+  56,
+  57,
+  50,
+  43,
+  36,
+  29,
+  22,
+  15,
+  23,
+  30,
+  37,
+  44,
+  51,
+  58,
+  59,
+  52,
+  45,
+  38,
+  31,
+  39,
+  46,
+  53,
+  60,
+  61,
+  54,
+  47,
+  55,
+  62,
+  63
+]);
+var FIX_0_298631336 = 2446;
+var FIX_0_390180644 = 3196;
+var FIX_0_541196100 = 4433;
+var FIX_0_765366865 = 6270;
+var FIX_0_899976223 = 7373;
+var FIX_1_175875602 = 9633;
+var FIX_1_501321110 = 12299;
+var FIX_1_847759065 = 15137;
+var FIX_1_961570560 = 16069;
+var FIX_2_053119869 = 16819;
+var FIX_2_562915447 = 20995;
+var FIX_3_072711026 = 25172;
+var CONST_BITS = 13;
+var PASS1_BITS = 2;
+function descale(x, n) {
+  return x + (1 << n - 1) >> n;
+}
+function clampCoeff(v) {
+  if (v > 32767) return 32767;
+  if (v < -32767) return -32767;
+  return v;
+}
+function idctBlock(block, ws, plane, stride, off) {
+  for (let c = 0; c < 8; c += 1) {
+    if (block[c + 8] === 0 && block[c + 16] === 0 && block[c + 24] === 0 && block[c + 32] === 0 && block[c + 40] === 0 && block[c + 48] === 0 && block[c + 56] === 0) {
+      const dc = block[c] << PASS1_BITS;
+      ws[c] = dc;
+      ws[c + 8] = dc;
+      ws[c + 16] = dc;
+      ws[c + 24] = dc;
+      ws[c + 32] = dc;
+      ws[c + 40] = dc;
+      ws[c + 48] = dc;
+      ws[c + 56] = dc;
+      continue;
+    }
+    const z2 = block[c + 16];
+    const z3 = block[c + 48];
+    const z1 = (z2 + z3) * FIX_0_541196100;
+    const t2 = z1 - z3 * FIX_1_847759065;
+    const t3 = z1 + z2 * FIX_0_765366865;
+    const d0 = block[c];
+    const d4 = block[c + 32];
+    const t0 = d0 + d4 << CONST_BITS;
+    const t1 = d0 - d4 << CONST_BITS;
+    const t10 = t0 + t3;
+    const t13 = t0 - t3;
+    const t11 = t1 + t2;
+    const t12 = t1 - t2;
+    const p0 = block[c + 56];
+    const p1 = block[c + 40];
+    const p2 = block[c + 24];
+    const p3 = block[c + 8];
+    const w1 = p0 + p3;
+    const w2 = p1 + p2;
+    const w3 = p0 + p2;
+    const w4 = p1 + p3;
+    const w5 = (w3 + w4) * FIX_1_175875602;
+    let q0 = p0 * FIX_0_298631336;
+    let q1 = p1 * FIX_2_053119869;
+    let q2 = p2 * FIX_3_072711026;
+    let q3 = p3 * FIX_1_501321110;
+    const s1 = w1 * -FIX_0_899976223;
+    const s2 = w2 * -FIX_2_562915447;
+    const s3 = w3 * -FIX_1_961570560 + w5;
+    const s4 = w4 * -FIX_0_390180644 + w5;
+    q0 += s1 + s3;
+    q1 += s2 + s4;
+    q2 += s2 + s3;
+    q3 += s1 + s4;
+    ws[c] = descale(t10 + q3, CONST_BITS - PASS1_BITS);
+    ws[c + 56] = descale(t10 - q3, CONST_BITS - PASS1_BITS);
+    ws[c + 8] = descale(t11 + q2, CONST_BITS - PASS1_BITS);
+    ws[c + 48] = descale(t11 - q2, CONST_BITS - PASS1_BITS);
+    ws[c + 16] = descale(t12 + q1, CONST_BITS - PASS1_BITS);
+    ws[c + 40] = descale(t12 - q1, CONST_BITS - PASS1_BITS);
+    ws[c + 24] = descale(t13 + q0, CONST_BITS - PASS1_BITS);
+    ws[c + 32] = descale(t13 - q0, CONST_BITS - PASS1_BITS);
+  }
+  for (let r = 0; r < 8; r += 1) {
+    const o = r * 8;
+    const base = off + r * stride;
+    if (ws[o + 1] === 0 && ws[o + 2] === 0 && ws[o + 3] === 0 && ws[o + 4] === 0 && ws[o + 5] === 0 && ws[o + 6] === 0 && ws[o + 7] === 0) {
+      let v = descale(ws[o], PASS1_BITS + 3) + 128;
+      if (v < 0) v = 0;
+      else if (v > 255) v = 255;
+      plane[base] = v;
+      plane[base + 1] = v;
+      plane[base + 2] = v;
+      plane[base + 3] = v;
+      plane[base + 4] = v;
+      plane[base + 5] = v;
+      plane[base + 6] = v;
+      plane[base + 7] = v;
+      continue;
+    }
+    const z2 = ws[o + 2];
+    const z3 = ws[o + 6];
+    const z1 = (z2 + z3) * FIX_0_541196100;
+    const t2 = z1 - z3 * FIX_1_847759065;
+    const t3 = z1 + z2 * FIX_0_765366865;
+    const d0 = ws[o];
+    const d4 = ws[o + 4];
+    const t0 = d0 + d4 << CONST_BITS;
+    const t1 = d0 - d4 << CONST_BITS;
+    const t10 = t0 + t3;
+    const t13 = t0 - t3;
+    const t11 = t1 + t2;
+    const t12 = t1 - t2;
+    const p0 = ws[o + 7];
+    const p1 = ws[o + 5];
+    const p2 = ws[o + 3];
+    const p3 = ws[o + 1];
+    const w1 = p0 + p3;
+    const w2 = p1 + p2;
+    const w3 = p0 + p2;
+    const w4 = p1 + p3;
+    const w5 = (w3 + w4) * FIX_1_175875602;
+    let q0 = p0 * FIX_0_298631336;
+    let q1 = p1 * FIX_2_053119869;
+    let q2 = p2 * FIX_3_072711026;
+    let q3 = p3 * FIX_1_501321110;
+    const s1 = w1 * -FIX_0_899976223;
+    const s2 = w2 * -FIX_2_562915447;
+    const s3 = w3 * -FIX_1_961570560 + w5;
+    const s4 = w4 * -FIX_0_390180644 + w5;
+    q0 += s1 + s3;
+    q1 += s2 + s4;
+    q2 += s2 + s3;
+    q3 += s1 + s4;
+    plane[base] = clampByte(descale(t10 + q3, CONST_BITS + PASS1_BITS + 3) + 128);
+    plane[base + 7] = clampByte(descale(t10 - q3, CONST_BITS + PASS1_BITS + 3) + 128);
+    plane[base + 1] = clampByte(descale(t11 + q2, CONST_BITS + PASS1_BITS + 3) + 128);
+    plane[base + 6] = clampByte(descale(t11 - q2, CONST_BITS + PASS1_BITS + 3) + 128);
+    plane[base + 2] = clampByte(descale(t12 + q1, CONST_BITS + PASS1_BITS + 3) + 128);
+    plane[base + 5] = clampByte(descale(t12 - q1, CONST_BITS + PASS1_BITS + 3) + 128);
+    plane[base + 3] = clampByte(descale(t13 + q0, CONST_BITS + PASS1_BITS + 3) + 128);
+    plane[base + 4] = clampByte(descale(t13 - q0, CONST_BITS + PASS1_BITS + 3) + 128);
+  }
+}
+function clampByte(v) {
+  return v < 0 ? 0 : v > 255 ? 255 : v;
+}
+function buildHuffman(counts, values) {
+  const lookup = new Uint16Array(512);
+  const mincode = new Int32Array(17);
+  const maxcode = new Int32Array(17).fill(-1);
+  const valptr = new Int32Array(17);
+  let code = 0;
+  let k = 0;
+  for (let len = 1; len <= 16; len += 1) {
+    const n = counts[len];
+    valptr[len] = k;
+    mincode[len] = code;
+    if (n > 0) {
+      maxcode[len] = code + n - 1;
+      if (len <= 9) {
+        const shift = 9 - len;
+        for (let i = 0; i < n; i += 1) {
+          const start = code + i << shift;
+          const packed = len << 8 | values[k + i];
+          for (let j = 0; j < 1 << shift; j += 1) lookup[start + j] = packed;
+        }
+      }
+    }
+    k += n;
+    code = code + n << 1;
+  }
+  if (k !== values.length) throw new Error("JPEG 的 Huffman 表长度不一致（DHT 损坏）");
+  return { lookup, maxcode, mincode, valptr, values };
+}
+function buildAxis(comp, max2, srcLen, dstLen) {
+  const i0 = new Int32Array(dstLen);
+  const i1 = new Int32Array(dstLen);
+  const frac = new Int32Array(dstLen);
+  const last = srcLen - 1;
+  if (comp !== max2 && max2 === comp * 2) {
+    for (let d = 0; d < dstLen; d += 1) {
+      let u = Math.floor((d * 2 + 1) * comp * 128 / max2) - 128;
+      if (u < 0) u = 0;
+      const maxU = last * 256;
+      if (u > maxU) u = maxU;
+      const a = u >> 8;
+      i0[d] = a;
+      i1[d] = a < last ? a + 1 : a;
+      frac[d] = u & 255;
+    }
+    return { i0, i1, frac };
+  }
+  for (let d = 0; d < dstLen; d += 1) {
+    const a = Math.min(Math.floor(d * comp / max2), last);
+    i0[d] = a;
+    i1[d] = a;
+    frac[d] = 0;
+  }
+  return { i0, i1, frac };
+}
+function isJpeg(bytes) {
+  return bytes.length >= 3 && bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255;
+}
+function decodeJpeg(bytes) {
+  if (!isJpeg(bytes)) throw new Error("不是 JPEG（缺少 SOI 标记 FF D8）");
+  const dcTables = [];
+  const acTables = [];
+  const qtables = [];
+  let pos = 2;
+  let width = 0;
+  let height = 0;
+  let hMax = 1;
+  let vMax = 1;
+  let restartInterval = 0;
+  let components = [];
+  const scannedComps = [];
+  let sawSof = false;
+  let sawScan = false;
+  let dcPred = new Int32Array(0);
+  let block = new Int32Array(64);
+  let ws = new Int32Array(64);
+  let entropyPos = 0;
+  let bitBuf = 0;
+  let bitCnt = 0;
+  let marker = 0;
+  let markerPos = -1;
+  function fillOne() {
+    if (entropyPos >= bytes.length) {
+      marker = -1;
+      markerPos = entropyPos;
+      return;
+    }
+    const b = bytes[entropyPos];
+    if (b !== 255) {
+      bitBuf = (bitBuf << 8 | b) >>> 0;
+      bitCnt += 8;
+      entropyPos += 1;
+      return;
+    }
+    const n = entropyPos + 1 < bytes.length ? bytes[entropyPos + 1] : -1;
+    if (n === 0) {
+      bitBuf = (bitBuf << 8 | 255) >>> 0;
+      bitCnt += 8;
+      entropyPos += 2;
+      return;
+    }
+    marker = n;
+    markerPos = entropyPos;
+  }
+  function ensure(n) {
+    while (bitCnt < n && marker === 0) fillOne();
+  }
+  function readBits(n) {
+    if (n === 0) return 0;
+    ensure(n);
+    if (bitCnt < n) throw new Error("JPEG 扫描数据提前结束（文件被截断？）");
+    const v = bitBuf >>> bitCnt - n & (1 << n) - 1;
+    bitCnt -= n;
+    return v;
+  }
+  function decodeHuff(t) {
+    ensure(9);
+    if (bitCnt >= 9) {
+      const entry = t.lookup[bitBuf >>> bitCnt - 9 & 511];
+      if (entry !== 0) {
+        bitCnt -= entry >>> 8;
+        return entry & 255;
+      }
+    }
+    let code = 0;
+    for (let len = 1; len <= 16; len += 1) {
+      code = code << 1 | readBits(1);
+      const mx = t.maxcode[len];
+      if (mx >= 0 && code <= mx) {
+        return t.values[t.valptr[len] + code - t.mincode[len]];
+      }
+    }
+    throw new Error("JPEG 的 Huffman 码不合法（扫描数据损坏）");
+  }
+  function receiveExtend(s) {
+    const v = readBits(s);
+    return v < 1 << s - 1 ? v - ((1 << s) - 1) : v;
+  }
+  function restartScan(mcuIndex) {
+    bitBuf = 0;
+    bitCnt = 0;
+    let q = marker !== 0 && markerPos >= 0 ? markerPos : entropyPos;
+    while (q + 1 < bytes.length && bytes[q] === 255 && bytes[q + 1] === 255) q += 1;
+    if (q + 1 >= bytes.length || bytes[q] !== 255) {
+      throw new Error(`JPEG 在第 ${mcuIndex} 个 MCU 后缺少重启标记 RSTn（DRI 与实际数据不一致）`);
+    }
+    const m = bytes[q + 1];
+    if (m < 208 || m > 215) {
+      throw new Error(`JPEG 在第 ${mcuIndex} 个 MCU 后缺少重启标记 RSTn（遇到 FF ${m.toString(16)}）`);
+    }
+    entropyPos = q + 2;
+    marker = 0;
+    markerPos = -1;
+    dcPred.fill(0);
+  }
+  function resyncToMarker() {
+    bitBuf = 0;
+    bitCnt = 0;
+    let q = marker !== 0 && markerPos >= 0 ? markerPos : entropyPos;
+    for (; ; ) {
+      while (q + 1 < bytes.length) {
+        if (bytes[q] !== 255) {
+          q += 1;
+          continue;
+        }
+        const m2 = bytes[q + 1];
+        if (m2 === 0) {
+          q += 2;
+          continue;
+        }
+        if (m2 === 255) {
+          q += 1;
+          continue;
+        }
+        break;
+      }
+      if (q + 1 >= bytes.length) throw new Error("JPEG 扫描段之后找不到下一个标记（文件被截断）");
+      const m = bytes[q + 1];
+      if (m >= 208 && m <= 215) {
+        q += 2;
+        continue;
+      }
+      marker = 0;
+      markerPos = -1;
+      entropyPos = q;
+      return q;
+    }
+  }
+  function decodeBlock(sc) {
+    block.fill(0);
+    const dcLen = decodeHuff(sc.dc);
+    let diff = 0;
+    if (dcLen > 0) diff = receiveExtend(dcLen);
+    const pred = dcPred[sc.index] + diff | 0;
+    dcPred[sc.index] = pred;
+    block[0] = clampCoeff(pred * sc.qt[0]);
+    let k = 1;
+    while (k < 64) {
+      const rs = decodeHuff(sc.ac);
+      const run = rs >>> 4;
+      const size = rs & 15;
+      if (size === 0) {
+        if (run !== 15) break;
+        k += 16;
+        continue;
+      }
+      k += run;
+      if (k > 63) throw new Error("JPEG 扫描数据损坏（AC 系数游程越界）");
+      const nat = ZIGZAG[k];
+      block[nat] = clampCoeff(receiveExtend(size) * sc.qt[nat]);
+      k += 1;
+    }
+  }
+  function decodeScan(scanComponents, start) {
+    entropyPos = start;
+    bitBuf = 0;
+    bitCnt = 0;
+    marker = 0;
+    markerPos = -1;
+    dcPred.fill(0);
+    if (scanComponents.length === 1) {
+      const sc = scanComponents[0];
+      const comp = sc.comp;
+      const bw = Math.ceil(comp.width / 8);
+      const bh = Math.ceil(comp.height / 8);
+      const total = bw * bh;
+      let mcu = 0;
+      for (let by = 0; by < bh; by += 1) {
+        for (let bx = 0; bx < bw; bx += 1) {
+          decodeBlock(sc);
+          idctBlock(block, ws, comp.plane, comp.planeW, by * 8 * comp.planeW + bx * 8);
+          mcu += 1;
+          if (restartInterval > 0 && mcu % restartInterval === 0 && mcu < total) restartScan(mcu);
+        }
+      }
+    } else {
+      const mcusX = Math.ceil(width / (8 * hMax));
+      const mcusY = Math.ceil(height / (8 * vMax));
+      const total = mcusX * mcusY;
+      let mcu = 0;
+      for (let my = 0; my < mcusY; my += 1) {
+        for (let mx = 0; mx < mcusX; mx += 1) {
+          for (const sc of scanComponents) {
+            const comp = sc.comp;
+            for (let vy = 0; vy < comp.v; vy += 1) {
+              for (let hx = 0; hx < comp.h; hx += 1) {
+                decodeBlock(sc);
+                const px = (mx * comp.h + hx) * 8;
+                const py = (my * comp.v + vy) * 8;
+                idctBlock(block, ws, comp.plane, comp.planeW, py * comp.planeW + px);
+              }
+            }
+          }
+          mcu += 1;
+          if (restartInterval > 0 && mcu % restartInterval === 0 && mcu < total) restartScan(mcu);
+        }
+      }
+    }
+    return resyncToMarker();
+  }
+  while (pos < bytes.length) {
+    if (bytes[pos] !== 255) {
+      pos += 1;
+      continue;
+    }
+    const m = pos + 1 < bytes.length ? bytes[pos + 1] : -1;
+    if (m === -1) break;
+    if (m === 255) {
+      pos += 1;
+      continue;
+    }
+    pos += 2;
+    if (m === 217) break;
+    if (m === 216 || m === 1 || m >= 208 && m <= 215) continue;
+    if (pos + 2 > bytes.length) throw new Error("JPEG 段头被截断");
+    const segLen = bytes[pos] << 8 | bytes[pos + 1];
+    if (segLen < 2 || pos + segLen > bytes.length) {
+      throw new Error("JPEG 段长度越界（文件被截断或损坏）");
+    }
+    const seg = pos + 2;
+    const end = pos + segLen;
+    switch (m) {
+      case 192:
+      case 193: {
+        if (sawSof) throw new Error("JPEG 出现了多个 SOF（不支持分层/多帧）");
+        if (end - seg < 6) throw new Error("JPEG 的 SOF 段太短");
+        const precision = bytes[seg];
+        if (precision !== 8) {
+          if (precision === 12) throw new Error("JPEG 是 12-bit 的，不支持：本解码器只解 8-bit");
+          throw new Error(`JPEG 精度是 ${precision}-bit，不支持：本解码器只解 8-bit`);
+        }
+        height = bytes[seg + 1] << 8 | bytes[seg + 2];
+        width = bytes[seg + 3] << 8 | bytes[seg + 4];
+        const n = bytes[seg + 5];
+        if (width <= 0 || height <= 0) throw new Error(`JPEG 尺寸不合法：${width}x${height}`);
+        if (n === 4) {
+          throw new Error("JPEG 有 4 个分量（CMYK/YCCK），不支持：只支持灰度或 YCbCr");
+        }
+        if (n !== 1 && n !== 3) throw new Error(`JPEG 有 ${n} 个分量，不支持：只支持 1（灰度）或 3（YCbCr）`);
+        if (end - seg !== 6 + n * 3) throw new Error("JPEG 的 SOF 段长度与分量数不一致");
+        const specs = [];
+        hMax = 1;
+        vMax = 1;
+        for (let i = 0; i < n; i += 1) {
+          const o = seg + 6 + i * 3;
+          const id = bytes[o];
+          const hv = bytes[o + 1];
+          const h = hv >> 4;
+          const v = hv & 15;
+          const tq = bytes[o + 2];
+          if (h < 1 || h > 4 || v < 1 || v > 4) {
+            throw new Error(`JPEG 采样因子超出范围（分量 ${id}：${h}x${v}，只支持 1..4）`);
+          }
+          if (tq > 3) throw new Error(`JPEG 量化表编号 ${tq} 超出范围（0..3）`);
+          specs.push({ id, h, v, tq });
+          if (h > hMax) hMax = h;
+          if (v > vMax) vMax = v;
+        }
+        const mcusX = Math.ceil(width / (8 * hMax));
+        const mcusY = Math.ceil(height / (8 * vMax));
+        components = specs.map((s) => {
+          const cw = Math.ceil(width * s.h / hMax);
+          const ch = Math.ceil(height * s.v / vMax);
+          const planeW = mcusX * s.h * 8;
+          const planeH = mcusY * s.v * 8;
+          return {
+            id: s.id,
+            h: s.h,
+            v: s.v,
+            tq: s.tq,
+            width: cw,
+            height: ch,
+            planeW,
+            plane: new Uint8Array(planeW * planeH)
+          };
+        });
+        dcPred = new Int32Array(components.length);
+        scannedComps.length = 0;
+        for (let i = 0; i < components.length; i += 1) scannedComps.push(false);
+        block = new Int32Array(64);
+        ws = new Int32Array(64);
+        sawSof = true;
+        break;
+      }
+      case 194:
+        throw new Error("这是 progressive（渐进式）JPEG，不支持：本解码器只解 baseline 顺序编码");
+      case 195:
+        throw new Error("JPEG 用了无损（lossless）编码（SOF3），不支持");
+      case 197:
+      case 198:
+      case 199:
+        throw new Error("JPEG 是差分/分层编码（SOF5-7），不支持");
+      case 201:
+      case 202:
+      case 203:
+        throw new Error("JPEG 用了算术编码（SOF9-11），不支持：只支持 Huffman 编码");
+      case 205:
+      case 206:
+      case 207:
+        throw new Error("JPEG 用了算术编码（SOF13-15），不支持：只支持 Huffman 编码");
+      case 204:
+        throw new Error("JPEG 用了算术编码（DAC 段），不支持：只支持 Huffman 编码");
+      case 196: {
+        let q = seg;
+        while (q < end) {
+          const tcth = bytes[q];
+          q += 1;
+          const tc = tcth >> 4;
+          const th = tcth & 15;
+          if (tc > 1 || th > 3) throw new Error(`JPEG 的 Huffman 表标识不合法（Tc=${tc}, Th=${th}）`);
+          if (q + 16 > end) throw new Error("JPEG 的 DHT 段被截断");
+          const counts = new Uint8Array(17);
+          let total = 0;
+          for (let i = 1; i <= 16; i += 1) {
+            const c = bytes[q];
+            q += 1;
+            counts[i] = c;
+            total += c;
+          }
+          if (q + total > end) throw new Error("JPEG 的 DHT 段被截断");
+          const values = bytes.slice(q, q + total);
+          q += total;
+          const table = buildHuffman(counts, values);
+          if (tc === 0) dcTables[th] = table;
+          else acTables[th] = table;
+        }
+        break;
+      }
+      case 219: {
+        let q = seg;
+        while (q < end) {
+          const pqtq = bytes[q];
+          q += 1;
+          const pq = pqtq >> 4;
+          const tq = pqtq & 15;
+          if (pq > 1 || tq > 3) throw new Error(`JPEG 的量化表标识不合法（Pq=${pq}, Tq=${tq}）`);
+          if (q + 64 * (pq + 1) > end) throw new Error("JPEG 的 DQT 段被截断");
+          const qt = new Uint16Array(64);
+          for (let i = 0; i < 64; i += 1) {
+            const nat = ZIGZAG[i];
+            if (pq === 0) {
+              qt[nat] = bytes[q];
+              q += 1;
+            } else {
+              qt[nat] = bytes[q] << 8 | bytes[q + 1];
+              q += 2;
+            }
+          }
+          qtables[tq] = qt;
+        }
+        break;
+      }
+      case 221: {
+        if (end - seg < 2) throw new Error("JPEG 的 DRI 段太短");
+        restartInterval = bytes[seg] << 8 | bytes[seg + 1];
+        break;
+      }
+      case 218: {
+        if (!sawSof) throw new Error("JPEG 在 SOF 之前出现了 SOS");
+        if (end - seg < 4) throw new Error("JPEG 的 SOS 段太短");
+        const ns = bytes[seg];
+        if (ns !== 1 && ns !== 3) {
+          throw new Error(`JPEG 扫描里有 ${ns} 个分量，不支持：只支持 1 或 3`);
+        }
+        if (end - seg !== 1 + ns * 2 + 3) throw new Error("JPEG 的 SOS 段长度与分量数不一致");
+        const scanComponents = [];
+        for (let i = 0; i < ns; i += 1) {
+          const cs = bytes[seg + 1 + i * 2];
+          const tdta = bytes[seg + 2 + i * 2];
+          const index = components.findIndex((c) => c.id === cs);
+          if (index < 0) throw new Error(`JPEG 的扫描引用了不存在的分量 ${cs}`);
+          const comp = components[index];
+          const td2 = tdta >> 4;
+          const ta = tdta & 15;
+          const dc = dcTables[td2];
+          const ac = acTables[ta];
+          if (!dc || !ac) throw new Error(`JPEG 缺少 Huffman 表（DC ${td2} / AC ${ta}）`);
+          const qt = qtables[comp.tq];
+          if (!qt) throw new Error(`JPEG 缺少分量 ${cs} 的量化表 ${comp.tq}`);
+          scanComponents.push({ comp, index, dc, ac, qt });
+        }
+        const o = seg + 1 + ns * 2;
+        const ss = bytes[o];
+        const se = bytes[o + 1];
+        const ahal = bytes[o + 2];
+        if (ss !== 0 || se !== 63 || ahal !== 0) {
+          if (ss !== 0) throw new Error("这不是 baseline 扫描（谱选择 Ss≠0）：progressive/渐进式 JPEG 不支持");
+          throw new Error(`JPEG 扫描参数不是 baseline（Ss=${ss}, Se=${se}, Ah/Al=${ahal}），不支持`);
+        }
+        for (const sc of scanComponents) scannedComps[sc.index] = true;
+        sawScan = true;
+        pos = decodeScan(scanComponents, end);
+        continue;
+      }
+      case 224:
+      case 225:
+      case 226:
+      case 227:
+      case 228:
+      case 229:
+      case 230:
+      case 231:
+      case 232:
+      case 233:
+      case 234:
+      case 235:
+      case 236:
+      case 237:
+      case 238:
+      case 239:
+      case 254:
+        break;
+      // APPn / COM：跳过
+      default:
+        break;
+    }
+    pos += segLen;
+  }
+  if (!sawSof) throw new Error("JPEG 里没找到 SOF（可能不是完整的基线 JPEG）");
+  if (!sawScan) throw new Error("JPEG 里没找到扫描数据（SOS）");
+  for (let i = 0; i < components.length; i += 1) {
+    if (!scannedComps[i]) throw new Error(`JPEG 缺少分量 ${components[i].id} 的扫描数据（文件不完整）`);
+  }
+  return toRgba(components, width, height);
+}
+function toRgba(components, width, height) {
+  const out = new Uint8ClampedArray(width * height * 4);
+  if (components.length === 1) {
+    const c = components[0];
+    const plan = c.plane;
+    const pw = c.planeW;
+    for (let y = 0; y < height; y += 1) {
+      const srcRow = y * pw;
+      const dstRow = y * width * 4;
+      for (let x = 0; x < width; x += 1) {
+        const v = plan[srcRow + x];
+        const o = dstRow + x * 4;
+        out[o] = v;
+        out[o + 1] = v;
+        out[o + 2] = v;
+        out[o + 3] = 255;
+      }
+    }
+    return { data: out, width, height };
+  }
+  const yC = components[0];
+  const cbC = components[1];
+  const crC = components[2];
+  const hMax = hMaxOf(components);
+  const vMax = vMaxOf(components);
+  const yx = buildAxis(yC.h, hMax, yC.width, width);
+  const yy = buildAxis(yC.v, vMax, yC.height, height);
+  const cbx = buildAxis(cbC.h, hMax, cbC.width, width);
+  const cby = buildAxis(cbC.v, vMax, cbC.height, height);
+  const crx = buildAxis(crC.h, hMax, crC.width, width);
+  const cry = buildAxis(crC.v, vMax, crC.height, height);
+  const crR = new Int32Array(256);
+  const cbG = new Int32Array(256);
+  const crG = new Int32Array(256);
+  const cbB = new Int32Array(256);
+  for (let i = 0; i < 256; i += 1) {
+    const v = i - 128;
+    crR[i] = 91881 * v + 32768 >> 16;
+    cbG[i] = -22554 * v + 32768 >> 16;
+    crG[i] = -46802 * v + 32768 >> 16;
+    cbB[i] = 116130 * v + 32768 >> 16;
+  }
+  for (let y = 0; y < height; y += 1) {
+    const y0 = yy.i0[y];
+    const y1 = yy.i1[y];
+    const yf = yy.frac[y];
+    const cb0 = cby.i0[y];
+    const cb1 = cby.i1[y];
+    const cbf = cby.frac[y];
+    const cr0 = cry.i0[y];
+    const cr1 = cry.i1[y];
+    const crf = cry.frac[y];
+    const yRow0 = y0 * yC.planeW;
+    const yRow1 = y1 * yC.planeW;
+    const cbRow0 = cb0 * cbC.planeW;
+    const cbRow1 = cb1 * cbC.planeW;
+    const crRow0 = cr0 * crC.planeW;
+    const crRow1 = cr1 * crC.planeW;
+    for (let x = 0; x < width; x += 1) {
+      const yx0 = yx.i0[x];
+      const yx1 = yx.i1[x];
+      const yxf = yx.frac[x];
+      const yTop = yC.plane[yRow0 + yx0] * (256 - yxf) + yC.plane[yRow0 + yx1] * yxf;
+      const yBot = yC.plane[yRow1 + yx0] * (256 - yxf) + yC.plane[yRow1 + yx1] * yxf;
+      const yv = (256 - yf) * yTop + yf * yBot + 32768 >> 16;
+      const cbx0 = cbx.i0[x];
+      const cbx1 = cbx.i1[x];
+      const cbfx = cbx.frac[x];
+      const cbTop = cbC.plane[cbRow0 + cbx0] * (256 - cbfx) + cbC.plane[cbRow0 + cbx1] * cbfx;
+      const cbBot = cbC.plane[cbRow1 + cbx0] * (256 - cbfx) + cbC.plane[cbRow1 + cbx1] * cbfx;
+      const cbv = (256 - cbf) * cbTop + cbf * cbBot + 32768 >> 16;
+      const crx0 = crx.i0[x];
+      const crx1 = crx.i1[x];
+      const crfx = crx.frac[x];
+      const crTop = crC.plane[crRow0 + crx0] * (256 - crfx) + crC.plane[crRow0 + crx1] * crfx;
+      const crBot = crC.plane[crRow1 + crx0] * (256 - crfx) + crC.plane[crRow1 + crx1] * crfx;
+      const crv = (256 - crf) * crTop + crf * crBot + 32768 >> 16;
+      const o = (y * width + x) * 4;
+      out[o] = clampByte(yv + crR[crv]);
+      out[o + 1] = clampByte(yv + cbG[cbv] + crG[crv]);
+      out[o + 2] = clampByte(yv + cbB[cbv]);
+      out[o + 3] = 255;
+    }
+  }
+  return { data: out, width, height };
+}
+function hMaxOf(components) {
+  let h = 1;
+  for (const c of components) if (c.h > h) h = c.h;
+  return h;
+}
+function vMaxOf(components) {
+  let v = 1;
+  for (const c of components) if (c.v > v) v = c.v;
+  return v;
+}
+
 // src/mcloud/slide.ts
 var ALPHA_OPAQUE_THRESHOLD = 128;
 function toGrayFast(data, i) {
@@ -4823,10 +5644,19 @@ function matchSlide(bgData, puzzleData, bgW, bgH, pzW, pzH) {
   const avgScore = totalScore / (maxOffset + 1);
   return { offsetX: bestOffset, confidence: avgScore > 0 ? bestScore / avgScore : 0 };
 }
-function calcPuzzleOffset(puzzleBase64, pictureBase64) {
-  const puzzle = decodeImage(fromBase64(puzzleBase64));
-  const picture = decodeImage(fromBase64(pictureBase64));
+function decodeSlideImage(bytes) {
+  if (isJpeg(bytes)) return decodeJpeg(bytes);
+  const isPng = bytes.length >= 8 && bytes[0] === 137 && bytes[1] === 80 && bytes[2] === 78 && bytes[3] === 71;
+  if (isPng) return decodeImage(bytes);
+  throw new Error("滑块题面既不是 PNG 也不是 JPEG（移动云盘换了格式？）");
+}
+function calcSlideOffset(puzzleBase64, pictureBase64) {
+  const puzzle = decodeSlideImage(fromBase64(puzzleBase64));
+  const picture = decodeSlideImage(fromBase64(pictureBase64));
   return matchSlide(picture, puzzle, picture.width, picture.height, puzzle.width, puzzle.height);
+}
+function calcPuzzleOffset(puzzleBase64, pictureBase64) {
+  return calcSlideOffset(puzzleBase64, pictureBase64);
 }
 var MIN_CONFIDENCE = 1.5;
 function usable(r) {
@@ -6057,7 +6887,8 @@ function drain(step, deps, opts) {
 var BRIEF_MAX = 40;
 function brief(s, label) {
   const t = s.trim();
-  return t.length === 0 || t.length > BRIEF_MAX ? `${label}：好了` : t;
+  if (t.length === 0) return `${label}：好了`;
+  return t.length > BRIEF_MAX ? `${t.slice(0, BRIEF_MAX - 1)}…` : t;
 }
 
 // src/mcloud/tokenGate.ts
@@ -7118,7 +7949,21 @@ function runLiveDraw(deps, opts = {}) {
     deps.store.setState(STATE_DRAW, JSON.stringify(s), deps.nowIso);
     return { ok: true, note: "步骤下标越界，已跳到收尾" };
   }
-  const res = callOnce(deps.transport, withSession(step.request, session.jwt));
+  const read = () => {
+    const cur = loadSession(deps.store);
+    if (!cur || !cur.jwt) throw new LoginExpiredError("领小红花要先有票 —— 上面「换票」那一步说了原因");
+    const out = callOnce(deps.transport, withSession(step.request, cur.jwt));
+    if (out.env?.code === 90001) throw new LoginExpiredError();
+    return out;
+  };
+  let res;
+  try {
+    res = withTokenGate(deps, read);
+  } catch (e) {
+    const note2 = e instanceof Error ? e.message : String(e);
+    recordError(deps.store, TASK, note2, deps.nowIso);
+    return { ok: false, note: note2 };
+  }
   const before = s.results.length;
   const advance = judge(s, step.label, res, deps.nowIso);
   deps.store.setState(STATE_DRAW, JSON.stringify(advance.state), deps.nowIso);
@@ -7173,6 +8018,9 @@ function judge(s, label, res, nowIso) {
     case "first-participate": {
       const code = res.env.code;
       st.firstParticipate = code === 0 ? "领到首次参与惊喜奖" : code === 200110 ? "已参与过（正常）" : `服务端回 ${code ?? "?"}`;
+      st.firstParticipateNum = code === 0 ? classifyDraw(res.env).result?.flowerNum ?? 0 : void 0;
+      st.firstParticipateCode = code;
+      st.firstParticipateMessage = res.env.message ?? "";
       st.step = "draw";
       return { state: st, ok: true, note: `${label}：${st.firstParticipate}` };
     }
@@ -7183,7 +8031,10 @@ function judge(s, label, res, nowIso) {
         code,
         kind: out.kind,
         note: drawLine(code, out),
-        flowerNum: out.result?.flowerNum ?? 0
+        flowerNum: out.result?.flowerNum ?? 0,
+        prizeName: out.result?.prizeName,
+        message: out.message,
+        envCode: out.code
       });
       st.drawIndex = s.drawIndex + 1;
       if (st.drawIndex >= st.codes.length) st.step = "revival";
@@ -7359,6 +8210,13 @@ function summarize2(items) {
   return { done, todo, skip, todoNames };
 }
 function runAppTaskMatrix(deps) {
+  const exp = jwtExpiry(deps.store, deps.nowIso);
+  if (exp !== null && exp.expired) {
+    return {
+      ok: false,
+      note: `凭据已过期（${exp.atIso.slice(0, 16).replace("T", " ")}）—— 先「刷新/重新导入」再读任务清单，这一趟不发请求（免得把好读数盖成全零）`
+    };
+  }
   const raw = deps.store.getState(STATE_GROUP_INDEX);
   const parsed = raw === void 0 || raw === null ? 0 : Number(raw);
   const idx = Number.isFinite(parsed) && parsed >= 0 && parsed < MATRIX_MARKETS.length ? parsed : 0;
@@ -7821,10 +8679,10 @@ function scanProtoFields(data) {
   while (i < data.length) {
     const key = readVarint(data, i);
     i = key.next;
-    const num3 = Number(key.value >> 3n);
+    const num4 = Number(key.value >> 3n);
     const wire = Number(key.value & 7n);
-    if (num3 === 0) throw new Error(`字段号为 0（key = ${key.value.toString()}）`);
-    if (!Number.isSafeInteger(num3)) throw new Error(`字段号超出安全整数（key = ${key.value.toString()}）`);
+    if (num4 === 0) throw new Error(`字段号为 0（key = ${key.value.toString()}）`);
+    if (!Number.isSafeInteger(num4)) throw new Error(`字段号超出安全整数（key = ${key.value.toString()}）`);
     let value = 0n;
     let raw = new Uint8Array(0);
     if (wire === WIRE_VARINT) {
@@ -7835,22 +8693,22 @@ function scanProtoFields(data) {
       const len = readVarint(data, i);
       i = len.next;
       const size = Number(len.value);
-      if (!Number.isSafeInteger(size) || size < 0) throw new Error(`字段 ${num3} 的声明长度超出范围`);
+      if (!Number.isSafeInteger(size) || size < 0) throw new Error(`字段 ${num4} 的声明长度超出范围`);
       if (data.length - i < size) {
-        throw new Error(`字段 ${num3} 声明长度 ${size}，实际只剩 ${data.length - i} 字节`);
+        throw new Error(`字段 ${num4} 声明长度 ${size}，实际只剩 ${data.length - i} 字节`);
       }
       raw = new Uint8Array(data.subarray(i, i + size));
       i += size;
     } else if (wire === WIRE_FIXED64) {
-      if (data.length - i < 8) throw new Error(`字段 ${num3} 的 64 位定长值被截断`);
+      if (data.length - i < 8) throw new Error(`字段 ${num4} 的 64 位定长值被截断`);
       i += 8;
     } else if (wire === WIRE_FIXED32) {
-      if (data.length - i < 4) throw new Error(`字段 ${num3} 的 32 位定长值被截断`);
+      if (data.length - i < 4) throw new Error(`字段 ${num4} 的 32 位定长值被截断`);
       i += 4;
     } else {
-      throw new Error(`不支持的 wire type ${wire}（字段 ${num3}）`);
+      throw new Error(`不支持的 wire type ${wire}（字段 ${num4}）`);
     }
-    out.push({ num: num3, wire, value, raw });
+    out.push({ num: num4, wire, value, raw });
   }
   return out;
 }
@@ -7861,14 +8719,14 @@ function fieldsOf(data) {
     return [];
   }
 }
-function lastBytesField(fields, num3) {
+function lastBytesField(fields, num4) {
   let found;
-  for (const f of fields) if (f.num === num3 && f.wire === WIRE_BYTES) found = f.raw;
+  for (const f of fields) if (f.num === num4 && f.wire === WIRE_BYTES) found = f.raw;
   return found;
 }
-function lastVarintField(fields, num3) {
+function lastVarintField(fields, num4) {
   let found;
-  for (const f of fields) if (f.num === num3 && f.wire === WIRE_VARINT) found = f.value;
+  for (const f of fields) if (f.num === num4 && f.wire === WIRE_VARINT) found = f.value;
   return found;
 }
 function putVarint(out, value) {
@@ -7879,36 +8737,36 @@ function putVarint(out, value) {
   }
   out.push(Number(v));
 }
-function putTag(out, num3, wire) {
-  putVarint(out, BigInt(num3) << 3n | BigInt(wire));
+function putTag(out, num4, wire) {
+  putVarint(out, BigInt(num4) << 3n | BigInt(wire));
 }
-function putScalar(out, num3, value) {
+function putScalar(out, num4, value) {
   if (value === 0n) return;
-  putTag(out, num3, WIRE_VARINT);
+  putTag(out, num4, WIRE_VARINT);
   putVarint(out, value);
 }
-function putScalarForced(out, num3, value) {
-  putTag(out, num3, WIRE_VARINT);
+function putScalarForced(out, num4, value) {
+  putTag(out, num4, WIRE_VARINT);
   putVarint(out, value);
 }
-function putString(out, num3, value) {
+function putString(out, num4, value) {
   if (value.length === 0) return;
-  putBytesRaw(out, num3, utf8(value));
+  putBytesRaw(out, num4, utf8(value));
 }
-function putStringKeepingEmpty(out, num3, value) {
-  putBytesRaw(out, num3, utf8(value));
+function putStringKeepingEmpty(out, num4, value) {
+  putBytesRaw(out, num4, utf8(value));
 }
-function putBytesRaw(out, num3, body) {
-  putTag(out, num3, WIRE_BYTES);
+function putBytesRaw(out, num4, body) {
+  putTag(out, num4, WIRE_BYTES);
   putVarint(out, BigInt(body.length));
   for (let i = 0; i < body.length; i += 1) out.push(body[i]);
 }
-function putBytes(out, num3, body) {
+function putBytes(out, num4, body) {
   if (body.length === 0) return;
-  putBytesRaw(out, num3, body);
+  putBytesRaw(out, num4, body);
 }
-function putMessage(out, num3, body) {
-  putBytesRaw(out, num3, body);
+function putMessage(out, num4, body) {
+  putBytesRaw(out, num4, body);
 }
 function be64(value) {
   const out = new Uint8Array(8);
@@ -10164,6 +11022,500 @@ function syncTaskReadiness(store2, tasks = ["日常", "兑换", "直播"]) {
   }
 }
 
+// src/mcloud/tasks/prizeClaim.ts
+var PRIZE_ACTIVITY = "National_Getprize";
+var PRIZE_REFERER = "https://m.mcloud.139.com/portal/cloudItem/index.html?path=getPrize&sourceid=1000";
+var PRIZE_SOURCE = "1000";
+var PRIZE_LIST_PAGE_SIZE = 100;
+var PRIZE_LIST_MAX_PAGES = 3;
+var PRIZE_CACHE_TTL_MS = 6e4;
+var CLAIM_SMS_COOLDOWN_MS = 6e4;
+var CLAIM_STATE_TTL_MS = 15 * 6e4;
+var STATE_PRIZE_CACHE = "mcloud.prizes.cache";
+var STATE_PRIZE_CLAIM = "mcloud.prizes.claim";
+var EP_PRIZE = {
+  list: "/ycloud/prizeApi/checkPrize/getUserPrizeLogPageV2",
+  detail: "/ycloud/prizeApi/checkPrize/receivePrizeDetailsV2",
+  slide: "/ycloud/auth-service/auth/getSlidePuzzle",
+  sms: "/ycloud/prize/api/sendPrizeSms",
+  accept: "/ycloud/prize/api/acceptPrizeV2"
+};
+var num3 = (v) => {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
+  return void 0;
+};
+var str2 = (v) => typeof v === "string" && v.trim() !== "" ? v.trim() : void 0;
+function maskPhoneLike(raw) {
+  const v = (raw ?? "").trim();
+  if (v === "") return void 0;
+  if (/^1\d{10}$/.test(v)) return `${v.slice(0, 1)}****${v.slice(-4)}`;
+  const digits = v.replace(/\D/g, "");
+  if (digits.length === 11 && digits.startsWith("1")) return `${digits.slice(0, 1)}****${digits.slice(-4)}`;
+  if (digits.length === 13 && digits.startsWith("86")) return `1****${digits.slice(-4)}`;
+  return v;
+}
+var bareBase64 = (v) => {
+  const at = v.indexOf("base64,");
+  return at >= 0 ? v.slice(at + "base64,".length) : v;
+};
+function sendOnce(deps, spec) {
+  const session = loadSession(deps.store);
+  const url = hostBase(deps, MCLOUD_HOST) + spec.path + (spec.query ? `?${spec.query}` : "");
+  const req = buildH5Request({
+    url,
+    method: spec.method,
+    body: spec.body,
+    contentType: spec.contentType,
+    referer: PRIZE_REFERER,
+    showLoading: SHOW_LOADING,
+    // ⚠ 逐接口：只有 `acceptPrizeV2` 实拍带 `isdeviceid: true`
+    isDeviceId: spec.isDeviceId ?? false,
+    saltKey: 1,
+    marketName: PRIZE_ACTIVITY,
+    session: session ? sessionHeaders(session) : {}
+  });
+  const res = callOnce(deps.transport, req);
+  if (res.setCookies.length > 0 && session !== null) {
+    saveSession(
+      deps.store,
+      { ...session, cookie: mergeCookieJar(session.cookie, res.setCookies) },
+      deps.nowIso
+    );
+  }
+  if (res.env?.code === 90001) throw new LoginExpiredError();
+  return res;
+}
+function prizeCodeText(code, msg) {
+  const raw = (msg ?? "").trim();
+  switch (code) {
+    case 0:
+      return "成功";
+    case 514:
+      return "滑块这道题没过 —— 再点一次「领取」，会换一道新题";
+    case -6:
+    case -7:
+      return "验证码不对，重新输一次";
+    case -8:
+      return "点太快了，等一会儿再试";
+    case 1001:
+      return "刚发过验证码 —— 等一分钟再发";
+    case 1002:
+      return "今天短信发到上限了，明天再领";
+    case 511:
+      return "移动云盘那边正忙，稍后再试";
+    case 1e3:
+      return "这件要去移动云盘页面里领";
+    case 10010013:
+      return "这件没中奖（未中奖）";
+    case 10010004:
+      return "这件已经过期了";
+    case 10010018:
+      return "这件已经被抢光了";
+    default:
+      return `移动云盘没领成（code ${code}${raw ? `：${raw}` : ""}）`;
+  }
+}
+function readListPage(deps, page) {
+  const res = sendOnce(deps, {
+    path: EP_PRIZE.list,
+    method: "GET",
+    query: `currPage=${page}&pageSize=${PRIZE_LIST_PAGE_SIZE}`
+  });
+  if (res.env === void 0) {
+    return { ok: false, note: res.error ?? "移动云盘没回应", records: [] };
+  }
+  if (res.env.code !== 0) {
+    return {
+      ok: false,
+      note: prizeCodeText(res.env.code, res.env.message),
+      records: []
+    };
+  }
+  const root = resultObject(res.env);
+  const records = root["result"];
+  if (!Array.isArray(records)) {
+    return {
+      ok: false,
+      note: `第 ${page} 页的响应里没有 result.result（形状变了？）`,
+      records: []
+    };
+  }
+  return {
+    ok: true,
+    records,
+    totalCount: num3(root["totalCount"]),
+    totalPages: num3(root["totalPages"])
+  };
+}
+function toItem(raw) {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
+  const o = raw;
+  const oidRaw = o["oId"] ?? o["oid"];
+  const oid = typeof oidRaw === "number" && Number.isFinite(oidRaw) ? String(oidRaw) : typeof oidRaw === "string" ? oidRaw.trim() : "";
+  const prizeId = num3(o["prizeId"]) ?? 0;
+  const name = str2(o["prizeName"]) ?? str2(o["name"]) ?? `奖品 ${prizeId}`;
+  const market = str2(o["marketname"]) ?? str2(o["market"]) ?? "";
+  const marketId = str2(o["marketid"]) ?? str2(o["marketName"]) ?? market;
+  const flag = num3(o["flag"]) ?? 0;
+  const item = {
+    oid,
+    prizeId,
+    name,
+    market,
+    marketId,
+    expireAt: str2(o["expireTime"]),
+    insertedAt: str2(o["insertTime"]),
+    phone: maskPhoneLike(str2(o["servNumber"])),
+    claimable: oid !== "" && prizeId > 0
+  };
+  return { item, flag };
+}
+function expireRank(item) {
+  const ms = item.expireAt === void 0 ? NaN : Date.parse(item.expireAt);
+  return Number.isFinite(ms) ? ms : Number.MAX_SAFE_INTEGER;
+}
+function readPendingPrizes(deps) {
+  const map = /* @__PURE__ */ new Map();
+  let scanned = 0;
+  let totalCount;
+  let hasMore = false;
+  let failed;
+  for (let page = 1; page <= PRIZE_LIST_MAX_PAGES; page += 1) {
+    const one = readListPage(deps, page);
+    if (!one.ok) {
+      const why = one.note ?? "未知原因";
+      failed = page === 1 ? why : `第 ${page} 页没读成：${why}`;
+      break;
+    }
+    scanned += one.records.length;
+    if (one.totalCount !== void 0) totalCount = one.totalCount;
+    for (const raw of one.records) {
+      const got = toItem(raw);
+      if (got === null || got.flag !== 1) continue;
+      const { item } = got;
+      const key = item.oid !== "" ? `o:${item.oid}` : `p:${item.prizeId}|${item.insertedAt ?? ""}`;
+      if (!map.has(key)) map.set(key, item);
+    }
+    const pages = one.totalPages;
+    const shortPage = one.records.length < PRIZE_LIST_PAGE_SIZE;
+    const lastPage = pages !== void 0 && page >= pages;
+    if (shortPage || lastPage) break;
+    if (page === PRIZE_LIST_MAX_PAGES) {
+      hasMore = totalCount !== void 0 ? scanned < totalCount : true;
+    }
+  }
+  const items = [...map.values()].sort((a, b) => {
+    const d = expireRank(a) - expireRank(b);
+    return d !== 0 ? d : a.prizeId - b.prizeId;
+  });
+  return {
+    items,
+    scanned,
+    ...totalCount !== void 0 ? { totalCount } : {},
+    hasMore,
+    ...failed !== void 0 ? { failed } : {}
+  };
+}
+function loadPrizeCache(store2) {
+  const raw = store2.getState(STATE_PRIZE_CACHE);
+  if (raw === null || raw === "") return null;
+  try {
+    const v = JSON.parse(raw);
+    if (typeof v !== "object" || v === null) return null;
+    const o = v;
+    const list = o["list"];
+    if (typeof o["atMs"] !== "number" || typeof list !== "object" || list === null) return null;
+    const l = list;
+    if (!Array.isArray(l["items"]) || typeof l["scanned"] !== "number") return null;
+    return { atMs: o["atMs"], list };
+  } catch {
+    return null;
+  }
+}
+function savePrizeCache(store2, list, nowMs, nowIso) {
+  store2.setState(STATE_PRIZE_CACHE, JSON.stringify({ atMs: nowMs, list }), nowIso);
+}
+function dropCachedPrize(store2, oid, nowIso) {
+  const cache = loadPrizeCache(store2);
+  if (cache === null) return;
+  const items = cache.list.items.filter((x) => x.oid !== oid);
+  if (items.length === cache.list.items.length) return;
+  savePrizeCache(store2, { ...cache.list, items }, cache.atMs, nowIso);
+}
+function loadClaimState(store2) {
+  const raw = store2.getState(STATE_PRIZE_CLAIM);
+  if (raw === null || raw === "") return null;
+  try {
+    const v = JSON.parse(raw);
+    if (typeof v !== "object" || v === null) return null;
+    const o = v;
+    if (typeof o["oid"] !== "string" || typeof o["sentAtMs"] !== "number") return null;
+    return {
+      oid: o["oid"],
+      prizeId: typeof o["prizeId"] === "number" ? o["prizeId"] : 0,
+      marketId: typeof o["marketId"] === "string" ? o["marketId"] : "",
+      name: typeof o["name"] === "string" ? o["name"] : "",
+      phone: typeof o["phone"] === "string" ? o["phone"] : void 0,
+      prizetype: typeof o["prizetype"] === "string" ? o["prizetype"] : void 0,
+      sentAtMs: o["sentAtMs"]
+    };
+  } catch {
+    return null;
+  }
+}
+function saveClaimState(store2, state, nowIso) {
+  store2.setState(STATE_PRIZE_CLAIM, JSON.stringify(state), nowIso);
+}
+function clearClaimState(store2, nowIso) {
+  store2.setState(STATE_PRIZE_CLAIM, "", nowIso);
+}
+function startPrizeClaim(deps, item, accountLabel = "") {
+  if (!item.claimable || item.oid === "") {
+    return { ok: false, note: "这一条没有单号（oId），领不了 —— 刷新列表再试" };
+  }
+  const session = loadSession(deps.store);
+  if (session === null || (session.jwt ?? "") === "") {
+    return { ok: false, note: "这个账号还没有网页会话 —— 去「账号」页重新登录一次" };
+  }
+  const nowMs = depsNowMs(deps);
+  const prev = loadClaimState(deps.store);
+  if (prev !== null && prev.oid === item.oid) {
+    const left = CLAIM_SMS_COOLDOWN_MS - (nowMs - prev.sentAtMs);
+    if (left > 0) {
+      return {
+        ok: false,
+        note: `刚发过验证码（${Math.round((nowMs - prev.sentAtMs) / 1e3)} 秒前），再等 ${Math.ceil(left / 1e3)} 秒`
+      };
+    }
+  }
+  const detail = sendOnce(deps, {
+    path: EP_PRIZE.detail,
+    method: "GET",
+    query: `marketId=${encodeURIComponent(item.marketId)}&prizeId=${encodeURIComponent(String(item.prizeId))}&drawRecode=${encodeURIComponent(item.oid)}`
+  });
+  if (detail.env === void 0) {
+    return { ok: false, note: detail.error ?? "移动云盘没回应（取奖品详情那一步）" };
+  }
+  if (detail.env.code !== 0) {
+    if (detail.env.code === 10010004 || detail.env.code === 10010018 || detail.env.code === 10010013) {
+      dropCachedPrize(deps.store, item.oid, deps.nowIso);
+    }
+    return { ok: false, note: prizeCodeText(detail.env.code, detail.env.message) };
+  }
+  const info = resultObject(detail.env);
+  if (num3(info["exchangeCode"]) === 2031) {
+    dropCachedPrize(deps.store, item.oid, deps.nowIso);
+    return { ok: false, note: "这件已经领过了（移动云盘说已兑换）—— 刷新一下列表" };
+  }
+  const ptRaw = info["prizetype"] ?? info["prizeType"];
+  const prizetype = typeof ptRaw === "number" && Number.isFinite(ptRaw) ? String(ptRaw) : str2(ptRaw);
+  const name = str2(info["prizename"]) ?? item.name;
+  const phone = item.phone ?? (accountLabel !== "" ? accountLabel : void 0);
+  const slide = sendOnce(deps, {
+    path: EP_PRIZE.slide,
+    method: "POST",
+    body: "{}",
+    contentType: "application/json"
+  });
+  if (slide.env === void 0) {
+    return { ok: false, note: slide.error ?? "移动云盘没回应（取滑块那一步）" };
+  }
+  if (slide.env.code !== 0) {
+    return { ok: false, note: prizeCodeText(slide.env.code, slide.env.message) };
+  }
+  const images = resultObject(slide.env);
+  const puzzle = str2(images["puzzle"]) ?? str2(images["puzzleImg"]);
+  const picture = str2(images["picture"]) ?? str2(images["pictureImg"]);
+  if (puzzle === void 0 || picture === void 0) {
+    return { ok: false, note: "滑块题面里没有两张图（形状变了？）—— 再点一次试试" };
+  }
+  const picWidth = num3(images["picWidth"]);
+  const puzzleWidth = num3(images["puzzleWidth"]);
+  let solution;
+  try {
+    solution = calcPuzzleOffset(bareBase64(puzzle), bareBase64(picture));
+  } catch (e) {
+    return {
+      ok: false,
+      note: `滑块底图解不开（${e instanceof Error ? e.message : String(e)}）—— 再点一次会换一道题`
+    };
+  }
+  if (!usable(solution)) {
+    return {
+      ok: false,
+      note: `滑块没算准（偏移 ${solution.offsetX}，置信度 ${solution.confidence.toFixed(2)}）—— 再点一次会换一道题；算不准就不发，别拿一次确定的失败去白耗`
+    };
+  }
+  if (picWidth !== void 0 && puzzleWidth !== void 0 && (solution.offsetX < 0 || solution.offsetX > picWidth - puzzleWidth)) {
+    return {
+      ok: false,
+      note: `滑块算出来的位置（${solution.offsetX}）超出可滑范围 —— 再点一次换一道题`
+    };
+  }
+  const oidNum = num3(item.oid);
+  const body = JSON.stringify({
+    oid: oidNum ?? item.oid,
+    puzzleOffset: solution.offsetX,
+    app: 0
+  });
+  const sms = sendOnce(deps, {
+    path: EP_PRIZE.sms,
+    method: "POST",
+    body,
+    contentType: "application/json"
+  });
+  if (sms.env === void 0) {
+    saveClaimState(
+      deps.store,
+      { oid: item.oid, prizeId: item.prizeId, marketId: item.marketId, name, phone, prizetype, sentAtMs: nowMs },
+      deps.nowIso
+    );
+    return {
+      ok: false,
+      unknown: true,
+      note: `没拿到回应（${sms.error ?? "网络"}）—— 短信可能已经发出去了：收到就直接填下面的验证码；没收到就等一分钟再点「重新发送」`,
+      phone,
+      name,
+      prizetype,
+      oid: item.oid,
+      at: nowMs
+    };
+  }
+  if (sms.env.code !== 0) {
+    return { ok: false, note: prizeCodeText(sms.env.code, sms.env.message) };
+  }
+  saveClaimState(
+    deps.store,
+    {
+      oid: item.oid,
+      prizeId: item.prizeId,
+      marketId: item.marketId,
+      name,
+      phone,
+      prizetype,
+      sentAtMs: nowMs
+    },
+    deps.nowIso
+  );
+  return {
+    ok: true,
+    note: `验证码已发到 ${phone ?? "这个账号绑定的手机"} —— 收到后填在里面` + (prizetype === "1028" || prizetype === "1029" ? "（这一件按原样提交，不做摘要）" : ""),
+    phone,
+    name,
+    prizetype,
+    oid: item.oid,
+    at: nowMs,
+    offset: solution.offsetX,
+    confidence: solution.confidence
+  };
+}
+function confirmPrizeClaim(deps, oid, code) {
+  const st = loadClaimState(deps.store);
+  if (st === null || st.oid !== oid) {
+    return { ok: false, note: "先点「领取」发验证码，再来填这一条" };
+  }
+  const nowMs = depsNowMs(deps);
+  if (nowMs - st.sentAtMs > CLAIM_STATE_TTL_MS) {
+    clearClaimState(deps.store, deps.nowIso);
+    return { ok: false, note: "这一单的验证码已经过期了 —— 重新点「领取」再发一次" };
+  }
+  const clean = code.trim();
+  if (clean === "") return { ok: false, note: "验证码没填" };
+  if (clean.length < 4 || clean.length > 8) {
+    return { ok: false, note: "验证码看起来不是 4–8 位，再核对一下" };
+  }
+  const session = loadSession(deps.store);
+  const deviceId = session?.deviceId ?? "";
+  if (deviceId === "") {
+    return {
+      ok: false,
+      note: "这份会话没有设备指纹（deviceId），领不了 —— 去「账号」页重新换一次票"
+    };
+  }
+  const plain = st.prizetype === "1028" || st.prizetype === "1029";
+  const smsCode = plain ? clean : md5Hex(clean);
+  const oidNum = num3(st.oid);
+  const body = JSON.stringify({
+    oid: oidNum ?? st.oid,
+    app: 0,
+    sendDefaultSms: true,
+    source: PRIZE_SOURCE,
+    smsCode,
+    deviceId
+  });
+  const res = sendOnce(deps, {
+    path: EP_PRIZE.accept,
+    method: "POST",
+    body,
+    contentType: "application/json",
+    isDeviceId: true
+  });
+  if (res.env === void 0) {
+    clearClaimState(deps.store, deps.nowIso);
+    return {
+      ok: false,
+      unknown: true,
+      note: `没拿到回应（${res.error ?? "网络"}）—— 这一单可能已经领到了：先点「刷新」看它还在不在，别急着再确认一次`
+    };
+  }
+  const env = res.env;
+  if (env.code === 0) {
+    clearClaimState(deps.store, deps.nowIso);
+    dropCachedPrize(deps.store, st.oid, deps.nowIso);
+    const result = str2(env.result);
+    return {
+      ok: true,
+      note: `已领取：${st.name}${result !== void 0 ? `（${result}）` : ""}`,
+      code: 0,
+      ...result !== void 0 ? { result } : {}
+    };
+  }
+  const code0 = env.code;
+  if (code0 === 514) {
+    clearClaimState(deps.store, deps.nowIso);
+  }
+  if (code0 === 10010004 || code0 === 10010018 || code0 === 10010013) {
+    clearClaimState(deps.store, deps.nowIso);
+    dropCachedPrize(deps.store, st.oid, deps.nowIso);
+  }
+  if (code0 === 1e3) {
+    const link = str2(env.result) ?? (typeof env.result === "object" && env.result !== null ? str2(env.result["url"]) : void 0);
+    return {
+      ok: false,
+      note: "这件要去移动云盘页面里领（不在这个号上直接发）",
+      code: code0,
+      ...link !== void 0 ? { link } : {}
+    };
+  }
+  return { ok: false, note: prizeCodeText(code0, env.message), code: code0 };
+}
+function ensurePrizeToken(deps) {
+  if (jwtFresh(deps.store, Date.now(), FALLBACK_RECIPE)) return { ok: true };
+  if (loadAuthRaw(deps.store) === "") return { ok: true };
+  const r = exchangeOnce(
+    {
+      store: deps.store,
+      transport: deps.transport,
+      nowIso: deps.nowIso,
+      baseUrl: deps.baseUrl
+    },
+    FALLBACK_RECIPE
+  );
+  return r.ok ? { ok: true } : { ok: false, note: r.note };
+}
+function withPrizeTokenGate(deps, run) {
+  return withTokenGate(
+    {
+      store: deps.store,
+      transport: deps.transport,
+      nowIso: deps.nowIso,
+      baseUrl: deps.baseUrl
+    },
+    run
+  );
+}
+
 // src/mcloud/beans.ts
 var LEDGER_AI_DOU = 1;
 var TYPE_ALL = 0;
@@ -10287,6 +11639,7 @@ function parseCloudRecords(result) {
 }
 function aggregateToday(records, nowMs) {
   let gained = 0;
+  let gainedCount = 0;
   let spent = 0;
   let count = 0;
   for (const r of records) {
@@ -10301,8 +11654,9 @@ function aggregateToday(records, nowMs) {
     count += 1;
     if (r.num >= 0) gained += r.num;
     else spent += -r.num;
+    if (r.num > 0) gainedCount += 1;
   }
-  return { net: gained - spent, gained, spent, count };
+  return { net: gained - spent, gained, gainedCount, spent, count };
 }
 function buildRecords(all, sinceMs, limit, truncated) {
   let recs = all.map((r) => ({
@@ -10569,15 +11923,31 @@ function readBackupState(one, nowIso) {
   try {
     const ex = JSON.parse(one.getState(STATE_EXPAND) ?? "null");
     if (ex === null || typeof ex !== "object") return null;
-    let enabled = typeof ex.curMonthBackup === "boolean" ? ex.curMonthBackup : void 0;
+    const month = nowIso.slice(0, 7);
+    const day0 = typeof ex.day === "string" ? ex.day : "";
+    const fresh0 = day0 === nowIso.slice(0, 10);
+    let enabled = fresh0 && typeof ex.curMonthBackup === "boolean" ? ex.curMonthBackup : void 0;
     const mb = JSON.parse(one.getState(STATE_MONTH_BACKUP) ?? "null");
-    if (mb !== null && mb.month === nowIso.slice(0, 7) && typeof mb.backup === "boolean") {
+    if (mb !== null && mb.month === month && typeof mb.backup === "boolean") {
       enabled = mb.backup;
     }
+    if (fresh0 && typeof ex.backupOn === "boolean") enabled = ex.backupOn;
+    const day = day0;
+    const fresh = fresh0;
+    let step = fresh && typeof ex.step === "string" ? ex.step : "";
+    let why = fresh && typeof ex.blockedWhy === "string" ? ex.blockedWhy : "";
+    if (step === "done" && enabled !== true) {
+      step = "blocked";
+      const snap = fresh && typeof ex.snapError === "string" ? ex.snapError : "";
+      if (why === "") why = snap === "" ? "旧状态没记原因" : `快照没建上：${snap}`;
+    }
     return {
-      step: typeof ex.step === "string" ? ex.step : "",
-      day: typeof ex.day === "string" ? ex.day : "",
-      enabled
+      // 旧状态（没写 day 的 / 跨天的）不算今天这一趟的进度。
+      step,
+      day,
+      enabled,
+      why,
+      stale: !fresh
     };
   } catch {
     return null;
@@ -10589,6 +11959,8 @@ function buildReadings(deps) {
   const view = accountsView(deps.store);
   return {
     at: nowIso,
+    // 界面右上角要印「跑的是哪一版」—— 用户排查时第一句就是这个。
+    version: PLUGIN_VERSION,
     account: {
       loggedIn: view.accounts.length > 0,
       current: view.current,
@@ -12642,6 +14014,208 @@ function mcloudRoutes(deps) {
             nowMs,
             error: e instanceof Error ? e.message : String(e)
           });
+        }
+      }
+    },
+    // ══════════════════════ 领奖（待领取奖品）══════════════════════
+    //
+    // 三件事分开三个路由：
+    //   GET  /prizes          —— 待领取清单（**只读**；旧口跨市场；按账号；60 秒缓存）
+    //   POST /prizes/claim    —— 详情 → 滑块（本地解）→ 发短信（**会发一条短信**）
+    //   POST /prizes/confirm  —— 验证码 → 真正领取（**写**）
+    //
+    // 为什么不在 `/readings` 里给：打开页面就要替每个账号翻三页上游，
+    // 而「待领取」不是每次都要看 —— 和「今日AI豆」同一个口径：**进这一页才取**。
+    // 为什么拆成 claim/confirm 而不是一个路由：中间那一步的**等待由用户决定**
+    // （手机收短信、抄验证码），和登录那条链同一个理由。
+    {
+      path: `${base}/prizes`,
+      method: "GET",
+      // 翻最多 3 页 × 100 条 + 可能的当场续票（到期主动一轮 / 90001 被动两轮）。
+      budget_ms: 9e4,
+      handler: (req) => {
+        const q = parseQuery(req.query ?? "");
+        const wanted = (q["account"] ?? "").trim();
+        const refresh = q["refresh"] === "1";
+        const accounts = loadAccounts(deps.store);
+        const cur = currentAccount(deps.store);
+        const view = accounts.map((a) => ({
+          id: a.id,
+          label: maskPhoneLike(a.label) ?? a.label,
+          current: cur !== void 0 && cur.id === a.id,
+          disabled: a.disabled === true
+        }));
+        const found = wanted === "" ? cur !== void 0 && cur.disabled !== true ? cur : accounts.find((a) => a.disabled !== true) : accounts.find((a) => a.id === wanted);
+        if (wanted !== "" && found === void 0) {
+          return json(400, { error: `列表里没有这个账号：${wanted}` });
+        }
+        if (found === void 0) {
+          return json(200, {
+            ok: true,
+            accounts: view,
+            account: null,
+            nowMs: Date.parse(deps.now()),
+            cached: false,
+            pending: 0,
+            scanned: 0,
+            hasMore: false,
+            items: [],
+            noAccount: true
+          });
+        }
+        const nowIso = deps.now();
+        const nowMs = Date.parse(nowIso);
+        const one = scoped(rawStoreOf(deps.store), found.id);
+        const who = maskPhoneLike(found.label) ?? found.label;
+        const prizeDeps = {
+          store: one,
+          transport: deps.transport,
+          nowIso,
+          baseUrl: loadBaseUrl(deps.store),
+          nowMs: () => Date.parse(deps.now())
+        };
+        const cache = refresh ? null : loadPrizeCache(one);
+        let list;
+        let cached = false;
+        if (cache !== null && nowMs - cache.atMs < PRIZE_CACHE_TTL_MS) {
+          list = cache.list;
+          cached = true;
+        } else {
+          try {
+            list = withPrizeTokenGate(prizeDeps, () => readPendingPrizes(prizeDeps));
+            savePrizeCache(one, list, nowMs, nowIso);
+            deps.log(
+              `领奖：${who} 读到 ${list.items.length} 件待领取（共翻到 ${list.scanned} 条记录${list.failed === void 0 ? "" : `；${list.failed}`}）`
+            );
+          } catch (e) {
+            list = {
+              items: [],
+              scanned: 0,
+              hasMore: false,
+              failed: e instanceof Error ? e.message : String(e)
+            };
+          }
+        }
+        return json(200, {
+          ok: true,
+          accounts: view,
+          account: { id: found.id, label: maskPhoneLike(found.label) ?? found.label },
+          nowMs,
+          cached,
+          pending: list.items.length,
+          scanned: list.scanned,
+          hasMore: list.hasMore === true,
+          ...list.totalCount !== void 0 ? { totalCount: list.totalCount } : {},
+          items: list.items,
+          ...list.failed !== void 0 ? { failed: list.failed } : {}
+        });
+      }
+    },
+    {
+      // 第一段：读详情 → 取滑块题面（本地解偏移）→ 发验证码短信。
+      //
+      // ⚠ 这一枪**会真的发一条短信**（到账号绑定的手机）。所以只有用户点了
+      //   「领取」才会走到这里；同一件 60 秒内不重发（本地闸，别让上游回 1001）。
+      path: `${base}/prizes/claim`,
+      method: "POST",
+      // 详情一发 + 题面一发 + 发码一发，再加"当场续票"与本地解图（JPEG 680×400）。
+      budget_ms: 12e4,
+      handler: (req) => {
+        const b = readBody(req);
+        const id = typeof b["account"] === "string" ? b["account"] : "";
+        const oidRaw = b["oid"];
+        const oid = typeof oidRaw === "string" ? oidRaw.trim() : typeof oidRaw === "number" && Number.isFinite(oidRaw) ? String(oidRaw) : "";
+        const accounts = loadAccounts(deps.store);
+        const found = id === "" ? currentAccount(deps.store) : accounts.find((a) => a.id === id);
+        if (found === void 0) {
+          return json(400, { error: id === "" ? "还没有账号 —— 去「账号」页加一个" : `列表里没有这个账号：${id}` });
+        }
+        if (oid === "") return json(400, { error: "要带一个 oid（领哪一件）" });
+        const one = scoped(rawStoreOf(deps.store), found.id);
+        const nowIso = deps.now();
+        const prizeDeps = {
+          store: one,
+          transport: deps.transport,
+          nowIso,
+          baseUrl: loadBaseUrl(deps.store),
+          nowMs: () => Date.parse(deps.now())
+        };
+        const cache = loadPrizeCache(one);
+        const item = cache?.list.items.find((x) => x.oid === oid);
+        if (item === void 0) {
+          return json(400, { error: "列表里没有这一件 —— 先点「刷新」再点一次「领取」" });
+        }
+        const who = maskPhoneLike(found.label) ?? found.label;
+        const pre = ensurePrizeToken(prizeDeps);
+        if (!pre.ok) {
+          return json(200, {
+            ok: false,
+            note: pre.note ?? "登录信息需要换一次 —— 去「账号」页点一下刷新，再回来领"
+          });
+        }
+        try {
+          const r = startPrizeClaim(prizeDeps, item, who);
+          deps.log(`领奖：${who} · ${item.name} —— ${r.note}`);
+          return json(200, { ...r, at: r.at ?? Date.parse(nowIso) });
+        } catch (e) {
+          const note2 = e instanceof LoginExpiredError ? "登录信息过期了 —— 去「账号」页重新登录一次再试（这一枪没有发出去）" : e instanceof Error ? e.message : String(e);
+          deps.log(`领奖：${who} · ${item.name} —— ${note2}`);
+          return json(200, { ok: false, note: note2 });
+        }
+      }
+    },
+    {
+      // 第二段：提交验证码，真正领取。
+      //
+      // ⚠ 状态来自上一步落的那一单（`mcloud.prizes.claim`）：没发过短信就不许确认
+      //   —— 否则拿旧单/别人的单去撞，只会换回一个看不懂的错误码。
+      path: `${base}/prizes/confirm`,
+      method: "POST",
+      // 一发写请求 + 可能的当场续票；不重试写这一枪（没有幂等键，重试由用户决定）。
+      budget_ms: 6e4,
+      handler: (req) => {
+        const b = readBody(req);
+        const id = typeof b["account"] === "string" ? b["account"] : "";
+        const oidRaw = b["oid"];
+        const oid = typeof oidRaw === "string" ? oidRaw.trim() : typeof oidRaw === "number" && Number.isFinite(oidRaw) ? String(oidRaw) : "";
+        const codeRaw = b["code"];
+        const code = typeof codeRaw === "string" ? codeRaw : typeof codeRaw === "number" && Number.isFinite(codeRaw) ? String(codeRaw) : "";
+        const accounts = loadAccounts(deps.store);
+        const found = id === "" ? currentAccount(deps.store) : accounts.find((a) => a.id === id);
+        if (found === void 0) {
+          return json(400, { error: id === "" ? "还没有账号 —— 去「账号」页加一个" : `列表里没有这个账号：${id}` });
+        }
+        if (oid === "") return json(400, { error: "要带一个 oid（领哪一件）" });
+        if (code.trim() === "") return json(400, { error: "验证码没填" });
+        const one = scoped(rawStoreOf(deps.store), found.id);
+        const nowIso = deps.now();
+        const pendingClaim = loadClaimState(one);
+        if (pendingClaim === null || pendingClaim.oid !== oid) {
+          return json(400, { error: "先点「领取」发验证码，再来填这一条" });
+        }
+        const prizeDeps = {
+          store: one,
+          transport: deps.transport,
+          nowIso,
+          baseUrl: loadBaseUrl(deps.store),
+          nowMs: () => Date.parse(deps.now())
+        };
+        const who = maskPhoneLike(found.label) ?? found.label;
+        const pre = ensurePrizeToken(prizeDeps);
+        if (!pre.ok) {
+          return json(200, {
+            ok: false,
+            note: pre.note ?? "登录信息需要换一次 —— 去「账号」页点一下刷新，再回来确认"
+          });
+        }
+        try {
+          const r = confirmPrizeClaim(prizeDeps, oid, code);
+          deps.log(`领奖：${who} · ${r.ok ? r.note : `没成（${r.note}）`}`);
+          return json(200, r);
+        } catch (e) {
+          const note2 = e instanceof LoginExpiredError ? "登录信息过期了 —— 去「账号」页重新登录一次再试（这一枪没有发出去）" : e instanceof Error ? e.message : String(e);
+          deps.log(`领奖：${who} · 确认失败 —— ${note2}`);
+          return json(200, { ok: false, note: note2 });
         }
       }
     }

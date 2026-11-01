@@ -6789,3 +6789,149 @@ AI豆快照：流水 0 条
 - 手动贴了口令（`manual`）不受影响：那本来就不看门，照常按账号领。
 
 钉住它的用例：`test/webui.test.ts` 的「直播没开始就整趟跳过」。
+
+## F-118 · 「本月备份：未开启（任务拓展：已完成）」—— 状态机的 done 是"步骤走完"，不是"目标达成"（2026-11-01）
+
+用户口径（原话）：
+
+> 「排除 本月备份：未开启（任务拓展：已完成） 。注意账号隔离，任务隔离，
+> 不然没办法逐步判断和修复」
+
+数据页那一行是 `readBackupState()` 拼的：前半截来自按月的 `mcloud.month.backup`，
+后半截来自**每日**的 `mcloud.taskexpansion.state.step`。现场（三个号都一样）：
+
+| 键 | 值 |
+| --- | --- |
+| `taskexpansion.state` | `step: done` / `day: 2026-11-01` / `curMonthBackup: false` / `snapError: createSnapshot 失败：code=04000003` |
+| `month.backup` | `{ month: "2026-11", backup: false }` |
+
+也就是：快照那一枪被上游打回，链却照样收尾成 `done` —— 因为 `done` 的含义是
+**状态机的步骤走完了**，不是**备份真的开了**。而 `done` 又是"今天这一趟已经走完"
+的挡箭牌，于是这一整天（以及之后的每一天）都不会再试。
+
+三处一起改：
+
+1. **收尾判据换成复查读数**（`taskExpansion.ts::verdictOf`）：
+   复查读到 `true` ⇒ `done`；读到 `false` ⇒ `blocked`；读不到 ⇒ `unknown`。
+   后两档**不是**完成标记（Auto 当天不再重跑，手动「现在跑一次」可以再来一次）。
+   收尾那句也先说结论：「备份仍未开启 —— 凑过一次备份，重读仍是「未开启」；
+   快照没建上：createSnapshot 失败：code=04000003」。
+2. **任务隔离**：上传那台状态机原来只有一格 `mcloud.upload.state`，
+   `task-expansion`（备份支）与 `app-task`（手动上传支）**共用一格游标**，
+   而 `uploadDone()` 只问"这格是不是 done" ⇒ 两条任务互相把对方传完的文件
+   当成自己传完了（现场：三个号的格子里都是 App 任务的 `asign-*.bin`，
+   而任务拓展记的是另一个 fileId）。现在任务拓展用 `mcloud.upload.state.expansion`
+   （账号那一维仍由 `scoped()` 管）。
+3. **读数层兜最后一道**：`readBackupState()` 只在 `day` 是今天时给 `step`
+   （昨天的"已完成"不许摆到今天），并且**旧状态**里 `done + 备份 false` 也改写成
+   `blocked` 并把 `snapError` 带出来 —— 库里已经写下的那些谎不会自己变，
+   这一道让它们**立刻**不再显示成"已完成"（不用等到明天）。
+
+另外补了"动作与复查之间的间隔"：快照确认后先进 `wait`（缺省 5 秒，
+`settleMs` 可覆盖），再复查 —— 参考实现是 20 秒（`backup_wait_secs || 20`）。
+
+钉住它的用例：`test/taskExpansion.test.ts` 14 项（`done` 看目标 / 快照失败 ⇒ blocked /
+任务隔离 / 账号隔离 / blocked 当天 Auto 不重试但手动可重试 / 等待那一步）、
+`test/matrixAccount.test.ts` 的「跨天的「已完成」不许摆到今天；没成要说清原因」。
+
+⚠ **还没解的那一格**：`createSnapshot` 回 `04000003`。抓包那一套（`app-album-backup-samples.txt` §6）
+25 枚头里有 `x-yun-client-info`，而我们的 `snapshotHeaders()` 没有发它；
+`mcloud-back` 的三趟活体探针（`docs/status.md` 里的 04000003）给的方向是
+"这一族只认 `x-yun-client-info` 的**值**，且网盘侧那一串（`CLIENT_INFO_ANDROID`）是通的那一个"。
+下一轮先只加这一枚再真跑一次，别和其它改动混在一起 —— 这就是"逐步判断"。
+
+### 补记（同日 13:40，用户一句话纠正）
+
+用户原话：**「备份有自动完成啊」**。查库确认他是对的：`测试`（19142492716）的
+`month.backup` 已经是 `true`、`taskexpansion.state` 是 `{step: done, backupOn: true}` ——
+而它的 `snapError: createSnapshot 失败：code=04000003` 从来没修过。
+
+⇒ **快照不是这条路的关键**：备份支那次**上传**（`op=backup`）发出去之后，上游自己
+记账（现场：12:52 传完读到 `false`，13:40 再读就是 `true`，中间没人做任何事）。
+所以我上一轮那句「去 App 里把「自动备份」打开」是**错的建议**，已经改掉。
+
+由此改了两处：
+
+- `blocked`/`unknown` **不再是"今天不再看"**：自动那趟改走**只读复查**
+  （`retryMode: 'recheck'`，一个 GET，不再传文件）；翻成 `true` 就记 `done`。
+  复查没翻也只算"还没记账"（`skipped`，不染红）—— 当天第一次已经如实报过没成了。
+- 复查那一趟**不许再删一次**那个文件（`cleanupDone`）：同一个 fileId 再 trash
+  会被回"文件不存在"，把一次干净的复查染成失败。
+
+## F-119 · 「本次运行」按钮永远印「跟随自动」：label 的 id 是拼错的（2026-11-01）
+
+用户截图（第七十六轮）：**本次运行：跟随自动**，展开面板里却只有 **测试** 打勾。
+
+根因在 `PICKERS` 那张表 + 一行 `setText`：
+
+```js
+setText(`${cfg.key}-acct-label`, …)   // manual 的 key 是 daily-manual ⇒ daily-manual-acct-label
+```
+
+而 HTML 里那两个元素叫 `daily-manual-label` / `live-manual-label`（没有 `-acct-`）。
+`setText` 找不到元素就**静默不写** ⇒ 按钮停在 HTML 的默认文案「跟随自动」，
+而实际的 `mcloud.task.accounts.日常.manual` 是 `{follow:false, ids:[测试]}`。
+
+这正好卡在用户那句「不然没办法逐步判断和修复」上：**看不出一趟要跑谁**。
+改成每个 picker 显式写 `label: 'daily-manual-label'`，并加了一条静态断言
+（`test/webui.test.ts`：不许再按 key 拼 label 的 id + 两个 id 必须在 HTML 里存在）。
+
+## F-120 · App 任务「一堆没做成功」：一条没成把整趟掐了（2026-11-01）
+
+现场：三个账号 11 月 1 日的日常都是同一条 ——
+
+```
+App 任务：第 10 步失败 —— AI 对话没取到输出（events=1）。下一条 #604（「去云盘图书馆阅读书籍」）
+```
+
+而矩阵里 `已完成 0 条`。看着像"十五条都没搬"，实际是**第 10 步那条 #609 把整趟停了**：
+`aiChat` 那一步 `ok = res.ok && events>0 && text!==''`，回 `ok:false` ⇒ `drain` 见 `!ok && !pending`
+就收工 —— 后面每一条都没机会做。而它**已经**在下一条之前的同一个函数里 `advance` 过了。
+
+参考实现的口径（`mcloud/crates/mcloud-tasks/src/app_task.rs` 的逐条循环）：某一条动作失败只是
+`continue` 下一条；整趟只有「取消」才停。AI 那一条"没回话"更是**只记一条 note**
+（`runners.rs:451-471`，`acted=false`），成败交给收尾的复查。
+
+改了三处：
+
+1. **逐条隔离**：`appTask.ts` 里 14 处 `return {ok:false}` 改成 `itemFailed()` —— 记进
+   `state.failed`（带原因）、换下一条、返回 `ok:true`；收尾时如实报出"N 条没做成（#609 …）"，
+   并进 `unconfirmed` 让下一趟重试（**不封顶**）。
+2. **AI 对话不再判死**：没回话只记 note；`parseSse` 顺手带出信封里的 `code`/`message`
+   （以前只能说 `events=1`，说不出为什么）。
+3. **顺序照参考实现**：待办按 taskId 升序，**434 排最后**（`app_task.rs:1727-1731`）——
+   434 的 id 比 106/522 都小，不挪的话它永远排在"传文件"前面，每次都"没有可分享的文件"。
+
+另外补了 `1075 和AI助手对话 ⇒ aiAssistant`（609 的别名，先例 `1028|1057`、`585|618`）。
+
+逐条台账见 `docs/app-task-ids.md`（哪条真发请求、哪条刻意不发、哪条还没搬）。
+
+## F-122 凭据过期时 `taskListV3` 回一份 200 的「游客清单」（读数会被盖成全零）
+
+2026-11-01 15:0x 自测时发现：用**过期会话**的账号袋读矩阵，三个号读出来的东西**一模一样**
+（同样的 19/20 条、全部 `·0`）。当时差点当成"服务端把任务清零了"，一查才明白：
+
+```
+POST /ycloud/signin/task/taskListV3
+→ 200 {"code":0,"msg":"success","result":[{…20 条全 WAIT…}]}
+```
+
+**`code:0` + 200**，没有任何"未登录"的信号。照单收下就把好读数覆盖成"一条都没做"。
+
+**已加的闸**：`runAppTaskMatrix` 先看 `jwtExpiry` —— 过期就**一个请求都不发**，回
+`凭据已过期（…）—— 先「刷新/重新导入」再读任务清单`（`test/appTaskMatrix.test.ts` 钉住）。
+这样至少不会静默把界面刷成灰的。
+
+⚠ 没解决的部分：如果上游**提前踢人**（jwt 还没到期但会话已失效），这道闸拦不住——
+那一路仍然会拿到游客清单。判别方法：三个号读数**完全一样**且全是 0 ⇒ 八成是这个。
+
+## F-123 `buildPutRequest` 的 op 码与 create 不同档（**存疑，未改**）
+
+评审 2026-11-01 指出：同一条上传链上 `create` 发 `x-yun-op-type/x-yun-sub-op-type = 1/100`
+（`androidOpCodes('upload')`），而紧接着的 `PUT` 发 **`2/200`**；备份支更悬：create `2/200`、
+PUT `0/0`（= 快照档）。参考实现 `app_cloud_upload.rs:197-204` 的 `upload_put_request_with_op`
+用的是**同一套** `android_op_codes`。
+
+**为什么没改**：这条链在真机上是**通的**（备份支这几个月一直在传、`curMonthBackup` 会翻），
+说明上游对 PUT 这枚头并不较真；而"改了会不会坏"没有样本。按纪律：**一次只改一样、改动要有
+实测支撑** —— 所以先记在这里，等哪天有独立的上传探针能把两档都跑一遍再定。

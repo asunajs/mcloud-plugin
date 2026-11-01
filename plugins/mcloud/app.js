@@ -1,8 +1,9 @@
-// 界面逻辑：**只调一个读数接口**，把七个区块画出来。
+// 界面逻辑：**一个读数接口画主体**，把六个区块画出来。
 //
 // # 三条设计约束（与 index.html 的文件头是同一件事，这里说的是怎么落实）
 //
-// ① **一次调用画全部**。`/plugins/mcloud/api/readings` 一次给全七个区块的读数。
+// ① **一次调用画全部**。`/plugins/mcloud/api/readings` 一次给全六个区块的主体读数
+//    （AI豆 / 领奖 这两格是"进这一页才自己取"的，见各自那一节的模块头）。
 //    旧版是一个区块一个接口，于是每块各有各的加载/错误状态 —— 用户看到
 //    「有的块有数、有的块空着、有的块报错」，而没人知道该看哪个。
 //    现在只有两种状态：**有读数** 或者 **一次都没读到**（一个错误信息）。
@@ -317,7 +318,7 @@ function paintList(id, rows, emptyText) {
     .join('');
 }
 
-// ──────────────────────────────────────────────────────────── 七个区块
+// ──────────────────────────────────────────────────────────── 六个区块
 
 /** 登录那一节。三种方式各自的状态由**路由**推，界面只负责显示与触发。 */
 function renderLogin(l) {
@@ -1868,17 +1869,33 @@ const BACKUP_STEP_TEXT = {
   'snapshot-create': '正在建快照',
   'snapshot-put': '正在写快照',
   'snapshot-complete': '正在完成快照',
+  wait: '等移动云盘记账',
   recheck: '正在复查',
   cleanup: '正在清理',
   done: '已完成',
+  // ⚠ 这两档**不是**完成：`done` 只在复查**读到**备份已开启时成立
+  //   （见 tasks/taskExpansion.ts 的 verdictOf）。写成"已完成"就是那句
+  //   「本月备份：未开启（任务拓展：已完成）」自相矛盾的来源。
+  blocked: '没成',
+  unknown: '判不了',
 };
+
+/** 一句话截短（这一行是"看的是哪个号"的副标题，不是运行记录的详情）。 */
+function shortWhy(text, max) {
+  const t = String(text || '').trim();
+  return t.length > max ? `${t.slice(0, max)}…` : t;
+}
 
 function paintMatrixLine(label, groups, backup) {
   const read = (groups || []).filter((g) => g.reading).length;
   const b =
     backup && typeof backup.enabled === 'boolean'
       ? ` · 本月备份：${backup.enabled ? '已开启' : '未开启'}${
-          backup.step ? `（任务拓展：${BACKUP_STEP_TEXT[backup.step] || backup.step}）` : ''
+          backup.step
+            ? `（任务拓展：${BACKUP_STEP_TEXT[backup.step] || backup.step}${
+                backup.why ? ` —— ${shortWhy(backup.why, 60)}` : ''
+              }）`
+            : ''
         }`
       : '';
   setText(
@@ -2151,6 +2168,585 @@ $('beans-list').addEventListener('click', (ev) => {
   void openBeansDetail(det.dataset.beansDetail, 1);
 });
 
+// ══════════════ 领奖（待领取 → 领取 → 短信验证码） ══════════════
+//
+// # 三步，一下一个动作
+//
+//   ① 选账号 → `GET /prizes`（进这一块**自己读一次**，跟「数据」那一格同一条理由：
+//      待领取是"每账号一本账、只读"，塞进 `/readings` 等于开页面就先打一圈）
+//   ② 点「领取」 → 打开弹窗 → **自动** `POST /prizes/claim`（发短信）
+//   ③ 填验证码 → `POST /prizes/confirm`
+//
+// ⚠ 界面上**没有**滑块图，也**没有**「输入偏移量 / 像素」这种格子 —— 那几条像素
+//   人眼分不出来，让用户填等于让他猜。滑块是后端自己解的，前端只等短信。
+//
+// ⚠ 三个接口的失败形状不一样，别只看 HTTP 状态：
+//   · `GET /prizes` 读失败是 **200 + `failed`** ⇒ 照常渲染，写「读不到 —— 原因」；
+//   · `claim` / `confirm` 业务失败是 **200 + `{ok:false, note}`** ⇒ 不 throw；
+//   · 只有"账号不存在 / 没先发短信"才是 400 + `{error}` ⇒ `call()` 会 throw。
+
+/** `GET /prizes` 那一趟的读数（null = 还没取）。 */
+let prizesNow = null;
+/** 当前看的账号（'' = 还没选，第一趟交给后端用当前账号）。 */
+let prizesAccountId = '';
+/** 取数序号：切账号时上一趟可能回来得更晚，不许它盖掉新的。 */
+let prizeFetchSeq = 0;
+/** 弹窗里正在领的那一件。 */
+let prizeDialogOid = '';
+let prizeDialogName = '';
+/** 每开/关一次弹窗就 +1：晚回来的请求不许再动界面（用户可能已经关了或换了号）。 */
+let prizeDialogSeq = 0;
+/** 「重新发送」的倒计时。关弹窗 / 切账号必须清掉（否则它会在后台一直跑）。 */
+let prizeResendTimer = null;
+
+/** 这个号叫啥（接口给的 `label` 已经脱敏，直接显示）。 */
+function prizeLabelOf(id) {
+  const sel = $('prize-account');
+  if (sel) {
+    for (const opt of Array.from(sel.options)) {
+      if (opt.value === id) return opt.textContent || id;
+    }
+  }
+  // 下拉还没画出来的那一瞬间（或者这个号不在列表里）：退回读数里那一份。
+  const r = prizesNow;
+  if (r && r.account && r.account.id === id) return r.account.label || id;
+  return id || '这个号';
+}
+
+/** 过期时间说人话：今年就写「过期 10-31 23:59」，跨年才带年份；没有就直说。 */
+function prizeExpireText(iso) {
+  if (!iso) return '没过期时间';
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return '没过期时间';
+  const d = new Date(t);
+  const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  const md = `${d.getMonth() + 1}-${d.getDate()}`;
+  const day = d.getFullYear() === new Date().getFullYear() ? md : `${d.getFullYear()}-${md}`;
+  return `过期 ${day} ${hm}`;
+}
+
+/** 账号下拉：列表与选中项都以接口回来的 `accounts` 为准（它是唯一来源）。
+ *
+ *  ⚠ 还没取到读数时（`prizesNow === null`）**不许**写「还没有账号」：那时
+ *  "有没有账号"根本还不知道，写了会让刚切过来的用户以为自己的号没了。
+ *  那时下拉禁用 + 写「正在读…」；「还没有账号」只在取到了读数、确实空着时才写。 */
+function fillPrizeAccounts(accounts, current) {
+  const sel = $('prize-account');
+  if (!sel) return;
+  if (prizesNow === null) {
+    sel.disabled = true;
+    sel.innerHTML = '<option value="">正在读…</option>';
+    return;
+  }
+  const list = accounts || [];
+  if (prizesAccountId === '' || !list.some((a) => a.id === prizesAccountId)) {
+    prizesAccountId = current || (list[0] ? list[0].id : '');
+  }
+  sel.disabled = list.length === 0;
+  sel.innerHTML =
+    list.length === 0
+      ? '<option value="">还没有账号</option>'
+      : list
+          .map(
+            (a) =>
+              `<option value="${esc(a.id)}"${a.id === prizesAccountId ? ' selected' : ''}>${esc(a.label || a.id)}</option>`,
+          )
+          .join('');
+}
+
+/** 第一行回答"有几件要领"。
+ *
+ *  ⚠ `failed` 可能**与 items 同时出现**（后面几页没读成、第一页已经有货）：
+ *  这时按 items 本来有几件说，别把已有的货一起说成"没读到"。 */
+function paintPrizeHero() {
+  const r = prizesNow;
+  if (r === null) {
+    setText('prize-hero', '…');
+    return;
+  }
+  const items = r.items || [];
+  // 一件都没读到、又确实读挂了 ⇒ 直说不知道有几件。
+  if (r.failed && items.length === 0) {
+    setText('prize-hero', '没读到有几件要领');
+    return;
+  }
+  const accounts = r.accounts || [];
+  if (r.noAccount === true || accounts.length === 0) {
+    setText('prize-hero', '还没选账号');
+    return;
+  }
+  const n = r.failed
+    ? items.length
+    : typeof r.pending === 'number'
+      ? r.pending
+      : items.length;
+  setText('prize-hero', n === 0 ? '没有待领取的' : `${n} 件待领取`);
+}
+
+/** 第二行：这一步会往哪个号发短信。 */
+function paintPrizeSub() {
+  const r = prizesNow;
+  if (r === null) {
+    setText('prize-sub', '点「领取」会发一条短信验证码到这个号上，收到后填进来就能领到。');
+    return;
+  }
+  const accounts = r.accounts || [];
+  // ⚠ 读挂了不等于"没有账号"：那时不写「还没有账号」（同 `fillPrizeAccounts` 那条理由）。
+  if (accounts.length === 0 && !r.failed) {
+    setText('prize-sub', '还没有账号 —— 先去「账号」页加一个，回来这里就能领。');
+    return;
+  }
+  const label = prizesAccountId
+    ? prizeLabelOf(prizesAccountId)
+    : (r.account && (r.account.label || r.account.id)) || '';
+  setText(
+    'prize-sub',
+    label
+      ? `点「领取」会发一条短信验证码到 ${label} 上，收到后填进来就能领到。`
+      : '点「领取」会发一条短信验证码到这个号上，收到后填进来就能领到。',
+  );
+}
+
+/** 卡片标题下面那一行：读到时间 / 缓存 / 共扫了多少条。
+ *
+ *  ⚠ `failed` 与 `items` 同时出现时（后面几页没读成）这句**照常写**，只在末尾补一句
+ *  「后几页没读到」—— 把已有的读数整句换成"读不到"等于把读成功的半份也丢了。 */
+function paintPrizeLine() {
+  const r = prizesNow;
+  if (r === null) {
+    setText('prize-line', '正在读…');
+    return;
+  }
+  if (r.failed && (r.items || []).length === 0) {
+    setText('prize-line', `读不到 —— ${r.failed}（点「刷新」再试）`);
+    return;
+  }
+  const bits = [];
+  if (typeof r.nowMs === 'number') bits.push(`读到 ${when(new Date(r.nowMs).toISOString())}`);
+  if (typeof r.pending === 'number') bits.push(`待领取 ${r.pending} 件`);
+  if (typeof r.scanned === 'number') bits.push(`共扫了 ${r.scanned} 条`);
+  bits.push(r.cached === true ? '来自缓存（点「刷新」强取一次）' : '刚从移动云盘读的');
+  // 撞了翻页/条数上限：说清"这一份不全"，别让上面的件数看着像全部
+  // （与「AI豆」明细那一句同一个说法）。
+  if (r.hasMore === true) bits.push('这一份不全（撞了翻页或条数上限）');
+  let line = bits.join(' · ');
+  if (r.failed) line += `（后几页没读到：${r.failed}）`;
+  setText('prize-line', line);
+}
+
+/** 列表：一行一件，右边一个「领取」。 */
+function paintPrizeList() {
+  const ul = $('prize-list');
+  if (!ul) return;
+  const r = prizesNow;
+  if (r === null) {
+    ul.innerHTML = '<li class="empty">正在读…</li>';
+    return;
+  }
+  const items = r.items || [];
+  // ⚠ `failed` 与 `items` 可能同时出现（后面几页没读成、第一页已经有货）：
+  //   有货就**照常列出来**，只在上面那行说明后几页没读到；一件都没有时才写"读不到"。
+  if (items.length === 0) {
+    if (r.failed) {
+      ul.innerHTML = `<li class="empty">读不到 —— ${esc(r.failed)}（点「刷新」再试）</li>`;
+      return;
+    }
+    const accounts = r.accounts || [];
+    if (r.noAccount === true || accounts.length === 0) {
+      ul.innerHTML = '<li class="empty">还没有账号 —— 去「账号」页加一个</li>';
+      return;
+    }
+    ul.innerHTML = '<li class="empty">没有待领取的东西</li>';
+    return;
+  }
+  ul.innerHTML = items
+    .map((x) => {
+      const sub = [x.market, prizeExpireText(x.expireAt), x.phone]
+        .filter((v) => v !== undefined && v !== null && v !== '')
+        .join(' · ');
+      // 没有单号（oId）的那一条领不了：按钮禁用并说清原因，别让用户点了才被拒
+      const can = x.claimable !== false && x.oid !== '';
+      const btn = can
+        ? `<button class="btn primary" type="button" data-prize-oid="${esc(x.oid)}">领取</button>`
+        : '<button class="btn" type="button" disabled title="这一条没有单号">领不了</button>';
+      return (
+        `<li class="item"><div class="item-main">` +
+        `<span class="item-t"><b>${esc(x.name || '这件奖品')}</b></span>` +
+        `<span class="item-s">${esc(sub)}</span>` +
+        `</div><div class="item-r">` +
+        btn +
+        `</div></li>`
+      );
+    })
+    .join('');
+}
+
+/** 整张卡一起画。 */
+function paintPrizeAll() {
+  const r = prizesNow;
+  fillPrizeAccounts((r && r.accounts) || [], (r && r.account && r.account.id) || '');
+  paintPrizeHero();
+  paintPrizeSub();
+  paintPrizeLine();
+  paintPrizeList();
+}
+
+/** 取一次待领取（只取，不画）。读失败也**不抛** —— 落到 `failed` 上让界面说人话。 */
+async function fetchPrizes(force = false) {
+  const id = prizesAccountId || ($('prize-account') ? $('prize-account').value : '');
+  const q = [];
+  if (id) q.push(`account=${encodeURIComponent(id)}`);
+  if (force) q.push('refresh=1');
+  try {
+    return await api(`/prizes${q.length > 0 ? `?${q.join('&')}` : ''}`);
+  } catch (e) {
+    const prev = prizesNow || {};
+    return {
+      ok: false,
+      accounts: prev.accounts || [],
+      account: prev.account || null,
+      items: [],
+      failed: String(e && e.message ? e.message : e),
+    };
+  }
+}
+
+/** 取一次并画出来（进这一块自动取、点「刷新」、切账号都走这一条）。 */
+async function loadPrizes(force = false, btn = null) {
+  const seq = ++prizeFetchSeq;
+  const target = btn || $('prize-refresh');
+  const sel = $('prize-account');
+  if (target) {
+    target.disabled = true;
+    target.textContent = '正在读…';
+  }
+  if (sel) sel.disabled = true;
+  if (prizesNow === null) {
+    paintPrizeLine();
+    paintPrizeList();
+  }
+  const r = await fetchPrizes(force);
+  // 有更新的一趟在跑 ⇒ 这一趟的结果作废（别让慢的那一趟盖掉新的账号）。
+  if (seq !== prizeFetchSeq) return r;
+  prizesNow = r;
+  if (r.account && r.account.id) prizesAccountId = r.account.id;
+  paintPrizeAll();
+  if (target) {
+    target.disabled = false;
+    target.textContent = '刷新';
+  }
+  return r;
+}
+
+/** 切账号的那一下：先把卡片换成"正在读"，别让上一个号的奖品看着像这个号的。 */
+function paintPrizeSwitching() {
+  setText('prize-hero', '…');
+  setText('prize-line', '正在读…');
+  const ul = $('prize-list');
+  if (ul) ul.innerHTML = '<li class="empty">正在读…</li>';
+}
+
+/** 这一块**第一次**进来时自己读一次（之后要新的点「刷新」；切账号才重取）。
+ *
+ *  ⚠ 不轮询：待领取不是"看着它变"的东西，而这一页在 iframe 里。
+ *  ⚠ 上一次读完是"没有账号 / 没读成"时，再进这一块**再试一次** —— 用户很可能
+ *    刚去「账号」页加了一个号；不重读的话下拉还停在"还没有账号"，看着像坏了。
+ *    这仍然是一次进入一次请求，不是轮询。
+ *  ⚠ 读失败不拦着用户 —— 那句话已经画在卡片里，他点「刷新」能重试。 */
+let prizesAutoFetched = false;
+function autoFetchPrizesOnce() {
+  const unusable =
+    prizesNow !== null && ((prizesNow.accounts || []).length === 0 || !!prizesNow.failed);
+  if (prizesAutoFetched && !unusable) return;
+  prizesAutoFetched = true;
+  void loadPrizes(false);
+}
+
+// ── 领取弹窗 ──
+
+/** 清掉倒计时，「重新发送」回到还没发过的样子（关弹窗 / 切账号都走这里）。 */
+function resetPrizeResend() {
+  if (prizeResendTimer !== null) {
+    clearInterval(prizeResendTimer);
+    prizeResendTimer = null;
+  }
+  const b = $('prize-resend');
+  if (!b) return;
+  b.hidden = true;
+  b.disabled = false;
+  b.textContent = '重新发送（60 秒）';
+}
+
+/** 发码成功之后开始倒计时：60 秒内不许再点（连点只会让后端限流）。 */
+function startPrizeResend(seconds = 60) {
+  const b = $('prize-resend');
+  if (!b) return;
+  if (prizeResendTimer !== null) clearInterval(prizeResendTimer);
+  b.hidden = false;
+  b.disabled = true;
+  let left = seconds;
+  const tick = () => {
+    if (left <= 0) {
+      if (prizeResendTimer !== null) clearInterval(prizeResendTimer);
+      prizeResendTimer = null;
+      b.disabled = false;
+      b.textContent = '重新发送';
+      return;
+    }
+    b.textContent = `重新发送（${left} 秒）`;
+    left -= 1;
+  };
+  tick();
+  prizeResendTimer = setInterval(tick, 1000);
+}
+
+/** 把弹窗里的临时状态清干净（关弹窗 / 切账号 / 打开新的一条都走这里）。 */
+function resetPrizeDialog() {
+  resetPrizeResend();
+  const code = $('prize-code');
+  if (code) {
+    code.value = '';
+    code.disabled = false;
+  }
+  const confirm = $('prize-confirm');
+  if (confirm) {
+    confirm.disabled = true;
+    confirm.textContent = '确认领取';
+  }
+  const send = $('prize-send');
+  if (send) {
+    send.hidden = false;
+    send.disabled = false;
+    send.textContent = '发送验证码';
+  }
+  const row = $('prize-code-row');
+  if (row) row.hidden = true;
+  setText('prize-note', '');
+}
+
+function closePrizeDialog() {
+  const back = $('prize-dialog');
+  if (back) back.hidden = true;
+  // 关掉就是新的一轮：还在路上的发码 / 确认请求回来之后**不许**再改界面。
+  prizeDialogSeq += 1;
+  prizeDialogOid = '';
+  prizeDialogName = '';
+  resetPrizeDialog();
+}
+
+/** 发一条验证码。打开弹窗时**自动**跑一次；「再试一次」/「重新发送」也走这里。
+ *
+ *  ⚠ 发不出去是 200 + `{ok:false, note}`（可能是滑块没解出来、这个号刚发过、
+ *    被限流），所以**不能**只看 HTTP 状态；只有 400 才 throw。两种都说成人话。 */
+async function sendPrizeCode() {
+  const oid = prizeDialogOid;
+  if (!oid) return;
+  // 记下这一轮的序号：用户在等短信时关了弹窗 / 换了号，这一趟回来就作废。
+  const session = prizeDialogSeq;
+  const account = prizesAccountId || ($('prize-account') ? $('prize-account').value : '');
+  const send = $('prize-send');
+  const codeRow = $('prize-code-row');
+  const confirm = $('prize-confirm');
+  const code = $('prize-code');
+  // 新一轮发码：上一轮的输入框与倒计时都先收起来（用户手上还没有新码）。
+  resetPrizeResend();
+  if (codeRow) codeRow.hidden = true;
+  if (confirm) confirm.disabled = true;
+  if (code) {
+    code.value = '';
+    code.disabled = false;
+  }
+  if (send) {
+    send.hidden = false;
+    send.disabled = true;
+    send.textContent = '正在发验证码…';
+  }
+  setText('prize-note', '正在发验证码…（要等几秒，短信到了就填在下面）');
+  try {
+    const r = await post('prizes/claim', { account, oid });
+    if (session !== prizeDialogSeq) return;
+    if (r && r.ok === true) {
+      if (send) send.hidden = true;
+      if (codeRow) codeRow.hidden = false;
+      setText(
+        'prize-note',
+        `验证码已发到 ${r.phone || prizeLabelOf(account)}，填进来就能领到。`,
+      );
+      startPrizeResend(60);
+      if (code) code.focus();
+      return;
+    }
+    // `unknown` = **没拿到回应**（不是"没发出去"）：短信可能已经发了。
+    // ⇒ 把验证码格露出来（收到就能填），并给 60 秒倒计时（没收到就等一分钟再发）。
+    if (r && r.unknown === true) {
+      if (send) send.hidden = true;
+      if (codeRow) codeRow.hidden = false;
+      setText('prize-note', r.note || '没拿到回应 —— 短信可能已经发出去，收到就填进来。');
+      startPrizeResend(60);
+      if (code) code.focus();
+      return;
+    }
+    // 业务失败：原因**留在弹窗里**（不只 toast），并给一个重发的按钮。
+    if (send) {
+      send.hidden = false;
+      send.disabled = false;
+      send.textContent = '再试一次';
+    }
+    setText('prize-note', `没发出去 —— ${(r && r.note) || '原因不明'}（点「再试一次」重新发）`);
+  } catch (e) {
+    if (session !== prizeDialogSeq) return;
+    if (send) {
+      send.hidden = false;
+      send.disabled = false;
+      send.textContent = '再试一次';
+    }
+    // 这条是 400（账号不对 / 缓存里没有这一件之类）—— 后端那句话本身就是下一步，
+    // 不再补「点再试一次」，那种情况重发也没用。
+    setText('prize-note', `没发出去 —— ${e.message || String(e)}`);
+  }
+}
+
+/** 确认领取。验证码错是最正常的失败 ⇒ **留在弹窗里**让他重输。
+ *
+ *  ⚠ 成功之后只重新 GET 一次列表（**不带** `refresh=1`）：后端已经把这件从缓存里
+ *    摘掉了，再去打一次移动云盘是白花一次请求。 */
+async function confirmPrize() {
+  const oid = prizeDialogOid;
+  if (!oid) return;
+  const session = prizeDialogSeq;
+  const input = $('prize-code');
+  const btn = $('prize-confirm');
+  const code = String((input && input.value) || '').trim();
+  if (code.length < 4) {
+    setText('prize-note', '验证码是短信里那串数字，至少 4 位。');
+    return;
+  }
+  const account = prizesAccountId || ($('prize-account') ? $('prize-account').value : '');
+  if (input) input.disabled = true;
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '正在领…';
+  }
+  setText('prize-note', '正在领…');
+  try {
+    const r = await post('prizes/confirm', { account, oid, code });
+    if (r && r.ok === true) {
+      // 成功了就照实说 + 重读列表（弹窗可能已经关了，也不影响这两件事）。
+      toast(typeof r.note === 'string' && r.note !== '' ? r.note : `已领取：${prizeDialogName}`);
+      closePrizeDialog();
+      await loadPrizes(false);
+      return;
+    }
+    if (session !== prizeDialogSeq) return;
+    // `unknown` = 这一单可能已经领到了（写请求没拿到回应）：
+    // ⇒ **不许原地再撞**，关掉弹窗去刷新列表看它还在不在。
+    if (r && r.unknown === true) {
+      toast(r.note || '没拿到回应 —— 先点「刷新」看它还在不在', true);
+      closePrizeDialog();
+      await loadPrizes(false);
+      return;
+    }
+    if (input) {
+      input.disabled = false;
+      input.focus();
+    }
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = '确认领取';
+    }
+    // `code:1000` 那种"要去页面里领"的会给一个地址；原样显示出来（不吞掉）
+    const why = (r && r.note) || '原因不明';
+    const link = r && typeof r.link === 'string' && r.link !== '' ? `（地址：${r.link}）` : '';
+    setText('prize-note', `没领到 —— ${why}${link}`);
+  } catch (e) {
+    if (session !== prizeDialogSeq) return;
+    // 400 这类是"面板明确拒了"（没写出去）：留在弹窗里说清。
+    // 网络层失败**不知道面板收没收到** ⇒ 当结果未知，别原地重试，去刷新列表。
+    const known = e && e.data && typeof e.data === 'object';
+    if (!known) {
+      toast(`没拿到回应 —— 先点「刷新」看它还在不在：${e.message || String(e)}`, true);
+      closePrizeDialog();
+      await loadPrizes(false);
+      return;
+    }
+    if (input) {
+      input.disabled = false;
+      input.focus();
+    }
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = '确认领取';
+    }
+    setText('prize-note', `没领到 —— ${(e.data && e.data.error) || e.message || String(e)}`);
+  }
+}
+
+/** 打开「领取」弹窗。**打开就发码** —— 用户点「领取」本身就是明确动作。 */
+async function openPrizeDialog(item) {
+  // 新的一条 = 新的一轮：上一次还没回来的请求从此作废。
+  prizeDialogSeq += 1;
+  resetPrizeDialog();
+  prizeDialogOid = String(item.oid);
+  prizeDialogName = item.name || '这件奖品';
+  setText('prize-title', prizeDialogName);
+  $('prize-dialog').hidden = false;
+  await sendPrizeCode();
+}
+
+// 「领取」按钮是每次重画列表时新生成的 —— 所以用委派。
+$('prize-list').addEventListener('click', (ev) => {
+  const b = ev.target.closest('[data-prize-oid]');
+  if (b === null || b.disabled) return;
+  const oid = b.dataset.prizeOid;
+  const item =
+    ((prizesNow && prizesNow.items) || []).find((x) => String(x.oid) === String(oid)) || null;
+  void openPrizeDialog(item || { oid, name: '' });
+});
+
+$('prize-refresh').addEventListener('click', (ev) => {
+  void loadPrizes(true, ev.currentTarget);
+});
+
+// 切账号：弹窗里那一条属于旧号，先关掉（顺带清掉倒计时），再用 `?account=` 取这个号。
+$('prize-account').addEventListener('change', (ev) => {
+  closePrizeDialog();
+  prizesAccountId = ev.currentTarget.value;
+  paintPrizeSwitching();
+  void loadPrizes(false);
+});
+
+$('prize-send').addEventListener('click', () => {
+  void sendPrizeCode();
+});
+$('prize-resend').addEventListener('click', () => {
+  void sendPrizeCode();
+});
+$('prize-confirm').addEventListener('click', () => {
+  void confirmPrize();
+});
+$('prize-close').addEventListener('click', () => {
+  closePrizeDialog();
+});
+$('prize-dialog').addEventListener('click', (ev) => {
+  if (ev.target === $('prize-dialog')) closePrizeDialog();
+});
+
+// 验证码只收数字；满 4 位才点亮「确认领取」（这是提前告知，不是替用户判对错）。
+$('prize-code').addEventListener('input', () => {
+  const input = $('prize-code');
+  const digits = String(input.value || '').replace(/\D/g, '').slice(0, 8);
+  if (digits !== input.value) input.value = digits;
+  const confirm = $('prize-confirm');
+  if (confirm) confirm.disabled = digits.length < 4;
+});
+// 回车 = 点「确认领取」（键盘上输完码不用再去够鼠标）。
+$('prize-code').addEventListener('keydown', (ev) => {
+  if (ev.key !== 'Enter') return;
+  ev.preventDefault();
+  const confirm = $('prize-confirm');
+  if (confirm && !confirm.disabled) void confirmPrize();
+});
+
 // ── 运行记录（三块共用） ──
 //
 // # 为什么是「一次运行一行」而不是「一条日志一行」
@@ -2217,6 +2813,8 @@ async function loadRunDetail(stepsId, id) {
 // 见 `scripts/e2e-mock.sh`），只是**不再从界面上暴露**。开发要改就调接口。
 
 function render(r) {
+  // 版本号：`/readings` 给什么印什么（没有就留空，不写死一个数在界面里）
+  setText('plugin-ver', r.version ? `v${String(r.version)}` : '');
   renderAccount(r.account || {}, r.login || {});
   renderDaily(r.daily || {});
   renderExchange(r.exchange || {});
@@ -2583,6 +3181,8 @@ function showBlock(name) {
   if (name === 'data') autoFetchBeansOnce();
   // 兑换页同理：今天还没读到清单就补一枪（清单是下拉的唯一来源）。
   if (name === 'exchange') autoFetchPicksOnce();
+  // 「领奖」页也是：第一次进就读一次未领取（之后点「刷新」/切账号才重取）。
+  if (name === 'prizes') autoFetchPrizesOnce();
 }
 
 $('menu').addEventListener('click', (ev) => {
@@ -2737,10 +3337,17 @@ $('acct-refresh-all').addEventListener('click', (e) =>
 //    同一套口径**，否则迟早一处改了、另一处没改」。
 const PICKERS = [
   // 每个任务两份：auto 给定时，manual 只给手动。不要合成一份（见 taskAccounts.ts）。
-  { task: '日常', mode: 'auto', key: 'daily', btn: 'daily-acct-btn', panel: 'daily-acct-panel', all: 'daily-acct-all', list: 'daily-acct-list' },
-  { task: '日常', mode: 'manual', key: 'daily-manual', btn: 'daily-manual-btn', panel: 'daily-manual-panel', all: 'daily-manual-all', list: 'daily-manual-list', follow: 'daily-manual-follow' },
-  { task: '直播', mode: 'auto', key: 'live', btn: 'live-acct-btn', panel: 'live-acct-panel', all: 'live-acct-all', list: 'live-acct-list' },
-  { task: '直播', mode: 'manual', key: 'live-manual', btn: 'live-manual-btn', panel: 'live-manual-panel', all: 'live-manual-all', list: 'live-manual-list', follow: 'live-manual-follow' },
+  //
+  // ⚠ `label` 必须**逐个写死**，不要用 `${key}-acct-label` 拼：
+  //   auto 那两个是 `daily-acct-label` / `live-acct-label`，而 manual 那两个
+  //   在 HTML 里叫 `daily-manual-label` / `live-manual-label`（没有 `-acct-`）。
+  //   拼出来的 id 找不到元素，`setText` 静默不写 ⇒ 按钮永远印着 HTML 里的默认
+  //   「跟随自动」，而展开面板里勾的其实是「测试」—— 用户看不出这一趟要跑谁
+  //   （现场 2026-11-01 截图：本次运行「跟随自动」但只有「测试」打勾）。
+  { task: '日常', mode: 'auto', key: 'daily', label: 'daily-acct-label', legacy: 'daily-acct-legacy', btn: 'daily-acct-btn', panel: 'daily-acct-panel', all: 'daily-acct-all', list: 'daily-acct-list' },
+  { task: '日常', mode: 'manual', key: 'daily-manual', label: 'daily-manual-label', btn: 'daily-manual-btn', panel: 'daily-manual-panel', all: 'daily-manual-all', list: 'daily-manual-list', follow: 'daily-manual-follow' },
+  { task: '直播', mode: 'auto', key: 'live', label: 'live-acct-label', legacy: 'live-acct-legacy', btn: 'live-acct-btn', panel: 'live-acct-panel', all: 'live-acct-all', list: 'live-acct-list' },
+  { task: '直播', mode: 'manual', key: 'live-manual', label: 'live-manual-label', btn: 'live-manual-btn', panel: 'live-manual-panel', all: 'live-manual-all', list: 'live-manual-list', follow: 'live-manual-follow' },
 ];
 
 function pickerLabel(v, follow) {
@@ -2769,8 +3376,11 @@ function renderPicker(cfg) {
   //   （`legacyAuto` = 这一版还没单独设过、读的是旧键），用户看到它只会猜
   //   "这设置过期了？"或"还有一份新版设置我没找到"。所以按钮保持干净，
   //   "这份是从你以前的设置沿用的"挪进展开面板，那儿有地方说清楚。
-  setText(`${cfg.key}-acct-label`, pickerLabel({ ...v, accounts }, follow));
-  const note = $(`${cfg.key}-acct-legacy`);
+  setText(cfg.label, pickerLabel({ ...v, accounts }, follow));
+  // ⚠ 同理：`${cfg.key}-acct-legacy` 拼出来的是 `daily-manual-acct-legacy`，
+  //   HTML 里根本没有这个 id（只有 `daily-acct-legacy`）⇒ 拼出来的写法在 manual
+  //   那两条上永远写不到（评审 2026-11-01）。改成表里写死。
+  const note = cfg.legacy ? $(cfg.legacy) : null;
   if (note) note.hidden = !(cfg.mode === 'auto' && all && all.legacyAuto === true);
   if (cfg.follow) $(cfg.follow).checked = follow;
   $(cfg.all).checked = follow ? false : v.all === true;
@@ -3533,4 +4143,6 @@ for (const id of ['ex-plan-cron', 'ex-plan-lead', 'ex-plan-lead-sec', 'ex-plan-m
 // 「今日AI豆」那一格**不塞进 `load()`** —— 它每次点都要打移动云盘，见上面 `renderData`
 // 之后那一节的模块头。这里只画"还没取"那一行占位。
 paintBeansList();
+// 领奖那一格同理：进这一块才取（见 `autoFetchPrizesOnce`），这里只画占位。
+paintPrizeAll();
 load();

@@ -1309,6 +1309,20 @@ button.picker-row {
 }
 
 
+/* ── 领奖页 ── */
+
+/* 弹窗里「验证码 + 确认领取」那一行：输入框撑满、按钮跟在后面。
+   `.grow` 已经给了 flex 基准，这里只钉底对齐（`.row` 是 flex，窄屏会自己折行）。 */
+#prize-code-row {
+  align-items: flex-end;
+}
+
+/* 说明那一行同时承担"正在发 / 已发到某个号 / 没发出去 + 原因"，给个最小高度：
+   这几种状态来回切时弹窗不会跟着上下跳。 */
+#prize-note {
+  min-height: 1.4em;
+}
+
 /* 切换区块时给一点 160ms 的入场，避免内容"啪"地换掉。
    只动透明度与 4px 位移；系统开了「减少动态效果」就关掉。 */
 @keyframes block-in {
@@ -1324,4 +1338,21 @@ button.picker-row {
   .block.is-on {
     animation: none;
   }
+}
+
+/* 顶栏那个版本号：小、暗、不抢注意力，但一眼能找到。
+   ⚠ 颜色走本文件的短名字 `--dim`（= 面板的 `--text-dim`），别自造 `--muted`
+     —— 那个变量在这个文件里不存在，只会恒等于硬编码值（评审 2026-11-01）。
+   ⚠ 没有版本时（`/readings` 没给）要**整格消失**，别留一个空边框药丸。 */
+.ver {
+  font: 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--dim);
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  white-space: nowrap;
+}
+
+#plugin-ver:empty {
+  display: none;
 }

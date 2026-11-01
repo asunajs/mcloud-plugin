@@ -140,3 +140,8 @@ test('`doneToday` 认的是标记里的日期，不是"有没有过运行记录"
   store.setState(DAILY_DONE_KEY, '2026-10-14', NOW);
   assert.equal(readings(store).daily.doneToday, false);
 });
+
+test('读数里带**插件版本**（界面右上角那一格就是它）', () => {
+  const d = readings(memStore());
+  assert.match(String(d.version), /^\d+\.\d+\.\d+$/, `实际：${String(d.version)}`);
+});

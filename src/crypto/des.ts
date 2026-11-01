@@ -191,6 +191,23 @@ export function desEcbDecrypt(key: Uint8Array, cipher: Uint8Array): Uint8Array {
 export function desDecryptBase64(cipherB64: string, key: string): string {
   const raw = desEcbDecrypt(fitKey8(key), fromBase64(cipherB64));
   let end = raw.length;
+  // ⚠ **PKCS#5/7 去填充**：上游（`disk:queryUserToken` 的 `account`）是**带填充**的。
+  //   不去掉的话解出来是 `19142492716\x05\x05\x05\x05\x05`，而那个值会被拿去拼
+  //   AI 域的 `Authorization: Basic mobile:<手机号>:<token>` ⇒ 服务端回
+  //   **`01000002 鉴权失败`**（现场 2026-11-01 自测：609/1057 两条 AI 对话全挂在这）。
+  //   参考实现 `mcloud/crypto` 的 `des_decrypt_b64` 就是按"最后一个字节给长度"去的 ✓。
+  const pad = end === 0 ? 0 : raw[end - 1]!;
+  if (pad >= 1 && pad <= 8 && pad <= end) {
+    let allPad = true;
+    for (let i = end - pad; i < end; i++) {
+      if (raw[i] !== pad) {
+        allPad = false;
+        break;
+      }
+    }
+    if (allPad) end -= pad;
+  }
+  // 旧行为：有些响应是 NUL 补齐（没有填充约定），继续兜住。
   while (end > 0 && raw[end - 1] === 0) end--;
   return fromUtf8(raw.subarray(0, end));
 }

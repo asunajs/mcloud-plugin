@@ -34,6 +34,23 @@
    `.manual` 键：定时只读 auto，手动只读 manual（缺省跟随自动）。
    手动勾小号**绝不回写** auto；关闭页面也不会改变第二天的自动账号。
 
+8. **状态机的 `done` 只在"目标真的达成"时成立，不是"步骤走完了"。**
+   任务拓展的判据是**复查读到 `curMonthBackup === true`**（`done`）；
+   凑过了、复查仍读到 `false` ⇒ `blocked`，读不到 ⇒ `unknown` —— 后两档都**不是**
+   当天的完成标记。现场（2026-11-01）：快照被上游打回 `04000003`，而状态照样写
+   `done`，数据页于是显示「本月备份：未开启（任务拓展：已完成）」—— 一句自相矛盾的话。
+   `blocked`/`unknown` 当天 Auto **不再重传文件**（省得每趟往网盘传一个凑数文件），
+   但每趟仍做一次**只读复查**（一个 GET）：
+   **手动**「现在跑一次」可以再来一次（`lateMs < 0` 认手动，见 base.ts 的 F-001 那条）。
+9. **本地证据按任务分槽，不许共用一格游标。**
+   上传状态机原来只有一个 `mcloud.upload.state`，`task-expansion` 与 `app-task`
+   都往里写 ⇒ 两条任务互相把对方的文件当成"自己传完了"。现在任务拓展用
+   `mcloud.upload.state.expansion`（账号那一维仍由 `scoped()` 管）。
+10. **读数按天：跨天的 `step` 不许摆到今天。**
+   `readBackupState()` 只在 `day` 是今天时给 `step`，否则只给月份那一格；
+   界面上那行是「本月备份：未开启（任务拓展：没成 —— 快照没建上：…）」，
+   不再是「（任务拓展：已完成）」。
+
 ## 现场例子（106）
 
 | 证据 | 值 | 含义 |
@@ -46,5 +63,6 @@
 ## 代码位置
 
 - `src/mcloud/tasks/appTask.ts`：`advance()` / `appTaskFresh()` 的确认与重试规则。
+- `src/mcloud/tasks/taskExpansion.ts`：`verdictOf()` 与 `startExpansion()` 的「目标没达成不算完成」。
 - `src/mcloud/routes.ts`：`/matrix` 的本地读与 `?refresh=1` 真刷新。
 - `plugins/mcloud/app.js`：任务状态卡的本机证据、刷新按钮。

@@ -172,3 +172,46 @@ test('月度闸门的 marketName / groupId 是钉死的', () => {
   assert.equal(monthGateSkips({ groupId: 'month', marketName: 'sign_in_3' }, undefined, 14), false);
   assert.equal(monthGateSkips({ groupId: 'day', marketName: 'sign_in_3' }, false, 14), false);
 });
+
+// ── 逐条台账（docs/app-task-ids.md）：按 taskId 钉住"做 / 不做 / 没搬" ──
+//
+// 现场 2026-11-01：三账号矩阵里就这 30 来个 id。用户口径「每个任务 id 逐个」——
+// 所以要钉的是**分类**：哪条真发请求、哪条刻意不发、哪条还没搬。分类错了，
+// 要么白点一枪（点了不改状态 = 伪装成做了），要么永远不动。
+
+test('逐条台账：这一批**还没搬** ⇒ 一枪不发（参考实现同样未实现）', () => {
+  const ids = [105, 118, 319, 548, 549, 550, 551, 607, 608, 617, 1003, 1055, 1079];
+  for (const id of ids) {
+    assert.equal(stepFor({ taskId: id }), undefined, `#${id} 不该有动作`);
+    assert.equal(shouldSkip(id), false, `#${id} 是"没搬"，不是"刻意不打"`);
+    assert.equal(isUnimplemented(id), true, `#${id} 要如实报成没搬`);
+  }
+});
+
+test('逐条台账：这一批**要做**（含 1075 这个 609 的别名）', () => {
+  const runnerOf = (id: number): string | undefined => {
+    const st = stepFor({ taskId: id });
+    return st?.kind === 'runner' ? st.runner : undefined;
+  };
+  assert.equal(runnerOf(609), 'aiAssistant');
+  assert.equal(runnerOf(1075), 'aiAssistant', '同名能力换 id 的先例：1028|1057、585|618');
+  assert.equal(runnerOf(1028), 'aiWorkbench');
+  assert.equal(runnerOf(1057), 'aiWorkbench');
+  assert.equal(runnerOf(585), 'aiCamera');
+  assert.equal(runnerOf(618), 'aiCamera');
+  assert.equal(runnerOf(1004), 'sendMail');
+  assert.equal(runnerOf(1014), 'pdfConvert');
+  assert.equal(runnerOf(1020), 'mailBackup');
+  assert.equal(runnerOf(1029), 'billView');
+  assert.equal(runnerOf(107), 'note');
+  // 非 runner 档
+  assert.equal(stepFor({ taskId: 409 })?.kind, 'entry');
+  assert.equal(stepFor({ taskId: 1005 })?.kind, 'entry');
+  assert.equal(stepFor({ taskId: 1017 })?.kind, 'portal');
+  assert.equal(stepFor({ taskId: 604 })?.kind, 'portal');
+  assert.equal(stepFor({ taskId: 434 })?.kind, 'share');
+  assert.equal(stepFor({ taskId: 431 })?.kind, 'clickOnly');
+  assert.equal(stepFor({ taskId: 547 })?.kind, 'clickOnly');
+  assert.equal(stepFor({ taskId: 113 })?.kind, 'upload');
+  assert.equal(stepFor({ taskId: 522 })?.kind, 'upload');
+});

@@ -14,6 +14,7 @@
 // 给手工联调：把插件的基址指到它就行）。
 
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 
 /** 固定的会话凭据：mock 不校验，但插件要带，测试就能断言「确实带了」。 */
@@ -21,6 +22,23 @@ export const MOCK_JWT = 'mock-jwttoken';
 export const MOCK_COOKIE = 'mockcookie=1';
 /** 直播侧（`/cmlive`）的 JWT —— 与签到族的 `jwttoken` **不是同一份**（这一族用 `Authorization` 头）。 */
 export const MOCK_LIVE_JWT = 'MOCK-LIVE-JWT-180-CHARS-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx';
+
+/** 领奖滑块夹具：**真的一张 JPEG 底图 + 一张 PNG 竖切片**，碎片摆在 offset=282。
+ *
+ *  ⚠ 为什么不用"随便两张图"：领取链的判定之一是"滑块算出来的偏移对不对"，
+ *  而插件的算法（`slide.ts` 的轮廓匹配）只在**有边缘**的图上才成立。
+ *  夹具是离线生成的（Pillow，见 `mock/fixtures/README` 那条命令），
+ *  碎片边界那一圈描边就是匹配要咬住的信号；期望值 = 碎片 x − 切片里的 x = 300 − 18。
+ *  改夹具时**必须同时改** `PRIZE_SLIDE_OFFSET`，否则 mock 会开始拒绝正确偏移。 */
+export const PRIZE_SLIDE_OFFSET = 282;
+export const PRIZE_SLIDE_PICTURE_B64 = readFileSync(
+  new URL('./fixtures/prize-picture.jpg.b64', import.meta.url),
+  'utf8',
+).trim();
+export const PRIZE_SLIDE_PUZZLE_B64 = readFileSync(
+  new URL('./fixtures/prize-puzzle.png.b64', import.meta.url),
+  'utf8',
+).trim();
 
 /** 上游的本地时刻串（`YYYY-MM-DD HH:MM:SS`）—— 与真上游同一个格式（**没有时区**）。 */
 function localStamp(ms) {
@@ -352,6 +370,61 @@ export async function startMock(options = {}) {
     // 小红花：余额刻意做成**会变**的（插件的"进账"是 ⑥ − ①，夹具不变那条断言就等于没测）
     flowerCnt: 100,
     firstParticipated: false,
+    // ── 领奖（`National_Getprize`）──
+    // `flag`：1 = 待领取、2 = 已领取（实拍三笔逐笔翻转）、10 = 含义未解（不进列表）。
+    // ⚠ 字段名照**旧口**实拍：`oId`（大写 I）、`marketname` / `marketid`、`servNumber` 掩码。
+    prizeRecords: [
+      {
+        oId: 1280973030,
+        prizeId: 260907019,
+        prizeName: '0.41元支付宝话费红包',
+        flag: 1,
+        insertTime: '2026.10.24',
+        marketname: '全网算力大作战',
+        marketid: 'National_TokenPK',
+        expireTime: '2026-10-31T23:59:59.000+08:00',
+        servNumber: '159****7542',
+      },
+      {
+        oId: 1283824132,
+        prizeId: 251230053,
+        prizeName: '移动云盘100万tokens叠加包',
+        flag: 1,
+        insertTime: '2026.10.25',
+        marketname: '全网云朵兑好礼',
+        marketid: 'sign_in_3_ex',
+        expireTime: '2026-11-30T23:59:59.000+08:00',
+        servNumber: '159****7542',
+      },
+      {
+        oId: 1276337710,
+        prizeId: 251230054,
+        prizeName: '已经领过的会员月卡',
+        flag: 2,
+        insertTime: '2026.10.20',
+        marketname: '全网云朵兑好礼',
+        marketid: 'sign_in_3_ex',
+        expireTime: '2026-11-20T23:59:59.000+08:00',
+        servNumber: '159****7542',
+      },
+      {
+        oId: 1299999999,
+        prizeId: 251230055,
+        prizeName: '不知道哪一档（flag=10）',
+        flag: 10,
+        insertTime: '2026.10.21',
+        marketname: '全网云朵兑好礼',
+        marketid: 'sign_in_3_ex',
+        expireTime: '2026-11-21T23:59:59.000+08:00',
+        servNumber: '159****7542',
+      },
+    ],
+    /** 最近一次发码的单号（`acceptPrizeV2` 只认它 —— 模拟"没发码不能领"） */
+    prizeSmsOid: null,
+    /** 最近一次提交的滑块偏移（e2e 用来断言"算法值真的传对了"） */
+    prizeSmsOffset: null,
+    /** 领掉的单号（`/_debug/state` 里能读到） */
+    prizeAccepted: [],
   };
   // behavior: 'normal' | 'biz-fail' | 'http-500' | 'not-json' | 'timeout'
   let behavior = options.behavior ?? 'normal';
@@ -577,6 +650,112 @@ export async function startMock(options = {}) {
           msg: 'success',
           result: { token: 'JWT-MOCK-0123456789', mobile: '13800000000' },
         });
+      }
+
+      // ── 领奖（云朵中心 → 待领取，`National_Getprize`）──────────────────────
+      //
+      // 五口照抓包实现（`../mcloud-capture/mcloud/upstream/h5-getprize-claim.md`）：
+      // 列表 / 详情 / 滑块 / 发码 / 领。判据也照实拍：
+      //   · `flag` 1 → 待领取、2 → 已领取（领成功就翻）；
+      //   · `sendPrizeSms` 的 `puzzleOffset` 错 ⇒ `514`（这一条让"自动过滑块"真的被测到）；
+      //   · `acceptPrizeV2` 的 `smsCode` 是 `MD5(验证码)`，`deviceId` 必填。
+      // ⚠ 这一族**没有** `result.records` 那种新口形状 —— 旧口是 `result.result`。
+      if (url.pathname === '/ycloud/prizeApi/checkPrize/getUserPrizeLogPageV2') {
+        const page = Number(url.searchParams.get('currPage') ?? '1') || 1;
+        const size = Number(url.searchParams.get('pageSize') ?? '4') || 4;
+        const all = st.prizeRecords;
+        const start = (page - 1) * size;
+        const slice = all.slice(start, start + size);
+        return json(res, 200, {
+          code: 0,
+          msg: 'success',
+          result: {
+            pageNum: page,
+            pageSize: size,
+            totalCount: all.length,
+            totalPages: Math.max(1, Math.ceil(all.length / size)),
+            result: slice,
+          },
+        });
+      }
+      if (url.pathname === '/ycloud/prizeApi/checkPrize/receivePrizeDetailsV2') {
+        const oid = Number(url.searchParams.get('drawRecode') ?? '0');
+        const rec = st.prizeRecords.find((x) => Number(x.oId) === oid);
+        if (rec === undefined) return json(res, 200, { code: 10010004, msg: '奖品不存在或已过期' });
+        return json(res, 200, {
+          code: 0,
+          msg: 'success',
+          result: {
+            // 两种 `prizetype` 都给到：1035 走 MD5、1028 走明文（那张静态分支要有样本）
+            prizetype: rec.prizeId === 251230054 ? 1028 : 1035,
+            prizename: rec.prizeName,
+            prizeCategory: '虚拟',
+            memo: '',
+            verifycode: 1,
+            sms: 1,
+            // 已经领过的回 2031（参考实现 `PrizeDetail.exchangeCode` 的同一个值）
+            exchangeCode: rec.flag === 2 ? 2031 : 0,
+            limitCurrentMonth: 0,
+            id: rec.prizeId,
+            marketid: rec.marketid,
+          },
+        });
+      }
+      if (url.pathname === '/ycloud/auth-service/auth/getSlidePuzzle') {
+        return json(res, 200, {
+          code: 0,
+          msg: 'success',
+          result: {
+            puzzle: PRIZE_SLIDE_PUZZLE_B64,
+            puzzleWidth: 96,
+            picture: PRIZE_SLIDE_PICTURE_B64,
+            picWidth: 680,
+            picHeight: 400,
+            picType: 'png',
+            puzzleLeft: null,
+          },
+        });
+      }
+      if (url.pathname === '/ycloud/prize/api/sendPrizeSms') {
+        let b = {};
+        try {
+          b = JSON.parse(body || '{}');
+        } catch {}
+        const oid = Number(b.oid ?? 0);
+        const offset = Number(b.puzzleOffset ?? -9999);
+        const rec = st.prizeRecords.find((x) => Number(x.oId) === oid);
+        if (rec === undefined) return json(res, 200, { code: 10010004, msg: '奖品不存在或已过期' });
+        st.prizeSmsOffset = offset;
+        if (Math.abs(offset - PRIZE_SLIDE_OFFSET) > 15) {
+          // 滑块错 ⇒ 这一支必须能走到（否则"算不出来就别发"等于没测）
+          return json(res, 200, { code: 514, msg: '验证失败' });
+        }
+        st.prizeSmsOid = oid;
+        return json(res, 200, { code: 0, msg: 'success' });
+      }
+      if (url.pathname === '/ycloud/prize/api/acceptPrizeV2') {
+        let b = {};
+        try {
+          b = JSON.parse(body || '{}');
+        } catch {}
+        const oid = Number(b.oid ?? 0);
+        const rec = st.prizeRecords.find((x) => Number(x.oId) === oid);
+        if (rec === undefined) return json(res, 200, { code: 10010004, msg: '奖品不存在或已过期' });
+        if (st.prizeSmsOid !== oid) return json(res, 200, { code: -7, msg: '验证码错误' });
+        if (typeof b.deviceId !== 'string' || b.deviceId === '') {
+          return json(res, 200, { code: -7, msg: '验证码错误' });
+        }
+        // 1035 走 MD5；1028 明文（与插件侧同一条静态分支）
+        const plain = rec.prizeId === 251230054;
+        const want = plain ? '123456' : createHash('md5').update('123456').digest('hex');
+        if (b.smsCode !== want) return json(res, 200, { code: -7, msg: '验证码错误' });
+        rec.flag = 2;
+        st.prizeAccepted.push(oid);
+        st.prizeSmsOid = null;
+        // 两种成功形状都要有：带 `result:"订购成功"` 与不带 `result`（实拍都见过）
+        return rec.prizeId === 251230053
+          ? json(res, 200, { code: 0, msg: 'success' })
+          : json(res, 200, { code: 0, msg: 'success', result: '订购成功' });
       }
 
       const finish = () => {

@@ -21,9 +21,13 @@
 | `mcloud-exchange` | **兑换** |
 | `mcloud-live` | **直播** |
 
-界面是**菜单栏 + 一次一块**，六块：账号 / 日常 / 兑换 / 直播 / 数据 / 推送。
-每块第一行回答那个块的核心问题（「登录了吗」「今天跑了吗」「口令池里有几条能用」），
-**读数直接显示**，按钮说人话（「现在跑一次」「贴进去领取」「扫码登录」）。
+界面是**菜单栏 + 一次一块**，六块：账号 / 日常 / 兑换 / 直播 / **领奖** / 数据。
+每块第一行回答那个块的核心问题（「登录了吗」「今天跑了吗」「有几件待领取」），
+**读数直接显示**，按钮说人话（「现在跑一次」「贴进去领取」「扫码登录」「领取」）。
+
+「领奖」那一块是 2026-10-31 新加的：**选账号 → 看未领取 → 点「领取」→ 填短信验证码**。
+滑块由后端本地解（底图是 JPEG，见 [`docs/prize-claim.md`](docs/prize-claim.md)），
+界面上没有滑块图、也没有让用户填像素的格子。
 
 ⚠ 界面上**没有「设置」页**（原来那一页是六个地址口子 + 自检）。那些口子是
 **搭测试环境**用的，用户看不懂、还会把面板指到错的地方去。要改基址请直接调
@@ -50,7 +54,7 @@
   日常/直播共享一条粗粒度 lane，面板自动抬到 4 条线程
 - **按任务声明执行预算**：`register_cron(name, expr, handler, { budget_ms })`
 
-有了这两条，「日常」就能是一条**从换票一路跑到快照**的函数（15 步、几十个请求），
+有了这两条，「日常」就能是一条**从换票一路跑到收尾读数**的函数（十几步、几十个请求），
 而不是 25 条任务互相接力。
 
 ### ② 登录**恰恰必须**一步一步 —— 因为状态机是用户本人
@@ -69,10 +73,13 @@
 
 面板的日志是**环形 200 行**、混着所有插件。所以：
 
-- 读数走**一个**聚合接口 `GET /plugins/mcloud/api/readings`，一次给全七个区块
+- 读数走**一个**聚合接口 `GET /plugins/mcloud/api/readings`，一次给全各区块
   （前一版是一个区块一个接口 ⇒ 每块各有各的加载/错误状态 ⇒ 没人知道该看哪个）
 - 「一次运行」的结果**落一条读数**（日常把整趟的每一步结果存下来），界面读它
 - 这个接口**只读**：一个上游请求都不发 ⇒ 打开页面永远不会因为上游慢而卡住
+- 例外是**点了才取**的两格：「今日AI豆」(`/beans/today`) 与「待领取奖品」(`/prizes`)。
+  它们每次都要真打移动云盘（按账号、还要翻页），塞进首屏聚合等于**替每个账号发一枪**
+  才能打开页面 —— 所以进那一页才取，页面里写清"读到时间"。
 
 ## 先跑起来（不用真账号）
 
@@ -82,12 +89,17 @@ npm ci && npm run all
 
 # ② 对着 mock 上游跑完整条链 —— **绝不碰真账号**，也不需要你的凭据
 ./scripts/e2e-mock.sh <面板可执行文件> 18900
+
+# ③ 只跑「领奖」那条链：列表 → 自动过滑块（真 JPEG）→ 短信验证码 → 领取
+./scripts/e2e-prize.sh <面板可执行文件> 18870
 ```
 
 `e2e-mock.sh` 会起 mock 上游 + 一个面板实例，把上游指向 mock、导入一份假会话，
 然后**三条任务各跑一次**，断言协议层逐字节正确：签到三段式（含回查）、
 领小红花六步链 11 个请求、H5 换票四步含 smid、WS 升级头、query 逐字节 ——
 以及 **mock 侧的状态真的变了**（`todaySigned` / `curMonthBackupSignAccept` / 领取清单 / 通知）。
+`e2e-prize.sh` 单独跑「领奖」：**滑块答案 282 必须由插件自己算出来**（不只是"发出去了"），
+而且列表/日志里不许出现凭据与验证码摘要。
 
 它和你跑的是**同一份脚本**，CI 里跑的也是这一份。
 
@@ -134,7 +146,7 @@ PANEL_TOKEN_HASH="$(printf '%s' '<你的令牌>' | <面板二进制> hash-token)
 
 | # | 能力 | 为什么这个插件非要 |
 |---|---|---|
-| ①-1 | **worker 隔离**（`worker_hint('exclusive')`） | 抢兑和长路由不能被 15 步的日常/直播拖住；日常/直播共享粗粒度 lane |
+| ①-1 | **worker 隔离**（`worker_hint('exclusive')`） | 抢兑和长路由不能被十几步的日常/直播拖住；日常/直播共享粗粒度 lane |
 | ①-2 | **任务参数**（`register_cron(..., { params })`） | 脚本任务用；兑换的多计划走插件自己的计划表（一条计划一个账号），面板仍是一条任务 |
 | ①-3 | **侧边栏入口**（`register_nav`） | 插件得在面板上有个门 |
 | ①-4 | **随机表达式**（`@every 5s -200ms` / cron 抖动） | 定时不该齐步走 |
@@ -168,10 +180,14 @@ mcloud-plugin/
 | [`docs/howto-session.md`](docs/howto-session.md) | 使用者手册：怎么拿会话、怎么导入、失败了怎么看 |
 | [`docs/ui-wording.md`](docs/ui-wording.md) | 界面用词规则（**对用户不许说"上游"**） |
 | [`docs/live-spec.md`](docs/live-spec.md) | **直播（小红花）业务规格**：两条路、共享口令池、领取结果分类、哪些环节还没被证实 |
+| [`docs/prize-claim.md`](docs/prize-claim.md) | **领奖（待领取奖品）**：领取链四段、滑块为什么必须本地解（底图是 JPEG）、验证码摘要规则、哪些还没被证实 |
 | [`docs/app-task-parity.md`](docs/app-task-parity.md) | **App 任务对照表**：mcloud-sign 的 runner 哪些搬了、哪些还没搬、日志怎么说 |
+| [`docs/app-task-ids.md`](docs/app-task-ids.md) | **App 任务逐条 id 台账**（2026-11-01）：每条 id 我们做什么、Rust 参考是什么、能做的/刻意不做的/还没搬的；以及「一条没成不许拖垮整趟」 |
 | [`docs/smid-chain.md`](docs/smid-chain.md) · [`docs/upload-chain.md`](docs/upload-chain.md) | 两条比较绕的链路的实测记录 |
-| [`docs/shots/`](docs/shots/README.md) | 界面截图（七个区块各一张 + 扫码） |
+| [`docs/shots/`](docs/shots/README.md) | 界面截图（各区块一张 + 扫码） |
 | [`docs/standalone.md`](docs/standalone.md) | **面板外独立运行**：替代 mcloud-sign 的 CLI / 配置 / 导出函数 |
+| [`docs/cli-vs-mcloud-sign.md`](docs/cli-vs-mcloud-sign.md) | **CLI 与 mcloud-sign 的差异清单**：默认每日任务、日志、退出码、换票 |
+| [`docs/auth-families.md`](docs/auth-families.md) | **鉴权分族（抓包实测）**：哪些接口认 `jwttoken`、哪些认 `Authorization`；以及对齐判据是**用户看得见的行为**，不是"照抄实现" |
 | [`docs/task-state.md`](docs/task-state.md) | **任务状态规则**：本地动作不算成功，只有服务端 FINISH 才算；每日/每月记录有效期，未确认可重试 |
 | [`docs/design-history.md`](docs/design-history.md) | **开工前的设计稿**（历史；有些判断后来被推翻了，为什么留着见文件头） |
 | [`docs/acceptance-real.md`](docs/acceptance-real.md) | **真机验收清单**（这一步只能在你的真机上做 —— 照着点，每步写清看什么算过） |

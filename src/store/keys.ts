@@ -134,7 +134,12 @@ export const KEY_SCOPE: Readonly<Record<string, KeyScope>> = {
   'mcloud.sign.stage': 'account',
   'mcloud.sign.last': 'account',
   'mcloud.sign.done': 'account',
+  // 上传那台状态机**按任务分槽**：`mcloud.upload.state` 是 App 任务那一格，
+  // `mcloud.upload.state.expansion` 是任务拓展那一格（见 tasks/upload.ts 文件头）。
+  // 槽位名带任务 ⇒ 整串是拼出来的，静态扫描扫不到，所以按前缀也登记一条。
   'mcloud.upload.state': 'account',
+  // 我们自己传上去、还没收尾的云盘文件（按账号；链尾兜底清理用）。
+  'mcloud.cloud.owned': 'account',
   'mcloud.taskexpansion.state': 'account',
   'mcloud.month.backup': 'account',
   'mcloud.apptask.state': 'account',
@@ -147,6 +152,10 @@ export const KEY_SCOPE: Readonly<Record<string, KeyScope>> = {
   'mcloud.msgpush.can': 'account',
   'mcloud.msgpush.last': 'account',
   'mcloud.prizes.last': 'account',
+  // 「领奖」页：待领取列表的缓存与进行中的那一单。
+  // 按账号 —— 奖品记录、单号、手机号都是某一个号的；串了号就是拿 A 的单号去领 B 的东西。
+  'mcloud.prizes.cache': 'account',
+  'mcloud.prizes.claim': 'account',
   'mcloud.multiple.last': 'account',
   'mcloud.multiple.done': 'account',
   'mcloud.revival.done': 'account',
@@ -191,6 +200,16 @@ export const KEY_SCOPE: Readonly<Record<string, KeyScope>> = {
   'mcloud.smid.deviceId': 'account',
   'mcloud.smid.fingerprint': 'account',
   'mcloud.auth.refresh.last': 'account',
+  // ── 红包派对（移动云手机的活动站，另一套凭据：它自己的 `token` 头）──
+  // 整趟的进度台账：一次 drain 里跨步活着的只有它（活动站票与华为侧的票**跑完就抹**，
+  // 见 `tasks/redpackState.ts` 文件头）。按账号 —— 队列、按天的写账（`written`）
+  // 与给用户看的那几行都属于某一个号；串了号就是拿 A 的队列去发 B 的写请求。
+  'mcloud.redpack.state': 'account',
+  // 开没开。**按账号**：参照实现那份默认配置就是每个号一格
+  // （`红包派对.开启`，默认 true），所以"这一个号开没开"确实是账号的属性。
+  'mcloud.redpack.enabled': 'account',
+  // 指到别处用的口子（CI / 只读探针）。与 `mcloud.live.gate_base` 同一类，按账号。
+  'mcloud.redpack.base': 'account',
 
   // ── 实例级配置 / 跨账号共享 ────────────────────────────────
   /** 账号表本身。 */
@@ -256,6 +275,10 @@ export const KEY_PREFIX_SCOPE: readonly (readonly [string, KeyScope])[] = [
   // 矩阵按**市场**分（`mcloud.apptaskmatrix.g.sign_in_3`）—— 动态拼出来的，
   // 静态扫描扫不到整串，所以按前缀登记。
   ['mcloud.apptaskmatrix.g.', 'account'],
+  // 上传状态机**按任务分槽**（`mcloud.upload.state.expansion`）。槽位名是拼出来的，
+  // 精确表里只有 App 任务那一格 ⇒ 这里补前缀。⚠ 不能落成 global：
+  // 它记的是"这个号传了什么、传到哪"，串号就会拿 A 的 fileId 去收尾。
+  ['mcloud.upload.state.', 'account'],
 ];
 
 /** 查一个**完整**键名的作用域。没登记 ⇒ `undefined`（调用方必须报错，不许当全局）。 */

@@ -25,7 +25,7 @@
 
 
 import { callRawText } from '../client.ts';
-import { depsNowMs, sessionHeaders } from './base.ts';
+import { depsNowMs, sessionHeaders, waitMs } from './base.ts';
 import { REFERER_SIGN_IN, SHOW_LOADING, buildH5Request } from '../h5.ts';
 import { loadSession } from '../../store/types.ts';
 import { loadAuthRaw } from '../sessionExchange.ts';
@@ -33,10 +33,12 @@ import { parseAuth } from '../auth.ts';
 import { uuidV4 } from '../rand.ts';
 import { utf8 } from '../../crypto/bytes.ts';
 import { MATRIX_MARKETS, judgeItem, readMatrix, runAppTaskMatrix } from './appTaskMatrix.ts';
-import { loadUpload, runUploadStep, startUpload, uploadDone } from './upload.ts';
+import { clearUpload, loadUpload, runUploadStep, startUpload, uploadDone } from './upload.ts';
 import { readMonthBackup } from './taskExpansion.ts';
+import { parseTrashResult } from './cloudTrash.ts';
+import { unregisterOwnedFile } from './ownedFiles.ts';
 import { cloudFileOpHeaders, deterministicFile, randomHex } from '../cloudUpload.ts';
-import { monthGateSkips, shouldSkip, stepFor, uploadShapeFor } from '../appTaskRules.ts';
+import { SHARE_TASK_ID, monthGateSkips, shouldSkip, stepFor, uploadShapeFor } from '../appTaskRules.ts';
 import type { AppRunner, TaskStep } from '../appTaskRules.ts';
 import { parseSsoToken } from '../h5session.ts';
 import {
@@ -56,6 +58,7 @@ import {
   marketClickRequest,
   noteAuthRequest,
   noteCreateRequest,
+  peActiveReportRequest,
   noteDeleteRequest,
   parseAiRecognize,
   parseComposeId,
@@ -163,12 +166,22 @@ interface TaskState {
   data?: Record<string, string> | undefined;
   /** 本轮为这条任务传上去的文件 id（收尾要用）。**没有就不发收尾那一枪。** */
   fileId?: string | undefined;
+  /** 这个 fileId 是不是**我们造的**。`false` = 撞上用户已有文件 ⇒ 只做动作、
+   *  绝不删；`undefined` = 旧状态/普通上传支（那里只有 `owned === true` 才会存
+   *  `fileId`）⇒ 按我们造的收尾。 */
+  fileOwned?: boolean | undefined;
   /** 已经点过的那些（防重发 —— `task/click` 不可回滚）。
    *  ⚠ 这不是"成功"名单：只有矩阵回 `FINISH` 才算成功；
    *  收摊时仍待办的那些会被移到 `unconfirmed`，**不留在 clicked**，好让下一趟重试。 */
   clicked: number[];
   /** 点了/传了，但服务端状态仍不是 `FINISH` 的条目（本地动作 ≠ 成功）。 */
   unconfirmed?: number[] | undefined;
+  /** 这一趟**逐条**做过但没成的那些（带原因）。
+   *
+   *  ⚠ 与 `unconfirmed` 不同：那个是"动作发了、等服务端确认"，这个是**这条本身没做成**
+   *  （取不到 mid / AI 没回话 / 邮箱登录失败…）。它只用于"这一趟别再撞同一条" +
+   *  收尾如实报出来 —— **不挡下一趟重试**（docs/task-state.md 第 3 条）。 */
+  failed?: { id: number; why: string }[] | undefined;
   /** 这条已经走起来了（`currStep != 0`）⇒ 按参考实现**不再打卡**，只做动作。
    *  上传族尤其重要：106 `currstep=1` 时旧实现不发 `task/click`。 */
   skipClick?: boolean | undefined;
@@ -248,21 +261,6 @@ export function clickRequest(
  *  ⚠ 这一枪我一开始**整个漏了** —— 少了它，打卡回 200 但状态不变。 */
 /** 打卡之后补访问日志（参考实现 `click_with_key()` 的第二发）。
  *  只发一次；失败也只记明细，不挡后面的动作。 */
-/** 同步等一小会儿。沙箱没有计时器；`spin` 是测试注入的假时钟推进器。 */
-function waitMs(deps: TaskDeps, ms: number): void {
-  if (ms <= 0) return;
-  const end = depsNowMs(deps) + Math.min(ms, 10_000);
-  while (depsNowMs(deps) < end) {
-    if (deps.spin) deps.spin();
-    else {
-      const t0 = Date.now();
-      while (Date.now() - t0 < 2) {
-        /* 忙等 2ms */
-      }
-    }
-  }
-}
-
 function journalOnce(deps: TaskDeps, st: TaskState): { note: string; state: TaskState } {
   if (st.journaled === true) return { note: '', state: st };
   const market = st.data?.marketName ?? 'sign_in_3';
@@ -350,7 +348,10 @@ function clickedButIneffective(deps: TaskDeps, st: TaskState): number[] {
 /** 换到下一条待办（跳过今天已经点过的）。没有下一条 ⇒ 收摊。 */
 function advance(deps: TaskDeps, st: TaskState): TaskOutcome {
   const clicked = freshClicked(st, deps);
-  const next = pendingItems(deps).find((p) => !clicked.includes(p.itemId));
+  const failedIds = (st.failed ?? []).map((f) => f.id);
+  const next = pendingItems(deps).find(
+    (p) => !clicked.includes(p.itemId) && !failedIds.includes(p.itemId),
+  );
   if (!next) {
     // ⚠⚠ **不能刚做完就问上游**：动作和检查之间要有间隔。
     //   矩阵读数是动作前的快照，立刻拿它判"没变"会把每一次成功都误判成失败。
@@ -361,10 +362,12 @@ function advance(deps: TaskDeps, st: TaskState): TaskOutcome {
       ...st,
       phase: 'settle',
       fileId: undefined,
+      fileOwned: undefined,
       special: undefined,
       data: undefined,
       clicked,
       unconfirmed: [],
+      failed: st.failed ?? [],
       settleAt: depsNowMs(deps) + wait,
       day: today(deps),
     });
@@ -382,14 +385,15 @@ function advance(deps: TaskDeps, st: TaskState): TaskOutcome {
   const clickFirst = next.needUpload && (next.currStep === undefined || next.currStep === 0);
   let phase: TaskPhase = next.needUpload ? (clickFirst ? 'click' : 'upload') : 'click';
   if (next.step.kind === 'share') {
-    const up = (() => {
-      try {
-        return JSON.parse(deps.store.getState('mcloud.upload.state') ?? '{}') as { fileId?: string };
-      } catch {
-        return {};
-      }
-    })();
-    if (!up.fileId) {
+    // ⚠ **一律自己传一个**，不看 `mcloud.upload.state`：那格里躺的可能是**上一趟**
+    //   （甚至已收尾删掉）的文件 —— 拿它去建外链，上游回
+    //   `1010010006 …记录已被删除 / 消息参数错误`（2026-11-01 现场：小号 434 就这么挂的）。
+    // ⚠ 但**打卡那一发照样要有**（`currstep=0` 的条目参考实现是先打卡）：
+    //   以前这里无条件设成 `upload`，于是从 `advance` 进来的 434 一趟都不打卡
+    //   （评审 2026-11-01）。`startAppTask` 那边是 click-first，两条路必须一致。
+    if (next.currStep === undefined || next.currStep === 0) {
+      phase = 'click';
+    } else {
       beginUpload(deps, next.itemId, next.name);
       phase = 'upload';
     }
@@ -415,9 +419,12 @@ function advance(deps: TaskDeps, st: TaskState): TaskOutcome {
     phase = phaseOfSpecial(special) ?? phase;
   }
   // 参考实现 `should_click()`：`currstep == 0` 才打卡；已经走起来的不再打，
-  // 但门照样通过、动作照做。上传族（106/113/522）在 `currstep=1` 时就是这一档。
-  const skipClick = next.step.kind === 'upload' && next.currStep !== undefined && next.currStep !== 0;
-  // currStep != 0 的上传任务不打卡；先把它记成"动作已做"，否则传完会再走一遍 visit/click。
+  // 但门照样通过、动作照做。上传族（106/113/522）在 `currstep=1` 时就是这一档；
+  // **runner 那几条（1014/1029/1004…）在 `currstep != 0` 时也是这一档**。
+  const started = next.currStep !== undefined && next.currStep !== 0;
+  const skipClick = started && (next.step.kind === 'upload' || special !== undefined);
+  // ⚠ 不打卡也要把它记成"这一趟动过了"：不记的话动作做完 `advance` 又把它挑出来
+  //   （现场 2026-11-01 自测：#1014 卡成 60 步死循环：打卡-传-转-收尾-再挑 1014）。
   const markHandled = skipClick && !clicked.includes(next.itemId);
   save(deps, {
     gi: next.gi,
@@ -433,9 +440,36 @@ function advance(deps: TaskDeps, st: TaskState): TaskOutcome {
       link: next.buttonEmailLink ?? next.buttonAppLink ?? '',
     },
     clicked: markHandled ? [...clicked, next.itemId] : clicked,
+    // ⚠ 把"这一趟失败过的那几条"带过去：不带的话下一条选回同一条，又撞一次。
+    failed: st.failed ?? [],
     day: today(deps),
   });
   return { ok: true, note: `下一条 #${next.itemId}（「${next.name}」）` };
+}
+
+/**
+ * **这一条没成** —— 记下来、跳到下一条，**不拖垮整趟**。
+ *
+ * 参考实现的口径（`app_task.rs` 的逐条循环）：某一条动作失败只结束那一条
+ * （`continue` 下一条），整趟只有在「取消」时才停。这里原先是 `return {ok:false}`，
+ * 于是 `drain` 一停 —— 一条 AI 对话没回话，后面 10 条就再没机会做（现场 2026-11-01：
+ * 三账号都停在 #609，`已完成 0 条`）。
+ */
+function itemFailed(deps: TaskDeps, st: TaskState, why: string): TaskOutcome {
+  const keep = (st.failed ?? []).filter((f) => f.id !== st.itemId);
+  const failed = [...keep, { id: st.itemId, why }];
+  // ⚠ 手里还攥着**我们造的**文件时不能直接换条：`advance` 会重建 state、把 `fileId`
+  //   丢掉 ⇒ 那枚文件既不进回收站、也不再被 `activeAppTaskFileId` 认领（评审 2026-11-01）。
+  //   先记下"这一条没成"，再走一趟收尾。
+  if (st.fileId !== undefined && st.fileOwned !== false) {
+    save(deps, { ...st, phase: 'trash', failed, day: today(deps) });
+    return { ok: true, note: `#${st.itemId}：「${why}」—— 先把这个文件收尾，再换下一条` };
+  }
+  const out = advance(deps, { ...st, failed });
+  return {
+    ok: true,
+    note: `#${st.itemId}：「${why}」—— 这一条先记下，继续下一条。${out.note}`,
+  };
 }
 
 /** 上一次 `pendingItems` 里"未实现"的那些 id（只用于文案）。 */
@@ -515,7 +549,17 @@ export function pendingItems(deps: TaskDeps): Pending[] {
     }
   });
   lastSkipped = skipped;
-  return out;
+  // ⚠ 顺序照参考实现：**taskId 升序**，但 **434 排最后**。
+  //   434（分享）消费的是"这一趟自己传上去的文件"，而它 id 比 522/106 都小 ——
+  //   按 id 排就一定排在它们前面 ⇒ 手里空着 ⇒ 每次都"没有可分享的文件"
+  //   （Rust 在 `app_task.rs:1727-1731` 用一句 `sort_by_key(task_id == 434)` 钉住这层）。
+  const rank = (id: number): number => (id === SHARE_TASK_ID ? 1 : 0);
+  out.sort((a, b) => rank(a.itemId) - rank(b.itemId) || a.itemId - b.itemId);
+  // 同一个 taskId 可能在**两个市场**各出现一次（现场：522 在 `sign_in_3` 与
+  // `newsign_139mail` 都有）。打卡那一枪只带 `id`、不带市场 ⇒ **点一次两处都算**，
+  // 所以这里按 id 去重（留先出现的那条），否则"待办 17 条"里有一条是重影。
+  const seen = new Set<number>();
+  return out.filter((p) => (seen.has(p.itemId) ? false : (seen.add(p.itemId), true)));
 }
 
 /** 把上传那台状态机**起起来**（只写字、不发请求）。
@@ -526,16 +570,20 @@ function beginUpload(deps: TaskDeps, itemId: number, name: string): void {
   // ⚠ 随机名 + 随机内容（mcloud 的 `random_plan_with_ext`）：固定内容会命中秒传，
   //    固定名字会撞用户文件；这一条要的是“真的传一个文件”。
   const seed = randomHex(16);
-  void itemId;
   void name;
+  // ⚠ **113「使用PC客户端」要按 PC 档发**（`UPLOAD_ONE_PC`）：头画像整组不同，
+  //   拿安卓档传的话上游当我们是手机，这条任务永远不翻（参考实现 `app_task.rs` 的
+  //   `upload_shape_for` 为它单开了一档）。
+  const shape = uploadShapeFor({ taskId: itemId });
   startUpload(deps, {
-    name: `asign-${randomHex(8)}.bin`,
+    name: `asign-${randomHex(8)}${shape?.fileExt ?? '.bin'}`,
     bytes: deterministicFile(seed, 256),
     seed,
     renameMode: 'force_rename',
     parallelUpload: false,
     // ⚠ 手动上传支**不带** localCreatedAt（备份支才带；见 Rust app_task.rs）。
     op: 'upload',
+    channel: shape?.channel ?? 'android',
   });
 }
 
@@ -699,21 +747,22 @@ function phaseOfSpecial(s: Special | undefined): TaskPhase | undefined {
       return 'portal';
     case 'share':
       return 'share';
+    // ⚠ **凡是要邮箱会话的，入口一律先 `mailLogin`**。
+    //   `st.data`（sid/rmkey）在 `advance` 换条目时就没了 —— 直接进
+    //   `sendMailAction`/`pdfUpload` 这些"用会话"的阶段，带出去的是**空 sid**：
+    //   现场 2026-11-01 自测就是这么挂的（1004 回 `FA_INVALID_PARAMETER`、
+    //   1014 回 `FA_INVALID_SESSION User Session Expired`）。
     case 'mailBackup':
     case 'aiAssistant':
     case 'aiWorkbench':
     case 'aiCamera':
+    case 'mailActive':
+    case 'sendMail':
+    case 'pdfConvert':
+    case 'billView':
       return 'mailLogin';
     case 'note':
       return 'noteAuth';
-    case 'mailActive':
-      return 'mailActiveAction';
-    case 'sendMail':
-      return 'sendMailAction';
-    case 'pdfConvert':
-      return 'pdfUpload';
-    case 'billView':
-      return 'billViewAction';
     default:
       return undefined;
   }
@@ -747,13 +796,20 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
       ...clickedButIneffective(deps, st),
       ...(st.unconfirmed ?? []).filter(stillTodo),
     ];
-    return dead.length === 0
+    // ⚠ 同一条可能既在 `dead`（本机动过）又在 `failed`（这一条没成）—— 别数两遍。
+    const deadSet = new Set(dead);
+    const failedWhy = (st.failed ?? []).filter((f) => stillTodo(f.id) && !deadSet.has(f.id));
+    return dead.length === 0 && failedWhy.length === 0
       ? { ok: true, idle: true, note: '这一趟做完了（服务端已确认）' }
       : {
           ok: false,
           idle: true,
           pending: true,
-          note: `这一趟没有全确认：${dead.length} 条本机动过、服务端仍是待办（#${dead.join('、')}）—— 下一趟继续重试（不设上限）`,
+          note: `这一趟没有全确认：${dead.length} 条本机动过、服务端仍是待办（#${dead.join('、')}）${
+            failedWhy.length === 0
+              ? ''
+              : `；${failedWhy.length} 条没做成（${failedWhy.map((f) => `#${f.id} ${f.why}`).join('；')}）`
+          } —— 下一趟继续重试（不设上限）`,
         };
   }
 
@@ -768,26 +824,34 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
       for (let i = 0; i < MATRIX_MARKETS.length; i++) runAppTaskMatrix(deps);
     }
     const dead = clickedButIneffective(deps, st);
+    // 逐条失败的那些（没打卡/没传成功，只在 `failed` 里）也要进 `unconfirmed`：
+    // 否则下一趟会被当成"今天没碰过"，或者反过来被"今天做完了"骗过去。
+    const failed = st.failed ?? [];
+    const failedIds = failed.map((f) => f.id);
     const kept = st.clicked.filter((id) => !dead.includes(id));
-    const retryCount = dead.length > 0 ? (st.retryCount ?? 0) + 1 : 0;
+    const retryCount = dead.length > 0 || failed.length > 0 ? (st.retryCount ?? 0) + 1 : 0;
     save(deps, {
       ...st,
       phase: 'done',
       clicked: kept,
-      unconfirmed: dead,
+      unconfirmed: [...dead, ...failedIds.filter((id) => !dead.includes(id))],
       settleAt: undefined,
       retryDay: today(deps),
       retryCount,
       day: today(deps),
     });
-    const warn =
-      dead.length === 0
-        ? ''
-        : `；⚠ ${dead.length} 条本机动过、服务端仍是待办（#${dead.join('、')}）—— 只有矩阵回 FINISH 才算成功，下一趟会重试`;
+    const bits: string[] = [];
+    if (dead.length > 0) {
+      bits.push(`${dead.length} 条本机动过、服务端仍是待办（#${dead.join('、')}）`);
+    }
+    if (failed.length > 0) {
+      bits.push(`${failed.length} 条没做成（${failed.map((f) => `#${f.id} ${f.why}`).join('；')}）`);
+    }
+    const warn = bits.length === 0 ? '' : `；⚠ ${bits.join('；')} —— 只有矩阵回 FINISH 才算成功，下一趟会重试`;
     return {
-      ok: dead.length === 0,
+      ok: bits.length === 0,
       idle: true,
-      pending: dead.length > 0,
+      pending: bits.length > 0,
       note: `复查完成（已等 ${deps.settleMs ?? 5000}ms，重新拉过矩阵）${warn}`,
     };
   }
@@ -813,15 +877,22 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
     const base = st;
     const afterClick = freshClicked(base, deps).includes(base.itemId);
     const finishUpload = (ours: string | undefined): TaskOutcome => {
+      // ⚠ 434（分享）是**上传的消费者**：传完要去分享，不是去收尾 ——
+      //   以前这一支对"已打卡"的条目一律进 trash，于是刚传上去的文件当场被删，
+      //   分享那一格永远"手里没有文件"。
+      if (base.special === 'share' && ours !== undefined) {
+        save(deps, { ...base, phase: 'share', fileId: ours, fileOwned: true, day: today(deps) });
+        return { ok: true, note: '文件已传完 —— 下一步分享它' };
+      }
       if (afterClick) {
         if (ours !== undefined) {
-          save(deps, { ...base, phase: 'trash', fileId: ours, day: today(deps) });
+          save(deps, { ...base, phase: 'trash', fileId: ours, fileOwned: true, day: today(deps) });
           return { ok: true, note: '文件已传完 —— 下一步收尾' };
         }
         const out = advance(deps, base);
         return { ok: true, note: `文件已传完（不是我们造的）—— ${out.note}` };
       }
-      save(deps, { ...base, phase: 'visit', fileId: ours, day: today(deps) });
+      save(deps, { ...base, phase: 'visit', fileId: ours, fileOwned: true, day: today(deps) });
       return {
         ok: true,
         note: ours ? '文件已传完（收尾要用它的 id）—— 下一步记访问日志' : '文件已传完，但不是我们造的 ⇒ 不收尾',
@@ -839,15 +910,21 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
     }
     if (uploadDone(deps)) {
       const up = loadUpload(deps);
-      return finishUpload(up?.ownedByUs === true ? up.fileId : undefined);
+      // ⚠ `ownedByUs === undefined`（判不了）要按**我们造的**处理：秒传那一支
+      //   上游回 `exist: null` + `uploadId: null`，正好落到"判不了" ⇒ 以前当成
+      //   "不是我们造的"⇒ 文件既不登记也不收尾，**永久留在用户网盘**（评审 2026-11-01）。
+      return finishUpload(up !== null && up.ownedByUs !== false ? up.fileId : undefined);
     }
+    // ⚠ 上传三枪失败（create/PUT/complete）也是**这一条**没成，不是整趟别做了。
+    //   以前这里直接 `return out`（ok:false）⇒ drain 当场收工（评审 2026-11-01 抓到的漏洞）。
+    if (!out.ok) return itemFailed(deps, st, out.note);
     return out;
   }
 
   // ①b 记访问日志（漏了它打卡不生效）
   if (st.phase === 'visit') {
     const res = callRawText(deps.transport, journalingRequest(deps, st.itemId));
-    if (!res.ok) return { ok: false, note: `记访问日志 #${st.itemId} 失败：${res.error ?? '未知失败'}` };
+    if (!res.ok) return itemFailed(deps, st, `记访问日志失败：${res.error ?? '未知失败'}`);
     save(deps, { ...st, phase: 'click', day: today(deps) });
     return { ok: true, note: `已记访问日志 #${st.itemId}（HTTP ${res.status}）—— 下一步打卡` };
   }
@@ -888,14 +965,15 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
         return { ok: true, note: `#${stj.itemId} 今天已经点过了 —— 不重发，去做「${sp}」${jn}` };
       }
       if (stj.fileId) {
-        save(deps, { ...stj, phase: 'trash', day: today(deps) });
+        save(deps, { ...stj, phase: 'trash', fileOwned: stj.fileOwned ?? true, day: today(deps) });
         return { ok: true, note: `#${stj.itemId} 今天已经点过了 —— 不重发，去收尾${jn}` };
       }
       const out = advance(deps, stj);
       return { ok: true, note: `#${stj.itemId} 今天已经点过了 —— 不重发。${jn}${out.note}` };
     }
     const res = callRawText(deps.transport, clickRequest(deps, st.itemId));
-    if (!res.ok) return { ok: false, note: `打卡 #${st.itemId} 失败：${res.error ?? '未知失败'}` };
+    // 打卡失败也只是**这一条**没成（参考实现里它是 `continue` 下一条，不是整趟停）。
+    if (!res.ok) return itemFailed(deps, st, `打卡失败：${res.error ?? '未知失败'}`);
     // 点了就记下来（哪怕响应不理想 —— 不可回滚的东西不能"当没发过"）
     const clicked = [...freshClicked(st, deps), st.itemId];
     // 参考实现：`task/click` 之后补一发 visitlog（`click_with_key` 的第二发）。
@@ -913,15 +991,14 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
       return { ok: true, note: `打卡 #${stj.itemId}（HTTP ${res.status}）${jn} —— 下一步传文件` };
     }
     if (stj.fileId) {
-      save(deps, { ...stj, phase: 'trash', day: today(deps) });
+      save(deps, { ...stj, phase: 'trash', fileOwned: stj.fileOwned ?? true, day: today(deps) });
       return { ok: true, note: `打卡 #${stj.itemId}（HTTP ${res.status}）${jn} —— 下一步收尾` };
     }
     const out = advance(deps, stj);
-    // ⚠ **要把 `advance` 的结论带出去**：这一趟可能以"有条目点了没生效"收摊，
-    //   那时 `advance` 回 `ok: false` —— 吞掉它就会把"没生效"报成成功。
-    //   （打卡本身回 200 是真的，但**整趟的结论**不是"成功"。）
+    // ⚠ `advance` 现在只回 `ok:true`（"没生效"由收尾那次矩阵复查判，见 `settle`）
+    //   —— 这里写死 `true`，别再写 `out.ok` 让人以为还有判死逻辑（评审 2026-11-01）。
     return {
-      ok: out.ok,
+      ok: true,
       note: `打卡 #${st.itemId}（HTTP ${res.status}）${jn} —— 这条没有要收尾的文件。${out.note}`,
     };
   }
@@ -938,7 +1015,8 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
     if (!c.ok) bits.push(`补打卡没成：${c.error ?? '未知失败'}`);
     const out = advance(deps, doneState(deps, st));
     return {
-      ok: out.ok,
+      // `advance` 现在只回 `ok:true`；这里写死 true，别让人以为还有判死逻辑（评审 2026-11-01）。
+      ok: true,
       note: `固定入口 #${st.itemId}（${bits.join('；')}）。${out.note}`,
     };
   }
@@ -961,41 +1039,50 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
     }
     const bits = [a.ok ? 'doTaskPost ok' : 'doTaskPost 没成', b.ok ? 'page/doTask ok' : 'page/doTask 没成', page];
     const out = advance(deps, doneState(deps, st));
-    return { ok: out.ok, note: `入口页 #${st.itemId}（${bits.join('；')}）。${out.note}` };
+    return { ok: true, note: `入口页 #${st.itemId}（${bits.join('；')}）。${out.note}` };
   }
 
   if (st.phase === 'share') {
-    const fileId =
-      st.fileId ??
-      (() => {
-        try {
-          return (JSON.parse(deps.store.getState('mcloud.upload.state') ?? '{}') as { fileId?: string }).fileId;
-        } catch {
-          return undefined;
-        }
-      })();
+    // ⚠ 收尾要用这个文件的 id 和归属：上传状态机只记得“这一次”，
+    //   而分享跑完就 `advance` 会把 fileId 丢掉 —— 那正是以前留在云盘里的原因。
+    let fileId = st.fileId;
+    let fileOwned = st.fileOwned ?? (fileId === undefined ? undefined : true);
     if (!fileId) {
-      const out = advance(deps, { ...st, fileId: undefined });
-      return { ok: true, note: `分享 #${st.itemId}：手里没有文件 —— 不发空外链。${out.note}` };
+      // ⚠ 参考实现是"拿这一趟自己传的那个文件"（`share_first_uploaded(&result.file_ids)`）；
+      //   手里空着就**自己传一个**，而不是放弃（现场 2026-11-01：522 的文件收尾后
+      //   上传槽是空的 ⇒ 434 直接"不发空外链"，白白丢一条）。
+      beginUpload(deps, st.itemId, '');
+      save(deps, { ...st, phase: 'upload', fileId: undefined, fileOwned: undefined, day: today(deps) });
+      return { ok: true, note: `分享 #${st.itemId}：手里没有文件 —— 自己传一个再分享` };
     }
+    /** 建链失败/没 linkID 时也要收尾：文件是我们传的，不能因为分享没成就留着。 */
+    const trashNext = (ok: boolean, note: string): TaskOutcome => {
+      if (fileOwned === true) {
+        save(deps, { ...st, phase: 'trash', fileId, fileOwned: true, day: today(deps) });
+        return { ok, note: `${note} —— 下一步收尾` };
+      }
+      const out = advance(deps, doneState(deps, { ...st, fileId: undefined, fileOwned: undefined }));
+      return { ok, note: `${note}${out.note}` };
+    };
     const req = getOutLinkRequest(deps, [fileId]);
-    if (!req) {
-      const out = advance(deps, st);
-      return { ok: true, note: `分享 #${st.itemId}：请求没造出来。${out.note}` };
-    }
+    if (!req) return trashNext(true, `分享 #${st.itemId}：请求没造出来`);
     const res = callRawText(deps.transport, req);
+    // ⚠ 分享失败也**不拖垮整趟**（参考实现里它只是这一条的 problem）。
     if (!res.ok) {
-      const out = advance(deps, st);
-      return { ok: false, note: `分享 #${st.itemId} 建外链失败：${res.error ?? '未知失败'}。${out.note}` };
+      return trashNext(true, `分享 #${st.itemId} 建外链失败：${res.error ?? '未知失败'}`);
     }
     const ids = parseLinkIds(res.text);
     if (ids.length === 0) {
-      const out = advance(deps, st);
-      return { ok: false, note: `分享 #${st.itemId}：响应里没有 linkID，没法删外链。${out.note}` };
+      return trashNext(
+        true,
+        `分享 #${st.itemId}：响应里没有 linkID（${res.text.slice(0, 80).replace(/\s+/g, ' ')}）`,
+      );
     }
     save(deps, {
       ...st,
       phase: 'shareDel',
+      fileId,
+      fileOwned: fileOwned ?? true,
       data: { ...(st.data ?? {}), linkIds: JSON.stringify(ids) },
       day: today(deps),
     });
@@ -1010,27 +1097,40 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
       ids = [];
     }
     const req = delOutLinkRequest(deps, ids);
-    if (!req) {
-      const out = advance(deps, st);
-      return { ok: true, note: `分享 #${st.itemId}：没有 linkID 可删。${out.note}` };
+    const res = req ? callRawText(deps.transport, req) : undefined;
+    // 外链删没删成，文件都要收尾（外链没了，文件留着也没有用途）。
+    // ⚠ 只认 `fileOwned === true`：判不了的一律不删。
+    if (st.fileId !== undefined && st.fileOwned === true) {
+      save(deps, { ...st, phase: 'trash', fileOwned: true, day: today(deps) });
+      return {
+        ok: res?.ok ?? true,
+        note: !req
+          ? `分享 #${st.itemId}：没有 linkID 可删 —— 下一步收尾`
+          : res!.ok
+            ? `分享 #${st.itemId}：外链已删 —— 下一步收尾`
+            : `分享 #${st.itemId}：删外链失败（${res!.error ?? '未知失败'}）—— 下一步收尾`,
+      };
     }
-    const res = callRawText(deps.transport, req);
-    const out = advance(deps, { ...st, fileId: undefined });
+    const out = advance(deps, doneState(deps, { ...st, fileId: undefined, fileOwned: undefined }));
     return {
-      ok: res.ok,
-      note: res.ok
-        ? `分享 #${st.itemId}：外链已删。${out.note}`
-        : `分享 #${st.itemId}：删外链失败（${res.error ?? '未知失败'}）。${out.note}`,
+      // ⚠ 删外链失败**不许判死**：`trash` 已经排在下一步，判死会让它这一趟根本不执行
+      //   （评审 2026-11-01）。失败写进 note，文件照旧收尾。
+      ok: true,
+      note: !req
+        ? `分享 #${st.itemId}：没有 linkID 可删。${out.note}`
+        : res!.ok
+          ? `分享 #${st.itemId}：外链已删。${out.note}`
+          : `分享 #${st.itemId}：删外链失败（${res!.error ?? '未知失败'}）。${out.note}`,
     };
   }
 
   // ③b 1020 邮件转存：一次一步
   if (st.phase === 'mailLogin') {
     const res = callRawText(deps.transport, mailSpecTokenRequest(deps));
-    if (!res.ok) return { ok: false, note: `邮箱 SSO token 失败：${res.error ?? '未知失败'}` };
+    if (!res.ok) return itemFailed(deps, st, `邮箱 SSO token 失败：${res.error ?? '未知失败'}`);
     const parsed = parseSsoToken(res.text);
     if (!parsed.ok || parsed.value === undefined) {
-      return { ok: false, note: `邮箱 SSO token 没换到：${parsed.error}` };
+      return itemFailed(deps, st, `邮箱 SSO token 没换到：${parsed.error}`);
     }
     save(deps, {
       ...st,
@@ -1044,9 +1144,9 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
   if (st.phase === 'mailLogin2') {
     const sso = st.data?.sso ?? '';
     const res = callRawText(deps.transport, mailLoginRequest(sso));
-    if (!res.ok) return { ok: false, note: `邮箱登录失败：${res.error ?? '未知失败'}` };
+    if (!res.ok) return itemFailed(deps, st, `邮箱登录失败：${res.error ?? '未知失败'}`);
     const sess = parseMailSession(res.text);
-    if (!sess) return { ok: false, note: '邮箱登录响应里没有 var.sid / var.rmkey' };
+    if (!sess) return itemFailed(deps, st, '邮箱登录响应里没有 var.sid / var.rmkey');
     const nextPhase =
       st.special === 'aiAssistant' || st.special === 'aiWorkbench' || st.special === 'aiCamera'
         ? 'aiQuery'
@@ -1078,7 +1178,7 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
       return { ok: true, note: `云笔记 #${st.itemId}：没有 authToken，跳过。${out.note}` };
     }
     const res = callRawText(deps.transport, noteAuthRequest(auth.token, auth.phone));
-    if (!res.ok) return { ok: false, note: `云笔记鉴权失败：${res.error ?? '未知失败'}` };
+    if (!res.ok) return itemFailed(deps, st, `云笔记鉴权失败：${res.error ?? '未知失败'}`);
     const headers = parseNoteHeaders(res.text);
     if (!headers) {
       const out = advance(deps, doneState(deps, st));
@@ -1144,8 +1244,11 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
     const a = callRawText(deps.transport, getComposeIdRequest(sess));
     const composeId = a.ok ? parseComposeId(a.text) : undefined;
     if (!composeId) {
-      const out = advance(deps, doneState(deps, st));
-      return { ok: false, note: `发邮件 #${st.itemId}：取不到 composeId。${out.note}` };
+      return itemFailed(
+        deps,
+        { ...st },
+        `发邮件：取不到 composeId（HTTP ${a.status}，原文 ${a.text.slice(0, 80).replace(/\s+/g, ' ')}）`,
+      );
     }
     const auth = parseAuth(loadAuthRaw(deps.store));
     const account = `${auth?.phone ?? ''}@139.com`;
@@ -1160,13 +1263,31 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
       }),
     );
     const code = b.ok ? mailCode(b.text) : { ok: false, code: '', summary: b.error ?? '' };
-    const c = callRawText(deps.transport, marketClickRequest(1004, 'newsign_139mail'));
+    // ③ PE 活跃上报（`eventType "3"` = 发邮件）：参考实现发信成功后才发，**best-effort**。
+    //    少了这一枪，上游大概只当"接口被调过"，不当"这个客户端真的发了信"
+    //    （2026-11-01 实测：光发信 + 打卡，1004 仍是 `第 1 步`）。
+    // ⚠ 用**本条会话**的 cguid（`mailLogin2` 已经生成过），别再新造一个 ——
+    //   同一会话两个 cguid，"这次活跃算不算这个会话的"就说不清了（评审 2026-11-01）。
+    const pe = code.ok
+      ? callRawText(deps.transport, peActiveReportRequest(sess, st.data?.cguid ?? newCguid(), Date.now()))
+      : undefined;
+    // ⚠ 参考实现这一发打的是 `taskClickV2` —— 但那个口**已经死了**：
+    //   `caiyun…:7071/ycloud/signin/task/taskClickV2` 回 **404 访问资源不存在**，
+    //   换 `m.mcloud.139.com` 又回 405（2026-11-01 实测，Rust 那边 2026-10-07 也记的 404）。
+    // ⚠ 而且**这一条开头已经打过卡了**（`click` 阶段那一发，同一趟）——
+    //   `task/click` 不可回滚，同一趟打两发是文件头第 ① 条明令禁止的
+    //   （评审 2026-11-01：实测一趟两发 id=1004）。已打过就只做 PE 上报。
+    const c = freshClicked(st, deps).includes(1004)
+      ? { ok: true, status: 0, text: '', chars: 0, tookMs: 0, error: undefined }
+      : callRawText(deps.transport, clickRequest(deps, 1004));
     const out = advance(deps, doneState(deps, st));
     return {
-      ok: code.ok,
+      // ⚠ 业务失败**不停整趟**（参考实现里 runner 失败只记账，continue 下一条）：
+      //   这一条进 `clicked`、收尾那段复查会把它列进"本机动过、服务端仍是待办"。
+      ok: true,
       note: code.ok
-        ? `邮件已发送到 ${account}（市场打卡 ${c.ok ? 'ok' : '没成'}）。${out.note}`
-        : `发邮件没成（code=${code.code} ${code.summary}）。${out.note}`,
+        ? `邮件已发送到 ${account}（PE 上报 ${pe?.ok ? 'ok' : `没成：${pe?.error ?? '未知'}`}；市场打卡 ${c.ok ? 'ok' : '没成'}）。${out.note}`
+        : `发邮件没成（code=${code.code} ${code.summary}）—— 记下，收尾看服务端认不认。${out.note}`,
     };
   }
 
@@ -1180,8 +1301,7 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
     );
     const rec = res.ok ? parseAiRecognize(res.text) : undefined;
     if (!rec || !rec.success || !rec.fileId) {
-      const out = advance(deps, doneState(deps, st));
-      return { ok: false, note: `AI 相机识图没成：${rec?.message ?? res.error ?? '没有 fileId'}。${out.note}` };
+      return itemFailed(deps, st, `AI 相机识图没成：${rec?.message ?? res.error ?? '没有 fileId'}`);
     }
     save(deps, {
       ...st,
@@ -1206,13 +1326,15 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
       ),
     );
     const sse = res.ok ? parseSse(res.text) : { events: 0, text: '' };
-    const ok = sse.events > 0 || sse.text !== '' || (res.ok && res.text.includes('"success":true'));
+    const got = sse.events > 0 || sse.text !== '' || (res.ok && res.text.includes('"success":true'));
+    // ⚠ 参考实现（`runners.rs` 的 AiCamera）也是"没回话只记一条 note"，
+    //   成败交给收尾的矩阵复查 —— 不在这里判死。
     const out = advance(deps, doneState(deps, st));
     return {
-      ok,
-      note: ok
+      ok: true,
+      note: got
         ? `AI 相机对话完成（events=${sse.events}）。${out.note}`
-        : `AI 相机对话没成（events=${sse.events}）。${out.note}`,
+        : `AI 相机对话没取到输出（events=${sse.events}）—— 记下，等到收尾看服务端认不认。${out.note}`,
     };
   }
 
@@ -1222,11 +1344,11 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
       deps.transport,
       queryUserTokenRequest(sess, st.data?.cguid ?? newCguid()),
     );
-    if (!res.ok) return { ok: false, note: `AI 鉴权 queryUserToken 失败：${res.error ?? '未知失败'}` };
+    if (!res.ok) return itemFailed(deps, st, `AI 鉴权 queryUserToken 失败：${res.error ?? '未知失败'}`);
     const t = parseQueryUserToken(res.text);
     const auth = t ? deriveAiAuth(t) : undefined;
-    if (!t || !auth) return { ok: false, note: 'queryUserToken 没给全 account/token 或解不出手机号' };
-    if (auth.userDomainId === '') return { ok: false, note: 'queryUserToken 没给 userDomainId' };
+    if (!t || !auth) return itemFailed(deps, st, 'queryUserToken 没给全 account/token 或解不出手机号');
+    if (auth.userDomainId === '') return itemFailed(deps, st, 'queryUserToken 没给 userDomainId');
     const next = st.special === 'aiCamera' ? 'camRecognize' : 'aiStatus';
     save(deps, {
       ...st,
@@ -1266,11 +1388,18 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
     const sse = res.ok ? parseSse(res.text) : { events: 0, text: '' };
     const out = advance(deps, doneState(deps, st));
     return {
-      ok: res.ok && sse.events > 0 && sse.text !== '',
+      // ⚠⚠ **这里不许判死**：参考实现（`runners.rs:453-465`）遇到"没回话"只记一条
+      //   note（`acted` 不算），整趟照常往下走；而这一条到底成没成，由收尾那次
+      //   矩阵复查说（用户口径：成功与否看状态变化，不看我们发了啥）。
+      //   以前这里 `ok:false` ⇒ `drain` 当场停 ⇒ 后面每条都没机会做
+      //   （现场 2026-11-01：三账号全停在 #609，`已完成 0 条`）。
+      ok: true,
       note:
         sse.events > 0 && sse.text !== ''
           ? `AI 对话成功（events=${sse.events}，回复 ${sse.text.slice(0, 20)}…）。${out.note}`
-          : `AI 对话没取到输出（events=${sse.events}）${res.ok ? '' : `：${res.error ?? ''}`}。${out.note}`,
+          : `AI 对话没取到输出（events=${sse.events}${sse.code === undefined ? '' : ` code=${sse.code}`}${
+              sse.message === undefined ? '' : ` ${sse.message}`
+            }）${res.ok ? '' : `：${res.error ?? ''}`} —— 记下，等到收尾看服务端认不认。${out.note}`,
     };
   }
 
@@ -1280,17 +1409,25 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
       ts = beginPdfUpload(deps);
       save(deps, { ...st, data: { ...(st.data ?? {}), pdfTs: String(ts) }, day: today(deps) });
     }
-    if (uploadDone(deps)) {
-      const up = JSON.parse(deps.store.getState('mcloud.upload.state') ?? '{}') as { fileId?: string };
-      save(deps, { ...st, phase: 'pdfConvert', fileId: up.fileId, day: today(deps) });
-      return { ok: true, note: 'PDF 已传完 —— 下一步转换' };
-    }
+    const pdfUploaded = () => {
+      const up = JSON.parse(deps.store.getState('mcloud.upload.state') ?? '{}') as {
+        fileId?: string;
+        ownedByUs?: boolean;
+      };
+      // 转换要用 fileId；但只有明确是我们造的才允许收尾时删（撞同名时那是用户的文件）。
+      save(deps, {
+        ...st,
+        phase: 'pdfConvert',
+        fileId: up.fileId,
+        fileOwned: up.ownedByUs === true,
+        day: today(deps),
+      });
+      return { ok: true as const, note: 'PDF 已传完 —— 下一步转换' };
+    };
+    if (uploadDone(deps)) return pdfUploaded();
     const out = runUploadStep(deps, utf8(makePdf(ts)));
-    if (uploadDone(deps)) {
-      const up = JSON.parse(deps.store.getState('mcloud.upload.state') ?? '{}') as { fileId?: string };
-      save(deps, { ...st, phase: 'pdfConvert', fileId: up.fileId, day: today(deps) });
-      return { ok: true, note: 'PDF 已传完 —— 下一步转换' };
-    }
+    if (uploadDone(deps)) return pdfUploaded();
+    if (!out.ok) return itemFailed(deps, st, out.note);
     return out;
   }
 
@@ -1309,10 +1446,21 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
       ),
     );
     const code = res.ok ? mailCode(res.text) : { ok: false, code: '', summary: res.error ?? '未知失败' };
+    // ⚠ 转换完要先收尾：以前这里直接 `advance` 会把 fileId 清掉，
+    //   传上去的 PDF 就永远留在用户网盘里。
+    if (st.fileId !== undefined) {
+      save(deps, { ...st, phase: 'trash', day: today(deps) });
+      return {
+        ok: true,
+        note: code.ok
+          ? 'PDF 转换完成 —— 下一步收尾'
+          : `PDF 转换没成（code=${code.code} ${code.summary}）—— 仍然先收尾（文件不能留在网盘里）`,
+      };
+    }
     const out = advance(deps, doneState(deps, st));
     return {
-      ok: code.ok,
-      note: code.ok ? `PDF 转换完成。${out.note}` : `PDF 转换没成（code=${code.code} ${code.summary}）。${out.note}`,
+      ok: true,
+      note: code.ok ? `PDF 转换完成。${out.note}` : `PDF 转换没成（code=${code.code} ${code.summary}）—— 记下，收尾看服务端认不认。${out.note}`,
     };
   }
 
@@ -1323,8 +1471,7 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
     const b = callRawText(deps.transport, billMailsSearchRequest(sess, cguid));
     const mid = b.ok ? firstField(b.text, 'mid') : undefined;
     if (!mid) {
-      const out = advance(deps, doneState(deps, st));
-      return { ok: false, note: `账单 #${st.itemId}：邮件列表里取不到 mid。${out.note}` };
+      return itemFailed(deps, st, '账单：邮件列表里取不到 mid');
     }
     const c = callRawText(deps.transport, markMailReadRequest(sess, cguid, mid));
     const d = callRawText(deps.transport, readMessageRequest(sess, cguid, mid));
@@ -1343,8 +1490,8 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
     const e = callRawText(deps.transport, logBehaviorActionRequest(sess, 111631, 261, cguid, '110542_6'));
     const out = advance(deps, doneState(deps, st));
     return {
-      ok: d.ok && mq.every(Boolean) && e.ok,
-      note: `账单 #${st.itemId}（页 ${a.ok ? 'ok' : '没成'}；mid 已取；标读 ${c.ok ? 'ok' : '没成'}；读信 ${d.ok ? 'ok' : '没成'}；MQ ${mq.filter(Boolean).length}/3；像素 ${e.ok ? 'ok' : '没成'}）。${out.note}`,
+      ok: true,
+      note: `账单 #${st.itemId}（页 ${a.ok ? 'ok' : '没成'}；mid 已取；标读 ${c.ok ? 'ok' : '没成'}；读信 ${d.ok ? 'ok' : '没成'}；MQ ${mq.filter(Boolean).length}/3；像素 ${e.ok ? 'ok' : '没成'}）—— 记下，收尾看服务端认不认。${out.note}`,
     };
   }
 
@@ -1371,11 +1518,7 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
     const res = callRawText(deps.transport, mailSearchRequest(sess, st.data?.cguid ?? newCguid()));
     const mid = res.ok ? firstField(res.text, 'mid') : undefined;
     if (!mid) {
-      const out = advance(deps, doneState(deps, st));
-      return {
-        ok: false,
-        note: `邮件列表里取不到 mid：${res.error ?? '响应里没有 mid'}。${out.note}`,
-      };
+      return itemFailed(deps, st, `邮件列表里取不到 mid：${res.error ?? '响应里没有 mid'}`);
     }
     save(deps, { ...st, phase: 'mailBackup', data: { ...(st.data ?? {}), mid }, day: today(deps) });
     return { ok: true, note: `找到邮件 mid（${mid.length} 字符）—— 下一步转存` };
@@ -1390,10 +1533,10 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
     const code = res.ok ? mailCode(res.text) : { ok: false, code: '', summary: res.error ?? '未知失败' };
     const out = advance(deps, doneState(deps, st));
     return {
-      ok: res.ok && code.ok,
+      ok: true,
       note: code.ok
         ? `邮件转存已提交（服务端认了）。${out.note}`
-        : `邮件转存没成（code=${code.code} ${code.summary}）。${out.note}`,
+        : `邮件转存没成（code=${code.code} ${code.summary}）—— 记下，收尾看服务端认不认。${out.note}`,
     };
   }
 
@@ -1403,24 +1546,52 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
     const out = advance(deps, st);
     return { ok: true, note: `这条没有要收尾的文件 —— 不发空数组那一枪。${out.note}` };
   }
-  const res = callRawText(deps.transport, trashRequest(deps, [st.fileId]));
-  if (!res.ok) return { ok: false, note: `收尾 #${st.itemId} 失败：${res.error ?? '未知失败'}` };
-  let ok = true;
-  let why = '';
-  try {
-    const v = JSON.parse(res.text) as Record<string, unknown>;
-    // ⚠ 这一口是**字符串 code** + `success` 那套信封（与 `rabactive/*` 那套不同）
-    const code = typeof v.code === 'string' ? v.code : String(v.code ?? '');
-    ok = v.success === true || code === '0000' || code === '0';
-    if (!ok) why = `（code=${code}${typeof v.msg === 'string' ? ` ${v.msg}` : ''}）`;
-  } catch {
-    ok = false;
-    why = '（响应不是 JSON）';
+  if (st.fileOwned === false) {
+    // 撞上用户已有文件：只做动作，绝不删。
+    const out = advance(deps, doneState(deps, { ...st, fileId: undefined, fileOwned: undefined }));
+    return { ok: true, note: `这条的文件不是我们造的 ⇒ 不删。${out.note}` };
   }
-  const out = advance(deps, { ...st, fileId: undefined });
-  return ok
-    ? { ok: true, note: `收尾 #${st.itemId}：文件已移进回收站。${out.note}` }
-    : { ok: false, note: `收尾 #${st.itemId} 被拒 ${why}` };
+  const fileId = st.fileId;
+  const res = callRawText(deps.transport, trashRequest(deps, [fileId]));
+  const parsed = res.ok
+    ? parseTrashResult(res.text)
+    : { ok: false, code: '', why: res.error ?? '未知失败' };
+  if (!parsed.ok) {
+    // 登记表里还留着：链尾那一枪会再试，跨天也不会丢。
+    // ⚠ 收尾失败**不拖垮整趟**（参考实现里它只是这一条的 problem）。
+    const out0 = advance(deps, doneState(deps, { ...st, fileId: undefined, fileOwned: undefined }));
+    return { ok: true, note: `收尾 #${st.itemId} 被拒（${parsed.why}）—— 文件留着，链尾再清。${out0.note}` };
+  }
+  unregisterOwnedFile(deps, fileId);
+  // ⚠ 上传槽里如果躺着的正是刚删掉的这一枚，要清掉：434（分享）会用
+  //   `mcloud.upload.state.fileId` 当"这一趟传的文件"，不清就会拿着**已删的 id**
+  //   去建外链 ⇒ 上游回 `1010010006 …记录已被删除`（现场 2026-11-01 自测）。
+  // ⚠ 而且必须清在 `advance` **之前**：`advance` 会给下一条排队上传、把槽覆盖，
+  //   那时"槽里正好是刚删的那枚"永远不成立，这一枪就白清了（评审 2026-11-01）。
+  try {
+    if ((JSON.parse(deps.store.getState('mcloud.upload.state') ?? '{}') as { fileId?: string }).fileId === fileId) {
+      clearUpload(deps);
+    }
+  } catch {
+    // 槽里不是 JSON 就不管
+  }
+  // ⚠ 收尾也要把这一条记成"动过了"：`fileId` 那支以前只清 id 不记 clicked，
+  //   于是不打卡的 runner（`currstep != 0`）收完尾又被挑回来 —— 1014 那次 60 步死循环。
+  const out = advance(deps, doneState(deps, { ...st, fileId: undefined, fileOwned: undefined }));
+  return { ok: true, note: `收尾 #${st.itemId}：文件已移进回收站。${out.note}` };
+}
+
+/** 今天这一趟还在用、**不能提前收尾**的文件 id。
+ *
+ *  链尾兜底清理会跳过它：上传完 → 分享/打卡还没做完时删掉，下一趟就用不了那一枚了。
+ *  跨天、已收摊（done/settle）的状态不算 —— 那些才是该清的遗留。 */
+export function activeAppTaskFileId(deps: TaskDeps): string | undefined {
+  const st = load(deps);
+  if (st === null) return undefined;
+  if (st.day !== today(deps)) return undefined;
+  if (st.phase === 'done' || st.phase === 'settle') return undefined;
+  if (st.fileId === undefined) return undefined;
+  return st.fileOwned === false ? undefined : st.fileId;
 }
 
 /** 还剩几条（面板显示用）。 */

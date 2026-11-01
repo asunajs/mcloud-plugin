@@ -20,3 +20,21 @@ export function trashRequest(fileIds: string[]): BuiltRequest {
     body: JSON.stringify({ fileIds }),
   };
 }
+
+/** 收尾响应是不是**真的成了**（HTTP 200 不够）。
+ *
+ *  真机这一口的信封是**字符串 code + `success`**（与 `rabactive/*` 那套不同）；
+ *  只看 HTTP 会把「被拒」记成已清理，然后把它从登记表里注销掉 —— 文件就留在
+ *  用户网盘里再也没人认领。解不出也按没成处理（宁可下一趟重试）。 */
+export function parseTrashResult(text: string): { ok: boolean; code: string; why: string } {
+  let v: Record<string, unknown>;
+  try {
+    v = JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    return { ok: false, code: '', why: '响应不是 JSON' };
+  }
+  const code = typeof v.code === 'string' ? v.code : String(v.code ?? '');
+  const ok = v.success === true || code === '0000' || code === '0';
+  const msg = typeof v.msg === 'string' ? v.msg : '';
+  return { ok, code, why: ok ? '' : `code=${code}${msg === '' ? '' : ` ${msg}`}` };
+}

@@ -252,9 +252,15 @@ export interface BeanDay {
   net: number;
   /** 今日收入合计（正数）。 */
   gained: number;
+  /** 今日**收入**笔数（`num > 0`）。
+   *
+   *  ⚠ 与 `count` 不是一回事：`count` 是今天读到的**全部**流水（含支出、含 0）。
+   *  「今日获得 N 次」那一行只数进账，所以不能拿 `count` 顶替 —— 今天兑过一次奖，
+   *  两者就会差一笔，而用户看到的 N 会莫名其妙多 1。 */
+  gainedCount: number;
   /** 今日支出合计（取正数）。 */
   spent: number;
-  /** 今日读到几笔流水。 */
+  /** 今日读到几笔流水（进 + 出 + 0）。 */
   count: number;
 }
 
@@ -267,6 +273,7 @@ export interface BeanDay {
  *  "今天没进出"是两件事，不能混。 */
 export function aggregateToday(records: readonly CloudRecord[], nowMs: number): BeanDay {
   let gained = 0;
+  let gainedCount = 0;
   let spent = 0;
   let count = 0;
   for (const r of records) {
@@ -279,11 +286,13 @@ export function aggregateToday(records: readonly CloudRecord[], nowMs: number): 
     }
     if (!isToday(ts, nowMs)) continue;
     count += 1;
-    // `num` 的正负号就是进出。`0` 归进收入一侧（+0），两种写法等价。
+    // `num` 的正负号就是进出。`0` 归进收入一侧（+0），两种写法等价，
+    // 但它不是一笔"获得"—— `gainedCount` 只数 `> 0`。
     if (r.num >= 0) gained += r.num;
     else spent += -r.num;
+    if (r.num > 0) gainedCount += 1;
   }
-  return { net: gained - spent, gained, spent, count };
+  return { net: gained - spent, gained, gainedCount, spent, count };
 }
 
 // ══════════════════════════ 明细（不限今日，纯函数部分）════════════════════

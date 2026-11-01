@@ -252,6 +252,9 @@ test('`note` 是一行摘要 —— 进 runs 表，不该是一大段', () => {
     more: () => false,
   });
   assert.ok(r.note.length < 120, `摘要太长了（${r.note.length} 字）：${r.note}`);
-  // 允许留**最后一步**那句话（它是具体的结论），但不许把每一步的原话都拼进来
-  assert.ok(!r.note.includes('很长的原话'.repeat(3)), '摘要不该把每步原话拼进去');
+  // ⚠ 2026-11-01 改口径：超长 note **截短**，不再折成「<label>：好了」——
+  //   那句"好了"会把"没成"说成"成了"（任务拓展判 blocked 时就发生过）。
+  //   留下来的仍是**开头那截原话**，所以这里只钉"没被拼成一大段"。
+  assert.ok(r.note.startsWith('很长的原话'), `摘要该留原话开头：${r.note}`);
+  assert.ok(!r.note.includes('很长的原话'.repeat(8)), '摘要不该把每步原话整段拼进来');
 });

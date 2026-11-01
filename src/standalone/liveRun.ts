@@ -15,11 +15,14 @@ import {
 } from '../mcloud/sessionExchange.ts';
 import { loadAccounts } from '../mcloud/accounts.ts';
 import { labelOf } from '../mcloud/taskAccounts.ts';
+import { runAuthRefresh } from '../mcloud/authRefresh.ts';
 import { runLiveGate, readGateReading } from '../mcloud/tasks/liveGateTask.ts';
 import { runLiveRoom, STATE_CODES } from '../mcloud/tasks/liveRoom.ts';
 import { runLiveListen, type ListenDeps } from '../mcloud/tasks/liveListen.ts';
-import { runLiveDraw, STATE_DRAW } from '../mcloud/tasks/liveDraw.ts';
-import { userLine } from '../mcloud/tasks/stepLog.ts';
+import { loadDrawState, runLiveDraw, STATE_DRAW, type DrawState } from '../mcloud/tasks/liveDraw.ts';
+import { drawLogLines } from './liveLog.ts';
+import { createCliLogger, colorizeFrom, type CliLogger } from './logger.ts';
+import { lineLevel, userLine } from '../mcloud/tasks/stepLog.ts';
 import type { TaskDeps, TaskOutcome } from '../mcloud/tasks/base.ts';
 import type { Runtime } from './runtime.ts';
 
@@ -33,13 +36,13 @@ interface RunStep {
 }
 
 /** 直播领花要先有 H5 会话；gate 只换直播 JWT，不写 mcloud.session。 */
-function ensureSignInSession(deps: TaskDeps, label: string): boolean {
+function ensureSignInSession(deps: TaskDeps, label: string, log: CliLogger): boolean {
   if (!needExchange(deps.store, Date.now(), 'sign-in')) return true;
   const st = loadExchange(deps.store, 'sign-in');
   if (st === null || st.step === 'done') {
     const started = startExchange(deps.store, loadAuthRaw(deps.store), deps.nowIso, 'sign-in');
     if (!started.ok) {
-      console.log(`[${label}] 换票：${started.error ?? '未知失败'}`);
+      log.error(`换票：${started.error ?? '未知失败'}`);
       return false;
     }
   }
@@ -51,7 +54,11 @@ function ensureSignInSession(deps: TaskDeps, label: string): boolean {
     deps,
     { label: `${label} 换票`, maxSteps: 4, deadlineMs: 30_000, startedAt: Date.now() },
   );
-  return r.ok;
+  if (!r.ok) {
+    log.error(`换票：${r.note}`);
+    return false;
+  }
+  return true;
 }
 
 function collectOnce(
@@ -146,19 +153,37 @@ function collectOnce(
 
 function drawFor(
   deps: TaskDeps,
-  opts: { force: boolean; label: string },
+  opts: { force: boolean; label: string; codes?: readonly string[] },
 ): { ok: boolean; note: string; steps: RunStep[] } {
-  const r = drain(runLiveDraw, deps, {
-    label: opts.label,
-    maxSteps: 12,
-    deadlineMs: 60_000,
-    startedAt: Date.now(),
-  });
+  const r = drain(
+    // 手动那一路必须把**人给的那几条**显式传进去：只写 `STATE_CODES` 不够 ——
+    // `runLiveDraw` 不传 `codes` 时会从共享池里再挑（人给的在前，池里的跟在后面），
+    // 于是「我输入一条、结果把上一场听来的也领了」。mcloud-sign 的
+    // `drawRedFlower(codes)` 只打调用方给的那几条，CLI 要照这个。
+    (d) => runLiveDraw(d, opts.codes === undefined ? {} : { codes: opts.codes }),
+    deps,
+    {
+      label: opts.label,
+      maxSteps: 12,
+      deadlineMs: 60_000,
+      startedAt: Date.now(),
+    },
+  );
   return {
     ok: r.ok,
     note: r.note,
     steps: [{ name: '领小红花', ok: r.ok, note: r.note, idle: r.idle }],
   };
+}
+
+/** 把这一轮落盘的结果照 mcloud-sign 的句子打出来。返回有没有真的打印。 */
+function printDraw(deps: TaskDeps, before: DrawState | null, log: CliLogger): boolean {
+  const st = loadDrawState(deps.store);
+  if (st === null) return false;
+  // 口令没变、这一轮早就跑完 ⇒ 不把上次的结果再打一遍（面板那边同样标「上次」）。
+  if (before?.step === 'done' && st.step === 'done' && st.startedAt === before.startedAt) return false;
+  for (const line of drawLogLines(st)) log[line.level](line.text);
+  return true;
 }
 
 function accounts(rt: Runtime, only?: string): { id: string; label: string }[] {
@@ -170,43 +195,83 @@ function accounts(rt: Runtime, only?: string): { id: string; label: string }[] {
 
 /** 自动听直播 + 领花。没开播时只判断一次，不逐账号刷屏。 */
 export function autoDrawRedFlower(rt: Runtime): void {
+  const log = createCliLogger({ colorize: colorizeFrom(rt.config.common) });
   const all = accounts(rt);
   if (all.length === 0) {
-    console.log('[直播] 没有启用账号');
+    log.error('未找到账号配置');
     return;
   }
+  log.info('------【直播弹幕口令】------');
   const first = all[0]!;
-  const collectDeps = rt.listenDepsFor(first.id);
-  if (!ensureSignInSession(collectDeps, first.label)) return;
+  const collectDeps: ListenDeps = {
+    ...rt.listenDepsFor(first.id),
+    // 照 mcloud-sign 的 `[WS] 弹幕: ...`；runtime 里那条默认走 host-api 的
+    // `[ISO] [debug]` 格式，这里覆盖成 CLI 的 `[debug] HH:MM:SS`。
+    onDanmaku: (text) => log.debug(`[WS] 弹幕: ${text}`),
+  };
+  const auth = runAuthRefresh(collectDeps);
+  if (!auth.ok) log.warn(`凭据续期：${auth.note}`);
+  if (!ensureSignInSession(collectDeps, first.label, log)) return;
   const collected = collectOnce(collectDeps, Date.now(), LISTEN_BUDGET_MS);
-  for (const line of collected.detail) console.log(`[${first.label}] ${line}`);
+  for (const line of collected.detail) log[lineLevel(line)](line);
   if (collected.stopped) return;
-  for (const acct of all) {
+
+  // 照 mcloud-sign：把这一趟**所有**口令都列出来（不只是计数）。
+  const pool = loadPoolFrom(rt.rawStore).pool;
+  const codes = pool.codes.filter((c) => c.state !== 'invalid').map((c) => c.value);
+  if (codes.length > 0) log.info(`共提取 ${codes.length} 个口令: ${codes.join(', ')}`);
+
+  for (const [i, acct] of all.entries()) {
+    log.info(`====== 账号 ${i + 1}【${acct.label}】 ======`);
     const deps = rt.depsFor(acct.id);
-    if (!ensureSignInSession(deps, acct.label)) continue;
+    const auth = runAuthRefresh(deps);
+    if (!auth.ok) log.warn(`凭据续期（${acct.label}）：${auth.note}`);
+    if (!ensureSignInSession(deps, acct.label, log)) {
+      log.error('初始化失败，跳过');
+      continue;
+    }
+    const before = loadDrawState(deps.store);
     const r = drawFor(deps, { force: true, label: `${acct.label} 领小红花` });
-    console.log(`[${acct.label}] ${r.note}`);
+    const printed = printDraw(deps, before, log);
+    // 口令没变、上一轮已跑完 ⇒ 没有新结果可打，就把状态机那句「已跑完」说出来。
+    if (!printed) log.info(r.note);
+    if (!r.ok) log.error(`领取失败：${r.note}`);
   }
 }
 
 /** 手工口令：不监听，只把给出的口令逐账号领一遍。 */
 export function drawRedFlower(rt: Runtime, codes: string[]): void {
+  const log = createCliLogger({ colorize: colorizeFrom(rt.config.common) });
   if (codes.length === 0) {
-    console.log('[小红花] 没有口令');
+    log.error('请提供至少一个口令');
+    return;
+  }
+  const all = accounts(rt);
+  if (all.length === 0) {
+    log.error('未找到账号配置');
     return;
   }
   const now = new Date().toISOString();
-  for (const acct of accounts(rt)) {
+  for (const acct of all) {
+    log.info('==============');
+    log.info(`登录账号【${acct.label}】`);
     const deps = rt.depsFor(acct.id);
-    if (!ensureSignInSession(deps, acct.label)) continue;
+    const auth = runAuthRefresh(deps);
+    if (!auth.ok) log.warn(`凭据续期（${acct.label}）：${auth.note}`);
+    if (!ensureSignInSession(deps, acct.label, log)) continue;
     deps.store.setState(
       STATE_CODES,
       JSON.stringify({ at: now, codes, raw: codes.join(' '), how: '手工传入' }),
       now,
     );
     deps.store.setState(STATE_DRAW, '', now);
-    const r = drawFor(deps, { force: true, label: `${acct.label} 领小红花` });
-    console.log(`[${acct.label}] ${r.note}`);
+    const r = drawFor(deps, { force: true, label: `${acct.label} 领小红花`, codes });
+    printDraw(deps, null, log);
+    // 照 mcloud-sign：读余额失败就是「获取用户信息失败」，别拿内部步骤名糊上去。
+    if (!r.ok) {
+      const st = loadDrawState(deps.store);
+      log.error(st?.balanceBefore === undefined ? '获取用户信息失败' : `领取失败：${r.note}`);
+    }
   }
 }
 

@@ -14,6 +14,7 @@
 // 的 HTTP 接口。
 
 
+import { PLUGIN_VERSION } from '../version.ts';
 import {
   STATE_BASE_URL,
   importSession,
@@ -231,6 +232,20 @@ import {
   setTaskSummary,
   syncTaskReadiness,
 } from './taskReadiness.ts';
+import {
+  PRIZE_CACHE_TTL_MS,
+  confirmPrizeClaim,
+  ensurePrizeToken,
+  loadClaimState,
+  loadPrizeCache,
+  maskPhoneLike,
+  readPendingPrizes,
+  savePrizeCache,
+  startPrizeClaim,
+  withPrizeTokenGate,
+  type PrizeListResult,
+} from './tasks/prizeClaim.ts';
+import { LoginExpiredError } from './tokenGate.ts';
 
 import {
   APP_LOGIN_AES_KEY,
@@ -488,31 +503,75 @@ function readMatrixLocal(one: Store): {
   return { clicked, unconfirmed, uploadDone, uploadName };
 }
 
-/** 备份进度（只读本地状态）。任务拓展的 `step` + 本月备份开关。 */
+/** 备份进度（只读本地状态）。任务拓展的 `step` + 本月备份开关。
+ *
+ *  ⚠ **跨天的旧状态不摆**（`day` 不是今天就只给月份读数、`step` 空）：
+ *  那一步是**每日**状态，昨天的「已完成」写在今天这一行上，读起来就是
+ *  「本月备份：未开启（任务拓展：已完成）」—— 一句自相矛盾的话（现场 2026-11-01）。
+ *  月份那一格（`mcloud.month.backup`）本来就是按月存的，照旧给。
+ *
+ *  ⚠ `why` 是**没成的那一句**（`blocked`/`unknown` 时才有）：界面照着它说
+ *  「任务拓展：没成 —— 快照没建上：…」，而不是拿一个"已完成"糊过去。 */
 function readBackupState(
   one: Store,
   nowIso: string,
-): { step: string; day: string; enabled?: boolean | undefined } | null {
+): {
+  step: string;
+  day: string;
+  enabled?: boolean | undefined;
+  why: string;
+  stale: boolean;
+} | null {
   try {
     const ex = JSON.parse(one.getState(STATE_EXPAND) ?? 'null') as {
       step?: unknown;
       day?: unknown;
       curMonthBackup?: unknown;
+      backupOn?: unknown;
+      blockedWhy?: unknown;
+      snapError?: unknown;
     } | null;
     if (ex === null || typeof ex !== 'object') return null;
+    const month = nowIso.slice(0, 7);
+    // ⚠ `curMonthBackup` 是**当月**读数，跨月就不能再当"本月"用 ——
+    //   它记在自己的 `month` 格里（`STATE_MONTH_BACKUP`），而状态袋里那份没有月份，
+    //   所以只在"这趟是今天写的"时才采信它（评审 2026-11-01：月初第一次跑之前，
+    //   上个月的读数会被印成「本月备份：未开启」）。
+    const day0 = typeof ex.day === 'string' ? ex.day : '';
+    const fresh0 = day0 === nowIso.slice(0, 10);
     let enabled: boolean | undefined =
-      typeof ex.curMonthBackup === 'boolean' ? ex.curMonthBackup : undefined;
+      fresh0 && typeof ex.curMonthBackup === 'boolean' ? ex.curMonthBackup : undefined;
     const mb = JSON.parse(one.getState(STATE_MONTH_BACKUP) ?? 'null') as {
       month?: unknown;
       backup?: unknown;
     } | null;
-    if (mb !== null && mb.month === nowIso.slice(0, 7) && typeof mb.backup === 'boolean') {
+    if (mb !== null && mb.month === month && typeof mb.backup === 'boolean') {
       enabled = mb.backup;
     }
+    // 状态机那边的判据是 `backupOn ?? curMonthBackup`（见 `verdictOf`）；
+    // 两处必须说同一句话，否则界面和状态机会各说各的。
+    if (fresh0 && typeof ex.backupOn === 'boolean') enabled = ex.backupOn;
+    const day = day0;
+    const fresh = fresh0;
+    let step = fresh && typeof ex.step === 'string' ? ex.step : '';
+    let why = fresh && typeof ex.blockedWhy === 'string' ? ex.blockedWhy : '';
+    // ⚠ 兜最后一道：**旧版本**写下的 `done` 不看目标（快照失败也写 done）。
+    //   只要"备份还是 false + 状态说已完成"，这一行就不许照抄 —— 那句
+    //   「本月备份：未开启（任务拓展：已完成）」正是这么来的。
+    //   改在这里（读数层）而不是只改状态机：库里那些旧状态不会自己变。
+    if (step === 'done' && enabled !== true) {
+      // ⚠ 判据用 `!== true`：`enabled === undefined`（读不到）同样不能算"已完成"。
+      step = 'blocked';
+      const snap = fresh && typeof ex.snapError === 'string' ? ex.snapError : '';
+      if (why === '') why = snap === '' ? '旧状态没记原因' : `快照没建上：${snap}`;
+    }
     return {
-      step: typeof ex.step === 'string' ? ex.step : '',
-      day: typeof ex.day === 'string' ? ex.day : '',
+      // 旧状态（没写 day 的 / 跨天的）不算今天这一趟的进度。
+      step,
+      day,
       enabled,
+      why,
+      stale: !fresh,
     };
   } catch {
     return null;
@@ -526,6 +585,8 @@ function buildReadings(deps: RouteDeps): Record<string, unknown> {
 
   return {
     at: nowIso,
+    // 界面右上角要印「跑的是哪一版」—— 用户排查时第一句就是这个。
+    version: PLUGIN_VERSION,
     account: {
       loggedIn: view.accounts.length > 0,
       current: view.current,
@@ -3042,6 +3103,252 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
             nowMs,
             error: e instanceof Error ? e.message : String(e),
           });
+        }
+      },
+    },
+
+    // ══════════════════════ 领奖（待领取奖品）══════════════════════
+    //
+    // 三件事分开三个路由：
+    //   GET  /prizes          —— 待领取清单（**只读**；旧口跨市场；按账号；60 秒缓存）
+    //   POST /prizes/claim    —— 详情 → 滑块（本地解）→ 发短信（**会发一条短信**）
+    //   POST /prizes/confirm  —— 验证码 → 真正领取（**写**）
+    //
+    // 为什么不在 `/readings` 里给：打开页面就要替每个账号翻三页上游，
+    // 而「待领取」不是每次都要看 —— 和「今日AI豆」同一个口径：**进这一页才取**。
+    // 为什么拆成 claim/confirm 而不是一个路由：中间那一步的**等待由用户决定**
+    // （手机收短信、抄验证码），和登录那条链同一个理由。
+    {
+      path: `${base}/prizes`,
+      method: 'GET',
+      // 翻最多 3 页 × 100 条 + 可能的当场续票（到期主动一轮 / 90001 被动两轮）。
+      budget_ms: 90_000,
+      handler: (req) => {
+        const q = parseQuery(req.query ?? '');
+        const wanted = (q['account'] ?? '').trim();
+        const refresh = q['refresh'] === '1';
+        const accounts = loadAccounts(deps.store);
+        const cur = currentAccount(deps.store);
+        // ⚠ 账号标签默认就是**完整手机号**（`accounts.ts::upsertAccount` 用 `phoneOf`）。
+        //   领奖页会把 label 显示在下拉与"验证码发到 …"那一句里 ⇒ 这一层统一脱敏。
+        const view = accounts.map((a) => ({
+          id: a.id,
+          label: maskPhoneLike(a.label) ?? a.label,
+          current: cur !== undefined && cur.id === a.id,
+          disabled: a.disabled === true,
+        }));
+        // 默认看"当前账号"；当前那个停用了就退到第一条启用的（停用的号不该被默认读）
+        const found =
+          wanted === ''
+            ? cur !== undefined && cur.disabled !== true
+              ? cur
+              : accounts.find((a) => a.disabled !== true)
+            : accounts.find((a) => a.id === wanted);
+        if (wanted !== '' && found === undefined) {
+          return json(400, { error: `列表里没有这个账号：${wanted}` });
+        }
+        if (found === undefined) {
+          // 没有账号 ≠ 读失败：界面要显示"去账号页加一个"，不是一句红字
+          return json(200, {
+            ok: true,
+            accounts: view,
+            account: null,
+            nowMs: Date.parse(deps.now()),
+            cached: false,
+            pending: 0,
+            scanned: 0,
+            hasMore: false,
+            items: [],
+            noAccount: true,
+          });
+        }
+        const nowIso = deps.now();
+        const nowMs = Date.parse(nowIso);
+        const one = scoped(rawStoreOf(deps.store), found.id);
+        const who = maskPhoneLike(found.label) ?? found.label;
+        const prizeDeps = {
+          store: one,
+          transport: deps.transport,
+          nowIso,
+          baseUrl: loadBaseUrl(deps.store),
+          nowMs: () => Date.parse(deps.now()),
+        };
+        const cache = refresh ? null : loadPrizeCache(one);
+        let list: PrizeListResult;
+        let cached = false;
+        if (cache !== null && nowMs - cache.atMs < PRIZE_CACHE_TTL_MS) {
+          list = cache.list;
+          cached = true;
+        } else {
+          try {
+            list = withPrizeTokenGate(prizeDeps, () => readPendingPrizes(prizeDeps));
+            savePrizeCache(one, list, nowMs, nowIso);
+            deps.log(
+              `领奖：${who} 读到 ${list.items.length} 件待领取（共翻到 ${list.scanned} 条记录` +
+                `${list.failed === undefined ? '' : `；${list.failed}`}）`,
+            );
+          } catch (e) {
+            // 读失败不写缓存（网络抖一下不该被冻 60 秒），但把原因如实带回界面
+            list = {
+              items: [],
+              scanned: 0,
+              hasMore: false,
+              failed: e instanceof Error ? e.message : String(e),
+            };
+          }
+        }
+        return json(200, {
+          ok: true,
+          accounts: view,
+          account: { id: found.id, label: maskPhoneLike(found.label) ?? found.label },
+          nowMs,
+          cached,
+          pending: list.items.length,
+          scanned: list.scanned,
+          hasMore: list.hasMore === true,
+          ...(list.totalCount !== undefined ? { totalCount: list.totalCount } : {}),
+          items: list.items,
+          ...(list.failed !== undefined ? { failed: list.failed } : {}),
+        });
+      },
+    },
+    {
+      // 第一段：读详情 → 取滑块题面（本地解偏移）→ 发验证码短信。
+      //
+      // ⚠ 这一枪**会真的发一条短信**（到账号绑定的手机）。所以只有用户点了
+      //   「领取」才会走到这里；同一件 60 秒内不重发（本地闸，别让上游回 1001）。
+      path: `${base}/prizes/claim`,
+      method: 'POST',
+      // 详情一发 + 题面一发 + 发码一发，再加"当场续票"与本地解图（JPEG 680×400）。
+      budget_ms: 120_000,
+      handler: (req) => {
+        const b = readBody(req);
+        const id = typeof b['account'] === 'string' ? b['account'] : '';
+        const oidRaw = b['oid'];
+        const oid =
+          typeof oidRaw === 'string'
+            ? oidRaw.trim()
+            : typeof oidRaw === 'number' && Number.isFinite(oidRaw)
+              ? String(oidRaw)
+              : '';
+        const accounts = loadAccounts(deps.store);
+        const found =
+          id === '' ? currentAccount(deps.store) : accounts.find((a) => a.id === id);
+        if (found === undefined) {
+          return json(400, { error: id === '' ? '还没有账号 —— 去「账号」页加一个' : `列表里没有这个账号：${id}` });
+        }
+        if (oid === '') return json(400, { error: '要带一个 oid（领哪一件）' });
+        const one = scoped(rawStoreOf(deps.store), found.id);
+        const nowIso = deps.now();
+        const prizeDeps = {
+          store: one,
+          transport: deps.transport,
+          nowIso,
+          baseUrl: loadBaseUrl(deps.store),
+          nowMs: () => Date.parse(deps.now()),
+        };
+        const cache = loadPrizeCache(one);
+        const item = cache?.list.items.find((x) => x.oid === oid);
+        if (item === undefined) {
+          return json(400, { error: '列表里没有这一件 —— 先点「刷新」再点一次「领取」' });
+        }
+        const who = maskPhoneLike(found.label) ?? found.label;
+        // ⚠ **写这一族不走 `withPrizeTokenGate` 的自动重跑**：票过期先换一轮票，
+        //   换不成就让用户自己再点（他点了才算重试）。理由见 `ensurePrizeToken`。
+        const pre = ensurePrizeToken(prizeDeps);
+        if (!pre.ok) {
+          return json(200, {
+            ok: false,
+            note: pre.note ?? '登录信息需要换一次 —— 去「账号」页点一下刷新，再回来领',
+          });
+        }
+        try {
+          const r = startPrizeClaim(prizeDeps, item, who);
+          deps.log(`领奖：${who} · ${item.name} —— ${r.note}`);
+          return json(200, { ...r, at: r.at ?? Date.parse(nowIso) });
+        } catch (e) {
+          const note =
+            e instanceof LoginExpiredError
+              ? '登录信息过期了 —— 去「账号」页重新登录一次再试（这一枪没有发出去）'
+              : e instanceof Error
+                ? e.message
+                : String(e);
+          deps.log(`领奖：${who} · ${item.name} —— ${note}`);
+          return json(200, { ok: false, note });
+        }
+      },
+    },
+    {
+      // 第二段：提交验证码，真正领取。
+      //
+      // ⚠ 状态来自上一步落的那一单（`mcloud.prizes.claim`）：没发过短信就不许确认
+      //   —— 否则拿旧单/别人的单去撞，只会换回一个看不懂的错误码。
+      path: `${base}/prizes/confirm`,
+      method: 'POST',
+      // 一发写请求 + 可能的当场续票；不重试写这一枪（没有幂等键，重试由用户决定）。
+      budget_ms: 60_000,
+      handler: (req) => {
+        const b = readBody(req);
+        const id = typeof b['account'] === 'string' ? b['account'] : '';
+        const oidRaw = b['oid'];
+        const oid =
+          typeof oidRaw === 'string'
+            ? oidRaw.trim()
+            : typeof oidRaw === 'number' && Number.isFinite(oidRaw)
+              ? String(oidRaw)
+              : '';
+        const codeRaw = b['code'];
+        const code =
+          typeof codeRaw === 'string'
+            ? codeRaw
+            : typeof codeRaw === 'number' && Number.isFinite(codeRaw)
+              ? String(codeRaw)
+              : '';
+        const accounts = loadAccounts(deps.store);
+        const found =
+          id === '' ? currentAccount(deps.store) : accounts.find((a) => a.id === id);
+        if (found === undefined) {
+          return json(400, { error: id === '' ? '还没有账号 —— 去「账号」页加一个' : `列表里没有这个账号：${id}` });
+        }
+        if (oid === '') return json(400, { error: '要带一个 oid（领哪一件）' });
+        if (code.trim() === '') return json(400, { error: '验证码没填' });
+        const one = scoped(rawStoreOf(deps.store), found.id);
+        const nowIso = deps.now();
+        // 没发过码就不许确认：拿旧单/别人的单去撞，只会换回一个看不懂的错误码
+        const pendingClaim = loadClaimState(one);
+        if (pendingClaim === null || pendingClaim.oid !== oid) {
+          return json(400, { error: '先点「领取」发验证码，再来填这一条' });
+        }
+        const prizeDeps = {
+          store: one,
+          transport: deps.transport,
+          nowIso,
+          baseUrl: loadBaseUrl(deps.store),
+          nowMs: () => Date.parse(deps.now()),
+        };
+        const who = maskPhoneLike(found.label) ?? found.label;
+        // 同 claim：只"写前换票"，**不自动重跑**这一枪（没有幂等键）
+        const pre = ensurePrizeToken(prizeDeps);
+        if (!pre.ok) {
+          return json(200, {
+            ok: false,
+            note: pre.note ?? '登录信息需要换一次 —— 去「账号」页点一下刷新，再回来确认',
+          });
+        }
+        try {
+          const r = confirmPrizeClaim(prizeDeps, oid, code);
+          // ⚠ 验证码与 deviceId **不进日志**：这里只记结果那一句
+          deps.log(`领奖：${who} · ${r.ok ? r.note : `没成（${r.note}）`}`);
+          return json(200, r);
+        } catch (e) {
+          const note =
+            e instanceof LoginExpiredError
+              ? '登录信息过期了 —— 去「账号」页重新登录一次再试（这一枪没有发出去）'
+              : e instanceof Error
+                ? e.message
+                : String(e);
+          deps.log(`领奖：${who} · 确认失败 —— ${note}`);
+          return json(200, { ok: false, note });
         }
       },
     },
