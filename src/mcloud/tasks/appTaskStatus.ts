@@ -21,6 +21,8 @@
 //   434  分享文件领好礼           buttonOutText=已完成 + name 里 1/7 ⇒ 已完成 1/7
 
 import { readMatrix } from './appTaskMatrix.ts';
+import { STATE_TASK } from './appTask.ts';
+import { SHARE_TASK_ID } from '../appTaskRules.ts';
 import type { MatrixItem } from './appTaskMatrix.ts';
 
 export interface StatusSpec {
@@ -30,6 +32,7 @@ export interface StatusSpec {
 
 /** 要播报哪几条。加一行就多播一条 —— 前提是上游会写 `buttonOutText`。 */
 export const STATUS_TASKS: readonly StatusSpec[] = [
+  { id: 522, title: '当月上传文件满100个' },
   { id: 549, title: '备份文件领好礼' },
   { id: 551, title: '连续31天开启云盘APP通知' },
   { id: 1021, title: '连续31天开启邮箱APP通知' },
@@ -63,6 +66,18 @@ export function describeStatus(item: MatrixItem, title?: string): string | undef
   const prog = progressOf(item);
 
   let body: string;
+  // 「攒够 N 个」那类（522）：`buttonOutText` 永远是「去完成」，
+  // 真正的进度在 `process` 里 —— 实拍 67/100。分母从名字里的「满100个」取。
+  // ⚠ `process` 这一格**每条都有**（其它任务是 0）—— 所以不能"有就播"，
+  //   否则每条都变成「已累计 0」（现场：2026-11-02 自测打出来 5 条全是「已累计 0」）。
+  //   只有两种该播：名字里写着「满 N 个」（分母已知），或者**真的攒了**（> 0）。
+  const proc = item.process;
+  const cap = /满(\d+)/.exec(head)?.[1];
+  const meaningful = proc !== undefined && Number.isFinite(proc) && (cap !== undefined || proc > 0);
+  if (meaningful && proc !== undefined) {
+    const shown = cap === undefined ? `已累计 ${proc}` : `已累计 ${proc}/${cap}`;
+    return `${head}：${shown}${cap !== undefined && proc >= Number(cap) ? '（已满）' : ''}`;
+  }
   if (/开启中|已开启/.test(btn)) {
     body = day !== '' && total !== '' ? `已开启 ${day}/${total} 天` : '已开启';
   } else if (/^(去开启|立即开启|开启)$/.test(btn)) {
@@ -90,10 +105,28 @@ function pickBetter(a: MatrixItem, b: MatrixItem): MatrixItem {
 }
 
 /** 播报这几条。`backupOn === false` 时给 549 补一句"备份没开"（开关不在这条任务里）。 */
+/** 今天这一趟**动过**哪几条（`mcloud.apptask.state` 里的 `day`+`clicked`）。
+ *
+ *  用它把"每天只算一次"的那几条（434 分享）说清楚 —— 否则用户看到 `2/7` 停在原地，
+ *  以为失败了，其实今天这一趟已经记过了。`undefined` = 没有今天的记录。 */
+function touchedToday(store: { getState(k: string): string | null | undefined }, nowIso: string): number[] | undefined {
+  const raw = store.getState(STATE_TASK);
+  if (!raw) return undefined;
+  try {
+    const st = JSON.parse(raw) as { day?: unknown; clicked?: unknown };
+    const day = typeof st.day === 'string' ? st.day : '';
+    if (day === '' || day !== nowIso.slice(0, 10)) return undefined;
+    return Array.isArray(st.clicked) ? (st.clicked as number[]) : [];
+  } catch {
+    return undefined;
+  }
+}
+
 export function appTaskStatusLines(
   store: { getState(k: string): string | null | undefined },
-  opts: { backupOn?: boolean | undefined } = {},
+  opts: { backupOn?: boolean | undefined; nowIso?: string | undefined } = {},
 ): string[] {
+  const touched = touchedToday(store, opts.nowIso ?? new Date().toISOString());
   const seen = new Map<number, MatrixItem>();
   for (const reading of readMatrix(store)) {
     for (const item of reading?.items ?? []) {
@@ -108,8 +141,13 @@ export function appTaskStatusLines(
   for (const spec of STATUS_TASKS) {
     const item = seen.get(spec.id);
     if (item === undefined) continue;
-    const line = describeStatus(item, spec.title);
+    let line = describeStatus(item, spec.title);
     if (line === undefined) continue;
+    // 434：`a/b` 的分子**每天最多 +1**，今天这趟已经动过 ⇒ 明说"今天记过了"，
+    // 免得用户对着不动的那一格以为失败（2026-11-02 现场）。
+    if (spec.id === SHARE_TASK_ID && (touched ?? []).includes(SHARE_TASK_ID)) {
+      line += '（今天这一趟已记过，每天只算一次）';
+    }
     out.push(spec.id === 549 && opts.backupOn === false ? `${line}（备份开关没开，开了才会有）` : line);
   }
   return out;

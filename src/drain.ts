@@ -16,7 +16,7 @@
 // 现在任务可以声明长预算（`{ budget_ms }`），就可以在一次触发里连跑多步，
 // 直到状态机自己说「没得做了」。面板上就变成「一次运行 = 一条任务 = 一个结果」。
 
-import type { TaskDeps, TaskOutcome } from './mcloud/tasks/base.ts';
+import { waitGap, type TaskDeps, type TaskOutcome } from './mcloud/tasks/base.ts';
 
 /** 把一条「一次一步」的状态机在**一次触发里**跑到走完。
  *
@@ -70,6 +70,13 @@ export function drain(
     /** 每步的原话（**立刻**回调）。给长状态机用：文件上传、任务重试这些过程
      *  要能在日志里看到，而不是等整趟 drain 结束只剩一句结论。 */
     onStep?: ((note: string, step: number) => void) | undefined;
+    /** 每步之间**随机**隔一会儿（`deps.gapMs`，默认 0.5–2 秒）。
+     *
+     *  什么时候该开：这一条 drain 的"一步"**就是**一个独立任务时（领取AI豆 是
+     *  "队列里一条一个请求"）—— 各条之间不该连着打。
+     *  什么时候别开：一步只是同一条任务内部的一段（上传→确认→转换），
+     *  开了会把整条拉长，白吃预算；那种要按**任务边界**等（见 `appTask.advance`）。 */
+    gap?: boolean | undefined;
   },
 ): DrainResult {
   const startedAt = opts.startedAt ?? Date.now();
@@ -80,6 +87,8 @@ export function drain(
   let lastNote = '';
 
   for (let i = 0; i < opts.maxSteps; i++) {
+    // 条与条之间隔一会儿（第一轮不等 —— 前面没有"上一条"）
+    if (i > 0 && opts.gap === true) waitGap(deps);
     // 第一轮永远跑（总得先跑一次才知道要干嘛）；之后由调用方说还有没有未完成的段
     if (i > 0 && opts.more && !opts.more()) {
       return {

@@ -452,11 +452,12 @@
           <!-- ── 凭据 ── -->
           <div class="pane" data-pane="auth" hidden>
             <p class="hint">
-              贴一段已有的 <code>Authorization</code>：
-              <code>Basic &lt;base64&gt;</code>，或者只贴 base64 那段。
-              里面是 <code>&lt;平台&gt;:&lt;手机号&gt;:&lt;token&gt;</code>。
+              贴一段已有的 <code>Authorization</code> 就行 —— <b>怎么贴都认</b>：
+              带不带 <code>Basic</code>、多打了空格/换行、带了引号、整行
+              <code>Authorization: …</code>，甚至贴解开之后的
+              <code>&lt;平台&gt;:&lt;手机号&gt;:&lt;token&gt;</code> 明文，都会自动收拾成能用的形状。
             </p>
-            <textarea id="paste-body" rows="3" placeholder="Basic <base64>，或只粘 base64 那段"></textarea>
+            <textarea id="paste-body" rows="3" placeholder="Basic &lt;base64&gt;、只贴 base64 那段、或直接贴 pc:手机号:… 明文"></textarea>
             <p class="hint" id="paste-note"></p>
             <p class="hint">
               存下之后<b>不用再管登录票</b> —— H5 那几张票是任务自己换的（约 2 小时废一次，

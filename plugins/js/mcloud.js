@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.21 · 插件 `mcloud`
+//   mcloud-plugin 0.2.22 · 插件 `mcloud`
 
 // src/entries/mcloud.ts
 import {
@@ -15,7 +15,7 @@ import {
 } from "host-api";
 
 // src/version.ts
-var PLUGIN_VERSION = "0.2.21";
+var PLUGIN_VERSION = "0.2.22";
 
 // src/store/keys.ts
 var DEFAULT_ACCT = "default";
@@ -518,6 +518,49 @@ function parseAuth(auth) {
   const expire = seg !== void 0 && isPlainDecimal(seg) ? Math.trunc(Number(seg)) || 0 : 0;
   return { raw: `Basic ${clean}`, platform, phone, token, expire };
 }
+function stripInvisible(raw) {
+  return raw.replace(/[\uFEFF\u200B-\u200D\u2060]/g, "");
+}
+function stripOuterQuotes(raw) {
+  const head = raw.charAt(0);
+  if (raw.length >= 2 && (head === '"' || head === "'" || head === "`") && raw.charAt(raw.length - 1) === head) {
+    return raw.slice(1, -1).trim();
+  }
+  return raw;
+}
+function hardenAuthorization(raw) {
+  const t = stripInvisible(raw).trim();
+  if (t === "") return { ok: false, error: "凭据是空的" };
+  const unquoted = stripOuterQuotes(t);
+  const line = /^authorization\s*[:=]\s*([\s\S]*)$/i.exec(unquoted);
+  let rest = (line !== null ? line[1] ?? "" : unquoted).trim();
+  let bearer = false;
+  for (; ; ) {
+    const m = /^(basic|bearer)[\s:=]*/i.exec(rest);
+    if (m === null) break;
+    if (/^bearer$/i.test(m[1] ?? "")) bearer = true;
+    rest = rest.slice(m[0].length).trim();
+  }
+  const compact = rest.replace(/\s+/g, "");
+  if (compact === "") return { ok: false, error: "只有 `Basic`，没有凭据本体" };
+  if (/^(pc|mobile|app)[\s]?:/i.test(compact)) {
+    return { ok: true, value: `${bearer ? "Bearer" : "Basic"} ${toBase64(utf8(compact))}` };
+  }
+  if (!/^[A-Za-z0-9+/=_-]+$/.test(compact)) {
+    return {
+      ok: false,
+      error: '这串里还有 base64 之外的字符 —— 正确形状是 `Basic base64("pc:手机号:token|…")`；把 `pc:手机号:…` 那串**明文**直接贴进来也行（会自动编）'
+    };
+  }
+  const info = parseAuth(compact);
+  if (info === void 0 || info.raw === "") {
+    return {
+      ok: false,
+      error: '认不出这串凭据（base64 解不开）—— 正确形状是 `Basic base64("pc:手机号:token|…")`；把 `pc:手机号:…` 那串**明文**直接贴进来也行（会自动编）'
+    };
+  }
+  return { ok: true, value: bearer ? `Bearer ${compact}` : `Basic ${compact}` };
+}
 
 // src/mcloud/accounts.ts
 function maskAuth(raw) {
@@ -540,14 +583,9 @@ function phoneOf(raw) {
   }
 }
 function normalizeAuth(raw) {
-  const t = raw.replace(/\uFEFF/g, "").trim();
-  const head = t.charAt(0);
-  const unquoted = t.length >= 2 && (head === '"' || head === "'") && t.charAt(t.length - 1) === head ? t.slice(1, -1).trim() : t;
-  const m = /^basic[\s:]+([\s\S]+)$/i.exec(unquoted);
-  const b64 = (m !== null ? m[1] : unquoted).replace(/\s+/g, "");
-  if (b64 === "") return unquoted;
-  const info = parseAuth(b64);
-  return info !== void 0 && info.raw !== "" ? `Basic ${b64}` : unquoted;
+  const r = hardenAuthorization(raw);
+  if (r.ok && r.value !== void 0) return r.value;
+  return raw.replace(/\uFEFF/g, "").trim();
 }
 function idOf(raw) {
   const phone = phoneOf(raw);
@@ -1396,8 +1434,39 @@ function hostBase(deps, fallback) {
   const b = (deps.baseUrl ?? "").trim();
   return b === "" ? fallback : b.replace(/\/+$/, "");
 }
+var DEFAULT_GAP_MS = [500, 2e3];
+function gapDelayMs(deps) {
+  const [lo, hi] = deps.gapMs ?? DEFAULT_GAP_MS;
+  if (!(hi > 0) || hi < lo) return 0;
+  return lo + Math.floor(Math.random() * (hi - lo + 1));
+}
+function waitGap(deps) {
+  const ms = gapDelayMs(deps);
+  if (ms > 0) waitMs(deps, ms);
+  return ms;
+}
 function depsNowMs(deps) {
   return (deps.nowMs ?? Date.now)();
+}
+function waitMs(deps, ms) {
+  if (!(ms > 0)) return;
+  const start = depsNowMs(deps);
+  const end = start + Math.min(ms, 1e4);
+  let frozen = 0;
+  while (depsNowMs(deps) < end) {
+    if (deps.spin) deps.spin();
+    else {
+      const t0 = Date.now();
+      while (Date.now() - t0 < 2) {
+      }
+    }
+    if (depsNowMs(deps) === start) {
+      frozen += 1;
+      if (frozen > 5) return;
+    } else {
+      frozen = 0;
+    }
+  }
 }
 var ERR_PREFIX = "mcloud.last_error.";
 function recordError(store2, task, note2, nowIso) {
@@ -3713,16 +3782,9 @@ function parseJwtToken(body) {
   };
 }
 function normalizeAuthorization(raw) {
-  const v = raw.trim();
-  if (v === "") return { ok: false, error: "凭据是空的" };
-  if (/^(basic|bearer)\s/i.test(v)) return { ok: true, value: v };
-  if (/\s/.test(v)) {
-    return {
-      ok: false,
-      error: '这个值里有空格但又不是 Basic/Bearer 开头 —— 像是抄断了。正确形状是 `Basic base64("mobile:手机号:token")`（整串一个空格）'
-    };
-  }
-  return { ok: true, value: `Basic ${v}` };
+  const r = hardenAuthorization(raw);
+  if (!r.ok || r.value === void 0) return { ok: false, error: r.error ?? "认不出这串凭据" };
+  return { ok: true, value: r.value };
 }
 function authFingerprint(sha256hex) {
   return sha256hex.slice(0, 16);
@@ -6800,6 +6862,7 @@ function drain(step, deps, opts) {
   let steps = 0;
   let lastNote = "";
   for (let i = 0; i < opts.maxSteps; i++) {
+    if (i > 0 && opts.gap === true) waitGap(deps);
     if (i > 0 && opts.more && !opts.more()) {
       return {
         ok: true,
@@ -8125,6 +8188,8 @@ function parseMatrixItem(raw) {
     limitType: asStr2(o.limitType ?? o.limit_type),
     enable: asInt2(o.enable),
     currStep: asInt2(o.currstep ?? o.currStep),
+    // 「本月已经攒了多少个」——522 只有攒满 100 才翻 FINISH，界面上却一直只写「去完成」
+    process: asInt2(o.process),
     buttonAppLink: asStr2(o.buttonAppLink ?? o.button_app_link) ?? nestedLink(o.button, "app"),
     buttonEmailLink: asStr2(o.buttonEmailLink ?? o.button_email_link) ?? nestedLink(o.button, "email"),
     buttonOutText: at("text"),

@@ -52,7 +52,7 @@ function depsFor(tokenPkOn: boolean): { deps: TaskDeps; sent: BuiltRequest[] } {
     return { status: 200, headers: {}, body: JSON.stringify({ code: 90001, msg: '未登录' }) };
   }) as never;
   return {
-    deps: { store, transport, nowIso: NOW, nowMs: () => Date.parse(NOW), settleMs: 0 } as TaskDeps,
+    deps: { store, transport, nowIso: NOW, nowMs: () => Date.parse(NOW), settleMs: 0, gapMs: [0, 0] } as TaskDeps,
     sent,
   };
 }
