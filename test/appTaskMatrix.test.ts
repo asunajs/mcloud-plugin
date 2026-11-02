@@ -221,6 +221,7 @@ test('凭据过期：**不发** taskListV3（否则把读数盖成全零的"游�
     nowIso: NOW,
     baseUrl: undefined,
     settleMs: 0,
+    gapMs: [0, 0],
   } as TaskDeps;
   const out = runAppTaskMatrix(deps);
   assert.equal(out.ok, false);

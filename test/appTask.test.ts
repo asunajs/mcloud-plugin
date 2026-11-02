@@ -139,7 +139,7 @@ function mkDeps(groups: Record<string, unknown[]>) {
     }
     return { status: 200, headers: {}, body: JSON.stringify({ code: 0, result: {} }) };
   }) as never;
-  return { deps: { store, transport, nowIso: NOW, baseUrl: undefined, settleMs: 0 } as TaskDeps, sent, store };
+  return { deps: { store, transport, nowIso: NOW, baseUrl: undefined, settleMs: 0, gapMs: [0, 0] } as TaskDeps, sent, store };
 }
 
 test('待办：只挑 `todo`，**"不做"名单里的不发**', () => {
@@ -1054,4 +1054,57 @@ test('1014 的 PDF：240×240 小页 + **xref 偏移真的对**（转换后端�
   });
   // 内容流里的字还是那句（转换那边认的是"一页有字"）
   assert.match(pdf, /\(asign pdf 1793600000000\) Tj/);
+});
+
+test('434 分享：建外链失败**不能静默**（要记进 failed，复查点名）', () => {
+  // 现场问题（2026-11-02）：建链失败只写一句 note 就 `ok: true`，
+  // 于是日志看着像"分享过了"，云朵没涨，而复查那句话里一个字都不提。
+  const { deps } = mkDeps({
+    [MATRIX_MARKETS[0]!]: [{ taskId: 434, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '分享文件领好礼' }],
+  });
+  // `getOutLink` 那一枪直接 500（模拟"建链挂了"），其余照旧
+  const inner = deps.transport as unknown as (r: BuiltRequest) => unknown;
+  (deps as { transport: unknown }).transport = (r: BuiltRequest) =>
+    r.url.includes('getOutLink') ? { status: 500, headers: {}, body: 'boom' } : inner(r);
+  startAppTask(deps);
+  const notes: string[] = [];
+  for (let i = 0; i < 30; i++) {
+    const out = runAppTaskStep(deps);
+    notes.push(out.note);
+    if (out.idle) break;
+  }
+  const all = notes.join('\n');
+  assert.match(all, /分享 #434 没成：建外链失败/, `失败要说出原因：${all.slice(-300)}`);
+  // 复查那一步要**点名**（只有矩阵回 FINISH 才算成功）
+  assert.match(all, /没做成（#434 建外链失败/, `复查要带上这条：${all.slice(-400)}`);
+  // 而且这一趟要如实报"没成"（`ok:false`），别只是 note
+  const settle = notes.find((n) => n.includes('复查完成')) ?? '';
+  assert.ok(settle !== '', '要有复查那一步');
+});
+
+test('434 分享：链内两处动作之间不是 0ms（传完→建链、建链→删链）', () => {
+  const t = { ms: Date.parse(NOW) };
+  const { deps } = mkDeps({
+    [MATRIX_MARKETS[0]!]: [{ taskId: 434, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '分享文件领好礼' }],
+  });
+  // 换成带假钟的 deps：`spin` 推进时间，间隔才看得见
+  const clocked = { ...deps, nowMs: () => t.ms, spin: () => void (t.ms += 100), gapMs: [500, 2000] } as TaskDeps;
+  startAppTask(clocked);
+  const hits: Array<{ at: number; url: string }> = [];
+  const tr = clocked.transport as unknown as (r: BuiltRequest) => unknown;
+  (clocked as { transport: unknown }).transport = (r: BuiltRequest) => {
+    if (/getOutLink|delOutLink|file\/create|upload|complete/i.test(r.url)) hits.push({ at: t.ms, url: r.url });
+    return tr(r);
+  };
+  for (let i = 0; i < 40; i++) {
+    const out = runAppTaskStep(clocked);
+    if (out.idle) break;
+  }
+  const at = (re: RegExp) => hits.filter((h) => re.test(h.url)).map((h) => h.at);
+  const created = at(/file\/create/);
+  const outlink = at(/getOutLink/);
+  const del = at(/delOutLink/);
+  assert.ok(outlink.length > 0 && del.length > 0, '这一趟要走到建链与删链');
+  assert.ok(outlink[0]! - created[created.length - 1]! >= 500, '传完到建链之间要隔 ≥500ms');
+  assert.ok(del[0]! - outlink[0]! >= 500, '建链到删链之间要隔 ≥500ms');
 });

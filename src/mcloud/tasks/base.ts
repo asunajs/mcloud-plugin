@@ -71,6 +71,35 @@ export interface TaskDeps {
   spin?: (() => void) | undefined;
   /** 动作做完到复查上游之间等多久（毫秒）。默认 5 秒；测试传 0。 */
   settleMs?: number | undefined;
+  /** **两个任务之间的随机间隔**（毫秒区间，闭区间）。`undefined` = 不等
+   *  （手搓 deps 的测试就是这一档，不会莫名变慢；生产由 `taskDeps()` 给
+   *  `[500, 2000]`）。
+   *
+   *  为什么要随机：固定间隔本身就是个"指纹"。而同一批任务连着打，间隔只有
+   *  一次 RTT（实测 33–677ms），看起来就像机器在刷。 */
+  gapMs?: [number, number] | undefined;
+}
+
+/** 默认的任务间随机间隔（毫秒）。用户口径：**至少 500ms，最多 2000ms**。 */
+export const DEFAULT_GAP_MS: readonly [number, number] = [500, 2000];
+
+/** 抽一个间隔毫秒数。
+ *
+ *  ⚠ **缺省就是默认间隔，不是"不等"**：`undefined` 表示"调用方没想这件事"，
+ *  而没想这件事的后果是"连着打上游"。所以默认走 `DEFAULT_GAP_MS`；
+ *  真要关掉必须显式传 `[0, 0]`（测试就是这么写的）。
+ *  这就是"不要假设未来不会发生"——将来新加的任务/入口不写这一格，也会被限速。 */
+export function gapDelayMs(deps: TaskDeps): number {
+  const [lo, hi] = deps.gapMs ?? DEFAULT_GAP_MS;
+  if (!(hi > 0) || hi < lo) return 0;
+  return lo + Math.floor(Math.random() * (hi - lo + 1));
+}
+
+/** 在两个任务之间等一个**随机**间隔，返回等了多少毫秒（0 = 没等）。 */
+export function waitGap(deps: TaskDeps): number {
+  const ms = gapDelayMs(deps);
+  if (ms > 0) waitMs(deps, ms);
+  return ms;
 }
 
 /** 取当前毫秒时刻（没注入就用真时钟）。 */
@@ -86,8 +115,14 @@ export function depsNowMs(deps: TaskDeps): number {
  *  后面的步骤就全没了。所以长等待要由调用方自己切成小口（见 `redpackJobs` 的
  *  `waitBrowse`），而不是这里一次等满。 */
 export function waitMs(deps: TaskDeps, ms: number): void {
-  if (ms <= 0) return;
-  const end = depsNowMs(deps) + Math.min(ms, 10_000);
+  if (!(ms > 0)) return;
+  const start = depsNowMs(deps);
+  const end = start + Math.min(ms, 10_000);
+  // ⚠ **防挂死**：`nowMs` 是注入的。测试里它常是个常量（假时钟）——
+  //   `while (now() < end)` 会**永远转下去**，把整趟拖死。
+  //   所以钟不走就撤：连续若干轮读到的还是同一个时刻 ⇒ 当成"这里的等待没有意义"。
+  //   这不是"假设不会发生"，是"发生了也不能卡住"。
+  let frozen = 0;
   while (depsNowMs(deps) < end) {
     if (deps.spin) deps.spin();
     else {
@@ -95,6 +130,12 @@ export function waitMs(deps: TaskDeps, ms: number): void {
       while (Date.now() - t0 < 2) {
         /* 忙等 2ms */
       }
+    }
+    if (depsNowMs(deps) === start) {
+      frozen += 1;
+      if (frozen > 5) return;
+    } else {
+      frozen = 0;
     }
   }
 }

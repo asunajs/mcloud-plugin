@@ -1325,6 +1325,9 @@ test('任务状态可切账号；每条带 taskId 和未完成时的步进', () 
   assert.ok(/matrixAccountId/.test(js), '要记住用户选的账号');
   assert.ok(/taskId/.test(js) && /第 \$\{typeof it\.currStep === 'number' \? it\.currStep : 0\} 步/.test(js), '每条任务要带 id 和步号');
   assert.ok(/完成进度/.test(js) && /buttonOutDay/.test(js), '通知任务要显示完成进度');
+  // 「攒够 N 个」那类（522）的进度在 `process` 里 —— 界面上必须能看见
+  // （真机 2026-11-02：`process:67`，而按钮话一直是「去完成」，一点进度都没有）
+  assert.ok(/已累计/.test(js) && /it\.process/.test(js), '累计进度（process）要显示出来');
   assert.ok(/本月备份/.test(js) && /BACKUP_STEP_TEXT/.test(js), '备份进度要显示出来');
   assert.ok(/只读本地缓存，不发新请求/.test(js), '默认不请求上游要说清');
   assert.ok(/renderData\(r\.data \|\| \{\}, r\.account \|\| \{\}\)/.test(js), 'renderData 必须拿到账号表（否则下拉是空的）');

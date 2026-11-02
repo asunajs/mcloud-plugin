@@ -207,6 +207,7 @@ function harness(opts: SiteOpts = {}): Harness {
       t.ms += 500;
     },
     settleMs: 0,
+    gapMs: [0, 0],
   };
   return { store, deps, sent, t };
 }
