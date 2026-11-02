@@ -10,6 +10,8 @@ import { taskDeps } from '../mcloud/accountRuntime.ts';
 import type { HostWs, TaskDeps } from '../mcloud/tasks/base.ts';
 import { applyDefaultContentType, type Transport } from '../mcloud/client.ts';
 import { setRedpackEnabled } from '../mcloud/tasks/redpackState.ts';
+import { setTokenPkDraw, setTokenPkEnabled } from '../mcloud/tokenPkState.ts';
+import type { PkDrawConfig } from '../mcloud/tokenPkState.ts';
 import type { ListenDeps } from '../mcloud/tasks/liveListen.ts';
 import { loadConfig, type StandaloneConfig } from './config.ts';
 import { FileStore } from './fileStore.ts';
@@ -38,6 +40,10 @@ function seedAccounts(raw: Store, config: StandaloneConfig): void {
   // 账号 id ← 「红包派对.开启」里**明确写了**的那个值。
   // 攒着统一落：新号要等 `upsertAccount` 之后才有 id 可写。
   const redpack: { id: string; on: boolean }[] = [];
+  // 算力大作战的开关（同样只在配置里**明确写了**时才落状态；默认是开）
+  const tokenPk: { id: string; on: boolean }[] = [];
+  // 代抽（默认不抽；只有配置里写了「代抽」才落状态）
+  const tokenPkDraw: { id: string; cfg: PkDrawConfig }[] = [];
   for (const [index, seed] of config.accounts.entries()) {
     const phone = phoneOf(seed.auth);
     const hit =
@@ -50,6 +56,8 @@ function seedAccounts(raw: Store, config: StandaloneConfig): void {
     // 三层合并照参照实现：账号那层赢，其次 `common`，**都没写就不写这一格**
     // （缺省本来就是"开着"，见 `redpackState.redpackEnabled`）。
     const on = seed.redpackEnabled ?? config.commonRedpackEnabled;
+    const pkOn = seed.tokenPkEnabled ?? config.commonTokenPkEnabled;
+    const pkDraw = seed.tokenPkDraw ?? config.commonTokenPkDraw;
     if (hit !== undefined) {
       if (used.has(hit.id)) continue;
       used.add(hit.id);
@@ -60,6 +68,8 @@ function seedAccounts(raw: Store, config: StandaloneConfig): void {
         disabled: seed.disabled === true,
       });
       if (on !== undefined) redpack.push({ id: hit.id, on });
+      if (pkOn !== undefined) tokenPk.push({ id: hit.id, on: pkOn });
+      if (pkDraw !== undefined) tokenPkDraw.push({ id: hit.id, cfg: pkDraw });
       continue;
     }
     // 新号：走 upsertAccount，id/平台/手机号规则与面板一致
@@ -69,6 +79,8 @@ function seedAccounts(raw: Store, config: StandaloneConfig): void {
     used.add(account.id);
     next.push({ ...account, label, disabled: seed.disabled === true });
     if (on !== undefined) redpack.push({ id: account.id, on });
+    if (pkOn !== undefined) tokenPk.push({ id: account.id, on: pkOn });
+    if (pkDraw !== undefined) tokenPkDraw.push({ id: account.id, cfg: pkDraw });
   }
   saveAccounts(raw, next, nowIso);
   if (next.length > 0 && (raw.getState(STATE_CURRENT_ACCOUNT) ?? '') === '') {
@@ -78,6 +90,12 @@ function seedAccounts(raw: Store, config: StandaloneConfig): void {
   //   直接写 `raw` 会落到"当前账号"上（多账号时就是把 A 的开关写到 B 名下）。
   for (const one of redpack) {
     setRedpackEnabled(scoped(raw, one.id), one.on, nowIso);
+  }
+  for (const one of tokenPk) {
+    setTokenPkEnabled(scoped(raw, one.id), one.on, nowIso);
+  }
+  for (const one of tokenPkDraw) {
+    setTokenPkDraw(scoped(raw, one.id), one.cfg, nowIso);
   }
 }
 

@@ -1,11 +1,10 @@
-// 新一批任务的测试：prizes / cloud-snapshot / sign / backup-gift，
+// 新一批任务的测试：prizes / cloud-snapshot / sign，
 // 外加底座那条「错过太久就不做」的策略。
 //
-// 三条是**行为断言**（不是功能断言），它们才是这里真正的价值：
-//   ① 备份好礼**不能抢跑**：`info` 说不能领时，绝不发领取请求
-//   ② 手动触发（`lateMs` 负数）**不能**被跳过策略当成"晚" —— 否则点「立即执行」
+// 两条是**行为断言**（不是功能断言），它们才是这里真正的价值：
+//   ① 手动触发（`lateMs` 负数）**不能**被跳过策略当成"晚" —— 否则点「立即执行」
 //      反而什么都不做（面板 F-001 的连带影响）
-//   ③ 每个请求的 query 逐字正确（params 抄错是最容易犯、最难查的错）
+//   ② 每个请求的 query 逐字正确（params 抄错是最容易犯、最难查的错）
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -18,12 +17,6 @@ import {
   runCloudSnapshot,
 } from '../src/mcloud/tasks/cloudSnapshot.ts';
 import { runSign } from '../src/mcloud/tasks/sign.ts';
-import {
-  STATE_CAN,
-  parseCanReceive,
-  runBackupGift,
-  runBackupGiftInfo,
-} from '../src/mcloud/tasks/backupGift.ts';
 import { runTask } from '../src/mcloud/tasks/base.ts';
 import { SESSION_KEY } from '../src/store/types.ts';
 import { memStore } from '../src/store/memory.ts';
@@ -144,38 +137,6 @@ test('sign：有设备号才发 isdeviceid 与 deviceId（且要走到"提交"�
   assert.equal(submit2.url, 'https://m.mcloud.139.com/ycloud/signin/page/startSignIn?client=app');
   assert.equal(submit2.headers['isdeviceid'], undefined);
   assert.equal(submit2.headers.activityid, 'sign_in_3');
-});
-
-test('② 备份好礼不能抢跑：info 说不能领就绝不发领取请求', () => {
-  // 能领 → 第二次调用才去领
-  const yes = seeded();
-  const r1 = recorder([{ canReceive: true }]);
-  runBackupGiftInfo({ store: yes, transport: r1.transport, nowIso: NOW });
-  assert.equal(yes.getState(STATE_CAN), 'yes');
-  const r2 = recorder([{ done: true }]);
-  const out2 = runBackupGift({ store: yes, transport: r2.transport, nowIso: NOW });
-  assert.equal(out2.ok, true);
-  assert.equal(r2.sent.length, 1);
-  assert.match(r2.sent[0]!.url, /backupgift\/receive$/);
-  assert.equal(r2.sent[0]!.url.startsWith('https://caiyun.feixin.10086.cn'), true, '在另一个域上');
-  assert.equal(yes.getState(STATE_CAN), 'no:claimed', '领过就不再排队');
-
-  // 不能领 → 第二次调用只问，不发领取
-  const no = seeded();
-  const n1 = recorder([{ canReceive: false }]);
-  runBackupGiftInfo({ store: no, transport: n1.transport, nowIso: NOW });
-  assert.match(no.getState(STATE_CAN)!, /^no:/);
-  const n2 = recorder([{ canReceive: false }]);
-  const outNo = runBackupGift({ store: no, transport: n2.transport, nowIso: NOW });
-  assert.equal(outNo.ok, true);
-  assert.equal(n2.sent.length, 1, '只发了一次请求');
-  assert.match(n2.sent[0]!.url, /backupgift\/info$/, '而且发的是 info，不是 receive');
-
-  // info 的响应认不出来 → 当作不能领（宁可不领，不要抢跑）
-  assert.equal(parseCanReceive({ weird: true }).can, false);
-  assert.equal(parseCanReceive(undefined).can, false);
-  assert.equal(parseCanReceive({ canReceive: 1 }).can, true);
-  assert.equal(parseCanReceive({ canReceive: 'true' }).can, true);
 });
 
 test('③ 底座：错过太久就跳过，但**手动触发（负数）不算晚**', () => {

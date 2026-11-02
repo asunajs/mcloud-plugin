@@ -111,6 +111,20 @@ assert 'mock-jwttoken' not in json.dumps(d), 'jwt 也不能回显'
 print('   会话导入并对 mock 验证通过，响应里没有凭据原文')
 PY
 
+# ⚠ 任务现在只跑「这条任务选的账号」（多选 / 全部）—— 一个账号都没有时它**静默返回**，
+#   一个请求都不发。所以 e2e 必须先把一个账号加进来（与 `split_check.py` 的「前置」同一条路）。
+#   以前这里不需要，因为那时任务只认"当前账号"。
+AUTH="Basic $(python3 -c 'import base64,time; exp=int((time.time()+30*86400)*1000); print(base64.b64encode(f"pc:13500135000:tok|1|2|{exp}".encode()).decode())')"
+curl -fsS "${W[@]}" -X POST "$B/plugins/mcloud/api/accounts" \
+  -H 'content-type: application/json' -H 'x-panel: 1' \
+  -d "{\"op\":\"add\",\"pcPlatform\":\"win\",\"auth\":\"$AUTH\"}" > "$TMP/acct.json"
+python3 - "$TMP/acct.json" <<'PY2'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert len(d.get('accounts') or []) >= 1, '账号没加进去：' + json.dumps(d, ensure_ascii=False)[:200]
+print('   已加一个账号给日常跑（否则任务静默返回）')
+PY2
+
 echo "④ 跑三条任务（新模型：一条任务 = 一个函数从头跑到尾）"
 #
 # ⚠ 这里从「逐条驱动 25 条任务、多步任务跑多次让步骤机推进」改成了
@@ -124,6 +138,52 @@ echo "④ 跑三条任务（新模型：一条任务 = 一个函数从头跑到�
 # —— 日常：整条链一次跑完 ——
 curl -fsS "${W[@]}" -X POST "$B/api/tasks/mcloud-daily/%E6%97%A5%E5%B8%B8/run" -o "$TMP/daily.json"
 printf '   日常 ✓\n'
+
+# —— 算力大作战（`National_TokenPK`）：日常第 ④.6 步 ——
+# 判据：抓包 2026-11-01 —— 列表 `platform=ios`、click 的体逐字节、`openUrl` 只认 click、
+# `RESERVE` 走 reserve、领奖走 receivePrize，且 mock 侧真的记下了。
+curl -fsS "${H[@]}" "$B/plugins/mcloud/api/readings" -o "$TMP/readings.json"
+curl -fsS "http://127.0.0.1:$MOCK_PORT/_debug/requests" -o "$TMP/mock-tokenpk.json"
+curl -fsS "http://127.0.0.1:$MOCK_PORT/_debug/state" -o "$TMP/mock-state-tokenpk.json"
+python3 - "$TMP/readings.json" "$TMP/mock-tokenpk.json" "$TMP/mock-state-tokenpk.json" <<'PY'
+import json, sys
+
+readings = json.load(open(sys.argv[1]))
+reqs = json.load(open(sys.argv[2]))
+mockst = json.load(open(sys.argv[3]))
+
+step = next((s for s in (readings.get('daily') or {}).get('last', {}).get('steps', [])
+             if s.get('name') == '算力大作战'), None)
+assert step is not None, '日常里没有「算力大作战」这一步'
+assert step.get('ok') is True, '这一步没跑成：' + json.dumps(step, ensure_ascii=False)[:400]
+assert step.get('idle') is True, '这一趟没走完（应当是 idle）：' + json.dumps(step, ensure_ascii=False)[:400]
+assert '领取奖励3项' in step.get('note', ''), '汇总句不对：' + str(step.get('note'))
+assert step.get('lines'), '逐行读数没交给 DailyStep.lines'
+
+tpk = [r for r in reqs if '/ycloud/tokenpk/' in r['path']]
+assert tpk, '算力大作战一发都没发'
+lst = [r for r in tpk if r['path'].startswith('/ycloud/tokenpk/task/list')]
+assert lst, '没拉 task/list'
+assert lst[0]['path'] == '/ycloud/tokenpk/task/list?marketName=National_TokenPK&platform=ios&sortState=true', (
+    '列表的 query 不对：' + lst[0]['path'])
+assert all(r['headers'].get('activityid') == 'National_TokenPK' for r in tpk), (
+    'activityid 头必须跟着市场名：' + str([(r['path'], r['headers'].get('activityid')) for r in tpk])[:300])
+clicks = [r for r in tpk if r['path'].endswith('/task/step/click')]
+assert len(clicks) == 1, '这一趟只有 openUrl 那一条该点（其余是 SUCCESS/需手动/预约）：' + str(clicks)
+assert clicks[0]['body'] == '{"marketName":"National_TokenPK","taskId":6,"key":"openUrl","source":"app"}', (
+    'click 的体必须逐字节对上（含键序）：' + clicks[0]['body'])
+assert 'inviteFriend' not in str(tpk), 'inviteFriend 是需手动，不该发任何写请求'
+rv = [r for r in tpk if r['path'].endswith('/task/step/reserve')]
+assert rv and rv[0]['body'] == '{"marketName":"National_TokenPK","taskId":8,"key":"reserveLogin","source":"app"}', (
+    '预约的体不对：' + str(rv)[:300])
+rp = [r for r in tpk if r['path'].endswith('/task/step/receivePrize')]
+assert len(rp) == 3, '三条 SUCCESS 该领（#5/#1/#6）：' + str([r['body'] for r in rp])
+chance = [r for r in tpk if r['path'].endswith('/autoReceiveLotteryChance')]
+assert chance and chance[0]['body'] == 'null', '领抽奖次数的体必须是字面 null：' + str(chance)[:200]
+assert set(mockst['tokenPk']['claimed']) >= {5, 1, 6}, (
+    'mock 侧领奖状态没变：' + str(mockst['tokenPk']))
+print('   ✅ 算力大作战：列表/click/预约/领奖三发/字面 null，mock 侧状态真的变了')
+PY
 python3 - "$TMP/daily.json" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
@@ -265,10 +325,13 @@ assert line('/ycloud/signin/public/record')['path'] == (
 assert line('/ycloud/signin/public/cloudRecordV2')['path'] == (
     '/ycloud/signin/public/cloudRecordV2?aiDou=1&type=0&pageNumber=1&pageSize=100')
 assert line('/ycloud/signin/page/startSignIn')['path'].startswith('/ycloud/signin/page/startSignIn?client=app')
-bi, br = line('/market/backupgift/info'), line('/market/backupgift/receive')
-assert bi and br, '备份好礼两步没走完'
-assert len(paths['/market/backupgift/receive']) == 1, '领一次就够，别重复领'
-assert bi['headers']['activityid'] == 'backupgift', '备份好礼那页的 activityid 是 backupgift'
+# ⚠ 反向断言（2026-11-01）：备份好礼 / 打开通知 / 消息推送这三条**旧任务已删** ——
+#   它们完成与否由服务端按新版 taskList 自己记账，我们一个动作都不该再发。
+for p in ('/market/backupgift/info', '/market/backupgift/receive',
+          '/ycloud/openemailsms-service/openEmailsms/getTaskInfo',
+          '/ycloud/openemailsms-service/openEmailsms/reward',
+          '/market/msgPushOn/task/status', '/market/msgPushOn/task/obtain'):
+    assert p not in paths, f'旧任务已删，这一口不该再发：{p}（发了 {len(paths.get(p, []))} 次）'
 sess = line('/ycloud/signin/page/infoV3')
 assert sess and sess['method'] == 'GET' and '?client=app' in sess['path'], sess
 
@@ -287,6 +350,7 @@ assert rte[-1]['path'] == '/ycloud/signin/page/receiveTaskExpansion', (
     '延期领取应当是裸 GET：' + rte[-1]['path'])
 assert mockst['backupCanReceive'] is False, '备份好礼没领到'
 
+
 # 签到是三段式：先 infoV3（说没签）→ startSignIn → 再 infoV3（说签了）
 # ⚠️ 大小写：端点里是 `startSignIn`（大写 S），别写成 `signIn` 去 in 一下 ——
 # 那次我因此得到"插件没提交签到"的假象，白白绕了几个来回。
@@ -299,22 +363,9 @@ if sig_seq.count('/ycloud/signin/page/infoV3') < 2:
 assert sig_seq.count('/ycloud/signin/page/startSignIn') == 1, '提交只该一次：' + str(sig_seq)
 assert sig_seq.count('/ycloud/signin/page/infoV3') >= 2, '回查那一步没发生：' + str(sig_seq)
 
-print('   ✅ 全部断言通过：query 逐字、备份好礼两步、签到三段式（含回查）、')
+print('   ✅ 全部断言通过：query 逐字、旧任务真的没再发、签到三段式（含回查）、')
 print('      翻倍门槛、逐条领取、只领一次、没有任务报错 —— 且 mock 侧状态真的变了')
 print('   ✅ 面板日志：' + sys.argv[1].replace('plugin.json', 'panel.log'))
-PY
-
-# 通知任务：`reward` **只该发一次**（它真的会入账），且 mock 侧状态必须真的变了
-python3 - "$TMP/mock.json" "$TMP/mock-state.json" <<'PY'
-import json, sys
-reqs = json.dumps(json.load(open(sys.argv[1])), ensure_ascii=False)
-st = json.load(open(sys.argv[2]))
-info_n = reqs.count('getTaskInfo')
-reward_n = reqs.count('/openEmailsms/reward')
-assert info_n >= 2, f'通知任务该查过至少两次状态（第二次是回查），实际 {info_n}'
-assert reward_n == 1, f'reward 只该发一次（会真入账），实际 {reward_n}'
-assert st.get('noticeClaimable') is False, f'mock 侧状态没变：{st.get("noticeClaimable")}'
-print('   ✅ 通知任务：查过状态、只领一次、mock 侧真的变成已领')
 PY
 
 # App 任务矩阵：游标真的在推进（三次读到两个市场）、**只走 V3**，且只碰只读端点

@@ -57,8 +57,9 @@ export interface H5RequestSpec {
   /** POST 的 content-type。默认 `application/json`；`taskListV3` 要的是
    *  `application/json;charset=UTF-8`（原实现逐字如此，别自作主张统一）。 */
   contentType?: string | undefined;
-  /** `activityid` 用的市场名。**各页不同**：签到页 `sign_in_3`、
-   *  备份有礼页 `backupgift`（见 `session.rs` 的配方表）。
+  /** `activityid` 用的市场名。**各页不同**：签到族是 `sign_in_3`（默认），
+   *  App 任务矩阵按本次的 marketname 逐发覆盖（`backupgift` 那一页的用法随
+   *  旧任务一起删了，2026-11-01）。
    *  原实现每次 POST 都拿本次的 marketname 去**先剥再补**这枚头 ——
    *  同名两枚头会让「哪枚生效」变成传输层的事，所以这里是一枚、可覆盖的。 */
   marketName?: string | undefined;
@@ -123,8 +124,6 @@ export function buildH5Request(spec: H5RequestSpec): BuiltRequest {
 // ── 端点（来自 mcloud-upstream 的常量，逐字照抄）────────────────────────────
 
 export const MCLOUD_HOST = 'https://m.mcloud.139.com';
-/** 备份好礼在另一个域（`caiyun.feixin.10086.cn`），原实现单独列出来 */
-export const BACKUP_GIFT_HOST = 'https://caiyun.feixin.10086.cn';
 
 export const EP = {
   infoV3: { origin: MCLOUD_HOST, path: '/ycloud/signin/page/infoV3' },
@@ -138,18 +137,8 @@ export const EP = {
   cloudRecordV2: { origin: MCLOUD_HOST, path: '/ycloud/signin/public/cloudRecordV2' },
   taskListV2: { origin: MCLOUD_HOST, path: '/ycloud/signin/task/taskListV2' },
   taskListV3: { origin: MCLOUD_HOST, path: '/ycloud/signin/task/taskListV3' },
-  // 通知任务（`notice`）：两个端点都在主域，**裸 GET、不带查询参数**。
-  // ⚠ "不带参数"本身是个**未验证的选择** —— 实拍的完整 URL 被脱敏，只见到路径。
-  //   真要出问题（例如回了另一个活动的状态），改这一处加参数即可。
   // 兑换清单：**只读**，查询串只有 client 与 clientVersion，**不带 deviceId**
   exchangeList: { origin: MCLOUD_HOST, path: '/ycloud/signin/page/exchangeList' },
-  noticeInfo: { origin: MCLOUD_HOST, path: '/ycloud/openemailsms-service/openEmailsms/getTaskInfo' },
-  noticeReward: { origin: MCLOUD_HOST, path: '/ycloud/openemailsms-service/openEmailsms/reward' },
-  backupGiftInfo: { origin: BACKUP_GIFT_HOST, path: '/market/backupgift/info' },
-  backupGiftReceive: { origin: BACKUP_GIFT_HOST, path: '/market/backupgift/receive' },
-  // 消息推送奖励（msgpushon 那一页）—— **同一台主机、不同一族**
-  msgPushStatus: { origin: BACKUP_GIFT_HOST, path: '/market/msgPushOn/task/status' },
-  msgPushObtain: { origin: BACKUP_GIFT_HOST, path: '/market/msgPushOn/task/obtain' },
 } as const;
 
 export type EndpointName = keyof typeof EP;
@@ -198,12 +187,6 @@ export const EP_METHOD: Record<string, 'GET' | 'POST'> = {
   taskListV2: 'POST', // body 带 group=<组名>
   taskListV3: 'POST', // body 带 group=""（空串）
   exchangeList: 'GET',
-  noticeInfo: 'GET',
-  noticeReward: 'GET', // 写（会真入账），但上游用 GET
-  backupGiftInfo: 'GET', // 另一个域
-  backupGiftReceive: 'GET', // 另一个域
-  msgPushStatus: 'GET',
-  msgPushObtain: 'POST', // 这一族用 POST，body `{"type":2}`
 };
 
 /** `infoV3` / `startSignIn` 这类 GET 端点带的固定 query。 */

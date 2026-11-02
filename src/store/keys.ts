@@ -145,12 +145,6 @@ export const KEY_SCOPE: Readonly<Record<string, KeyScope>> = {
   'mcloud.apptask.state': 'account',
   'mcloud.apptaskmatrix.last': 'account',
   'mcloud.apptaskmatrix.group_index': 'account',
-  'mcloud.notice.can_claim': 'account',
-  'mcloud.notice.info': 'account',
-  'mcloud.backupgift.can_receive': 'account',
-  'mcloud.backupgift.info': 'account',
-  'mcloud.msgpush.can': 'account',
-  'mcloud.msgpush.last': 'account',
   'mcloud.prizes.last': 'account',
   // 「领奖」页：待领取列表的缓存与进行中的那一单。
   // 按账号 —— 奖品记录、单号、手机号都是某一个号的；串了号就是拿 A 的单号去领 B 的东西。
@@ -210,6 +204,18 @@ export const KEY_SCOPE: Readonly<Record<string, KeyScope>> = {
   'mcloud.redpack.enabled': 'account',
   // 指到别处用的口子（CI / 只读探针）。与 `mcloud.live.gate_base` 同一类，按账号。
   'mcloud.redpack.base': 'account',
+
+  // ── 算力大作战（`National_TokenPK`，另一个活动站；只带云盘 jwttoken）──
+  // 整趟进度台账（计划队列、已领/待领、逐行账）。按账号：队列与"哪条领过了"都是某个号的。
+  'mcloud.tokenpk.state': 'account',
+  // 开没开。参照实现 `DefaultEnabled: true` ⇒ 没写过就是开。按账号。
+  'mcloud.tokenpk.enabled': 'account',
+  // 上传那台状态机给这一族单独开的槽位（与 App 任务 / 任务拓展分开）。
+  'mcloud.tokenpk.upload': 'account',
+  // 代抽的开关与每日上限（缺省不抽：花的是用户的次数）。
+  'mcloud.tokenpk.draw': 'account',
+  // 代抽的按天账（今天抽了几次、中了什么）—— 上限按天算，第二趟不重置。
+  'mcloud.tokenpk.draw.state': 'account',
 
   // ── 实例级配置 / 跨账号共享 ────────────────────────────────
   /** 账号表本身。 */

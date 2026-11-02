@@ -66,7 +66,7 @@ test('出口 ①：`idle` 立刻停下（App 任务做完一条就报 idle）', 
   assert.match(r.note, /走完/);
 });
 
-test('出口 ②：`skipped` 也停下（receive / notice / backupGift 用它说「条件不成立」）', () => {
+test('出口 ②：`skipped` 也停下（receive / prizes 用它说「条件不成立」）', () => {
   let n = 0;
   const r = drain(
     () => {

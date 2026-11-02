@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { createRuntime } from '../src/standalone/runtime.ts';
 import { loadAccounts } from '../src/mcloud/accounts.ts';
 import { redpackEnabled, setRedpackEnabled } from '../src/mcloud/tasks/redpackState.ts';
+import { tokenPkDraw } from '../src/mcloud/tokenPkState.ts';
 import { scoped } from '../src/store/scoped.ts';
 
 function cfg(d: string, extra: Record<string, unknown> = {}): string {
@@ -100,4 +101,27 @@ test('独立运行时：配置没写这一格 ⇒ 不碰面板设过的值（缺
   const b = await createRuntime({ configPath: p });
   assert.equal(redpackEnabled(scoped(b.rawStore, loadAccounts(b.rawStore)[0]!.id)), false);
   b.close();
+});
+
+test('独立运行时：代抽只在配置写了才落状态（账号 > common），缺省不抽', async () => {
+  const d = mkdtempSync(join(tmpdir(), 'mcloud-rt-'));
+  // ① common 写开 ⇒ 这个号跟着开
+  const p = cfg(d, { common: { 算力大作战: { 代抽: { 开启: true, 每日上限: 2 } } } });
+  const a = await createRuntime({ configPath: p });
+  const idA = loadAccounts(a.rawStore)[0]!.id;
+  assert.deepEqual(tokenPkDraw(scoped(a.rawStore, idA)), { enabled: true, max: 2 });
+  a.close();
+  // ② 账号那层赢过 common（显式关）
+  const p2 = cfg(d, {
+    common: { 算力大作战: { 代抽: { 开启: true, 每日上限: 2 } } },
+    caiyun: [{ auth: 'Basic dGVzdDoxMjM=', nickname: '小号', 算力大作战: { 代抽: { 开启: false } } }],
+  });
+  const b = await createRuntime({ configPath: p2 });
+  assert.deepEqual(tokenPkDraw(scoped(b.rawStore, loadAccounts(b.rawStore)[0]!.id)), { enabled: false, max: 10 });
+  b.close();
+  // ③ 都没写 ⇒ 不抽（这是唯一"缺省关"的格）
+  const p3 = cfg(d);
+  const c = await createRuntime({ configPath: p3 });
+  assert.deepEqual(tokenPkDraw(scoped(c.rawStore, loadAccounts(c.rawStore)[0]!.id)), { enabled: false, max: 10 });
+  c.close();
 });

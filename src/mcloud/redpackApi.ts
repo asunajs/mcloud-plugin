@@ -7,7 +7,7 @@
 // | 族 | 站点 | 凭证 |
 // |---|---|---|
 // | 签到族 / 网盘 | `m.mcloud.139.com`、`*.yun.139.com` | `jwttoken` / `Authorization` |
-// | 消息推送 / 备份好礼 | `caiyun.feixin.10086.cn` | `jwttoken` |
+// | 活动页（旧备份好礼/消息推送，已随任务一起删） | `caiyun.feixin.10086.cn` | `jwttoken` |
 // | **红包派对** | **`cpactiv.buy.139.com/cloudphone-market`** | **它自己的 `token` 头** |
 //
 // 那个 `token` 是用 SSO 票向 `/user/tokenValidate` 换来的，**不能**拿网盘的

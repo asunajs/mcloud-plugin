@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.18 · 插件 `mcloud-daily`
+//   mcloud-plugin 0.2.20 · 插件 `mcloud-daily`
 
 // src/entries/daily.ts
 import { debug as debug2, register_cron } from "host-api";
@@ -205,7 +205,7 @@ function hostFetchOptions(req, timeoutMs) {
 }
 function callOnce(transport2, req) {
   const t0 = Date.now();
-  const fail3 = (error3) => ({
+  const fail4 = (error3) => ({
     status: 0,
     tookMs: Date.now() - t0,
     env: void 0,
@@ -219,11 +219,11 @@ function callOnce(transport2, req) {
   try {
     res = transport2(req);
   } catch (e) {
-    return fail3(`请求失败：${e instanceof Error ? e.message : String(e)}`);
+    return fail4(`请求失败：${e instanceof Error ? e.message : String(e)}`);
   }
-  if (isFetchError(res)) return fail3(pickError(res.error));
+  if (isFetchError(res)) return fail4(pickError(res.error));
   if (typeof res !== "object" || res === null || typeof res.body !== "string") {
-    return fail3(`请求返回的形状不认识：${JSON.stringify(res)?.slice(0, 200) ?? String(res)}`);
+    return fail4(`请求返回的形状不认识：${JSON.stringify(res)?.slice(0, 200) ?? String(res)}`);
   }
   const tookMs = Date.now() - t0;
   const raw = res.body.length > 500 ? `${res.body.slice(0, 500)}…` : res.body;
@@ -259,7 +259,7 @@ function applyDefaultContentType(req) {
 }
 function callRawText(transport2, req) {
   const t0 = Date.now();
-  const fail3 = (error2) => ({
+  const fail4 = (error2) => ({
     ok: false,
     status: 0,
     text: "",
@@ -271,13 +271,13 @@ function callRawText(transport2, req) {
   try {
     res = transport2(req);
   } catch (e) {
-    return fail3(`请求失败：${e instanceof Error ? e.message : String(e)}`);
+    return fail4(`请求失败：${e instanceof Error ? e.message : String(e)}`);
   }
   const tookMs = Date.now() - t0;
-  if (isFetchError(res)) return { ...fail3(pickError(res.error)), tookMs };
+  if (isFetchError(res)) return { ...fail4(pickError(res.error)), tookMs };
   if (typeof res !== "object" || res === null || typeof res.body !== "string") {
     return {
-      ...fail3(`请求返回的形状不认识：${JSON.stringify(res)?.slice(0, 200) ?? String(res)}`),
+      ...fail4(`请求返回的形状不认识：${JSON.stringify(res)?.slice(0, 200) ?? String(res)}`),
       tookMs
     };
   }
@@ -392,12 +392,6 @@ var KEY_SCOPE = {
   "mcloud.apptask.state": "account",
   "mcloud.apptaskmatrix.last": "account",
   "mcloud.apptaskmatrix.group_index": "account",
-  "mcloud.notice.can_claim": "account",
-  "mcloud.notice.info": "account",
-  "mcloud.backupgift.can_receive": "account",
-  "mcloud.backupgift.info": "account",
-  "mcloud.msgpush.can": "account",
-  "mcloud.msgpush.last": "account",
   "mcloud.prizes.last": "account",
   // 「领奖」页：待领取列表的缓存与进行中的那一单。
   // 按账号 —— 奖品记录、单号、手机号都是某一个号的；串了号就是拿 A 的单号去领 B 的东西。
@@ -457,6 +451,17 @@ var KEY_SCOPE = {
   "mcloud.redpack.enabled": "account",
   // 指到别处用的口子（CI / 只读探针）。与 `mcloud.live.gate_base` 同一类，按账号。
   "mcloud.redpack.base": "account",
+  // ── 算力大作战（`National_TokenPK`，另一个活动站；只带云盘 jwttoken）──
+  // 整趟进度台账（计划队列、已领/待领、逐行账）。按账号：队列与"哪条领过了"都是某个号的。
+  "mcloud.tokenpk.state": "account",
+  // 开没开。参照实现 `DefaultEnabled: true` ⇒ 没写过就是开。按账号。
+  "mcloud.tokenpk.enabled": "account",
+  // 上传那台状态机给这一族单独开的槽位（与 App 任务 / 任务拓展分开）。
+  "mcloud.tokenpk.upload": "account",
+  // 代抽的开关与每日上限（缺省不抽：花的是用户的次数）。
+  "mcloud.tokenpk.draw": "account",
+  // 代抽的按天账（今天抽了几次、中了什么）—— 上限按天算，第二趟不重置。
+  "mcloud.tokenpk.draw.state": "account",
   // ── 实例级配置 / 跨账号共享 ────────────────────────────────
   /** 账号表本身。 */
   "mcloud.accounts": "global",
@@ -2449,7 +2454,6 @@ function buildH5Request(spec) {
   };
 }
 var MCLOUD_HOST = "https://m.mcloud.139.com";
-var BACKUP_GIFT_HOST = "https://caiyun.feixin.10086.cn";
 var EP = {
   infoV3: { origin: MCLOUD_HOST, path: "/ycloud/signin/page/infoV3" },
   startSignIn: { origin: MCLOUD_HOST, path: "/ycloud/signin/page/startSignIn" },
@@ -2462,18 +2466,8 @@ var EP = {
   cloudRecordV2: { origin: MCLOUD_HOST, path: "/ycloud/signin/public/cloudRecordV2" },
   taskListV2: { origin: MCLOUD_HOST, path: "/ycloud/signin/task/taskListV2" },
   taskListV3: { origin: MCLOUD_HOST, path: "/ycloud/signin/task/taskListV3" },
-  // 通知任务（`notice`）：两个端点都在主域，**裸 GET、不带查询参数**。
-  // ⚠ "不带参数"本身是个**未验证的选择** —— 实拍的完整 URL 被脱敏，只见到路径。
-  //   真要出问题（例如回了另一个活动的状态），改这一处加参数即可。
   // 兑换清单：**只读**，查询串只有 client 与 clientVersion，**不带 deviceId**
-  exchangeList: { origin: MCLOUD_HOST, path: "/ycloud/signin/page/exchangeList" },
-  noticeInfo: { origin: MCLOUD_HOST, path: "/ycloud/openemailsms-service/openEmailsms/getTaskInfo" },
-  noticeReward: { origin: MCLOUD_HOST, path: "/ycloud/openemailsms-service/openEmailsms/reward" },
-  backupGiftInfo: { origin: BACKUP_GIFT_HOST, path: "/market/backupgift/info" },
-  backupGiftReceive: { origin: BACKUP_GIFT_HOST, path: "/market/backupgift/receive" },
-  // 消息推送奖励（msgpushon 那一页）—— **同一台主机、不同一族**
-  msgPushStatus: { origin: BACKUP_GIFT_HOST, path: "/market/msgPushOn/task/status" },
-  msgPushObtain: { origin: BACKUP_GIFT_HOST, path: "/market/msgPushOn/task/obtain" }
+  exchangeList: { origin: MCLOUD_HOST, path: "/ycloud/signin/page/exchangeList" }
 };
 function resolveUrl(name, base) {
   const ep = EP[name];
@@ -2504,17 +2498,7 @@ var EP_METHOD = {
   // body 带 group=<组名>
   taskListV3: "POST",
   // body 带 group=""（空串）
-  exchangeList: "GET",
-  noticeInfo: "GET",
-  noticeReward: "GET",
-  // 写（会真入账），但上游用 GET
-  backupGiftInfo: "GET",
-  // 另一个域
-  backupGiftReceive: "GET",
-  // 另一个域
-  msgPushStatus: "GET",
-  msgPushObtain: "POST"
-  // 这一族用 POST，body `{"type":2}`
+  exchangeList: "GET"
 };
 var CLIENT_QUERY = "client=app";
 function rootOrDefault(base, fallback) {
@@ -3523,19 +3507,19 @@ function readMatrix(store2) {
   });
 }
 function summarize(items) {
-  let done = 0;
+  let done2 = 0;
   let todo = 0;
   let skip = 0;
   const todoNames = [];
   for (const i of items) {
     const j = judgeItem(i);
-    if (j === "done") done += 1;
+    if (j === "done") done2 += 1;
     else if (j === "todo") {
       todo += 1;
       if (todoNames.length < 3) todoNames.push(i.name ?? i.description ?? `#${i.taskId ?? "?"}`);
     } else skip += 1;
   }
-  return { done, todo, skip, todoNames };
+  return { done: done2, todo, skip, todoNames };
 }
 function runAppTaskMatrix(deps) {
   const exp = jwtExpiry(deps.store, deps.nowIso);
@@ -4308,6 +4292,17 @@ function verdictOf(st) {
   if (st.snapError !== void 0 && st.snapError !== "") bits.push(`快照没建上：${st.snapError}`);
   if (st.uploadOwned === false) bits.push("撞上你已有的同名文件（没覆盖、也没删）");
   return { step: on === void 0 ? "unknown" : "blocked", why: bits.join("；") };
+}
+function readBackupOn(store2) {
+  const raw = store2.getState(STATE_EXPAND);
+  if (!raw) return void 0;
+  try {
+    const st = JSON.parse(raw);
+    if (typeof st.backupOn === "boolean") return st.backupOn;
+    return typeof st.curMonthBackup === "boolean" ? st.curMonthBackup : void 0;
+  } catch {
+    return void 0;
+  }
 }
 function runExpansionStep(deps) {
   let st = load2(deps) ?? { step: "read" };
@@ -5614,44 +5609,45 @@ function beginUpload(deps, itemId, name) {
   });
 }
 function makePdf(ts) {
-  const text = `asign auto pdf ${ts}`;
-  return `%PDF-1.4
-1 0 obj
-<< /Type /Catalog /Pages 2 0 R >>
-endobj
-2 0 obj
-<< /Type /Pages /Kids [3 0 R] /Count 1 >>
-endobj
-3 0 obj
-<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
-endobj
-4 0 obj
-<< /Length ${text.length + 50} >>
-stream
-BT
-/F1 18 Tf
-72 720 Td
+  const text = `asign pdf ${ts}`;
+  const stream = `BT
+/F1 12 Tf
+16 210 Td
 (${text}) Tj
 ET
-endstream
+`;
+  const objs = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 240 240] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+    `<< /Length ${stream.length} >>
+stream
+${stream}endstream`,
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"
+  ];
+  let out = "%PDF-1.4\n";
+  const offs = [];
+  for (let i = 0; i < objs.length; i++) {
+    offs.push(out.length);
+    out += `${i + 1} 0 obj
+${objs[i]}
 endobj
-5 0 obj
-<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
-endobj
-xref
-0 6
-0000000000 65535 f
-0000000009 00000 n
-0000000058 00000 n
-0000000115 00000 n
-0000000223 00000 n
-0000000378 00000 n
-trailer
-<< /Size 6 /Root 1 0 R >>
+`;
+  }
+  const xrefAt = out.length;
+  out += `xref
+0 ${objs.length + 1}
+0000000000 65535 f 
+`;
+  for (const o of offs) out += `${String(o).padStart(10, "0")} 00000 n 
+`;
+  out += `trailer
+<< /Size ${objs.length + 1} /Root 1 0 R >>
 startxref
-444
+${xrefAt}
 %%EOF
 `;
+  return out;
 }
 function beginPdfUpload(deps) {
   const ts = Date.now();
@@ -6436,166 +6432,68 @@ function activeAppTaskFileId(deps) {
   return st.fileOwned === false ? void 0 : st.fileId;
 }
 
-// src/mcloud/tasks/backupGift.ts
-var STATE_INFO = "mcloud.backupgift.info";
-var STATE_CAN = "mcloud.backupgift.can_receive";
-function parseCanReceive(result) {
-  const o = resultObject({ code: 0, message: "", result, ok: true });
-  const v = o.canReceive ?? o.can_receive ?? o.receivable ?? o.status;
-  if (typeof v === "boolean") return { can: v, raw: v };
-  if (typeof v === "number") return { can: v === 1, raw: v };
-  if (typeof v === "string") {
-    const s = v.toLowerCase();
-    if (s === "true" || s === "1" || s === "yes" || s === "can") return { can: true, raw: v };
-    return { can: false, raw: v };
+// src/mcloud/tasks/appTaskStatus.ts
+var STATUS_TASKS = [
+  { id: 549, title: "备份文件领好礼" },
+  { id: 551, title: "连续31天开启云盘APP通知" },
+  { id: 1021, title: "连续31天开启邮箱APP通知" },
+  { id: 434, title: "分享文件领好礼" }
+];
+function plainName(raw) {
+  return raw.replace(/<[^>]*>[^<]*<\/[^>]*>/g, " ").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+}
+function progressOf(item) {
+  const m = /(\d{1,3})\s*\/\s*(\d{1,3})/.exec(item.name ?? "");
+  return m === null ? void 0 : `${m[1]}/${m[2]}`;
+}
+function describeStatus(item, title) {
+  const btn = (item.buttonOutText ?? "").trim();
+  if (btn === "") return void 0;
+  const head = title ?? (plainName(item.name ?? "") || `#${String(item.taskId ?? "")}`);
+  const day = (item.buttonOutDay ?? "").trim();
+  const total = (item.buttonOutTotal ?? "").trim();
+  const prog = progressOf(item);
+  let body;
+  if (/开启中|已开启/.test(btn)) {
+    body = day !== "" && total !== "" ? `已开启 ${day}/${total} 天` : "已开启";
+  } else if (/^(去开启|立即开启|开启)$/.test(btn)) {
+    body = "还没开启（去 App 打开）";
+  } else if (/下月再来|下月可领/.test(btn)) {
+    body = "本月已完成，下月再来";
+  } else if (/^已完成$/.test(btn)) {
+    body = prog === void 0 ? "已完成" : `已完成 ${prog}`;
+  } else if (/预定/.test(btn)) {
+    body = "下月再来（现在还不能做）";
+  } else if (/^(去完成|立即完成|去参与|立即参与)$/.test(btn)) {
+    body = "还没做";
+  } else {
+    body = btn;
   }
-  return { can: false, raw: result ?? null };
+  return `${head}：${body}`;
 }
-function runBackupGiftInfo(deps) {
-  return runTask(
-    deps,
-    {
-      task: "backup-gift",
-      endpoint: "backupGiftInfo",
-      method: "GET",
-      marketName: "backupgift",
-      isDeviceId: false,
-      stateKey: STATE_INFO
-    },
-    (env) => {
-      const { can, raw } = parseCanReceive(env.result);
-      deps.store.setState(STATE_CAN, can ? "yes" : `no:${JSON.stringify(raw)?.slice(0, 80)}`, deps.nowIso);
-      return {
-        ok: true,
-        note: can ? "有备份礼物可领，下一次去领" : "无备份礼物可领",
-        snapshot: env.result ?? null
-      };
+function pickBetter(a, b) {
+  const score = (x) => (x.buttonOutText === void 0 ? 0 : 1) + (x.buttonOutDay === void 0 ? 0 : 2) + (progressOf(x) === void 0 ? 0 : 4);
+  return score(b) > score(a) ? b : a;
+}
+function appTaskStatusLines(store2, opts = {}) {
+  const seen = /* @__PURE__ */ new Map();
+  for (const reading of readMatrix(store2)) {
+    for (const item of reading?.items ?? []) {
+      const id = item.taskId;
+      if (id === void 0) continue;
+      if (!STATUS_TASKS.some((s) => s.id === id)) continue;
+      const prev = seen.get(id);
+      seen.set(id, prev === void 0 ? item : pickBetter(prev, item));
     }
-  );
-}
-function runBackupGiftReceive(deps) {
-  const can = deps.store.getState(STATE_CAN);
-  if (can !== "yes") {
-    return {
-      ok: true,
-      skipped: true,
-      // 参考实现：「本月已领取」/「未开启备份，请前往 APP 手动开启」
-      note: can === "no" ? "本月已领取" : "未开启备份，请前往 APP 手动开启"
-    };
   }
-  const out = runTask(
-    deps,
-    {
-      task: "backup-gift",
-      endpoint: "backupGiftReceive",
-      method: "GET",
-      marketName: "backupgift",
-      isDeviceId: false
-    },
-    (env) => ({
-      ok: true,
-      // 参考实现：「领取成功，获得云朵 N」
-      note: "领取成功，获得云朵"
-    })
-  );
-  if (out.ok) deps.store.setState(STATE_CAN, "no:claimed", deps.nowIso);
-  return out;
-}
-function runBackupGift(deps) {
-  const can = deps.store.getState(STATE_CAN);
-  if (can === "yes") return runBackupGiftReceive(deps);
-  return runBackupGiftInfo(deps);
-}
-
-// src/mcloud/tasks/msgPush.ts
-var STATE_STATUS = "mcloud.msgpush.last";
-var STATE_CAN2 = "mcloud.msgpush.can";
-var SECOND_STATUS_CLAIMABLE = 2;
-function asInt3(v) {
-  if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
-  if (typeof v === "string" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
-  return void 0;
-}
-function parseStatus(result) {
-  const o = resultObject({ code: 0, message: "", result, ok: true });
-  return {
-    pushOn: asInt3(o.pushOn),
-    onDuaration: asInt3(o.onDuaration),
-    firstTaskStatus: asInt3(o.firstTaskStatus),
-    secondTaskStatus: asInt3(o.secondTaskStatus)
-  };
-}
-var PUSH_ON_OFF = 0;
-function planMsgPush(s) {
-  if (s.pushOn !== void 0 && s.pushOn === PUSH_ON_OFF) return "manual";
-  if (s.secondTaskStatus === void 0) return "unknown";
-  if (s.secondTaskStatus === SECOND_STATUS_CLAIMABLE) return "obtain";
-  return "nothing";
-}
-function runMsgPushStatus(deps) {
-  return runTask(
-    deps,
-    {
-      task: "msg-push",
-      endpoint: "msgPushStatus",
-      method: "GET",
-      // ⚠ 这一族的 `activityid` 是 **msgpushon**，不是签到页那个 `sign_in_3`：
-      // 「每个页面用自己的参数换自己的票，票与票之间逐字节不等」（见 session.rs 的配方表）
-      marketName: "msgpushon",
-      isDeviceId: false,
-      stateKey: STATE_STATUS
-    },
-    (env) => {
-      const s = parseStatus(env.result);
-      const plan = planMsgPush(s);
-      const can = plan === "obtain";
-      deps.store.setState(STATE_CAN2, can ? "yes" : plan === "unknown" ? "unknown" : "no", deps.nowIso);
-      let note;
-      if (plan === "unknown") {
-        note = "消息推送：判据字段缺失（没读到 secondTaskStatus）⇒ **判不了**，一个写请求都不发";
-      } else if (s.pushOn === 0) {
-        note = "消息推送：通知已被关闭，需要你在 App 里手动打开（这一步我们做不了）";
-      } else if (can) {
-        note = "消息推送：有可领的奖励（下一次触发会去领）";
-      } else if (s.firstTaskStatus !== void 0 && s.firstTaskStatus !== 3) {
-        note = "消息推送：首次奖励未领 —— 那一步要在 App 里手动完成，我们做不了";
-      } else {
-        note = `消息推送：暂无可领${s.onDuaration === void 0 ? "" : `（已开启 ${s.onDuaration} 天）`}`;
-      }
-      return { ok: true, note, snapshot: env.result ?? null };
-    }
-  );
-}
-function runMsgPushObtain(deps) {
-  const can = deps.store.getState(STATE_CAN2);
-  if (can !== "yes") {
-    return {
-      ok: true,
-      skipped: true,
-      note: `上次问到的状态是「${can === "unknown" ? "判不了（判据字段缺失）" : can === "no" ? "不该领" : can === "yes" ? "该领" : "没问过"}」，不发领取请求`
-    };
+  const out = [];
+  for (const spec of STATUS_TASKS) {
+    const item = seen.get(spec.id);
+    if (item === void 0) continue;
+    const line = describeStatus(item, spec.title);
+    if (line === void 0) continue;
+    out.push(spec.id === 549 && opts.backupOn === false ? `${line}（备份开关没开，开了才会有）` : line);
   }
-  const out = runTask(
-    deps,
-    {
-      task: "msg-push",
-      endpoint: "msgPushObtain",
-      method: "POST",
-      body: JSON.stringify({ type: 2 }),
-      marketName: "msgpushon",
-      isDeviceId: false
-    },
-    (env) => {
-      const o = resultObject(env);
-      const code = asInt3(o.obtainCode);
-      if (code === 0) return { ok: true, note: "消息推送奖励：已领取" };
-      return {
-        ok: false,
-        note: `消息推送奖励：没领到（obtainCode=${code ?? "缺字段"}；服务端回 ${JSON.stringify(env.result ?? env.message).slice(0, 120)}）`
-      };
-    }
-  );
-  if (out.ok) deps.store.setState(STATE_CAN2, "no", deps.nowIso);
   return out;
 }
 
@@ -6682,115 +6580,6 @@ function runMultiple(deps) {
   );
   if (out.ok) deps.store.setState(STATE_MULTIPLE_DONE, month, deps.nowIso);
   return out;
-}
-
-// src/mcloud/tasks/notice.ts
-var STATE_CAN3 = "mcloud.notice.can_claim";
-var STATE_INFO2 = "mcloud.notice.info";
-var NOTICE_CLOUD_STATUS_UNCLAIMED = 1;
-var NOTICE_TASK_STATUS_DONE = 3;
-function asInt4(v) {
-  if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
-  if (typeof v === "string" && v.trim() !== "" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
-  return void 0;
-}
-function parseNoticeSlot(raw) {
-  if (raw === null || raw === void 0 || typeof raw !== "object") return void 0;
-  const o = raw;
-  const slot = {
-    cloudStatus: asInt4(o.cloudStatus ?? o.cloud_status),
-    sum: asInt4(o.sum),
-    progress: asInt4(o.progress),
-    taskStatus: asInt4(o.taskStatus ?? o.task_status)
-  };
-  const any = slot.cloudStatus !== void 0 || slot.sum !== void 0 || slot.progress !== void 0 || slot.taskStatus !== void 0;
-  return any ? slot : void 0;
-}
-function parseNoticeInfo(result) {
-  const o = resultObject({ code: 0, message: "", result, ok: true });
-  return {
-    one: parseNoticeSlot(o.taskOneInfo ?? o.task_one_info),
-    two: parseNoticeSlot(o.taskTwoInfo ?? o.task_two_info)
-  };
-}
-function slotJudged(slot) {
-  return !!slot && slot.cloudStatus !== void 0 && slot.taskStatus !== void 0;
-}
-function slotClaimable(slot) {
-  if (!slotJudged(slot)) return false;
-  return slot.cloudStatus === NOTICE_CLOUD_STATUS_UNCLAIMED && slot.taskStatus === NOTICE_TASK_STATUS_DONE;
-}
-function noticePlan(info) {
-  const slots = [
-    ["槽一", info.one],
-    ["槽二", info.two]
-  ];
-  const claimable = slots.filter(([, s]) => slotClaimable(s)).map(([n]) => n);
-  const unjudged = slots.filter(([, s]) => s && !slotJudged(s)).map(([n]) => n);
-  const missing = slots.filter(([, s]) => !s).map(([n]) => n);
-  const parts = [];
-  if (claimable.length) parts.push(`${claimable.join("/")}可领`);
-  if (unjudged.length) parts.push(`${unjudged.join("/")}判据字段不全（不参与判断，避免静默漏领）`);
-  if (missing.length) parts.push(`${missing.join("/")}服务端没给`);
-  if (!parts.length) parts.push("通知奖励都领过了");
-  return {
-    claimable: claimable.length > 0,
-    unjudged: unjudged.length > 0,
-    detail: parts.join("；")
-  };
-}
-function runNoticeInfo(deps) {
-  return runTask(
-    deps,
-    {
-      task: "notice",
-      endpoint: "noticeInfo",
-      method: "GET",
-      marketName: "sign_in_3",
-      isDeviceId: false,
-      stateKey: STATE_INFO2
-    },
-    (env) => {
-      const info = parseNoticeInfo(env.result);
-      const plan = noticePlan(info);
-      deps.store.setState(STATE_CAN3, plan.claimable ? "yes" : `no:${plan.detail}`, deps.nowIso);
-      return {
-        ok: true,
-        note: plan.claimable ? `${plan.detail}（下一次触发会去领）` : plan.detail,
-        snapshot: { one: info.one ?? null, two: info.two ?? null }
-      };
-    }
-  );
-}
-function runNoticeReward(deps) {
-  const can = deps.store.getState(STATE_CAN3);
-  if (can !== "yes") {
-    return { ok: true, skipped: true, note: `上次问过状态是「${can ?? "没问过"}」，不发领取请求` };
-  }
-  const out = runTask(
-    deps,
-    {
-      task: "notice",
-      endpoint: "noticeReward",
-      method: "GET",
-      marketName: "sign_in_3",
-      isDeviceId: false
-    },
-    (env) => ({
-      ok: true,
-      // 上游不报到账数 —— 这句必须说，否则下一个人会以为这里能看到领了多少
-      note: `通知任务：已发领取请求（服务端不报到账数，下一次触发回查 ${JSON.stringify(
-        env.message ?? "success"
-      ).slice(0, 40)}）`
-    })
-  );
-  if (out.ok) deps.store.setState(STATE_CAN3, "no:sent", deps.nowIso);
-  return out;
-}
-function runNotice(deps) {
-  const can = deps.store.getState(STATE_CAN3);
-  if (can === "yes") return runNoticeReward(deps);
-  return runNoticeInfo(deps);
 }
 
 // src/mcloud/tasks/prizes.ts
@@ -7856,6 +7645,1020 @@ function walk(deps, st, base) {
   return { ok: true, note: step.kind === "failed" ? `${job.taskName}：这一条没成` : `${job.taskName}：过了` };
 }
 
+// src/mcloud/tokenPkState.ts
+var STATE_TOKENPK = "mcloud.tokenpk.state";
+var STATE_TOKENPK_ENABLED = "mcloud.tokenpk.enabled";
+var STATE_TOKENPK_UPLOAD = "mcloud.tokenpk.upload";
+var STATE_TOKENPK_DRAW = "mcloud.tokenpk.draw";
+var STATE_TOKENPK_DRAW_DAY = "mcloud.tokenpk.draw.state";
+function tokenPkDay(nowIso) {
+  return nowIso.slice(0, 10);
+}
+function parse2(raw) {
+  if (raw === void 0 || raw === null || raw === "") return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+function loadTokenPk(store2) {
+  const v = parse2(store2.getState(STATE_TOKENPK));
+  if (v === null || typeof v.day !== "string" || typeof v.phase !== "string") return null;
+  return v;
+}
+function saveTokenPk(store2, st, nowIso) {
+  store2.setState(STATE_TOKENPK, JSON.stringify(st), nowIso);
+}
+function newTokenPk(day) {
+  return {
+    day,
+    phase: "list",
+    queue: [],
+    executed: 0,
+    claimedCount: 0,
+    finished: [],
+    claimedIds: [],
+    pending: [],
+    touched: [],
+    toClaim: [],
+    names: {},
+    manual: [],
+    failed: [],
+    chanceReward: 0,
+    lines: []
+  };
+}
+function beginLeg2(store2, nowIso) {
+  const day = tokenPkDay(nowIso);
+  const prev = loadTokenPk(store2);
+  if (prev === null || prev.day !== day || prev.phase === "done") {
+    const fresh = newTokenPk(day);
+    saveTokenPk(store2, fresh, nowIso);
+    return fresh;
+  }
+  return prev;
+}
+function pkLine(st, line) {
+  st.lines.push(line);
+}
+function takeTokenPkLines(store2, nowIso) {
+  const st = loadTokenPk(store2);
+  if (st === null || st.lines.length === 0) return [];
+  const lines = [...st.lines];
+  saveTokenPk(store2, { ...st, lines: [] }, nowIso);
+  return lines;
+}
+function tokenPkEnabled(store2) {
+  const v = store2.getState(STATE_TOKENPK_ENABLED);
+  if (v === null || v === void 0 || v === "") return true;
+  return v === "true" || v === "1";
+}
+var DEFAULT_DRAW_MAX = 10;
+function tokenPkDraw(store2) {
+  const raw = parse2(store2.getState(STATE_TOKENPK_DRAW));
+  if (raw === null) return { enabled: false, max: DEFAULT_DRAW_MAX };
+  const max = typeof raw.max === "number" && Number.isFinite(raw.max) && raw.max >= 0 ? Math.floor(raw.max) : DEFAULT_DRAW_MAX;
+  return { enabled: raw.enabled === true, max };
+}
+function loadDrawDay(store2, day) {
+  const v = parse2(store2.getState(STATE_TOKENPK_DRAW_DAY));
+  if (v === null || v.day !== day) return { day, drawn: 0, wins: [] };
+  return {
+    day,
+    drawn: typeof v.drawn === "number" && v.drawn >= 0 ? Math.floor(v.drawn) : 0,
+    wins: Array.isArray(v.wins) ? v.wins.filter((x) => typeof x === "string") : [],
+    ...typeof v.remaining === "number" && v.remaining >= 0 ? { remaining: Math.floor(v.remaining) } : {}
+  };
+}
+function saveDrawDay(store2, d, nowIso) {
+  store2.setState(STATE_TOKENPK_DRAW_DAY, JSON.stringify(d), nowIso);
+}
+function clearAttempt(st) {
+  st.attempt = void 0;
+}
+
+// src/mcloud/tokenPkAssets.ts
+var SAMPLE_JPEG_B64 = "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAA0JCgsKCA0LCgsODg0PEyAVExISEyccHhcgLikxMC4pLSwzOko+MzZGNywtQFdBRkxOUlNSMj5aYVpQYEpRUk//2wBDAQ4ODhMREyYVFSZPNS01T09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT0//wAARCABAAEADASIAAhEBAxEB/8QAGQABAQADAQAAAAAAAAAAAAAABAIAAQUD/8QAJBAAAgECBQUBAQAAAAAAAAAAAAEFAgQDJZOy0RFUVXN0IRL/xAAXAQEBAQEAAAAAAAAAAAAAAAAEAwUG/8QAHREAAwEAAgMBAAAAAAAAAAAAAAECESEiAzFR8P/aAAwDAQACEQMRAD8A4KRaRiR25aUksOYvaMOQu6aKbjEVNNONUkl/T/F+nQ3T3EZketOMkUkOUtKeSvNerkpSsn5G816uSFOhUNAkikhqlZPyN3r1clKUkvIXetVyHpsTDBJFpDFKSXkLvWq5KlVnF79GJuZCmJhnGSHzCzu/+nE3MGkOmFnV99GJuZp2+y/fDAh8A0ikjaRSRGmIhmki0jEi0iFMVDNJDZVZve++vcwqQ2UWbXnvr3MPT5FQzjpDpdZzffRibmESHSyzi9+jE3M0rfY5+H1BJFpGJFpEaYiGaSLSMSLSIUxUM0kNk1mt5769zCpDJNZrd++vcw9MVDOOkOlVnF79GJuYRIcpOR7+61quTSvd1GB46WYwaRaQtSUh391rVclKRkO+udWrkhTYmGgiRSQtSN/31zq1clKQv+9udWrkhTYmGgqQySWaXfur3MxSF93tzq1cni3VXU6q6nVVU+rbfVtkKYmGf//Z";
+function sampleJpeg() {
+  return fromBase64(SAMPLE_JPEG_B64);
+}
+
+// src/mcloud/tokenPk.ts
+var TOKENPK_MARKET = "National_TokenPK";
+var TOKENPK_PAGE_PATH = "portal/yunClound/index.html";
+var TOKENPK_SOURCE_ID = "1016";
+var TOKENPK_REFERER = `https://m.mcloud.139.com/${TOKENPK_PAGE_PATH}?path=${TOKENPK_MARKET}&sourceid=${TOKENPK_SOURCE_ID}&enableShare=1`;
+var TOKENPK_PLATFORM = "ios";
+var TOKENPK_EP = {
+  list: "/ycloud/tokenpk/task/list",
+  click: "/ycloud/tokenpk/task/step/click",
+  reserve: "/ycloud/tokenpk/task/step/reserve",
+  receive: "/ycloud/tokenpk/task/step/receivePrize",
+  progress: "/ycloud/tokenpk/toplist/progress/queryHome",
+  chance: "/ycloud/tokenpk/toplist/progress/autoReceiveLotteryChance",
+  lottery: "/ycloud/tokenpk/toplist/progress/lottery",
+  remainChance: "/ycloud/tokenpk/toplist/progress/queryRemainChance",
+  smartAlbum: "/ycloud/tokenpk/task/smartAlbum/open"
+};
+function pkHeaders(s, opts = {}) {
+  const h = {
+    Accept: "*/*",
+    activityid: TOKENPK_MARKET,
+    appversion: H5_APP_VERSION,
+    showloading: opts.showLoading === false ? "false" : "true",
+    Referer: TOKENPK_REFERER,
+    jwttoken: s.jwt
+  };
+  if (s.userAgent !== void 0 && s.userAgent !== "") h["user-agent"] = s.userAgent;
+  if (s.cookie !== void 0 && s.cookie !== "") h.cookie = s.cookie;
+  if (opts.json === true) {
+    h["content-type"] = "application/json;charset=UTF-8";
+    h.origin = "https://m.mcloud.139.com";
+  }
+  return h;
+}
+function pkUrl(path, base, query = "") {
+  const root = rootOrDefault(base, "https://m.mcloud.139.com").replace(/\/+$/, "");
+  return `${root}${path}${query === "" ? "" : `?${query}`}`;
+}
+function listRequest(s, base) {
+  const q = `marketName=${TOKENPK_MARKET}&platform=${TOKENPK_PLATFORM}&sortState=true`;
+  return {
+    url: pkUrl(TOKENPK_EP.list, base, q),
+    method: "GET",
+    headers: { ...pkHeaders(s), "cache-control": "no-cache" },
+    body: void 0
+  };
+}
+function clickRequest2(s, taskId, key, base) {
+  return {
+    url: pkUrl(TOKENPK_EP.click, base),
+    method: "POST",
+    headers: pkHeaders(s, { json: true }),
+    body: JSON.stringify({ marketName: TOKENPK_MARKET, taskId, key, source: "app" })
+  };
+}
+function reserveRequest(s, taskId, key, base) {
+  return {
+    url: pkUrl(TOKENPK_EP.reserve, base),
+    method: "POST",
+    headers: pkHeaders(s, { json: true }),
+    body: JSON.stringify({ marketName: TOKENPK_MARKET, taskId, key, source: "app" })
+  };
+}
+function receiveRequest(s, taskId, base) {
+  return {
+    url: pkUrl(TOKENPK_EP.receive, base),
+    method: "POST",
+    headers: pkHeaders(s, { json: true }),
+    body: JSON.stringify({ marketName: TOKENPK_MARKET, taskId, source: "app" })
+  };
+}
+function smartAlbumRequest(s, base) {
+  return {
+    url: pkUrl(TOKENPK_EP.smartAlbum, base),
+    method: "GET",
+    headers: pkHeaders(s),
+    body: void 0
+  };
+}
+function progressRequest(s, base) {
+  return {
+    url: pkUrl(TOKENPK_EP.progress, base),
+    method: "GET",
+    headers: pkHeaders(s),
+    body: void 0
+  };
+}
+function lotteryRequest(s, base) {
+  return {
+    url: pkUrl(TOKENPK_EP.lottery, base),
+    method: "POST",
+    headers: pkHeaders(s, { json: true }),
+    body: "null"
+  };
+}
+function remainChanceRequest(s, base) {
+  return {
+    url: pkUrl(TOKENPK_EP.remainChance, base),
+    method: "GET",
+    headers: pkHeaders(s),
+    body: void 0
+  };
+}
+function chanceRequest(s, base) {
+  return {
+    url: pkUrl(TOKENPK_EP.chance, base),
+    method: "POST",
+    headers: pkHeaders(s, { json: true }),
+    body: "null"
+  };
+}
+function parsePk(body) {
+  try {
+    const env = parseSignInEnvelope(body);
+    return { code: env.code, message: env.message, result: env.result, ok: env.ok };
+  } catch (e) {
+    return {
+      code: -1,
+      message: `响应不是 JSON：${e instanceof Error ? e.message : String(e)}`,
+      result: void 0,
+      ok: false
+    };
+  }
+}
+function parseClaim(result) {
+  const out = { allSuccess: false, prizes: [], failures: [] };
+  if (typeof result !== "object" || result === null) return out;
+  const r = result;
+  out.allSuccess = r.allSuccess === true;
+  const task = r.task;
+  if (typeof task === "object" && task !== null) {
+    const st = task.state;
+    if (typeof st === "string") out.state = st;
+  }
+  const prizes = Array.isArray(r.prizes) ? r.prizes : [];
+  for (const one of prizes) {
+    if (typeof one !== "object" || one === null) continue;
+    const p = one;
+    const name = typeof p.prizeName === "string" && p.prizeName.trim() !== "" ? p.prizeName : "";
+    if (p.success === true) {
+      if (name !== "") out.prizes.push(name);
+    } else {
+      const why = typeof p.errorMsg === "string" && p.errorMsg !== "" ? p.errorMsg : "没给原因";
+      out.failures.push(name === "" ? why : `${name}（${why}）`);
+    }
+  }
+  return out;
+}
+function parseProgress(result) {
+  if (typeof result !== "object" || result === null) return {};
+  const used = result.usedToken;
+  if (typeof used === "number" && Number.isFinite(used)) return { usedToken: used };
+  if (typeof used === "string" && used.trim() !== "" && !Number.isNaN(Number(used))) {
+    return { usedToken: Number(used) };
+  }
+  return {};
+}
+function parseRemainChance(result) {
+  if (typeof result === "number" && Number.isFinite(result) && result >= 0) return Math.floor(result);
+  if (typeof result === "string" && result.trim() !== "" && !Number.isNaN(Number(result))) {
+    return Math.max(0, Math.floor(Number(result)));
+  }
+  return void 0;
+}
+function parseLottery(result) {
+  if (typeof result !== "object" || result === null) return { win: false };
+  const r = result;
+  const out = { win: r.win === true };
+  if (typeof r.prizeName === "string" && r.prizeName.trim() !== "") out.prizeName = r.prizeName.trim();
+  const n = r.remainChance;
+  if (typeof n === "number" && Number.isFinite(n)) out.remainChance = n;
+  else if (typeof n === "string" && n.trim() !== "" && !Number.isNaN(Number(n))) out.remainChance = Number(n);
+  return out;
+}
+function parseChance(result) {
+  if (typeof result !== "object" || result === null) return 0;
+  const n = result.rewardCount;
+  if (typeof n === "number" && Number.isFinite(n) && n > 0) return Math.floor(n);
+  if (typeof n === "string" && n.trim() !== "" && !Number.isNaN(Number(n))) {
+    return Math.max(0, Math.floor(Number(n)));
+  }
+  return 0;
+}
+
+// src/mcloud/tasks/tokenPkActions.ts
+function firstActionStep(key) {
+  switch (key) {
+    case "openUrl":
+      return "done";
+    case "loginPc":
+    case "uploadPhoto":
+    case "shareFile":
+    case "backup":
+      return "upload";
+    case "createNote":
+      return "note-auth";
+    case "aiCamera":
+    case "aiAssistant":
+      return "ai-mail-sso";
+    case "openAlbum":
+      return "smart-album";
+    default:
+      return "done";
+  }
+}
+function fail2(note) {
+  return { ok: false, note, finished: true, failed: true };
+}
+function done(note) {
+  return { ok: true, note, finished: true };
+}
+function more(note) {
+  return { ok: true, note, finished: false };
+}
+function advance2(a, step, data) {
+  a.step = step;
+  if (data !== void 0) a.data = { ...a.data ?? {}, ...data };
+}
+function send2(deps, req) {
+  return callRawText(deps.transport, req);
+}
+function stepAction(deps, s, a) {
+  const data = a.data ?? {};
+  if (a.step === "reserve") {
+    const res = send2(deps, reserveRequest(s, a.taskId, a.key, deps.baseUrl));
+    if (!res.ok) return fail2(`预约「${a.name}」没成：${res.error ?? "未知失败"}`);
+    return done(`已预约「${a.name}」`);
+  }
+  if (a.step === "click") {
+    if (a.skipClick === true) {
+      const next2 = firstActionStep(a.key);
+      if (next2 === "done") return done(`「${a.name}」已经登记过`);
+      advance2(a, next2);
+      return more(`「${a.name}」已经登记过 —— 下一步「${next2}」`);
+    }
+    const res = send2(deps, clickRequest2(s, a.taskId, a.key, deps.baseUrl));
+    if (!res.ok) return fail2(`登记「${a.name}」没成：${res.error ?? "未知失败"}`);
+    const next = firstActionStep(a.key);
+    if (next === "done") return done(`已点「${a.name}」—— 这一条只认点击`);
+    advance2(a, next);
+    return more(`已登记「${a.name}」—— 下一步「${next}」`);
+  }
+  if (a.step === "upload") return stepUpload(deps, a, data);
+  if (a.step === "snapshot-create") {
+    const hash = contentHashOf(EMPTY_ZIP);
+    const ts = depsNowMs(deps);
+    const req = buildSnapshotCreateRequest({
+      fileExtension: "zip",
+      count: 1,
+      size: EMPTY_ZIP.length,
+      contentHash: hash,
+      timestampMs: ts
+    });
+    const res = send2(deps, req);
+    if (!res.ok) return fail2(`备份快照没建起来：${res.error ?? "未知失败"}`);
+    const parsed = parseSnapshotCreate(res.text);
+    if (!parsed.ok || !parsed.created) return fail2(`备份快照响应解析不了：${parsed.error ?? ""}`);
+    advance2(a, parsed.created.rapidUpload ? "snapshot-complete" : "snapshot-put", {
+      snapFileId: parsed.created.fileId,
+      snapUploadId: parsed.created.uploadId,
+      snapUploadUrl: parsed.created.uploadUrl,
+      snapHash: hash,
+      snapSize: String(EMPTY_ZIP.length),
+      snapTs: String(ts)
+    });
+    return more("备份快照已声明 —— 下一步传快照体");
+  }
+  if (a.step === "snapshot-put") {
+    if (!data.snapUploadUrl || !data.snapUploadId) return fail2("备份快照缺 uploadUrl/uploadId");
+    const { req, leaksCredential } = buildPutRequest(data.snapUploadUrl, EMPTY_ZIP, "snapshot");
+    if (leaksCredential) return fail2("备份快照的目标主机不该带凭据 ⇒ 不发");
+    const res = send2(deps, req);
+    if (!res.ok) return fail2(`备份快照体没传成：${res.error ?? "未知失败"}`);
+    advance2(a, "snapshot-complete");
+    return more("备份快照体已传 —— 下一步确认");
+  }
+  if (a.step === "snapshot-complete") {
+    if (!data.snapFileId || !data.snapHash) return fail2("备份快照缺 fileId/contentHash");
+    const req = buildSnapshotCompleteRequest({
+      fileId: data.snapFileId,
+      uploadId: data.snapUploadId ?? "",
+      count: 1,
+      contentHash: data.snapHash,
+      size: Number(data.snapSize ?? EMPTY_ZIP.length),
+      timestampMs: Number(data.snapTs ?? depsNowMs(deps))
+    });
+    const res = send2(deps, req);
+    const parsed = res.ok ? parseSnapshotComplete(res.text) : { ok: false, error: res.error };
+    if (!parsed.ok) return fail2(`备份快照没确认：${parsed.error ?? "未知失败"}`);
+    return done(`备份了一次文件（含快照）——「${a.name}」`);
+  }
+  if (a.step === "outlink") {
+    const fileId = loadUpload(deps, STATE_TOKENPK_UPLOAD)?.fileId;
+    if (fileId === void 0 || fileId === "") return fail2("分享文件：上传没有给出 fileId");
+    const req = getOutLinkRequest(deps, [fileId]);
+    if (req === void 0) return fail2("分享文件：造不出外链请求（缺账号）");
+    const res = send2(deps, req);
+    if (!res.ok) return fail2(`分享文件：建外链没成（${res.error ?? "未知失败"}）`);
+    return done(`分享了一个文件 ——「${a.name}」`);
+  }
+  if (a.step === "note-auth") {
+    const auth = parseAuth(loadAuthRaw(deps.store));
+    if (auth === void 0 || auth.token === "") return fail2("云笔记：这个号没有 authToken");
+    const res = send2(deps, noteAuthRequest(auth.token, auth.phone));
+    if (!res.ok) return fail2(`云笔记鉴权没成：${res.error ?? "未知失败"}`);
+    const headers = parseNoteHeaders(res.text);
+    if (headers === void 0) return fail2("云笔记：鉴权响应里没有 headers.app_auth");
+    const noteId = uuidV4().replace(/-/g, "").padEnd(32, "0").slice(0, 32);
+    advance2(a, "note-create", {
+      noteId,
+      noteTitle: noteId.slice(0, 3),
+      noteHeaders: JSON.stringify(headers)
+    });
+    return more("云笔记鉴权好了 —— 下一步建笔记");
+  }
+  if (a.step === "note-create") {
+    const auth = parseAuth(loadAuthRaw(deps.store));
+    let headers = {};
+    try {
+      headers = JSON.parse(data.noteHeaders ?? "{}");
+    } catch {
+      headers = {};
+    }
+    const res = send2(
+      deps,
+      noteCreateRequest(data.noteId ?? "", data.noteTitle ?? "", auth?.phone ?? "", headers, Date.now())
+    );
+    advance2(a, "note-wait");
+    return more(res.ok ? "云笔记已建 —— 等一下再删" : `建笔记没成（旧实现也忽略）：${res.error ?? ""}`);
+  }
+  if (a.step === "note-wait") {
+    waitMs(deps, deps.settleMs ?? 2e3);
+    advance2(a, "note-delete");
+    return more("等好了 —— 下一步把笔记移进回收站");
+  }
+  if (a.step === "note-delete") {
+    let headers = {};
+    try {
+      headers = JSON.parse(data.noteHeaders ?? "{}");
+    } catch {
+      headers = {};
+    }
+    const res = send2(deps, noteDeleteRequest(data.noteId ?? "", headers));
+    return done(res.ok ? `建了一条云笔记（已移进回收站）——「${a.name}」` : `云笔记删失败（旧实现也忽略）：${res.error ?? ""}`);
+  }
+  if (a.step === "ai-mail-sso") {
+    const res = send2(deps, mailSpecTokenRequest(deps));
+    if (!res.ok) return fail2(`灵犀：换邮箱 SSO 没成（${res.error ?? "未知失败"}）`);
+    const p = parseSsoToken(res.text);
+    if (!p.ok || p.value === void 0) return fail2(`灵犀：${p.error ?? "邮箱 SSO 响应里没有 token"}`);
+    advance2(a, "ai-mail-login", { sso: p.value });
+    return more("灵犀：邮箱 SSO 到手 —— 下一步登录邮箱");
+  }
+  if (a.step === "ai-mail-login") {
+    const res = send2(deps, mailLoginRequest(data.sso ?? ""));
+    if (!res.ok) return fail2(`灵犀：邮箱登录没成（${res.error ?? "未知失败"}）`);
+    const sess = parseMailSession(res.text);
+    if (sess === void 0) return fail2("灵犀：邮箱登录响应里没有 sid/rmkey");
+    advance2(a, "ai-query", { sid: sess.sid, rmkey: sess.rmkey, cguid: newCguid() });
+    return more("灵犀：邮箱登录好了 —— 下一步拿 AI 鉴权");
+  }
+  if (a.step === "ai-query") {
+    const res = send2(
+      deps,
+      queryUserTokenRequest({ sid: data.sid ?? "", rmkey: data.rmkey ?? "" }, data.cguid ?? newCguid())
+    );
+    if (!res.ok) return fail2(`灵犀：queryUserToken 没成（${res.error ?? "未知失败"}）`);
+    const tok = parseQueryUserToken(res.text);
+    const auth = tok === void 0 ? void 0 : deriveAiAuth(tok);
+    if (auth === void 0) return fail2("灵犀：queryUserToken 没给全 account/token 或解不出手机号");
+    const next = a.key === "aiCamera" ? "ai-recognize" : "ai-chat";
+    advance2(a, next, {
+      phone: auth.phone,
+      authz: auth.authorization,
+      domain: auth.userDomainId
+    });
+    return more(`灵犀：AI 鉴权到手 —— 下一步${next === "ai-recognize" ? "拍照识图" : "对话"}`);
+  }
+  if (a.step === "ai-chat") {
+    const res = send2(deps, aiChatRequest(data.authz ?? "", data.domain ?? "", "你好"));
+    const sse = res.ok ? parseSse(res.text) : { events: 0, text: "" };
+    return done(
+      sse.events > 0 && sse.text !== "" ? `和灵犀聊了一句（${sse.text.slice(0, 12)}…）——「${a.name}」` : `灵犀对话没取到输出（events=${sse.events}）——「${a.name}」记下，等服务端认`
+    );
+  }
+  if (a.step === "ai-recognize") {
+    const native = parseAuth(loadAuthRaw(deps.store))?.raw ?? "";
+    const tid = uuidV4().replace(/-/g, "").slice(0, 16);
+    const res = send2(deps, aiRecognizeRequest(native, data.domain ?? "", tid, s.deviceId ?? ""));
+    const rec = res.ok ? parseAiRecognize(res.text) : void 0;
+    if (rec === void 0 || !rec.success || rec.fileId === void 0) {
+      return fail2(`AI 相机识图没成：${rec?.message ?? res.error ?? "没有 fileId"}`);
+    }
+    advance2(a, "ai-camera-chat", { fileId: rec.fileId, camTaskId: rec.taskId ?? "" });
+    return more("AI 相机识图好了 —— 下一步对话");
+  }
+  if (a.step === "ai-camera-chat") {
+    const native = parseAuth(loadAuthRaw(deps.store))?.raw ?? "";
+    const tid = uuidV4().replace(/-/g, "").slice(0, 16);
+    const res = send2(
+      deps,
+      aiCameraChatRequest(native, data.domain ?? "", data.fileId ?? "", data.camTaskId ?? "", tid)
+    );
+    const sse = res.ok ? parseSse(res.text) : { events: 0, text: "" };
+    return done(
+      sse.events > 0 || sse.text !== "" ? `拍了一张问 AI（events=${sse.events}）——「${a.name}」` : "AI 相机对话没取到输出 —— 记下，等服务端认"
+    );
+  }
+  if (a.step === "smart-album") {
+    const res = send2(deps, smartAlbumRequest(s, deps.baseUrl));
+    if (!res.ok) return fail2(`开启智能相册没成（${res.error ?? "未知失败"}）`);
+    return done(`开启了智能相册 ——「${a.name}」`);
+  }
+  return done(`「${a.name}」没有更多动作`);
+}
+function stepUpload(deps, a, data) {
+  const key = STATE_TOKENPK_UPLOAD;
+  const jpg = a.key === "uploadPhoto" || a.key === "backup";
+  const seed = data.uploadSeed ?? randomHex(16);
+  const bytes = jpg ? sampleJpeg() : deterministicFile(seed, 256);
+  const name = a.key === "backup" ? `tokenpk-backup-${randomHex(6)}.jpg` : a.key === "uploadPhoto" ? `tokenpk-photo-${randomHex(6)}.jpg` : `tokenpk-${a.key}-${randomHex(6)}.bin`;
+  let up = loadUpload(deps, key);
+  if (up !== null && up.seed !== seed) {
+    clearUpload(deps, key);
+    up = null;
+  }
+  if (up === null || up.step === "done") {
+    clearUpload(deps, key);
+    startUpload(deps, {
+      name,
+      bytes,
+      seed,
+      renameMode: "force_rename",
+      op: a.key === "backup" ? "backup" : "upload",
+      channel: a.key === "loginPc" ? "pc" : "android",
+      key
+    });
+    advance2(a, "upload", { uploadSeed: seed });
+  }
+  const out = runUploadStep(deps, bytes, key);
+  if (!out.ok) return fail2(`上传「${a.name}」没成：${out.note}`);
+  if (!uploadDone(deps, key)) return more(`上传中 —— ${out.note}`);
+  const fileId = loadUpload(deps, key)?.fileId ?? "";
+  if (a.key === "shareFile") {
+    advance2(a, "outlink", fileId === "" ? {} : { fileId });
+    return more("文件传完了 —— 下一步建外链");
+  }
+  if (a.key === "backup") {
+    advance2(a, "snapshot-create");
+    return more("备份文件已传 —— 下一步触发快照");
+  }
+  return done(`${a.key === "loginPc" ? "用 PC 档传了一个文件" : "上传了一张照片"} ——「${a.name}」`);
+}
+function claimAction(deps, s, taskId, name) {
+  const res = callRawText(deps.transport, receiveRequest(s, taskId, deps.baseUrl));
+  if (!res.ok) return { ok: false, note: `领奖「${name}」没成：${res.error ?? "未知失败"}`, prizes: [] };
+  const env = parsePk(res.text);
+  if (!env.ok) {
+    return { ok: false, note: `领奖「${name}」没成：服务端说 ${env.message || `code=${env.code}`}`, prizes: [] };
+  }
+  const out = parseClaim(env.result);
+  if (out.prizes.length === 0 && out.failures.length === 0) {
+    if (!out.allSuccess) {
+      return { ok: false, note: `领奖「${name}」没成：服务端 code=0 但 allSuccess=false`, prizes: [] };
+    }
+    return { ok: true, note: `领奖「${name}」：服务端说成功（没报奖品名）`, prizes: [] };
+  }
+  if (out.failures.length > 0 && out.prizes.length === 0) {
+    return { ok: false, note: `领奖「${name}」没到：${out.failures.join("；")}`, prizes: [] };
+  }
+  const suffix = out.failures.length > 0 ? `（另有 ${out.failures.length} 项没到：${out.failures.join("；")}）` : "";
+  return { ok: true, note: `领取「${name}」→ ${out.prizes.join("、")}${suffix}`, prizes: out.prizes };
+}
+
+// src/mcloud/tokenPkRules.ts
+var RUN_KEYS = [
+  "backup",
+  "uploadPhoto",
+  "aiCamera",
+  "aiAssistant",
+  "createNote",
+  "shareFile",
+  "openUrl",
+  "loginPc",
+  "openAlbum"
+];
+var PLATFORMS2 = ["ios", "android", "other", "harmony", "app"];
+function stepKeyOf(t) {
+  for (const p of PLATFORMS2) {
+    const b = t.button[p];
+    if (b !== void 0 && b.ext.trim() !== "") return b.ext.trim();
+  }
+  for (const b of Object.values(t.button)) {
+    if (b.ext.trim() !== "") return b.ext.trim();
+  }
+  return "";
+}
+function stateOf(t) {
+  return t.state.trim().toUpperCase();
+}
+function isReserve(t) {
+  return t.taskType.trim().toUpperCase() === "RESERVE";
+}
+function overMonthlyLimit(t) {
+  return t.monthlyLimit > 0 && t.monthlyCompleted >= t.monthlyLimit;
+}
+function planTasks(tasks) {
+  const plan = { actions: [], manual: [], skipped: 0 };
+  const seen = /* @__PURE__ */ new Set();
+  for (const t of tasks) {
+    if (seen.has(t.id)) continue;
+    seen.add(t.id);
+    const st = stateOf(t);
+    if (st === "FINISH") {
+      plan.skipped += 1;
+      continue;
+    }
+    if (st === "SUCCESS") {
+      if (isReserve(t)) {
+        plan.skipped += 1;
+        continue;
+      }
+      plan.actions.push({ task: t, key: stepKeyOf(t), kind: "claim" });
+      continue;
+    }
+    if (overMonthlyLimit(t)) {
+      plan.skipped += 1;
+      continue;
+    }
+    if (isReserve(t)) {
+      plan.actions.push({ task: t, key: stepKeyOf(t), kind: "reserve" });
+      continue;
+    }
+    const key = stepKeyOf(t);
+    if (RUN_KEYS.includes(key)) {
+      plan.actions.push({ task: t, key, kind: "run" });
+      continue;
+    }
+    plan.manual.push(`${t.name}(${key === "" ? "没有按钮" : key})`);
+  }
+  return plan;
+}
+function formatTokenCount(tokens) {
+  if (!Number.isFinite(tokens) || tokens <= 0) return "0";
+  if (tokens >= 1e8) return `${(tokens / 1e8).toFixed(1)}亿`;
+  if (tokens >= 1e4) return `${Math.floor(tokens / 1e4)}万`;
+  return String(Math.floor(tokens));
+}
+function summaryOf(c) {
+  const parts = [];
+  if (c.claimed > 0) parts.push(`领取奖励${c.claimed}项`);
+  if (c.executed > 0) parts.push(`执行任务${c.executed}项`);
+  if (c.chanceReward > 0) parts.push(`抽奖次数+${c.chanceReward}`);
+  if (c.drawn !== void 0 && c.drawn > 0) {
+    const wins = c.wins ?? 0;
+    parts.push(wins > 0 ? `代抽${c.drawn}次（中${wins}次）` : `代抽${c.drawn}次（都没中）`);
+  }
+  if (c.usedToken !== void 0 && c.usedToken > 0) parts.push(`累计算力${formatTokenCount(c.usedToken)}`);
+  if (c.manual.length > 0) parts.push(`需手动: ${c.manual.join("、")}`);
+  if (c.failed > 0) parts.push(`${c.failed}项步骤失败`);
+  if (c.pending > 0) parts.push(`${c.pending}项待服务端确认或跨月完成`);
+  if (parts.length === 0) return "本轮无可执行步骤（已完成、达到月上限或待好友互助）";
+  return parts.join("；");
+}
+function asRecord(v) {
+  return typeof v === "object" && v !== null && !Array.isArray(v) ? v : void 0;
+}
+function num(v, d = 0) {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string" && v.trim() !== "" && !Number.isNaN(Number(v))) return Number(v);
+  return d;
+}
+function str(v, d = "") {
+  return typeof v === "string" ? v : d;
+}
+function tasksFrom(result) {
+  if (!Array.isArray(result)) return [];
+  const out = [];
+  for (const raw of result) {
+    const t = asRecord(raw);
+    if (t === void 0) continue;
+    const id = num(t.id, -1);
+    if (id < 0) continue;
+    const buttons = {};
+    const b = asRecord(t.button);
+    if (b !== void 0) {
+      for (const [platform, one] of Object.entries(b)) {
+        const o = asRecord(one);
+        if (o === void 0) continue;
+        buttons[platform] = {
+          ext: str(o.ext),
+          action: str(o.action),
+          text: str(o.text)
+        };
+      }
+    }
+    const prizesRaw = Array.isArray(t.prizes) ? t.prizes : [];
+    const prizes = [];
+    for (const p of prizesRaw) {
+      const o = asRecord(p);
+      if (o === void 0) continue;
+      if (o.available !== void 0 && o.available !== true) continue;
+      prizes.push({
+        prizeType: str(o.prizeType),
+        prizeName: str(o.prizeName),
+        amount: num(o.amount)
+      });
+    }
+    out.push({
+      id,
+      name: str(t.name, `#${id}`),
+      description: str(t.description),
+      state: str(t.state).toUpperCase(),
+      taskType: str(t.taskType).toUpperCase(),
+      limitType: str(t.limitType).toUpperCase(),
+      currstep: num(t.currstep),
+      claimable: t.claimable === true,
+      monthlyCompleted: num(t.monthlyCompleted),
+      monthlyLimit: num(t.monthlyLimit),
+      prizes,
+      button: buttons
+    });
+  }
+  return out;
+}
+
+// src/mcloud/tasks/tokenPk.ts
+var TOKENPK_BUDGET = { maxSteps: 80, deadlineMs: 45e3 };
+function summaryFromState(st, draw) {
+  return summaryOf({
+    claimed: st.claimedCount,
+    executed: st.executed,
+    chanceReward: st.chanceReward,
+    drawn: draw.drawn,
+    wins: draw.wins.length,
+    usedToken: st.usedToken,
+    manual: st.manual,
+    failed: st.failed.length,
+    pending: st.pending.length
+  });
+}
+function tokenPkSummary(store2) {
+  const st = loadTokenPk(store2);
+  return st === null ? void 0 : summaryFromState(st, loadDrawDay(store2, st.day));
+}
+function tokenPkGate(deps) {
+  if (tokenPkEnabled(deps.store)) return { ok: true, idle: false, note: "" };
+  return { ok: true, idle: true, skipped: true, note: "这一族没开（账号设置里可以开）" };
+}
+function pkSession(deps) {
+  const sess = loadSession(deps.store);
+  if (sess === null) return void 0;
+  const rec = loadJwt(deps.store);
+  if (rec === null || rec.jwt === "") return void 0;
+  return {
+    jwt: rec.jwt,
+    cookie: sess.cookie,
+    userAgent: sess.userAgent,
+    deviceId: sess.deviceId
+  };
+}
+function save6(deps, st) {
+  saveTokenPk(deps.store, st, deps.nowIso);
+}
+function queued(a) {
+  return {
+    taskId: a.task.id,
+    name: a.task.name,
+    key: a.key,
+    kind: a.kind,
+    skipClick: a.task.currstep >= 1
+  };
+}
+function tokenPkStep(deps) {
+  const st = beginLeg2(deps.store, deps.nowIso);
+  const s = pkSession(deps);
+  switch (st.phase) {
+    // ① 读任务表 → 排计划
+    case "list": {
+      if (s === void 0) {
+        return {
+          ok: false,
+          note: "还没有可用的 H5 票（日常第①步换票没成）—— 这一族这一趟没做"
+        };
+      }
+      const res = callRawText(deps.transport, listRequest(s, deps.baseUrl));
+      if (!res.ok) return { ok: false, note: `任务列表没读到：${res.error ?? "未知失败"}` };
+      const env = parsePk(res.text);
+      if (!env.ok) {
+        return { ok: false, note: `任务列表没成：服务端说 ${env.message || `code=${env.code}`}` };
+      }
+      const tasks = tasksFrom(env.result);
+      const plan = planTasks(tasks);
+      st.queue = plan.actions.filter((a) => a.kind !== "claim").map(queued);
+      st.toClaim = plan.actions.filter((a) => a.kind === "claim").map((a) => a.task.id);
+      st.names = Object.fromEntries(tasks.map((t) => [String(t.id), t.name]));
+      st.manual = plan.manual;
+      st.phase = "act";
+      st.verified = false;
+      save6(deps, st);
+      const bits = [`任务表 ${tasks.length} 条`];
+      if (st.queue.length > 0) bits.push(`${st.queue.length} 条要做`);
+      if (st.toClaim.length > 0) bits.push(`${st.toClaim.length} 条可领`);
+      if (st.manual.length > 0) bits.push(`${st.manual.length} 条需手动`);
+      return { ok: true, note: bits.join("，") };
+    }
+    // ② 逐条：登记 → 动作
+    case "act": {
+      if (st.attempt === void 0) {
+        const next = st.queue.shift();
+        if (next === void 0) {
+          st.phase = st.touched.length > 0 && st.verified !== true ? "verify" : "claim";
+          save6(deps, st);
+          return { ok: true, note: "动作都做完了 —— 下一步复查服务端认不认" };
+        }
+        st.attempt = {
+          taskId: next.taskId,
+          name: next.name,
+          key: next.key,
+          step: next.kind === "reserve" ? "reserve" : "click",
+          skipClick: next.skipClick
+        };
+        save6(deps, st);
+      }
+      if (s === void 0) {
+        return { ok: false, note: "H5 票没了 —— 这一族这一趟没做完" };
+      }
+      const out = stepAction(deps, s, st.attempt);
+      if (!out.finished) {
+        save6(deps, st);
+        return { ok: true, note: out.note };
+      }
+      const name = st.attempt.name;
+      const id = st.attempt.taskId;
+      clearAttempt(st);
+      if (out.failed === true) {
+        st.failed.push({ id, name, why: out.note });
+        pkLine(st, `「${name}」没成 —— ${out.note}`);
+      } else {
+        st.executed += 1;
+        if (!st.touched.includes(id)) st.touched.push(id);
+        pkLine(st, out.note);
+      }
+      save6(deps, st);
+      return { ok: true, note: out.note };
+    }
+    // ③ 复查：动作 ≠ 服务端认了
+    case "verify": {
+      if (s === void 0) return { ok: false, note: "H5 票没了 —— 没法复查" };
+      waitMs(deps, deps.settleMs ?? 3e3);
+      const res = callRawText(deps.transport, listRequest(s, deps.baseUrl));
+      if (!res.ok) return { ok: false, note: `复查没读到任务表：${res.error ?? "未知失败"}` };
+      const env = parsePk(res.text);
+      if (!env.ok) return { ok: false, note: `复查没成：服务端说 ${env.message || `code=${env.code}`}` };
+      const tasks = tasksFrom(env.result);
+      const byId = new Map(tasks.map((t) => [t.id, t]));
+      let success2 = 0;
+      let still = 0;
+      for (const id of st.touched) {
+        const t = byId.get(id);
+        if (t === void 0) continue;
+        if (t.state === "FINISH") continue;
+        if (t.taskType === "RESERVE") continue;
+        if (t.state === "SUCCESS" && t.taskType !== "RESERVE") {
+          if (!st.toClaim.includes(id)) st.toClaim.push(id);
+          success2 += 1;
+          continue;
+        }
+        if (!st.pending.includes(id)) st.pending.push(id);
+        still += 1;
+      }
+      for (const t of tasks) {
+        if (t.state === "SUCCESS" && t.taskType !== "RESERVE" && !st.claimedIds.includes(t.id)) {
+          if (!st.toClaim.includes(t.id)) st.toClaim.push(t.id);
+        }
+      }
+      st.verified = true;
+      st.phase = "claim";
+      save6(deps, st);
+      return { ok: true, note: `复查：${success2} 条翻成可领、${still} 条还在等（共 ${tasks.length} 条）` };
+    }
+    // ④ 领奖（一条一发）
+    case "claim": {
+      if (s === void 0) return { ok: false, note: "H5 票没了 —— 没法领奖" };
+      const id = st.toClaim.find((x) => !st.claimedIds.includes(x));
+      if (id === void 0) {
+        st.phase = "chance";
+        save6(deps, st);
+        return { ok: true, note: "该领的领完了 —— 下一步收尾读数" };
+      }
+      const name = st.names[String(id)] ?? `#${id}`;
+      const r = claimAction(deps, s, id, name);
+      st.claimedIds.push(id);
+      if (r.ok) {
+        st.claimedCount += 1;
+        st.pending = st.pending.filter((x) => x !== id);
+        pkLine(st, r.note);
+      } else {
+        st.failed.push({ id, name, why: r.note });
+        pkLine(st, r.note);
+      }
+      save6(deps, st);
+      return { ok: true, note: r.note };
+    }
+    // ⑤ 领抽奖次数（参照实现的收尾第一发；**是写**，但幂等：没有可换的就是 0/0）
+    case "chance": {
+      if (s === void 0) return { ok: false, note: "H5 票没了 —— 没法读抽奖次数" };
+      const res = callRawText(deps.transport, chanceRequest(s, deps.baseUrl));
+      if (!res.ok) {
+        st.phase = "progress";
+        save6(deps, st);
+        return { ok: true, note: `领抽奖次数没成（${res.error ?? "未知失败"}）—— 继续读进度` };
+      }
+      const env = parsePk(res.text);
+      if (env.ok) st.chanceReward = parseChance(env.result);
+      st.phase = "draw";
+      save6(deps, st);
+      return { ok: true, note: `抽奖次数 +${st.chanceReward}` };
+    }
+    // ⑤.5 代抽（可选，缺省关）：一次调用抽一次，上限按天算
+    case "draw": {
+      const cfg = tokenPkDraw(deps.store);
+      const ledger = loadDrawDay(deps.store, st.day);
+      if (!cfg.enabled || cfg.max <= 0 || ledger.drawn >= cfg.max) {
+        st.phase = "progress";
+        save6(deps, st);
+        return {
+          ok: true,
+          note: cfg.enabled && cfg.max > 0 ? `代抽到上限（${ledger.drawn}/${cfg.max}）—— 下一步读进度` : "代抽没开 —— 下一步读进度"
+        };
+      }
+      if (s === void 0) return { ok: false, note: "H5 票没了 —— 没法抽奖" };
+      if (ledger.remaining === void 0) {
+        const rr = callRawText(deps.transport, remainChanceRequest(s, deps.baseUrl));
+        if (rr.ok) {
+          const renv = parsePk(rr.text);
+          if (renv.ok) {
+            const n = parseRemainChance(renv.result);
+            if (n !== void 0) {
+              ledger.remaining = n;
+              saveDrawDay(deps.store, ledger, deps.nowIso);
+            }
+          }
+        }
+        if (ledger.remaining !== void 0 && ledger.remaining <= 0) {
+          st.phase = "progress";
+          save6(deps, st);
+          pkLine(st, "代抽：今天没有抽奖次数");
+          return { ok: true, note: "没有抽奖次数 —— 跳过代抽，继续读进度" };
+        }
+        save6(deps, st);
+        return {
+          ok: true,
+          note: ledger.remaining === void 0 ? "读剩余抽奖次数没成 —— 按上限试抽" : `还剩 ${ledger.remaining} 次抽奖机会 —— 下一步抽`
+        };
+      }
+      const res = callRawText(deps.transport, lotteryRequest(s, deps.baseUrl));
+      if (!res.ok) {
+        st.failed.push({ id: 0, name: "抽奖", why: `抽奖没成：${res.error ?? "未知失败"}` });
+        pkLine(st, `抽奖没成：${res.error ?? "未知失败"}`);
+        st.phase = "progress";
+        save6(deps, st);
+        return { ok: true, note: `抽奖没成（${res.error ?? "未知失败"}）—— 停手，继续读进度` };
+      }
+      const env = parsePk(res.text);
+      if (!env.ok) {
+        const why = `抽奖没成：服务端说 ${env.message || `code=${env.code}`}`;
+        st.failed.push({ id: 0, name: "抽奖", why });
+        pkLine(st, why);
+        st.phase = "progress";
+        save6(deps, st);
+        return { ok: true, note: `${why} —— 停手，继续读进度` };
+      }
+      const one = parseLottery(env.result);
+      ledger.drawn += 1;
+      ledger.remaining = one.remainChance !== void 0 ? one.remainChance : ledger.remaining === void 0 ? void 0 : Math.max(0, ledger.remaining - 1);
+      if (one.win) ledger.wins.push(one.prizeName ?? "奖品");
+      saveDrawDay(deps.store, ledger, deps.nowIso);
+      pkLine(st, one.win ? `代抽中奖：${one.prizeName ?? "奖品"}（第 ${ledger.drawn} 次）` : `代抽第 ${ledger.drawn} 次：没中`);
+      if (ledger.remaining !== void 0 && ledger.remaining <= 0) st.phase = "progress";
+      save6(deps, st);
+      return {
+        ok: true,
+        note: one.win ? `代抽中了 ${one.prizeName ?? "奖品"}` : `代抽第 ${ledger.drawn} 次没中`
+      };
+    }
+    // ⑥ 算力进度（只读）
+    case "progress": {
+      if (s === void 0) return { ok: false, note: "H5 票没了 —— 没法读进度" };
+      const res = callRawText(deps.transport, progressRequest(s, deps.baseUrl));
+      if (res.ok) {
+        const env = parsePk(res.text);
+        if (env.ok) st.usedToken = parseProgress(env.result).usedToken;
+      }
+      st.phase = "done";
+      save6(deps, st);
+      return {
+        ok: st.failed.length === 0,
+        idle: true,
+        pending: st.pending.length > 0,
+        note: summaryFromState(st, loadDrawDay(deps.store, st.day))
+      };
+    }
+    // ⑦ 收尾
+    case "done":
+      return {
+        ok: st.failed.length === 0,
+        idle: true,
+        pending: st.pending.length > 0,
+        note: summaryFromState(st, loadDrawDay(deps.store, st.day))
+      };
+  }
+  return { ok: true, idle: true, note: "没有可推进的阶段" };
+}
+
 // src/mcloud/tasks/receive.ts
 var CLOUD_TYPE = {
   /** 当前可领取 ⇒ `receiveV3` */
@@ -8594,7 +9397,7 @@ function runTodayCloud(deps) {
 }
 
 // src/mcloud/dailyRun.ts
-var DAILY_PAGES = ["sign-in", "msg-push-on"];
+var DAILY_PAGES = ["sign-in"];
 var PAGE_LABEL = {
   "sign-in": "签到族",
   "msg-push-on": "消息推送"
@@ -8721,6 +9524,16 @@ function runDaily(deps, opts = {}) {
     });
     push({ name: "App 任务", ok: r.ok, note: r.note, idle: r.idle, pending: r.pending === true });
   }
+  const statusLines = appTaskStatusLines(deps.store, { backupOn: readBackupOn(deps.store) });
+  if (statusLines.length > 0) {
+    push({
+      name: "App 任务状态",
+      ok: true,
+      idle: true,
+      note: `${statusLines.length} 条在跟`,
+      lines: statusLines
+    });
+  }
   const rpKick = redpackGate(deps);
   if (rpKick.idle === true || rpKick.skipped === true) {
     push({ name: "红包派对", ok: true, note: rpKick.note, idle: true });
@@ -8742,23 +9555,29 @@ function runDaily(deps, opts = {}) {
       lines: takeRedpackLines(deps.store, deps.nowIso)
     });
   }
-  for (const [name, fn] of [
-    ["消息推送奖励（问状态）", runMsgPushStatus],
-    ["消息推送奖励（领）", runMsgPushObtain]
-  ]) {
-    const r = drain(fn, deps, {
-      label: name,
-      maxSteps: 6,
-      deadlineMs: 2e4,
-      startedAt: started
+  const pkKick = tokenPkGate(deps);
+  if (pkKick.idle === true || pkKick.skipped === true) {
+    push({ name: "算力大作战", ok: true, note: pkKick.note, idle: true });
+  } else {
+    const r = drain(tokenPkStep, deps, {
+      label: "算力大作战",
+      maxSteps: TOKENPK_BUDGET.maxSteps,
+      deadlineMs: TOKENPK_BUDGET.deadlineMs,
+      startedAt: started,
+      // 「已登记 X —— 下一步 Y」这种内部进度走 debug；用户读数是下面那些逐行
+      onStep: (note) => opts.onNote?.(`算力大作战：${note}`)
     });
-    push({ name, ok: r.ok, note: r.note, idle: name.includes("问状态") ? true : r.idle });
+    const tally = tokenPkSummary(deps.store);
+    push({
+      name: "算力大作战",
+      ok: r.ok,
+      note: r.ok && tally !== void 0 ? tally : r.note,
+      idle: r.idle,
+      pending: r.pending === true,
+      lines: takeTokenPkLines(deps.store, deps.nowIso)
+    });
   }
-  for (const [name, fn] of [
-    ["备份好礼", runBackupGift],
-    ["开启通知领AI豆", runNotice],
-    ["领取AI豆", runReceive]
-  ]) {
+  for (const [name, fn] of [["领取AI豆", runReceive]]) {
     const r = drain(fn, deps, {
       label: name,
       // ⚠ 领取这一类是"队列里一条一个请求"：**队列空了就停**（`more`），
@@ -8779,7 +9598,7 @@ function runDaily(deps, opts = {}) {
   const pendingCount = steps.filter((s) => s.pending === true).length;
   const failed = steps.filter((s) => !s.ok && s.pending !== true);
   const elapsed = Date.now() - started;
-  const done = steps.filter((s) => !s.idle && s.pending !== true).length;
+  const done2 = steps.filter((s) => !s.idle && s.pending !== true).length;
   const shape = (r) => ({
     name: r.name,
     ok: r.ok,
@@ -8795,7 +9614,7 @@ function runDaily(deps, opts = {}) {
   if (failed.length === 0) {
     return {
       ok: true,
-      note: pendingCount > 0 ? `${steps.length} 步都有结果（${done} 步有动作，${pendingCount} 项等服务端确认，用时 ${(elapsed / 1e3).toFixed(1)}s）` : `${steps.length} 步全部完成（${done} 步有动作，用时 ${(elapsed / 1e3).toFixed(1)}s）`,
+      note: pendingCount > 0 ? `${steps.length} 步都有结果（${done2} 步有动作，${pendingCount} 项等服务端确认，用时 ${(elapsed / 1e3).toFixed(1)}s）` : `${steps.length} 步全部完成（${done2} 步有动作，用时 ${(elapsed / 1e3).toFixed(1)}s）`,
       detail,
       steps: steps.map(shape)
     };
@@ -9148,12 +9967,12 @@ function appendRun(store2, rec) {
 }
 
 // src/mcloud/log.ts
-import { debug, error, fail as fail2, fatal, log, start, success, warn } from "host-api";
+import { debug, error, fail as fail3, fatal, log, start, success, warn } from "host-api";
 
 // src/mcloud/logRing.ts
 var RING_KEY = "mcloud.log.ring";
 var RING_MAX = 400;
-function parse2(raw) {
+function parse3(raw) {
   if (raw === "") return [];
   try {
     const v = JSON.parse(raw);
@@ -9166,7 +9985,7 @@ function parse2(raw) {
   }
 }
 function appendRing(store2, nowIso, level, msg) {
-  const all = parse2(store2.getState(RING_KEY) ?? "");
+  const all = parse3(store2.getState(RING_KEY) ?? "");
   all.push({ t: nowIso, l: level, m: msg });
   const kept = all.length > RING_MAX ? all.slice(all.length - RING_MAX) : all;
   store2.setState(RING_KEY, JSON.stringify(kept), nowIso);
@@ -9194,7 +10013,7 @@ function logBoth(store2, level, msg, nowIso) {
       success(msg);
       break;
     case "fail":
-      fail2(msg);
+      fail3(msg);
       break;
     default:
       log(msg);
@@ -9654,7 +10473,7 @@ var TASK_LABELS = {
   exchange: "兑换",
   live: "直播"
 };
-function parse3(raw, fallback) {
+function parse4(raw, fallback) {
   if (raw === void 0 || raw === null || raw === "") return fallback;
   try {
     const v = JSON.parse(raw);
@@ -9664,14 +10483,14 @@ function parse3(raw, fallback) {
   }
 }
 function loadPushConfig(store2) {
-  return parse3(store2.getState(STATE_PUSH_CONFIG), {});
+  return parse4(store2.getState(STATE_PUSH_CONFIG), {});
 }
 function loadPushRules(store2) {
-  const raw = parse3(store2.getState(STATE_PUSH_RULES), []);
+  const raw = parse4(store2.getState(STATE_PUSH_RULES), []);
   return Array.isArray(raw) ? raw.filter((r) => typeof r?.id === "string") : [];
 }
 function loadPushBindings(store2) {
-  const raw = parse3(store2.getState(STATE_PUSH_BINDINGS), {});
+  const raw = parse4(store2.getState(STATE_PUSH_BINDINGS), {});
   return {
     daily: typeof raw.daily === "string" ? raw.daily : "",
     exchange: typeof raw.exchange === "string" ? raw.exchange : "",

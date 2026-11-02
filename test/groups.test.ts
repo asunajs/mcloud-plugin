@@ -20,7 +20,7 @@ test('分组：路线图那两列 —— implemented 说做完了没，evidence 
   //
   // 这条规则改过一次：原来写的是"证据不是 captured 就不许标已实现"——
   // 太粗了。`partial`（只实拍到成功那一枪、失败形态零样本）**是能实现的**，
-  // 前提是把缺口写清楚：`notice` 就是这一档。真正做不了的是
+  // 前提是把缺口写清楚：`live-draw` 就是这一档。真正做不了的是
   // `none`（零样本）与 `no-ticket`（连票怎么换都不知道）。
   for (const t of TASK_META) {
     if (!t.implemented) continue;
@@ -32,8 +32,6 @@ test('分组：路线图那两列 —— implemented 说做完了没，evidence 
     assert.notEqual(t.evidence, 'no-ticket', `${t.name} 连票都换不出来却标了已实现`);
   }
   // 三处更正（都是查源码查出来的，不是估的）
-  assert.equal(by('notice').deps.join(), 'jwt', 'notice 用的是签到页那张票 —— 手里已有');
-  assert.equal(by('msg-push').group, 'activity', 'msg-push 要另一张票（msgpushon），不属于 daily');
   assert.equal(by('fun-ai').group, 'activity', 'fun-ai 的票换不出来，不属于 daily');
   assert.equal(by('fun-ai').evidence, 'no-ticket');
   // ⚠ 2026-10-23 新增的一档：`ran-elsewhere` = **本仓库零抓包**，但参照实现在真账号上

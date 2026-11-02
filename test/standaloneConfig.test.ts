@@ -85,3 +85,29 @@ test('「红包派对.开启」只在**明确写了**时才读成值：没写 / 
   assert.equal(bad.commonRedpackEnabled, undefined);
   assert.equal(bad.accounts[0]!.redpackEnabled, undefined);
 });
+
+test('「算力大作战.代抽」：true / {开启,每日上限} / 形状不对 ⇒ 当没写', async () => {
+  const d = dir();
+  const p = join(d, 'asign.json');
+  writeFileSync(
+    p,
+    JSON.stringify({
+      version: 2,
+      caiyun: [
+        { auth: 'Basic dGVzdDoxMjM=', 算力大作战: { 开启: true, 代抽: true } },
+        { auth: 'Basic dGVzdDoxMjQ=', 算力大作战: { 代抽: { 开启: true, 每日上限: 3 } } },
+        { auth: 'Basic dGVzdDoxMjU=', 算力大作战: { 代抽: { 开启: false } } },
+        { auth: 'Basic dGVzdDoxMjY=', 算力大作战: { 代抽: '是' } },
+        { auth: 'Basic dGVzdDoxMjc=' },
+      ],
+      common: { 算力大作战: { 代抽: { 开启: true, 每日上限: 0 } } },
+    }),
+  );
+  const c = await loadConfig(p);
+  assert.deepEqual(c.accounts[0]!.tokenPkDraw, { enabled: true, max: 10 }, 'true = 开、上限取默认 10');
+  assert.deepEqual(c.accounts[1]!.tokenPkDraw, { enabled: true, max: 3 });
+  assert.deepEqual(c.accounts[2]!.tokenPkDraw, { enabled: false, max: 10 }, '关掉是合法形状（显式关）');
+  assert.equal(c.accounts[3]!.tokenPkDraw, undefined, '形状不对 ⇒ 当没写');
+  assert.equal(c.accounts[4]!.tokenPkDraw, undefined, '没写 ⇒ undefined（留给 common）');
+  assert.deepEqual(c.commonTokenPkDraw, { enabled: true, max: 0 }, '0 = 不抽，但要读出来');
+});
