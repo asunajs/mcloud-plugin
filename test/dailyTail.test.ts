@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 import { runDaily } from '../src/mcloud/dailyRun.ts';
 import { STATE_JWT } from '../src/mcloud/sessionExchange.ts';
 import { SESSION_KEY } from '../src/store/types.ts';
+import { matrixKey } from '../src/mcloud/tasks/appTaskMatrix.ts';
 import { memStore } from '../src/store/memory.ts';
 import type { BuiltRequest } from '../src/mcloud/h5.ts';
 import type { TaskDeps } from '../src/mcloud/tasks/base.ts';
@@ -56,4 +57,35 @@ test('runDaily.detail 带「清理临时文件」和「今日云朵」', () => {
   assert.ok(sent.some((q) => q.url.includes('/ycloud/signin/public/cloudRecordV2?')));
   // 旧的 mrp 端点已经不用了，不许再出现在日常链里
   assert.ok(!sent.some((q) => q.url.includes('/market/signin/public/cloudRecord?')));
+});
+
+test('runDaily 带「App 任务状态」那几行；旧的三条任务**不再出现**', () => {
+  const store = memStore();
+  store.ensureSchema();
+  const nowIso = '2026-11-01T07:00:00.000Z';
+  const transport = (() => ({ status: 200, headers: {}, body: JSON.stringify({ code: 90001, msg: '未登录' }) })) as never;
+  store.setState(SESSION_KEY, JSON.stringify({ cookie: 'c=1', jwt: 'JWT', deviceId: 'D1', userAgent: 'UA', savedAt: nowIso }), nowIso);
+  // 矩阵读数（就是「App 任务矩阵」那一步落的格）—— 里面放 2026-11-01 真机那四条
+  const items = [
+    { taskId: 549, name: '备份文件领好礼', state: 'WAIT', buttonOutText: '下月再来' },
+    { taskId: 551, name: '连续31天开启云盘APP通知', state: 'WAIT', buttonOutText: '开启中', buttonOutDay: '29', buttonOutTotal: '31' },
+    { taskId: 1021, name: '连续31天开启邮箱APP通知', state: 'WAIT', buttonOutText: '去开启', buttonOutDay: '0' },
+    { taskId: 434, name: "分享文件领好礼<span id='share_title'>1/7</span>", state: 'WAIT', buttonOutText: '已完成' },
+  ];
+  store.setState(
+    matrixKey('sign_in_3'),
+    JSON.stringify({ group: 'sign_in_3', at: nowIso, done: 0, todo: items.length, skip: 0, todoNames: [], items }),
+    nowIso,
+  );
+  const deps = { store, transport, nowIso, nowMs: () => Date.parse(nowIso), settleMs: 0 } as TaskDeps;
+
+  const r = runDaily(deps);
+  const names = r.steps.map((s) => s.name);
+  for (const gone of ['备份好礼', '开启通知领AI豆', '消息推送奖励（问状态）', '消息推送奖励（领）']) {
+    assert.ok(!names.includes(gone), `旧任务「${gone}」已删，不该再出现：${names.join(' → ')}`);
+  }
+  assert.ok(names.includes('App 任务状态'), names.join(' → '));
+  for (const want of ['备份文件领好礼：本月已完成，下月再来', '连续31天开启云盘APP通知：已开启 29/31 天', '连续31天开启邮箱APP通知：还没开启（去 App 打开）', '分享文件领好礼：已完成 1/7']) {
+    assert.ok(r.detail.includes(want), `detail 里缺这句：${want}\n实际：${r.detail.join('\n')}`);
+  }
 });

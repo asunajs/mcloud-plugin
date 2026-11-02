@@ -587,22 +587,38 @@ function beginUpload(deps: TaskDeps, itemId: number, name: string): void {
   });
 }
 
-/** 生成一个最小 PDF（参考 mcloud 的 pdf_convert_runner）。 */
-function makePdf(ts: number): string {
-  const text = `asign auto pdf ${ts}`;
-  return (
-    '%PDF-1.4\n' +
-    '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n' +
-    '2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n' +
-    '3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n' +
-    `4 0 obj\n<< /Length ${text.length + 50} >>\nstream\n` +
-    `BT\n/F1 18 Tf\n72 720 Td\n(${text}) Tj\nET\n` +
-    'endstream\nendobj\n' +
-    '5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n' +
-    'xref\n0 6\n0000000000 65535 f\n0000000009 00000 n\n0000000058 00000 n\n' +
-    '0000000115 00000 n\n0000000223 00000 n\n0000000378 00000 n\n' +
-    'trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n444\n%%EOF\n'
-  );
+/** 生成一个**小而合法**的 PDF（参考 mcloud 的 pdf_convert_runner）。
+ *
+ *  # 为什么故意做小
+ *
+ *  `体验"PDF转换"` 那条的转换后端是 **AI**：它按**渲染出来的面积**算量。
+ *  以前是 612×792（Letter），现在 **240×240**（面积小 8.4 倍），仍是 1 页 1 行字 ——
+ *  转换那边要的东西（一页、有字、能认出格式）一个不少。
+ *
+ *  ⚠ 顺带把 **xref 偏移算对**：老版本那串 `0000000223 00000 n` 是**硬编码**的，
+ *  而内容流长度随 `ts` 位数变 ⇒ 偏移本来就是错的（只是阅读器都容忍）。
+ *  现在按实际字节数算，`startxref` 真的指向 `xref`。 */
+export function makePdf(ts: number): string {
+  const text = `asign pdf ${ts}`;
+  const stream = `BT\n/F1 12 Tf\n16 210 Td\n(${text}) Tj\nET\n`;
+  const objs: string[] = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 240 240] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>',
+    `<< /Length ${stream.length} >>\nstream\n${stream}endstream`,
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+  ];
+  let out = '%PDF-1.4\n';
+  const offs: number[] = [];
+  for (let i = 0; i < objs.length; i++) {
+    offs.push(out.length);
+    out += `${i + 1} 0 obj\n${objs[i]}\nendobj\n`;
+  }
+  const xrefAt = out.length;
+  out += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n`;
+  for (const o of offs) out += `${String(o).padStart(10, '0')} 00000 n \n`;
+  out += `trailer\n<< /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${xrefAt}\n%%EOF\n`;
+  return out;
 }
 
 function beginPdfUpload(deps: TaskDeps): number {

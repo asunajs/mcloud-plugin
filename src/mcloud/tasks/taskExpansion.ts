@@ -359,6 +359,22 @@ function verdictOf(st: ExpandState): { step: ExpandStep; why: string } {
 }
 
 /** 推进一步，一次调用一个请求。 */
+/** 这个号**本月备份开没开** —— 只读，给「App 任务状态」那一步补一句用。
+ *
+ *  判据与 `verdictOf` 一致：先看 `backupOn`（本次复查读到的），再回落到
+ *  `curMonthBackup`（读数那一格）。`undefined` = 还没读到，**不要**当成"没开"。 */
+export function readBackupOn(store: { getState(k: string): string | null | undefined }): boolean | undefined {
+  const raw = store.getState(STATE_EXPAND);
+  if (!raw) return undefined;
+  try {
+    const st = JSON.parse(raw) as { backupOn?: unknown; curMonthBackup?: unknown };
+    if (typeof st.backupOn === 'boolean') return st.backupOn;
+    return typeof st.curMonthBackup === 'boolean' ? st.curMonthBackup : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function runExpansionStep(deps: TaskDeps): TaskOutcome {
   let st = load(deps) ?? { step: 'read' as ExpandStep };
 

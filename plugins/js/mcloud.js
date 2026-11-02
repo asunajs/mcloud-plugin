@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.18 · 插件 `mcloud`
+//   mcloud-plugin 0.2.20 · 插件 `mcloud`
 
 // src/entries/mcloud.ts
 import {
@@ -15,7 +15,7 @@ import {
 } from "host-api";
 
 // src/version.ts
-var PLUGIN_VERSION = "0.2.18";
+var PLUGIN_VERSION = "0.2.20";
 
 // src/store/keys.ts
 var DEFAULT_ACCT = "default";
@@ -77,12 +77,6 @@ var KEY_SCOPE = {
   "mcloud.apptask.state": "account",
   "mcloud.apptaskmatrix.last": "account",
   "mcloud.apptaskmatrix.group_index": "account",
-  "mcloud.notice.can_claim": "account",
-  "mcloud.notice.info": "account",
-  "mcloud.backupgift.can_receive": "account",
-  "mcloud.backupgift.info": "account",
-  "mcloud.msgpush.can": "account",
-  "mcloud.msgpush.last": "account",
   "mcloud.prizes.last": "account",
   // 「领奖」页：待领取列表的缓存与进行中的那一单。
   // 按账号 —— 奖品记录、单号、手机号都是某一个号的；串了号就是拿 A 的单号去领 B 的东西。
@@ -142,6 +136,17 @@ var KEY_SCOPE = {
   "mcloud.redpack.enabled": "account",
   // 指到别处用的口子（CI / 只读探针）。与 `mcloud.live.gate_base` 同一类，按账号。
   "mcloud.redpack.base": "account",
+  // ── 算力大作战（`National_TokenPK`，另一个活动站；只带云盘 jwttoken）──
+  // 整趟进度台账（计划队列、已领/待领、逐行账）。按账号：队列与"哪条领过了"都是某个号的。
+  "mcloud.tokenpk.state": "account",
+  // 开没开。参照实现 `DefaultEnabled: true` ⇒ 没写过就是开。按账号。
+  "mcloud.tokenpk.enabled": "account",
+  // 上传那台状态机给这一族单独开的槽位（与 App 任务 / 任务拓展分开）。
+  "mcloud.tokenpk.upload": "account",
+  // 代抽的开关与每日上限（缺省不抽：花的是用户的次数）。
+  "mcloud.tokenpk.draw": "account",
+  // 代抽的按天账（今天抽了几次、中了什么）—— 上限按天算，第二趟不重置。
+  "mcloud.tokenpk.draw.state": "account",
   // ── 实例级配置 / 跨账号共享 ────────────────────────────────
   /** 账号表本身。 */
   "mcloud.accounts": "global",
@@ -1334,7 +1339,6 @@ function buildH5Request(spec) {
   };
 }
 var MCLOUD_HOST = "https://m.mcloud.139.com";
-var BACKUP_GIFT_HOST = "https://caiyun.feixin.10086.cn";
 var EP = {
   infoV3: { origin: MCLOUD_HOST, path: "/ycloud/signin/page/infoV3" },
   startSignIn: { origin: MCLOUD_HOST, path: "/ycloud/signin/page/startSignIn" },
@@ -1347,18 +1351,8 @@ var EP = {
   cloudRecordV2: { origin: MCLOUD_HOST, path: "/ycloud/signin/public/cloudRecordV2" },
   taskListV2: { origin: MCLOUD_HOST, path: "/ycloud/signin/task/taskListV2" },
   taskListV3: { origin: MCLOUD_HOST, path: "/ycloud/signin/task/taskListV3" },
-  // 通知任务（`notice`）：两个端点都在主域，**裸 GET、不带查询参数**。
-  // ⚠ "不带参数"本身是个**未验证的选择** —— 实拍的完整 URL 被脱敏，只见到路径。
-  //   真要出问题（例如回了另一个活动的状态），改这一处加参数即可。
   // 兑换清单：**只读**，查询串只有 client 与 clientVersion，**不带 deviceId**
-  exchangeList: { origin: MCLOUD_HOST, path: "/ycloud/signin/page/exchangeList" },
-  noticeInfo: { origin: MCLOUD_HOST, path: "/ycloud/openemailsms-service/openEmailsms/getTaskInfo" },
-  noticeReward: { origin: MCLOUD_HOST, path: "/ycloud/openemailsms-service/openEmailsms/reward" },
-  backupGiftInfo: { origin: BACKUP_GIFT_HOST, path: "/market/backupgift/info" },
-  backupGiftReceive: { origin: BACKUP_GIFT_HOST, path: "/market/backupgift/receive" },
-  // 消息推送奖励（msgpushon 那一页）—— **同一台主机、不同一族**
-  msgPushStatus: { origin: BACKUP_GIFT_HOST, path: "/market/msgPushOn/task/status" },
-  msgPushObtain: { origin: BACKUP_GIFT_HOST, path: "/market/msgPushOn/task/obtain" }
+  exchangeList: { origin: MCLOUD_HOST, path: "/ycloud/signin/page/exchangeList" }
 };
 function resolveUrl(name, base) {
   const ep = EP[name];
@@ -1389,17 +1383,7 @@ var EP_METHOD = {
   // body 带 group=<组名>
   taskListV3: "POST",
   // body 带 group=""（空串）
-  exchangeList: "GET",
-  noticeInfo: "GET",
-  noticeReward: "GET",
-  // 写（会真入账），但上游用 GET
-  backupGiftInfo: "GET",
-  // 另一个域
-  backupGiftReceive: "GET",
-  // 另一个域
-  msgPushStatus: "GET",
-  msgPushObtain: "POST"
-  // 这一族用 POST，body `{"type":2}`
+  exchangeList: "GET"
 };
 var CLIENT_QUERY = "client=app";
 function rootOrDefault(base, fallback) {
@@ -1680,7 +1664,6 @@ var TASK_NAMES = [
   "receive",
   "multiple",
   "revival",
-  "backup-gift",
   "prizes",
   "cloud-snapshot"
 ];
@@ -1847,19 +1830,15 @@ var TASK_META = [
   { name: "sign", title: "每日签到", group: "signin", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["jwt"], batch: true, hidden: false, implemented: true, evidence: "captured", note: "三段式：问状态 → 提交 → 回查（判据是回查）" },
   { name: "receive", title: "领取AI豆", group: "signin", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["jwt"], batch: true, hidden: false, implemented: true, evidence: "captured", note: "逐条独立；延期领取走另一口端点" },
   { name: "multiple", title: "签到翻倍", group: "signin", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["jwt"], batch: true, hidden: false, implemented: true, evidence: "captured", note: "每月一次机会 —— 门槛由插件自己判，条件不成立时一个字节都不发" },
-  { name: "backup-gift", title: "备份好礼", group: "signin", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["jwt"], batch: true, hidden: false, implemented: true, evidence: "captured", note: "**GET 却是写**；两步：先问能不能领，能领才领" },
   { name: "revival", title: "用复活卡/回馈卡", group: "signin", kind: "Action", risk: "irreversible", missed: "skip", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "captured", note: "**不可逆** —— 晚超过 2 小时就不做" },
   { name: "prizes", title: "待领取奖品", group: "query", kind: "Query", risk: "none", missed: "catch-up", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "captured" },
   // mcloud 2026-10-07 已把这两条从任务注册里摘掉（数据改在「上游状态」页按需读）；
   // 插件保留模块/路由，但不再当日常任务跑、也不在任务列表里露出来。
   { name: "task-list", title: "任务清单", group: "query", kind: "Query", risk: "none", missed: "catch-up", deps: ["jwt"], batch: false, hidden: true, implemented: true, evidence: "captured" },
   { name: "cloud-snapshot", title: "AI豆余额快照", group: "query", kind: "Query", risk: "none", missed: "catch-up", deps: ["jwt"], batch: false, hidden: true, implemented: true, evidence: "captured", note: "只取第一页；一页装满会如实说可能还有下一页。mcloud 已摘掉任务注册，数据在数据页按需取" },
-  // ── 通知与趣玩（未实现）──
-  // 它用**签到页那张票**（`SessionRecipe::SignInPage`）—— 就是本插件手里已有的会话，
-  // 所以「只依赖 jwt」这条是对的。`getTaskInfo` 有实拍；`reward` 只实拍到成功那一枪。
+  // ── 活动与趣玩 ──
   { name: "exchange-list", title: "兑换清单（只看）", group: "activity", kind: "Query", risk: "none", missed: "catch-up", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "captured", note: "逐件判能不能兑；**不碰余额、不碰滑块、不下单**" },
   { name: "app-task-matrix", title: "App 任务矩阵（只看）", group: "signin", kind: "Query", risk: "none", missed: "catch-up", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "captured", note: "8 个 group 一次读一个；只读，一个字节都不写" },
-  { name: "notice", title: "开启通知领AI豆", group: "daily", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["jwt"], batch: true, hidden: false, implemented: true, evidence: "partial", note: "有手动前置（判不出来，见 notice.ts 文件头 ③）；reward 不报到账数 ⇒ 靠下一轮回查" },
   // ⚠️ 2026-10-14 第三次更正：**换票那一步现在有了**（通用机制，见 mcloud/h5session.ts
   //    与 sessionExchange.ts：原生凭据 → querySpecTokenV2 → 时间戳 → tyrzLogin → jwttoken）。
   //    所以"换票做不了"这句话**不再成立** —— 我连着两轮把"我没有"说成了"不能做"：
@@ -1868,19 +1847,13 @@ var TASK_META = [
   //    这一条真正缺的是**它自己那一页的换票参数**（`marketName` / `sourceId`）——
   //    签到页与 msgpushon 页有实拍，这一页没有。缺参数 ≠ 缺机制。
   { name: "fun-ai", title: "趣玩AI抽奖", group: "activity", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["activity-token"], batch: true, hidden: false, implemented: false, evidence: "no-ticket", note: "换票那步没抓到 ⇒ 做不了" },
-  // 更正：整条链在 `/ycloud/msgPushOn/` 下、要**另一张票**（marketName=msgpushon /
-  // sourceId=1062）。`task/status` 有实拍，`task/obtain` **零样本** ——
-  // "什么值该做什么"仍是旧项目口径，一条都没被服务端证实过。
-  // ⚠️ 2026-10-14 修正认知：这一族与 `notice` **不是同一件事**（域/配方/端点全不同，
-  //    见 tasks/msgPush.ts 的文件头对照表）。两步：问状态（只读）+ 领（写）。
-  { name: "msg-push", title: "消息推送奖励", group: "activity", kind: "Action", risk: "ledger", missed: "catch-up", deps: ["jwt"], batch: false, hidden: false, implemented: true, evidence: "captured", note: "两步：问状态 + 领（`secondTaskStatus===2` 才领）。⚠ `pushOn===0` 与首次奖励都要用户去 App 手动" },
-  { name: "msg-push-obtain", title: "消息推送奖励（领）", group: "activity", kind: "Action", risk: "ledger", missed: "skip", deps: ["jwt"], batch: false, hidden: true, implemented: true, evidence: "captured", note: "上一步说可领才发" },
   // ── 活动与站票（未实现）──
   // 2026-10-23 接上。⚠ 这一族的证据**不是**我们的抓包：`cpactiv.buy.139.com` 在本仓库
   // 零线格式样本，跑通靠的是参照实现在两个真账号上各 3.7s / 3.9s 成功、**逐行产出留了档**
   // （那十行就是规格，抄在 `tasks/redpack.ts` 文件头）。⇒ 判据按"用户看到的那几行"对齐，
   // 端点与字段名没有在**我们这一侧**复验过 —— 第一次真跑的读数才算数。
   { name: "cloud-phone-redpack", title: "红包派对", group: "activity", kind: "Action", risk: "write-cloud", missed: "catch-up", deps: ["activity-token"], batch: false, hidden: false, implemented: true, evidence: "ran-elsewhere", note: "⚠ 读到没见过的状态码时**刻意不发写**（旧 TS 会发）。⚠ 装机那条会**往用户的云机里装包**（先问装过没有，装过只上报）。零抓包：靠参照实现真跑成功过的逐行读数" },
+  { name: "token-pk", title: "算力大作战", group: "activity", kind: "Action", risk: "write-cloud", missed: "catch-up", deps: ["basic+jwt"], batch: false, hidden: false, implemented: true, evidence: "ran-elsewhere", note: "实拍 2026-11-01（iOS WebView）：click 在**动作之前**、`openUrl` 只认 click、`RESERVE` 成功后**不再领**。动作（备份/上传/笔记/分享/灵犀/PC 上传）由本仓自己造信号；会上传临时文件，链尾由 ownedFiles 清理。代抽默认关（`算力大作战.代抽`，按天限次）" },
   { name: "play-ai-special", title: "拍拍盘点", group: "activity", kind: "Query", risk: "none", missed: "catch-up", deps: ["jwt", "activity-token"], batch: false, hidden: false, implemented: false },
   // ⚠️ 这条我**改过两次口径**，第三次才对：
   //   ① 先说「需要 WebSocket ⇒ 做不了」✗

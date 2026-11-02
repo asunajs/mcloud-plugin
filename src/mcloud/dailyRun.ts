@@ -16,17 +16,17 @@ import {
 } from './sessionExchange.ts';
 import { MATRIX_MARKETS, runAppTaskMatrix } from './tasks/appTaskMatrix.ts';
 import { activeAppTaskFileId, appTaskFresh, runAppTaskStep, startAppTask } from './tasks/appTask.ts';
-import { runBackupGift } from './tasks/backupGift.ts';
-import { runMsgPushObtain, runMsgPushStatus } from './tasks/msgPush.ts';
+import { appTaskStatusLines } from './tasks/appTaskStatus.ts';
 import { runMultiple } from './tasks/multiple.ts';
-import { runNotice } from './tasks/notice.ts';
 import { runPrizes } from './tasks/prizes.ts';
 import { REDPACK_BUDGET, redpackGate, redpackStep } from './tasks/redpack.ts';
 import { redpackDay, redpackSummary, takeRedpackLines } from './tasks/redpackState.ts';
+import { TOKENPK_BUDGET, tokenPkGate, tokenPkStep, tokenPkSummary } from './tasks/tokenPk.ts';
+import { takeTokenPkLines } from './tokenPkState.ts';
 import { runReceive } from './tasks/receive.ts';
 import { runRevival } from './tasks/revival.ts';
 import { STATE_STAGE as SIGN_STAGE, runSign } from './tasks/sign.ts';
-import { activeExpansionFileId, runExpansionStep, startExpansion } from './tasks/taskExpansion.ts';
+import { activeExpansionFileId, readBackupOn, runExpansionStep, startExpansion } from './tasks/taskExpansion.ts';
 import { loadQueue } from './tasks/receive.ts';
 import { runAuthRefresh } from './authRefresh.ts';
 import { runOwnedCleanup } from './tasks/ownedFiles.ts';
@@ -36,7 +36,9 @@ import { runTodayCloud } from './tasks/todayCloud.ts';
  *
  *  ⚠ 这里列的是"这一趟真的会用到票的页"。多列一页的代价是每次多三枪；
  *  少列一页的代价是那一族**用错页面的票**（而"行不行"没有样本）。 */
-const DAILY_PAGES: readonly SessionRecipe[] = ['sign-in', 'msg-push-on'];
+// ⚠ `msg-push-on` 那张票去掉了：它唯一的用户是旧的「消息推送奖励」任务（2026-11-01 删）。
+//   少换一张票 = 每趟少三枪；换票 UI 里也不再列这一页。
+const DAILY_PAGES: readonly SessionRecipe[] = ['sign-in'];
 
 /** 界面上的名字。用"哪一族"而不是配方编号 —— 用户不认 `sign-in`。 */
 const PAGE_LABEL: Record<SessionRecipe, string> = {
@@ -134,14 +136,11 @@ export function runDaily(
   // ① 换票（H5 的 jwttoken 约 2 小时即废）。票新鲜时 `needExchange` 直接说不用。
   //
   // ⚠ **一页一张票**，所以这里按页循环。参考实现的实测结论是
-  //   「每个页面用自己的参数换自己的票，票与票之间逐字节不等」——
-  //   而这一趟要跑的两族正好落在两页上：
+  //   「每个页面用自己的参数换自己的票，票与票之间逐字节不等」。
   //
-  //     签到族（签到 / 备份有礼 / …） → `sign-in`
-  //     消息推送奖励                   → `msg-push-on`
-  //
-  //   只换一页的表现是另一族**用错页面的票**。而那"行不行"**没有样本**
-  //   （参考实现自己标的是"反向未验证"）—— 所以不赌，该换的都换。
+  //   2026-11-01 之后日常只剩 `sign-in` 一页：旧的「消息推送奖励」任务删了，
+  //   `msg-push-on` 那张票没有用户了。哪天要再接那一族的读/写，把它加回
+  //   `DAILY_PAGES` 即可（配方还在 `h5session.ts`）。
   //
   // ⚠⚠ 这里必须用 `deps.store`，**不能用模块级那个 `store`**。
   //   模块级那份是"没作用在某个账号上"的（`scopedAccountOf` 得到 undefined），
@@ -277,6 +276,21 @@ export function runDaily(
     push({ name: 'App 任务', ok: r.ok, note: r.note, idle: r.idle, pending: r.pending === true });
   }
 
+  // ④b App 任务状态：这几条（备份好礼 / 两个 31 天通知 / 分享）由**服务端自己记账**，
+  //     我们既不点也不领 —— 但用户要知道"现在到哪了"：开了几天、是不是下月再来。
+  //     读的是刚刷新的矩阵读数（`buttonOutText` 就是 App 上那个按钮的字），一个请求都不发。
+  //     旧的三条任务 2026-11-01 删了，理由见 docs/findings.md F-124。
+  const statusLines = appTaskStatusLines(deps.store, { backupOn: readBackupOn(deps.store) });
+  if (statusLines.length > 0) {
+    push({
+      name: 'App 任务状态',
+      ok: true,
+      idle: true,
+      note: `${statusLines.length} 条在跟`,
+      lines: statusLines,
+    });
+  }
+
   // ④.5 红包派对（移动云手机的活动站）—— 另一台主机、**另一套凭据**。
   //
   // 放在 App 任务之后、消息推送之前：参照实现也是这个相对位置，而且它之后
@@ -309,30 +323,51 @@ export function runDaily(
     });
   }
 
-  // ⑤ 消息推送奖励：**两步**（问状态 → 领）。
-  //    两条都各自带判据，所以 drain 会让「没得领」的那条一次就停。
-  for (const [name, fn] of [
-    ['消息推送奖励（问状态）', runMsgPushStatus],
-    ['消息推送奖励（领）', runMsgPushObtain],
-  ] as const) {
-    const r = drain(fn, deps, {
-      label: name,
-      maxSteps: 6,
-      deadlineMs: 20_000,
+  // ④.6 算力大作战（`National_TokenPK`）—— 另一个活动站，与「待领取奖品」不是同一个口。
+  //
+  // 位置三条理由：
+  //   ① 与红包派对同属"活动站"，挨着读；
+  //   ② 它会往网盘写文件（上传/备份/分享），必须在 ⑨「清理临时文件」之前 ——
+  //      `ownedFiles` 那条兜底会把它造的文件在链尾删掉；
+  //   ③ 它**自带领奖**（`task/step/receivePrize`），不依赖第 ⑤ 步的 receiveList。
+  //
+  // 判据：抓包 2026-11-01（`mcloud-capture/.../app-tokenpk-playai-samples.txt` §8）+ 参照实现
+  // `caiyun/tasks/tokenpk.go`；**抓包有的以抓包为准**（`click` 在动作之前、`openUrl` 只认 click、
+  // `RESERVE` 成功后不再领）。
+  //
+  // ⚠ 小结同样用**台账**那句（`drain` 的 note 会在 40 字处截断，这一族的结论就是几张计数）。
+  const pkKick = tokenPkGate(deps);
+  if (pkKick.idle === true || pkKick.skipped === true) {
+    push({ name: '算力大作战', ok: true, note: pkKick.note, idle: true });
+  } else {
+    const r = drain(tokenPkStep, deps, {
+      label: '算力大作战',
+      maxSteps: TOKENPK_BUDGET.maxSteps,
+      deadlineMs: TOKENPK_BUDGET.deadlineMs,
       startedAt: started,
+      // 「已登记 X —— 下一步 Y」这种内部进度走 debug；用户读数是下面那些逐行
+      onStep: (note) => opts.onNote?.(`算力大作战：${note}`),
     });
-    // 「问状态」是只读，不是动作；「领」才可能真的做成一件事。
-    push({ name, ok: r.ok, note: r.note, idle: name.includes('问状态') ? true : r.idle });
+    const tally = tokenPkSummary(deps.store);
+    push({
+      name: '算力大作战',
+      ok: r.ok,
+      note: r.ok && tally !== undefined ? tally : r.note,
+      idle: r.idle,
+      pending: r.pending === true,
+      lines: takeTokenPkLines(deps.store, deps.nowIso),
+    });
   }
 
-  // ⑥ 领取类必须放在**所有会产生奖励的动作之后**：签到/任务拓展/App 任务/
-  //    消息推送都会往 receiveList 里放新条目，先领就会漏掉这一趟刚挣到的。
-  //    三条的「做完了」信号都是 `skipped: true`，所以不给 `more`。
-  for (const [name, fn] of [
-    ['备份好礼', runBackupGift],
-    ['开启通知领AI豆', runNotice],
-    ['领取AI豆', runReceive],
-  ] as const) {
+  // ⑤ 领取类必须放在**所有会产生奖励的动作之后**：签到/任务拓展/App 任务
+  //    都会往 `receiveList` 里放新条目，先领就会漏掉这一趟刚挣到的。
+  //
+  //    ⚠ 2026-11-01 删掉三条旧任务：备份好礼 / 开启通知领AI豆 / 消息推送奖励。
+  //      它们完成与否**由服务端按新版 taskList 自己记账**，我们不发任何动作；
+  //      挣到的云朵会进 `receiveList`，由下面这一步领走（每趟重读，不用改）。
+  //      现在还需要知道的是那几条**现在什么状态** —— 见后面的「App 任务状态」。
+  //    「做完了」信号是 `skipped: true`，所以不给 `more`。
+  for (const [name, fn] of [['领取AI豆', runReceive]] as const) {
     const r = drain(fn, deps, {
       label: name,
       // ⚠ 领取这一类是"队列里一条一个请求"：**队列空了就停**（`more`），

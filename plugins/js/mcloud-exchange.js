@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.18 · 插件 `mcloud-exchange`
+//   mcloud-plugin 0.2.20 · 插件 `mcloud-exchange`
 
 // src/entries/exchange.ts
 import { debug as debug2, log as log3, register_cron, worker_hint } from "host-api";
@@ -401,12 +401,6 @@ var KEY_SCOPE = {
   "mcloud.apptask.state": "account",
   "mcloud.apptaskmatrix.last": "account",
   "mcloud.apptaskmatrix.group_index": "account",
-  "mcloud.notice.can_claim": "account",
-  "mcloud.notice.info": "account",
-  "mcloud.backupgift.can_receive": "account",
-  "mcloud.backupgift.info": "account",
-  "mcloud.msgpush.can": "account",
-  "mcloud.msgpush.last": "account",
   "mcloud.prizes.last": "account",
   // 「领奖」页：待领取列表的缓存与进行中的那一单。
   // 按账号 —— 奖品记录、单号、手机号都是某一个号的；串了号就是拿 A 的单号去领 B 的东西。
@@ -466,6 +460,17 @@ var KEY_SCOPE = {
   "mcloud.redpack.enabled": "account",
   // 指到别处用的口子（CI / 只读探针）。与 `mcloud.live.gate_base` 同一类，按账号。
   "mcloud.redpack.base": "account",
+  // ── 算力大作战（`National_TokenPK`，另一个活动站；只带云盘 jwttoken）──
+  // 整趟进度台账（计划队列、已领/待领、逐行账）。按账号：队列与"哪条领过了"都是某个号的。
+  "mcloud.tokenpk.state": "account",
+  // 开没开。参照实现 `DefaultEnabled: true` ⇒ 没写过就是开。按账号。
+  "mcloud.tokenpk.enabled": "account",
+  // 上传那台状态机给这一族单独开的槽位（与 App 任务 / 任务拓展分开）。
+  "mcloud.tokenpk.upload": "account",
+  // 代抽的开关与每日上限（缺省不抽：花的是用户的次数）。
+  "mcloud.tokenpk.draw": "account",
+  // 代抽的按天账（今天抽了几次、中了什么）—— 上限按天算，第二趟不重置。
+  "mcloud.tokenpk.draw.state": "account",
   // ── 实例级配置 / 跨账号共享 ────────────────────────────────
   /** 账号表本身。 */
   "mcloud.accounts": "global",
@@ -2265,7 +2270,6 @@ function buildH5Request(spec) {
   };
 }
 var MCLOUD_HOST = "https://m.mcloud.139.com";
-var BACKUP_GIFT_HOST = "https://caiyun.feixin.10086.cn";
 var EP = {
   infoV3: { origin: MCLOUD_HOST, path: "/ycloud/signin/page/infoV3" },
   startSignIn: { origin: MCLOUD_HOST, path: "/ycloud/signin/page/startSignIn" },
@@ -2278,18 +2282,8 @@ var EP = {
   cloudRecordV2: { origin: MCLOUD_HOST, path: "/ycloud/signin/public/cloudRecordV2" },
   taskListV2: { origin: MCLOUD_HOST, path: "/ycloud/signin/task/taskListV2" },
   taskListV3: { origin: MCLOUD_HOST, path: "/ycloud/signin/task/taskListV3" },
-  // 通知任务（`notice`）：两个端点都在主域，**裸 GET、不带查询参数**。
-  // ⚠ "不带参数"本身是个**未验证的选择** —— 实拍的完整 URL 被脱敏，只见到路径。
-  //   真要出问题（例如回了另一个活动的状态），改这一处加参数即可。
   // 兑换清单：**只读**，查询串只有 client 与 clientVersion，**不带 deviceId**
-  exchangeList: { origin: MCLOUD_HOST, path: "/ycloud/signin/page/exchangeList" },
-  noticeInfo: { origin: MCLOUD_HOST, path: "/ycloud/openemailsms-service/openEmailsms/getTaskInfo" },
-  noticeReward: { origin: MCLOUD_HOST, path: "/ycloud/openemailsms-service/openEmailsms/reward" },
-  backupGiftInfo: { origin: BACKUP_GIFT_HOST, path: "/market/backupgift/info" },
-  backupGiftReceive: { origin: BACKUP_GIFT_HOST, path: "/market/backupgift/receive" },
-  // 消息推送奖励（msgpushon 那一页）—— **同一台主机、不同一族**
-  msgPushStatus: { origin: BACKUP_GIFT_HOST, path: "/market/msgPushOn/task/status" },
-  msgPushObtain: { origin: BACKUP_GIFT_HOST, path: "/market/msgPushOn/task/obtain" }
+  exchangeList: { origin: MCLOUD_HOST, path: "/ycloud/signin/page/exchangeList" }
 };
 function resolveUrl(name, base) {
   const ep = EP[name];
@@ -2320,17 +2314,7 @@ var EP_METHOD = {
   // body 带 group=<组名>
   taskListV3: "POST",
   // body 带 group=""（空串）
-  exchangeList: "GET",
-  noticeInfo: "GET",
-  noticeReward: "GET",
-  // 写（会真入账），但上游用 GET
-  backupGiftInfo: "GET",
-  // 另一个域
-  backupGiftReceive: "GET",
-  // 另一个域
-  msgPushStatus: "GET",
-  msgPushObtain: "POST"
-  // 这一族用 POST，body `{"type":2}`
+  exchangeList: "GET"
 };
 function rootOrDefault(base, fallback) {
   const t = (base ?? "").trim();

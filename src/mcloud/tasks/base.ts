@@ -8,7 +8,7 @@
 //
 // 另一件事是**错过太久的不可逆动作不做**：原实现的任务表给每条任务标了
 // catch-up / skip 两种语义（`docs/task-inventory.md`）：
-//   - 签到、领豆、翻倍、备份好礼 → catch-up（晚了也补做，上游自己有幂等）
+//   - 签到、领豆、翻倍 → catch-up（晚了也补做，上游自己有幂等）
 //   - 用复活卡 → **skip**（不可逆，晚了就别补）
 // 本底座把这条做成 `skipIfLaterThanMs` + payload 里的 `lateMs`。
 // ⚠️ 手动触发时 `lateMs` 是**负数**（面板的已知问题，见 F-001）——
@@ -125,7 +125,7 @@ export interface TaskSpec {
   body?: string | undefined;
   contentType?: string | undefined;
   isDeviceId?: boolean | undefined;
-  /** `activityid` 用的市场名；默认 `sign_in_3`，备份好礼那页是 `backupgift` */
+  /** `activityid` 用的市场名；默认 `sign_in_3`（签到页那一族） */
   marketName?: string | undefined;
   /** 快照落盘的 state 键（不落盘就不传） */
   stateKey?: string | undefined;

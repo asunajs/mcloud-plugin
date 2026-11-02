@@ -5,6 +5,7 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { DEFAULT_DRAW_MAX } from '../mcloud/tokenPkState.ts';
 import { pathToFileURL } from 'node:url';
 import { normalizeAuth, phoneOf } from '../mcloud/accounts.ts';
 
@@ -20,6 +21,12 @@ export interface WsConfig {
   timeoutMs: number;
 }
 
+/** 代抽配置：开关 + 每日上限。 */
+export interface DrawSeed {
+  enabled: boolean;
+  max: number;
+}
+
 export interface AccountSeed {
   auth: string;
   nickname?: string | undefined;
@@ -29,6 +36,11 @@ export interface AccountSeed {
   /** 配置里**明确写了**的「红包派对.开启」。`undefined` = 没写 ⇒ 不碰状态里那一格
    *  （面板上的开关可能已经改过，不能被每次启动都覆盖一遍）。 */
   redpackEnabled?: boolean | undefined;
+  /** 配置里**明确写了**的「算力大作战.开启」。`undefined` = 没写 ⇒ 不碰状态里那一格
+   *  （默认是开，见 `tokenPkState.tokenPkEnabled`）。 */
+  tokenPkEnabled?: boolean | undefined;
+  /** 「算力大作战.代抽」：显式写了才动状态里那一格（默认**不抽**）。 */
+  tokenPkDraw?: DrawSeed | undefined;
 }
 
 export interface StandaloneConfig {
@@ -44,6 +56,10 @@ export interface StandaloneConfig {
   /** `common.红包派对.开启` —— 参照实现是「默认 → 通用 → 账号」三层合并，
    *  账号那层赢。这里同样只在**明确写了**时才落到账号状态上。 */
   commonRedpackEnabled?: boolean | undefined;
+  /** `common.算力大作战.开启`（与红包同一套三层合并：账号 > 通用 > 缺省开）。 */
+  commonTokenPkEnabled?: boolean | undefined;
+  /** `common.算力大作战.代抽`。 */
+  commonTokenPkDraw?: DrawSeed | undefined;
   raw: Record<string, unknown>;
 }
 
@@ -131,6 +147,20 @@ function mergeLegacyAuth(accounts: AccountSeed[], dir: string): AccountSeed[] {
  *  ⚠ **没写这一格 ⇒ `undefined`**，不是 `false`。参照实现的默认来自
  *  `defaultAccountConfig`（`红包派对: {开启: true}`）⇒ 缺省是**开**，
  *  这里要是把"没写"折成 `false`，就等于把整族偷偷关掉，而日志里一句不说。 */
+/** 读「代抽」那一格：`true` 或 `{开启, 每日上限}`。形状不对 ⇒ `undefined`（当没写）。 */
+function drawOf(pk: unknown): DrawSeed | undefined {
+  if (typeof pk !== 'object' || pk === null || Array.isArray(pk)) return undefined;
+  const d = (pk as Record<string, unknown>)['代抽'];
+  if (d === true) return { enabled: true, max: DEFAULT_DRAW_MAX };
+  if (typeof d !== 'object' || d === null || Array.isArray(d)) return undefined;
+  const o = d as Record<string, unknown>;
+  if (typeof o['开启'] !== 'boolean') return undefined;
+  const lim = o['每日上限'];
+  const max =
+    typeof lim === 'number' && Number.isFinite(lim) && lim >= 0 ? Math.floor(lim) : DEFAULT_DRAW_MAX;
+  return { enabled: o['开启'], max };
+}
+
 function switchOn(v: unknown): boolean | undefined {
   if (typeof v !== 'object' || v === null || Array.isArray(v)) return undefined;
   const o = v as Record<string, unknown>;
@@ -154,6 +184,8 @@ function accountSeeds(raw: Record<string, unknown>): AccountSeed[] {
       disabled: o.disabled === true,
       replaceAuth: o.replaceAuth === true,
       redpackEnabled: switchOn(o['红包派对']),
+      tokenPkEnabled: switchOn(o['算力大作战']),
+      tokenPkDraw: drawOf(o['算力大作战']),
     });
   }
   return out;
@@ -204,6 +236,10 @@ export async function loadConfig(path?: string): Promise<StandaloneConfig> {
     common: raw.common === undefined ? {} : asObject(raw.common, 'common'),
     commonRedpackEnabled:
       raw.common === undefined ? undefined : switchOn(asObject(raw.common, 'common')['红包派对']),
+    commonTokenPkEnabled:
+      raw.common === undefined ? undefined : switchOn(asObject(raw.common, 'common')['算力大作战']),
+    commonTokenPkDraw:
+      raw.common === undefined ? undefined : drawOf(asObject(raw.common, 'common')['算力大作战']),
     message: raw.message,
     raw,
   };
