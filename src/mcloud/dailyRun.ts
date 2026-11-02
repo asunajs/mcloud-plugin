@@ -373,7 +373,11 @@ export function runDaily(
       // ⚠ 领取这一类是"队列里一条一个请求"：**队列空了就停**（`more`），
       //   而不是靠步数上限兜 —— 靠上限兜的表现是"刚好领完"也被说成"没做完"。
       maxSteps: 24,
-      deadlineMs: 40_000,
+      // ⚠ 这一格必须**大于前面所有步的预算**：`deadlineMs` 是从日常开始算的
+      //   （`startedAt: started` 全链共享）。2026-11-02 15:55 现场：算力大作战
+      //   跑到 45 秒被截，而领取的 40 秒早已过 ⇒ 「走到时间上限（40000ms / 0 步）」，
+      //   这一天剩下的 AI豆 一颗都没领。150 秒 = 前面全跑满也还能领。
+      deadlineMs: 150_000,
       startedAt: started,
       ...(name === '领取AI豆' ? { more: () => loadQueue(deps.store).length > 0 } : {}),
     });

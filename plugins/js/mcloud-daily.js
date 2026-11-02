@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.20 · 插件 `mcloud-daily`
+//   mcloud-plugin 0.2.21 · 插件 `mcloud-daily`
 
 // src/entries/daily.ts
 import { debug as debug2, register_cron } from "host-api";
@@ -3585,6 +3585,12 @@ var BACKUP_CREATE_SNAPSHOT_PATH = "/hcy/backup/createSnapshot";
 var BACKUP_COMPLETE_SNAPSHOT_PATH = "/hcy/backup/completeSnapshot";
 var CREATE_CONTENT_TYPE = "application/oct-stream";
 var PUT_CONTENT_TYPE = "application/octet-stream";
+function contentTypeOfName(name) {
+  const n = name.toLowerCase();
+  if (n.endsWith(".jpg") || n.endsWith(".jpeg")) return "image/jpeg";
+  if (n.endsWith(".png")) return "image/png";
+  return void 0;
+}
 var PUT_ORIGIN = "https://yun.139.com";
 var PUT_REFERER = "https://yun.139.com/";
 var PUT_UPLOAD_COMPLETE = "?1";
@@ -3738,14 +3744,15 @@ function parseCreate(body) {
     }
   };
 }
-function buildPutRequest(uploadUrl, bytes, op = false) {
+function buildPutRequest(uploadUrl, bytes, op = false, contentType) {
   const kind = op === true ? "backup" : op === false ? "upload" : op;
   const codes = kind === "backup" ? { op: OP_TYPE_BACKUP, sub: SUB_OP_TYPE_BACKUP } : kind === "snapshot" ? { op: "0", sub: "0" } : { op: OP_TYPE_UPLOAD, sub: SUB_OP_TYPE_UPLOAD };
   const req = {
     url: uploadUrl,
     method: "PUT",
     headers: {
-      "Content-Type": PUT_CONTENT_TYPE,
+      // 图片必须跟 create 里声明的一致（否则预签名校验 403，见 `contentTypeOfName`）
+      "Content-Type": contentType ?? PUT_CONTENT_TYPE,
       origin: PUT_ORIGIN,
       referer: PUT_REFERER,
       // ⚠ 值是**带问号**的 `?1`
@@ -4044,7 +4051,8 @@ function startUpload(deps, opts) {
     parallelUpload: opts.parallelUpload,
     localCreatedAt: opts.localCreatedAt,
     op: opts.op,
-    channel: opts.channel
+    channel: opts.channel,
+    contentType: opts.contentType ?? contentTypeOfName(opts.name)
   };
   save2(deps, st, key);
   return {
@@ -4067,7 +4075,8 @@ function runUploadStep(deps, bytes, key = STATE_UPLOAD) {
       parallelUpload: st.parallelUpload,
       localCreatedAt: st.localCreatedAt,
       op: st.op,
-      channel: st.channel
+      channel: st.channel,
+      contentType: st.contentType
     });
     const res2 = callRawText(deps.transport, req);
     if (!res2.ok) return { ok: false, note: `${label}失败：${res2.error ?? "未知失败"}` };
@@ -4106,7 +4115,12 @@ function runUploadStep(deps, bytes, key = STATE_UPLOAD) {
     if (body.length === 0) {
       return { ok: false, note: `${label}：字节是空的 ⇒ 不发（拿空体去 PUT 会真的传一个 0 字节文件上去）` };
     }
-    const { req, leaksCredential } = buildPutRequest(st.uploadUrl, body, st.op ?? false);
+    const { req, leaksCredential } = buildPutRequest(
+      st.uploadUrl,
+      body,
+      st.op ?? false,
+      st.contentType
+    );
     if (leaksCredential) {
       return {
         ok: false,
@@ -8371,7 +8385,7 @@ function tasksFrom(result) {
 }
 
 // src/mcloud/tasks/tokenPk.ts
-var TOKENPK_BUDGET = { maxSteps: 80, deadlineMs: 45e3 };
+var TOKENPK_BUDGET = { maxSteps: 80, deadlineMs: 9e4 };
 function summaryFromState(st, draw) {
   return summaryOf({
     claimed: st.claimedCount,
@@ -9583,7 +9597,11 @@ function runDaily(deps, opts = {}) {
       // ⚠ 领取这一类是"队列里一条一个请求"：**队列空了就停**（`more`），
       //   而不是靠步数上限兜 —— 靠上限兜的表现是"刚好领完"也被说成"没做完"。
       maxSteps: 24,
-      deadlineMs: 4e4,
+      // ⚠ 这一格必须**大于前面所有步的预算**：`deadlineMs` 是从日常开始算的
+      //   （`startedAt: started` 全链共享）。2026-11-02 15:55 现场：算力大作战
+      //   跑到 45 秒被截，而领取的 40 秒早已过 ⇒ 「走到时间上限（40000ms / 0 步）」，
+      //   这一天剩下的 AI豆 一颗都没领。150 秒 = 前面全跑满也还能领。
+      deadlineMs: 15e4,
       startedAt: started,
       ...name === "领取AI豆" ? { more: () => loadQueue(deps.store).length > 0 } : {}
     });

@@ -49,7 +49,7 @@ mcloud 的原话：它与凭据同类 —— **绝不进日志、夹具、错误
 |---|---|---|
 | `CLOUD_CREATE_CONTENT_TYPE` | `application/oct-**stream**` | 少一个 `et` —— 与下一行**不是**同一个值 |
 | `CLOUD_CREATE_CONTENT_TYPE_OCTET` | `application/oct**et**-stream` | 同一支里**两种都存在**（抓包按 profile 分），别"统一"成一个 |
-| `CLOUD_PUT_CONTENT_TYPE` | `application/octet-stream` | 数据面用这个 |
+| `CLOUD_PUT_CONTENT_TYPE` | `application/octet-stream` | 数据面缺省用这个；**图片例外**：`.jpg/.jpeg/.png` 与 create 一起发 `image/jpeg` / `image/png`（2026-11-02 真跑：`.jpg` 用 octet-stream 被预签名校验回 403，同一次 `.bin` 的 PUT 是 200） |
 | `CLOUD_PUT_ORIGIN` / `REFERER` | `https://yun.139.com` / `…/` | PUT 那枪的 origin 是**云盘域**，不是 `m.mcloud.139.com` |
 | `CLOUD_PUT_UPLOAD_COMPLETE` | `?1` | 头名 `upload-complete`，值是 `?1`（带问号） |
 | `…_UPLOAD_DRAFT_INTEROP_VERSION` | `6` | |

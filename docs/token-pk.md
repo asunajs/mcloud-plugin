@@ -106,7 +106,9 @@ WAIT ──click──► SUCCESS                          ← openUrl 这一类
 - `receivePrize` 的失败形态（"已领取"/"活动太火爆"这类 `code/msg`）—— 目前按非 0 = 失败如实报；
 - `openAlbum` 的回执细节（只按 `code=0` 判）；
 - `aiCamera`/`aiAssistant` 的动作是否能被活动站认成信号（造的是同一族真实信号，第一次真跑读数是判据）；
-- 上传链的 `Content-Type`：参照实现发 `image/jpeg`，本仓上传链只有 `octet-stream`；
+- 上传链的图片 `Content-Type`：2026-11-02 真跑第一次就撞了 —— `.jpg` 的 PUT 回 **403**
+  （同一次 `.bin` 的 PUT 是 200），因为预签名按 create 声明的类型签。现在 `.jpg/.jpeg/.png`
+  在 create 与 PUT 都发 `image/jpeg` / `image/png`（见 `docs/upload-chain.md` §四）；
 - cookie `jwtToken`：实拍里**头和 cookie 都在**（cookie 是页面 JS 从 URL 的 `token=` 写进去的）。
   本仓只发 `jwttoken` 头、cookie 沿用 H5 会话那一份 —— 真跑若回 401，先看这一格。
 

@@ -56,6 +56,31 @@ test('起一次上传：**一个请求都不发**，摘要已经算好并落库'
   assert.equal(uploadDone(deps), false);
 });
 
+test('图片上传：create 与 PUT 都发 image/jpeg（2026-11-02 真跑 403 的修）', () => {
+  const { deps, sent } = mkDeps({ 'file/create': CREATED, 'file/complete': { code: 0 } });
+  const bytes = deterministicFile('seed', 256);
+  startUpload(deps, { name: 'photo.jpg', bytes });
+  runUploadStep(deps);
+  const create = sent[0]!;
+  const body = JSON.parse(create.body ?? '{}') as { contentType?: string };
+  assert.equal(body.contentType, 'image/jpeg', '预签名按 create 声明的类型签');
+  runUploadStep(deps, bytes);
+  const put = sent[1]!;
+  assert.equal(put.method, 'PUT');
+  assert.equal(put.headers['Content-Type'], 'image/jpeg', 'PUT 必须一字不差');
+});
+
+test('非图片仍走抓包那两支：create `application/oct-stream` / PUT `octet-stream`', () => {
+  const { deps, sent } = mkDeps({ 'file/create': CREATED, 'file/complete': { code: 0 } });
+  const bytes = deterministicFile('seed2', 256);
+  startUpload(deps, { name: 'a.bin', bytes });
+  runUploadStep(deps);
+  const body = JSON.parse(sent[0]!.body ?? '{}') as { contentType?: string };
+  assert.equal(body.contentType, 'application/oct-stream');
+  runUploadStep(deps, bytes);
+  assert.equal(sent[1]!.headers['Content-Type'], 'application/octet-stream');
+});
+
 test('空文件名 / 空内容 ⇒ 拒绝（不发）', () => {
   const { deps, sent } = mkDeps({});
   assert.equal(startUpload(deps, { name: '  ', bytes: deterministicFile('s', 8) }).ok, false);
