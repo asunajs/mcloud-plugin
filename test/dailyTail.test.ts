@@ -44,6 +44,7 @@ test('runDaily.detail 带「清理临时文件」和「今日云朵」', () => {
     nowIso,
     nowMs: () => Date.parse(nowIso),
     settleMs: 0,
+    gapMs: [0, 0],
   } as TaskDeps;
 
   const r = runDaily(deps);
@@ -77,7 +78,7 @@ test('runDaily 带「App 任务状态」那几行；旧的三条任务**不再�
     JSON.stringify({ group: 'sign_in_3', at: nowIso, done: 0, todo: items.length, skip: 0, todoNames: [], items }),
     nowIso,
   );
-  const deps = { store, transport, nowIso, nowMs: () => Date.parse(nowIso), settleMs: 0 } as TaskDeps;
+  const deps = { store, transport, nowIso, nowMs: () => Date.parse(nowIso), settleMs: 0, gapMs: [0, 0] } as TaskDeps;
 
   const r = runDaily(deps);
   const names = r.steps.map((s) => s.name);

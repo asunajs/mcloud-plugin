@@ -29,7 +29,7 @@
 // 差异只出现在畸形输入上 —— 但那正是这一层要处理的东西：
 // 用严格模式，"上游塞了个空白字符"会变成"凭据整条不可用"。
 
-import { fromBase64, fromUtf8 } from '../crypto/bytes.ts';
+import { fromBase64, fromUtf8, toBase64, utf8 } from '../crypto/bytes.ts';
 
 /** PC 端载荷的第一段。**不区分** Windows 与 macOS。 */
 export const PC_AUTH_PREFIX = 'pc';
@@ -127,6 +127,89 @@ export function parseAuth(auth: string): AuthInfo | undefined {
     seg !== undefined && isPlainDecimal(seg) ? Math.trunc(Number(seg)) || 0 : 0;
 
   return { raw: `Basic ${clean}`, platform, phone, token, expire };
+}
+
+/** 去掉那些"看不见但会让 base64 解不开"的字符：BOM、零宽空格/连接符。
+ *
+ *  ⚠ 从微信、笔记、终端里复制时最爱带这些；而 `\s` **不**包含 U+200B，
+ *  于是它会被当成 base64 的一部分 ⇒ 上游回 `05050009`（又一条"像是过期"的假线索）。 */
+function stripInvisible(raw: string): string {
+  return raw.replace(/[\uFEFF\u200B-\u200D\u2060]/g, '');
+}
+
+/** 去掉成对的外层引号。
+ *
+ *  ⚠ 手写而不是用带引号的正则：面板扫 `worker_hint('exclusive')` 的那个状态机很朴素，
+ *  正则字面量里的引号会把它的状态带歪（见 findings F-080）。 */
+function stripOuterQuotes(raw: string): string {
+  const head = raw.charAt(0);
+  if (raw.length >= 2 && (head === '"' || head === "'" || head === '`') && raw.charAt(raw.length - 1) === head) {
+    return raw.slice(1, -1).trim();
+  }
+  return raw;
+}
+
+/** 把用户贴进来的凭据**尽力**弄成能直接当 `Authorization` 用的形状。
+ *
+ *  # 用户会怎么贴
+ *
+ *  抓包、笔记、聊天记录、终端、青龙配置…… 实测见到的脏东西：
+ *
+ *  | 贴进来 | 以前的表现 | 现在 |
+ *  |---|---|---|
+ *  | `cGM6…`（没前缀） | 少 `Basic ` ⇒ `05050009` | 补上 |
+ *  | `basic   cGM6…`（多空格/换行/制表） | 原样发 ⇒ `05050009` | 归一成 `Basic cGM6…` |
+ *  | `"Basic cGM6…"`（外层引号） | 引号进请求头 | 去掉 |
+ *  | `Authorization: Basic cGM6…`（整行头） | 同上 | 只取值 |
+ *  | `Basic Basic cGM6…`（双前缀） | `Basic Basic …` ⇒ `05050009` | 剥到只剩一层 |
+ *  | `Basic cGM6\u200b…`（零宽） | base64 解不开 ⇒ `05050009` | 清掉 |
+ *  | `pc:手机号:token\|…`（**明文**） | 当 base64 解 ⇒ 认不出 | 替他 base64 |
+ *
+ *  ⚠ `05050009 非法的token！` 的文案把人引向"过期"，而上面每一条真因都是**格式**。
+ *  所以这一层放在**落库/换票**两处（`upsertAccount`、`startExchange`），
+ *  而不是指望每个调用点都记得先归一。
+ *
+ *  ⚠ 认不出来就**报错**（不硬塞一个猜测的形状）：塞错了会得到 05050009，
+ *  比"贴错了"更难查。 */
+export function hardenAuthorization(raw: string): { ok: boolean; value?: string; error?: string } {
+  const t = stripInvisible(raw).trim();
+  if (t === '') return { ok: false, error: '凭据是空的' };
+  const unquoted = stripOuterQuotes(t);
+  // 有人直接把整行头拷进来：`Authorization: Basic …`
+  const line = /^authorization\s*[:=]\s*([\s\S]*)$/i.exec(unquoted);
+  let rest = (line !== null ? (line[1] ?? '') : unquoted).trim();
+  // 反复剥 scheme（`Basic Basic …`、`basic:`、`BASIC\t`、甚至 `BasiccGM6` 这种没分隔符的）
+  let bearer = false;
+  for (;;) {
+    const m = /^(basic|bearer)[\s:=]*/i.exec(rest);
+    if (m === null) break;
+    if (/^bearer$/i.test(m[1] ?? '')) bearer = true;
+    rest = rest.slice(m[0].length).trim();
+  }
+  const compact = rest.replace(/\s+/g, '');
+  if (compact === '') return { ok: false, error: '只有 `Basic`，没有凭据本体' };
+  // **明文**形态：用户贴的是解开之后那串 ⇒ 替他编成 base64
+  if (/^(pc|mobile|app)[\s]?:/i.test(compact)) {
+    return { ok: true, value: `${bearer ? 'Bearer' : 'Basic'} ${toBase64(utf8(compact))}` };
+  }
+  // ⚠ 先过**字符集**：`parseAuth` 用的是宽松 base64（`lenientB64`），
+  //   连中文都能"解"出点东西来 ⇒ 单靠它挡不住"贴错了"的情况。
+  if (!/^[A-Za-z0-9+/=_-]+$/.test(compact)) {
+    return {
+      ok: false,
+      error: '这串里还有 base64 之外的字符 —— 正确形状是 `Basic base64("pc:手机号:token|…")`；'
+        + '把 `pc:手机号:…` 那串**明文**直接贴进来也行（会自动编）',
+    };
+  }
+  const info = parseAuth(compact);
+  if (info === undefined || info.raw === '') {
+    return {
+      ok: false,
+      error: '认不出这串凭据（base64 解不开）—— 正确形状是 `Basic base64("pc:手机号:token|…")`；'
+        + '把 `pc:手机号:…` 那串**明文**直接贴进来也行（会自动编）',
+    };
+  }
+  return { ok: true, value: bearer ? `Bearer ${compact}` : `Basic ${compact}` };
 }
 
 /** 是不是 PC 端的凭据。**显式比对前缀**（空串不算）。 */

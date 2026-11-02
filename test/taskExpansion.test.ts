@@ -292,7 +292,7 @@ test('⚠ 账号隔离：A 的完成标记不挡 B，B 也读不到 A 的槽位'
     sent.push(req);
     return { status: 200, headers: {}, body: JSON.stringify({ code: 0, result: { curMonthBackup: false } }) };
   }) as never;
-  const depsB = { store: oneB, transport, nowIso: NOW, baseUrl: undefined, settleMs: 0 } as TaskDeps;
+  const depsB = { store: oneB, transport, nowIso: NOW, baseUrl: undefined, settleMs: 0, gapMs: [0, 0] } as TaskDeps;
   const kick = startExpansion(depsB);
   assert.notEqual(kick.idle, true, 'B 没跑过 —— A 的 done 不许把它挡在门外');
   assert.equal(expandState(oneB).step, 'read');

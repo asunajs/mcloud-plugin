@@ -47,6 +47,7 @@
 //    `jwttoken` 也要短存 —— 它 2 小时即废。
 
 import { rootOrDefault } from './h5.ts';
+import { hardenAuthorization } from './auth.ts';
 import { signHeadersWith } from './sign.ts';
 import type { SignHeaders } from './sign.ts';
 import { nonce as newNonce, uuidV4 } from './rand.ts';
@@ -400,18 +401,14 @@ export function parseJwtToken(body: string): Parsed<{ jwt: string; mobile?: stri
  *  而且补错的后果很明确（上游回 `05050009 非法的token！`）。
  *  比"一律原样发"更好的一点是：裸值也能用，少一步手工拼。 */
 export function normalizeAuthorization(raw: string): Parsed<string> {
-  const v = raw.trim();
-  if (v === '') return { ok: false, error: '凭据是空的' };
-  if (/^(basic|bearer)\s/i.test(v)) return { ok: true, value: v };
-  // 裸值：补一次 `Basic `
-  if (/\s/.test(v)) {
-    return {
-      ok: false,
-      error: '这个值里有空格但又不是 Basic/Bearer 开头 —— 像是抄断了。' +
-        '正确形状是 `Basic base64("mobile:手机号:token")`（整串一个空格）',
-    };
-  }
-  return { ok: true, value: `Basic ${v}` };
+  // ⚠ 归一的实现只有**一处**（`auth.ts::hardenAuthorization`）——
+  //   以前这里和 `accounts.ts::normalizeAuth` 各写一套，规则还不一样：
+  //   这条能容忍裸值，却会把 `basic   x`（多空格）**原样**存进去，而那一格是当
+  //   `Authorization` 头发出去的 ⇒ 上游回 `05050009 非法的token！`（看着像过期）。
+  //   2026-11-02 用户口径：**不管用户怎么贴都要接住**（多余的空白也算）。
+  const r = hardenAuthorization(raw);
+  if (!r.ok || r.value === undefined) return { ok: false, error: r.error ?? '认不出这串凭据' };
+  return { ok: true, value: r.value };
 }
 
 /** 凭据指纹：SHA-256 hex 的前 16 个字符。只用于**分组/判断"换了没换"**，不当凭据用。

@@ -15,7 +15,7 @@
 
 import { STATE_ACCOUNTS, STATE_CURRENT_ACCOUNT, clearBag } from '../store/keys.ts';
 
-import { PC_AUTH_PREFIX, parseAuth, type PcPlatform } from './auth.ts';
+import { PC_AUTH_PREFIX, hardenAuthorization, parseAuth, type PcPlatform } from './auth.ts';
 import { fromBase64, fromUtf8 } from '../crypto/bytes.ts';
 import type { Store } from '../store/types.ts';
 
@@ -116,33 +116,18 @@ export function phoneOf(raw: string): string | undefined {
 /** 稳定 id：手机号优先（人能对上），否则凭据的短哈希。 */
 /** 落库前**归一**成一串能直接当 `Authorization` 用的东西（**带 `Basic `**）。
  *
- *  ⚠ 用户从别处（mcloud、抓包、笔记）把凭据贴进来时，**经常没有 `Basic ` 前缀** ——
- *  而这一格是原样当请求头发出去的。少了前缀的表现是上游回
- *  `05050009 非法的token！`，一句**指向"凭据过期"的假线索**（真因是格式）。
+ *  ⚠ 用户从别处（mcloud、抓包、笔记、青龙配置）把凭据贴进来时，**怎么贴的都有**：
+ *  没前缀、多空格、外层引号、整行头、双前缀、零宽字符、甚至贴的是解开之后的明文
+ *  `pc:手机号:token|…`。而这一格是原样当请求头发出去的 —— 漏一种的表现就是上游回
+ *  `05050009 非法的token！`（一句**指向"凭据过期"的假线索**，真因是格式）。
  *  更隐蔽的是 `phoneOf` 认不出手机号 ⇒ 账号 id 变成 `anon-xxxx`（与真实手机号脱钩）。
  *
- *  `parseAuth` 本来就容忍缺前缀并会补回来（它的 `raw` 是归一后的形状）——
- *  这里只是把"归一"这件事**放到落库这一处**，而不是指望每个调用点都记得。 */
+ *  归一的实现只有一处：`auth.ts::hardenAuthorization`（`h5session` 那条路也用同一个）。
+ *  认不出来的**原样留着**（不替用户猜）：猜错了一样是 05050009，还更难查。 */
 export function normalizeAuth(raw: string): string {
-  // ⚠ 不直接调 `parseAuth`：它只认字面量 `'Basic '`（一个空格），
-  //   而真实粘贴里见过 `basic   `（多空格）、`Basic\n`、外层带引号这几种。
-  const t = raw.replace(/\uFEFF/g, '').trim();
-  // ⚠ 这里**不能**用带引号的正则（`/^(['"])…/`）：面板扫描 `worker_hint('exclusive')`
-  //   时用一个很朴素的状态机剥字符串/注释（`workers.rs::code_mask`），正则字面量里的
-  //   引号会把它的状态带歪 ⇒ 从那以后整段代码都被当成"字符串"，插件声明了独占也
-  //   扫不到 ⇒ 每次加载都报一句假警告（见 findings F-080）。
-  //   所以用 `charAt` 手写"去外层引号"，语义一样，扫的时候不添乱。
-  const head = t.charAt(0);
-  const unquoted =
-    t.length >= 2 && (head === '"' || head === "'") && t.charAt(t.length - 1) === head
-      ? t.slice(1, -1).trim()
-      : t;
-  const m = /^basic[\s:]+([\s\S]+)$/i.exec(unquoted);
-  const b64 = (m !== null ? m[1]! : unquoted).replace(/\s+/g, '');
-  if (b64 === '') return unquoted;
-  // 只认"解出来是三段"的那种 —— 解不开就原样留着，不替用户猜
-  const info = parseAuth(b64);
-  return info !== undefined && info.raw !== '' ? `Basic ${b64}` : unquoted;
+  const r = hardenAuthorization(raw);
+  if (r.ok && r.value !== undefined) return r.value;
+  return raw.replace(/\uFEFF/g, '').trim();
 }
 
 export function idOf(raw: string): string {

@@ -87,9 +87,18 @@ function drive(
 test('收凭据：只收下、**不发请求**；坏的输入什么都不写', () => {
   const store = memStore();
   store.ensureSchema();
-  const bad = startExchange(store, 'bW9iaWxl OjE=', NOW);
+  // ⚠ 2026-11-02 起判据变了：**多一个空格不算坏输入**（用户口径"怎么贴都要接住"）。
+  //   真正"坏"的是**认不出是凭据**的东西（中文、截图里的废话、只有 scheme）。
+  const bad = startExchange(store, '这不是凭据', NOW);
   assert.equal(bad.ok, false);
   assert.equal(store.getState(STATE_AUTH), null, '坏的输入不该留下凭据');
+
+  // 脏但真是凭据 ⇒ 收下，而且**存的是归一后的形状**（多空格/大小写都被抹平）
+  const store2 = memStore();
+  store2.ensureSchema();
+  const messy = startExchange(store2, '  basic    bW9iaWxlOjEzODAwMDAwMDAwOnRva2Vu  ', NOW);
+  assert.equal(messy.ok, true, '多几个空格不该被拒');
+  assert.equal(store2.getState(STATE_AUTH), AUTH, '存进去的必须是归一后的 `Basic …`');
 
   const ok = startExchange(store, AUTH, NOW);
   assert.equal(ok.ok, true);

@@ -25,7 +25,7 @@
 
 
 import { callRawText } from '../client.ts';
-import { depsNowMs, sessionHeaders, waitMs } from './base.ts';
+import { depsNowMs, sessionHeaders, waitGap, waitMs } from './base.ts';
 import { REFERER_SIGN_IN, SHOW_LOADING, buildH5Request } from '../h5.ts';
 import { loadSession } from '../../store/types.ts';
 import { loadAuthRaw } from '../sessionExchange.ts';
@@ -444,7 +444,17 @@ function advance(deps: TaskDeps, st: TaskState): TaskOutcome {
     failed: st.failed ?? [],
     day: today(deps),
   });
-  return { ok: true, note: `下一条 #${next.itemId}（「${next.name}」）` };
+  // ⚠ **换条之前要隔一会儿**（随机 0.5–2 秒，`deps.gapMs`；先把下一条的状态存好再等，
+   //   这样即便等到一半被 60 秒硬闸掐掉，下一次也是从新那条接着走）：
+  //   实测相邻两条之间只有 33–677ms —— 那只是上一个请求的 RTT，看起来就像机器在刷；
+  //   而且上一条刚收尾、下一条立刻开工，两件事会撞在同一秒里。
+  //   这一段**故意不放进 drain**：drain 只认"一步"，分不清哪几步属于同一条任务，
+  //   放进去会把同一串"上传→确认→转换"也拉开，白白吃掉 60 秒预算。
+  const gap = waitGap(deps);
+  return {
+    ok: true,
+    note: `下一条 #${next.itemId}（「${next.name}」）${gap > 0 ? ` —— 隔了 ${gap}ms 再打` : ''}`,
+  };
 }
 
 /**
@@ -1026,7 +1036,10 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
   if (st.phase === 'entry') {
     const market = st.data?.marketName ?? 'sign_in_3';
     const a = callRawText(deps.transport, entryPostRequest(deps, market));
+    // ⚠ 同一阶段里的连发也要隔（0.5–2 秒）：三枪连着打，上游那边还没记完上一枪。
+    waitGap(deps);
     const b = callRawText(deps.transport, entryGetRequest(deps));
+    waitGap(deps);
     // 409 / 1005 的“补那一发”都是 task2（参考实现 409 实测靠它翻 FINISH）。
     const c = callRawText(deps.transport, clickRequest(deps, st.itemId, 'task2'));
     const bits = [a.ok ? 'doTaskPost ok' : `doTaskPost 没成：${a.error ?? ''}`, b.ok ? 'page/doTask ok' : `page/doTask 没成：${b.error ?? ''}`];
@@ -1042,16 +1055,19 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
   if (st.phase === 'portal') {
     const market = st.data?.marketName ?? 'sign_in_3';
     const a = callRawText(deps.transport, entryPostRequest(deps, market));
+    waitGap(deps);
     const b = callRawText(deps.transport, entryGetRequest(deps));
     const link = st.data?.link ?? '';
     const url = link === '' ? undefined : portalUrl(link, deps);
     let page = '没有入口链接';
     if (url !== undefined) {
+      waitGap(deps);
       const p = callRawText(deps.transport, portalPageRequest(deps, url));
       page = p.ok ? `入口页 HTTP ${p.status}（${p.text.length} 字节）` : `入口页没取成：${p.error ?? ''}`;
     }
     // 1017 的 gate 在 currstep=1 时不会打，参考实现用 task2 补；604 的 gate 会自己打。
     if (st.itemId === 1017) {
+      waitGap(deps);
       const c = callRawText(deps.transport, clickRequest(deps, st.itemId, 'task2'));
       if (!c.ok) page += `；补打卡没成：${c.error ?? ''}`;
     }
@@ -1061,6 +1077,10 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
   }
 
   if (st.phase === 'share') {
+    // ⚠ **传完就建外链**这一步之间不能是 0ms：上传是不是"上游已经落账"没有保证
+    //   （实测两枪之间只有 ~350ms，见 F-130）。上一条刚传完就建链，可能拿到
+    //   `1010010006`（记录已被删除/参数错误）之类，而那是**没有错误提示**的失败。
+    waitGap(deps);
     // ⚠ 收尾要用这个文件的 id 和归属：上传状态机只记得“这一次”，
     //   而分享跑完就 `advance` 会把 fileId 丢掉 —— 那正是以前留在云盘里的原因。
     let fileId = st.fileId;
@@ -1073,27 +1093,33 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
       save(deps, { ...st, phase: 'upload', fileId: undefined, fileOwned: undefined, day: today(deps) });
       return { ok: true, note: `分享 #${st.itemId}：手里没有文件 —— 自己传一个再分享` };
     }
-    /** 建链失败/没 linkID 时也要收尾：文件是我们传的，不能因为分享没成就留着。 */
-    const trashNext = (ok: boolean, note: string): TaskOutcome => {
+    /** 建链失败/没 linkID 时也要收尾：文件是我们传的，不能因为分享没成就留着。
+     *
+     *  ⚠ **必须记进 `failed`**，不能只写一句 note 就 `ok: true`：
+     *  那样这一条既没成、也不会出现在复查那句话里 —— 用户看到的就是
+     *  "日志说分享成功了，云朵却没涨，而且没有任何错误提示"（2026-11-02 用户口径）。
+     *  记进 `failed` 之后，复查会把 `#434 建外链失败：…` 原样念出来。 */
+    const trashNext = (why: string): TaskOutcome => {
+      const failed = [...(st.failed ?? []).filter((f) => f.id !== st.itemId), { id: st.itemId, why }];
       if (fileOwned === true) {
-        save(deps, { ...st, phase: 'trash', fileId, fileOwned: true, day: today(deps) });
-        return { ok, note: `${note} —— 下一步收尾` };
+        save(deps, { ...st, phase: 'trash', fileId, fileOwned: true, failed, day: today(deps) });
+        return { ok: true, note: `分享 #${st.itemId} 没成：${why} —— 先把文件收尾（原因已记下）` };
       }
-      const out = advance(deps, doneState(deps, { ...st, fileId: undefined, fileOwned: undefined }));
-      return { ok, note: `${note}${out.note}` };
+      const out = advance(deps, { ...doneState(deps, { ...st, fileId: undefined, fileOwned: undefined }), failed });
+      return { ok: false, note: `分享 #${st.itemId} 没成：${why}${out.note}` };
     };
     const req = getOutLinkRequest(deps, [fileId]);
-    if (!req) return trashNext(true, `分享 #${st.itemId}：请求没造出来`);
+    if (!req) return trashNext(`外链请求没造出来（拿不到手机号/凭据？）`);
     const res = callRawText(deps.transport, req);
-    // ⚠ 分享失败也**不拖垮整趟**（参考实现里它只是这一条的 problem）。
+    // ⚠ 分享失败也**不拖垮整趟**（参考实现里它只是这一条的 problem）——
+    //   但"这一条没成"这件事必须说出来，见上面 `trashNext` 的注释。
     if (!res.ok) {
-      return trashNext(true, `分享 #${st.itemId} 建外链失败：${res.error ?? '未知失败'}`);
+      return trashNext(`建外链失败：${res.error ?? '未知失败'}`);
     }
     const ids = parseLinkIds(res.text);
     if (ids.length === 0) {
       return trashNext(
-        true,
-        `分享 #${st.itemId}：响应里没有 linkID（${res.text.slice(0, 80).replace(/\s+/g, ' ')}）`,
+        `响应里没有 linkID（${res.text.slice(0, 80).replace(/\s+/g, ' ')}）`,
       );
     }
     save(deps, {
@@ -1108,6 +1134,8 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
   }
 
   if (st.phase === 'shareDel') {
+    // 建链与删链之间同样不能 0ms：链刚建出来就删，上游那边可能还没落账。
+    waitGap(deps);
     let ids: string[] = [];
     try {
       ids = JSON.parse(st.data?.linkIds ?? '[]') as string[];
@@ -1119,14 +1147,21 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
     // 外链删没删成，文件都要收尾（外链没了，文件留着也没有用途）。
     // ⚠ 只认 `fileOwned === true`：判不了的一律不删。
     if (st.fileId !== undefined && st.fileOwned === true) {
-      save(deps, { ...st, phase: 'trash', fileOwned: true, day: today(deps) });
+      // 删链失败也要**记进 `failed`**：只写 note 的话，这一条到底成没成，
+      // 复查那句话里一个字都不会提（用户口径：失败要有错误提示）。
+      const delWhy = req === undefined ? '' : res!.ok ? '' : `删外链失败：${res!.error ?? '未知失败'}`;
+      const failed =
+        delWhy === ''
+          ? st.failed ?? []
+          : [...(st.failed ?? []).filter((f) => f.id !== st.itemId), { id: st.itemId, why: delWhy }];
+      save(deps, { ...st, phase: 'trash', fileOwned: true, failed, day: today(deps) });
       return {
         ok: res?.ok ?? true,
         note: !req
           ? `分享 #${st.itemId}：没有 linkID 可删 —— 下一步收尾`
           : res!.ok
             ? `分享 #${st.itemId}：外链已删 —— 下一步收尾`
-            : `分享 #${st.itemId}：删外链失败（${res!.error ?? '未知失败'}）—— 下一步收尾`,
+            : `分享 #${st.itemId}：${delWhy} —— 下一步收尾（原因已记下）`,
       };
     }
     const out = advance(deps, doneState(deps, { ...st, fileId: undefined, fileOwned: undefined }));
@@ -1249,6 +1284,7 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
   if (st.phase === 'mailActiveAction') {
     const sess = { sid: st.data?.sid ?? '', rmkey: st.data?.rmkey ?? '' };
     const a = callRawText(deps.transport, mailAutologinRequest(sess));
+    waitGap(deps);
     const b = callRawText(deps.transport, marketClickRequest(st.itemId, 'sign_in_3'));
     const out = advance(deps, doneState(deps, st));
     return {
@@ -1270,6 +1306,7 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
     }
     const auth = parseAuth(loadAuthRaw(deps.store));
     const account = `${auth?.phone ?? ''}@139.com`;
+    waitGap(deps);
     const b = callRawText(
       deps.transport,
       composeMailRequest(sess, {
@@ -1286,6 +1323,7 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
     //    （2026-11-01 实测：光发信 + 打卡，1004 仍是 `第 1 步`）。
     // ⚠ 用**本条会话**的 cguid（`mailLogin2` 已经生成过），别再新造一个 ——
     //   同一会话两个 cguid，"这次活跃算不算这个会话的"就说不清了（评审 2026-11-01）。
+    if (code.ok) waitGap(deps);
     const pe = code.ok
       ? callRawText(deps.transport, peActiveReportRequest(sess, st.data?.cguid ?? newCguid(), Date.now()))
       : undefined;
@@ -1295,7 +1333,9 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
     // ⚠ 而且**这一条开头已经打过卡了**（`click` 阶段那一发，同一趟）——
     //   `task/click` 不可回滚，同一趟打两发是文件头第 ① 条明令禁止的
     //   （评审 2026-11-01：实测一趟两发 id=1004）。已打过就只做 PE 上报。
-    const c = freshClicked(st, deps).includes(1004)
+    const already = freshClicked(st, deps).includes(1004);
+    if (!already && pe !== undefined) waitGap(deps);
+    const c = already
       ? { ok: true, status: 0, text: '', chars: 0, tookMs: 0, error: undefined }
       : callRawText(deps.transport, clickRequest(deps, 1004));
     const out = advance(deps, doneState(deps, st));
@@ -1486,14 +1526,20 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
     const sess = { sid: st.data?.sid ?? '', rmkey: st.data?.rmkey ?? '' };
     const cguid = st.data?.cguid ?? newCguid();
     const a = callRawText(deps.transport, billPageRequest(sess, cguid));
+    // ⚠ 这一阶段原先一口气 6 枪（账单页 → 搜邮件 → 标已读 → 读信 → 埋点）：
+    //   中间没有一拍，等于把"看账单"这件事在一秒里演完。逐枪之间隔 0.5–2 秒。
+    waitGap(deps);
     const b = callRawText(deps.transport, billMailsSearchRequest(sess, cguid));
     const mid = b.ok ? firstField(b.text, 'mid') : undefined;
     if (!mid) {
       return itemFailed(deps, st, '账单：邮件列表里取不到 mid');
     }
+    waitGap(deps);
     const c = callRawText(deps.transport, markMailReadRequest(sess, cguid, mid));
+    waitGap(deps);
     const d = callRawText(deps.transport, readMessageRequest(sess, cguid, mid));
     const mq: boolean[] = [];
+    waitGap(deps);
     for (const [actionType, clientType, channel] of [
       ['1003', '2', ''],
       ['1003', '2', ''],
@@ -1505,6 +1551,7 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
       );
       mq.push(r.ok);
     }
+    waitGap(deps);
     const e = callRawText(deps.transport, logBehaviorActionRequest(sess, 111631, 261, cguid, '110542_6'));
     const out = advance(deps, doneState(deps, st));
     return {

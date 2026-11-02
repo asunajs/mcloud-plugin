@@ -267,7 +267,10 @@ export function runDaily(
       //   十来条各自 2~6 步 ⇒ 20 步会在半路截断（截断不报错，下一次接着走，
       //   但用户看到的是"这一趟只做了一半"）。时间上限仍是 60s 那道硬闸。
       maxSteps: 40,
-      deadlineMs: 60_000,
+      // ⚠ 60 秒是**没有任务间间隔**时的数。现在每条之间随机隔 0.5–2 秒
+      //   （`gapMs`，十几条就是 10–25 秒）⇒ 预算必须跟着放宽，否则会被硬闸截在半路
+      //   （截断不报错，用户看到的是"这一趟只做了一半"）。
+      deadlineMs: 90_000,
       startedAt: started,
       // 上传 / 访问日志 / 打卡 / 重试逐步打出来；否则日志只剩最后一句
       // 「这一趟没有全确认」，用户看不到文件到底传没传。
@@ -280,7 +283,7 @@ export function runDaily(
   //     我们既不点也不领 —— 但用户要知道"现在到哪了"：开了几天、是不是下月再来。
   //     读的是刚刷新的矩阵读数（`buttonOutText` 就是 App 上那个按钮的字），一个请求都不发。
   //     旧的三条任务 2026-11-01 删了，理由见 docs/findings.md F-124。
-  const statusLines = appTaskStatusLines(deps.store, { backupOn: readBackupOn(deps.store) });
+  const statusLines = appTaskStatusLines(deps.store, { backupOn: readBackupOn(deps.store), nowIso: deps.nowIso });
   if (statusLines.length > 0) {
     push({
       name: 'App 任务状态',
@@ -379,6 +382,9 @@ export function runDaily(
       //   这一天剩下的 AI豆 一颗都没领。150 秒 = 前面全跑满也还能领。
       deadlineMs: 150_000,
       startedAt: started,
+      // ⚠ 这一条 drain 的"一步"**就是一个独立条目**（队列里一条一个请求）⇒
+      //   条与条之间要隔（`gapMs`，0.5–2 秒），否则就是一串连发。
+      gap: true,
       ...(name === '领取AI豆' ? { more: () => loadQueue(deps.store).length > 0 } : {}),
     });
     push({ name, ok: r.ok, note: r.note, idle: r.idle });

@@ -57,7 +57,7 @@ function depsFor(redpack: boolean): { deps: TaskDeps; sent: string[] } {
   store.setState(STATE_AUTH, AUTH, NOW);
   if (!redpack) setRedpackEnabled(store, false, NOW);
   const { transport, sent } = transportFor(redpack);
-  return { deps: { store, transport, nowIso: NOW, nowMs: () => Date.parse(NOW), settleMs: 0 }, sent };
+  return { deps: { store, transport, nowIso: NOW, nowMs: () => Date.parse(NOW), settleMs: 0, gapMs: [0, 0] }, sent };
 }
 
 test('开着 ⇒ 红包那一族的逐行进 `detail`，步骤名与小结也在', () => {

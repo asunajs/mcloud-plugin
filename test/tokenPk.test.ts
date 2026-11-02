@@ -202,7 +202,7 @@ function depsFor(transport: Transport, nowIso = NOW): TaskDeps {
     nowIso,
   );
   store.setState(STATE_JWT, JSON.stringify({ at: nowIso, jwt: 'JWT', referer: '', fingerprint: 'f' }), nowIso);
-  return { store, transport, nowIso, nowMs: () => Date.parse(nowIso), settleMs: 0 };
+  return { store, transport, nowIso, nowMs: () => Date.parse(nowIso), settleMs: 0, gapMs: [0, 0] };
 }
 
 function runAll(deps: TaskDeps): { notes: string[]; idle: boolean; ok: boolean } {

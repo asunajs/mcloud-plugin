@@ -99,6 +99,15 @@ export interface MatrixItem {
   buttonOutDay?: string;
   /** `button.*.total` —— 通知任务总共几天（实拍 551 是 `31`）。 */
   buttonOutTotal?: string;
+  /** **累计进度**（`process`）—— 只对"要攒够 N 个"的那几条有意义。
+   *
+   *  实拍（2026-11-02，测试号）：`522 当月上传文件满100个` 的原始响应里
+   *  `"process":67` —— 就是"本月已经传了 67 个"。而 `button.text` 还是「去完成」，
+   *  **界面上一点进度都看不出来**（这条任务只有攒满 100 才翻 `state=FINISH`）。
+   *
+   *  ⚠ 它**不是**百分比、也不是"完成了几步"：分母看 `stop_at_process`
+   *  （522 是 100，见 `app_task.rs:1314-1319`，不许写死）。 */
+  process?: number;
   /** `textMiddle` —— V2 那三档里的"进行中"。V3 通常不给（`text` 已经挑好）。 */
   buttonTextMiddle?: string;
   /** `textFinish` —— V2 三档里的"已完成"（实拍 550 是「已领取」、551 是「领AI豆」）。 */
@@ -165,6 +174,8 @@ export function parseMatrixItem(raw: unknown): MatrixItem | undefined {
     limitType: asStr(o.limitType ?? o.limit_type),
     enable: asInt(o.enable),
     currStep: asInt(o.currstep ?? o.currStep),
+    // 「本月已经攒了多少个」——522 只有攒满 100 才翻 FINISH，界面上却一直只写「去完成」
+    process: asInt(o.process),
     buttonAppLink: asStr(o.buttonAppLink ?? o.button_app_link) ?? nestedLink(o.button, 'app'),
     buttonEmailLink: asStr(o.buttonEmailLink ?? o.button_email_link) ?? nestedLink(o.button, 'email'),
     buttonOutText: at('text'),

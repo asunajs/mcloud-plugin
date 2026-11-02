@@ -273,6 +273,8 @@ function drawOnce(
     {
     label: '领小红花',
     maxSteps: 12,
+    // 一次抽奖 = 一步，连着抽就是连发 ⇒ 步与步之间随机隔 0.5–2 秒（`deps.gapMs`）
+    gap: true,
     deadlineMs: Math.max(15_000, runStartMs + BUDGET_MS - Date.now() - 3_000),
     startedAt: runStartMs,
   });

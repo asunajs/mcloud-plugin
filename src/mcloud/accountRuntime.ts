@@ -7,7 +7,7 @@ import { loadBaseUrl } from './session.ts';
 import { loadAuthRaw } from './sessionExchange.ts';
 import { authorizeRequest } from './cloudUpload.ts';
 import type { Transport } from './client.ts';
-import type { TaskDeps } from './tasks/base.ts';
+import { DEFAULT_GAP_MS, type TaskDeps } from './tasks/base.ts';
 
 export function forEachTaskAccount<T>(
   base: Store,
@@ -59,5 +59,7 @@ export function taskDeps(
     // 否则「刚把基址指到 mock，任务却还在打真上游」
     baseUrl: loadBaseUrl(store),
     lateMs: payload.lateMs,
+    // 任务之间**随机**隔 0.5–2 秒（`gapMs` 缺省就是 `DEFAULT_GAP_MS`）。
+    gapMs: [DEFAULT_GAP_MS[0], DEFAULT_GAP_MS[1]],
   };
 }

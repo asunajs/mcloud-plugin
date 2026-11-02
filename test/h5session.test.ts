@@ -130,21 +130,54 @@ test('③ 解析：数字 0 与字符串 "0000" 都算成功；失败样本**没
   assert.equal(parseJwtToken('{"code":0,"result":{"token":"J"}}').ok, true);
 });
 
-test('凭据：带前缀的原样收下（**绝不**补第二次 `Basic `）', () => {
-  // 双前缀会得到 `Basic Basic bW9iaW…`，而上游回的是「非法的token！」
+test('凭据：带前缀的收下（**绝不**补第二次 `Basic `）', () => {
+  // 双前缀会得到 `Basic Basic bW9iaWxl…`，而上游回的是「非法的token！」
   // —— 那句话听起来像"凭据过期了"，会把排查带到隔壁
   assert.equal(normalizeAuthorization('Basic bW9iaWxlOjE=').value, 'Basic bW9iaWxlOjE=');
-  assert.equal(normalizeAuthorization('basic bW9iaWxlOjE=').value, 'basic bW9iaWxlOjE=');
+  // `basic` 小写也归一成 `Basic `（同一串，只是大小写；上游不区分，但存两种写法没好处）
+  assert.equal(normalizeAuthorization('basic bW9iaWxlOjE=').value, 'Basic bW9iaWxlOjE=');
   assert.equal(normalizeAuthorization('  Bearer eyJhbGci  ').value, 'Bearer eyJhbGci');
 });
 
-test('凭据：裸值只在**完全没有 scheme** 时补一次 `Basic `', () => {
-  assert.equal(normalizeAuthorization('bW9iaWxlOjE=').value, 'Basic bW9iaWxlOjE=');
-  // 有空格但没 scheme ⇒ 像是抄断了，拒绝比猜好
-  const bad = normalizeAuthorization('bW9iaWxl OjE=');
-  assert.equal(bad.ok, false);
-  assert.match(bad.error!, /抄断/);
+test('凭据：不管用户怎么贴，都归一成能直接当请求头的形状', () => {
+  const want = 'Basic bW9iaWxlOjE=';
+  const cases: Array<[string, string]> = [
+    ['裸 base64（没前缀）', 'bW9iaWxlOjE='],
+    ['多空格', 'basic     bW9iaWxlOjE='],
+    ['制表 + 换行', 'Basic\n\tbW9iaWxlOjE=\n'],
+    ['外层引号', '"Basic bW9iaWxlOjE="'],
+    ['单引号', "'bW9iaWxlOjE='"],
+    ['整行头', 'Authorization: Basic bW9iaWxlOjE='],
+    ['双前缀', 'Basic Basic bW9iaWxlOjE='],
+    ['没分隔符的前缀', 'BasicbW9iaWxlOjE='],
+    ['冒号当分隔符', 'basic:bW9iaWxlOjE='],
+    ['base64 中间夹空格（抄断/换行）', 'bW9iaWxl OjE='],
+    ['零宽字符', 'Basic bW9iaWxl\u200bOjE='],
+    ['全角空格', 'Basic\u3000bW9iaWxlOjE='],
+    ['到处都是空白', '  basic \n  bW9iaWxlOjE=  \n '],
+  ];
+  for (const [name, input] of cases) {
+    const r = normalizeAuthorization(input);
+    assert.equal(r.ok, true, `${name} 该被接住`);
+    assert.equal(r.value, want, `${name} 归一结果不对`);
+  }
+  // 空的不行；只有 scheme 也不行
   assert.equal(normalizeAuthorization('   ').ok, false);
+  assert.equal(normalizeAuthorization('Basic   ').ok, false);
+  // 认不出来的**报错**（不硬塞一个猜测的形状）
+  const bad = normalizeAuthorization('这不是 base64');
+  assert.equal(bad.ok, false);
+  assert.match(bad.error!, /认不出|形状/);
+});
+
+test('凭据：贴**明文** `pc:手机号:token|…` 会自动编成 Basic', () => {
+  const plain = 'pc:19142492716:3ybfyHGZ|1|RCS|1796100727482|abc';
+  const r = normalizeAuthorization(plain);
+  assert.equal(r.ok, true);
+  assert.equal(r.value, `Basic ${Buffer.from(plain, 'utf8').toString('base64')}`);
+  // 编出来的这串能解回去，而且手机号认得出来
+  const back = Buffer.from(r.value!.slice('Basic '.length), 'base64').toString('utf8');
+  assert.equal(back, plain);
 });
 
 test('`h5Headers`：`jwttoken` 只在给了票时才加，且头名小写', () => {

@@ -1806,6 +1806,15 @@ function paintAppTasks(groups, local) {
           bits.push('本机已点过');
         }
       }
+      // **累计进度**（`process`）—— 只对"要攒够 N 个"的那几条有（实拍 522=67/100）。
+      // ⚠ 不放进上面那个"只对未完成"的分支：攒满之后它照样有意义（"这个月传了 100 个"）。
+      const proc = typeof it.process === 'number' && Number.isFinite(it.process) ? it.process : undefined;
+      // ⚠ `process` 每条都有（其它任务是 0）—— 只有"名字里带满 N 个"或"真的攒了"才画，
+      //   否则每行都会多出一句「已累计 0」。
+      const cap = /满(\d+)/.exec(name)?.[1] ?? '';
+      if (proc !== undefined && (cap !== '' || proc > 0)) {
+        bits.push(cap === '' ? `已累计 ${proc}` : `已累计 ${proc}/${cap}`);
+      }
       const meta = [sub, bits.filter(Boolean).join(' · ')].filter(Boolean).join(' · ');
       // ⚠ 徽章上那个词是**上游给的**，照样要 `esc`（它进过我们的 DOM 字符串）
       return (
