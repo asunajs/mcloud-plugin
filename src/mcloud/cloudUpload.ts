@@ -35,6 +35,24 @@ export const CREATE_CONTENT_TYPE = 'application/oct-stream';
 export const CREATE_CONTENT_TYPE_OCTET = 'application/octet-stream';
 export const PUT_CONTENT_TYPE = 'application/octet-stream';
 
+/** 按扩展名给内容类型。**只认图片**（jpg/jpeg/png）——
+ *
+ *  # 为什么必须给图片单独定
+ *
+ *  2026-11-02 15:55 真跑：算力大作战「上传照片存云盘」的 PUT 回 **403**，
+ *  而同一次 run 里 `.bin`（PC 上传/分享文件）的 PUT 都是 **200**。
+ *  差别只在文件扩展名与内容类型：预签名地址是按 create 里声明的 `contentType`
+ *  签的，而图片那一支（参照实现 `activity_actions.go` 的 `uploadPhotoFile`/
+ *  `performAlbumBackup`）create 与 PUT 都发 `image/jpeg`。
+ *  `.bin` / `.zip` / `.pdf` 保持缺省不变（那几支有真跑 200 的样本）。
+ */
+export function contentTypeOfName(name: string): string | undefined {
+  const n = name.toLowerCase();
+  if (n.endsWith('.jpg') || n.endsWith('.jpeg')) return 'image/jpeg';
+  if (n.endsWith('.png')) return 'image/png';
+  return undefined;
+}
+
 /** PUT 那一枪的 origin/referer 是**云盘域**，不是 `m.mcloud.139.com`。 */
 export const PUT_ORIGIN = 'https://yun.139.com';
 export const PUT_REFERER = 'https://yun.139.com/';
@@ -314,6 +332,7 @@ export function buildPutRequest(
   uploadUrl: string,
   bytes: Uint8Array,
   op: CloudOp | boolean = false,
+  contentType?: string | undefined,
 ): { req: BuiltRequest; leaksCredential: boolean } {
   const kind: CloudOp = op === true ? 'backup' : op === false ? 'upload' : op;
   const codes =
@@ -326,7 +345,8 @@ export function buildPutRequest(
     url: uploadUrl,
     method: 'PUT',
     headers: {
-      'Content-Type': PUT_CONTENT_TYPE,
+      // 图片必须跟 create 里声明的一致（否则预签名校验 403，见 `contentTypeOfName`）
+      'Content-Type': contentType ?? PUT_CONTENT_TYPE,
       origin: PUT_ORIGIN,
       referer: PUT_REFERER,
       // ⚠ 值是**带问号**的 `?1`

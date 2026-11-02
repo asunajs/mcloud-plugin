@@ -1042,7 +1042,7 @@ test('1014 的 PDF：240×240 小页 + **xref 偏移真的对**（转换后端�
   // `makePdf` 是纯函数，直接验字节；上传那段由 1014 那条 e2e 用例覆盖。
   const pdf = makePdf(1793600000000);
   assert.ok(pdf.startsWith('%PDF-1.4'), pdf.slice(0, 20));
-  assert.match(pdf, /\/MediaBox \[0 0 240 240\]/, '页面要小（612×792 → 240×240）');
+  assert.match(pdf, /\/MediaBox \[0 0 240 240\]/, '页面要小（612×792 → 240×240，面积 1/8.4）');
   assert.ok(Buffer.byteLength(pdf, 'utf8') < 700, `别又涨回去：${Buffer.byteLength(pdf, 'utf8')} 字节`);
   const at = Number(/startxref\n(\d+)\n%%EOF/.exec(pdf)?.[1]);
   assert.equal(pdf.slice(at, at + 4), 'xref', 'startxref 没指向 xref 表');

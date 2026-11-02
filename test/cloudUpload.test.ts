@@ -93,6 +93,15 @@ test('⚠ `uploadUrl` 是**另一台主机**，PUT 那一枪必须被认出来"�
   assert.equal(req.headers.authorization, undefined);
 });
 
+test('图片的 PUT 可以显式给 `image/jpeg`（缺省仍是 octet-stream）', () => {
+  const { req } = buildPutRequest('https://storage.example.net/k', deterministicFile('s', 8), 'upload', 'image/jpeg');
+  assert.equal(req.headers['Content-Type'], 'image/jpeg');
+  assert.equal(
+    buildPutRequest('https://storage.example.net/k', deterministicFile('s', 8)).req.headers['Content-Type'],
+    'application/octet-stream',
+  );
+});
+
 test('数据面那一枪的头：`upload-complete: ?1`（**带问号**）、origin 是**云盘域**', () => {
   const { req } = buildPutRequest('https://storage.example.net/k', deterministicFile('s', 8));
   assert.equal(req.headers['upload-complete'], '?1');

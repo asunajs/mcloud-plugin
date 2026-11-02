@@ -343,7 +343,8 @@ test('月上限到了的那条不做（连 click 都不发）', () => {
   assert.equal(sent.filter((x) => x === 'POST /ycloud/tokenpk/task/step/click').length, 1, sent.join(', '));
 });
 
-test('预算常量：步数与时间都比 App 任务那一档低（后面还有 5 步要跑）', () => {
+test('预算常量：90 秒是"从日常开始算"的里程碑（必须留得下领奖这一步）', () => {
   assert.equal(TOKENPK_BUDGET.maxSteps, 80);
-  assert.ok(TOKENPK_BUDGET.deadlineMs <= 60_000);
+  // 2026-11-02 15:55 现场：45 秒那档领奖领到一半被截，紧接着领取AI豆 0 步
+  assert.equal(TOKENPK_BUDGET.deadlineMs, 90_000);
 });
