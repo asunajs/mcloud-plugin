@@ -24,7 +24,6 @@ export const TASK_NAMES = [
   'receive',
   'multiple',
   'revival',
-  'backup-gift',
   'prizes',
   'cloud-snapshot',
 ] as const;

@@ -139,8 +139,6 @@ export const FIXTURES = {
   //   被别的 case 意外吃到的占位形状）。
   cloudRecordV2: { code: 0, msg: 'success', result: { records: [] } },
   prizeRecord: { code: 0, msg: 'success', result: [{ id: 1, name: 'AI豆', state: 'UNRECEIVED' }] },
-  backupGiftInfo: { code: 0, msg: 'success', result: { canReceive: true } },
-  backupGiftReceive: { code: 0, msg: 'success', result: {} },
 };
 
 /** `cloudRecordV2` 的 mock：**按"现在"现算**，让预览里"今日"真的有数。
@@ -360,13 +358,10 @@ export async function startMock(options = {}) {
   //
   // 默认起点：今天还没签、有 2 条待领（其中 1 条是延期领取）、有翻倍机会、备份好礼可领。
   const st = {
-    // 通知任务：能不能领（reward 之后翻成 false）
-    noticeClaimable: true,
     todaySigned: false,
     receiveList: [{ recordId: 'r1', cloudType: 2 }, { recordId: 'r2', cloudType: 1 }],
     curMonthBackup: true,
     curMonthBackupSignAccept: false,
-    backupCanReceive: true,
     // 小红花：余额刻意做成**会变**的（插件的"进账"是 ⑥ − ①，夹具不变那条断言就等于没测）
     flowerCnt: 100,
     firstParticipated: false,
@@ -425,6 +420,50 @@ export async function startMock(options = {}) {
     prizeSmsOffset: null,
     /** 领掉的单号（`/_debug/state` 里能读到） */
     prizeAccepted: [],
+    // ── 算力大作战（`National_TokenPK`）──
+    // 形状照 2026-10-24/11-01 两轮实拍的任务表（只留判据要用的格子）。
+    // ⚠ `openUrl` 只认 click（点完就 SUCCESS）；`backup` 要等快照确认才翻。
+    tokenPk: {
+      clicked: [],
+      reserved: [],
+      claimed: [],
+      // 代抽：每次 POST 抽一次；`remainChance` 从 3 往下数
+      lottery: [],
+      tasks: [
+        {
+          id: 5, name: '登录PC客户端传文件', state: 'SUCCESS', taskType: 'NORMAL', limitType: 'MONTH',
+          currstep: 2, claimable: false, monthlyCompleted: null, monthlyLimit: null,
+          prizes: [{ prizeName: 'Token+100万', prizeType: 'token', amount: 1000000, available: true }],
+          button: { ios: { ext: 'loginPc', action: 'toPcClient', text: '领取奖励' } },
+        },
+        {
+          // e2e 里让它**已经是 SUCCESS**：备份那串要走真实的上传主机（`personal-kd-njs.yun.139.com`），
+          // 而 mock 拦不到那台主机 ⇒ 留在 WAIT 会把日常整趟跑红。上传链的形状由单测钉。
+          id: 1, name: '成功备份一次文件', state: 'SUCCESS', taskType: 'NORMAL', limitType: 'MONTH',
+          currstep: 2, claimable: false, monthlyCompleted: null, monthlyLimit: null,
+          prizes: [{ prizeName: 'Token+100万', prizeType: 'token', amount: 1000000, available: true }],
+          button: { ios: { ext: 'backup', action: 'jump', text: '去完成' } },
+        },
+        {
+          id: 6, name: '了解PC同步盘', state: 'WAIT', taskType: 'NORMAL', limitType: 'EVER',
+          currstep: 0, claimable: false, monthlyCompleted: null, monthlyLimit: null,
+          prizes: [{ prizeName: 'Token+10万', prizeType: 'token', amount: 100000, available: true }],
+          button: { ios: { ext: 'openUrl', action: 'jump', text: '去完成' } },
+        },
+        {
+          id: 7, name: '分享活动给好友', state: 'WAIT', taskType: 'NORMAL', limitType: 'MONTH',
+          currstep: 0, claimable: false, monthlyCompleted: null, monthlyLimit: null,
+          prizes: [{ prizeName: 'Token+50万', prizeType: 'token', amount: 500000, available: true }],
+          button: { ios: { ext: 'inviteFriend', action: 'invite', text: '去完成' } },
+        },
+        {
+          id: 8, name: '下月登录活动领Token', state: 'WAIT', taskType: 'RESERVE', limitType: 'MONTH',
+          currstep: 0, claimable: false, monthlyCompleted: null, monthlyLimit: null,
+          prizes: [{ prizeName: 'Token+50万', prizeType: 'token', amount: 500000, available: true }],
+          button: { ios: { ext: 'reserveLogin', action: 'jump', text: '立即预定' } },
+        },
+      ],
+    },
   };
   // behavior: 'normal' | 'biz-fail' | 'http-500' | 'not-json' | 'timeout'
   let behavior = options.behavior ?? 'normal';
@@ -758,6 +797,112 @@ export async function startMock(options = {}) {
           : json(res, 200, { code: 0, msg: 'success', result: '订购成功' });
       }
 
+      // ── 算力大作战（`National_TokenPK`）──
+      // 回执形状全部照 2026-11-01 的 HAR：click 无 result；reserve/receivePrize 回
+      // `{allSuccess,task,prizes}`；`openUrl` 点完就 SUCCESS；备份要等快照确认。
+      if (url.pathname === '/ycloud/tokenpk/task/list') {
+        return json(res, 200, { code: 0, msg: 'success', result: st.tokenPk.tasks });
+      }
+      if (url.pathname === '/ycloud/tokenpk/task/step/click') {
+        let b = {};
+        try { b = JSON.parse(body || '{}'); } catch {}
+        const task = st.tokenPk.tasks.find((t) => t.id === Number(b.taskId));
+        if (!task) return json(res, 200, { code: 6001, msg: '任务不存在' });
+        st.tokenPk.clicked.push({ taskId: task.id, key: String(b.key ?? '') });
+        task.currstep = Math.max(1, Number(task.currstep ?? 0));
+        if (task.button?.ios?.ext === 'openUrl') {
+          task.state = 'SUCCESS';
+          task.currstep = 2;
+        }
+        return json(res, 200, { code: 0, msg: 'success' });
+      }
+      if (url.pathname === '/ycloud/tokenpk/task/step/reserve') {
+        let b = {};
+        try { b = JSON.parse(body || '{}'); } catch {}
+        const task = st.tokenPk.tasks.find((t) => t.id === Number(b.taskId));
+        if (!task) return json(res, 200, { code: 6001, msg: '任务不存在' });
+        st.tokenPk.reserved.push(task.id);
+        task.state = 'SUCCESS';
+        task.currstep = Math.max(1, Number(task.currstep ?? 0));
+        return json(res, 200, {
+          code: 0, msg: 'success',
+          result: { allSuccess: true, task: { id: task.id, state: task.state, currstep: task.currstep }, prizes: [] },
+        });
+      }
+      if (url.pathname === '/ycloud/tokenpk/task/step/receivePrize') {
+        let b = {};
+        try { b = JSON.parse(body || '{}'); } catch {}
+        const task = st.tokenPk.tasks.find((t) => t.id === Number(b.taskId));
+        if (!task) return json(res, 200, { code: 6001, msg: '任务不存在' });
+        if (task.state !== 'SUCCESS') return json(res, 200, { code: 6010, msg: '任务还没完成' });
+        task.state = 'FINISH';
+        task.currstep = 3;
+        const prizes = (task.prizes ?? []).map((p) => ({
+          prizeName: p.prizeName, success: true, errorMsg: 'success',
+        }));
+        st.tokenPk.claimed.push(task.id);
+        return json(res, 200, {
+          code: 0, msg: 'success',
+          result: { allSuccess: true, task: { id: task.id, state: task.state, currstep: task.currstep }, prizes },
+        });
+      }
+      if (url.pathname === '/ycloud/tokenpk/task/smartAlbum/open') {
+        return json(res, 200, { code: 0, msg: 'success' });
+      }
+      if (url.pathname === '/ycloud/tokenpk/toplist/progress/queryHome') {
+        return json(res, 200, { code: 0, msg: 'success', result: { usedToken: 1260000, currentVersion: 'V1', rewardStages: [] } });
+      }
+      if (url.pathname === '/ycloud/tokenpk/toplist/progress/autoReceiveLotteryChance') {
+        return json(res, 200, { code: 0, msg: 'success', result: { totalChance: 1, rewardCount: 1 } });
+      }
+      if (url.pathname === '/ycloud/tokenpk/toplist/progress/queryRemainChance') {
+        return json(res, 200, { code: 0, msg: 'success', result: Math.max(0, 3 - st.tokenPk.lottery.length) });
+      }
+      if (url.pathname === '/ycloud/tokenpk/toplist/progress/lottery') {
+        // 实拍 §8.3：体字面 `null`，回 `{win,prizeId,prizeName,prizeImage,prizeDesc,remainChance}`
+        const n = st.tokenPk.lottery.length + 1;
+        const win = n % 2 === 1;
+        st.tokenPk.lottery.push({ win, prizeName: win ? 'Token+1000' : null });
+        return json(res, 200, {
+          code: 0, msg: 'success',
+          result: {
+            win,
+            prizeId: win ? 9001 : null,
+            prizeName: win ? 'Token+1000' : null,
+            prizeImage: null,
+            prizeDesc: null,
+            remainChance: Math.max(0, 3 - n),
+          },
+        });
+      }
+
+      // ── 上传三枪 + 备份快照（算力大作战的 backup/上传类任务要用）──
+      // `uploadUrl` 指回 mock 自己：真上游是另一台主机，但这里只验形状。
+      if (url.pathname === '/hcy/file/create') {
+        return json(res, 200, {
+          success: true, code: '0000',
+          data: { fileId: 'PK-F1', uploadId: 'PK-U1', rapidUpload: false, partInfos: [{ uploadUrl: `http://${req.headers.host}/mock-put/1` }] },
+        });
+      }
+      if (url.pathname === '/hcy/file/complete') {
+        return json(res, 200, { success: true, code: '0000', data: null });
+      }
+      if (url.pathname.startsWith('/mock-put/')) {
+        res.writeHead(200, { 'content-type': 'application/octet-stream' });
+        return res.end('');
+      }
+      if (url.pathname === '/hcy/backup/createSnapshot') {
+        return json(res, 200, {
+          success: true, code: '0000',
+          data: { fileId: 'PK-S1', uploadId: 'PK-SU1', rapidUpload: false, partInfos: [{ uploadUrl: `http://${req.headers.host}/mock-put/2` }] },
+        });
+      }
+      if (url.pathname === '/hcy/backup/completeSnapshot') {
+        const backup = st.tokenPk.tasks.find((t) => t.button?.ios?.ext === 'backup');
+        if (backup) { backup.state = 'SUCCESS'; backup.currstep = 2; }
+        return json(res, 200, { success: true, code: '0000', data: null });
+      }
+
       const finish = () => {
         if (behavior === 'http-500') return json(res, 500, { code: -1, msg: 'boom' });
         if (behavior === 'not-json') {
@@ -781,28 +926,8 @@ export async function startMock(options = {}) {
           '/ycloud/signin/page/multiple': FIXTURES.multiple,
           '/ycloud/signin/page/receiveRevivalReward': FIXTURES.receiveRevivalReward,
           '/ycloud/signin/public/record': FIXTURES.prizeRecord,
-          '/market/backupgift/info': FIXTURES.backupGiftInfo,
-          '/market/backupgift/receive': FIXTURES.backupGiftReceive,
         };
         // ── 会改变状态的那几口 ──
-        if (url.pathname === '/ycloud/openemailsms-service/openEmailsms/getTaskInfo') {
-          // 四个字段名来自实拍：cloudStatus / sum / progress / taskStatus。
-          // sum 与 progress 是**假数**（含义未证实，插件只原样搬运）。
-          const cloud = st.noticeClaimable ? 1 : 2;
-          return json(res, 200, {
-            code: 0,
-            msg: 'success',
-            result: {
-              taskOneInfo: { cloudStatus: cloud, sum: 10, progress: 16, taskStatus: 3 },
-              taskTwoInfo: { cloudStatus: cloud, sum: 10, progress: 16, taskStatus: 3 },
-            },
-          });
-        }
-        if (url.pathname === '/ycloud/openemailsms-service/openEmailsms/reward') {
-          st.noticeClaimable = false;
-          // 实拍响应就是这个形状 —— 连 result 都没有，报不出到账数
-          return json(res, 200, { code: 0, msg: 'success' });
-        }
         if (url.pathname === '/ycloud/signin/page/exchangeList') {
           // ⚠ group 键**不连续**（实拍是 0,1,2,5,7,8,9,11,15）—— 夹具就摆成这样，
           // 谁按 0..n 遍历，这里就会漏。
@@ -905,16 +1030,8 @@ export async function startMock(options = {}) {
           st.curMonthBackupSignAccept = true; // 每月只用一次
           return json(res, 200, { code: 0, msg: 'success', result: { multiple: 2 } });
         }
-        if (url.pathname === '/market/backupgift/receive') {
-          st.backupCanReceive = false;
-          return json(res, 200, { code: 0, msg: 'success', result: {} });
-        }
-
         const hit = map[url.pathname];
         if (!hit) return json(res, 404, { code: -1, msg: `mock 没有这个端点：${url.pathname}` });
-        if (url.pathname === '/market/backupgift/info') {
-          return json(res, 200, { code: 0, msg: 'success', result: { canReceive: st.backupCanReceive } });
-        }
         return json(res, 200, hit);
       };
 

@@ -37,7 +37,7 @@ import type { TaskDeps, TaskOutcome } from './mcloud/tasks/base.ts';
  *  | 信号 | 谁用 | 含义 |
  *  |---|---|---|
  *  | `idle: true` | taskExpansion · appTask · exchangeOrder · liveDraw | 「这一趟没得做了 / 已经走完」 |
- *  | `skipped: true` | receive · notice · backupGift | 「条件不成立，不发请求」 |
+ *  | `skipped: true` | receive · prizes | 「条件不成立，不发请求」 |
  *  | `more()` 返回 false | sign（唯一一个） | 调用方自己说「状态里还有没有未完成的段」 |
  *
  *  ⚠ **`sign` 是那个必须给 `more` 的**：它是「问状态 → 提交 → 回查」三段式，

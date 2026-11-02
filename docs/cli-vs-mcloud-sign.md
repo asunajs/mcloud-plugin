@@ -28,7 +28,7 @@
 
 默认入口两边都是每日任务，这一点一致。不一致在后面三层：
 
-1. **任务集**：参考实现的每日入口包含 AI 头像、春日拍拍、AI 抽奖、云朵大作战等条件任务；本仓的日常没有这些实现（有些在 `groups.ts` 里明确标了 `implemented: false`）。红包派对已在 2026-10-23 接进日常（第 ④.5 步），直播口令仍只在默认日常之外提供导出。
+1. **任务集**：参考实现的每日入口包含 AI 头像、春日拍拍、AI 抽奖、云朵大作战等条件任务；本仓的日常没有这些实现（有些在 `groups.ts` 里明确标了 `implemented: false`）。红包派对已在 2026-10-23 接进日常（第 ④.5 步）；**算力大作战**在 2026-11-01 接进来（第 ④.6 步，参照 `caiyun` 的 `tokenpk` + 当天的 iOS WebView 抓包，见 [`token-pk.md`](token-pk.md)）；直播口令仍只在默认日常之外提供导出。
 2. **日志形状**：已对齐——CLI 现在也是 `[info] HH:MM:SS` + 账号段头 + 账号完成行，不再每行带 `[账号]` 前缀；颜色由 `common.colorize` 控制。面板日志没有跟着改（仍走 `host-api` / `userLine`）。日常尾部已补「今日云朵」与「清理临时文件」，两边共用同一条 `runDaily`，所以面板日志和运行结束推送也会带上这两行。
 3. **换票与退出码**：两边的换票都已走通（参考实现的旧地址已在 2026-10-23 换到新地址）；退出码仍不同：参考实现单账号任务失败仍退出 0，本仓会退出 1。
 
@@ -44,10 +44,9 @@
 [debug] 22:40:11 任务拓展：这一趟已经走完
 [info] 22:40:11 App 任务矩阵（只看）：已完成 11 条，另有 3 条没做完
 [info] 22:40:11 App 任务：没有能替你做的了，另有 5 条还没搬
-[info] 22:40:11 消息推送奖励（问状态）：暂无可领（已开启 13 天）
-[debug] 22:40:11 消息推送奖励（领）：上次问到的状态是「不该领」，不发领取请求
-[debug] 22:40:11 备份好礼：无备份礼物可领
-[debug] 22:40:11 开启通知领AI豆：通知奖励都领过了
+[info] 22:40:11 App 任务状态：4 条在跟
+[info] 22:40:11 备份文件领好礼：本月已完成，下月再来
+[info] 22:40:11 连续31天开启云盘APP通知：已开启 29/31 天
 [debug] 22:40:11 领取AI豆：下月可领取（324 个）—— 今天不发请求
 [debug] 22:40:11 待领取奖品：无待领取奖品
 [info] 22:40:11 清理临时文件：没有要清理的文件
@@ -121,11 +120,10 @@ CLI 不打印步数总结，参考实现也没有。
 | `playAiSpecialTask`（`春日拍拍大作战.开启`） | 无 | 未实装；`groups.ts:221` 标 `implemented:false` |
 | `playAiLotteryTask`（无条件调用） | 无 | 未实装；`groups.ts:210`（`fun-ai`）标 `implemented:false`，evidence `no-ticket` |
 | `cloudPhoneRedpackTask`（`红包派对.开启`） | 红包派对（日常第 ④.5 步） | **2026-10-23 已接**；`groups.ts` 那条标 `implemented:true`、evidence `ran-elsewhere`（本仓零抓包，逐行文案照参照实现那次真跑留档的产出）。开关同名、默认开 |
+| `tokenPkTask`（caiyun 的 `token_pk`，`DefaultEnabled: true`） | 算力大作战（日常第 ④.6 步） | **2026-11-01 已接**；判据＝2026-10-24/11-01 的 iOS WebView 抓包（`click` 在动作之前、`openUrl` 只认 click、`RESERVE` 成功后不领）+ `caiyun` 的计划分类与汇总句。**mcloud-sign 没有这一族**，所以这一行只在 `caiyun` 那条线有对照 |
 | `liveRoomKoulingTask`（`直播口令.开启`） | 默认日常不跑；只提供导出 | 刻意不同（`docs/standalone.md:59` 写明无参数不碰直播）；参考实现可配进每日 |
-| `msgPushOnTask` | 消息推送奖励（问状态 / 领） | 等价，拆成两步 |
-| `noticeTask` | 开启通知领AI豆 | 等价 |
-| `backupGiftTask` | 备份好礼 | 等价 |
-| `appTask` | App 任务矩阵（只读）+ App 任务 | 部分；本仓自己报「另有 5 条还没搬」 |
+| `appTask` | App 任务矩阵（只读）+ App 任务 + **App 任务状态** | 部分；本仓自己报「另有 5 条还没搬」 |
+| ~~`msgPushOnTask`~~ / ~~`noticeTask`~~ / ~~`backupGiftTask`~~ | **2026-11-01 已删** | 新版 taskList 由服务端自己记账，挣到的云朵进 `receiveList` 自动领；我们只播报状态（`docs/findings.md` F-124/F-125） |
 | `hc1tTask`（`云朵大作战.开启`） | 无 | 未在 `groups.ts` 找到对应条目 |
 | `printPendingPrizes` | 待领取奖品 | 等价 |
 | `receiveTask`（单发领取） | 领取AI豆（队列 + 延期领取） | 语义相近，实现不同 |

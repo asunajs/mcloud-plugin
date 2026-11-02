@@ -183,6 +183,7 @@ mcloud-plugin/
 | [`docs/prize-claim.md`](docs/prize-claim.md) | **领奖（待领取奖品）**：领取链四段、滑块为什么必须本地解（底图是 JPEG）、验证码摘要规则、哪些还没被证实 |
 | [`docs/app-task-parity.md`](docs/app-task-parity.md) | **App 任务对照表**：mcloud-sign 的 runner 哪些搬了、哪些还没搬、日志怎么说 |
 | [`docs/app-task-ids.md`](docs/app-task-ids.md) | **App 任务逐条 id 台账**（2026-11-01）：每条 id 我们做什么、Rust 参考是什么、能做的/刻意不做的/还没搬的；以及「一条没成不许拖垮整趟」 |
+| [`docs/token-pk.md`](docs/token-pk.md) | **算力大作战（`National_TokenPK`）**：实拍出来的状态机与七个口、计划分类、动作矩阵、用户看到的汇总句；以及哪些还没实拍 |
 | [`docs/smid-chain.md`](docs/smid-chain.md) · [`docs/upload-chain.md`](docs/upload-chain.md) | 两条比较绕的链路的实测记录 |
 | [`docs/shots/`](docs/shots/README.md) | 界面截图（各区块一张 + 扫码） |
 | [`docs/standalone.md`](docs/standalone.md) | **面板外独立运行**：替代 mcloud-sign 的 CLI / 配置 / 导出函数 |
