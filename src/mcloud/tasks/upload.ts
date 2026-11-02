@@ -42,6 +42,7 @@ import {
   buildCreateRequest,
   buildPutRequest,
   contentHashOf,
+  contentTypeOfName,
   deterministicFile,
   parseComplete,
   parseCreate,
@@ -71,6 +72,9 @@ export interface UploadState {
   seed?: string | undefined;
   /** 走哪一档（`android` 缺省 / `pc` 给 113）—— 头画像整组跟着变。 */
   channel?: 'android' | 'pc' | undefined;
+  /** create 与 PUT 共用的内容类型（图片 = `image/jpeg`；缺省 = 抓包里那两支）。
+   *  预签名按 create 声明的那一份签 ⇒ PUT 必须一字不差。 */
+  contentType?: string | undefined;
   /** 改名模式 / 并行上传 / localCreatedAt / op：由调用方按支路口径给。 */
   renameMode?: string | undefined;
   parallelUpload?: boolean | undefined;
@@ -125,6 +129,8 @@ export function startUpload(
     channel?: 'android' | 'pc';
     /** 哪个槽位（**按任务分**，见文件头。缺省 = App 任务那格）。 */
     key?: string;
+    /** create 与 PUT 共用的内容类型。缺省按扩展名定（图片给 `image/jpeg`）。 */
+    contentType?: string;
   },
 ): TaskOutcome {
   const key = opts.key ?? STATE_UPLOAD;
@@ -144,6 +150,7 @@ export function startUpload(
     localCreatedAt: opts.localCreatedAt,
     op: opts.op,
     channel: opts.channel,
+    contentType: opts.contentType ?? contentTypeOfName(opts.name),
   };
   save(deps, st, key);
   // ⚠ 字节本身**不落库**：它在第 ② 枪时要重新给（由调用方从"确定的文件体"重建，
@@ -176,6 +183,7 @@ export function runUploadStep(
       localCreatedAt: st.localCreatedAt,
       op: st.op,
       channel: st.channel,
+      contentType: st.contentType,
     });
     const res = callRawText(deps.transport, req);
     if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? '未知失败'}` };
@@ -222,7 +230,12 @@ export function runUploadStep(
       // ⚠ 空体**不发**：那会把一个 0 字节文件传上去（不是"失败"，是"传错了东西"）
       return { ok: false, note: `${label}：字节是空的 ⇒ 不发（拿空体去 PUT 会真的传一个 0 字节文件上去）` };
     }
-    const { req, leaksCredential } = buildPutRequest(st.uploadUrl, body, st.op ?? false);
+    const { req, leaksCredential } = buildPutRequest(
+      st.uploadUrl,
+      body,
+      st.op ?? false,
+      st.contentType,
+    );
     if (leaksCredential) {
       // 照设计不该发生；真发生了就**不发** —— 凭据泄漏到存储主机比这次上传失败严重得多
       return {

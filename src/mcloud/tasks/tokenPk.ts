@@ -69,10 +69,13 @@ import type { PkAction } from '../tokenPkRules.ts';
 
 /** 整趟的调度上限（`dailyRun` 那边用）。
  *
- *  ⚠ `deadlineMs` 比 App 任务那一档（60 秒）**还低**：它后面还有消息推送、领取、
- *  清理、今日云朵。参照实现整趟 3~8 秒，45 秒是宽松值。
- *  走到上限不是失败 —— 状态留库，下一趟接着走（日常一天两趟）。 */
-export const TOKENPK_BUDGET = { maxSteps: 80, deadlineMs: 45_000 };
+ *  ⚠ `deadlineMs` 是**从日常开始算**的（`drain` 的 `startedAt: started` 是全链共享的），
+ *  不是"这一族自己的 90 秒"。所以它必须大于前面所有步的预算，否则一慢就 0 步。
+ *
+ *  2026-11-02 15:55 现场：45 秒那一档在 15:55:30 到点，**领奖领到一半被截**
+ *  （3 条可领只领了 1 条），紧接着「领取AI豆」的 40 秒也已过 ⇒ 0 步。
+ *  90 秒 = 前面 App 任务/红包派对跑满也还留得下这一趟（实测这一族约 27 秒）。 */
+export const TOKENPK_BUDGET = { maxSteps: 80, deadlineMs: 90_000 };
 
 /** 开没开（**默认开**：参照实现 `DefaultEnabled: true`）。 */
 /** 这一趟的汇总句（**给用户的结论**）。
