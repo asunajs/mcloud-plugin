@@ -15,7 +15,7 @@ import {
 } from "host-api";
 
 // src/version.ts
-var PLUGIN_VERSION = "0.2.22";
+var PLUGIN_VERSION = "0.2.23";
 
 // src/store/keys.ts
 var DEFAULT_ACCT = "default";
