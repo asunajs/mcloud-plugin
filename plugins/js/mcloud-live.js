@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.22 · 插件 `mcloud-live`
+//   mcloud-plugin 0.2.23 · 插件 `mcloud-live`
 
 // src/entries/live.ts
 import { debug as debug2, register_cron } from "host-api";
@@ -344,6 +344,8 @@ var KEY_SCOPE = {
   "mcloud.host.native_tls": "account",
   "mcloud.h5.exchange": "account",
   "mcloud.h5.jwt": "account",
+  // 单次预算（秒）：**全局** —— 它是"这一趟跑多久"的策略，不是某个号的读数。
+  "mcloud.daily.budget_s": "global",
   "mcloud.daily.done_date": "account",
   "mcloud.daily.last_run": "account",
   // ⚠ 登录这一族是**本机**的，不是某个账号的。
@@ -3953,6 +3955,10 @@ var XIAOHONGSHU_KOULING_PROFILE_URL = "https://www.xiaohongshu.com/user/profile/
 function xiaohongshuProfileHeaders() {
   return {
     accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    // 空串不是“省一个头”：宿主 HTTP 客户端会自动补 `Accept-Encoding: gzip`，
+    // 而小红书只要看到这个头就回 36 KB 空壳（`userPageData:{}`）；
+    // 显式给空值才能压掉自动补头，拿到带笔记的完整页。
+    "accept-encoding": "",
     "accept-language": "zh-CN,zh;q=0.9",
     referer: "https://www.xiaohongshu.com/",
     "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
@@ -4202,7 +4208,7 @@ function noteClaim(pool, account, code, verdict, nowMs) {
       break;
     case "alreadyClaimed":
       state = "valid";
-      reason = "已验证有效（这个账号已领过）";
+      reason = "已验证有效（至少一个账号领过）";
       break;
     case "invalid":
       state = "invalid";
@@ -4495,6 +4501,9 @@ function runLiveRoom(deps) {
 }
 function loadLiveCodes(store2) {
   return parseJson(store2.getState(STATE_CODES));
+}
+function clearLiveCodes(store2, nowIso) {
+  store2.setState(STATE_CODES, "", nowIso);
 }
 function parseJson(raw) {
   if (!raw) return null;
@@ -6487,9 +6496,17 @@ function collectOnce(deps, runStartMs) {
       idle: false,
       note: `「${KOULING_ANCHOR}」开播了（${liveCount} 间在播）`
     });
-    logBoth(store, "start", `开播了，开始听弹幕（窗口 ${loadListenSeconds(deps.store)} 秒）`, deps.nowIso);
+    logBoth(
+      store,
+      "start",
+      `开播了，先看小红书，再听弹幕（窗口 ${loadListenSeconds(deps.store)} 秒）`,
+      deps.nowIso
+    );
   }
-  step("主播发口令没有", () => runLiveRoom(deps));
+  logBoth(store, "start", "小红书：开始看口令发布方主页", deps.nowIso);
+  const xhsAt = Date.now();
+  const xhs = step("小红书主页口令", () => runLiveRoom(deps));
+  logBoth(store, "debug", `小红书：这一步用了 ${Math.round((Date.now() - xhsAt) / 1e3)} 秒`, deps.nowIso);
   const poolNow = loadPoolFrom(deps.store).pool;
   const enough = stopScraping(poolNow);
   if (enough) {
@@ -6608,7 +6625,9 @@ register_cron(
   (p) => {
     const startedMs = Date.now();
     const at = new Date(startedMs).toISOString();
-    const manual = (loadLiveCodes(store)?.codes ?? []).some((c2) => c2.trim() !== "");
+    const manualCodes = (loadLiveCodes(store)?.codes ?? []).map((c2) => c2.trim()).filter(Boolean);
+    const manual = manualCodes.length > 0;
+    if (manual) clearLiveCodes(store, at);
     let collected = null;
     let stopAll = false;
     const runs = forEachTaskAccount(store, "直播", p, transport, (deps, _acct, index) => {
@@ -6618,8 +6637,7 @@ register_cron(
         if (one.stopped) stopAll = true;
       }
       if (stopAll) return { steps: [], detail: [], ok: true, note: "没在播，跳过" };
-      const onlyCodes = manual ? (loadLiveCodes(store)?.codes ?? []).map((c2) => c2.trim()).filter(Boolean) : null;
-      return drawOnce(deps, startedMs, onlyCodes);
+      return drawOnce(deps, startedMs, manual ? manualCodes : null);
     });
     if (runs.length === 0) return;
     const c = collected;

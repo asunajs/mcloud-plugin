@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.22 · 插件 `mcloud`
+//   mcloud-plugin 0.2.23 · 插件 `mcloud`
 
 // src/entries/mcloud.ts
 import {
@@ -33,6 +33,8 @@ var KEY_SCOPE = {
   "mcloud.host.native_tls": "account",
   "mcloud.h5.exchange": "account",
   "mcloud.h5.jwt": "account",
+  // 单次预算（秒）：**全局** —— 它是"这一趟跑多久"的策略，不是某个号的读数。
+  "mcloud.daily.budget_s": "global",
   "mcloud.daily.done_date": "account",
   "mcloud.daily.last_run": "account",
   // ⚠ 登录这一族是**本机**的，不是某个账号的。
@@ -7330,6 +7332,18 @@ function parseBalance(env) {
 
 // src/mcloud/liveKouling.ts
 var XIAOHONGSHU_KOULING_PROFILE_URL = "https://www.xiaohongshu.com/user/profile/568caf13aed7585949773b30";
+function xiaohongshuProfileHeaders() {
+  return {
+    accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    // 空串不是“省一个头”：宿主 HTTP 客户端会自动补 `Accept-Encoding: gzip`，
+    // 而小红书只要看到这个头就回 36 KB 空壳（`userPageData:{}`）；
+    // 显式给空值才能压掉自动补头，拿到带笔记的完整页。
+    "accept-encoding": "",
+    "accept-language": "zh-CN,zh;q=0.9",
+    referer: "https://www.xiaohongshu.com/",
+    "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+  };
+}
 function isKoulingHead(text) {
   return /(?:复制)?口令\s*\d*\s*[：:]\s*$/.test(text.trim());
 }
@@ -7562,7 +7576,7 @@ function noteClaim(pool, account, code, verdict, nowMs) {
       break;
     case "alreadyClaimed":
       state = "valid";
-      reason = "已验证有效（这个账号已领过）";
+      reason = "已验证有效（至少一个账号领过）";
       break;
     case "invalid":
       state = "invalid";
@@ -12088,19 +12102,34 @@ function buildReadings(deps) {
         // 也不能把 `LiveCodes` 这个对象直接丢给界面（它要的是数组）。
         codes: (() => {
           const human = loadLiveCodes(liveOne)?.codes ?? [];
-          const poolCodes = loadFreshPool(deps.store, nowMs).pool.codes;
+          const fresh = loadFreshPool(deps.store, nowMs);
+          const poolCodes = fresh.pool.codes;
+          const claims = fresh.pool.claims;
+          const labels = new Map(
+            loadAccounts(deps.store).map((a) => [accountKey(parseAuthorization(a.auth)?.phone ?? ""), a.label])
+          );
+          const claimedBy = (code) => Object.entries(claims).filter(([, mine]) => mine[code] === "claimed" || mine[code] === "alreadyClaimed").map(([id]) => labels.get(id) ?? id);
           const seen = /* @__PURE__ */ new Set();
           const out = [];
           for (const c of human) {
             const code = c.trim();
             if (code === "" || seen.has(code)) continue;
             seen.add(code);
-            out.push({ code, source: "手动" });
+            out.push({ code, source: "手动", claimedBy: claimedBy(code) });
           }
           for (const c of poolCodes) {
             if (seen.has(c.value)) continue;
             seen.add(c.value);
-            out.push({ code: c.value, state: c.state, source: c.source, reason: c.reason });
+            const by = claimedBy(c.value);
+            out.push({
+              code: c.value,
+              state: c.state,
+              source: c.source,
+              // 老池子里存的是“这个账号已领过”；有具体账号标签时不要再显示这句
+              // 含糊话，统一成“已验证有效 + 已领过：<账号名>”。
+              reason: by.length > 0 ? "已验证有效" : c.reason,
+              claimedBy: by
+            });
           }
           return out;
         })(),
@@ -12996,6 +13025,29 @@ function mcloudRoutes(deps) {
       })
     },
     {
+      // 日常这一趟的**单次预算**（秒）。默认 600（= 面板硬上限）；
+      // ⚠ 面板不允许声明超过 600000ms，超了会**抛异常、插件整个加载失败**
+      //   （2026-11-03 09:58 现场），所以这里把上限写死在同一处并说明白。
+      path: `${base}/daily-budget`,
+      method: "POST",
+      handler: (req) => {
+        const body = readBody(req);
+        const n = Number(body.seconds ?? body.budgetSeconds);
+        if (!Number.isInteger(n) || n < 60 || n > 600) {
+          return json(400, {
+            error: "单次预算要给 60..600 之间的整数（秒）—— 面板对单任务有 10 分钟硬上限，超过它会拒绝加载插件"
+          });
+        }
+        deps.store.setState("mcloud.daily.budget_s", String(n), deps.now());
+        deps.log(`日常单次预算改为 ${n} 秒（下次加载插件时生效）`);
+        return json(200, {
+          ok: true,
+          budgetSeconds: n,
+          note: `已设为 ${n} 秒 —— **下次加载插件时生效**（面板会按需卸载/重载；也可以手动重载）`
+        });
+      }
+    },
+    {
       path: `${base}/listen-seconds`,
       method: "POST",
       handler: (req) => {
@@ -13855,6 +13907,30 @@ function mcloudRoutes(deps) {
           reading: st,
           line: listenReadingLine(st),
           windowOpen: st0?.step === "listen" || st0?.step === "open"
+        });
+      }
+    },
+    {
+      // 调试口：原样返回这次小红书请求的 body。只读、无凭据；
+      // 用户要核对“到底请求到了什么”时，不能只给字符数。
+      path: `${base}/live/raw`,
+      method: "GET",
+      handler: () => {
+        const url = loadLiveUrl(deps.store);
+        const res = callRawText(deps.transport, {
+          url,
+          method: "GET",
+          headers: xiaohongshuProfileHeaders(),
+          body: void 0
+        });
+        deps.log(`小红书原始页：HTTP ${res.status}，${res.chars} 字符`);
+        return json(200, {
+          url,
+          status: res.status,
+          ok: res.ok,
+          chars: res.chars,
+          error: res.error,
+          text: res.text
         });
       }
     },

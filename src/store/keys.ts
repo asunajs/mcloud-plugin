@@ -101,6 +101,8 @@ export const KEY_SCOPE: Readonly<Record<string, KeyScope>> = {
   'mcloud.host.native_tls': 'account',
   'mcloud.h5.exchange': 'account',
   'mcloud.h5.jwt': 'account',
+  // 单次预算（秒）：**全局** —— 它是"这一趟跑多久"的策略，不是某个号的读数。
+  'mcloud.daily.budget_s': 'global',
   'mcloud.daily.done_date': 'account',
   'mcloud.daily.last_run': 'account',
   // ⚠ 登录这一族是**本机**的，不是某个账号的。
