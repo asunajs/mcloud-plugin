@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.22 · 插件 `mcloud-exchange`
+//   mcloud-plugin 0.2.23 · 插件 `mcloud-exchange`
 
 // src/entries/exchange.ts
 import { debug as debug2, log as log3, register_cron, worker_hint } from "host-api";
@@ -357,6 +357,8 @@ var KEY_SCOPE = {
   "mcloud.host.native_tls": "account",
   "mcloud.h5.exchange": "account",
   "mcloud.h5.jwt": "account",
+  // 单次预算（秒）：**全局** —— 它是"这一趟跑多久"的策略，不是某个号的读数。
+  "mcloud.daily.budget_s": "global",
   "mcloud.daily.done_date": "account",
   "mcloud.daily.last_run": "account",
   // ⚠ 登录这一族是**本机**的，不是某个账号的。

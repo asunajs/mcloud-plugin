@@ -1038,7 +1038,7 @@ test('⚠ 直播：口令只收**一次**（一个账号听到，所有账号都
   assert.ok(/function drawOnce\(/.test(live), '领取才是按账号的那一支');
   assert.ok(/if \(index === 0 && !manual\) \{[\s\S]{0,160}?collectOnce\(deps, startedMs\)/.test(live),
     '只有第一个账号去收，且人贴了口令就不收');
-  assert.ok(/return drawOnce\(deps, startedMs, onlyCodes\);/.test(live), '每个账号都领（手动只领贴的那条）');
+  assert.ok(/return drawOnce\(deps, startedMs, manual \? manualCodes : null\);/.test(live), '每个账号都领（手动只领贴的那条）');
   // 听窗口不能再按账号摊预算
   assert.ok(!/runLive\(deps, startedMs\)/.test(live), '不再有"每账号跑一遍"');
   assert.ok(/const listenDeadline =[\s\S]{0,200}BUDGET_MS - 20_000/.test(live), '截止按整趟算');
@@ -1102,7 +1102,7 @@ test('⚠ 先验开播再决定要不要听（参考 mcloud `live_room.rs:1603`�
   assert.ok(/间在播，但没有一间是「\$\{KOULING_ANCHOR\}」的/.test(live), '别人在播');
   // 早退发生在小红书之前
   const atGate = live.indexOf('if (gate === null || gate.active !== true) {');
-  const atRoom = live.indexOf("step('主播发口令没有'");
+  const atRoom = live.indexOf("step('小红书主页口令'");
   assert.ok(atGate > 0 && atRoom > atGate, '小红书必须在开播之后');
   // 排期：一天两次
   assert.ok(/'30 10,15 \* \* \*'/.test(live), '每天 10:30 / 15:30');
@@ -1291,7 +1291,8 @@ test('⚠ 日常**不设"今天跑过就跳过"**：一天两趟都跑，第二�
   // 那道闸必须没了 —— 插件没法证明所有小任务都到了预期，跳过就等于放弃兜底
   assert.ok(!/doneToday && !manual/.test(d), '不许再有"今天跑过就跳过"');
   assert.ok(/forEachTaskAccount\(store, '日常', p, transport, \(deps, acctId\) =>/.test(d), '每个账号都照跑');
-  assert.ok(/runDaily\(deps, \{\s*onPhase/.test(d), '步骤/阶段要边跑边打');
+  // 允许在 `onPhase` 前面夹别的选项（2026-11-03 起先是 `deadlineAt`，整趟硬截止）
+  assert.ok(/runDaily\(deps, \{[\s\S]{0,120}onPhase/.test(d), '步骤/阶段要边跑边打');
   assert.ok(/第二次跑是容错/.test(d), '理由要写在代码里（下次别又加回去）');
   // 面板侧那一格 `manual` 仍然有用（别的地方要判"谁触发的"）
   const t = srcOf('src/host-api.d.ts');

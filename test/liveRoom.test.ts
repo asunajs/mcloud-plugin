@@ -221,6 +221,11 @@ test('读数与输入口是两个键 —— 抓主页不会把人给的口令冲
 
 // ── 主页地址可配置（CI 必须能把它指到 mock，否则就得去敲真站点）
 
+test('⚠ 小红书请求必须显式压掉 Accept-Encoding：宿主会自动补 gzip，而 gzip 头会换回空壳页', () => {
+  const h = xiaohongshuProfileHeaders();
+  assert.equal(h['accept-encoding'], '', '空串才能压掉宿主的自动 gzip；identity 也会被当成有压缩头');
+});
+
 test('主页地址可改：指到哪就抓哪（CI 靠这个口子不碰外站）', () => {
   const store = memStore();
   store.ensureSchema();

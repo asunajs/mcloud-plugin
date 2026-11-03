@@ -28,7 +28,7 @@ import { TASK_NAMES, STATE_LAST_TASKLIST } from './tasks/taskList.ts';
 import { SCHEDULED_TASKS } from './taskAccounts.ts';
 import { groupView } from './groups.ts';
 import { hasBigInt, sandboxCaps } from './caps.ts';
-import { runAuthRefresh } from './authRefresh.ts';
+import { parseAuthorization, runAuthRefresh } from './authRefresh.ts';
 import { STATE_STEP, clearOrder, runOrderStep, startOrder } from './tasks/exchangeOrder.ts';
 import {
   CHANNELS,
@@ -94,8 +94,8 @@ import {
   saveLiveCodes,
   saveLiveUrl,
 } from './tasks/liveRoom.ts';
-import { XIAOHONGSHU_KOULING_PROFILE_URL } from './liveKouling.ts';
-import { loadFreshPool, localStamp } from './koulingPool.ts';
+import { XIAOHONGSHU_KOULING_PROFILE_URL, xiaohongshuProfileHeaders } from './liveKouling.ts';
+import { accountKey, loadFreshPool, localStamp } from './koulingPool.ts';
 import {
   loadGateBase,
   loadGateState,
@@ -150,7 +150,7 @@ import {
 } from './tasks/liveDraw.ts';
 import { loadWakePlan, planTrusted } from './tasks/liveAutoTask.ts';
 import { qrSvg } from '../crypto/qr.ts';
-import { callOnce } from './client.ts';
+import { callOnce, callRawText } from './client.ts';
 import { uuidV4 } from './rand.ts';
 import {
   CODES,
@@ -680,19 +680,45 @@ function buildReadings(deps: RouteDeps): Record<string, unknown> {
       // 也不能把 `LiveCodes` 这个对象直接丢给界面（它要的是数组）。
       codes: (() => {
         const human = loadLiveCodes(liveOne)?.codes ?? [];
-        const poolCodes = loadFreshPool(deps.store, nowMs).pool.codes;
+        const fresh = loadFreshPool(deps.store, nowMs);
+        const poolCodes = fresh.pool.codes;
+        const claims = fresh.pool.claims;
+        const labels = new Map(
+          loadAccounts(deps.store).map((a) => [accountKey(parseAuthorization(a.auth)?.phone ?? ''), a.label]),
+        );
+        // 口令是共享的，但“领过”是**按账号**记的；这里把账号标签一并给界面，
+        // 否则三个号时只写“这个账号”根本不知道是哪个（2026-11-03 现场）。
+        const claimedBy = (code: string): string[] =>
+          Object.entries(claims)
+            .filter(([, mine]) => mine[code] === 'claimed' || mine[code] === 'alreadyClaimed')
+            .map(([id]) => labels.get(id) ?? id);
         const seen = new Set<string>();
-        const out: Array<{ code: string; state?: string; source?: string; reason?: string }> = [];
+        const out: Array<{
+          code: string;
+          state?: string;
+          source?: string;
+          reason?: string;
+          claimedBy?: string[];
+        }> = [];
         for (const c of human) {
           const code = c.trim();
           if (code === '' || seen.has(code)) continue;
           seen.add(code);
-          out.push({ code, source: '手动' });
+          out.push({ code, source: '手动', claimedBy: claimedBy(code) });
         }
         for (const c of poolCodes) {
           if (seen.has(c.value)) continue;
           seen.add(c.value);
-          out.push({ code: c.value, state: c.state, source: c.source, reason: c.reason });
+          const by = claimedBy(c.value);
+          out.push({
+            code: c.value,
+            state: c.state,
+            source: c.source,
+            // 老池子里存的是“这个账号已领过”；有具体账号标签时不要再显示这句
+            // 含糊话，统一成“已验证有效 + 已领过：<账号名>”。
+            reason: by.length > 0 ? '已验证有效' : c.reason,
+            claimedBy: by,
+          });
         }
         return out;
       })(),
@@ -1841,6 +1867,29 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
         }),
     },
     {
+      // 日常这一趟的**单次预算**（秒）。默认 600（= 面板硬上限）；
+      // ⚠ 面板不允许声明超过 600000ms，超了会**抛异常、插件整个加载失败**
+      //   （2026-11-03 09:58 现场），所以这里把上限写死在同一处并说明白。
+      path: `${base}/daily-budget`,
+      method: 'POST',
+      handler: (req) => {
+        const body = readBody(req);
+        const n = Number(body.seconds ?? body.budgetSeconds);
+        if (!Number.isInteger(n) || n < 60 || n > 600) {
+          return json(400, {
+            error: '单次预算要给 60..600 之间的整数（秒）—— 面板对单任务有 10 分钟硬上限，超过它会拒绝加载插件',
+          });
+        }
+        deps.store.setState('mcloud.daily.budget_s', String(n), deps.now());
+        deps.log(`日常单次预算改为 ${n} 秒（下次加载插件时生效）`);
+        return json(200, {
+          ok: true,
+          budgetSeconds: n,
+          note: `已设为 ${n} 秒 —— **下次加载插件时生效**（面板会按需卸载/重载；也可以手动重载）`,
+        });
+      },
+    },
+    {
       path: `${base}/listen-seconds`,
       method: 'POST',
       handler: (req) => {
@@ -2868,6 +2917,30 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
           reading: st,
           line: listenReadingLine(st),
           windowOpen: st0?.step === 'listen' || st0?.step === 'open',
+        });
+      },
+    },
+    {
+      // 调试口：原样返回这次小红书请求的 body。只读、无凭据；
+      // 用户要核对“到底请求到了什么”时，不能只给字符数。
+      path: `${base}/live/raw`,
+      method: 'GET',
+      handler: () => {
+        const url = loadLiveUrl(deps.store);
+        const res = callRawText(deps.transport, {
+          url,
+          method: 'GET',
+          headers: xiaohongshuProfileHeaders(),
+          body: undefined,
+        });
+        deps.log(`小红书原始页：HTTP ${res.status}，${res.chars} 字符`);
+        return json(200, {
+          url,
+          status: res.status,
+          ok: res.ok,
+          chars: res.chars,
+          error: res.error,
+          text: res.text,
         });
       },
     },

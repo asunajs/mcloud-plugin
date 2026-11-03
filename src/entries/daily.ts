@@ -79,9 +79,36 @@ import type { TaskPayload } from './shared.ts';
 
 const store = makeStore();
 const transport = makeTransport(LONG_REQUEST_TIMEOUT_MS);
+
+/** 日常这一趟的**单次预算**（毫秒）。
+ *
+ *  为什么做成可配：3 个账号 + 每条任务之间 0.5–2 秒的间隔，一趟本就要好几分钟；
+ *  写死一个数就必然出现"跑到一半被宿主强杀"（2026-11-03 现场：300s 被中断）。
+ *
+ *  读的是 `mcloud.daily.budget_s`（秒）。缺省 **900**；允许 60–3600。
+ *  ⚠ 面板自己对单任务预算有上限（`hostapi.rs` 的 `MAX_DECLARED_BUDGET_MS`，10 分钟），
+ *  超过会被夹；这里先按上限夹一道，免得"配了 900 实际只有 600"没人知道。 */
+/** 面板对单任务预算的**硬上限**：`hostapi.rs` 的 `MAX_DECLARED_BUDGET_MS`。
+ *  ⚠ 超了不是"夹一下"，是**抛异常、插件整个加载失败**（2026-11-03 09:58 现场：
+ *  声明 900s ⇒ `Error: budget_ms 太大（900000ms），最多 600000ms`，日常任务直接消失）。
+ *  所以这里必须先按它夹住，**永远不往宿主递一个超限的数**。 */
+const MAX_BUDGET_MS = 600_000;
+const MIN_BUDGET_S = 60;
+
+function dailyBudgetMs(store: { getState(k: string): string | null | undefined }): number {
+  const raw = store.getState('mcloud.daily.budget_s');
+  const n = raw === null || raw === undefined ? NaN : Number(String(raw).trim());
+  // 缺省就是面板允许的最大值（600 秒）：多账号 + 任务间间隔，300 秒根本不够。
+  const sec = Number.isFinite(n) && n >= MIN_BUDGET_S ? Math.min(n, MAX_BUDGET_MS / 1000) : MAX_BUDGET_MS / 1000;
+  return Math.min(Math.round(sec * 1000), MAX_BUDGET_MS);
+}
 // 3 个账号串行时，单账号约 40 秒，120 秒正好在第三个账号中间被宿主强杀
 // （2026-11-01 08:02 现场：不是死循环，是预算太短）。留足多账号余量。
-const BUDGET_MS = 300_000;
+//
+// ⚠ 2026-11-03：加了任务间/任务内间隔之后，3 个账号一趟轻松超过 300 秒
+//   （现场 08:05：「执行超过预算 300s，被强制中断（疑似死循环）」）。
+//   预算改成读**可配置**的一格，默认 **900 秒**。
+const BUDGET_MS = dailyBudgetMs(store);
 const DONE_KEY = DAILY_DONE_KEY;
 const LAST_KEY = DAILY_LAST_KEY;
 
@@ -128,6 +155,11 @@ register_cron(
     const onceHints = new Set<string>();
     // 先打一行，别让用户只看到插件加载的三行
     logBoth(store, 'start', '日常 · 开始', nowIso);
+    // ⚠ **整趟的硬截止**：宿主按"一次运行"计预算（默认 600 秒，含所有账号），
+    //   而每个账号原先各按自己的开始时间算截止 ⇒ 3 个号叠起来能超过它、被强杀
+    //   （2026-11-03 08:05：`执行超过预算 300s，被强制中断（疑似死循环）`）。
+    //   留 25 秒给"写记录 + 发推送"。
+    const hardStopAt = Date.now() + BUDGET_MS - 25_000;
     const runs = forEachTaskAccount(store, '日常', p, transport, (deps, acctId) => {
       const who = labelOf(store, acctId);
       const tag = `[${shortLabel(who)}]`;
@@ -135,7 +167,14 @@ register_cron(
       logBoth(store, 'start', tag, nowIso);
       const skippedSteps: string[] = [];
       let prev = '';
+      // 预算不够再跑下一个号时**干净收尾**（留 40 秒）：剩下的下次再来，
+      // 而不是被宿主一刀砍掉、连这一趟的记录都没有。
+      if (hardStopAt - Date.now() < 40_000) {
+        logBoth(store, 'warn', `${tag} 预算快到了（还剩 ${Math.max(0, Math.round((hardStopAt - Date.now()) / 1000))} 秒），这个号下次再跑`, nowIso);
+        return { name: '日常', ok: true, note: '预算到点，这个号下次再跑', detail: [], steps: [], skipped: true };
+      }
       const r = runDaily(deps, {
+        deadlineAt: hardStopAt,
         onPhase: (phase) => logBoth(store, 'info', `${tag} ${phase}…`, nowIso),
         // 上传 / 访问日志 / 打卡这些是**排查细节**，走 debug；
         // info 只留用户能看懂的任务结论。

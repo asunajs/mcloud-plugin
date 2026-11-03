@@ -65,6 +65,10 @@ export const XIAOHONGSHU_KOULING_PROFILE_URL =
 export function xiaohongshuProfileHeaders(): Record<string, string> {
   return {
     accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    // 空串不是“省一个头”：宿主 HTTP 客户端会自动补 `Accept-Encoding: gzip`，
+    // 而小红书只要看到这个头就回 36 KB 空壳（`userPageData:{}`）；
+    // 显式给空值才能压掉自动补头，拿到带笔记的完整页。
+    'accept-encoding': '',
     'accept-language': 'zh-CN,zh;q=0.9',
     referer: 'https://www.xiaohongshu.com/',
     'user-agent':
