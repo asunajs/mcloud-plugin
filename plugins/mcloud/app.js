@@ -1663,11 +1663,17 @@ function renderLive(l) {
   }
   paintList(
     'live-codes',
-    codes.map((c) => [
-      c.code,
-      `${c.source || ''}${c.state ? ` · ${c.state}` : ''}${c.reason ? ` · ${c.reason}` : ''}`,
-      c.kind ? `<span class="badge">${esc(c.kind)}</span>` : '',
-    ]),
+    codes.map((c) => {
+      const claimed =
+        Array.isArray(c.claimedBy) && c.claimedBy.length > 0
+          ? ` · 已领过：${c.claimedBy.join('、')}`
+          : '';
+      return [
+        c.code,
+        `${c.source || ''}${c.state ? ` · ${c.state}` : ''}${c.reason ? ` · ${c.reason}` : ''}${claimed}`,
+        c.kind ? `<span class="badge">${esc(c.kind)}</span>` : '',
+      ];
+    }),
     '还没有口令。从直播弹幕里抄一条贴在上面。',
   );
 }
@@ -4026,11 +4032,26 @@ $('live-claim').addEventListener('click', (e) =>
 $('live-run').addEventListener('click', (e) => runTaskAndWait('live', e.currentTarget));
 $('live-stop').addEventListener('click', (e) => stopRunning('live', e.currentTarget));
 
+$('live-listen-seconds').addEventListener('change', async (e) => {
+  // 清空就恢复默认，不需要再点保存 —— 否则用户删了 30，跑起来还是 30。
+  if (e.currentTarget.value.trim() !== '') return;
+  try {
+    await api('/config', { method: 'POST', write: true, body: { listenSeconds: 600 } });
+    toast('听弹幕时长已恢复默认 600 秒');
+    await load();
+  } catch (err) {
+    toast(err && err.message ? err.message : '没恢复成', true);
+  }
+});
+
 $('live-listen-save').addEventListener('click', (e) =>
   act(
     e.currentTarget,
     async () => {
-      const n = Number($('live-listen-seconds').value);
+      // 空输入 = 恢复默认 600。以前直接 Number('') = 0，校验失败，
+      // 保存不了；用户删掉旧值再跑，实际还在用旧值。
+      const raw = $('live-listen-seconds').value.trim();
+      const n = raw === '' ? 600 : Number(raw);
       if (!Number.isInteger(n) || n < 5 || n > 1800) {
         throw new Error('听弹幕时长要给 5–1800 之间的整数（秒）');
       }

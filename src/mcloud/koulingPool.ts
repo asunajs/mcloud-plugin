@@ -433,7 +433,7 @@ export function noteClaim(
       break;
     case 'alreadyClaimed':
       state = 'valid';
-      reason = '已验证有效（这个账号已领过）';
+      reason = '已验证有效（至少一个账号领过）';
       break;
     case 'invalid':
       state = 'invalid';

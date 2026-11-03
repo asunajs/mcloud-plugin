@@ -122,7 +122,7 @@ function collectOnce(
     });
   }
 
-  step('主播发口令没有', () => runLiveRoom(deps));
+  step('小红书主页口令', () => runLiveRoom(deps));
   const poolNow = loadPoolFrom(deps.store).pool;
   if (stopScraping(poolNow)) {
     steps.push({

@@ -90,6 +90,12 @@ export function runDaily(
     onPhase?: (phase: string) => void;
     /** 长状态机的逐步原话（上传 / 打卡 / 重试）—— 不等整步结束。 */
     onNote?: (note: string) => void;
+    /** **整趟的硬截止时刻**（绝对毫秒，含所有账号）。宿主按"一次运行"计时，
+     *  默认 600 秒 —— 而我们的每一步原先各自按"这个账号开始时"算截止，
+     *  3 个账号最坏能叠到 600 秒以上，于是整趟被宿主强杀
+     *  （2026-11-03 08:05 现场：`执行超过预算 300s，被强制中断（疑似死循环）`）。
+     *  给了这一格，每一步的 `deadlineMs` 都会被夹到"还剩多少"。 */
+    deadlineAt?: number | undefined;
   } = {},
 ): {
   ok: boolean;
@@ -98,6 +104,13 @@ export function runDaily(
   steps: DailyStep[];
 } {
   const started = Date.now();
+  /** 每一步的预算都要夹到"整趟还剩多少"（见 `deadlineAt` 的注释）。
+   *  留 8 秒的余量：掐在最后一刻会连"写记录 / 发推送"都做不完。 */
+  const cap = (ms: number): number => {
+    const at = opts.deadlineAt;
+    if (at === undefined) return ms;
+    return Math.max(5_000, Math.min(ms, at - Date.now() - 8_000));
+  };
   const steps: StepResult[] = [];
   const detail: string[] = [];
 
@@ -174,7 +187,7 @@ export function runDaily(
           return { ok: x.ok, note: x.note, idle: x.done };
         },
         deps,
-        { label: `换票（${PAGE_LABEL[page]}）`, maxSteps: 4, deadlineMs: 30_000, startedAt: started },
+        { label: `换票（${PAGE_LABEL[page]}）`, maxSteps: 4, deadlineMs: cap(30_000), startedAt: started },
       );
       push({ name: `换票（${PAGE_LABEL[page]}）`, ok: r.ok, note: r.note, idle: r.idle });
     } else {
@@ -198,7 +211,7 @@ export function runDaily(
       const r = drain(runSign, deps, {
         label: '签到',
         maxSteps: 4,
-        deadlineMs: 20_000,
+        deadlineMs: cap(20_000),
         startedAt: started,
         more: signPending,
       });
@@ -224,7 +237,7 @@ export function runDaily(
         const r = drain(runExpansionStep, deps, {
           label: '任务拓展',
           maxSteps: 12,
-          deadlineMs: 45_000,
+          deadlineMs: cap(45_000),
           startedAt: started,
           onStep: (note) => opts.onNote?.(`任务拓展：${note}`),
         });
@@ -243,7 +256,7 @@ export function runDaily(
       const r = drain(runAppTaskMatrix, deps, {
         label: 'App 任务矩阵',
         maxSteps: MATRIX_MARKETS.length,
-        deadlineMs: 25_000,
+        deadlineMs: cap(25_000),
         startedAt: started,
       });
       // 它不报 idle（每读一个市场都是"有事做"），所以 drain 会正好跑满 maxSteps。
@@ -270,7 +283,7 @@ export function runDaily(
       // ⚠ 60 秒是**没有任务间间隔**时的数。现在每条之间随机隔 0.5–2 秒
       //   （`gapMs`，十几条就是 10–25 秒）⇒ 预算必须跟着放宽，否则会被硬闸截在半路
       //   （截断不报错，用户看到的是"这一趟只做了一半"）。
-      deadlineMs: 90_000,
+      deadlineMs: cap(90_000),
       startedAt: started,
       // 上传 / 访问日志 / 打卡 / 重试逐步打出来；否则日志只剩最后一句
       // 「这一趟没有全确认」，用户看不到文件到底传没传。
@@ -380,7 +393,7 @@ export function runDaily(
       //   （`startedAt: started` 全链共享）。2026-11-02 15:55 现场：算力大作战
       //   跑到 45 秒被截，而领取的 40 秒早已过 ⇒ 「走到时间上限（40000ms / 0 步）」，
       //   这一天剩下的 AI豆 一颗都没领。150 秒 = 前面全跑满也还能领。
-      deadlineMs: 150_000,
+      deadlineMs: cap(150_000),
       startedAt: started,
       // ⚠ 这一条 drain 的"一步"**就是一个独立条目**（队列里一条一个请求）⇒
       //   条与条之间要隔（`gapMs`，0.5–2 秒），否则就是一串连发。

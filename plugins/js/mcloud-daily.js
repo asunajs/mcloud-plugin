@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.22 · 插件 `mcloud-daily`
+//   mcloud-plugin 0.2.23 · 插件 `mcloud-daily`
 
 // src/entries/daily.ts
 import { debug as debug2, register_cron } from "host-api";
@@ -799,6 +799,8 @@ var KEY_SCOPE = {
   "mcloud.host.native_tls": "account",
   "mcloud.h5.exchange": "account",
   "mcloud.h5.jwt": "account",
+  // 单次预算（秒）：**全局** —— 它是"这一趟跑多久"的策略，不是某个号的读数。
+  "mcloud.daily.budget_s": "global",
   "mcloud.daily.done_date": "account",
   "mcloud.daily.last_run": "account",
   // ⚠ 登录这一族是**本机**的，不是某个账号的。
@@ -9532,6 +9534,11 @@ function once(name, fn, deps) {
 }
 function runDaily(deps, opts = {}) {
   const started = Date.now();
+  const cap = (ms) => {
+    const at = opts.deadlineAt;
+    if (at === void 0) return ms;
+    return Math.max(5e3, Math.min(ms, at - Date.now() - 8e3));
+  };
   const steps = [];
   const detail = [];
   const push = (r) => {
@@ -9564,7 +9571,7 @@ function runDaily(deps, opts = {}) {
           return { ok: x.ok, note: x.note, idle: x.done };
         },
         deps,
-        { label: `换票（${PAGE_LABEL[page]}）`, maxSteps: 4, deadlineMs: 3e4, startedAt: started }
+        { label: `换票（${PAGE_LABEL[page]}）`, maxSteps: 4, deadlineMs: cap(3e4), startedAt: started }
       );
       push({ name: `换票（${PAGE_LABEL[page]}）`, ok: r.ok, note: r.note, idle: r.idle });
     } else {
@@ -9578,7 +9585,7 @@ function runDaily(deps, opts = {}) {
       const r = drain(runSign, deps, {
         label: "签到",
         maxSteps: 4,
-        deadlineMs: 2e4,
+        deadlineMs: cap(2e4),
         startedAt: started,
         more: signPending
       });
@@ -9600,7 +9607,7 @@ function runDaily(deps, opts = {}) {
         const r = drain(runExpansionStep, deps, {
           label: "任务拓展",
           maxSteps: 12,
-          deadlineMs: 45e3,
+          deadlineMs: cap(45e3),
           startedAt: started,
           onStep: (note) => opts.onNote?.(`任务拓展：${note}`)
         });
@@ -9613,7 +9620,7 @@ function runDaily(deps, opts = {}) {
       const r = drain(runAppTaskMatrix, deps, {
         label: "App 任务矩阵",
         maxSteps: MATRIX_MARKETS.length,
-        deadlineMs: 25e3,
+        deadlineMs: cap(25e3),
         startedAt: started
       });
       return { name: "App 任务矩阵（只看）", ok: r.ok, note: r.note, idle: true };
@@ -9633,7 +9640,7 @@ function runDaily(deps, opts = {}) {
       // ⚠ 60 秒是**没有任务间间隔**时的数。现在每条之间随机隔 0.5–2 秒
       //   （`gapMs`，十几条就是 10–25 秒）⇒ 预算必须跟着放宽，否则会被硬闸截在半路
       //   （截断不报错，用户看到的是"这一趟只做了一半"）。
-      deadlineMs: 9e4,
+      deadlineMs: cap(9e4),
       startedAt: started,
       // 上传 / 访问日志 / 打卡 / 重试逐步打出来；否则日志只剩最后一句
       // 「这一趟没有全确认」，用户看不到文件到底传没传。
@@ -9704,7 +9711,7 @@ function runDaily(deps, opts = {}) {
       //   （`startedAt: started` 全链共享）。2026-11-02 15:55 现场：算力大作战
       //   跑到 45 秒被截，而领取的 40 秒早已过 ⇒ 「走到时间上限（40000ms / 0 步）」，
       //   这一天剩下的 AI豆 一颗都没领。150 秒 = 前面全跑满也还能领。
-      deadlineMs: 15e4,
+      deadlineMs: cap(15e4),
       startedAt: started,
       // ⚠ 这一条 drain 的"一步"**就是一个独立条目**（队列里一条一个请求）⇒
       //   条与条之间要隔（`gapMs`，0.5–2 秒），否则就是一串连发。
@@ -10719,7 +10726,15 @@ function pickChannels(cfg, channels) {
 // src/entries/daily.ts
 var store = makeStore();
 var transport = makeTransport(LONG_REQUEST_TIMEOUT_MS);
-var BUDGET_MS = 3e5;
+var MAX_BUDGET_MS = 6e5;
+var MIN_BUDGET_S = 60;
+function dailyBudgetMs(store2) {
+  const raw = store2.getState("mcloud.daily.budget_s");
+  const n = raw === null || raw === void 0 ? NaN : Number(String(raw).trim());
+  const sec = Number.isFinite(n) && n >= MIN_BUDGET_S ? Math.min(n, MAX_BUDGET_MS / 1e3) : MAX_BUDGET_MS / 1e3;
+  return Math.min(Math.round(sec * 1e3), MAX_BUDGET_MS);
+}
+var BUDGET_MS = dailyBudgetMs(store);
 var DONE_KEY = DAILY_DONE_KEY;
 var LAST_KEY = DAILY_LAST_KEY;
 register_cron(
@@ -10733,13 +10748,19 @@ register_cron(
     const today2 = nowIso.slice(0, 10);
     const onceHints = /* @__PURE__ */ new Set();
     logBoth(store, "start", "日常 · 开始", nowIso);
+    const hardStopAt = Date.now() + BUDGET_MS - 25e3;
     const runs = forEachTaskAccount(store, "日常", p, transport, (deps, acctId) => {
       const who = labelOf(store, acctId);
       const tag = `[${shortLabel(who)}]`;
       logBoth(store, "start", tag, nowIso);
       const skippedSteps = [];
       let prev = "";
+      if (hardStopAt - Date.now() < 4e4) {
+        logBoth(store, "warn", `${tag} 预算快到了（还剩 ${Math.max(0, Math.round((hardStopAt - Date.now()) / 1e3))} 秒），这个号下次再跑`, nowIso);
+        return { name: "日常", ok: true, note: "预算到点，这个号下次再跑", detail: [], steps: [], skipped: true };
+      }
       const r2 = runDaily(deps, {
+        deadlineAt: hardStopAt,
         onPhase: (phase) => logBoth(store, "info", `${tag} ${phase}…`, nowIso),
         // 上传 / 访问日志 / 打卡这些是**排查细节**，走 debug；
         // info 只留用户能看懂的任务结论。

@@ -52,7 +52,7 @@ import { readGateReading, runLiveGate } from '../mcloud/tasks/liveGateTask.ts';
 import { KOULING_ANCHOR, loadPoolFrom, stopScraping, validCount } from '../mcloud/koulingPool.ts';
 import { loadListenSeconds, runLiveListen } from '../mcloud/tasks/liveListen.ts';
 import type { ListenDeps } from '../mcloud/tasks/liveListen.ts';
-import { loadLiveCodes, runLiveRoom } from '../mcloud/tasks/liveRoom.ts';
+import { clearLiveCodes, loadLiveCodes, runLiveRoom } from '../mcloud/tasks/liveRoom.ts';
 import type { TaskDeps, TaskOutcome } from '../mcloud/tasks/base.ts';
 import { capNote, hostNativeTls } from '../mcloud/hostCap.ts';
 import {
@@ -177,11 +177,21 @@ function collectOnce(
       idle: false,
       note: `「${KOULING_ANCHOR}」开播了（${liveCount} 间在播）`,
     });
-    logBoth(store, 'start', `开播了，开始听弹幕（窗口 ${loadListenSeconds(deps.store)} 秒）`, deps.nowIso);
+    logBoth(
+      store,
+      'start',
+      `开播了，先看小红书，再听弹幕（窗口 ${loadListenSeconds(deps.store)} 秒）`,
+      deps.nowIso,
+    );
   }
 
   // ② 小红书（公开 GET，封控要求 ≥30 分钟一次）
-  step('主播发口令没有', () => runLiveRoom(deps));
+  // 先单独打一行“开始看”，否则这一枪慢/被限流时用户只看到听弹幕，
+  // 会以为根本没请求小红书（2026-11-03 现场）。
+  logBoth(store, 'start', '小红书：开始看口令发布方主页', deps.nowIso);
+  const xhsAt = Date.now();
+  const xhs = step('小红书主页口令', () => runLiveRoom(deps));
+  logBoth(store, 'debug', `小红书：这一步用了 ${Math.round((Date.now() - xhsAt) / 1000)} 秒`, deps.nowIso);
 
   // ③ 听弹幕 —— 池里够 2 条有效就不听了（再听只是重复撞同一批）
   const poolNow = loadPoolFrom(deps.store).pool;
@@ -346,7 +356,13 @@ register_cron(
     //   上一轮听到的候选也算进来，于是自动任务永远走“手动领取”，跳过开播检查
     //   和听弹幕 —— 2026-10-22 现场：池里一条未验证的「AI模拟练面试」让直播正在
     //   进行时都没去听。
-    const manual = (loadLiveCodes(store)?.codes ?? []).some((c) => c.trim() !== '');
+    // 人贴的口令是**一次性**的：读出来立刻清掉，后面的账号都用这份快照。
+    // 不清的话，上一次贴过的口令会永远留着；下一次哪怕用户没输入，任务也会
+    // 误判成“手动领取”，直接跳过开播检查和听弹幕（2026-11-03 现场：
+    // 没去获取，却突然冒出一条「AI助力冲offer」的“上次”结果）。
+    const manualCodes = (loadLiveCodes(store)?.codes ?? []).map((c) => c.trim()).filter(Boolean);
+    const manual = manualCodes.length > 0;
+    if (manual) clearLiveCodes(store, at);
     let collected: { steps: RunStep[]; detail: string[]; ok: boolean; note: string; stopped: boolean } | null =
       null;
     // 第一段（收口令）说“别领”时，后面的账号**一个请求都不发**：
@@ -360,8 +376,7 @@ register_cron(
       }
       if (stopAll) return { steps: [] as RunStep[], detail: [] as string[], ok: true, note: '没在播，跳过' };
       // 人贴了口令就**只领他贴的那一条**，别把池里的旧候选混进来。
-      const onlyCodes = manual ? (loadLiveCodes(store)?.codes ?? []).map((c) => c.trim()).filter(Boolean) : null;
-      return drawOnce(deps, startedMs, onlyCodes);
+      return drawOnce(deps, startedMs, manual ? manualCodes : null);
     });
     // 没选到账号 ⇒ 静默返回（那不是失败，是"这条任务没配账号"）
     if (runs.length === 0) return;
