@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.23 · 插件 `mcloud`
+//   mcloud-plugin 0.2.24 · 插件 `mcloud`
 
 // src/entries/mcloud.ts
 import {
@@ -15,7 +15,7 @@ import {
 } from "host-api";
 
 // src/version.ts
-var PLUGIN_VERSION = "0.2.23";
+var PLUGIN_VERSION = "0.2.24";
 
 // src/store/keys.ts
 var DEFAULT_ACCT = "default";
@@ -7971,10 +7971,16 @@ function runLiveDraw(deps, opts = {}) {
     const account = accountOf(deps.store);
     const allClaimed = done.length > 0 && done.every((c) => accountClaimed(pool, account, c));
     if (codes.length === 0) {
-      return allClaimed ? { ok: true, idle: true, note: `这一轮已跑完（${s?.summary ?? ""}）；口令没变，不重复领` } : { ok: true, idle: true, note: "没有口令可领（先抓主页或把口令填进输入框）" };
+      const claimCount = Object.keys(pool.claims[account] ?? {}).length;
+      const why = `池里 ${pool.codes.length} 条 / 这个号能领 ${codes.length} 条 / 上一轮 ${done.length} 条 / 这个号已领过 ${claimCount} 条`;
+      return allClaimed ? { ok: true, idle: true, note: `这一轮已跑完（${s?.summary ?? ""}）；口令没变，不重复领（${why}）` } : { ok: true, idle: true, note: `没有口令可领（${why}）—— 先抓主页或把口令填进输入框` };
     }
     if (s?.step === "done" && sameList(done, codes) && s.account === account) {
-      return { ok: true, idle: true, note: `这一轮已跑完（${s.summary ?? ""}）；口令没变，不重复领` };
+      return {
+        ok: true,
+        idle: true,
+        note: `口令没变（${codes.length} 条都是这个号领过的），本次没再发请求；上次那轮：${s.summary ?? ""}`
+      };
     }
     s = {
       step: "balance-before",

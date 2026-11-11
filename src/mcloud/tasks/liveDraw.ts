@@ -276,12 +276,26 @@ export function runLiveDraw(
       // 池会把"领过的/判过无效的"滤掉 ⇒ 长度为 0 有**两种**意思，必须分开说：
       //   ① 上一轮那批都已经被这个账号领过 ⇒ **已跑完**（别写成"没有口令可领"）
       //   ② 手上确实什么都没有          ⇒ 让他去抓主页或填口令
+      //
+      // ⚠ 2026-11-11：现场出现过"刚听来的口令一条没用、日志却在播上次的结果"。
+      //   根因多半在这一支（`codes` 空着就 idle 了），所以这里把**判据本身**印出来：
+      //   池里几条、筛完几条、上一轮几条、这个号领过几条。下次一眼就能对上。
+      const claimCount = Object.keys(pool.claims[account] ?? {}).length;
+      const why =
+        `池里 ${pool.codes.length} 条 / 这个号能领 ${codes.length} 条 / ` +
+        `上一轮 ${done.length} 条 / 这个号已领过 ${claimCount} 条`;
       return allClaimed
-        ? { ok: true, idle: true, note: `这一轮已跑完（${s?.summary ?? ''}）；口令没变，不重复领` }
-        : { ok: true, idle: true, note: '没有口令可领（先抓主页或把口令填进输入框）' };
+        ? { ok: true, idle: true, note: `这一轮已跑完（${s?.summary ?? ''}）；口令没变，不重复领（${why}）` }
+        : { ok: true, idle: true, note: `没有口令可领（${why}）—— 先抓主页或把口令填进输入框` };
     }
     if (s?.step === 'done' && sameList(done, codes) && s.account === account) {
-      return { ok: true, idle: true, note: `这一轮已跑完（${s.summary ?? ''}）；口令没变，不重复领` };
+      // 口令一模一样且都是这个号领过的 ⇒ 不发请求（重复领只会换回 200112）。
+      // 但话要说全：哪一轮、当时什么结果 —— 免得被读成"这一次领成这样"。
+      return {
+        ok: true,
+        idle: true,
+        note: `口令没变（${codes.length} 条都是这个号领过的），本次没再发请求；上次那轮：${s.summary ?? ''}`,
+      };
     }
     // ⚠ 走到这里有两种情况，都要起新一轮：口令变了，**或者账号换了**
     //   （后者是人最容易忽略的：口令一样，但余额是另一个账号的）。
