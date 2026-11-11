@@ -13,9 +13,16 @@ test('听弹幕：每拍都判"够了没有 / 有没有新口令"，够了立刻
   // 循环体里必须有这两道提前退出
   assert.match(d, /const tickPet = loadPoolFrom\(deps\.store\)\.pool;/, '每拍要读一次池子');
   assert.match(d, /if \(stopScraping\(tickPet\)\) \{/, '够 2 条有效就停');
-  assert.match(d, /firstSeenMs >= runStartMs/, '听到新的就停（拿去领立刻验证）');
+  // ⚠ 听到新的口令是**去验证**，不是收工：万一口令是废的，收工就白听了
+  assert.match(d, /firstSeenMs >= runStartMs && !verified\.has\(c\.value\)/, '新的没验过的才验');
+  assert.match(d, /runLiveDraw\(d, \{ codes: \[fresh\.value\] \}\)/, '当场拿这一条去领（领就是验证）');
+  assert.ok(
+    /验证「\$\{fresh\.value\}」[\s\S]{0,400}continue;/.test(d),
+    '验完要**接着听**（continue），不许 break',
+  );
   // 停下要有话说，别让用户以为被截断
   assert.match(d, /listenStop/, '要说清为什么提前不听了');
+  assert.match(d, /const verified = new Set<string>\(\);/, '同一条口令不重复验');
 });
 
 test('播报：不许再出现「上次：」这种把上一轮当这一轮的说法', () => {

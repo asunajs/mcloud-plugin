@@ -6528,6 +6528,7 @@ function collectOnce(deps, runStartMs) {
   let listenNote = "";
   let listenPushed = false;
   let listenStop = "";
+  const verified = /* @__PURE__ */ new Set();
   const ld = listenDeps(deps);
   const listenDeadline = runStartMs + Math.min(loadListenSeconds(deps.store) * 1e3, BUDGET_MS - 2e4);
   while (Date.now() < listenDeadline) {
@@ -6552,10 +6553,29 @@ function collectOnce(deps, runStartMs) {
       listenStop = `已经有 ${validCount(tickPet)} 条能用的口令，不再听`;
       break;
     }
-    const fresh = tickPet.codes.find((c) => c.state !== "invalid" && c.firstSeenMs >= runStartMs);
+    const fresh = tickPet.codes.find(
+      (c) => c.state !== "invalid" && c.state !== "valid" && c.firstSeenMs >= runStartMs && !verified.has(c.value)
+    );
     if (fresh !== void 0) {
-      listenStop = `听到新口令「${fresh.value}」—— 立刻拿去领（不等窗口）`;
-      break;
+      verified.add(fresh.value);
+      logBoth(store, "start", `听到口令「${fresh.value}」—— 立刻去验证（不等窗口）`, deps.nowIso);
+      const v = drain((d) => runLiveDraw(d, { codes: [fresh.value] }), deps, {
+        label: `验证「${fresh.value}」`,
+        maxSteps: 8,
+        // 一条口令的验证 = 读余额 → 领 → 回读余额，给 25 秒足够
+        deadlineMs: 25e3,
+        startedAt: Date.now(),
+        gap: true
+      });
+      const nowPet = loadPoolFrom(deps.store).pool;
+      const thisOne = nowPet.codes.find((c) => c.value === fresh.value);
+      logBoth(
+        store,
+        v.ok ? "info" : "warn",
+        `验证「${fresh.value}」：${thisOne?.state === "valid" ? "有效" : thisOne?.state === "invalid" ? "无效" : "没结论"} —— ${v.note}`,
+        deps.nowIso
+      );
+      continue;
     }
     if (frames === 1 || frames % 5 === 0) {
       logBoth(
