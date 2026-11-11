@@ -23,6 +23,17 @@ interface WorkerReply {
   frame?: WsFrame;
 }
 
+/** 同 `httpBridge`：单文件版把 ws worker 内嵌，运行时用 `data:` URL；否则退回文件。 */
+declare const __MCLOUD_WS_WORKER__: string | undefined;
+
+function wsWorkerUrl(): URL {
+  const embedded = typeof __MCLOUD_WS_WORKER__ === 'string' ? __MCLOUD_WS_WORKER__ : undefined;
+  if (embedded !== undefined && embedded !== '') {
+    return new URL(`data:text/javascript;base64,${Buffer.from(embedded, 'utf8').toString('base64')}`);
+  }
+  return new URL('./wsWorker.mjs', import.meta.url);
+}
+
 export interface WsBridge {
   open(url: string, opts?: OpenOpts): number;
   send(id: number, text: string): true;
@@ -38,7 +49,7 @@ export function makeWsBridge(cfg: WsConfig): WsBridge {
   let dead: string | undefined;
   let worker: Worker;
   const spawn = (): Worker => {
-    const w = new Worker(new URL('./wsWorker.mjs', import.meta.url), {
+    const w = new Worker(wsWorkerUrl(), {
       workerData: signal.buffer,
       // 不继承 --input-type/--test 这类只对主线程有意义的参数
       execArgv: [],
