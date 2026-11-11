@@ -209,8 +209,10 @@ function collectOnce(
   let frames = 0;
   let listenNote = '';
   let listenPushed = false;
-  /** 为什么提前不听了（够 2 条 / 听到新的）—— 要有话说，别让用户以为被截断。 */
+  /** 为什么提前不听了（够 2 条有效）—— 要有话说，别让用户以为被截断。 */
   let listenStop = '';
+  /** 这一趟已经拿去验过的口令（同一个口令不重复验：重复领只会回 200112）。 */
+  const verified = new Set<string>();
   const ld = listenDeps(deps);
   // 听满用户设的窗口（默认 600 秒），但给后面的领取留 20 秒。
   // ⚠ 原来还有一道 `frames > 60`（约 100 秒）的硬上限，会把 600 秒设置
@@ -248,10 +250,34 @@ function collectOnce(
       listenStop = `已经有 ${validCount(tickPet)} 条能用的口令，不再听`;
       break;
     }
-    const fresh = tickPet.codes.find((c) => c.state !== 'invalid' && c.firstSeenMs >= runStartMs);
+    // 听到一条**还没验过**的口令 ⇒ **当场拿去领一次**（领就是验证），
+    // 然后**接着听** —— 不能因为"来了一条"就收工：万一口令是废的，
+    // 收工就等于这一趟白听（用户口径 2026-11-11：
+    // 「是去验证而不是停止，万一口令没用呢」）。
+    const fresh = tickPet.codes.find(
+      (c) => c.state !== 'invalid' && c.state !== 'valid' && c.firstSeenMs >= runStartMs && !verified.has(c.value),
+    );
     if (fresh !== undefined) {
-      listenStop = `听到新口令「${fresh.value}」—— 立刻拿去领（不等窗口）`;
-      break;
+      verified.add(fresh.value);
+      logBoth(store, 'start', `听到口令「${fresh.value}」—— 立刻去验证（不等窗口）`, deps.nowIso);
+      const v = drain((d) => runLiveDraw(d, { codes: [fresh.value] }), deps, {
+        label: `验证「${fresh.value}」`,
+        maxSteps: 8,
+        // 一条口令的验证 = 读余额 → 领 → 回读余额，给 25 秒足够
+        deadlineMs: 25_000,
+        startedAt: Date.now(),
+        gap: true,
+      });
+      const nowPet = loadPoolFrom(deps.store).pool;
+      const thisOne = nowPet.codes.find((c) => c.value === fresh.value);
+      logBoth(
+        store,
+        v.ok ? 'info' : 'warn',
+        `验证「${fresh.value}」：${thisOne?.state === 'valid' ? '有效' : thisOne?.state === 'invalid' ? '无效' : '没结论'} —— ${v.note}`,
+        deps.nowIso,
+      );
+      // ⚠ 这里**不 break**：继续听，直到"够 2 条有效"或听满窗口。
+      continue;
     }
     // 长连接是同步循环，不在这里打点的话界面上整段时间一行日志都没有 ——
     // 用户只能看到一个「跑着呢 70s」，以为卡死了。每 5 拍报一次进度。
