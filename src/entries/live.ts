@@ -209,6 +209,8 @@ function collectOnce(
   let frames = 0;
   let listenNote = '';
   let listenPushed = false;
+  /** 为什么提前不听了（够 2 条 / 听到新的）—— 要有话说，别让用户以为被截断。 */
+  let listenStop = '';
   const ld = listenDeps(deps);
   // 听满用户设的窗口（默认 600 秒），但给后面的领取留 20 秒。
   // ⚠ 原来还有一道 `frames > 60`（约 100 秒）的硬上限，会把 600 秒设置
@@ -234,6 +236,23 @@ function collectOnce(
       break;
     }
     frames++;
+    // ⚠ **每拍都要判"够了没有"**。原先只在"开始听之前"判一次 `stopScraping`，
+    //   于是明明已经听到 2 条能用的口令，还要**空听满 600 秒**才去领
+    //   （2026-11-11 14:42–14:52 现场：听了 600 秒，池里 2 条口令却在 14:52 才动）。
+    //   两件事都要在这里断：
+    //     ① 已经有 2 条**验证过**的口令 ⇒ 再听只是重复撞同一批弹幕；
+    //     ② 出现了**新的、还没验过**的口令 ⇒ 立刻停下，拿去领就是验证，
+    //        不用等窗口结束（用户口径：「获取到一条口令就立刻测试」）。
+    const tickPet = loadPoolFrom(deps.store).pool;
+    if (stopScraping(tickPet)) {
+      listenStop = `已经有 ${validCount(tickPet)} 条能用的口令，不再听`;
+      break;
+    }
+    const fresh = tickPet.codes.find((c) => c.state !== 'invalid' && c.firstSeenMs >= runStartMs);
+    if (fresh !== undefined) {
+      listenStop = `听到新口令「${fresh.value}」—— 立刻拿去领（不等窗口）`;
+      break;
+    }
     // 长连接是同步循环，不在这里打点的话界面上整段时间一行日志都没有 ——
     // 用户只能看到一个「跑着呢 70s」，以为卡死了。每 5 拍报一次进度。
     if (frames === 1 || frames % 5 === 0) {
@@ -246,7 +265,12 @@ function collectOnce(
     }
   }
   if (frames > 0 && !listenPushed) {
-    steps.push({ name: '听弹幕', ok: true, note: listenNote || `听了 ${frames} 轮`, idle: false });
+    steps.push({
+      name: '听弹幕',
+      ok: true,
+      note: listenStop !== '' ? `${listenStop}（听了 ${frames} 拍）` : listenNote || `听了 ${frames} 轮`,
+      idle: false,
+    });
   }
   const after = loadPoolFrom(deps.store).pool;
   const valid = validCount(after);
@@ -295,9 +319,13 @@ function drawOnce(
   // 免得用户连点几次都看到同一段，以为在报假数据。
   // 是否“没发新请求”：看**跑之前和跑完之后是不是同一轮**（startedAt 不变），
   // 不能看 drain 的收尾 note —— 新跑完的一轮也会被状态机写成“已跑完”。
-  const replay = before?.step === 'done' && st?.startedAt === before.startedAt;
-  const prefix = replay ? '上次：' : '';
-  const rows = st?.results ?? [];
+  // ⚠ **本次到底有没有领**：状态机起新一轮时会把 `startedAt` 写成"现在"。
+  //   以前这里靠"before/after 是同一轮"来判 `replay`，然后把**上次**的结果
+  //   当成这次的结果播出来（还带 `success` 绿灯）——
+  //   用户的原话：「日志离谱的说 success 上次成功，上次关你屁事啊」。
+  //   现在只有"这一趟真的起了一轮"才播结果；否则明说本次没领。
+  const freshRound = st !== null && st.startedAt === deps.nowIso;
+  const rows = freshRound ? (st?.results ?? []) : [];
   const steps: RunStep[] = [
     {
       name: '凭据续期',
@@ -312,13 +340,15 @@ function drawOnce(
     return {
       name: head,
       ok: row.kind === 'succeeded',
-      note: `${prefix}${detail}`,
+      note: detail,
       idle: false,
     };
   }));
-  const finalNote = st?.step === 'done' && st.summary
-    ? `${prefix}${st.summary}`
-    : r.note;
+  const finalNote = freshRound && st?.step === 'done' && st.summary
+    ? st.summary
+    : freshRound
+      ? r.note
+      : `本次没领 —— ${r.note}`;
   // `drain` 收尾时 `idle` 常为 true（状态机“走完”），不能拿它当“没领”。
   // 只有明确说没开/跳过才算 idle；领到/好了是实打实的结果。
   const noClaim = /没开|跳过|没有可|不用领|无需/.test(finalNote);
@@ -326,7 +356,8 @@ function drawOnce(
     name: '领小红花',
     ok: r.ok,
     note: finalNote,
-    idle: r.idle === true && noClaim,
+    // 没真跑一轮 ⇒ `idle`（界面上是灰色 info，不是成功绿灯）
+    idle: freshRound ? r.idle === true && noClaim : true,
     pending: r.pending === true,
   });
   return {

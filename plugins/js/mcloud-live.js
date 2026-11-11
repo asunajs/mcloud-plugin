@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.23 · 插件 `mcloud-live`
+//   mcloud-plugin 0.2.24 · 插件 `mcloud-live`
 
 // src/entries/live.ts
 import { debug as debug2, register_cron } from "host-api";
@@ -4569,10 +4569,16 @@ function runLiveDraw(deps, opts = {}) {
     const account = accountOf(deps.store);
     const allClaimed = done.length > 0 && done.every((c) => accountClaimed(pool, account, c));
     if (codes.length === 0) {
-      return allClaimed ? { ok: true, idle: true, note: `这一轮已跑完（${s?.summary ?? ""}）；口令没变，不重复领` } : { ok: true, idle: true, note: "没有口令可领（先抓主页或把口令填进输入框）" };
+      const claimCount = Object.keys(pool.claims[account] ?? {}).length;
+      const why = `池里 ${pool.codes.length} 条 / 这个号能领 ${codes.length} 条 / 上一轮 ${done.length} 条 / 这个号已领过 ${claimCount} 条`;
+      return allClaimed ? { ok: true, idle: true, note: `这一轮已跑完（${s?.summary ?? ""}）；口令没变，不重复领（${why}）` } : { ok: true, idle: true, note: `没有口令可领（${why}）—— 先抓主页或把口令填进输入框` };
     }
     if (s?.step === "done" && sameList(done, codes) && s.account === account) {
-      return { ok: true, idle: true, note: `这一轮已跑完（${s.summary ?? ""}）；口令没变，不重复领` };
+      return {
+        ok: true,
+        idle: true,
+        note: `口令没变（${codes.length} 条都是这个号领过的），本次没再发请求；上次那轮：${s.summary ?? ""}`
+      };
     }
     s = {
       step: "balance-before",
@@ -6521,6 +6527,7 @@ function collectOnce(deps, runStartMs) {
   let frames = 0;
   let listenNote = "";
   let listenPushed = false;
+  let listenStop = "";
   const ld = listenDeps(deps);
   const listenDeadline = runStartMs + Math.min(loadListenSeconds(deps.store) * 1e3, BUDGET_MS - 2e4);
   while (Date.now() < listenDeadline) {
@@ -6540,6 +6547,16 @@ function collectOnce(deps, runStartMs) {
       break;
     }
     frames++;
+    const tickPet = loadPoolFrom(deps.store).pool;
+    if (stopScraping(tickPet)) {
+      listenStop = `已经有 ${validCount(tickPet)} 条能用的口令，不再听`;
+      break;
+    }
+    const fresh = tickPet.codes.find((c) => c.state !== "invalid" && c.firstSeenMs >= runStartMs);
+    if (fresh !== void 0) {
+      listenStop = `听到新口令「${fresh.value}」—— 立刻拿去领（不等窗口）`;
+      break;
+    }
     if (frames === 1 || frames % 5 === 0) {
       logBoth(
         store,
@@ -6550,7 +6567,12 @@ function collectOnce(deps, runStartMs) {
     }
   }
   if (frames > 0 && !listenPushed) {
-    steps.push({ name: "听弹幕", ok: true, note: listenNote || `听了 ${frames} 轮`, idle: false });
+    steps.push({
+      name: "听弹幕",
+      ok: true,
+      note: listenStop !== "" ? `${listenStop}（听了 ${frames} 拍）` : listenNote || `听了 ${frames} 轮`,
+      idle: false
+    });
   }
   const after = loadPoolFrom(deps.store).pool;
   const valid = validCount(after);
@@ -6579,9 +6601,8 @@ function drawOnce(deps, runStartMs, onlyCodes) {
     }
   );
   const st = loadDrawState(deps.store);
-  const replay = before?.step === "done" && st?.startedAt === before.startedAt;
-  const prefix = replay ? "上次：" : "";
-  const rows = st?.results ?? [];
+  const freshRound = st !== null && st.startedAt === deps.nowIso;
+  const rows = freshRound ? st?.results ?? [] : [];
   const steps = [
     {
       name: "凭据续期",
@@ -6596,17 +6617,18 @@ function drawOnce(deps, runStartMs, onlyCodes) {
     return {
       name: head,
       ok: row.kind === "succeeded",
-      note: `${prefix}${detail}`,
+      note: detail,
       idle: false
     };
   }));
-  const finalNote = st?.step === "done" && st.summary ? `${prefix}${st.summary}` : r.note;
+  const finalNote = freshRound && st?.step === "done" && st.summary ? st.summary : freshRound ? r.note : `本次没领 —— ${r.note}`;
   const noClaim = /没开|跳过|没有可|不用领|无需/.test(finalNote);
   steps.push({
     name: "领小红花",
     ok: r.ok,
     note: finalNote,
-    idle: r.idle === true && noClaim,
+    // 没真跑一轮 ⇒ `idle`（界面上是灰色 info，不是成功绿灯）
+    idle: freshRound ? r.idle === true && noClaim : true,
     pending: r.pending === true
   });
   return {

@@ -23,6 +23,19 @@ function bodyToBase64(body: string): string {
   return Buffer.from(body, utf8 ? 'utf8' : 'latin1').toString('base64');
 }
 
+/** 单文件版：构建时把 worker 源码内嵌成字符串（`define`），运行时用 `data:` URL 起线程。
+ *  ⚠ `typeof` 保护是给"没内嵌"的场景留的（多文件版 / 测试直接跑源码）——
+ *  未定义时退回同目录的 `./httpWorker.mjs`。 */
+declare const __MCLOUD_HTTP_WORKER__: string | undefined;
+
+function httpWorkerUrl(): URL {
+  const embedded = typeof __MCLOUD_HTTP_WORKER__ === 'string' ? __MCLOUD_HTTP_WORKER__ : undefined;
+  if (embedded !== undefined && embedded !== '') {
+    return new URL(`data:text/javascript;base64,${Buffer.from(embedded, 'utf8').toString('base64')}`);
+  }
+  return new URL('./httpWorker.mjs', import.meta.url);
+}
+
 export function makeNodeFetcher(
   cfg: HttpConfig,
 ): (url: string, options?: FetchOptions) => FetchResult | FetchError {
@@ -33,7 +46,7 @@ export function makeNodeFetcher(
   let worker: Worker;
 
   const spawn = (): Worker => {
-    const w = new Worker(new URL('./httpWorker.mjs', import.meta.url), {
+    const w = new Worker(httpWorkerUrl(), {
       workerData: signal.buffer,
       execArgv: [],
     });

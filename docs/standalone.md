@@ -20,6 +20,10 @@ dist/standalone/wsWorker.mjs      同步 WS 用的 worker（已内嵌 ws）
 dist/standalone/httpWorker.mjs    同步 HTTP 用的 worker（Node fetch）
 ```
 
+`mcloud-sign.mjs` 是**单文件**：构建时把 `httpWorker` / `wsWorker` 的源码内嵌，
+运行时用 `data:` URL 起线程 —— 只拷这一个 `.mjs` 就能跑，不需要旁边的两个 worker。
+`daily.mjs` / `exchange.mjs` / `redflower.mjs` 是给库调用者的多文件 bundle（不含 worker 需求）。
+
 ## 日常
 
 ```bash
