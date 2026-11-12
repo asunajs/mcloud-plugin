@@ -622,6 +622,20 @@ export function parseNoteHeaders(body: string): Record<string, string> | undefin
   }
 }
 
+/** 建笔记的**成败判据**：回包里有没有 `noteid`。
+ *
+ *  ⚠ 鉴权不对时上游照样回 200，正文是个**空模板**（`{"noteid":"","title":"",…}`，
+ *  2026-11-12 实测）—— 所以"HTTP 200"完全不能当成功。 */
+export function parseNoteCreated(body: string): string | undefined {
+  try {
+    const v = JSON.parse(body) as { noteid?: unknown; result?: { noteid?: unknown } };
+    const id = typeof v.noteid === 'string' ? v.noteid : typeof v.result?.noteid === 'string' ? v.result.noteid : '';
+    return id.trim() === '' ? undefined : id.trim();
+  } catch {
+    return undefined;
+  }
+}
+
 export function noteCreateRequest(
   noteId: string,
   title: string,

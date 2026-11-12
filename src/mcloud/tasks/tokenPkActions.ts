@@ -41,6 +41,7 @@ import {
   newCguid,
   noteAuthRequest,
   noteCreateRequest,
+  parseNoteCreated,
   noteDeleteRequest,
   parseAiRecognize,
   parseMailSession,
@@ -54,6 +55,7 @@ import { loadAuthRaw } from '../sessionExchange.ts';
 import { parseSsoToken } from '../h5session.ts';
 import { uuidV4 } from '../rand.ts';
 import { clearUpload, loadUpload, runUploadStep, startUpload, uploadDone } from './upload.ts';
+import { registerOwnedFile } from './ownedFiles.ts';
 import { depsNowMs, waitMs } from './base.ts';
 import type { TaskDeps } from './base.ts';
 import { STATE_TOKENPK_UPLOAD } from '../tokenPkState.ts';
@@ -168,6 +170,8 @@ export function stepAction(deps: TaskDeps, s: PkSession, a: PkAttempt): ActionOu
     if (!res.ok) return fail(`备份快照没建起来：${res.error ?? '未知失败'}`);
     const parsed = parseSnapshotCreate(res.text);
     if (!parsed.ok || !parsed.created) return fail(`备份快照响应解析不了：${parsed.error ?? ''}`);
+    // 快照也是我们造的（一个空 zip），一样要登记，否则链尾清不掉
+    registerOwnedFile(deps, parsed.created.fileId);
     advance(a, parsed.created.rapidUpload ? 'snapshot-complete' : 'snapshot-put', {
       snapFileId: parsed.created.fileId,
       snapUploadId: parsed.created.uploadId,
@@ -218,19 +222,35 @@ export function stepAction(deps: TaskDeps, s: PkSession, a: PkAttempt): ActionOu
 
   // ── 云笔记（createNote）──────────────────────────────────────────
   if (a.step === 'note-auth') {
+    /** 这一趟是不是走了"拿 auth 当 app_auth"的兜底（决定下面那句话怎么说）。 */
+    let logFallbackAuth = false;
     const auth = parseAuth(loadAuthRaw(deps.store));
     if (auth === undefined || auth.token === '') return fail('云笔记：这个号没有 authToken');
     const res = send(deps, noteAuthRequest(auth.token, auth.phone));
     if (!res.ok) return fail(`云笔记鉴权没成：${res.error ?? '未知失败'}`);
-    const headers = parseNoteHeaders(res.text);
-    if (headers === undefined) return fail('云笔记：鉴权响应里没有 headers.app_auth');
+    let headers = parseNoteHeaders(res.text);
+    if (headers === undefined) {
+      // ⚠ 2026-11-12 实测：`authTokenRefresh.do` 现在回 **200 + 空体**（三个主机、三种体都一样），
+      //   所以 `headers.app_auth` 这条路早就走不通了（旧实现 2026-10-07 就记过）。
+      //   用户口径：「app_auth 是可以用 auth 转化的」—— 那就直接拿手上那份 auth 整串当
+      //   `app_auth` 试（云盘和笔记是同一套票）。试不试得通由**建笔记的响应**说了算，
+      //   不能在这里提前放弃（放弃 = 这条任务永远做不了）。
+      const raw = parseAuth(loadAuthRaw(deps.store))?.raw ?? '';
+      if (raw === '') return fail('云笔记：既没有 headers.app_auth，也没有 auth 可兜底');
+      headers = { app_auth: raw };
+      logFallbackAuth = true;
+    }
     const noteId = uuidV4().replace(/-/g, '').padEnd(32, '0').slice(0, 32);
     advance(a, 'note-create', {
       noteId,
       noteTitle: noteId.slice(0, 3),
       noteHeaders: JSON.stringify(headers),
     });
-    return more('云笔记鉴权好了 —— 下一步建笔记');
+    return more(
+      logFallbackAuth
+        ? '云笔记鉴权：服务端没给 app_auth，改用手上的 auth 兜底 —— 下一步建笔记（成不成看回包）'
+        : '云笔记鉴权好了 —— 下一步建笔记',
+    );
   }
 
   if (a.step === 'note-create') {
@@ -245,8 +265,18 @@ export function stepAction(deps: TaskDeps, s: PkSession, a: PkAttempt): ActionOu
       deps,
       noteCreateRequest(data.noteId ?? '', data.noteTitle ?? '', auth?.phone ?? '', headers, Date.now()),
     );
-    advance(a, 'note-wait');
-    return more(res.ok ? '云笔记已建 —— 等一下再删' : `建笔记没成（旧实现也忽略）：${res.error ?? ''}`);
+    // ⚠ 成败**只能看回包**：鉴权不对时上游照样回 200，只是 noteid 是空串
+    //   （2026-11-12 实测：`{"noteid":"","title":"",…}`）。旧实现 "res.ok 就算成"
+    //   会把"没建成"报成建成，然后再去删一条不存在的笔记 —— 两句话都是假的。
+    const created = res.ok ? parseNoteCreated(res.text) : undefined;
+    if (created === undefined) {
+      return done(
+        `云笔记没建成（鉴权没通过：回包里没有 noteid）——「${a.name}」。` +
+          `服务端 ${res.ok ? '回 200 但正文是空模板' : `失败：${res.error ?? '未知失败'}`}`,
+      );
+    }
+    advance(a, 'note-wait', { noteCreated: '1' });
+    return more(`云笔记已建（noteid ${created.slice(0, 8)}…）—— 等一下再删`);
   }
 
   if (a.step === 'note-wait') {
@@ -393,6 +423,11 @@ function stepUpload(deps: TaskDeps, a: PkAttempt, data: Record<string, string>):
   if (!out.ok) return fail(`上传「${a.name}」没成：${out.note}`);
   if (!uploadDone(deps, key)) return more(`上传中 —— ${out.note}`);
   const fileId = loadUpload(deps, key)?.fileId ?? '';
+  // ⚠ **登记"这是我们造的文件"**：算力大作战每天传一张照片/一个备份，链尾
+  //   `runOwnedCleanup` 只删**登记过**的 ⇒ 不登记就天天往用户网盘里堆
+  //   （用户口径 2026-11-12：「算力大作战每天上传图片却没有清理」）。
+  //   `ownedByUs === false`（撞上用户已有文件）绝不登记。
+  if (loadUpload(deps, key)?.ownedByUs !== false) registerOwnedFile(deps, fileId);
   if (a.key === 'shareFile') {
     advance(a, 'outlink', fileId === '' ? {} : { fileId });
     return more('文件传完了 —— 下一步建外链');
