@@ -7243,3 +7243,51 @@ const finalNote = st?.step === 'done' && st.summary ? `${prefix}${st.summary}` :
 
 验证：新增 `test/liveWatch.test.ts` 4 条（循环内提前退出、无「上次：」前缀、
 idle 带判据、`VALID_ENOUGH=2`）。全量 **1191 项通过**。
+
+## F-133 云笔记 app_auth 兜底 / 算力上传不清理 / panel-llrt 类型门禁（2026-11-12）
+
+### ① 云笔记：`headers.app_auth` 拿不到就用 auth 兜底
+
+实测（2026-11-12，测试号，3 台主机 × 3 种请求体）：
+
+```
+POST https://note.mcloud.139.com/noteServer/api/authTokenRefresh.do   200 (空体)
+POST https://mnote.caiyun.feixin.10086.cn/noteServer/api/authTokenRefresh.do  200 (空体)
+POST https://note-njs.yun.139.com/noteServer/api/authTokenRefresh.do  404 Route Not Found
+```
+
+⇒ 这一发**永远**拿不到 `headers.app_auth`（旧实现 2026-10-07 就记过），
+于是「创建云笔记」这条**每天都在跳过**。
+
+用户口径：「app_auth 是可以用 auth 转化的」。现在改成：拿不到就用手上那份
+`auth` 整串当 `app_auth` 试，成不成交给**建笔记的回包**说。
+
+### ② 建笔记的成败只能看回包
+
+鉴权不对时上游照样回 **200**，正文是空模板：
+
+```json
+{"version":"","noteid":"","createtime":"","updatetime":"","revision":"","title":"", …}
+```
+
+旧实现 `res.ok` 就算"建成了"，然后再去删一条不存在的笔记 —— 两句话都是假的。
+现在 `parseNoteCreated()` 只看 `noteid`：空 ⇒ 如实写「云笔记没建成（鉴权没通过：
+回包里没有 noteid）」，并**不再**去发那一发删除。
+
+### ③ 算力大作战上传的文件没人清
+
+`stepUpload` 传完就 `done`，从没登记到 `ownedFiles` 那张表 ⇒ 日常链尾
+`runOwnedCleanup` 清不到 ⇒ 每天一张 `tokenpk-photo-*.jpg`（+ 备份 zip + 快照）
+堆在用户网盘里。现在：
+
+- 上传完 `registerOwnedFile(deps, fileId)`（`ownedByUs === false` 的不登记，撞用户文件绝不删）
+- 快照那发也登记 `parsed.created.fileId`
+
+### ④ panel-llrt：`panel:host` 没有类型声明 ⇒ typecheck 红
+
+`src/panelllrt/hostApi.ts` 是 panel-llrt 的适配层（用户侧新增），它 `import panelHost from 'panel:host'`
+而那个模块只有文档、没有 `.d.ts`，于是 `npm run all` 的 typecheck 直接红。
+
+补了 `src/panelllrt/panel-host.d.ts`（`declare module 'panel:host'`，默认导出收成
+`Record<string, unknown>`；用它的地方本来就收窄成 `any`，这里不编精确签名）。
+`npm run build:panelllrt` 实测产出 4 个插件 + 界面，共 1322.4 KB。

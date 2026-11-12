@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.24 · 插件 `mcloud`
+//   mcloud-plugin 0.2.25 · 插件 `mcloud`
 
 // src/entries/mcloud.ts
 import {
@@ -15,7 +15,7 @@ import {
 } from "host-api";
 
 // src/version.ts
-var PLUGIN_VERSION = "0.2.24";
+var PLUGIN_VERSION = "0.2.25";
 
 // src/store/keys.ts
 var DEFAULT_ACCT = "default";
