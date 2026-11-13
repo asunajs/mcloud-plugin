@@ -97,8 +97,13 @@ function registry(): Record<string, Handler> {
 export function register_cron(name: string, expr: string, handler: Handler, opts?: any): void {
   registry()[name] = wrapJob(name, handler);
   const budget = typeof opts?.budget_ms === 'number' ? opts.budget_ms : 30_000;
+  // params / lead_ms 是注册期就给面板的（面板存着，每拍原样交回 payload.params）。
+  const extra: Record<string, unknown> = {};
+  if (opts != null && 'params' in opts) extra.params = opts.params ?? null;
+  if (typeof opts?.lead_ms === 'number') extra.lead_ms = opts.lead_ms;
+  const extraArg = Object.keys(extra).length ? extra : undefined;
   try {
-    void Promise.resolve(host.register_cron(name, expr, budget)).catch((e: unknown) => {
+    void Promise.resolve(host.register_cron(name, expr, budget, extraArg)).catch((e: unknown) => {
       emit('error', '注册任务 ' + name + '（' + expr + '）失败: ' + text(e));
     });
   } catch (e) {
@@ -142,6 +147,7 @@ export function sqlite_exec(sql: string, params?: unknown[]): any {
 
 export function http_fetch(url: string, options?: any): any {
   try {
+    // options 整包透传：tls:'native' 会走面板的平台 TLS 那条路（只有它能谈 CBC 套件）
     const r = host.http_fetch(url, options ?? {});
     // 面板的同步 op 返回 {status, headers, body, truncated, …}；
     // 旧契约只认 status/headers/body，多给的字段不影响。
@@ -219,36 +225,92 @@ export function register_route(
 
 // ── 面板没有的能力：明确报错，不装作有 ─────────────────────
 
-export function register_nav(_opts: unknown): void {
-  // 面板的侧栏是静态的（7 项），插件入口在「插件」页的「界面」按钮上。
-  emit('info', '[nav] 这个面板没有侧栏注册，插件页面走 插件页 → 界面');
+/** 侧栏入口 —— 面板**有**这个能力：`host.sidebar({ title, order })`（host-api.md §sidebar）。
+ *
+ * ⚠ 以前这里写的是"面板没有侧栏注册"，于是「移动云盘」永远不出现在侧栏里
+ *   （用户 2026-11-13 现场：侧栏只有 咪咕音乐 / 套件演示）。`/api/state` 里
+ *   我们的 `nav` 是 `null`，而 mgmusic 是 `{title:'咪咕音乐', order:80}` —— 差别就在这一步。
+ *
+ * 旧契约的 `label` → 面板的 `title`；`order` 原样透传（面板缺省 100，越小越靠上）。 */
+export function register_nav(opts: unknown): void {
+  const o = (opts ?? {}) as { label?: unknown; title?: unknown; order?: unknown };
+  const title = typeof o.title === 'string' ? o.title : typeof o.label === 'string' ? o.label : undefined;
+  const payload: Record<string, unknown> = {};
+  if (title !== undefined && title.trim() !== '') payload.title = title.trim();
+  if (typeof o.order === 'number' && Number.isFinite(o.order)) payload.order = o.order;
+  try {
+    void Promise.resolve(host.sidebar(payload)).catch((e: unknown) => {
+      emit('error', '侧栏注册失败: ' + text(e));
+    });
+  } catch (e) {
+    emit('error', '侧栏注册失败: ' + text(e));
+  }
 }
 
 export function worker_hint(_hint: string): void {
   // 面板一插件一 runtime，独占线程是默认的。
 }
 
-export function set_job_paused(_name: string, _paused: boolean): void {}
-export function set_job_blockers(_name: string, _blockers: string[]): void {}
-export function set_job_summary(_name: string, _text2: string): void {}
-export function set_job_schedule(_name: string, _opts: unknown): void {}
+// ── 面板版本（能力降级用，不是硬拒）──────────────────────────
+//
+//   if (panel.atLeast('0.3.0')) { /* 新路径 */ } else { /* 兼容路径 + 一句提示 */ }
+//
+// 版本比较是 semver：0.3 ≡ 0.3.0、v 前缀被忽略、0.3.0-rc.1 < 0.3.0；
+// 非法版本串**抛错**（「版本写错了」和「版本不够」是两件事）。
+export const panel = {
+  version: (): string => String(host.panel_version()),
+  atLeast: (v: string): boolean => host.panel_at_least(String(v)) === true,
+};
+// 基线的契约：panel 同时是**全局**，裸名 panel.version() 也能用。
+globals.panel = panel;
+
+// ── 任务状态（面板 2026-11-12 起支持）──────────────────────────
+// 面板侧是 async，插件侧是同步调用点：发出去就不等（失败记一条日志，不抛）。
+// 目标写法：'任务名'（自己的）或 '插件名/任务名'（同组 mcloud-* 的）。
+function jobCall(op: string, ...args: unknown[]): void {
+  try {
+    void Promise.resolve(host[op](...args)).catch((e: unknown) => {
+      emit('warn', '[job] ' + op + ' 失败: ' + text(e));
+    });
+  } catch (e) {
+    emit('warn', '[job] ' + op + ' 失败: ' + text(e));
+  }
+}
+
+export function set_job_paused(name: string, paused: boolean): void {
+  jobCall('set_job_paused', name, !!paused);
+}
+export function set_job_blockers(name: string, blockers: string[]): void {
+  jobCall('set_job_blockers', name, blockers ?? []);
+}
+export function set_job_summary(name: string, text2: string): void {
+  jobCall('set_job_summary', name, text2 ?? '');
+}
+export function set_job_schedule(name: string, opts: unknown): void {
+  jobCall('set_job_schedule', name, opts ?? {});
+}
 
 function missing(what: string): never {
   throw new Error('panel-llrt 还没有 ' + what + '：这个功能在这台面板上不可用');
 }
 
-export function ws_open(_url: string, _options?: unknown): number {
-  return missing('WebSocket 客户端');
+// ── WebSocket（面板 2026-11-12 起支持）────────────────────────
+// 面板那边是同步语义：ws_recv 带超时，超时返回 {type:'timeout'}（不是错误）。
+export function ws_open(url: string, options?: any): number {
+  return host.ws_open(url, options ?? {});
 }
-export function ws_send(_id: number, _text2: string): true {
-  return missing('WebSocket 客户端');
+export function ws_send(id: number, text: string): true {
+  return host.ws_send(id, text) as true;
 }
-export function ws_recv(_id: number, _timeoutMs?: number): any {
-  return missing('WebSocket 客户端');
+export function ws_recv(id: number, timeout_ms?: number): any {
+  return host.ws_recv(id, timeout_ms);
 }
-export function ws_close(_id: number): true {
-  return missing('WebSocket 客户端');
+export function ws_close(id: number): true {
+  return host.ws_close(id) as true;
 }
-export function smtp_send(_opts: unknown): any {
-  return missing('SMTP 发送');
+export function smtp_send(opts: unknown): any {
+  // 面板的 smtp_send 是**同步** op（和 http_fetch 同构），形状与旧面板一致：
+  //   { ok: true, response: '250 ...' }；失败抛错，错误文本是服务器那句原话。
+  const res = host.smtp_send(opts);
+  return { ok: res?.ok === true, response: String(res?.response ?? '') };
 }

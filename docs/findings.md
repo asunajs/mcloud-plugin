@@ -7328,3 +7328,49 @@ deploy-daily.sh                 插件已同步：14 个文件（已逐个核对
 1. **不手改产物**：`panel-llrt/plugins/*` 是构建产物，改界面改 `mcloud-plugin` 里的源
 2. **不用 `git add -A`**：同工作树里躺着别人未提交的改动（这次 `src/panelllrt/hostApi.ts`
    就有 60 行是别人写的），只提交自己该交的文件
+
+## F-135 日志不是实时的：新面板的帧没有事件名（2026-11-13）
+
+### 现场
+
+「跑着呢 12s / 显示 0 行」。任务确实在跑，面板日志页也能看到行，插件页的终端一行没有。
+
+### 真因
+
+新面板 `GET /api/logs/stream` 推的是**无名帧**：
+
+```
+data: {"id":1794578027097,"ts":1794578027097,"plugin":"mcloud-daily","run_id":7,"level":"info","message":"[debug] …"}
+```
+
+我们的终端只挂了 `es.addEventListener('log', paint)` / `('notice', …)` —— 有名事件永不触发，
+`onmessage` 没人接。三处叠加的差异：
+
+| 维度 | 旧面板 | 新面板（panel-llrt） |
+|---|---|---|
+| 事件名 | `event: log` | **无**（默认 `message`） |
+| 插件过滤 | 服务端按 `?plugin=` 筛 | **不筛**，所有插件都推 → 自己按 `d.plugin` 过滤 |
+| 级别 | `debug/start/success/fail` 原样给 | 只有 `info/warn/error`；我们那四档被折成 `info` + 文本前缀 `[debug] ` |
+| 时间 | `"2026-10-17 10:50:42.498"` | **epoch 毫秒数**（`1794578027097`，直接 slice 屏幕上就是一串数字） |
+| 断线补洞 | — | `?since=<id>` 原生支持（但 EventSource 自动重连**不带**） |
+
+### 改法（`plugins/mcloud/app.js`）
+
+- `paint` 拆成 `appendLine(lv, tsRaw, text)`；两条解析路径共用它
+- 新增 `paintPanel(ev)`：`onmessage` 收裸帧 → 按 `plugin` 过滤 → 从前缀还原级别 → 记 `lastId`
+- 时间戳三吃：`YYYY-MM-DD …`（旧面板）、`HH:mm:ss.SSS`（我们自己的历史）、13 位 epoch 毫秒（新面板）
+- `onerror` 自己重连并带 `?since=`（退避 1s → 15s），不再依赖浏览器自动重连（它会丢一段）
+- `--style-ver 156` / `appVer 158`
+
+### 怎么验的（不用人眼猜）
+
+真实面板 + 无头 Edge + CDP：打开插件页 → 点「日常」→ `POST /api/plugins/mcloud-daily/reload`
+→ 等 3.5 秒读 DOM：
+
+```
+{"total":1,"first":["21:56:17.301 debug  mcloud-daily：任务「日常」（预算 600"],
+ "meta":"mcloud-daily · 显示 1 行","block":"daily","appVer":"158"}
+```
+
+时间戳格式对、级别从前缀还原成 `debug`、插件过滤对（mcloud 的 reload 行没串进来）。
+回归断言在 `test/webui.test.ts` 第 ⑧ 组（onmessage / 过滤 / 前缀 / epoch / since）。
