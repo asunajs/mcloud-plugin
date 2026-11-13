@@ -253,7 +253,8 @@ def main() -> int:
             nav = next((p.get("nav") for p in plugins if p.get("name") == "mcloud"), None)
             check("`mcloud` 注册了侧边栏入口", nav is not None, "nav 字段为空")
             if nav:
-                check("入口标签是人话", nav.get("label") == "云盘", str(nav.get("label")))
+                # 产品名：用户口径「移动云盘」（2026-11-13，之前是「云盘」）
+                check("入口标签是人话", nav.get("label") == "移动云盘", str(nav.get("label")))
                 check("入口有图标", bool(nav.get("icon")), str(nav.get("icon")))
 
             # ---- ⑥ 路由真的能用 ----
