@@ -139,19 +139,23 @@ test('⚠ 页面用到的每个类都有定义（面板那份或自己那份）�
   //
   // 判据：页面上出现的每个类，要么在主面板的 `theme.css` / `components.css` 里，
   //       要么在自己的 `style.css` 里。两份都找不到 = 这个类渲染出来是裸的。
-  const panelDir = new URL('../../rust-plugin-panel/web/css/', import.meta.url);
+  // 2026-11-13：只认**新面板** panel-llrt 的 `/app.css`（token + 组件唯一来源）。
+  // 旧面板的 theme.css/components.css 已不再支持（用户口径「不需要老面板兼容」）。
+  const panelFile = new URL('../../panel-llrt/web/app.css', import.meta.url);
   let panel = '';
   try {
-    panel = readFileSync(new URL('theme.css', panelDir), 'utf8') +
-      readFileSync(new URL('components.css', panelDir), 'utf8');
+    panel = readFileSync(panelFile, 'utf8');
   } catch {
     // 插件仓库要能**单独**测。面板仓库不在旁边时跳过这一条，而不是判红 ——
     // 判红的话，任何人克隆这一个仓库都会看到一条与他无关的失败。
-    t.skip('旁边没有 rust-plugin-panel 仓库，跳过');
+    t.skip('旁边没有 panel-llrt 仓库，跳过');
     return;
   }
 
   const used = new Set<string>();
+  // ⚠ 只扫**完整的静态 class 属性**（`class="a b c"`）。带 `${…}` 或字符串拼接的
+  //   （`'<span class="ms-tag' + (cls ? …) + '">'`）会把 `+`、`cls` 这种碎片当成类名 ——
+  //   那是解析噪音，不是"用了却没定义"。（2026-11-13 在 llrt 面板上撞到的假红。）
   /** 把一段 class 串拆成类名。 */
   const addClasses = (raw: string) => {
     for (const c of raw.split(/\s+/)) {
@@ -165,7 +169,8 @@ test('⚠ 页面用到的每个类都有定义（面板那份或自己那份）�
   const collect = (text: string) => {
     // 注释里的类名不算：那是文档。`<!-- -->` 与 `/* */` 都剥掉。
     const body = text.replace(/<!--[\s\S]*?-->/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
-    for (const m of body.matchAll(/class="([^"]+)"/g)) {
+    // 只收静态字面量：含 `${` 或 `'` 的是 JS 拼出来的片段，拆出来的 `+`/`cls` 是噪音
+    for (const m of body.matchAll(/class="([^"$']+)"/g)) {
       addClasses((m[1] as string).replace(/\$\{[^}]*\}/g, ' '));
     }
     // `el('button', 'btn ghost')` / `classList.toggle('is-on', …)` 这类写法
@@ -233,7 +238,8 @@ test('动作接口都是**写**（带 `x-panel: 1`），否则会被面板挡成
 // ── ⑤ 菜单栏与区块一一对应 ────────────────────────────────────────────
 
 test('⚠ 菜单栏六块，与六个区块一一对应（少一块 = 用户点不到）', () => {
-  const items = [...html.matchAll(/class="menu-item[^"]*" data-block="([a-z]+)"/g)].map(
+  // 2026-11-13：导航改用面板的分段控件（`.seg-item` + `aria-pressed`），不再自造下划线 tabs
+  const items = [...html.matchAll(/class="seg-item[^"]*" (?:type="button" )?data-block="([a-z]+)"/g)].map(
     (m) => m[1] as string,
   );
   // ⚠ 原来是七块：「设置」和「推送」都按用户要求删掉了；2026-10-31 加了「领奖」
@@ -739,8 +745,11 @@ test('⚠ 第二行那句"它自己什么时候跑"来自**面板的任务表**�
   assert.ok(/每天 \$\{hours\} 各跑一次/.test(js), '`0 8,20 * * *` 要说成"每天 8:00、20:00 各跑一次"');
   // 认不出的形状**不许编**：说"按面板里设的时间跑"
   assert.ok(/按面板里设的时间跑/.test(js), '认不出的排期要老实说');
-  // 而且它要跟着读数一起拉
-  assert.ok(/Promise\.all\(\[api\('\/readings'\), loadJobs\(\)\]\)/.test(js), 'loadJobs 要跟读数一起拉');
+  // 而且它要跟着读数一起拉 —— **串行**，不是 `Promise.all`：
+  // 面板给一个插件只有一个 JS 执行位，同时发两个请求第二个会立刻 502「正忙」
+  // （第 141 轮现场），所以顺序必须是「先读数、再任务表」。
+  assert.ok(/await api\('\/readings'\);\s*await loadJobs\(\);/.test(js), 'loadJobs 要跟着读数一起拉（串行）');
+  assert.ok(!/Promise\.all\(\[[^\]]*api\('\/readings'\)/.test(js), '不许再并行拉（会自己撞自己）');
 });
 
 test('⚠ 界面上**没有**「连接」这种按钮（参考实现里换票是任务自己做的事）', () => {
