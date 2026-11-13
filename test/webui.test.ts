@@ -717,7 +717,7 @@ test('⚠ 运行日志是**终端样式**，接的是面板的日志流（SSE）
   assert.ok(/showBlock[\s\S]{0,800}?syncTerms\(name\)/.test(js), '切块时要开关日志流');
   // 行数有上限，且日志一律走 textContent（里面有用户可控字符串）
   assert.ok(/TERM_MAX_LINES/.test(js), '行数要封顶');
-  assert.ok(/msg\.textContent = String\(d\.msg/.test(js), '日志文本要用 textContent 画');
+  assert.ok(/msg\.textContent = String\(text/.test(js), '日志文本要用 textContent 画');
   assert.ok(!/innerHTML[^\n]*d\.msg/.test(js), '不许把日志塞进 innerHTML');
   // 换级别要重连（过滤在服务端）：处理器是字面量，重连逻辑在 `reload()` 里
   assert.ok(/\$\('daily-term-level'\)\.addEventListener\('change', \(\) => termHandle\('daily'\)\.reload\(\)\)/.test(js),
@@ -1511,4 +1511,23 @@ test('account picker 的 legacy 说明也写死 id（拼出来在 manual 上不�
   assert.equal(/\$\x60\$\{cfg\.key\}-acct-/.test(js), false, '别再拼 `${cfg.key}-acct-*` 的 id');
   assert.match(js, /legacy: 'daily-acct-legacy'/, 'daily 那条要有 legacy');
   assert.match(js, /legacy: 'live-acct-legacy'/, 'live 那条要有 legacy');
+});
+
+// ── ⑧ 日志流：新面板（panel-llrt）的帧形状 ─────────────────────────────
+
+test('日志：新面板的帧走默认 message 事件，按插件过滤、从前缀还原级别、时间戳吃 epoch 毫秒', () => {
+  const js = srcOf('plugins/mcloud/app.js');
+  // 新面板没有事件名（裸 `data:` 帧）——只挂 `addEventListener('log')` 会一帧都收不到
+  assert.ok(/es\.onmessage = paintPanel;/.test(js), '必须挂默认 message 事件');
+  assert.ok(/function paintPanel\(ev\)/.test(js), '要有新面板那一路的解析');
+  // 新面板不按插件过滤（所有插件都推）⇒ 自己筛
+  assert.ok(/d\.plugin !== plugin\) return;/.test(js), '要按 plugin 过滤');
+  // 只有 info/warn/error 三档；debug/start/ok/fail 是文本前缀
+  assert.ok(js.includes('(debug|start|ok|fail|fatal|success)'), '要从前缀还原级别');
+  // `ts` 在新面板是 epoch 毫秒（一长串数字），必须格式化，不能直接 slice
+  assert.ok(/\/\^\\d\{13\}\$\/\.test\(raw\)/.test(js), '13 位时间戳要按毫秒格式化');
+  assert.ok(/String\(d\.getHours\(\)\)/.test(js), '要真的格式化成 HH:mm:ss.SSS');
+  // 断线重连要带游标（EventSource 自动重连不带 since，会丢一段）
+  assert.ok(/q\.set\('since', String\(lastId\)\)/.test(js), '重连要带 since');
+  assert.ok(/typeof d\.id === 'number' && d\.id > lastId/.test(js), '要记 lastId');
 });
