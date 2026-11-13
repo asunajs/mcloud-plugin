@@ -63,15 +63,14 @@ for (const [name, entry] of Object.entries(ENTRIES)) {
   }
 }
 
-// 界面：**plugins/mcloud-llrt/** → <插件目录>/mcloud.webui/
+// 界面：plugins/mcloud/ → <插件目录>/mcloud.webui/
 //
-// ⚠ 用 `mcloud-llrt/` 而不是 `mcloud/`：新面板（0.4.x）的界面与 0.3.x 差在
-//   ① `<head>` 引面板的 `/app.css`（token + 组件的唯一来源）
-//   ② token 映射方向（`--text: var(--fg)`，写反就整页塌 —— 第 155 轮事故）
-//   ③ `boot.js` 自己挂 `data-theme`（`?theme=` → localStorage → 系统）
-//   ④ `?diag=1` 自检 + `--style-ver`
-//   见 `plugins/mcloud-llrt/README.md` 与面板仓 `docs/handoff/mcloud-webui-0.4.md`。
-const uiSrc = join(ROOT, 'plugins/mcloud-llrt');
+// ⚠ **只有一份界面源**（不再维护 0.3.x 兼容版，2026-11-13 用户口径「不需要老面板兼容」）。
+//   这份源已经是 panel-llrt（0.4.x）的形状：`<head>` 引面板的 `/app.css`（token + 组件的
+//   唯一来源）、token 映射是「旧名 → 0.4.0」（`--text: var(--fg)`，写反就整页塌）、
+//   `boot.js` 自己挂 `data-theme`、`?diag=1` 自检 + `--style-ver`。
+//   准则见技能 `panel-plugin-ui` 与面板仓 `scripts/check-plugin-style.mjs`。
+const uiSrc = join(ROOT, 'plugins/mcloud');
 const uiDst = join(OUTDIR, 'mcloud.webui');
 rmSync(uiDst, { recursive: true, force: true });
 cpSync(uiSrc, uiDst, { recursive: true });

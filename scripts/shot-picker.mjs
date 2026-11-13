@@ -48,7 +48,7 @@ await send('Page.navigate', { url: `${base}/plugins/mcloud/index.html` }); await
 const m = await evalJs(`JSON.stringify({ scrollW: document.documentElement.scrollWidth, clientW: document.documentElement.clientWidth })`);
 console.log('宽度', m.result?.value);
 // 滚到设备指纹那一块
-await evalJs(`document.querySelector('.menu-item[data-block="daily"]').click()`);
+await evalJs(`document.querySelector('.seg-item[data-block="daily"]').click()`);
 await sleep(400);
 await evalJs(`document.getElementById('daily-acct-btn').click()`);
 await sleep(400);

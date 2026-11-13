@@ -219,7 +219,7 @@ async function main() {
   ];
   for (const [block, name] of blocks) {
     await send('Runtime.evaluate', {
-      expression: `document.querySelector('.menu-item[data-block="${block}"]').click()`,
+      expression: `document.querySelector('.seg-item[data-block="${block}"]').click()`,
     });
     await sleep(400);
     await shot(name);
@@ -227,7 +227,7 @@ async function main() {
 
   // 回到「日常」，真跑一次，再截一张 —— 「最近几次」那个列表只有真跑过才有内容
   await send('Runtime.evaluate', {
-    expression: `document.querySelector('.menu-item[data-block="daily"]').click()`,
+    expression: `document.querySelector('.seg-item[data-block="daily"]').click()`,
   });
   await sleep(300);
   await send('Runtime.evaluate', { expression: `document.getElementById('daily-run').click()` });

@@ -23,6 +23,11 @@
 
 'use strict';
 
+// 页面版本号：和 style.css 里的 --style-ver 一起人工递增。
+// 「样式自检」（boot.js 的 ?diag=1）会读它 —— 用来区分「CSS 是新的、JS 还是旧的」这种
+// 半新半旧状态（第 155 轮：样式表是 v155，但 DOM 里根本没有 .ex-group-row 这种行）。
+document.documentElement.dataset.appVer = '155';
+
 /** 插件自己的接口。 */
 const API = '/plugins/mcloud/api';
 
@@ -205,6 +210,11 @@ function runTask(key) {
 
 function toast(msg, bad) {
   const el = $('toast');
+  // 没有字就别画：一个空的白卡片比不提示更让人困惑（它看起来像「加载中」）。
+  if (!msg) {
+    el.hidden = true;
+    return;
+  }
   el.textContent = msg;
   // 用主面板的提示条组件（`.toast` / `.toast.bad`），不是自己画一个：
   // 同一种"出事了"的提示在全站应该长一样。
@@ -233,7 +243,11 @@ async function act(btn, fn, okMsg) {
   if (!owned) btn.textContent = '…';
   try {
     const r = await fn();
-    toast(typeof okMsg === 'function' ? okMsg(r) : okMsg);
+    // ⚠ 空串 = 「这次别提示」（比如切到「数据」页时那次自动取豆）。
+    // 以前这里无条件 toast，于是 `act(..., () => '')` 会在页面顶上一个**没有字的空卡片**
+    // —— 用户看到的就是「啥也没写的提示条」（第 145 轮实测：切 tab 就冒一下）。
+    const msg = typeof okMsg === 'function' ? okMsg(r) : okMsg;
+    if (msg) toast(msg);
     await load();
   } catch (e) {
     toast(String(e && e.message ? e.message : e), true);
@@ -2841,8 +2855,11 @@ function render(r) {
 
 async function load() {
   try {
-    // 排期与读数一起拉：第二行那句「它自己什么时候跑」要真值（见 `scheduleText`）
-    const [r] = await Promise.all([api('/readings'), loadJobs()]);
+    // 排期与读数**串行**拉（第 141 轮）：面板里一个插件只有**一个** JS 执行位，
+    // 同时发两个请求时第二个会立刻拿到 502「正忙」—— 这不是任务在跑，是自己撞自己。
+    // 代价是这两个请求不再并行（各几十毫秒，界面感知不到）。
+    const r = await api('/readings');
+    await loadJobs();
     last = r;
     render(last);
   } catch (e) {
@@ -3180,10 +3197,11 @@ function syncTerms(blockName) {
 }
 
 function showBlock(name) {
-  for (const b of document.querySelectorAll('.menu-item')) {
+  for (const b of document.querySelectorAll('.seg-item[data-block]')) {
     const on = b.dataset.block === name;
-    b.classList.toggle('is-on', on);
-    // 下划线对屏幕阅读器不可见；补 aria-current 让它知道"现在在哪一块"。
+    // 面板的分段控件用 `aria-pressed` 表达选中态（不是自定义的 `is-on` 类）
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    // 屏幕阅读器：再给一个 aria-current 说"现在在哪一块"
     if (on) b.setAttribute('aria-current', 'page');
     else b.removeAttribute('aria-current');
   }
@@ -3201,7 +3219,7 @@ function showBlock(name) {
 }
 
 $('menu').addEventListener('click', (ev) => {
-  const btn = ev.target.closest('.menu-item');
+  const btn = ev.target.closest('.seg-item[data-block]');
   if (!btn) return;
   showBlock(btn.dataset.block);
 });
@@ -3379,6 +3397,28 @@ function pickerLabel(v, follow) {
   return `${n} 个账号`;
 }
 
+/** 触发按钮上的「选中了什么」——用**标签**说（TDesign 多选的样式），不用一句话。
+ *
+ *  ⚠ 原来按钮上只印一行字（「全部账号」/「2 个账号」）：用户点开面板才知道具体是谁，
+ *  收起来又忘了。标签能一眼看出「这趟跑哪几个号」，多了折成 +N。
+ */
+function pickerTags(v, follow, accounts) {
+  const tag = (text, cls) =>
+    '<span class="ms-tag' + (cls ? ' ' + cls : '') + '">' + esc(text) + '</span>';
+  if (follow === true) return tag('跟随自动', 'is-polar');
+  if (!v) return tag('…', 'is-polar');
+  if (v.all === true) return tag('全部账号') + tag('新号也算', 'is-polar');
+  const ids = v.ids || v.picked || [];
+  if (ids.length === 0) return tag('没选账号', 'is-polar');
+  const labels = ids.map((id) => {
+    const a = (accounts || []).find((x) => x.id === id);
+    return (a && a.label) || id;
+  });
+  const head = labels.slice(0, 2).map((t) => tag(t)).join('');
+  const more = labels.length > 2 ? tag('+' + (labels.length - 2), 'is-more') : '';
+  return head + more;
+}
+
 function renderPicker(cfg) {
   const all = (last && last.taskAccounts && last.taskAccounts[cfg.task]) || null;
   const v = cfg.mode === 'manual'
@@ -3391,7 +3431,12 @@ function renderPicker(cfg) {
   //   （`legacyAuto` = 这一版还没单独设过、读的是旧键），用户看到它只会猜
   //   "这设置过期了？"或"还有一份新版设置我没找到"。所以按钮保持干净，
   //   "这份是从你以前的设置沿用的"挪进展开面板，那儿有地方说清楚。
-  setText(cfg.label, pickerLabel({ ...v, accounts }, follow));
+  // 触发按钮：标签（TDesign 多选的样子）；收起来也能看出跑哪几个号
+  const labelEl = $(cfg.label);
+  if (labelEl) {
+    labelEl.innerHTML = pickerTags({ ...v, accounts }, follow, accounts);
+    labelEl.title = pickerLabel({ ...v, accounts }, follow);
+  }
   // ⚠ 同理：`${cfg.key}-acct-legacy` 拼出来的是 `daily-manual-acct-legacy`，
   //   HTML 里根本没有这个 id（只有 `daily-acct-legacy`）⇒ 拼出来的写法在 manual
   //   那两条上永远写不到（评审 2026-11-01）。改成表里写死。
@@ -3462,24 +3507,35 @@ function pickerPick(cfg, ev) {
   void savePicker(cfg, false, ids, false).catch((e) => toast(e.message || '没存上', true));
 }
 
+/** 「清空」：一个号都不勾（= 这趟不跑），并把「全部 / 跟随」一起取消。
+ *  这是 TDesign 多选浮层页脚那个「清空」的等价物 —— 手点三个框才回到空，太啰嗦。 */
+function pickerClear(cfg) {
+  void savePicker(cfg, false, [], false).catch((e) => toast(e.message || '没存上', true));
+}
+
 // ── 绑定：每个任务两份，字面 id（静态检查能看出有没有绑）──
 $('daily-acct-btn').addEventListener('click', (ev) => pickerToggle(PICKERS[0], ev));
 $('daily-acct-all').addEventListener('change', (ev) => pickerToggleAll(PICKERS[0], ev.currentTarget.checked));
 $('daily-acct-list').addEventListener('change', (ev) => pickerPick(PICKERS[0], ev));
 
+$('daily-acct-clear').addEventListener('click', () => pickerClear(PICKERS[0]));
 $('daily-manual-btn').addEventListener('click', (ev) => pickerToggle(PICKERS[1], ev));
 $('daily-manual-follow').addEventListener('change', (ev) => pickerFollow(PICKERS[1], ev.currentTarget.checked));
 $('daily-manual-all').addEventListener('change', (ev) => pickerToggleAll(PICKERS[1], ev.currentTarget.checked));
 $('daily-manual-list').addEventListener('change', (ev) => pickerPick(PICKERS[1], ev));
 
+$('daily-manual-clear').addEventListener('click', () => pickerClear(PICKERS[1]));
 $('live-acct-btn').addEventListener('click', (ev) => pickerToggle(PICKERS[2], ev));
 $('live-acct-all').addEventListener('change', (ev) => pickerToggleAll(PICKERS[2], ev.currentTarget.checked));
 $('live-acct-list').addEventListener('change', (ev) => pickerPick(PICKERS[2], ev));
 
+$('live-acct-clear').addEventListener('click', () => pickerClear(PICKERS[2]));
 $('live-manual-btn').addEventListener('click', (ev) => pickerToggle(PICKERS[3], ev));
 $('live-manual-follow').addEventListener('change', (ev) => pickerFollow(PICKERS[3], ev.currentTarget.checked));
 $('live-manual-all').addEventListener('change', (ev) => pickerToggleAll(PICKERS[3], ev.currentTarget.checked));
 $('live-manual-list').addEventListener('change', (ev) => pickerPick(PICKERS[3], ev));
+
+$('live-manual-clear').addEventListener('click', () => pickerClear(PICKERS[3]));
 
 document.addEventListener('click', (ev) => {
   if (ev.target.closest('.picker')) return;

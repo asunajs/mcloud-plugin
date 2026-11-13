@@ -13,13 +13,13 @@
            的第三方组件（`/vendor/puredashboard/*`）这里**引不到**：
            弹窗用的是面板自己那套 `.dialog*`（在 `components.css` 里），
            与面板的「运行记录」弹窗**是同一个组件**，不是另画一个。 -->
-    <link rel="stylesheet" href="/css/reset.css" />
-    <link rel="stylesheet" href="/css/theme.css" />
-    <link rel="stylesheet" href="/css/components.css" />
-    <link rel="stylesheet" href="style.css" />
+    <!-- 面板 0.4.0 只有一份 /app.css：token（含 [data-theme=dark]）+ 组件（.btn/.card/.field/.pill…）
+         都在里面。旧面板的 /css/reset|theme|components.css 已经不存在了（第 139 轮）。 -->
+    <link rel="stylesheet" href="/app.css" />
+    <link rel="stylesheet" href="style.css?v=20261113-1945" />
 
     <!-- 主题跟随 + embed 标记，必须赶在第一帧之前（见 boot.js 的文件头） -->
-    <script src="boot.js"></script>
+    <script src="boot.js?v=20261113-1945"></script>
   </head>
   <body>
     <!--
@@ -69,13 +69,15 @@
       </div>
     </header>
 
-    <nav class="menu" id="menu" aria-label="区块">
-      <button class="menu-item is-on" data-block="account">账号</button>
-      <button class="menu-item" data-block="daily">日常</button>
-      <button class="menu-item" data-block="exchange">兑换</button>
-      <button class="menu-item" data-block="live">直播</button>
-      <button class="menu-item" data-block="prizes">领奖</button>
-      <button class="menu-item" data-block="data">数据</button>
+    <!-- 区块切换用**面板的分段控件**（`.seg` / `.seg-item[aria-pressed]`）：
+         与面板日志页的级别筛选、设置页签是同一个控件，不自造一套下划线 tabs。 -->
+    <nav class="seg mcloud-nav" id="menu" role="group" aria-label="区块">
+      <button class="seg-item" type="button" data-block="account" aria-pressed="true">账号</button>
+      <button class="seg-item" type="button" data-block="daily" aria-pressed="false">日常</button>
+      <button class="seg-item" type="button" data-block="exchange" aria-pressed="false">兑换</button>
+      <button class="seg-item" type="button" data-block="live" aria-pressed="false">直播</button>
+      <button class="seg-item" type="button" data-block="prizes" aria-pressed="false">领奖</button>
+      <button class="seg-item" type="button" data-block="data" aria-pressed="false">数据</button>
     </nav>
 
     <main class="main">
@@ -493,6 +495,10 @@
               <span><b>全部账号</b><br /><span class="hint">定时触发用这一份；以后新登录的账号也一起跑</span></span>
             </label>
             <div class="picker-list" id="daily-acct-list"></div>
+            <div class="picker-foot">
+              <span class="hint">勾了的号才会跑</span>
+              <button type="button" class="btn ghost sm" id="daily-acct-clear">清空</button>
+            </div>
           </div>
         </div>
         <div class="picker" data-picker="日常-本次">
@@ -509,6 +515,10 @@
               <span><b>全部账号</b><br /><span class="hint">只影响这一次手动运行</span></span>
             </label>
             <div class="picker-list" id="daily-manual-list"></div>
+            <div class="picker-foot">
+              <span class="hint">勾了的号才会跑</span>
+              <button type="button" class="btn ghost sm" id="daily-manual-clear">清空</button>
+            </div>
           </div>
         </div>
         <!-- 上一次**每个号**的结果：多账号时"哪个号成了"一眼看到，不用翻日志。
@@ -578,7 +588,7 @@
         <p class="hint">用<b>当前账号</b>马上换；只影响这一下，不改定时任务的目标。</p>
         <div class="row" style="align-items:flex-end; margin-top:var(--sp-3)">
           <label class="field"><span class="field-label">当前账号（手动兑换）</span>
-            <select id="ex-account" class="select"></select></label>
+            <select id="ex-account"></select></label>
           <label class="term-follow" title="关掉之后点「立即兑换」会直接下单扣豆">
             <input type="checkbox" id="ex-confirm-first" checked /> 下单前再确认一次
           </label>
@@ -605,7 +615,7 @@
         <p class="hint" id="ex-note"></p>
         <div class="row">
           <input id="ex-filter" class="input" type="search" placeholder="搜名字或编号" />
-          <select id="ex-verdict" class="select" aria-label="筛选能不能换">
+          <select id="ex-verdict" aria-label="筛选能不能换">
             <option value="">全部</option>
             <option value="ok">只看可兑</option>
             <option value="sub">只看关注</option>
@@ -669,6 +679,10 @@
               <span><b>全部账号</b><br /><span class="hint">定时触发用这一份；以后新登录的账号也一起跑</span></span>
             </label>
             <div class="picker-list" id="live-acct-list"></div>
+            <div class="picker-foot">
+              <span class="hint">勾了的号才会跑</span>
+              <button type="button" class="btn ghost sm" id="live-acct-clear">清空</button>
+            </div>
           </div>
         </div>
         <div class="picker" data-picker="直播-本次">
@@ -685,6 +699,10 @@
               <span><b>全部账号</b><br /><span class="hint">只影响这一次手动运行</span></span>
             </label>
             <div class="picker-list" id="live-manual-list"></div>
+            <div class="picker-foot">
+              <span class="hint">勾了的号才会跑</span>
+              <button type="button" class="btn ghost sm" id="live-manual-clear">清空</button>
+            </div>
           </div>
         </div>
         <!-- 听弹幕时长：照 mcloud Rust 的「听弹幕时长」参数（5–1800 秒）。
@@ -747,7 +765,7 @@
               <span class="card-title">待领取</span>
             </div>
             <div class="card-actions">
-              <select class="select" id="prize-account" aria-label="看哪个账号的待领取商品"></select>
+              <select id="prize-account" aria-label="看哪个账号的待领取商品"></select>
               <button class="btn" id="prize-refresh" type="button">刷新</button>
             </div>
           </div>
@@ -784,7 +802,7 @@
               <span class="card-title">App 任务</span>
             </div>
             <div class="card-actions">
-              <select class="select" id="matrix-account" aria-label="看哪个账号的任务状态"></select>
+              <select id="matrix-account" aria-label="看哪个账号的任务状态"></select>
               <button class="btn ghost" id="matrix-refresh" type="button">刷新</button>
             </div>
           </div>
@@ -797,6 +815,6 @@
     </main>
 
     <div class="toast" id="toast" hidden></div>
-    <script src="app.js?v=20261031-2130"></script>
+    <script src="app.js?v=20261113-1945"></script>
   </body>
 </html>

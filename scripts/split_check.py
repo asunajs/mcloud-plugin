@@ -285,8 +285,8 @@ def main() -> int:
                 check(f"菜单栏有「{word}」", f'>{word}</button>' in page, "菜单里找不到这个词")
             check(
                 "菜单栏恰好 6 项（「设置」「推送」两页都删了，另加「领奖」）",
-                page.count('class="menu-item') == 6,
-                f"实际 {page.count('class=\"menu-item')} 项",
+                page.count('class="seg-item') == 6,
+                f"实际 {page.count('class=\"seg-item')} 项",
             )
             check("没有「高级」开关", "adv-toggle" not in page)
             code, js = http(f"{base}/plugins/mcloud/app.js")
