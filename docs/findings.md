@@ -7291,3 +7291,40 @@ POST https://note-njs.yun.139.com/noteServer/api/authTokenRefresh.do  404 Route 
 补了 `src/panelllrt/panel-host.d.ts`（`declare module 'panel:host'`，默认导出收成
 `Record<string, unknown>`；用它的地方本来就收窄成 `any`，这里不编精确签名）。
 `npm run build:panelllrt` 实测产出 4 个插件 + 界面，共 1322.4 KB。
+
+## F-134 界面归插件项目；只留一份源，且就是新面板那份（2026-11-13）
+
+### 事故：在产物上改了四天，一次构建就没了
+
+`build-panelllrt.mjs` 原来是 `rmSync + cpSync(plugins/mcloud → panel-llrt/plugins/mcloud.webui)`。
+而新面板（0.4.x）要的界面与 0.3.x 差四类东西（`<head>` 引 `/app.css`、token 映射方向、
+`boot.js` 自己挂 `data-theme`、`?diag=1`），这些**只在产物里**被改过 ⇒
+每次 `npm run build:panelllrt` 都会整段冲掉（"新 CSS / nav / 主题跟随全没了"）。
+
+### 现在：变体目录进插件项目，构建只拷它
+
+**最终形态（2026-11-13 用户口径「不需要老面板兼容」）**：只留**一份**界面源，就是 0.4 那份。
+
+- `plugins/mcloud/{index.html,style.css,app.js,boot.js}` 直接换成 0.4 版
+  （由 `plugins/mcloud/` + 面板仓交接补丁 `docs/handoff/mcloud-webui-0.4.diff` 得到，
+  **逐字节等于**面板仓当时那版暂存产物：`0c2fd5c2` / `8686d162` / `50063e23` / `a0038ab2`）
+- 不再维护 `plugins/mcloud-llrt/` 这种双源变体，也不再需要「打补丁复现」——
+  源就是新面板的形状，`build-panelllrt.mjs` 直接 `cpSync(plugins/mcloud → mcloud.webui)`
+- 老面板要是不再跑了，`plugins/mcloud/` 里那套 0.3 形状的兼容写法（`--fg: var(--text)`、
+  `/css/theme.css`）**已经删除**，所以别拿这份源去给旧面板用
+
+### 门禁（面板仓，全绿）
+
+```
+check-plugin-style.mjs          ok（token / 颜色 / !important / 主题 / 控件）
+ui-check.mjs                    ok 81 条
+ui-kit-check.mjs                ok 23 条
+check-docs.sh / check-pitfalls  ok 14 篇 / 12 条
+deploy-daily.sh                 插件已同步：14 个文件（已逐个核对）· readyz ok 5/5
+```
+
+### 纪律（这次踩到的两条）
+
+1. **不手改产物**：`panel-llrt/plugins/*` 是构建产物，改界面改 `mcloud-plugin` 里的源
+2. **不用 `git add -A`**：同工作树里躺着别人未提交的改动（这次 `src/panelllrt/hostApi.ts`
+   就有 60 行是别人写的），只提交自己该交的文件
