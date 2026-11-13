@@ -63,8 +63,15 @@ for (const [name, entry] of Object.entries(ENTRIES)) {
   }
 }
 
-// 界面：plugins/mcloud/ → <插件目录>/mcloud.webui/
-const uiSrc = join(ROOT, 'plugins/mcloud');
+// 界面：**plugins/mcloud-llrt/** → <插件目录>/mcloud.webui/
+//
+// ⚠ 用 `mcloud-llrt/` 而不是 `mcloud/`：新面板（0.4.x）的界面与 0.3.x 差在
+//   ① `<head>` 引面板的 `/app.css`（token + 组件的唯一来源）
+//   ② token 映射方向（`--text: var(--fg)`，写反就整页塌 —— 第 155 轮事故）
+//   ③ `boot.js` 自己挂 `data-theme`（`?theme=` → localStorage → 系统）
+//   ④ `?diag=1` 自检 + `--style-ver`
+//   见 `plugins/mcloud-llrt/README.md` 与面板仓 `docs/handoff/mcloud-webui-0.4.md`。
+const uiSrc = join(ROOT, 'plugins/mcloud-llrt');
 const uiDst = join(OUTDIR, 'mcloud.webui');
 rmSync(uiDst, { recursive: true, force: true });
 cpSync(uiSrc, uiDst, { recursive: true });
