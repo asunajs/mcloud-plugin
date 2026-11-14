@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.25 · 插件 `mcloud-daily`
+//   mcloud-plugin 0.2.27 · 插件 `mcloud-daily`
 
 // src/entries/daily.ts
 import { debug as debug2, register_cron } from "host-api";
@@ -862,6 +862,8 @@ var KEY_SCOPE = {
   // 界面上「选一件」的下拉缓存（全量清单里挑出来的四格）。
   // **按账号** —— 清单与"能不能换"都是账号级的。日界作废，见 exchangeList.ts。
   "mcloud.exchangelist.pick": "account",
+  // 434「领20豆」本月已领的月份（按月幂等；不同号各攒各的 7/7）。
+  "mcloud.shareclaim.done": "account",
   // 「我关注的奖品」：按账号存（不同账号的清单不同，关注的 id 也可能不同）。
   "mcloud.exchange.subs": "account",
   "mcloud.exchange.plan": "account",
@@ -4569,6 +4571,7 @@ var PC_UPLOAD_TASK_ID = 113;
 var UPLOAD_TASK_ID = 106;
 var GATE_UPLOAD_TASK_ID = 522;
 var SHARE_TASK_ID = 434;
+var SPECIAL_CLICK_STEP = 22;
 var SKIP_TASK_LIST = [
   117,
   437,
@@ -4583,6 +4586,7 @@ var SKIP_TASK_LIST = [
   120
 ];
 var PORTAL_ENTRY_TASK_IDS = [1017, 604];
+var ENTRY_TWICE_TASK_IDS = [619];
 var CLICK_ONLY_TASK_IDS = [
   115,
   431,
@@ -4639,9 +4643,18 @@ function needsPortalEntry(taskId) {
 function isShare(taskId) {
   return taskId === SHARE_TASK_ID;
 }
+function isEntryTwice(taskId) {
+  return taskId !== void 0 && ENTRY_TWICE_TASK_IDS.includes(taskId);
+}
+function isShareClaim(item) {
+  if (item.taskId !== SHARE_TASK_ID) return false;
+  if (item.currStep === SPECIAL_CLICK_STEP) return true;
+  return /领\s*\d+\s*豆/.test(item.buttonOutText ?? "");
+}
 function stepFor(item) {
   if (shouldSkip(item.taskId)) return void 0;
   if (item.taskId === 409 || item.taskId === 1005) return { kind: "entry" };
+  if (isEntryTwice(item.taskId)) return { kind: "entryTwice" };
   if (needsPortalEntry(item.taskId)) return { kind: "portal" };
   if (isShare(item.taskId)) return { kind: "share" };
   if (item.taskId === 1020) return { kind: "runner", runner: "mailBackup" };
@@ -5580,7 +5593,7 @@ function advance(deps, st) {
     }
   }
   if (next.needUpload && !clickFirst) beginUpload(deps, next.itemId, next.name);
-  const special = next.step.kind === "entry" ? "entry" : next.step.kind === "portal" ? "portal" : next.step.kind === "share" ? "share" : next.step.kind === "runner" ? specialForRunner(next.step.runner) : void 0;
+  const special = next.step.kind === "entry" ? "entry" : next.step.kind === "entryTwice" ? "entryTwice" : next.step.kind === "portal" ? "portal" : next.step.kind === "share" ? "share" : next.step.kind === "runner" ? specialForRunner(next.step.runner) : void 0;
   if (next.currStep !== void 0 && next.currStep !== 0 && special !== void 0) {
     phase = phaseOfSpecial(special) ?? phase;
   }
@@ -5636,6 +5649,7 @@ function pendingItems(deps) {
     if (!reading) return;
     for (const [ii, item] of (reading.items ?? []).entries()) {
       if (judgeItem(item) !== "todo") continue;
+      if (isShareClaim(item)) continue;
       if (shouldSkip(item.taskId)) continue;
       if (monthGateSkips({ groupId: item.groupId, marketName: reading.group }, monthBackup, day)) {
         continue;
@@ -5782,7 +5796,7 @@ function startAppTask(deps) {
     }
   }
   if (first.needUpload && !clickFirst) beginUpload(deps, first.itemId, first.name);
-  const special = first.step.kind === "entry" ? "entry" : first.step.kind === "portal" ? "portal" : first.step.kind === "share" ? "share" : first.step.kind === "runner" ? specialForRunner(first.step.runner) : void 0;
+  const special = first.step.kind === "entry" ? "entry" : first.step.kind === "entryTwice" ? "entryTwice" : first.step.kind === "portal" ? "portal" : first.step.kind === "share" ? "share" : first.step.kind === "runner" ? specialForRunner(first.step.runner) : void 0;
   if (first.currStep !== void 0 && first.currStep !== 0 && special !== void 0) {
     phase = phaseOfSpecial(special) ?? phase;
   }
@@ -5832,6 +5846,8 @@ function phaseOfSpecial(s) {
   switch (s) {
     case "entry":
       return "entry";
+    case "entryTwice":
+      return "entryTwice";
     case "portal":
       return "portal";
     case "share":
@@ -6052,6 +6068,27 @@ function runAppTaskStep(deps) {
       // `advance` 现在只回 `ok:true`；这里写死 true，别让人以为还有判死逻辑（评审 2026-11-01）。
       ok: true,
       note: `固定入口 #${st.itemId}（${bits.join("；")}）。${out2.note}`
+    };
+  }
+  if (st.phase === "entryTwice") {
+    const market = st.data?.marketName ?? "sign_in_3";
+    const bits = [];
+    const a1 = callRawText(deps.transport, entryPostRequest(deps, market));
+    bits.push(a1.ok ? "doTaskPost ok" : `doTaskPost 没成：${a1.error ?? ""}`);
+    waitGap(deps);
+    const c1 = callRawText(deps.transport, clickRequest(deps, st.itemId, "task"));
+    bits.push(c1.ok ? "key=task ok" : `key=task 没成：${c1.error ?? ""}`);
+    waitGap(deps);
+    const a2 = callRawText(deps.transport, entryPostRequest(deps, market));
+    bits.push(a2.ok ? "doTaskPost#2 ok" : `doTaskPost#2 没成：${a2.error ?? ""}`);
+    waitGap(deps);
+    const c2 = callRawText(deps.transport, clickRequest(deps, st.itemId, "task2"));
+    bits.push(c2.ok ? "key=task2 ok" : `key=task2 没成：${c2.error ?? ""}`);
+    const out2 = advance(deps, doneState(deps, st));
+    return {
+      // 四发里有一发没发出去才判失败；状态是否真的翻 FINISH 由收尾那次矩阵复查判。
+      ok: true,
+      note: `两轮打卡 #${st.itemId}（${bits.join("；")}）—— 等复查确认。${out2.note}`
     };
   }
   if (st.phase === "portal") {
@@ -6620,6 +6657,48 @@ function appTaskStatusLines(store2, opts = {}) {
     out.push(spec.id === 549 && opts.backupOn === false ? `${line}（备份开关没开，开了才会有）` : line);
   }
   return out;
+}
+
+// src/mcloud/tasks/shareClaim.ts
+var STATE_SHARE_CLAIM_DONE = "mcloud.shareclaim.done";
+function claimedBeans(env) {
+  const raw = resultObject(env).num;
+  if (typeof raw === "number" && Number.isFinite(raw)) return raw;
+  if (typeof raw === "string" && /^\d+$/.test(raw.trim())) return Number(raw.trim());
+  return void 0;
+}
+function runShareClaim(deps) {
+  const claim = readMatrix(deps.store).flatMap((r) => r?.items ?? []).find((item) => isShareClaim(item)) ?? void 0;
+  if (claim === void 0) {
+    return { ok: true, skipped: true, note: "分享还没攒到领奖档（仍然按天攒份数）" };
+  }
+  const month = deps.nowIso.slice(0, 7);
+  const done2 = deps.store.getState(STATE_SHARE_CLAIM_DONE);
+  if (done2 === month) {
+    return { ok: true, skipped: true, note: `这个月的 20 豆已经领过了（${month}），等下一轮` };
+  }
+  const res = callRawText(deps.transport, clickRequest(deps, SHARE_TASK_ID));
+  if (!res.ok) {
+    return { ok: false, note: `领20豆 没发出去：${res.error ?? "未知失败"}（下一趟重试）` };
+  }
+  let env;
+  try {
+    env = parseSignInEnvelope(res.text);
+  } catch (e) {
+    return {
+      ok: false,
+      note: `领20豆 的回包认不出来：${e instanceof Error ? e.message : String(e)}（原样：${res.text.slice(0, 80).replace(/\s+/g, " ")}）`
+    };
+  }
+  const beans = claimedBeans(env);
+  if (!env.ok || beans === void 0 || beans <= 0) {
+    return {
+      ok: false,
+      note: `领20豆 发了，但服务端没认：code=${env.code} ${env.message || ""} result.num=${String(beans ?? "没给")}（下一趟重试）`
+    };
+  }
+  deps.store.setState(STATE_SHARE_CLAIM_DONE, month, deps.nowIso);
+  return { ok: true, note: `领到 ${beans} 豆（分享文件领好礼 7/7 的尾奖，本月已记）` };
 }
 
 // src/mcloud/tasks/info.ts
@@ -9683,6 +9762,7 @@ function runDaily(deps, opts = {}) {
       lines: statusLines
     });
   }
+  push(once("分享领奖", runShareClaim, deps));
   const rpKick = redpackGate(deps);
   if (rpKick.idle === true || rpKick.skipped === true) {
     push({ name: "红包派对", ok: true, note: rpKick.note, idle: true });

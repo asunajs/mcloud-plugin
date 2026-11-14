@@ -17,6 +17,7 @@ import {
 import { MATRIX_MARKETS, runAppTaskMatrix } from './tasks/appTaskMatrix.ts';
 import { activeAppTaskFileId, appTaskFresh, runAppTaskStep, startAppTask } from './tasks/appTask.ts';
 import { appTaskStatusLines } from './tasks/appTaskStatus.ts';
+import { runShareClaim } from './tasks/shareClaim.ts';
 import { runMultiple } from './tasks/multiple.ts';
 import { runPrizes } from './tasks/prizes.ts';
 import { REDPACK_BUDGET, redpackGate, redpackStep } from './tasks/redpack.ts';
@@ -306,6 +307,16 @@ export function runDaily(
       lines: statusLines,
     });
   }
+
+  // ④c 分享文件领好礼（434）攒满 7/7 后的「领20豆」。
+  //     与 ④ 的攒份数**不是同一件事**：那一档服务端只收一发
+  //     `GET task/click?key=task&id=434`（抓包 2026-11-14），不走建外链。
+  //     ⚠ 放在 ④ 的 appTask drain **之后**：矩阵读数是 ④ 开头刷新的，
+  //       这一步读的是同一份读数；而且 ④ 若今天刚把 6/7 推到 7/7，
+  //       这一步仍要等下一次矩阵刷新才会看到（不赌「本地刚做完就算数」）。
+  //     ⚠ 放在 ⑤ 领取AI豆 **之前**：那一族只认 `receiveList` 账本，
+  //       这 20 豆不走它（抓包里 `receiveList` 只有 `cloudType=2` 下月可领）。
+  push(once('分享领奖', runShareClaim, deps));
 
   // ④.5 红包派对（移动云手机的活动站）—— 另一台主机、**另一套凭据**。
   //
