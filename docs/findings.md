@@ -7374,3 +7374,36 @@ data: {"id":1794578027097,"ts":1794578027097,"plugin":"mcloud-daily","run_id":7,
 
 时间戳格式对、级别从前缀还原成 `debug`、插件过滤对（mcloud 的 reload 行没串进来）。
 回归断言在 `test/webui.test.ts` 第 ⑧ 组（onmessage / 过滤 / 前缀 / epoch / since）。
+
+## F-136 入口任务 619 两轮打卡；「领20豆」以任务表为准（2026-11-14）
+
+样本：`mcloud-capture/mcloud/capture/app-cloudcenter-entry-samples.txt`（619）与
+`app-share-434-claim-samples.txt`（434），同一天、同一台设备、同一个号（小号）。
+
+### 619「从"我的"入口访问云朵中心」——**要两轮**
+
+```
+round1  POST page/doTaskPost + GET task/click?key=task&id=619   ⇒ currstep 0 → 1（仍 WAIT）
+round2  POST page/doTaskPost + GET task/click?key=task2&id=619  ⇒ currstep 3 / FINISH
+```
+
+- 这一族**不发** `market/signin/page/doTask`（旧入口族那发，抓包里一次都没有）
+- `stepTypeSet=["sendcloud","click"]`，**没有 `checktime`** ⇒ 不吃"满 N 天"
+- ⚠ **只放 619**：不同 id 是不同任务（用户口径），409/1005 保持原样，各自要各自证据
+- 实现：`ENTRY_TWICE_TASK_IDS=[619]` + `step.kind='entryTwice'` + `phase='entryTwice'`；
+  并且**跳过标准流程的前置那一发** `key=task`（否则重复打卡 —— 发一次就够）
+
+### 434「分享文件领好礼 7/7 → 领20豆」
+
+- 点一次只发 `GET task/click?key=task&id=434`，回 `result.num=20`
+- ⚠ 判据改成**以任务表为准**：发完重读矩阵，只有 434 变 `已领取`/`FINISH` 才算成功、
+  才写月度幂等；否则如实写"发了但服务端还没变"，下一趟重试（`num=20` 只是"答应给的数"）
+- 幂等检查放在判据**之前**（已领过就直说"领过"，不误报"还没到档位"）
+
+### 验证方法（可复跑）
+
+隔离副本（`sqlite3 .backup` 出数据副本 + 删 `auth.json` + 临时端口起实例），
+不动在跑实例的库；清掉该账号的 `mcloud.apptask.state` 让 App 任务重来一趟，再跑「日常」。
+
+真机结果（测试号）：`619 WAIT/0 → FINISH/3`、`unconfirmed=[]`；
+434 三个号均已 `已领取`（`currstep=24`）。

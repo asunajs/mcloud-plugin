@@ -427,7 +427,10 @@ function advance(deps: TaskDeps, st: TaskState): TaskOutcome {
   // 但门照样通过、动作照做。上传族（106/113/522）在 `currstep=1` 时就是这一档；
   // **runner 那几条（1014/1029/1004…）在 `currstep != 0` 时也是这一档**。
   const started = next.currStep !== undefined && next.currStep !== 0;
-  const skipClick = started && (next.step.kind === 'upload' || special !== undefined);
+  // ⚠ `entryTwice`（619 那一族）**一律跳过前置那一发**：它两轮里自己带 `key=task`，
+  //   再让标准流程先打一发就是**重复打卡**（`task/click` 不可回滚的东西不重复发）。
+  const skipClick =
+    next.step.kind === 'entryTwice' || (started && (next.step.kind === 'upload' || special !== undefined));
   // ⚠ 不打卡也要把它记成"这一趟动过了"：不记的话动作做完 `advance` 又把它挑出来
   //   （现场 2026-11-01 自测：#1014 卡成 60 步死循环：打卡-传-转-收尾-再挑 1014）。
   const markHandled = skipClick && !clicked.includes(next.itemId);
@@ -732,7 +735,9 @@ export function startAppTask(deps: TaskDeps): TaskOutcome {
     phase = phaseOfSpecial(special) ?? phase;
   }
   // 同 `advance`：上传族已经走起来（currStep != 0）⇒ 不打卡。
-  const skipClick = first.step.kind === 'upload' && first.currStep !== undefined && first.currStep !== 0;
+  const skipClick =
+    first.step.kind === 'entryTwice' ||
+    (first.step.kind === 'upload' && first.currStep !== undefined && first.currStep !== 0);
   const markHandled = skipClick && !clicked.includes(first.itemId);
   save(deps, {
     gi: first.gi,
@@ -972,6 +977,19 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
 
   // ② 打卡
   if (st.phase === 'click') {
+    if (st.skipClick === true && st.special === 'entryTwice') {
+      // 619 那一族：前置那一发省掉（它两轮里自带 `key=task`），也不传文件。
+      const handled = [...freshClicked(st, deps), st.itemId];
+      save(deps, {
+        ...st,
+        phase: 'entryTwice',
+        clicked: handled,
+        skipClick: undefined,
+        uploadAfter: false,
+        day: today(deps),
+      });
+      return { ok: true, note: `#${st.itemId} 两轮打卡：跳过前置那一发（两轮里自带 key=task）` };
+    }
     if (st.skipClick === true) {
       // ⚠ 参考实现：已经走起来的条目不再打卡，但动作照做。
       //   106 `currstep=1` 属于这一档；以前我们照点，结果服务端一直 WAIT。
