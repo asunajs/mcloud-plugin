@@ -228,47 +228,10 @@ body {
   justify-content: flex-end;
 }
 
-/* 「输入框 + 行内按钮」合成一格 —— 照参考实现自己的登录页那个形状：
-   一个边框包住两者，中间一条竖线（`请输入手机号 | 获取验证码`）。
-   为什么要合成一格而不是并排两个方块：这样按钮的**从属关系**一眼可见 ——
-   它是"给这个输入框"用的，不是旁边另一个独立动作（第一版并排时看不出来）。
-   ⚠ 这里确实动了颜色 / 边框（这一页的规矩是"颜色一律走面板的 `.btn`"）——
-     这是有意的一个例外：行内按钮要长得像输入框的一部分，而不是一颗按钮。
-     所以它没有底色、没有自己的圆角，只有一条左边线。 */
-.input-group {
-  display: flex;
-  align-items: stretch;
-  border: 1px solid var(--border-control);
-  border-radius: var(--r-md);
-  background: var(--bg);
-  overflow: hidden;
-}
-
-/* 聚焦时整格变色（输入框自己没有边框了，`input:focus` 那条改不动它） */
-.input-group:focus-within {
-  border-color: var(--accent);
-}
-
-.input-group input {
-  flex: 1 1 auto;
-  border: none;
-  border-radius: 0;
-  background: transparent;
-}
-
-.input-group .btn {
-  flex: 0 0 auto;
-  border: none;
-  border-left: 1px solid var(--border-control);
-  border-radius: 0;
-  background: transparent;
-  color: var(--accent);
-  white-space: nowrap;
-}
-
-/* 禁用态。面板的 `.btn` 没写这一条，而"还不能点"在这里是**有信息**的
-   （号码不满 11 位 / 码不满 6 位 / 重发倒计时里）—— 不给样子的话，
-   用户只会觉得按钮坏了，而"点了没反应"是最糟的反馈。 */
+/* 「输入框 + 行内按钮」合成一格（`.input-group`）**搬进面板了**（第 182 轮，
+   /app.css 的「供插件复用的组件补全」段）：它是发码页的通用形状，别的插件也要用，
+   就跟着 <p-sms-code> 一起提上去了。这里不再留一份 —— 同一套控件不留两份定义，
+   改面板的 CSS 等于改所有插件的观感。 */
 
 /* 一行的三个位置：名字（左边、可伸展）、状态（中间）、说明（右边）。
    固定成这三段之后，一列行看上去是**对齐的表格**，而不是一堆散字。 */

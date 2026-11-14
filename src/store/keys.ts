@@ -164,6 +164,8 @@ export const KEY_SCOPE: Readonly<Record<string, KeyScope>> = {
   // 界面上「选一件」的下拉缓存（全量清单里挑出来的四格）。
   // **按账号** —— 清单与"能不能换"都是账号级的。日界作废，见 exchangeList.ts。
   'mcloud.exchangelist.pick': 'account',
+  // 434「领20豆」本月已领的月份（按月幂等；不同号各攒各的 7/7）。
+  'mcloud.shareclaim.done': 'account',
   // 「我关注的奖品」：按账号存（不同账号的清单不同，关注的 id 也可能不同）。
   'mcloud.exchange.subs': 'account',
   'mcloud.exchange.plan': 'account',

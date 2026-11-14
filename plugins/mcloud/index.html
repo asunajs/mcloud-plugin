@@ -16,10 +16,14 @@
     <!-- 面板 0.4.0 只有一份 /app.css：token（含 [data-theme=dark]）+ 组件（.btn/.card/.field/.pill…）
          都在里面。旧面板的 /css/reset|theme|components.css 已经不存在了（第 139 轮）。 -->
     <link rel="stylesheet" href="/app.css" />
-    <link rel="stylesheet" href="style.css?v=20261113-1945" />
+    <link rel="stylesheet" href="style.css?v=20261114-0900" />
 
     <!-- 主题跟随 + embed 标记，必须赶在第一帧之前（见 boot.js 的文件头） -->
-    <script src="boot.js?v=20261113-1945"></script>
+    <script src="boot.js?v=20261114-0900"></script>
+    <!-- 面板的共享控件（p-select / p-card / p-sms-code …）。**同步**加载：
+         app.js 跑的时候要读 `$('sms-send').value` —— 自定义元素必须已经升级，
+         否则读到的是 undefined（defer 会排在 body 尾部的 app.js 之后，不行）。 -->
+    <script src="/ui.js"></script>
   </head>
   <body>
     <!--
@@ -382,17 +386,14 @@
                第一版我做成了"两步"（下一步 → 登录），用户把参考发过来 ⇒ 改成与它一致：
                **一屏**，别让用户先点一次「下一步」才看到验证码那格。
                ⚠ 两条路（短信 / 手机端）**同构**：同一套 DOM 结构、同一套类名，
-                 只有 id 前缀不同 —— 它们本来就是同一条流程的两套身份。 -->
+                 只有 id 前缀不同 —— 它们本来就是同一条流程的两套身份。
+               ⚠ 手机号那一格现在是面板的共享控件 <p-sms-code>（第 182 轮，ui.js）：
+                 数字门禁 / 行内按钮 / 重发倒计时都在控件里，这页只接 `send` 事件。 -->
           <div class="pane" data-pane="sms" hidden>
             <div class="form">
               <div class="field">
                 <span class="field-label">手机号</span>
-                <!-- 输入框 + 行内按钮合成一格（参考实现就是这个形状：一个边框包住两者，
-                     中间一条竖线）——按钮的从属关系一眼可见。 -->
-                <div class="input-group">
-                  <input id="sms-phone" type="tel" placeholder="请输入手机号" autocomplete="tel" inputmode="numeric" maxlength="11" />
-                  <button class="btn" id="sms-send" disabled>获取验证码</button>
-                </div>
+                <p-sms-code id="sms-send" length="11" seconds="60"></p-sms-code>
               </div>
               <div class="field">
                 <span class="field-label">验证码</span>
@@ -417,10 +418,7 @@
             <div class="form">
               <div class="field">
                 <span class="field-label">手机号</span>
-                <div class="input-group">
-                  <input id="app-phone" type="tel" placeholder="请输入手机号" autocomplete="tel" inputmode="numeric" maxlength="11" />
-                  <button class="btn" id="app-send" disabled>获取验证码</button>
-                </div>
+                <p-sms-code id="app-send" length="11" seconds="60"></p-sms-code>
               </div>
               <div class="field">
                 <span class="field-label">验证码</span>
@@ -815,6 +813,6 @@
     </main>
 
     <div class="toast" id="toast" hidden></div>
-    <script src="app.js?v=20261113-1945"></script>
+    <script src="app.js?v=20261114-0900"></script>
   </body>
 </html>
