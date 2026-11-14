@@ -1,6 +1,6 @@
 {
   "name": "mcloud-plugin",
-  "version": "0.2.29",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "mcloud 的 JS/TS 重写版 —— 可作为面板插件，也可独立运行（替代 mcloud-sign）",
@@ -27,7 +27,8 @@
     "e2e": "./scripts/e2e-mock.sh \"${PANEL_BIN:-../rust-plugin-panel/target/release/plugin-panel}\"",
     "shots": "node scripts/shots.mjs",
     "pack": "node scripts/pack.mjs",
-    "build:panelllrt": "node scripts/build-panelllrt.mjs"
+    "build:panelllrt": "node scripts/build-panelllrt.mjs",
+    "pack:panel04": "node scripts/pack-panelllrt.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

@@ -1,0 +1,11 @@
+{
+  "title": "移动云盘",
+  "order": 10,
+  "description": "移动云盘主插件：账号、签到、抽奖、兑换",
+  "min_panel": "0.4.0",
+  "capabilities": [
+    "http",
+    "sqlite",
+    "notify"
+  ]
+}

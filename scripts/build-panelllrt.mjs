@@ -80,4 +80,13 @@ rmSync(uiDst, { recursive: true, force: true });
 cpSync(uiSrc, uiDst, { recursive: true });
 console.log(`  ✅ ${uiDst}/（界面）`);
 
+// 清单：面板读 plugins/<name>.panel.json 出配置表单、核对 min_panel。
+// 源在 plugins/panelllrt/（被 git 跟踪），构建时拷到 dist 顶层，与 <name>.js 并列。
+for (const name of Object.keys(ENTRIES)) {
+  const src = join(ROOT, 'plugins', 'panelllrt', `${name}.panel.json`);
+  const dst = join(OUTDIR, `${name}.panel.json`);
+  cpSync(src, dst);
+  console.log(`  ✅ ${dst}`);
+}
+
 console.log(`✅ panel-llrt 版打包完成：4 个插件，合计 ${total.toFixed(1)} KB`);

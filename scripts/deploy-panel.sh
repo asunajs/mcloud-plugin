@@ -20,6 +20,8 @@ DIST="$ROOT/dist/panel-llrt"
 # 四个插件 + 一份界面（mcloud 是服务插件，其余三个各跑一类任务，共用同一份 webui）
 PLUGINS=(mcloud mcloud-daily mcloud-exchange mcloud-live)
 WEBUI_FILES=(index.html style.css app.js boot.js)
+# 清单（<name>.panel.json）：面板靠它出配置表单、核对 min_panel
+MANIFESTS=(mcloud.panel.json mcloud-daily.panel.json mcloud-exchange.panel.json mcloud-live.panel.json)
 RESTART=0
 for arg in "$@"; do
   case "$arg" in
@@ -59,14 +61,17 @@ BK="$(dirname "$DEST")/backups/mcloud-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$BK"
 for n in "${PLUGINS[@]}"; do [ -f "$DEST/$n.js" ] && cp "$DEST/$n.js" "$BK/"; done
 [ -d "$DEST/mcloud.webui" ] && cp -R "$DEST/mcloud.webui" "$BK/"
+for f in "${MANIFESTS[@]}"; do [ -f "$DEST/$f" ] && cp "$DEST/$f" "$BK/"; done
 echo "→ 旧的一套装在 $BK"
 
 echo "→ 装到 $DEST"
 for n in "${PLUGINS[@]}"; do cp "$DIST/$n.js" "$DEST/$n.js"; done
 rm -rf "${DEST:?}/mcloud.webui"
 cp -R "$DIST/mcloud.webui" "$DEST/mcloud.webui"
+for f in "${MANIFESTS[@]}"; do cp "$DIST/$f" "$DEST/$f"; done
 
 for n in "${PLUGINS[@]}"; do cmp "$DIST/$n.js" "$DEST/$n.js"; done
+for f in "${MANIFESTS[@]}"; do cmp "$DIST/$f" "$DEST/$f"; done
 for f in "${WEBUI_FILES[@]}"; do cmp "$DIST/mcloud.webui/$f" "$DEST/mcloud.webui/$f"; done
 echo "✅ $(( ${#PLUGINS[@]} + ${#WEBUI_FILES[@]} )) 个文件逐个 cmp 一致"
 
