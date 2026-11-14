@@ -218,3 +218,14 @@ QuickJS 沙箱里没有 Node（没有 `fs` / `net` / `crypto` / npm 包），
   不上传明文；日志与错误信息里都不回显口令
 
 > 面板里怎么装：[docs/install.md](docs/install.md)
+
+## 面板契约（0.4）
+
+面板侧的硬规则在 `panel-llrt/docs/plugin-contract.md`
+（`~/mobile/workspace/panel-llrt/docs/plugin-contract.md`）：
+
+- **产物只进本仓 `dist/panel-llrt/`**，`PANEL_LLRT_PLUGINS` 也不许指向面板仓；
+  面板仓的 `plugins/` 只有面板自己的 `webui-demo`（R1 / R2）。
+- 上线是「本仓 → 实例 `~/panel-3030/plugins`」，不经面板仓中转（R3）。
+- 只面向 0.4：不写 `atLeast('0.3.0')` 这类兼容分支，下限写进清单 `min_panel`（R5）。
+- 缺能力在面板仓加 API，别在插件里造轮子（R6）。

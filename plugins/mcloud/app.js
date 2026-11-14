@@ -233,14 +233,14 @@ function toast(msg, bad) {
  *
  *  为什么统一包一层：旧版每个按钮各写一遍 try/catch + 提示 + 刷新，
  *  于是有的忘了刷新（点了没反应）、有的忘了提示（不知道成没成）、
- *  有的错误只 `console.log`（用户看不见）。 */
+ *  有的错误只 `console.log`（用户看不见）。
+ *  ⚠ 只喂**普通按钮**（.btn）。发码那格走 <p-sms-code> 的 `send` 事件，由
+ *    `sendCode` 接（按钮在控件内部，textContent / disabled 归控件管，
+ *    `act` 插手会把「重新获取（N 秒）」改回去）。 */
 async function act(btn, fn, okMsg) {
-  // ⚠ 被重发倒计时**接管**的按钮（见 `startResend` 的 `dataset.resend`）连
-  //   "转圈"都不该画：倒计时的文字是它自己的状态，`act` 插进去只会闪一下 `…`。
-  const owned = btn.dataset.resend === '1';
   const old = btn.textContent;
   btn.disabled = true;
-  if (!owned) btn.textContent = '…';
+  btn.textContent = '…';
   try {
     const r = await fn();
     // ⚠ 空串 = 「这次别提示」（比如切到「数据」页时那次自动取豆）。
@@ -252,11 +252,8 @@ async function act(btn, fn, okMsg) {
   } catch (e) {
     toast(String(e && e.message ? e.message : e), true);
   } finally {
-    // ⚠ 同理，收尾也不还原它：否则会把「重新获取（N 秒）」改回去、还会把它重新点亮。
-    if (btn.dataset.resend !== '1') {
-      btn.disabled = false;
-      btn.textContent = old;
-    }
+    btn.disabled = false;
+    btn.textContent = old;
   }
 }
 
@@ -401,60 +398,15 @@ function maskPhone(p) {
   return /^\d{11}$/.test(s) ? `${s.slice(0, 3)}****${s.slice(7)}` : s;
 }
 
-/** 主按钮的可用性：**只按"还差几个字符"**，不问服务端。
+/** 主按钮（「登录」）的可用性：**只按"还差几个字符"**，不问服务端。
  *
  *  ⚠ 这是提前告知，不是替用户做判断 —— 点了才报错的写法，用户要先失败一次
  *  才知道规则（而这里唯一的规则就是位数）。
- *  ⚠ 被重发倒计时接管的按钮**不由位数决定**（它由倒计时决定）：每次动作之后都会
- *  `load()` → 重画 → 走到这里，不排掉的话「重新获取（N 秒）」会被重新点亮，
- *  用户就能在倒计时里再点一次（连点正是要防的那件事）。 */
+ *  ⚠ 手机号那一格的行内按钮**不走这里**：它现在是 <p-sms-code>（第 182 轮），
+ *    门禁在控件里按位数自己算（含发码在途 / 重发倒计时里的禁用）。 */
 function gate(btnId, value, need) {
   const el = $(btnId);
-  if (el && el.dataset.resend !== '1') {
-    el.disabled = String(value || '').trim().length !== need;
-  }
-}
-
-/** 两个页签各一份倒计时状态（发码之后 60 秒内不许再点）。 */
-const resendTimers = { sms: null, app: null };
-
-/** 停掉某个页签的重发倒计时，按钮回到「获取验证码」。 */
-function stopResend(kind) {
-  if (resendTimers[kind] !== null) {
-    clearInterval(resendTimers[kind]);
-    resendTimers[kind] = null;
-  }
-  const btn = $(`${kind}-send`);
-  if (btn) {
-    delete btn.dataset.resend;
-    btn.textContent = '获取验证码';
-    btn.disabled = false;
-  }
-}
-
-/** 发码成功之后开始倒计时。**这是界面节奏，不是权威** ——
- *  能不能发、还剩几次，最终是服务端说了算（`remainGetTimes`）。
- *  它的用处是别让用户连点：连点只会喂限流。 */
-function startResend(kind, seconds = 60) {
-  const btn = $(`${kind}-send`);
-  let left = seconds;
-  if (resendTimers[kind] !== null) clearInterval(resendTimers[kind]);
-  // ⚠ `dataset.resend` 是给 `act` 看的：倒计时接管了这个按钮之后，
-  //   `act` 的收尾**不许**把它改回「获取验证码」、也不许把它重新点亮。
-  if (btn) btn.dataset.resend = '1';
-  const tick = () => {
-    if (left <= 0) {
-      stopResend(kind);
-      return;
-    }
-    if (btn) {
-      btn.textContent = `重新获取（${left} 秒）`;
-      btn.disabled = true;
-    }
-    left -= 1;
-  };
-  tick();
-  resendTimers[kind] = setInterval(tick, 1000);
+  if (el) el.disabled = String(value || '').trim().length !== need;
 }
 
 /** 画这一屏的状态（两条路共用）。`s === null` ⇒ 还没开始这一趟。
@@ -463,9 +415,11 @@ function startResend(kind, seconds = 60) {
  *  → 整宽「登录」。第一版我做成了"两步"（下一步 → 登录），用户把参考发过来之后
  *  改成了一屏 —— 别让用户先点一次「下一步」才看到验证码那一格。 */
 function paintCodePane(kind, s) {
-  const phone = $(`${kind}-phone`);
+  const ctl = $(`${kind}-send`);
   if (s) {
-    if (phone && document.activeElement !== phone) phone.value = s.phone;
+    // ⚠ 控件的 value setter 只会整体重设：正在打字时别抢 —— 焦点落在控件**内部**
+    //   的输入框上（不是宿主元素），所以用 contains 判断
+    if (ctl && !ctl.contains(document.activeElement)) ctl.value = s.phone;
     // 一句人话回答"现在该干什么"：没发码 ⇒ 点获取；发了 ⇒ 去看短信
     const left = Math.max(0, Math.round(Number(s.expiresInMs) / 60000));
     setText(
@@ -475,22 +429,16 @@ function paintCodePane(kind, s) {
         : '点「获取验证码」，码会发到上面这个号。',
     );
   }
-  gate(`${kind}-send`, phone.value, 11);
   gate(`${kind}-submit`, $(`${kind}-code`).value, 6);
 }
 
-/** 输入框的实时反应：只留数字、按位数开关按钮、回车等于点那个主按钮。
+/** 验证码输入框的实时反应：只留数字、按位数开关「登录」、回车等于点「登录」。
  *
- *  ⚠ 两个输入框**当参数传进来**（而不是在函数里用 `${kind}-phone` 拼）：
+ *  ⚠ 手机号那一格**不在这里**了：它是 <p-sms-code>（第 182 轮），只留数字、
+ *    按位数开关行内按钮、回车点行内按钮都在控件里。
+ *  ⚠ 输入框**当参数传进来**（而不是在函数里用 `${kind}-code` 拼）：
  *  界面测试按字面 id 检查"每个控件都真的被取用过"，拼出来的字符串它看不见。 */
-function wireCodeForm(kind, phone, code) {
-  phone.addEventListener('input', () => {
-    phone.value = phone.value.replace(/\D/g, '').slice(0, 11);
-    gate(`${kind}-send`, phone.value, 11);
-  });
-  phone.addEventListener('keydown', (ev) => {
-    if (ev.key === 'Enter' && !$(`${kind}-send`).disabled) $(`${kind}-send`).click();
-  });
+function wireCodeForm(kind, code) {
   code.addEventListener('input', () => {
     code.value = code.value.replace(/\D/g, '').slice(0, 6);
     gate(`${kind}-submit`, code.value, 6);
@@ -509,13 +457,36 @@ function wireCodeForm(kind, phone, code) {
  *  所以这里**串一下**：先 start（纯本地，不发请求），再 send。用户看到的仍然是一屏。
  *  ⚠ 每次点都重新 start：形态可能刚被改过，而"界面上的选择"必须就是这一趟用的档案。 */
 async function requestCode(kind) {
-  const phone = $(`${kind}-phone`).value.trim();
+  const phone = $(`${kind}-send`).value;
   if (kind === 'sms') {
     await api('/login/sms/start', { method: 'POST', write: true, body: { phone, pcPlatform: addPc } });
     return api('/login/sms/send', { method: 'POST', write: true });
   }
   await api('/login/app/start', { method: 'POST', write: true, body: { phone } });
   return api('/login/app/send', { method: 'POST', write: true });
+}
+
+/** 发码这一趟（<p-sms-code> 派 `send` 之后走这里）：busy → 开会话 + 发码 → 倒计时。
+ *
+ *  ⚠ 不走 `act`：`act` 会直接碰按钮的 textContent / disabled，而这一格的按钮
+ *    在控件**内部**，状态归控件管 —— 这里只拨 `busy`（防连点）和 `startResend`
+ *    （**界面节奏**：连点只会喂限流，能不能发最终是服务端说了算）。
+ *  ⚠ 滑块由**后端**自动过（取新题 → 解坐标 → 带答案重发，见 `autoPassSlider`）：
+ *    界面这一层只可能拿到 `sent` 或一句人话，没有"再点一次"这种中间态。 */
+async function sendCode(kind) {
+  const ctl = $(`${kind}-send`);
+  ctl.busy = true;
+  try {
+    const r = await requestCode(kind);
+    if (!r.sent) throw new Error(r.note || '发码没成');
+    ctl.startResend();
+    toast('验证码已发出');
+    await load();
+  } catch (e) {
+    toast(String(e && e.message ? e.message : e), true);
+  } finally {
+    ctl.busy = false;
+  }
 }
 
 function renderAccount(a, login) {
@@ -3379,8 +3350,9 @@ function showAddTab(name) {
  *  ⚠ 两个验证码框清空：里面的码属于刚才那一趟会话，留着只会让人以为没登进去。 */
 function closeAddDialog() {
   stopQrPoll();
-  stopResend('sms');
-  stopResend('app');
+  // 重发倒计时在 <p-sms-code> 控件里，关弹窗必须停掉（否则它会在后台一直跑）
+  $('sms-send').stopResend();
+  $('app-send').stopResend();
   for (const id of ['sms-code', 'app-code']) {
     const el = $(id);
     if (el) el.value = '';
@@ -3810,25 +3782,11 @@ $('login-qr').addEventListener('click', (e) =>
   ),
 );
 
-// ⚠ 「获取验证码」这一个按钮干两件事：**开会话**（`/login/sms/start`，纯本地）
+// ⚠ 「获取验证码」这一个动作干两件事：**开会话**（`/login/sms/start`，纯本地）
 //   然后**发码**。用户看到的是一屏一个动作 —— 见 `requestCode` 的说明。
-$('sms-send').addEventListener('click', (e) =>
-  act(
-    e.currentTarget,
-    async () => {
-      const r = await requestCode('sms');
-      // ⚠ 滑块由**后端**自动过（取新题 → 解坐标 → 带答案重发，见 `autoPassSlider`）：
-      //   界面这一层只可能拿到 `sent` 或一句人话，没有"再点一次"这种中间态。
-      if (r.sent) {
-        // 发出去了 ⇒ 开始重发倒计时（**界面节奏**：连点只会喂限流）
-        startResend('sms');
-        return r;
-      }
-      throw new Error(r.note || '发码没成');
-    },
-    '验证码已发出',
-  ),
-);
+// ⚠ 这一格是 <p-sms-code>（第 182 轮）：控件只管界面，点行内按钮派 `send`，
+//   发码请求在这里接（`sendCode`），倒计时也是控件自己的（startResend）。
+$('sms-send').addEventListener('send', () => sendCode('sms'));
 
 $('sms-submit').addEventListener('click', (e) =>
   act(
@@ -3894,21 +3852,7 @@ $('paste-submit').addEventListener('click', (e) =>
 //   形状不同**：App 的 `data` 是密文字符串、要用**另一把钥匙**解。
 //   所以这里是三条独立的路由，不是把 PC 那套换个头。
 
-$('app-send').addEventListener('click', (e) =>
-  act(
-    e.currentTarget,
-    async () => {
-      const r = await requestCode('app');
-      // 同 PC：滑块由后端自动过，界面只认 `sent` 或一句人话
-      if (r.sent) {
-        startResend('app');
-        return r;
-      }
-      throw new Error(r.note || '发码没成');
-    },
-    '验证码已发出',
-  ),
-);
+$('app-send').addEventListener('send', () => sendCode('app'));
 
 $('app-submit').addEventListener('click', (e) =>
   act(
@@ -3930,10 +3874,11 @@ $('app-submit').addEventListener('click', (e) =>
   ),
 );
 
-// ⚠ 两个页签的输入框要接上"实时反应"（只留数字 / 按位数开关主按钮 / 回车提交）。
+// ⚠ 两个页签的验证码输入框要接上"实时反应"（只留数字 / 按 6 位开关「登录」 / 回车提交）。
 //   放在处理器都挂完之后：`wireCodeForm` 里会 `$()` 那几个按钮。
-wireCodeForm('sms', $('sms-phone'), $('sms-code'));
-wireCodeForm('app', $('app-phone'), $('app-code'));
+//   （手机号那一格不需要接线：数字门禁、行内按钮、回车都在 <p-sms-code> 控件里。）
+wireCodeForm('sms', $('sms-code'));
+wireCodeForm('app', $('app-code'));
 
 // ────────── 补回被误删的四个处理器（切片时把它们一起切掉了）──────────
 
