@@ -5,7 +5,8 @@
 // 实现到新面板的能力上（同步 op + register_web + __handlers）。
 // `panel:host` 保持 external —— 它由新面板的引擎注入。
 //
-// 产物直接写到 panel-llrt/plugins/：<name>.js + mcloud.webui/（界面）。
+// 产物写到 dist/panel-llrt/：<name>.js ×4 + mcloud.webui/（界面）；
+// 装进面板实例用 `npm run deploy:panel`（脚本会跑样式门禁 + 逐个 cmp）。
 
 import { build } from 'esbuild';
 import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -15,7 +16,10 @@ import { ENTRIES } from './build.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const ADAPTER = join(ROOT, 'src/panelllrt/hostApi.ts');
-const OUTDIR = process.env.PANEL_LLRT_PLUGINS ?? join(ROOT, '..', 'panel-llrt', 'plugins');
+// ⚠ 产物**不再**直接写进面板仓（panel-llrt/plugins 是面板仓的目录，插件产物不该躺那儿）。
+//   默认写本仓的 dist/panel-llrt/，由 `npm run deploy:panel` 装进实例。
+//   要直连某个实例：PANEL_LLRT_PLUGINS=/path/to/plugins npm run build:panelllrt
+const OUTDIR = process.env.PANEL_LLRT_PLUGINS ?? join(ROOT, 'dist', 'panel-llrt');
 const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
 
 async function bundleOne(name, entry) {
