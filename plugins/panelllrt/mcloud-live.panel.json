@@ -1,0 +1,11 @@
+{
+  "title": "移动云盘 · 直播",
+  "order": 13,
+  "description": "直播任务",
+  "min_panel": "0.4.0",
+  "capabilities": [
+    "http",
+    "sqlite",
+    "notify"
+  ]
+}

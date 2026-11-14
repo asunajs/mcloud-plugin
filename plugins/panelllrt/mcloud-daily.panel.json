@@ -1,0 +1,11 @@
+{
+  "title": "移动云盘 · 每日",
+  "order": 11,
+  "description": "每日签到与日常任务",
+  "min_panel": "0.4.0",
+  "capabilities": [
+    "http",
+    "sqlite",
+    "notify"
+  ]
+}

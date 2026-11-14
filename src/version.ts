@@ -5,4 +5,4 @@
 // 不靠构建脚本注入的理由：构建注入的那份只在**注释**里（`plugins/js/*.js` 文件头），
 // 界面上读不到；而读 package.json 在插件沙箱里不可用。
 
-export const PLUGIN_VERSION = '0.2.29';
+export const PLUGIN_VERSION = '0.3.0';
