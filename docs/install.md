@@ -1,12 +1,16 @@
 # 装到面板里（发布产物怎么用）
 
-> 一句话：**下载 `mcloud-plugin-vX.Y.Z.zip` → 面板「插件管理」→ 上传 → 选中那个 zip。**
+> 一句话：**下载 `mcloud-plugin-<版本>-panel04.zip` → 面板「插件管理」→ 上传 → 选中那个 zip。**
 > 面板会自己解压、重启插件、把三条任务挂上调度。
+>
+> ⚠ 只面向 **panel-llrt 0.4**（清单里 `min_panel: 0.4.0`）。形状是**全部平铺**：
+> `<name>.js` + `<name>.panel.json` + `mcloud.webui/` 都在 zip 根 —— 0.4 的加载器只扫
+> `plugins/*.js`，塞进 `js/` 子目录等于「装了但面板看不见」。
 
 ## 一、用 Release 里的 zip（推荐）
 
 1. 打开 <https://github.com/asunajs/mcloud-plugin/releases>，下载最新的
-   `mcloud-plugin-vX.Y.Z.zip`；
+   `mcloud-plugin-<版本>-panel04.zip`（同目录有 `.sha256`，装之前可以先对一下）；
 2. 面板左侧「插件管理」→ 点上传，选中那个 zip（**整包，不用解压**）；
 3. 等两秒。四张卡片出现、状态「已启用」。面板任务列表里有两条（日常 / 直播）：
 
@@ -25,9 +29,15 @@
 zip 里只有这些文件，没有源码、没有文档：
 
 ```
-js/mcloud.js  js/mcloud-daily.js  js/mcloud-exchange.js  js/mcloud-live.js
-mcloud/index.html  mcloud/app.js  mcloud/style.css
+mcloud.js  mcloud-daily.js  mcloud-exchange.js  mcloud-live.js
+mcloud.panel.json  mcloud-daily.panel.json  mcloud-exchange.panel.json  mcloud-live.panel.json
+mcloud.webui/{index.html,style.css,app.js,boot.js}
 ```
+
+清单里的 `config.fields` 决定「插件卡片 → 配置」显示什么：现在只有两格
+`daily_budget_s`（日常预算 60–600 秒）与 `exchange_enabled`（定时抢兑开关），
+写进 `plugin-data/<插件>/config.json`；插件自己界面改的值不会被它覆盖
+（判据见 `src/mcloud/configOverlay.ts` 文件头）。
 
 ## 二、zip 为什么"面板能直接用"
 

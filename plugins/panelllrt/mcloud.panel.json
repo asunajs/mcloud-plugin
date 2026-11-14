@@ -7,5 +7,23 @@
     "http",
     "sqlite",
     "notify"
-  ]
+  ],
+  "config": {
+    "fields": [
+      {
+        "name": "daily_budget_s",
+        "label": "日常预算（秒）",
+        "type": "number",
+        "default": 600,
+        "help": "「日常」一趟最多跑多久，60–600 秒。账号多就调大：所有账号是串行跑完的。在「移动云盘 · 每日」的配置页改，保存就生效。"
+      },
+      {
+        "name": "exchange_enabled",
+        "label": "定时抢兑",
+        "type": "bool",
+        "default": true,
+        "help": "关掉之后「兑换」不到点自动跑（手动「现在试一次」照旧）；开回来要配合兑换页里的计划一起用。"
+      }
+    ]
+  }
 }

@@ -7,5 +7,16 @@
     "http",
     "sqlite",
     "notify"
-  ]
+  ],
+  "config": {
+    "fields": [
+      {
+        "name": "exchange_enabled",
+        "label": "定时抢兑",
+        "type": "bool",
+        "default": true,
+        "help": "关掉之后不到点自动抢（兑换页里的「现在试一次」照旧）；计划本身在云盘 → 兑换里配。"
+      }
+    ]
+  }
 }

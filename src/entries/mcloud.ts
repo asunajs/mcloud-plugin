@@ -24,7 +24,13 @@ import {
 } from 'host-api';
 import { mcloudRoutes } from '../mcloud/routes.ts';
 import type { RouteEntry } from '../mcloud/routes.ts';
-import { makeHost, makePushDeps, makeStore, makeTransport } from './shared.ts';
+import {
+  makeHost,
+  makePushDeps,
+  makeStore,
+  makeTransport,
+  syncConfigToState,
+} from './shared.ts';
 import { selftest } from '../selftest.ts';
 import { migrateLegacyExchange, syncTaskReadiness } from '../mcloud/taskReadiness.ts';
 
@@ -33,6 +39,9 @@ import { migrateLegacyExchange, syncTaskReadiness } from '../mcloud/taskReadines
 worker_hint('exclusive');
 
 const store = makeStore();
+// 面板「插件配置」里那两格先并进 state —— **在迁移之前**：配置里显式给的
+// `exchange_enabled` 优先级高于"老库推测"（迁移只看那一格是不是空）。
+await syncConfigToState(store);
 // 老库一次性迁移：上一版兑换默认“全部账号”，定时默认启用。
 // 先迁移再同步，否则第一条注册算出来的 blockers 会停在“还没有选账号”。
 const bootIso = new Date().toISOString();

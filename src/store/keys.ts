@@ -228,6 +228,10 @@ export const KEY_SCOPE: Readonly<Record<string, KeyScope>> = {
   'mcloud.account.current': 'global',
   /** 上游域名。 */
   'mcloud.base_url': 'global',
+  /** 面板「插件配置」（`plugin-data/<插件>/config.json`）上次**应用进去**的值。
+   *  它就是"这份文件动过没有"的指纹 —— 与 state 现值相同 ⇒ 文件没动 ⇒ 用户在界面上
+   *  改过的现值不许被盖回去。全局：说的是文件，不是某个账号。见 `mcloud/configOverlay.ts`。 */
+  'mcloud.cfg.applied': 'global',
   /** 登录方式偏好（扫码 / 短信 / 账密）。 */
   'mcloud.login.pref': 'global',
   /** 几点抢兑 —— 是**配置**，跟账号无关。 */

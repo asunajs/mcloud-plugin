@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.29 · 插件 `mcloud`
+//   mcloud-plugin 0.4.0 · 插件 `mcloud`
 
 // src/entries/mcloud.ts
 import {
@@ -15,7 +15,7 @@ import {
 } from "host-api";
 
 // src/version.ts
-var PLUGIN_VERSION = "0.2.29";
+var PLUGIN_VERSION = "0.4.0";
 
 // src/store/keys.ts
 var DEFAULT_ACCT = "default";
@@ -158,6 +158,10 @@ var KEY_SCOPE = {
   "mcloud.account.current": "global",
   /** 上游域名。 */
   "mcloud.base_url": "global",
+  /** 面板「插件配置」（`plugin-data/<插件>/config.json`）上次**应用进去**的值。
+   *  它就是"这份文件动过没有"的指纹 —— 与 state 现值相同 ⇒ 文件没动 ⇒ 用户在界面上
+   *  改过的现值不许被盖回去。全局：说的是文件，不是某个账号。见 `mcloud/configOverlay.ts`。 */
+  "mcloud.cfg.applied": "global",
   /** 登录方式偏好（扫码 / 短信 / 账密）。 */
   "mcloud.login.pref": "global",
   /** 几点抢兑 —— 是**配置**，跟账号无关。 */
@@ -7167,7 +7171,7 @@ function runExchange(deps, opts = {}) {
       break;
     }
   }
-  r ?? (r = { ok: true, idle: true, steps: 0, note: "没有账号（先登录一个）", notes: [] });
+  r ??= { ok: true, idle: true, steps: 0, note: "没有账号（先登录一个）", notes: [] };
   if (multi) {
     add(
       "整点这一批",
@@ -14348,6 +14352,7 @@ function mcloudRoutes(deps) {
 import {
   http_fetch,
   log,
+  self_config,
   smtp_send,
   warn,
   ws_close,
@@ -14469,6 +14474,74 @@ function hostStore() {
   };
 }
 
+// src/mcloud/configOverlay.ts
+var STATE_APPLIED = "mcloud.cfg.applied";
+var MIN_BUDGET_S = 60;
+var MAX_BUDGET_S = 600;
+function budgetText(raw) {
+  if (raw === null || raw === void 0) return null;
+  const n = typeof raw === "number" ? raw : Number(String(raw).trim());
+  if (!Number.isFinite(n)) return null;
+  const sec = Math.min(Math.max(Math.round(n), MIN_BUDGET_S), MAX_BUDGET_S);
+  return String(sec);
+}
+function boolText(raw) {
+  if (typeof raw === "boolean") return raw ? "1" : "0";
+  if (typeof raw === "number") return raw === 1 ? "1" : raw === 0 ? "0" : null;
+  if (typeof raw !== "string") return null;
+  const t = raw.trim().toLowerCase();
+  if (t === "1" || t === "true" || t === "on" || t === "yes") return "1";
+  if (t === "0" || t === "false" || t === "off" || t === "no") return "0";
+  return null;
+}
+var CONFIG_RULES = [
+  { name: "daily_budget_s", stateKey: "mcloud.daily.budget_s", normalize: budgetText },
+  { name: "exchange_enabled", stateKey: "mcloud.exchange.schedule.enabled", normalize: boolText }
+];
+function isPlainObject(v) {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+function loadApplied(store2) {
+  const raw = store2.getState(STATE_APPLIED);
+  if (raw === null || raw === "") return {};
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {};
+  }
+  if (!isPlainObject(parsed)) return {};
+  const out = {};
+  for (const [k, v] of Object.entries(parsed)) {
+    if (typeof v === "string") out[k] = v;
+  }
+  return out;
+}
+function applyConfigOverlay(store2, cfg, nowIso) {
+  const src = isPlainObject(cfg) ? cfg : {};
+  const applied = loadApplied(store2);
+  const out = { applied: [], kept: [], ignored: [] };
+  let dirty = false;
+  for (const rule of CONFIG_RULES) {
+    if (!Object.prototype.hasOwnProperty.call(src, rule.name)) continue;
+    const want = rule.normalize(src[rule.name]);
+    if (want === null) {
+      out.ignored.push(rule.name);
+      continue;
+    }
+    if (applied[rule.name] === want) {
+      out.kept.push(rule.name);
+      continue;
+    }
+    store2.setState(rule.stateKey, want, nowIso);
+    applied[rule.name] = want;
+    dirty = true;
+    out.applied.push(rule.name + "=" + want);
+  }
+  if (dirty) store2.setState(STATE_APPLIED, JSON.stringify(applied), nowIso);
+  return out;
+}
+
 // src/entries/shared.ts
 var DEFAULT_REQUEST_TIMEOUT_MS = 1500;
 function makeTransport(timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
@@ -14486,6 +14559,23 @@ function makeStore() {
     log(`状态迁移：${moved.length} 个键搬进账号袋（${moved.join(", ")}）`);
   }
   return s;
+}
+async function syncConfigToState(store2) {
+  let raw = null;
+  try {
+    raw = await self_config();
+  } catch (e) {
+    warn('读插件配置失败（按"没配过"继续）：' + (e instanceof Error ? e.message : String(e)));
+    return { applied: [], kept: [], ignored: [] };
+  }
+  const out = applyConfigOverlay(store2, raw, (/* @__PURE__ */ new Date()).toISOString());
+  if (out.applied.length > 0) {
+    log(`插件配置已写进面板状态：${out.applied.join("，")}（改了要重载对应任务插件才用上）`);
+  }
+  if (out.ignored.length > 0) {
+    warn(`插件配置里有认不出来的值，已跳过：${out.ignored.join("，")}`);
+  }
+  return out;
 }
 function makeHost() {
   return {
@@ -14572,6 +14662,7 @@ function selftest(store2) {
 // src/entries/mcloud.ts
 worker_hint("exclusive");
 var store = makeStore();
+await syncConfigToState(store);
 var bootIso = (/* @__PURE__ */ new Date()).toISOString();
 if (migrateLegacyExchange(store, bootIso)) {
   log2("老库迁移：兑换的账号选择沿用“全部账号”（这一版改成显式选择）");

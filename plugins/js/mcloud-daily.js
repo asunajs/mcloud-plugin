@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.29 · 插件 `mcloud-daily`
+//   mcloud-plugin 0.4.0 · 插件 `mcloud-daily`
 
 // src/entries/daily.ts
 import { debug as debug2, register_cron } from "host-api";
@@ -924,6 +924,10 @@ var KEY_SCOPE = {
   "mcloud.account.current": "global",
   /** 上游域名。 */
   "mcloud.base_url": "global",
+  /** 面板「插件配置」（`plugin-data/<插件>/config.json`）上次**应用进去**的值。
+   *  它就是"这份文件动过没有"的指纹 —— 与 state 现值相同 ⇒ 文件没动 ⇒ 用户在界面上
+   *  改过的现值不许被盖回去。全局：说的是文件，不是某个账号。见 `mcloud/configOverlay.ts`。 */
+  "mcloud.cfg.applied": "global",
   /** 登录方式偏好（扫码 / 短信 / 账密）。 */
   "mcloud.login.pref": "global",
   /** 几点抢兑 —— 是**配置**，跟账号无关。 */
@@ -10288,6 +10292,7 @@ var DAILY_LAST_KEY = "mcloud.daily.last_run";
 import {
   http_fetch,
   log as log2,
+  self_config,
   smtp_send,
   warn as warn2,
   ws_close,
@@ -10407,6 +10412,74 @@ function hostStore() {
       [Math.min(limit, 1e3)]
     )
   };
+}
+
+// src/mcloud/configOverlay.ts
+var STATE_APPLIED = "mcloud.cfg.applied";
+var MIN_BUDGET_S = 60;
+var MAX_BUDGET_S = 600;
+function budgetText(raw) {
+  if (raw === null || raw === void 0) return null;
+  const n = typeof raw === "number" ? raw : Number(String(raw).trim());
+  if (!Number.isFinite(n)) return null;
+  const sec = Math.min(Math.max(Math.round(n), MIN_BUDGET_S), MAX_BUDGET_S);
+  return String(sec);
+}
+function boolText(raw) {
+  if (typeof raw === "boolean") return raw ? "1" : "0";
+  if (typeof raw === "number") return raw === 1 ? "1" : raw === 0 ? "0" : null;
+  if (typeof raw !== "string") return null;
+  const t = raw.trim().toLowerCase();
+  if (t === "1" || t === "true" || t === "on" || t === "yes") return "1";
+  if (t === "0" || t === "false" || t === "off" || t === "no") return "0";
+  return null;
+}
+var CONFIG_RULES = [
+  { name: "daily_budget_s", stateKey: "mcloud.daily.budget_s", normalize: budgetText },
+  { name: "exchange_enabled", stateKey: "mcloud.exchange.schedule.enabled", normalize: boolText }
+];
+function isPlainObject(v) {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+function loadApplied(store2) {
+  const raw = store2.getState(STATE_APPLIED);
+  if (raw === null || raw === "") return {};
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {};
+  }
+  if (!isPlainObject(parsed)) return {};
+  const out = {};
+  for (const [k, v] of Object.entries(parsed)) {
+    if (typeof v === "string") out[k] = v;
+  }
+  return out;
+}
+function applyConfigOverlay(store2, cfg, nowIso) {
+  const src = isPlainObject(cfg) ? cfg : {};
+  const applied = loadApplied(store2);
+  const out = { applied: [], kept: [], ignored: [] };
+  let dirty = false;
+  for (const rule of CONFIG_RULES) {
+    if (!Object.prototype.hasOwnProperty.call(src, rule.name)) continue;
+    const want = rule.normalize(src[rule.name]);
+    if (want === null) {
+      out.ignored.push(rule.name);
+      continue;
+    }
+    if (applied[rule.name] === want) {
+      out.kept.push(rule.name);
+      continue;
+    }
+    store2.setState(rule.stateKey, want, nowIso);
+    applied[rule.name] = want;
+    dirty = true;
+    out.applied.push(rule.name + "=" + want);
+  }
+  if (dirty) store2.setState(STATE_APPLIED, JSON.stringify(applied), nowIso);
+  return out;
 }
 
 // src/mcloud/push.ts
@@ -10776,6 +10849,23 @@ function makeStore() {
   }
   return s;
 }
+async function syncConfigToState(store2) {
+  let raw = null;
+  try {
+    raw = await self_config();
+  } catch (e) {
+    warn2('读插件配置失败（按"没配过"继续）：' + (e instanceof Error ? e.message : String(e)));
+    return { applied: [], kept: [], ignored: [] };
+  }
+  const out = applyConfigOverlay(store2, raw, (/* @__PURE__ */ new Date()).toISOString());
+  if (out.applied.length > 0) {
+    log2(`插件配置已写进面板状态：${out.applied.join("，")}（改了要重载对应任务插件才用上）`);
+  }
+  if (out.ignored.length > 0) {
+    warn2(`插件配置里有认不出来的值，已跳过：${out.ignored.join("，")}`);
+  }
+  return out;
+}
 function forEachTaskAccount(base, task, payload, transport2, fn) {
   const mode = payload.manual === true || payload.lateMs < 0 ? "manual" : "auto";
   const targets = resolveTaskAccounts(rawStoreOf(base), task, mode);
@@ -10854,12 +10944,13 @@ function pickChannels(cfg, channels) {
 // src/entries/daily.ts
 var store = makeStore();
 var transport = makeTransport(LONG_REQUEST_TIMEOUT_MS);
+await syncConfigToState(store);
 var MAX_BUDGET_MS = 6e5;
-var MIN_BUDGET_S = 60;
+var MIN_BUDGET_S2 = 60;
 function dailyBudgetMs(store2) {
   const raw = store2.getState("mcloud.daily.budget_s");
   const n = raw === null || raw === void 0 ? NaN : Number(String(raw).trim());
-  const sec = Number.isFinite(n) && n >= MIN_BUDGET_S ? Math.min(n, MAX_BUDGET_MS / 1e3) : MAX_BUDGET_MS / 1e3;
+  const sec = Number.isFinite(n) && n >= MIN_BUDGET_S2 ? Math.min(n, MAX_BUDGET_MS / 1e3) : MAX_BUDGET_MS / 1e3;
   return Math.min(Math.round(sec * 1e3), MAX_BUDGET_MS);
 }
 var BUDGET_MS = dailyBudgetMs(store);
