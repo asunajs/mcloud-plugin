@@ -1,0 +1,11 @@
+{
+  "title": "移动云盘 · 兑换",
+  "order": 12,
+  "description": "积分兑换",
+  "min_panel": "0.4.0",
+  "capabilities": [
+    "http",
+    "sqlite",
+    "notify"
+  ]
+}
