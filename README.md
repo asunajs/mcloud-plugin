@@ -229,3 +229,33 @@ QuickJS 沙箱里没有 Node（没有 `fs` / `net` / `crypto` / npm 包），
 - 上线是「本仓 → 实例 `~/panel-3030/plugins`」，不经面板仓中转（R3）。
 - 只面向 0.4：不写 `atLeast('0.3.0')` 这类兼容分支，下限写进清单 `min_panel`（R5）。
 - 缺能力在面板仓加 API，别在插件里造轮子（R6）。
+
+## 发布（面板 0.4 的 zip）
+
+资产名 `mcloud-plugin-<version>-panel04.zip`（当前 **0.4.0**），挂在
+<https://github.com/asunajs/mcloud-plugin/releases>；同目录还有 `.sha256`。
+
+```bash
+npm run build:panelllrt      # 产物 → dist/panel-llrt/（4 个 .js + 4 个清单 + mcloud.webui/）
+npm run pack:panel04         # → dist/mcloud-plugin-<version>-panel04.zip（+ .sha256、SHA256SUMS）
+```
+
+**必须从干净 worktree/tag 打**：`scripts/zip.mjs` 固定了 DOS 时间戳（1980-01-01），
+同输入同 sha256 —— 但在脏工作树里打，包里会混进未提交的改动，发布出去的 sha256 就和
+干净树对不上（踩过，只能重做）。做法：
+
+```bash
+git worktree add /tmp/rel-v0.4.0 v0.4.0
+cd /tmp/rel-v0.4.0 && npm ci && npm run build:panelllrt && npm run pack:panel04
+```
+
+面板 → 插件卡片 → **配置** 里有表单（不再是裸 JSON），四份清单各自声明自己真读的格子：
+
+| 插件 | 配置项 | 落在哪 |
+|---|---|---|
+| `mcloud` / `mcloud-daily` | `daily_budget_s`（日常一趟预算，60–600 秒） | `mcloud.daily.budget_s` |
+| `mcloud` / `mcloud-exchange` | `exchange_enabled`（定时抢兑开关） | `mcloud.exchange.schedule.enabled` |
+
+判据是**三方合并**：插件配置页写的 `plugin-data/<插件>/config.json` 与插件自己界面改的值
+互不覆盖 —— 文件里的值只在**它自己变过**的那一次生效（指纹在 `mcloud.cfg.applied`）。
+实现与理由见 `src/mcloud/configOverlay.ts` 的文件头。

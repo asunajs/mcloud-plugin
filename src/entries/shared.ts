@@ -29,6 +29,7 @@
 import {
   http_fetch,
   log,
+  self_config,
   smtp_send,
   warn,
   ws_close,
@@ -47,6 +48,7 @@ import { hostStore } from '../store/host.ts';
 import { rawStoreOf, scoped } from '../store/scoped.ts';
 import { resolveTaskAccounts, type TaskAccountMode } from '../mcloud/taskAccounts.ts';
 import { migrateFlatKeys } from '../store/keys.ts';
+import { applyConfigOverlay, type OverlayResult } from '../mcloud/configOverlay.ts';
 import { loadBaseUrl } from '../mcloud/session.ts';
 import { loadAuthRaw } from '../mcloud/sessionExchange.ts';
 import { authorizeRequest } from '../mcloud/cloudUpload.ts';
@@ -112,6 +114,32 @@ export function makeStore(): Store {
     log(`状态迁移：${moved.length} 个键搬进账号袋（${moved.join(', ')}）`);
   }
   return s;
+}
+
+/** 把面板「插件配置」页（`plugin-data/<插件>/config.json`）里那几格合并进 state。
+ *
+ *  加载期**先跑它、再读**这些格（日常的预算 `BUDGET_MS` 就是加载期算的 —— 顺序反了，
+ *  面板上改的预算要等下一次重载才生效，而用户点"保存"时看到的是"已生效"）。
+ *
+ *  合并判据、以及"为什么不能用'缺失才播种'"写在 `mcloud/configOverlay.ts` 的文件头。
+ *  这里只负责**读**：`self_config` 失败/为空 ⇒ 返回空结果、一格都不动（不抛）。 */
+export async function syncConfigToState(store: Store): Promise<OverlayResult> {
+  let raw: unknown = null;
+  try {
+    raw = await self_config();
+  } catch (e) {
+    warn('读插件配置失败（按"没配过"继续）：' + (e instanceof Error ? e.message : String(e)));
+    return { applied: [], kept: [], ignored: [] };
+  }
+  const out = applyConfigOverlay(store, raw, new Date().toISOString());
+  if (out.applied.length > 0) {
+    log(`插件配置已写进面板状态：${out.applied.join('，')}（改了要重载对应任务插件才用上）`);
+  }
+  if (out.ignored.length > 0) {
+    // 认不出来的值要报出来 —— 静默跳过等于"填了没反应"
+    warn(`插件配置里有认不出来的值，已跳过：${out.ignored.join('，')}`);
+  }
+  return out;
 }
 
 /** 长连接那一族（`ws_*`）。

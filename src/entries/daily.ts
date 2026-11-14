@@ -74,11 +74,16 @@ import {
   makeStore,
   makeTransport,
   notify,
+  syncConfigToState,
 } from './shared.ts';
 import type { TaskPayload } from './shared.ts';
 
 const store = makeStore();
 const transport = makeTransport(LONG_REQUEST_TIMEOUT_MS);
+
+// ⚠ 必须在 `BUDGET_MS` **之前**：预算就是加载期算的（下面 `dailyBudgetMs`），
+//   顺序反了的话面板上改的预算要等下一次重载才生效。
+await syncConfigToState(store);
 
 /** 日常这一趟的**单次预算**（毫秒）。
  *

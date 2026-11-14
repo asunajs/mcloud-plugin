@@ -15,7 +15,13 @@ import { hourKey } from '../mcloud/exchangeTiming.ts';
 import { loadAccounts } from '../mcloud/accounts.ts';
 import { appendRun } from '../mcloud/runLog.ts';
 import { STATE_ORDERED_HOUR } from '../mcloud/tasks/exchangeOrder.ts';
-import { depsForAccount, LONG_REQUEST_TIMEOUT_MS, makeStore, makeTransport } from './shared.ts';
+import {
+  depsForAccount,
+  LONG_REQUEST_TIMEOUT_MS,
+  makeStore,
+  makeTransport,
+  syncConfigToState,
+} from './shared.ts';
 import type { TaskPayload } from './shared.ts';
 import { labelOf, shortLabel } from '../mcloud/taskAccounts.ts';
 import { blockersFor } from '../mcloud/taskReadiness.ts';
@@ -45,6 +51,9 @@ worker_hint('exclusive');
 
 const store = makeStore();
 const transport = makeTransport(LONG_REQUEST_TIMEOUT_MS);
+
+// 面板「插件配置」里那两格先并进 state（判据见 mcloud/configOverlay.ts 文件头）。
+await syncConfigToState(store);
 
 // 老库迁移：上一版只有一条全局计划，按当时选的账号拆成多条。
 if (migrateLegacyPlan(store, new Date().toISOString())) {

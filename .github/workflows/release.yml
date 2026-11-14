@@ -1,28 +1,26 @@
 name: Release
 
-# 打一个**面板能直接装**的 zip，挂到 GitHub Release 上。
+# 打一个**面板能直接装**的 0.4 形状 zip，挂到 GitHub Release 上。
 #
-# 为什么单独一个 workflow 而不是塞进 ci.yml：
-#   · 它只在**打 tag** 时有意义，别的时点跑纯属浪费；
-#   · 它是**发布动作**（往网上挂产物），要和"检查"分开看 —— 出问题时能一眼
-#     分清"检查没过"还是"检查过了但发布那步挂了"。
+# ⚠ 2026-11-14 改成「只手动触发」：
+#   · 这条仓现在只面向 0.4（见 README「面板契约（0.4）」R5），产物是
+#     `dist/panel-llrt/mcloud-plugin-<version>-panel04.zip`（`npm run pack:panel04`）；
+#   · 发布动作由维护者从**干净 worktree + tag** 跑（`git worktree add` → `pack:panel04`），
+#     这样 zip 的 sha256 与发布出去的一致 —— 之前在工作树里直接打，包里混进了别人未提交的
+#     改动，sha256 对不上只能重做；
+#   · 所以**不再**在 push tag 时自动建 release：那会和手动上传的资产同名覆盖，
+#     一次「同名但 sha256 不同」的覆盖就足以让货架上的 sha256 变成孤儿。
 #
-# 产物的形状由 `src/upload.rs` 决定（面板的上传解压规则）：zip 里就是
-# `js/*.js` + `mcloud/*`，相对 `PLUGINS_DIR` 展开；不带源码、不带文档。
+# 要发的话：Actions → Release → Run workflow（填已存在的 tag）。
 on:
-  push:
-    tags: ['v*']
   workflow_dispatch:
     inputs:
       tag:
-        description: '要发布的 tag（例如 v0.1.0，必须已经存在）'
+        description: '要发布的 tag（例如 v0.4.0，必须已经存在且与 package.json 一致）'
         required: true
 
 permissions:
   contents: write # 建 Release 要写权限
-
-env:
-  CARGO_TERM_COLOR: always
 
 jobs:
   release:
@@ -31,6 +29,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ inputs.tag }}
 
       - uses: actions/setup-node@v4
         with:
@@ -38,102 +37,58 @@ jobs:
 
       - run: npm ci --no-audit --no-fund
 
-      # 面板先构建出来。**两个地方要它**：`check-split`（它要起一个真面板验调度
-      # 表达式）和后面"把这个 zip 传进空面板试装"那一步。构建一次，两处复用 ——
-      # 各构建一次会多花好几分钟（这个面板是 Rust 全量编译）。
-      - uses: dtolnay/rust-toolchain@stable
-      - name: 取出面板并构建
+      # 发布前把该跑的跑完。**不通过就不发** —— 一个"能下载但跑不起来"的产物比没有更糟。
+      - name: 常量可复现
         run: |
           set -euo pipefail
-          git clone --depth 1 https://github.com/asunajs/panel "$RUNNER_TEMP/panel"
-          cd "$RUNNER_TEMP/panel" && cargo build --release
-          echo "PANEL_BIN=$RUNNER_TEMP/panel/target/release/plugin-panel" >> "$GITHUB_ENV"
-
-      # 发布前把该跑的跑完。**不通过就不发** —— 一个"能下载但跑不起来"的
-      # 产物比没有产物更糟：用户会以为是自己的环境问题。
+          npm run gen
+          git diff --exit-code -- src/crypto/tables.ts \
+            || { echo "❌ src/crypto/tables.ts 与生成脚本的结果不一致"; exit 1; }
       - name: 类型检查
         run: npm run typecheck
       - name: 单元测试
         run: npm test
       - name: 产物与源码一致
         run: npm run check-build
-      - name: 参数/调度断言（起一个真面板看调度表达式）
-        run: python3 scripts/split_check.py "$PANEL_BIN"
 
       # tag 与 package.json 的版本必须对得上，否则 zip 名字会骗人
-      # （`mcloud-plugin-0.1.0.zip` 里装的是 0.0.0 的代码）。
+      # （`mcloud-plugin-0.4.0-panel04.zip` 里装的是别的版本的代码）。
       - name: tag 与 package.json 版本一致
         run: |
           set -euo pipefail
-          TAG="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
+          TAG="${{ inputs.tag }}"
           VER=$(node -p "require('./package.json').version")
           if [ "v$VER" != "$TAG" ]; then
             echo "❌ tag=$TAG 与 package.json version=$VER 对不上"
-            echo "   改版本：npm version --no-git-tag-version $TAG"
             exit 1
           fi
           echo "✅ tag $TAG == package.json $VER"
 
-      - name: 打包（zip 形状与面板的上传规则一致）
-        run: npm run pack
-
-      # 冒烟：把这个 zip **真的传进一个空面板**，确认插件装得起来、任务在。
-      # 只 `unzip -l` 看一眼是不够的 —— 形状对不对，面板说了算。
-      - name: 在空面板里试装这个 zip
+      # 0.4 形状：全部平铺（<name>.js + <name>.panel.json + mcloud.webui/）。
+      # 打包脚本只认 dist/panel-llrt/ 里**刚构建**的产物，所以先构建。
+      - name: 构建 + 打包（0.4 形状）
         run: |
           set -euo pipefail
-          TMP=$(mktemp -d)
-          mkdir -p "$TMP/plugins" "$TMP/db"
-          BIND_ADDR=127.0.0.1:18796 \
-          PANEL_TOKEN=rel-token PANEL_ALLOW_PLAIN_TOKEN=1 \
-          DB_PATH="$TMP/db/p.db" PLUGINS_DIR="$TMP/plugins" PANEL_LOG_DIR="$TMP/logs" \
-            "$PANEL_BIN" > "$TMP/panel.log" 2>&1 &
-          PID=$!
-          trap 'kill $PID 2>/dev/null || true' EXIT
-          for i in $(seq 1 40); do
-            curl -fsS -o /dev/null -H 'X-Panel-Token: rel-token' http://127.0.0.1:18796/api/state && break
-            sleep 0.25
-          done
-          ZIP=$(ls dist/*.zip)
-          echo "上传 $ZIP"
-          curl -fsS -X POST http://127.0.0.1:18796/api/plugins/upload \
-            -H 'X-Panel-Token: rel-token' -H 'x-panel: 1' \
-            -F "file=@$ZIP" | tee "$TMP/up.json"
-          # 等**插件与任务都真的就位**（别只等接口通 —— 这个坑踩过好几次）。
-          # 断言在 `scripts/ci_state_check.py` 里，`ready` 只管 0/1，不刷屏。
-          for i in $(seq 1 60); do
-            if curl -fsS -H 'X-Panel-Token: rel-token' http://127.0.0.1:18796/api/state -o "$TMP/s.json" 2>/dev/null \
-               && python3 scripts/ci_state_check.py ready "$TMP/s.json"; then
-              # 再问一下自检路由：**装上了 ≠ 跑得动**（沙箱里缺 crypto 之类的错，
-              # 只有真跑一次才知道），这也是"面板能直接用"这句话的全部含义。
-              curl -fsS -H 'X-Panel-Token: rel-token' \
-                http://127.0.0.1:18796/plugins/mcloud/api/selftest -o "$TMP/st.json"
-              python3 scripts/ci_state_check.py selftest "$TMP/st.json"
-              echo "✅ zip 装进空面板：4 个插件 + 3 条任务 + 自检路由都正常"
-              exit 0
-            fi
-            sleep 0.5
-          done
-          echo "❌ 装了 30 秒还没就位，日志："
-          tail -50 "$TMP/panel.log"
-          exit 1
+          npm run build:panelllrt
+          npm run pack:panel04
 
       - name: 挂到 Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          TAG="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
-          # 已经有人先建过这个 release（比如维护者在本地先传了一次）⇒ **补传**，
-          # 不是报错退出。发布这件事要**幂等**：同一个 tag 重跑一次就该得到同一个结果。
+          TAG="${{ inputs.tag }}"
+          ZIP=$(ls dist/*-panel04.zip)
+          SUM="$ZIP.sha256"
+          # 已经存在就先补传（发布要幂等：同一个 tag 重跑一次得到同一个结果）
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" dist/*.zip dist/SHA256SUMS --clobber
+            gh release upload "$TAG" "$ZIP" "$SUM" --clobber
             echo "✅ 已有 release，产物已覆盖更新"
           else
             gh release create "$TAG" \
               --title "mcloud-plugin $TAG" \
               --generate-notes \
-              --notes "面板能直接装的 zip：**插件管理 → 上传**选中下面这个 \`.zip\`（也可以解压进 \`PLUGINS_DIR\`）。\n\n装完打开「云盘」导入会话，然后点一次「日常」。" \
-              dist/*.zip dist/SHA256SUMS
+              --notes "面板 0.4 能直接装的 zip：**插件管理 → 上传**选中下面这个 \`.zip\`（也可以解压进 \`PLUGINS_DIR\`）。装完打开「云盘」导入会话，再点一次「日常」。" \
+              "$ZIP" "$SUM"
           fi
           echo "✅ https://github.com/${{ github.repository }}/releases/tag/$TAG"

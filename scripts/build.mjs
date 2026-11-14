@@ -52,7 +52,10 @@ export async function bundleAll() {
       entryPoints: [join(ROOT, entry)],
       bundle: true,
       format: 'esm',
-      target: 'es2020',
+      // ⚠ es2022（不是 es2020）：四个入口在加载期 `await syncConfigToState(store)`
+      //   —— 面板「插件配置」里的值要在**预算/调度被算出来之前**并进 state，只能顶层 await。
+      //   esbuild 的 es2020 目标会直接拒绝顶层 await；宿主是 ESM（quickjs-ng 支持它）。
+      target: 'es2022',
       platform: 'neutral',
       external: ['host-api'],
       write: false,
