@@ -1130,9 +1130,11 @@ test('619 两轮打卡：doTaskPost→key=task、doTaskPost→key=task2，且不
 
   const urls = sent.map((r) => r.url);
   const clicks = urls.filter((u) => u.includes('/ycloud/signin/task/click'));
-  assert.ok(
-    clicks.some((u) => u.includes('key=task&id=619')),
-    `要发 key=task：${clicks.join(' | ')}`,
+  // ⚠ `key=task` **只发一次**：两轮里自带，标准流程那一发不再重复（不可回滚的东西不重发）
+  assert.equal(
+    clicks.filter((u) => u.includes('key=task&id=619')).length,
+    1,
+    `key=task 恰好一次：${clicks.join(' | ')}`,
   );
   assert.ok(
     clicks.some((u) => u.includes('key=task2&id=619')),
