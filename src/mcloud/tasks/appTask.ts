@@ -38,7 +38,7 @@ import { readMonthBackup } from './taskExpansion.ts';
 import { parseTrashResult } from './cloudTrash.ts';
 import { unregisterOwnedFile } from './ownedFiles.ts';
 import { cloudFileOpHeaders, deterministicFile, randomHex } from '../cloudUpload.ts';
-import { SHARE_TASK_ID, monthGateSkips, shouldSkip, stepFor, uploadShapeFor } from '../appTaskRules.ts';
+import { SHARE_TASK_ID, isShareClaim, monthGateSkips, shouldSkip, stepFor, uploadShapeFor } from '../appTaskRules.ts';
 import type { AppRunner, TaskStep } from '../appTaskRules.ts';
 import { parseSsoToken } from '../h5session.ts';
 import {
@@ -116,6 +116,7 @@ export type TaskPhase =
   | 'click'
   | 'trash'
   | 'entry'
+  | 'entryTwice'
   | 'portal'
   | 'share'
   | 'shareDel'
@@ -143,6 +144,7 @@ export type TaskPhase =
 /** 这一条除了“点一下”之外还要做的动作。 */
 type Special =
   | 'entry'
+  | 'entryTwice'
   | 'portal'
   | 'share'
   | 'mailBackup'
@@ -209,6 +211,7 @@ const PHASE_TEXT: Record<TaskPhase, string> = {
   click: '打卡（不可回滚）',
   trash: '收尾（移进回收站）',
   entry: '固定入口（两发上报 + 补打卡）',
+  entryTwice: '两轮打卡（key=task → key=task2）',
   portal: '入口页 + 打卡',
   share: '分享文件（建外链）',
   shareDel: '删外链（收尾）',
@@ -402,7 +405,9 @@ function advance(deps: TaskDeps, st: TaskState): TaskOutcome {
   const special: Special | undefined =
     next.step.kind === 'entry'
       ? 'entry'
-      : next.step.kind === 'portal'
+      : next.step.kind === 'entryTwice'
+        ? 'entryTwice'
+        : next.step.kind === 'portal'
         ? 'portal'
         : next.step.kind === 'share'
           ? 'share'
@@ -519,6 +524,10 @@ export function pendingItems(deps: TaskDeps): Pending[] {
       //   真机/测试里的症状：只要**第一条**是"未实现"的（548），后面全部消失 ⇒
       //   `pendingItems` 回 `[]`，看着像"这账号没有任务"。我查了好几轮才定位到。
       if (judgeItem(item) !== 'todo') continue;
+      // ⚠ **434 的「领20豆」档不进这台状态机**：它攒满 7/7 之后
+      //   服务端只收一发 `task/click?key=task&id=434`（抓包 2026-11-14），
+      //   再走「传文件→建外链→删外链」是白做。它由独立的 `runShareClaim` 处理。
+      if (isShareClaim(item)) continue;
       // 「刻意不做」的（SKIP_TASK_LIST）不算“没搬”—— 它们本来就不该点。
       if (shouldSkip(item.taskId)) continue;
       // 月门：sign_in_3 / month、本月备份确认没开、日期 < 20 ⇒ 这一趟不动。
@@ -706,7 +715,9 @@ export function startAppTask(deps: TaskDeps): TaskOutcome {
   const special: Special | undefined =
     first.step.kind === 'entry'
       ? 'entry'
-      : first.step.kind === 'portal'
+      : first.step.kind === 'entryTwice'
+        ? 'entryTwice'
+        : first.step.kind === 'portal'
         ? 'portal'
         : first.step.kind === 'share'
           ? 'share'
@@ -771,6 +782,8 @@ function phaseOfSpecial(s: Special | undefined): TaskPhase | undefined {
   switch (s) {
     case 'entry':
       return 'entry';
+    case 'entryTwice':
+      return 'entryTwice';
     case 'portal':
       return 'portal';
     case 'share':
@@ -1049,6 +1062,38 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
       // `advance` 现在只回 `ok:true`；这里写死 true，别让人以为还有判死逻辑（评审 2026-11-01）。
       ok: true,
       note: `固定入口 #${st.itemId}（${bits.join('；')}）。${out.note}`,
+    };
+  }
+
+  // ②b 两轮打卡（619 那一族）—— 顺序**逐字照实拍**（2026-11-14 12:52–12:53）：
+  //
+  //    round1: doTaskPost → click(key=task)      ⇒ currstep 0 → 1（仍 WAIT）
+  //    round2: doTaskPost → click(key=task2)     ⇒ FINISH / currstep=3（已完成）
+  //
+  //  ⚠ 只打 `task2` 一发（旧入口族的做法）推不动这一条；
+  //  ⚠ 也不发 `market/signin/page/doTask` —— 抓包里没有那一发。
+  if (st.phase === 'entryTwice') {
+    const market = st.data?.marketName ?? 'sign_in_3';
+    const bits: string[] = [];
+    // 第 1 轮
+    const a1 = callRawText(deps.transport, entryPostRequest(deps, market));
+    bits.push(a1.ok ? 'doTaskPost ok' : `doTaskPost 没成：${a1.error ?? ''}`);
+    waitGap(deps);
+    const c1 = callRawText(deps.transport, clickRequest(deps, st.itemId, 'task'));
+    bits.push(c1.ok ? 'key=task ok' : `key=task 没成：${c1.error ?? ''}`);
+    // 第 2 轮（两轮之间要隔 —— 抓包里两轮相差约 35 秒；这里用任务间隔，
+    // 不硬等 35 秒：`currstep` 的推进由服务端结算，隔一个 gap 足够让上一枪落账）
+    waitGap(deps);
+    const a2 = callRawText(deps.transport, entryPostRequest(deps, market));
+    bits.push(a2.ok ? 'doTaskPost#2 ok' : `doTaskPost#2 没成：${a2.error ?? ''}`);
+    waitGap(deps);
+    const c2 = callRawText(deps.transport, clickRequest(deps, st.itemId, 'task2'));
+    bits.push(c2.ok ? 'key=task2 ok' : `key=task2 没成：${c2.error ?? ''}`);
+    const out = advance(deps, doneState(deps, st));
+    return {
+      // 四发里有一发没发出去才判失败；状态是否真的翻 FINISH 由收尾那次矩阵复查判。
+      ok: true,
+      note: `两轮打卡 #${st.itemId}（${bits.join('；')}）—— 等复查确认。${out.note}`,
     };
   }
 

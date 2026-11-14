@@ -1108,3 +1108,70 @@ test('434 分享：链内两处动作之间不是 0ms（传完→建链、建链
   assert.ok(outlink[0]! - created[created.length - 1]! >= 500, '传完到建链之间要隔 ≥500ms');
   assert.ok(del[0]! - outlink[0]! >= 500, '建链到删链之间要隔 ≥500ms');
 });
+
+// ── 619：两轮打卡（2026-11-14 实拍，见 appTaskRules.ts 的 ENTRY_TWICE_TASK_IDS） ──
+
+test('619 两轮打卡：doTaskPost→key=task、doTaskPost→key=task2，且不发 market/signin/page/doTask', () => {
+  const { deps, sent } = mkDeps({
+    [MATRIX_MARKETS[0]!]: [{ taskId: 619, state: 'WAIT', enable: 1, groupId: 'month', name: '从“我的”入口访问云朵中心' }],
+  });
+  startAppTask(deps);
+  // 推进到 entryTwice 阶段并跑完（click-first → 那次 click 会进特殊阶段）
+  let guard = 0;
+  while (guard < 12) {
+    const st = JSON.parse(deps.store.getState(STATE_TASK) ?? '{}') as { phase?: string };
+    if (st.phase === 'done') break;
+    step(deps);
+    guard += 1;
+    if (st.phase === 'entryTwice') break;
+  }
+  // 再推一步执行 entryTwice 本体
+  runAppTaskStep(deps);
+
+  const urls = sent.map((r) => r.url);
+  const clicks = urls.filter((u) => u.includes('/ycloud/signin/task/click'));
+  assert.ok(
+    clicks.some((u) => u.includes('key=task&id=619')),
+    `要发 key=task：${clicks.join(' | ')}`,
+  );
+  assert.ok(
+    clicks.some((u) => u.includes('key=task2&id=619')),
+    `要发 key=task2：${clicks.join(' | ')}`,
+  );
+  assert.ok(
+    !urls.some((u) => u.includes('/market/signin/page/doTask')),
+    `不许再发旧入口页那一发：${urls.filter((u) => u.includes('doTask')).join(' | ')}`,
+  );
+  // 两发 doTaskPost（每轮一发）
+  assert.equal(
+    urls.filter((u) => u.includes('/ycloud/signin/page/doTaskPost')).length,
+    2,
+    '每轮各一发 doTaskPost',
+  );
+});
+
+test('409 仍然走原来那套入口（含 page/doTask），619 的改法不外溢', () => {
+  const { deps, sent } = mkDeps({
+    [MATRIX_MARKETS[0]!]: [{ taskId: 409, state: 'WAIT', enable: 1, groupId: 'month', name: '云朵中心入口' }],
+  });
+  startAppTask(deps);
+  let guard = 0;
+  while (guard < 12) {
+    const st = JSON.parse(deps.store.getState(STATE_TASK) ?? '{}') as { phase?: string };
+    if (st.phase === 'done' || st.phase === 'entry') break;
+    step(deps);
+    guard += 1;
+  }
+  runAppTaskStep(deps);
+  const urls = sent.map((r) => r.url);
+  // ⚠ 409 老流程里**本来就有** `key=task`（那是"先打卡"那一发），
+  //   两者真正的区别是入口页那一发：409 发 `market/signin/page/doTask`，619 不发。
+  assert.ok(
+    urls.some((u) => u.includes('/market/signin/page/doTask')),
+    `409 还是老那套（含旧入口页那一发）：${urls.join(' | ')}`,
+  );
+  assert.ok(
+    urls.some((u) => u.includes('key=task2&id=409')),
+    `409 收尾那一发照旧：${urls.filter((u) => u.includes('click')).join(' | ')}`,
+  );
+});

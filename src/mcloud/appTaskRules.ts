@@ -73,6 +73,14 @@ export const GATE_UPLOAD_TASK_ID = 522;
 
 /** 分享文件（434）——它有一串自己的步骤，不是"点一下就完"。 */
 export const SHARE_TASK_ID = 434;
+/** 434 攒满 7/7 后的「领20豆」档：服务端把 `currstep` 推到 22。
+ *
+ *  Rust 参考实现 `app_task/tests.rs` 的 `should_click` 原话：
+ *  「434 在第 22 步**额外**打一发（叠加，不是替代）」—— 这一发就是领 20 豆，
+ *  不是"攒份数"那串分享动作里的打卡。
+ *  抓包 2026-11-14（`mcloud-capture/mcloud/capture/app-share-434-claim-samples.txt`）
+ *  实拍：7/7 档 `currstep=22` + 按钮 `领20豆` + `action=receiveCloud`，
+ *  点一下只发 `GET /ycloud/signin/task/click?key=task&id=434`，回 `result.num=20`。 */
 export const SPECIAL_CLICK_STEP = 22;
 
 /** ⚠ **不做**的任务 id。这一串是"看着能点、点了没用或会坏事"的那些。 */
@@ -82,6 +90,25 @@ export const SKIP_TASK_LIST: readonly number[] = [
 
 /** 需要先去"入口"页面的任务 id（不先进那个页面，`task/click` 会不认）。 */
 export const PORTAL_ENTRY_TASK_IDS: readonly number[] = [1017, 604];
+
+/** **两轮打卡**才结算的入口类任务 id。
+ *
+ *  ⚠ **只放证据覆盖到的 id，别按"看着像入口"往外推** —— 不同 id 是不同任务，
+ *  各自要各自的实拍（用户 2026-11-14 口径）。
+ *
+ *  619「从"我的"入口访问云朵中心」实拍（`mcloud-capture/mcloud/capture/`，
+ *  2026-11-14 12:52–12:53，两次点击各一轮）：
+ *
+ *    round1: POST page/doTaskPost → GET task/click?key=task&id=619
+ *            之后重读任务表：state=WAIT currstep=0 → **1**
+ *    round2: POST page/doTaskPost → GET task/click?key=task2&id=619
+ *            之后重读任务表：state=**FINISH** currstep=**3**（按钮「已完成」）
+ *
+ *  也就是说这一条**得推两轮**：`key=task` 把 `currstep` 推到 1，`key=task2`
+ *  才推到 FINISH。只打一发（我们以前对入口族只发 `task2`）它就一直停在 WAIT。
+ *  ⚠ 同一次抓包里 `m.mcloud.139.com` 上**没有** `market/signin/page/doTask`
+ *  （旧 `entry` 那一步会发的那一发）—— 所以这一族不走 `entry`。 */
+export const ENTRY_TWICE_TASK_IDS: readonly number[] = [619];
 
 /** 只要点一下就行、没有别的步骤的任务 id。 */
 export const CLICK_ONLY_TASK_IDS: readonly number[] = [
@@ -171,6 +198,33 @@ export function isShare(taskId: number | undefined): boolean {
   return taskId === SHARE_TASK_ID;
 }
 
+/** 这一条要**两轮**打卡才结算（见 {@link ENTRY_TWICE_TASK_IDS} 的实拍）。 */
+export function isEntryTwice(taskId: number | undefined): boolean {
+  return taskId !== undefined && ENTRY_TWICE_TASK_IDS.includes(taskId);
+}
+
+/** 434 这一行是不是**「攒满 7/7 → 领 20 豆」**那一档（不再是攒份数）。
+ *
+ *  ⚠ 判据全部来自**服务端**（`currstep` / 按钮文案），插件**不自己算 7 天**：
+ *    `stepTypeSet` 里有 `checktime`，门槛是服务端按时间结算的（抓包 §2）。
+ *  两条任一命中即认（都是同一档的实拍特征，互为兜底）：
+ *    · `currStep === 22` —— 参考实现 `SPECIAL_CLICK_STEP`，结构常量
+ *    · 按钮文案 `领N豆` —— 服务端替这一阶段写好的那句话（`buttonOutText`）
+ *  认不出来 ⇒ **不动**（不猜、不编状态词，见 appTaskStatus.ts 文件头）。
+ *
+ *  与 {@link isShare} 是**同一条任务的两个阶段**：这一档归独立的「分享领奖」步骤
+ *  处理（只发一发 `task/click`），**不能**再进 appTask 那台状态机做建外链/删外链 ——
+ *  抓包里点「领20豆」一发外链都没有。 */
+export function isShareClaim(item: {
+  taskId?: number | undefined;
+  currStep?: number | undefined;
+  buttonOutText?: string | undefined;
+}): boolean {
+  if (item.taskId !== SHARE_TASK_ID) return false;
+  if (item.currStep === SPECIAL_CLICK_STEP) return true;
+  return /领\s*\d+\s*豆/.test(item.buttonOutText ?? '');
+}
+
 // ───────────────────────── 这一条走哪一步（mcloud 的步骤表） ─────────────────────────
 
 /** 这一条要走的动作。`undefined` = **mcloud 里没实现** ⇒ 本插件也**不动它**。
@@ -206,6 +260,8 @@ export type TaskStep =
   | { kind: 'clickOnly' }
   /** 409 / 1005：固定入口两发上报 + 专用 key 补打卡。 */
   | { kind: 'entry' }
+  /** 619：`doTaskPost` + `key=task` 推一步，再 `doTaskPost` + `key=task2` 收尾。 */
+  | { kind: 'entryTwice' }
   /** 1017 / 604：入口页（`button.email.link` / `button.app.link`）+ 打卡。 */
   | { kind: 'portal' }
   /** 434：分享本趟传上去的第一个文件，再删外链。 */
@@ -223,6 +279,8 @@ export function stepFor(item: AppTaskItem): TaskStep | undefined {
   if (shouldSkip(item.taskId)) return undefined;
   // 409 / 1005：固定入口（两发上报 + 补打卡）。
   if (item.taskId === 409 || item.taskId === 1005) return { kind: 'entry' };
+  // 619：两轮打卡（见 ENTRY_TWICE_TASK_IDS 的实拍）。
+  if (isEntryTwice(item.taskId)) return { kind: 'entryTwice' };
   // 1017 / 604：入口页。
   if (needsPortalEntry(item.taskId)) return { kind: 'portal' };
   // 434：分享文件。

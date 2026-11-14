@@ -532,12 +532,12 @@ test('⚠ 一屏：手机号那格右端嵌着「获取验证码」，下面验�
     assert.ok(!pane.includes(`${kind}-step1`) && !pane.includes(`${kind}-step2`), `${kind} 不该再分两步`);
     assert.ok(!pane.includes(`${kind}-start`), `${kind} 不该再有「下一步」`);
     assert.ok(!pane.includes(`${kind}-change`), `${kind} 不该再有「改」（号码就在输入框里）`);
-    // 手机号那一格：输入框 + 行内按钮**合成一格**
+    // 手机号那一格：<p-sms-code>（第 182 轮，面板共享控件）——「输入框 + 行内按钮
+    // 合成一格」是控件自己的事，这页只留一个元素，位数交给 length 属性
     assert.ok(
-      new RegExp(`<div class="input-group">[\\s\\S]{0,400}?id="${kind}-phone"[\\s\\S]{0,400}?id="${kind}-send"`).test(pane),
-      `${kind}：手机号那一格要包在 \`input-group\` 里，「获取验证码」在里面`,
+      new RegExp(`<p-sms-code id="${kind}-send" length="11"`).test(pane),
+      `${kind}：手机号那一格是面板的 <p-sms-code>（length="11"）`,
     );
-    assert.ok(pane.includes(`>获取验证码<`), `${kind}：行内按钮写「获取验证码」`);
     // 验证码那一格是独立一行（不再和按钮挤在一起）
     assert.ok(
       new RegExp(`id="${kind}-code"[^>]*placeholder="请输入验证码"`).test(pane),
@@ -570,22 +570,28 @@ test('⚠ 「获取验证码」这一个按钮干两件事：先开会话再发�
     /function requestCode\(kind\)[\s\S]{0,900}?api\('\/login\/app\/start'[\s\S]{0,300}?api\('\/login\/app\/send'/.test(js),
     '手机端那一路：start → send',
   );
-  assert.ok(/requestCode\('sms'\)/.test(js) && /requestCode\('app'\)/.test(js), '两条路都要走它');
+  assert.ok(/await requestCode\(kind\)/.test(js), 'sendCode 里要走它（开会话 → 发码）');
+  assert.ok(/sendCode\('sms'\)/.test(js) && /sendCode\('app'\)/.test(js), '两条路都要走它（send 事件 → sendCode）');
   // 每次点都重新 start：形态可能刚被改过，"界面上的选择"必须就是这一趟用的档案
   assert.ok(/body: \{ phone, pcPlatform: addPc \}/.test(js), 'start 要带上当前形态');
 });
 
 test('⚠ 两个主按钮按**位数**开关，不是点了才报错', () => {
   assert.ok(/function gate\(btnId, value, need\)/.test(js), '缺 `gate`');
-  // 手机号 11 位 ⇒ 放开「获取验证码」；验证码 6 位 ⇒ 放开「登录」
-  assert.ok(/gate\(`\$\{kind\}-send`, phone\.value, 11\)/.test(js), '手机号满 11 位才放开「获取验证码」');
+  // 手机号那一格的门禁在 <p-sms-code> 控件里（length="11"：满 11 位才放开行内按钮）
+  assert.ok(
+    /<p-sms-code id="sms-send" length="11"/.test(html) && /<p-sms-code id="app-send" length="11"/.test(html),
+    '手机号满 11 位才放开「获取验证码」（门禁在控件里，length="11"）',
+  );
+  // app.js 读手机号也从控件读（value 只剩数字）
+  assert.ok(/const phone = \$\(`\$\{kind\}-send`\)\.value;/.test(js), '手机号从 <p-sms-code> 的 value 读');
+  // 验证码 6 位 ⇒ 放开「登录」（这页自己算）
   assert.ok(/gate\(`\$\{kind\}-submit`, code\.value, 6\)/.test(js), '验证码满 6 位才放开「登录」');
-  // 输入时只留数字、并重算开关
+  // 输入时只留数字（验证码框自己滤；手机号那半在控件里滤）
   assert.ok(/replace\(\/\\D\/g, ''\)/.test(js), '输入框要滤掉非数字');
   assert.ok(
-    /wireCodeForm\('sms', \$\('sms-phone'\), \$\('sms-code'\)\)/.test(js) &&
-      /wireCodeForm\('app', \$\('app-phone'\), \$\('app-code'\)\)/.test(js),
-    '两个页签都要接上（输入框当参数传，界面测试按字面 id 查）',
+    /wireCodeForm\('sms', \$\('sms-code'\)\)/.test(js) && /wireCodeForm\('app', \$\('app-code'\)\)/.test(js),
+    '两个页签都要接上（验证码框当参数传，界面测试按字面 id 查）',
   );
   // 回车等于点那个主按钮（手机上少一次瞄准）
   assert.ok(/ev\.key === 'Enter'/.test(js), '回车要能提交');
@@ -594,25 +600,32 @@ test('⚠ 两个主按钮按**位数**开关，不是点了才报错', () => {
 });
 
 test('⚠ 发码之后要进重发倒计时（连点只会喂限流）', () => {
-  assert.ok(/function startResend\(kind/.test(js) && /function stopResend\(kind/.test(js), '缺重发倒计时');
-  assert.ok(/startResend\('sms'\)/.test(js) && /startResend\('app'\)/.test(js), '两条路发码成功后都要起倒计时');
-  assert.ok(/重新获取（\$\{left\} 秒）/.test(js), '倒计时里按钮上要写还剩几秒');
-  // ⚠ 倒计时接管按钮之后，`act` 与 `gate` 都**不许**碰它 ——
-  //   否则会出现"按钮写着「获取验证码」、其实是可点的"的窗口（连点正是要防的）。
-  assert.ok(/btn\.dataset\.resend = '1'/.test(js), '倒计时要标记按钮已被接管');
+  // 第 182 轮：倒计时本身搬进了面板的 <p-sms-code>（ui.js；ui-kit-check 在面板那侧
+  // 真点过：位数门禁、倒计时文案、stopResend 恢复）。这页要保证的是**接线**：
   assert.ok(
-    /dataset\.resend !== '1'[\s\S]{0,120}?btn\.disabled = false/.test(js),
-    '`act` 的收尾要跳过被倒计时接管的按钮',
+    /\$\('sms-send'\)\.addEventListener\('send', \(\) => sendCode\('sms'\)\)/.test(js) &&
+      /\$\('app-send'\)\.addEventListener\('send', \(\) => sendCode\('app'\)\)/.test(js),
+    '两条路都要接 <p-sms-code> 的 send 事件',
   );
+  assert.ok(/async function sendCode\(kind\)/.test(js), '缺 `sendCode`');
+  // 请求在途要 busy：控件把行内按钮禁住防连点
+  assert.ok(/function sendCode\(kind\)[\s\S]{0,200}?ctl\.busy = true/.test(js), '发码在途要 busy（防连点）');
+  // 发出去了 ⇒ 起倒计时（**界面节奏**：连点只会喂限流）
   assert.ok(
-    /if \(!owned\) btn\.textContent = '…'/.test(js),
-    '`act` 对已接管的按钮连"转圈"都不该画（会闪一下）',
+    /function sendCode\(kind\)[\s\S]{0,600}?ctl\.startResend\(\)/.test(js),
+    '发码成功后要起倒计时（startResend 在控件里）',
   );
+  // ⚠ 本地的倒计时实现已经随控件搬走，不许再留一份 —— 同一套控件不留两份定义。
+  assert.ok(!/function (start|stop)Resend\(/.test(js), '本地倒计时已搬进控件，不许再自己写一份');
+  assert.ok(!/dataset\.resend/.test(js), '接管标记也没了');
+  // ⚠ `act` 不许再碰发码按钮：它直接改 textContent / disabled，会把「重新获取（N 秒）」
+  //   改回去、还会把它重新点亮。
+  assert.ok(!/\$\('sms-send'\)\.addEventListener\('click'/.test(js), '发码按钮按 send 事件接，不走 click');
+  // 关弹窗要停掉两个倒计时（控件方法；弹窗看不见了它还在跑是最难查的一类问题）
   assert.ok(
-    /function gate\(btnId, value, need\)[\s\S]{0,400}?dataset\.resend !== '1'/.test(js),
-    '`gate` 也要跳过它 —— 每次动作后的 `load()` 都会重画一次按钮',
+    /function closeAddDialog\(\)[\s\S]{0,400}?stopQrPoll\(\)[\s\S]{0,200}?\$\('sms-send'\)\.stopResend\(\)[\s\S]{0,200}?\$\('app-send'\)\.stopResend\(\)/.test(js),
+    '关弹窗要停掉轮询与两个倒计时',
   );
-  assert.ok(/function stopResend\(kind\)[\s\S]{0,400}?delete btn\.dataset\.resend/.test(js), '停掉时要摘掉标记');
 });
 
 test('⚠ 验证码框要用 `one-time-code`（别写成 off）', () => {
@@ -634,8 +647,10 @@ test('⚠ 说明文字里的号码要打码（它会一直留在屏幕上）', (
   assert.ok(/function maskPhone\(p\)/.test(js), '缺 `maskPhone`');
   assert.ok(/\*\*\*\*/.test(js), '要打码成 `138****0000` 那种');
   assert.ok(/验证码已发到 \$\{maskPhone\(s\.phone\)\}/.test(js), '那一行说明要用它');
-  // 两条路同构：短信与手机端同一套结构（它们本来就是同一条流程的两套身份）
-  for (const suffix of ['phone', 'code', 'send', 'submit', 'note']) {
+  // 两条路同构：短信与手机端同一套结构（它们本来就是同一条流程的两套身份）。
+  // `phone` 那格不在了：第 182 轮起手机号是共享控件 <p-sms-code id="…-send">，
+  // 输入框在控件内部 —— 两条路各一个元素，id 仍然成对。
+  for (const suffix of ['code', 'send', 'submit', 'note']) {
     assert.ok(html.includes(`id="sms-${suffix}"`) && html.includes(`id="app-${suffix}"`), `两条路都要有 ${suffix}`);
   }
 });
@@ -648,7 +663,7 @@ test('⚠ 界面里**不许再有滑块图**（坐标是解出来的，摆图等
   }
   assert.ok(!/needSlider/.test(js), '界面这一层不该再处理"要滑块"这个中间态（后端自己过）');
   // 发码只有两个结局：`sent` 或者一句人话
-  assert.ok(/if \(r\.sent\) \{[\s\S]{0,200}?throw new Error\(r\.note/.test(js), '发码那一路要收成"成了/没成"两种');
+  assert.ok(/if \(!r\.sent\) throw new Error\(r\.note/.test(js), '发码那一路要收成"成了/没成"两种');
 });
 
 test('⚠ 登录成功之后弹窗要**自己关掉**（四条进账号的路都要）', () => {
@@ -670,8 +685,8 @@ test('⚠ 登录成功之后弹窗要**自己关掉**（四条进账号的路都
   );
   // 收尾要**顺手停掉定时器**（弹窗看不见了还在问接口是最难查的一类问题）
   assert.ok(
-    /function closeAddDialog\(\)[\s\S]{0,400}?stopQrPoll\(\)[\s\S]{0,200}?stopResend\('sms'\)[\s\S]{0,200}?stopResend\('app'\)/.test(js),
-    '收尾要停掉轮询与两个倒计时',
+    /function closeAddDialog\(\)[\s\S]{0,400}?stopQrPoll\(\)[\s\S]{0,200}?\$\('sms-send'\)\.stopResend\(\)[\s\S]{0,200}?\$\('app-send'\)\.stopResend\(\)/.test(js),
+    '收尾要停掉轮询与两个倒计时（控件方法）',
   );
   // 验证码要清掉（它属于刚才那一趟会话）
   assert.ok(
