@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.28 · 插件 `mcloud-daily`
+//   mcloud-plugin 0.2.29 · 插件 `mcloud-daily`
 
 // src/entries/daily.ts
 import { debug as debug2, register_cron } from "host-api";
@@ -5598,7 +5598,7 @@ function advance(deps, st) {
     phase = phaseOfSpecial(special) ?? phase;
   }
   const started = next.currStep !== void 0 && next.currStep !== 0;
-  const skipClick = started && (next.step.kind === "upload" || special !== void 0);
+  const skipClick = next.step.kind === "entryTwice" || started && (next.step.kind === "upload" || special !== void 0);
   const markHandled = skipClick && !clicked.includes(next.itemId);
   save4(deps, {
     gi: next.gi,
@@ -5800,7 +5800,7 @@ function startAppTask(deps) {
   if (first.currStep !== void 0 && first.currStep !== 0 && special !== void 0) {
     phase = phaseOfSpecial(special) ?? phase;
   }
-  const skipClick = first.step.kind === "upload" && first.currStep !== void 0 && first.currStep !== 0;
+  const skipClick = first.step.kind === "entryTwice" || first.step.kind === "upload" && first.currStep !== void 0 && first.currStep !== 0;
   const markHandled = skipClick && !clicked.includes(first.itemId);
   save4(deps, {
     gi: first.gi,
@@ -5994,6 +5994,18 @@ function runAppTaskStep(deps) {
     return { ok: true, note: `已记访问日志 #${st.itemId}（HTTP ${res2.status}）—— 下一步打卡` };
   }
   if (st.phase === "click") {
+    if (st.skipClick === true && st.special === "entryTwice") {
+      const handled = [...freshClicked(st, deps), st.itemId];
+      save4(deps, {
+        ...st,
+        phase: "entryTwice",
+        clicked: handled,
+        skipClick: void 0,
+        uploadAfter: false,
+        day: today(deps)
+      });
+      return { ok: true, note: `#${st.itemId} 两轮打卡：跳过前置那一发（两轮里自带 key=task）` };
+    }
     if (st.skipClick === true) {
       const handled = [...freshClicked(st, deps), st.itemId];
       beginUpload(deps, st.itemId, "");
