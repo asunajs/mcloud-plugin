@@ -145,6 +145,15 @@ export function sqlite_exec(
   params?: SqlParam[],
 ): { changes: number; lastInsertRowid: number };
 
+/** 这个插件**自己**的配置（`plugin-data/<插件>/config.json`，面板的「插件配置」页写的
+ *  就是它；和面板级的 `config()` 分开）。**已经解好的对象**（不是 JSON 文本）。
+ *
+ *  形状由插件定：没有文件时是 `{}`（空对象，不是 `null`）。面板改完会**重载这个插件**，
+ *  所以"加载期读一次"就是最新的。
+ *
+ *  ⚠ 只有 0.4（panel-llrt）这一族宿主给这个 op；老宿主上加载会失败 —— 本仓只面向 0.4。 */
+export function self_config(): Promise<Record<string, unknown>>;
+
 export interface FetchOptions {
   method?: string;
   headers?: Record<string, string>;

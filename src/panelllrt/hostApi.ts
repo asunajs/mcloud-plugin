@@ -143,6 +143,30 @@ export function sqlite_exec(sql: string, params?: unknown[]): any {
   };
 }
 
+// ── 配置 ───────────────────────────────────────────────────
+//
+// 面板的「插件配置」页写 `plugin-data/<插件>/config.json`，改完会**重载这个插件**
+// （`web.rs` 的 `plugin_config_put`）⇒ 加载期读一次就是最新的，不用轮询。
+// 宿主给的是 JSON 文本（`op_self_config`），这里解成对象；空文件/没有文件是 `{}`。
+
+export async function self_config(): Promise<Record<string, unknown>> {
+  try {
+    // ⚠ 面板的 JS 垫片已经把 `raw.self_config()` 的 JSON 文本 `JSON.parse` 过了
+    //   （见 panel-llrt `src/hostapi.rs` 的 `self_config: async () => JSON.parse(...)`），
+    //   所以这里拿到的是**对象**。字符串那支留着是为了别家宿主 —— 2026-11-14 现场：
+    //   只认字符串 ⇒ 永远返回 {}，面板上填的预算一格都没生效，而且不报错。
+    const v = (await host.self_config()) as unknown;
+    const obj = typeof v === 'string' ? (JSON.parse(v) as unknown) : v;
+    return obj !== null && typeof obj === 'object' && !Array.isArray(obj)
+      ? (obj as Record<string, unknown>)
+      : {};
+  } catch (e) {
+    // 读不到不该让插件炸掉：说一句，按"没配过"继续（字段的默认值都在插件里）。
+    emit('warn', '读插件配置（plugin-data/config.json）失败: ' + text(e));
+    return {};
+  }
+}
+
 // ── HTTP（同步）────────────────────────────────────────────
 
 export function http_fetch(url: string, options?: any): any {

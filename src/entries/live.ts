@@ -61,6 +61,7 @@ import {
   drain,
   makeHost,
   makeStore,
+  syncConfigToState,
   makeTransport,
   taskDeps,
 } from './shared.ts';
@@ -72,6 +73,9 @@ import type { TaskPayload } from './shared.ts';
 const store = makeStore();
 const transport = makeTransport(LONG_REQUEST_TIMEOUT_MS);
 const host = makeHost();
+
+// 面板「插件配置」里那几格先并进 state（判据见 mcloud/configOverlay.ts 文件头）。
+await syncConfigToState(store);
 
 /** 听窗口预算。一天只来两次（10:30 / 15:30），所以每次听久一点：
  *  5 分钟。面板对预算的上限是 10 分钟（`MAX_DECLARED_BUDGET_MS`）。 */

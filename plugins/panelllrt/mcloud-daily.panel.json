@@ -7,5 +7,16 @@
     "http",
     "sqlite",
     "notify"
-  ]
+  ],
+  "config": {
+    "fields": [
+      {
+        "name": "daily_budget_s",
+        "label": "日常预算（秒）",
+        "type": "number",
+        "default": 600,
+        "help": "这一趟最多跑多久，60–600 秒（面板对单条任务的硬上限是 600 秒）。账号多、任务间要等，就调到最大。"
+      }
+    ]
+  }
 }
