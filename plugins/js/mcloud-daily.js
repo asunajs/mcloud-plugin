@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.2.27 · 插件 `mcloud-daily`
+//   mcloud-plugin 0.2.28 · 插件 `mcloud-daily`
 
 // src/entries/daily.ts
 import { debug as debug2, register_cron } from "host-api";
@@ -6668,14 +6668,14 @@ function claimedBeans(env) {
   return void 0;
 }
 function runShareClaim(deps) {
+  const month = deps.nowIso.slice(0, 7);
+  const claimedMonth = deps.store.getState(STATE_SHARE_CLAIM_DONE);
+  if (claimedMonth === month) {
+    return { ok: true, skipped: true, note: `这个月的 20 豆已经领过了（${month}），等下一轮` };
+  }
   const claim = readMatrix(deps.store).flatMap((r) => r?.items ?? []).find((item) => isShareClaim(item)) ?? void 0;
   if (claim === void 0) {
     return { ok: true, skipped: true, note: "分享还没攒到领奖档（仍然按天攒份数）" };
-  }
-  const month = deps.nowIso.slice(0, 7);
-  const done2 = deps.store.getState(STATE_SHARE_CLAIM_DONE);
-  if (done2 === month) {
-    return { ok: true, skipped: true, note: `这个月的 20 豆已经领过了（${month}），等下一轮` };
   }
   const res = callRawText(deps.transport, clickRequest(deps, SHARE_TASK_ID));
   if (!res.ok) {
@@ -6697,8 +6697,19 @@ function runShareClaim(deps) {
       note: `领20豆 发了，但服务端没认：code=${env.code} ${env.message || ""} result.num=${String(beans ?? "没给")}（下一趟重试）`
     };
   }
+  const settle = Math.min(Math.max(deps.settleMs ?? 5e3, 0), 8e3);
+  if (settle > 0) waitMs(deps, settle);
+  for (let i = 0; i < MATRIX_MARKETS.length; i++) runAppTaskMatrix(deps);
+  const after = readMatrix(deps.store).flatMap((r) => r?.items ?? []).find((item) => item.taskId === SHARE_TASK_ID);
+  const claimed = after !== void 0 && (after.state === "FINISH" || /已领取/.test(after.buttonOutText ?? ""));
+  if (!claimed) {
+    return {
+      ok: false,
+      note: `领20豆 发了（HTTP ${res.status}，回包 code=0 num=${beans}），但服务端任务表还没变「已领取」（现在是 ${after === void 0 ? "读不到 434 这一行" : `${after.state ?? "?"} / ${after.buttonOutText ?? "?"}`}），下一趟重试`
+    };
+  }
   deps.store.setState(STATE_SHARE_CLAIM_DONE, month, deps.nowIso);
-  return { ok: true, note: `领到 ${beans} 豆（分享文件领好礼 7/7 的尾奖，本月已记）` };
+  return { ok: true, note: `领到 ${beans} 豆（分享文件领好礼 7/7 的尾奖，任务表已确认「已领取」，本月已记）` };
 }
 
 // src/mcloud/tasks/info.ts
