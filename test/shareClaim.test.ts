@@ -75,6 +75,39 @@ function mkDeps(store: ReturnType<typeof memStore>, reply: (req: BuiltRequest) =
   return { deps, sent };
 }
 
+
+/** 造一个会回答 taskListV3 的 transport：`after` 决定"领完之后"读到的那一行长什么样。 */
+function mkDepsWithMatrix(
+  store: ReturnType<typeof memStore>,
+  opts: { click: { status: number; body: string }; after: 'claimed' | 'still' | 'missing' },
+) {
+  const sent: BuiltRequest[] = [];
+  const rowAfter =
+    opts.after === 'claimed'
+      ? { ...RAW_CLAIM_ROW, currstep: 24, button: { app: { text: '已领取', action: '' } }, state: 'FINISH' }
+      : opts.after === 'still'
+        ? RAW_CLAIM_ROW
+        : null;
+  const transport = ((req: BuiltRequest) => {
+    sent.push(req);
+    if (req.url.includes('taskListV3')) {
+      const items = rowAfter === null ? [] : [rowAfter];
+      return { headers: {}, status: 200, body: JSON.stringify({ code: 0, msg: 'success', result: items }) };
+    }
+    if (req.url.includes('task/click')) return { headers: {}, ...opts.click };
+    return { headers: {}, status: 200, body: JSON.stringify({ code: 0, msg: 'success', result: {} }) };
+  }) as never;
+  const deps = {
+    store,
+    transport,
+    nowIso: NOW,
+    nowMs: () => Date.parse(NOW),
+    settleMs: 0,
+    gapMs: [0, 0],
+  } as TaskDeps;
+  return { deps, sent };
+}
+
 // ── ① 判据（纯函数，零 IO） ────────────────────────────────────────────
 
 test('判据：currstep=22 与「领20豆」都认，攒份数那档不认', () => {
@@ -119,37 +152,68 @@ test('没攒到领奖档 ⇒ 不发请求', () => {
   assert.equal(sent.length, 0, '一枪都不该发');
 });
 
-test('领奖档 ⇒ 只发一发 task/click?key=task&id=434，回 num=20 才算到账', () => {
+test('领奖档 ⇒ 发 task/click；回包 num=20 **且** 任务表变「已领取」才算到账', () => {
   const store = storeWith([parseMatrixItem(RAW_CLAIM_ROW)]);
-  const { deps, sent } = mkDeps(store, () => ({ status: 200, body: OK_20 }));
+  const { deps, sent } = mkDepsWithMatrix(store, {
+    click: { status: 200, body: OK_20 },
+    after: 'claimed',
+  });
   const r = runShareClaim(deps);
   assert.equal(r.ok, true, r.note);
   assert.match(r.note, /领到 20 豆/);
-  assert.equal(sent.length, 1, '只有那一发');
-  assert.equal(sent[0]!.method, 'GET');
-  assert.equal(sent[0]!.url, CLICK_URL);
+  assert.match(r.note, /已领取/, '要说出任务表已确认');
+  const clicks = sent.filter((q) => q.url === CLICK_URL);
+  assert.equal(clicks.length, 1, '领取只发一发');
+  assert.equal(clicks[0]!.method, 'GET');
+  // 验真要重读任务表（两个市场各一发）
+  assert.ok(sent.filter((q) => q.url.includes('taskListV3')).length >= 1, '要重读矩阵验真');
   assert.equal(store.getState(STATE_SHARE_CLAIM_DONE), MONTH, '本月记下');
+});
+
+test('回包 num=20 但任务表仍是「领20豆」⇒ 不算成功、不记幂等（下一趟重试）', () => {
+  const store = storeWith([parseMatrixItem(RAW_CLAIM_ROW)]);
+  const { deps } = mkDepsWithMatrix(store, { click: { status: 200, body: OK_20 }, after: 'still' });
+  const r = runShareClaim(deps);
+  assert.equal(r.ok, false, r.note);
+  assert.match(r.note, /还没变「已领取」/);
+  assert.notEqual(store.getState(STATE_SHARE_CLAIM_DONE), MONTH, '绝不写幂等');
 });
 
 test('同一个月领过 ⇒ 整月不再发（task/click 不可回滚）', () => {
   const store = storeWith([parseMatrixItem(RAW_CLAIM_ROW)]);
-  const { deps, sent } = mkDeps(store, () => ({ status: 200, body: OK_20 }));
-  runShareClaim(deps);
+  const { deps, sent } = mkDepsWithMatrix(store, { click: { status: 200, body: OK_20 }, after: 'claimed' });
+  const first = runShareClaim(deps);
+  assert.equal(first.ok, true, first.note);
+  const clickCount = sent.filter((q) => q.url === CLICK_URL).length;
   const again = runShareClaim(deps);
   assert.equal(again.ok, true);
   assert.equal(again.skipped, true);
   assert.match(again.note, /已经领过/);
-  assert.equal(sent.length, 1, '第二趟一枪都不发');
+  assert.equal(sent.filter((q) => q.url === CLICK_URL).length, clickCount, '第二趟不再发领取');
 });
 
 test('换了月份 ⇒ 可以再领', () => {
   const store = storeWith([parseMatrixItem(RAW_CLAIM_ROW)]);
-  const { deps, sent } = mkDeps(store, () => ({ status: 200, body: OK_20 }));
+  const { deps, sent } = mkDepsWithMatrix(store, { click: { status: 200, body: OK_20 }, after: 'claimed' });
   runShareClaim(deps);
+  // 新周期：任务表回到「领20豆」这一档（真实里是服务端按新月份重开）
+  store.setState(
+    matrixKey(MATRIX_MARKETS[0]!),
+    JSON.stringify({
+      group: MATRIX_MARKETS[0],
+      at: NOW,
+      done: 0,
+      todo: 1,
+      skip: 0,
+      todoNames: [],
+      items: [parseMatrixItem(RAW_CLAIM_ROW)],
+    }),
+    NOW,
+  );
   const later = { ...deps, nowIso: '2026-12-01T04:00:00.000Z' } as TaskDeps;
   const r = runShareClaim(later);
   assert.equal(r.ok, true, r.note);
-  assert.equal(sent.length, 2);
+  assert.equal(sent.filter((q) => q.url === CLICK_URL).length, 2);
 });
 
 // ── ④ 服务端没认 ⇒ 不伪造成功、不记幂等（下一趟能重试） ────────────────
@@ -206,13 +270,20 @@ test('runDaily 有「分享领奖」这一步，且领奖档真发出那一发',
   const store = storeWith([parseMatrixItem(RAW_CLAIM_ROW)]);
   const sent: BuiltRequest[] = [];
   // 对「领20豆」那一发给 num=20；其余一律回「未登录」让整趟快速走完。
+  const claimedRow = { ...RAW_CLAIM_ROW, currstep: 24, button: { app: { text: '已领取' } }, state: 'FINISH' };
+  let claimSent = false;
   const transport = ((req: BuiltRequest) => {
     sent.push(req);
-    return {
-      headers: {},
-      status: 200,
-      body: req.url === CLICK_URL ? OK_20 : JSON.stringify({ code: 90001, msg: '未登录' }),
-    };
+    if (req.url === CLICK_URL) {
+      claimSent = true;
+      return { headers: {}, status: 200, body: OK_20 };
+    }
+    if (req.url.includes('taskListV3')) {
+      // 领取前后各读一次：领之前是「领20豆」，领之后变「已领取」（模拟服务端真的结算了）
+      const row = claimSent ? claimedRow : RAW_CLAIM_ROW;
+      return { headers: {}, status: 200, body: JSON.stringify({ code: 0, msg: 'success', result: [row] }) };
+    }
+    return { headers: {}, status: 200, body: JSON.stringify({ code: 90001, msg: '未登录' }) };
   }) as never;
   const deps = {
     store,
