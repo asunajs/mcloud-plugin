@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.4.0 · 插件 `mcloud`
+//   mcloud-plugin 0.4.1 · 插件 `mcloud`
 
 // src/entries/mcloud.ts
 import {
@@ -15,7 +15,7 @@ import {
 } from "host-api";
 
 // src/version.ts
-var PLUGIN_VERSION = "0.4.0";
+var PLUGIN_VERSION = "0.4.1";
 
 // src/store/keys.ts
 var DEFAULT_ACCT = "default";
@@ -14542,12 +14542,28 @@ function applyConfigOverlay(store2, cfg, nowIso) {
   return out;
 }
 
-// src/entries/shared.ts
+// src/mcloud/timeoutPolicy.ts
 var DEFAULT_REQUEST_TIMEOUT_MS = 1500;
+var SLOW_READ_PATTERNS = [
+  // ⚠ 按**端点名**匹配，不要把前缀写死：真实路径是
+  //   `/ycloud/signin/public/cloudRecordV2`（第一版写成 `/ycloud/cloudRecordV2`
+  //   就一条都没匹配上，2026-11-15 自测现场：小号余额仍报「请求超时（1500ms）」）
+  /\/cloudRecordV2(\?|$)/,
+  // AI豆流水（逐页查账，慢）
+  /\/signin\/page\/infoV3(\?|$)/
+  // 云朵/AI豆总览（余额就在 result.total）
+];
+var SLOW_READ_TIMEOUT_MS = 12e3;
+function timeoutForUrl(url, fallback = DEFAULT_REQUEST_TIMEOUT_MS) {
+  return SLOW_READ_PATTERNS.some((re) => re.test(url)) ? { ms: SLOW_READ_TIMEOUT_MS, why: "slow-read" } : { ms: fallback, why: "default" };
+}
+
+// src/entries/shared.ts
 function makeTransport(timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
   return (req) => {
     const r = applyDefaultContentType(req);
-    return http_fetch(r.url, hostFetchOptions(r, timeoutMs));
+    const ms = typeof timeoutMs === "number" ? timeoutMs : timeoutMs(r.url);
+    return http_fetch(r.url, hostFetchOptions(r, ms));
   };
 }
 function makeStore() {
@@ -14668,7 +14684,7 @@ if (migrateLegacyExchange(store, bootIso)) {
   log2("老库迁移：兑换的账号选择沿用“全部账号”（这一版改成显式选择）");
 }
 syncTaskReadiness(store);
-var transport = makeTransport();
+var transport = makeTransport((url) => timeoutForUrl(url).ms);
 var host = makeHost();
 register_nav({
   // 侧栏/页面上显示的产品名：用户口径「移动云盘」（2026-11-13）

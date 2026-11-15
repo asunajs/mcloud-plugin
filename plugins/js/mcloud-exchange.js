@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.4.0 · 插件 `mcloud-exchange`
+//   mcloud-plugin 0.4.1 · 插件 `mcloud-exchange`
 
 // src/entries/exchange.ts
 import { debug as debug2, log as log3, register_cron, worker_hint } from "host-api";
@@ -5868,13 +5868,16 @@ function authorizeRequest(req, auth) {
 }
 var EMPTY_ZIP = utf8("PK\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0");
 
-// src/entries/shared.ts
+// src/mcloud/timeoutPolicy.ts
 var DEFAULT_REQUEST_TIMEOUT_MS = 1500;
+
+// src/entries/shared.ts
 var LONG_REQUEST_TIMEOUT_MS = 2e4;
 function makeTransport(timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
   return (req) => {
     const r = applyDefaultContentType(req);
-    return http_fetch(r.url, hostFetchOptions(r, timeoutMs));
+    const ms = typeof timeoutMs === "number" ? timeoutMs : timeoutMs(r.url);
+    return http_fetch(r.url, hostFetchOptions(r, ms));
   };
 }
 function makeStore() {

@@ -31,6 +31,7 @@ import {
   makeTransport,
   syncConfigToState,
 } from './shared.ts';
+import { timeoutForUrl } from '../mcloud/timeoutPolicy.ts';
 import { selftest } from '../selftest.ts';
 import { migrateLegacyExchange, syncTaskReadiness } from '../mcloud/taskReadiness.ts';
 
@@ -55,7 +56,8 @@ syncTaskReadiness(store);
 // 大多数路由（点一下读一格）用默认档就够；像「今日AI豆」那样逐账号 × 翻页的
 // 只读链，2 秒撑不到读完 —— 它在 `routes.ts` 里自己声明 `budget_ms`，
 // 下面注册时透给 `register_route`。
-const transport = makeTransport();
+// 慢只读端点放宽到 12 秒；**写操作仍是 1500ms**（`SLOW_READ_PATTERNS` 只列只读 GET）。
+const transport = makeTransport((url) => timeoutForUrl(url).ms);
 const host = makeHost();
 
 // ── 侧边栏入口 ──

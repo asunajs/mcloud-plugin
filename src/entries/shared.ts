@@ -80,13 +80,15 @@ import {
  *  ⚠ 这个理由在**声明了长预算**的任务上不成立：那些任务（日常/兑换/直播）
  *  自己的预算就是几十秒，一次上游调用慢一点是正常的。所以它们要传
  *  `REQUEST_TIMEOUT_MS` 之外的值 —— 见 `makeTransport(timeoutMs)`。 */
-export const DEFAULT_REQUEST_TIMEOUT_MS = 1500;
+export { DEFAULT_REQUEST_TIMEOUT_MS, SLOW_READ_PATTERNS, SLOW_READ_TIMEOUT_MS } from '../mcloud/timeoutPolicy.ts';
+import { DEFAULT_REQUEST_TIMEOUT_MS as __DEFAULT_TIMEOUT } from '../mcloud/timeoutPolicy.ts';
 
 /** 长预算任务用的单次请求超时。取 20 秒：比上游的 99 分位宽，比任务预算窄。 */
 export const LONG_REQUEST_TIMEOUT_MS = 20_000;
 
-/** 造一个 transport。`timeoutMs` 要跟任务的预算匹配 —— 见上面那段。 */
-export function makeTransport(timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS): Transport {
+export function makeTransport(
+  timeoutMs: number | ((url: string) => number) = __DEFAULT_TIMEOUT,
+): Transport {
   return (req) => {
     // ⚠ 补默认 content-type **在这一层**，不是各个构造器里 —— 与真实现同构
     // （`client.rs::default_content_type`）。散在构造器里就会漏，而漏的表现是
@@ -95,7 +97,9 @@ export function makeTransport(timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS): T
     const r = applyDefaultContentType(req);
     // 返回值可能是 {status,headers,body}，也可能是失败形状 {"error":…} ——
     // client.ts 的 callOnce 负责认形状（实测踩过，见 docs/findings.md F-006）
-    return http_fetch(r.url, hostFetchOptions(r, timeoutMs));
+    // 纯策略在 `mcloud/timeoutPolicy.ts`（Node 里可测）；这里只做接线。
+    const ms = typeof timeoutMs === 'number' ? timeoutMs : timeoutMs(r.url);
+    return http_fetch(r.url, hostFetchOptions(r, ms));
   };
 }
 
