@@ -34,6 +34,17 @@ done
 cd "$ROOT"
 node scripts/build-panelllrt.mjs
 
+# 状态键门禁：`store/keys.ts` 的 KEY_SCOPE 漏登记会让**运行期**抛
+# `UnregisteredKeyError`（2026-11-15 08:00 现场：三个账号的「分享领奖」全挂在这上面，
+#  原因是实例里跑的包是从"登记还没进仓库"那一刻构建的）。
+# 这道闸在**构建之后、安装之前**跑，扫的是 src —— 部署永远从当前源码构建，所以够用。
+echo "→ 状态键门禁（test/keys.test.ts）"
+node --test test/keys.test.ts >/tmp/mcloud-keys-gate.log 2>&1 || {
+  echo "❌ 状态键没登记全，没装（详见 /tmp/mcloud-keys-gate.log）" >&2
+  tail -5 /tmp/mcloud-keys-gate.log >&2
+  exit 1
+}
+
 # 样式门禁：面板仓的 check-plugin-style.mjs 按 <cwd>/plugins 扫，所以把产物在临时目录里
 # 摆成插件目录再跑它 —— "插件归插件项目"之后这道闸门也没丢。
 PANEL_REPO="${PANEL_REPO:-$ROOT/../panel-llrt}"
