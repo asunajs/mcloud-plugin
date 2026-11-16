@@ -103,7 +103,7 @@
 | P0 | 基线、本文档 | ✅ |
 | P1 | 删老面板目标（产物 / 构建 / CI / 检查脚本） | ✅ |
 | P2 | 端口化 + `defineTask`，全局收口 | 进行中 |
-| P3 | HTTP 全 async（`Transport` / `Io.fetch` 是 Promise）；CLI 的 worker 同步桥还在（见 p3-async-plan） | ✅ |
+| P3 | HTTP 全 async（`Transport` / `Io.fetch` 是 Promise）；CLI 的同步桥已拆（直接 await `fetch`） | ✅ |
 | P4 | 存储换本地 JSON（含旧数据一次性导入） | ✅ |
 | P5 | 编排层 / 呈现层 / 路由拆分 | 🚧 路由拆完；三条任务的编排都搬出 entries（`app/daily`、`app/exchange`、`app/live`，入口 90/100/82 行）；`runTask` 统一 runner 与 `present` 未动 |
 | P6 | 直播收口成一个 invocation + trace | ✅ 入口 82 行只做注册；编排在 `src/app/live/{collect,draw,run}.ts`；`GET /live/trace` 真机验过 |
