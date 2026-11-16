@@ -178,6 +178,7 @@ mcloud-plugin/
 |---|---|
 | [`docs/architecture.md`](docs/architecture.md) | **架构现状**：分层、import 规则、存储布局、产物、阶段状态 |
 | [`docs/refactor-plan.md`](docs/refactor-plan.md) | **这次重构的账**：为什么、定了什么、P0~P7 各到哪一步、验收结果 |
+| [`docs/p3-async-plan.md`](docs/p3-async-plan.md) | **P3 的执行手册**（同步 → 异步）：量出来的范围、机械变换的做法、已知的坑、验收与回滚 |
 | [`docs/redesign-plan.md`](docs/redesign-plan.md) | **上一版的设计总纲**（历史；现状看 `architecture.md`） |
 | [`docs/findings.md`](docs/findings.md) | 压出来的面板边界：怎么测的、什么数、改了什么 |
 | [`docs/howto-session.md`](docs/howto-session.md) | 使用者手册：怎么拿会话、怎么导入、失败了怎么看 |
