@@ -26,7 +26,7 @@
 // 页面版本号：和 style.css 里的 --style-ver 一起人工递增。
 // 「样式自检」（boot.js 的 ?diag=1）会读它 —— 用来区分「CSS 是新的、JS 还是旧的」这种
 // 半新半旧状态（第 155 轮：样式表是 v155，但 DOM 里根本没有 .ex-group-row 这种行）。
-document.documentElement.dataset.appVer = '158';
+document.documentElement.dataset.appVer = '159';
 
 /** 插件自己的接口。 */
 const API = '/plugins/mcloud/api';
@@ -89,25 +89,71 @@ const api = (path, opts) => call(API + path, opts);
 // 任务还要跑几十秒。原来这里立刻弹「跑完了」并重画读数 —— 那两句都是假的：
 // 用户看到"跑完了"、读数却还是上一次的。
 //
-// 所以：触发之后**盯着面板的运行记录**（`/api/runs?plugin=&task=&limit=1`），
-// 直到这一次的 `finished_at` 有了值；期间按钮上写着秒数（**证明它还活着**），
-// 而日志面板那边本来就是一行一行往下走的。
+// 所以：触发之后**盯着面板的运行记录**，直到这一次有了 `ended_at`；
+// 期间按钮上写着秒数（**证明它还活着**），而日志面板那边本来就是一行一行往下走的。
+//
+// ⚠ 2026-11-16 现场（用户原话「跑完了不停止」）：原来查的是
+//   `GET /api/runs?plugin=&task=&limit=1` + `one.finished_at`，而新面板（panel-llrt）两处都对不上：
+//   ① 它的 `/api/runs` **不认 `?task=`**（未知字段 ⇒ 直接 400），
+//   ② 字段叫 `ended_at` / `status`，没有 `finished_at` / `ok` / `duration_ms`，
+//      `started_at` 还是**毫秒数**（不是日期字符串，`Date.parse` 得 NaN）。
+//   结果就是：任务早跑完了，按钮还一直写着「跑着呢 76s」，直到 180 秒超时才放弃。
+//   现在优先按 `POST …/run` 回的 `run_id` 去取那一条（最准，不用比时间），
+//   拿不到再退回"按插件列最近几条、自己挑这一次"。
 const RUN_WAIT_MAX_MS = 180_000;
 
+/** 时间戳统一成毫秒：新面板给数字，旧面板给 `2026-11-16 22:45:08` 这种字符串。 */
+function msOf(v) {
+  if (typeof v === 'number') return v;
+  if (!v) return 0;
+  const n = Date.parse(String(v).replace(' ', 'T'));
+  return Number.isFinite(n) ? n : 0;
+}
+
+/** 面板那条运行记录 → 调用方要的形状（`ok` / `duration_ms`）。
+ *
+ *  **纯函数**：单测会把它从本文件里抠出来单独喂两种面板的记录（见 test/webui.test.ts）。
+ *  没跑完（`ended_at` 为空）返回 `null` —— 这就是"还没完"的唯一判据。 */
+function normalizeRun(one) {
+  if (!one || typeof one !== 'object') return null;
+  const started = msOf(one.started_at);
+  const ended = one.ended_at != null ? msOf(one.ended_at) : msOf(one.finished_at);
+  if (!ended) return null;
+  return {
+    ok: one.ok === undefined ? one.status === 'ok' : one.ok === true,
+    duration_ms: one.duration_ms || (started ? ended - started : 0),
+    error: one.error || '',
+    started_at: started,
+    ended_at: ended,
+  };
+}
+
 /** 这一次运行完了吗？返回那条记录，或 `null`（还没完 / 记录还没写）。 */
-async function runRecordOf(plugin, task, sinceMs) {
+async function runRecordOf(plugin, task, sinceMs, runId) {
   try {
-    const r = await fetch(
-      `/api/runs?plugin=${encodeURIComponent(plugin)}&task=${encodeURIComponent(task)}&limit=1`,
-      { headers: { 'x-panel': '1' } },
-    );
+    // 首选：按 id 取那一条。`POST …/run` 回的就是它，不存在"挑错记录"的可能。
+    if (runId) {
+      const r = await fetch(`/api/runs/${encodeURIComponent(runId)}`, { headers: { 'x-panel': '1' } });
+      // 404 = 行还没落库（刚入队），下一轮再看
+      if (!r.ok) return null;
+      const j = await r.json();
+      return normalizeRun(j && j.run);
+    }
+    // 兜底（旧面板 / 没拿到 run_id）：按插件列最近几条，自己挑"这一次"。
+    // ⚠ 新面板**不认 `?task=`**，传了就是 400 —— 只能按 plugin 筛再自己比。
+    const r = await fetch(`/api/runs?plugin=${encodeURIComponent(plugin)}&limit=20`, {
+      headers: { 'x-panel': '1' },
+    });
     if (!r.ok) return null;
     const j = await r.json();
-    const one = (j.runs || [])[0];
-    if (!one || !one.finished_at) return null;
-    // 只认**这一次**（上一次的记录会一直躺在那儿，不判时间就会立刻"完成"）
-    if (Date.parse(String(one.started_at).replace(' ', 'T')) < sinceMs - 2000) return null;
-    return one;
+    for (const one of j.runs || []) {
+      if (!one || one.task !== task) continue;
+      // 只认**这一次**（上一次的记录会一直躺在那儿，不判时间就会立刻"完成"）
+      if (msOf(one.started_at) < sinceMs - 2000) continue;
+      const done = normalizeRun(one);
+      if (done) return done;
+    }
+    return null;
   } catch {
     return null;
   }
@@ -116,11 +162,11 @@ async function runRecordOf(plugin, task, sinceMs) {
 /** 等这一次跑完。`onTick` 每秒叫一次（按钮拿它写秒数）。
  *
  *  返回那条运行记录；超时返回 `null`（**别假装成功**）。 */
-async function waitRun(plugin, task, sinceMs, onTick) {
+async function waitRun(plugin, task, sinceMs, onTick, runId) {
   for (;;) {
     const ms = Date.now() - sinceMs;
     if (onTick) onTick(ms);
-    const one = await runRecordOf(plugin, task, sinceMs);
+    const one = await runRecordOf(plugin, task, sinceMs, runId);
     if (one !== null) return one;
     if (ms > RUN_WAIT_MAX_MS) return null;
     await new Promise((r) => setTimeout(r, 1000));
@@ -149,16 +195,18 @@ async function runTaskAndWait(key, btn) {
   }
   const t0 = Date.now();
   try {
-    // `?async=1`：面板只负责入队，立刻回 `{queued:true}`。
-    // 旧面板没有这个参数，会一直挂到任务结束 —— 所以它必须和新面板一起用；
-    // 这样按钮上的秒数、停止按钮和日志流才能真正同时工作。
-    await call(
+    // 新面板**本来**就是"派发完就回"（回 `{ok:true, run_id:N}`），`?async=1` 它不认也无妨；
+    // 旧面板没有这个参数，会一直挂到任务结束 —— 所以秒数/停止按钮/日志流要真正同时工作，
+    // 必须和新面板一起用。
+    const queued = await call(
       `/api/tasks/${encodeURIComponent(pair[0])}/${encodeURIComponent(pair[1])}/run?async=1`,
       { method: 'POST', write: true },
     );
+    // 面板**立刻**回 `run_id`（它只是把这次派发出去），拿它去取那一条记录 —— 最准。
+    const runId = queued && queued.run_id;
     const one = await waitRun(pair[0], pair[1], t0, (ms) => {
       btn.textContent = `跑着呢 ${Math.round(ms / 1000)}s`;
-    });
+    }, runId);
     if (one === null) {
       toast('还没跑完 —— 日志里能看到它走到哪了', true);
       return;
