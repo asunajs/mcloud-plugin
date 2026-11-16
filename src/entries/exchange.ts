@@ -25,7 +25,7 @@ import {
 } from './shared.ts';
 import type { TaskPayload } from './shared.ts';
 import { labelOf, shortLabel } from '../mcloud/taskAccounts.ts';
-import { blockersFor } from '../mcloud/taskReadiness.ts';
+import { blockersFor, syncExchangeJob } from '../mcloud/taskReadiness.ts';
 import { logBoth } from '../mcloud/log.ts';
 import { lineLevel, lineText, stepTally } from '../mcloud/tasks/stepLog.ts';
 import {
@@ -65,7 +65,7 @@ const bootPlans = enabledPlans(bootAll);
 const bootCron = bootPlans.length > 0 ? unionCron(bootPlans) : DEFAULT_SCHEDULE_CRON;
 const bootLeadMs = maxLeadMs(bootPlans);
 
-defineTask(
+await defineTask(
   {
     name: '兑换',
     cron: bootCron,
@@ -222,6 +222,11 @@ defineTask(
 // 新装先暂停：等用户建好计划、再点“启用”。（面板没有"注册时带 paused"这个口子，
 // 所以暂停是注册之后单独说一次；已有安装的开关由面板自己保留。）
 if (bootPlans.length === 0) panel.setJobPaused('兑换', true);
+
+// 注册完按**计划表**把自己那条任务的状态整一遍（cron / 暂停 / 未就绪 / 摘要）。
+// 为什么加载时还要做：界面插件改计划时调的是这一套，但那一刻兑换插件可能正"按需
+// 加载、还没装"，面板会回"没有这个任务" —— 于是那次改动只能等这里补上。
+syncExchangeJob(store);
 
 logTo('debug', 
   'mcloud-exchange：任务「兑换」（预算 ' +

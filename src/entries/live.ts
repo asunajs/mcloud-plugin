@@ -43,7 +43,7 @@
 import { logTo } from '../ports/log.ts';
 import { defineTask } from '../host/panel/index.ts';
 import { runAuthRefresh } from '../mcloud/authRefresh.ts';
-import { blockersFor, setTaskBlockers, setTaskSummary, summaryFor } from '../mcloud/taskReadiness.ts';
+import { blockersFor, setTaskBlockers, setTaskSummary, summaryFor, syncOwnTask } from '../mcloud/taskReadiness.ts';
 import { appendRun, type RunStep } from '../mcloud/runLog.ts';
 import { labelOf, shortLabel } from '../mcloud/taskAccounts.ts';
 import { logBoth } from '../mcloud/log.ts';
@@ -400,7 +400,7 @@ function drawOnce(
   };
 }
 
-defineTask(
+await defineTask(
   {
     name: '直播',
     // 用户口径（2026-10-17）：「太频繁了，每天上午 10:30 / 下午 15:30 两次」。
@@ -586,5 +586,8 @@ defineTask(
     setTaskSummary('直播', summaryFor(store, '直播'));
   },
 );
+
+// 同 daily：卡片上的字面板不认 opts，只能注册完自己写一遍
+syncOwnTask(store, '直播');
 
 logTo('debug', `mcloud-live：任务「直播」（预算 ${BUDGET_MS / 1000}s，共享粗粒度 lane）`);
