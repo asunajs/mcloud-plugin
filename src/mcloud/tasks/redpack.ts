@@ -100,11 +100,11 @@ import type { RedpackQueueItem, RedpackState } from './redpackState.ts';
 
 /** 整趟的调度上限（`dailyRun` 那边用）。
  *
- *  ⚠ `deadlineMs` **不能超过 App 任务那一档（60 秒）**：日常整趟的预算是 120 秒，
+ *  ⚠ 这里**只有步数上限**：插件不设内部时间限制（2026-11-16 口径），
  *  红包之后还有领取、清理、今日云朵。给这一族 90 秒的
- *  表现是"红包跑爽了，后面每一步都说走到时间上限"。
+ *  表现是"红包跑爽了，后面的步骤全没跑"。当时靠 sharedDeadline 挡，现在不再设时间闸。
  *  参照实现整趟实测 3.7 秒，所以 60 秒不是将就，是宽松。 */
-export const REDPACK_BUDGET = { maxSteps: 90, deadlineMs: 60_000 };
+export const REDPACK_BUDGET = { maxSteps: 90 };
 
 /** 开没开（**默认开**）。
  *

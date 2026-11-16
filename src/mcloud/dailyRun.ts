@@ -91,12 +91,6 @@ export function runDaily(
     onPhase?: (phase: string) => void;
     /** 长状态机的逐步原话（上传 / 打卡 / 重试）—— 不等整步结束。 */
     onNote?: (note: string) => void;
-    /** **整趟的硬截止时刻**（绝对毫秒，含所有账号）。宿主按"一次运行"计时，
-     *  默认 600 秒 —— 而我们的每一步原先各自按"这个账号开始时"算截止，
-     *  3 个账号最坏能叠到 600 秒以上，于是整趟被宿主强杀
-     *  （2026-11-03 08:05 现场：`执行超过预算 300s，被强制中断（疑似死循环）`）。
-     *  给了这一格，每一步的 `deadlineMs` 都会被夹到"还剩多少"。 */
-    deadlineAt?: number | undefined;
   } = {},
 ): {
   ok: boolean;
@@ -104,14 +98,8 @@ export function runDaily(
   detail: string[];
   steps: DailyStep[];
 } {
+  // 真实起点：最后那行「用时 X 秒」用它算（**不是**日志时间戳用的那个冻结值）
   const started = Date.now();
-  /** 每一步的预算都要夹到"整趟还剩多少"（见 `deadlineAt` 的注释）。
-   *  留 8 秒的余量：掐在最后一刻会连"写记录 / 发推送"都做不完。 */
-  const cap = (ms: number): number => {
-    const at = opts.deadlineAt;
-    if (at === undefined) return ms;
-    return Math.max(5_000, Math.min(ms, at - Date.now() - 8_000));
-  };
   const steps: StepResult[] = [];
   const detail: string[] = [];
 
@@ -188,7 +176,7 @@ export function runDaily(
           return { ok: x.ok, note: x.note, idle: x.done };
         },
         deps,
-        { label: `换票（${PAGE_LABEL[page]}）`, maxSteps: 4, deadlineMs: cap(30_000), startedAt: started },
+        { label: `换票（${PAGE_LABEL[page]}）`, maxSteps: 4 },
       );
       push({ name: `换票（${PAGE_LABEL[page]}）`, ok: r.ok, note: r.note, idle: r.idle });
     } else {
@@ -212,8 +200,6 @@ export function runDaily(
       const r = drain(runSign, deps, {
         label: '签到',
         maxSteps: 4,
-        deadlineMs: cap(20_000),
-        startedAt: started,
         more: signPending,
       });
       return { name: '签到', ok: r.ok, note: r.note, idle: r.idle };
@@ -238,8 +224,6 @@ export function runDaily(
         const r = drain(runExpansionStep, deps, {
           label: '任务拓展',
           maxSteps: 12,
-          deadlineMs: cap(45_000),
-          startedAt: started,
           onStep: (note) => opts.onNote?.(`任务拓展：${note}`),
         });
         return { name: '任务拓展', ok: r.ok, note: r.note, idle: r.idle };
@@ -257,8 +241,6 @@ export function runDaily(
       const r = drain(runAppTaskMatrix, deps, {
         label: 'App 任务矩阵',
         maxSteps: MATRIX_MARKETS.length,
-        deadlineMs: cap(25_000),
-        startedAt: started,
       });
       // 它不报 idle（每读一个市场都是"有事做"），所以 drain 会正好跑满 maxSteps。
       // 但对用户来说它是**只读**，不是这一趟做成了什么 ⇒ 运行记录里标 idle。
@@ -279,13 +261,11 @@ export function runDaily(
       // ⚠ 20 步是"一条没成整趟停"那会儿的数：那时候每次最多做到第 10 步就收工了。
       //   现在逐条失败**不再中止**（2026-11-01，见 docs/app-task-ids.md），
       //   十来条各自 2~6 步 ⇒ 20 步会在半路截断（截断不报错，下一次接着走，
-      //   但用户看到的是"这一趟只做了一半"）。时间上限仍是 60s 那道硬闸。
+      //   但用户看到的是"这一趟只做了一半"）。现在没有时间闸，只受步数上限约束。
       maxSteps: 40,
       // ⚠ 60 秒是**没有任务间间隔**时的数。现在每条之间随机隔 0.5–2 秒
       //   （`gapMs`，十几条就是 10–25 秒）⇒ 预算必须跟着放宽，否则会被硬闸截在半路
       //   （截断不报错，用户看到的是"这一趟只做了一半"）。
-      deadlineMs: cap(90_000),
-      startedAt: started,
       // 上传 / 访问日志 / 打卡 / 重试逐步打出来；否则日志只剩最后一句
       // 「这一趟没有全确认」，用户看不到文件到底传没传。
       onStep: (note) => opts.onNote?.(`App 任务：${note}`),
@@ -321,7 +301,7 @@ export function runDaily(
   // ④.5 红包派对（移动云手机的活动站）—— 另一台主机、**另一套凭据**。
   //
   // 放在 App 任务之后、消息推送之前：参照实现也是这个相对位置，而且它之后
-  // 还有五步要跑（这一族的时间上限因此**不能超过 App 任务那一档**，见 `REDPACK_BUDGET`）。
+  // 还有五步要跑（这一族的步数上限见 `REDPACK_BUDGET`）。
   //
   // ⚠ 这一族的成败判据**不在 `drain` 的 `note` 上**：一条任务一行，那些行由任务层
   //   写进台账（`redpackState.takeRedpackLines`），这里取出来交给日志与运行记录。
@@ -332,8 +312,6 @@ export function runDaily(
     const r = drain(redpackStep, deps, {
       label: '红包派对',
       maxSteps: REDPACK_BUDGET.maxSteps,
-      deadlineMs: REDPACK_BUDGET.deadlineMs,
-      startedAt: started,
       // 「进行中: X」这种内部进度走 debug（逐行的用户读数是上面那条通道）
       onStep: (note) => opts.onNote?.(`红包派对：${note}`),
     });
@@ -370,8 +348,6 @@ export function runDaily(
     const r = drain(tokenPkStep, deps, {
       label: '算力大作战',
       maxSteps: TOKENPK_BUDGET.maxSteps,
-      deadlineMs: TOKENPK_BUDGET.deadlineMs,
-      startedAt: started,
       // 「已登记 X —— 下一步 Y」这种内部进度走 debug；用户读数是下面那些逐行
       onStep: (note) => opts.onNote?.(`算力大作战：${note}`),
     });
@@ -400,12 +376,9 @@ export function runDaily(
       // ⚠ 领取这一类是"队列里一条一个请求"：**队列空了就停**（`more`），
       //   而不是靠步数上限兜 —— 靠上限兜的表现是"刚好领完"也被说成"没做完"。
       maxSteps: 24,
-      // ⚠ 这一格必须**大于前面所有步的预算**：`deadlineMs` 是从日常开始算的
-      //   （`startedAt: started` 全链共享）。2026-11-02 15:55 现场：算力大作战
-      //   跑到 45 秒被截，而领取的 40 秒早已过 ⇒ 「走到时间上限（40000ms / 0 步）」，
+      // 2026-11-02 15:55 现场（历史上这里还夹过"整趟预算"）：算力大作战
+      //   跑到 45 秒被截，而后面那一步的"剩余预算"早已过 ⇒ 0 步（时间闸已删，见 F-137），
       //   这一天剩下的 AI豆 一颗都没领。150 秒 = 前面全跑满也还能领。
-      deadlineMs: cap(150_000),
-      startedAt: started,
       // ⚠ 这一条 drain 的"一步"**就是一个独立条目**（队列里一条一个请求）⇒
       //   条与条之间要隔（`gapMs`，0.5–2 秒），否则就是一串连发。
       gap: true,

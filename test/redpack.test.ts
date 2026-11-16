@@ -486,6 +486,7 @@ test('一次调用只走一段：中途停住的状态，下一趟接着走完�
   assert.equal(nPath(sent, '/userCompleteTask'), 3, '被打断的趟里每条也只登记一次');
 });
 
-test('时间/步数上限由上层给：这一族的预算不能超过 App 任务那一档', () => {
-  assert.deepEqual(REDPACK_BUDGET, { maxSteps: 90, deadlineMs: 60_000 });
+test('这一族只有步数上限：插件不设内部时间限制（2026-11-16 口径）', () => {
+  assert.deepEqual(REDPACK_BUDGET, { maxSteps: 90 });
+  assert.ok(!('deadlineMs' in REDPACK_BUDGET), '时间闸已整类删除，不许再加回来');
 });

@@ -52,7 +52,7 @@ function ensureSignInSession(deps: TaskDeps, label: string, log: CliLogger): boo
       return { ok: x.ok, note: x.note, idle: x.done };
     },
     deps,
-    { label: `${label} 换票`, maxSteps: 4, deadlineMs: 30_000, startedAt: Date.now() },
+    { label: `${label} 换票`, maxSteps: 4 },
   );
   if (!r.ok) {
     log.error(`换票：${r.note}`);
@@ -95,8 +95,6 @@ function collectOnce(
   const gateOut = drain(runLiveGate, deps, {
     label: '有没有开播',
     maxSteps: 3,
-    deadlineMs: 40_000,
-    startedAt: runStartMs,
   });
   const gate = readGateReading(deps.store);
   const liveCount = gate === null ? 0 : gate.liveCount;
@@ -165,8 +163,6 @@ function drawFor(
     {
       label: opts.label,
       maxSteps: 12,
-      deadlineMs: 60_000,
-      startedAt: Date.now(),
     },
   );
   return {

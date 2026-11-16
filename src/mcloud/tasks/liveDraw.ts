@@ -294,7 +294,7 @@ export function runLiveDraw(
       return {
         ok: true,
         idle: true,
-        note: `口令没变（${codes.length} 条都是这个号领过的），本次没再发请求；上次那轮：${s.summary ?? ''}`,
+        note: `口令没变（${codes.length} 条都是这个号领过的），本次没再发请求；上次那轮：${drawReport(s)?.line ?? s.summary ?? ''}`,
       };
     }
     // ⚠ 走到这里有两种情况，都要起新一轮：口令变了，**或者账号换了**
@@ -485,9 +485,14 @@ function judge(s: DrawState, label: string, res: CallResult, nowIso: string): Ad
       st.finishedAt = nowIso;
       // ⚠ 进账是 **⑥ − ①**，不是把各口令的 flowerNum 加起来 ——
       // 相加会漏掉③首次参与惊喜奖那几朵（它不属于任何一个口令）
-      const gained = (st.balanceAfter ?? 0) - (st.balanceBefore ?? 0);
-      const okCount = st.results.filter((r) => r.kind === 'succeeded').length;
-      st.summary = `${st.results.length} 条口令领到 ${okCount} 条，进账 ${gained} 朵（${st.balanceBefore} → ${st.balanceAfter}）`;
+      // 措辞统一走 `drawReport`：那里会把"已领过/口令无效/本场结束"分栏说清楚，
+      // 自拼一版就会出现「领到 0 条」这种听着像失败、其实是已领过的说法。
+      st.summary = drawReport(st)?.line ?? '';
+      if (st.summary === '') {
+        const gained = (st.balanceAfter ?? 0) - (st.balanceBefore ?? 0);
+        const okCount = st.results.filter((r) => r.kind === 'succeeded').length;
+        st.summary = `${st.results.length} 条口令领到 ${okCount} 条，进账 ${gained} 朵`;
+      }
       return { state: st, ok: true, note: st.summary };
     }
     default:
@@ -560,9 +565,14 @@ export function drawReport(st: DrawState | null): DrawReport | null {
   const parts: string[] = [];
   if (st.results.length === 0) parts.push('还没发出口令');
   else parts.push(`${st.results.length} 条口令领到 ${succeeded} 条`);
-  if (st.balanceBefore !== undefined && st.balanceAfter !== undefined) {
-    parts.push(`进账 ${gained} 朵（${st.balanceBefore} → ${st.balanceAfter}）`);
+  // 「已领过」必须**单独说**：领到 0 条听着像失败，其实是这号之前就领过了（200112）。
+  const already = of('already-drawn');
+  if (already.length > 0) {
+    parts.push(`${already.length} 条已经领过（200112 已兑换过，不是没领成）`);
   }
+  // ⚠ 顺序有讲究：`drain` 的摘要会截到 40 字，所以"为什么没领到"（已领过/本场结束/无效）
+  //   必须排在"进账多少"**前面**。2026-11-16 之前那版把进账放前面，
+  //   截断后只剩「1 条口令领到 0 条」，看着像失败。
   const expired = of('kouling-expired');
   if (expired.length > 0) {
     // ⚠ 这句话必须说"不是口令的问题" —— 否则用户会去重抄一遍
@@ -572,6 +582,9 @@ export function drawReport(st: DrawState | null): DrawReport | null {
   if (invalid.length > 0) parts.push(`${invalid.length} 条口令无效`);
   const other = [...of('other'), ...of('unparsable')];
   if (other.length > 0) parts.push(`${other.length} 条回了没见过的结果`);
+  if (st.balanceBefore !== undefined && st.balanceAfter !== undefined) {
+    parts.push(`进账 ${gained} 朵（${st.balanceBefore} → ${st.balanceAfter}）`);
+  }
 
   return {
     attempted: st.results.length,
@@ -579,7 +592,7 @@ export function drawReport(st: DrawState | null): DrawReport | null {
     gained,
     balanceBefore: st.balanceBefore,
     balanceAfter: st.balanceAfter,
-    alreadyDrawn: of('already-drawn'),
+    alreadyDrawn: already,
     invalid,
     expired,
     other: of('other'),
