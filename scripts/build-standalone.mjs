@@ -41,10 +41,9 @@ async function workerSources() {
     charset: 'utf8',
     banner: WORKER_BANNER,
   });
-  return {
-    http: readFileSync(join(ROOT, 'src/standalone/httpWorker.mjs'), 'utf8'),
-    ws: wr.outputFiles[0].text,
-  };
+  // ⚠ 只剩 WS 一个 worker 了：HTTP 那层在 P3（端口改 async）之后不再需要同步桥，
+  //   CLI 直接 await Node 的 fetch —— 见 src/standalone/httpBridge.ts 头注。
+  return { ws: wr.outputFiles[0].text };
 }
 
 export async function bundleStandalone() {
@@ -64,16 +63,12 @@ export async function bundleStandalone() {
       legalComments: 'none',
       charset: 'utf8',
       banner: name === 'mcloud-sign' ? { js: '#!/usr/bin/env node' } : undefined,
-      // 单文件版：worker 源码直接内嵌，运行时用 data: URL 起线程
-      define: {
-        __MCLOUD_HTTP_WORKER__: JSON.stringify(workers.http),
-        __MCLOUD_WS_WORKER__: JSON.stringify(workers.ws),
-      },
+      // 单文件版：WS worker 源码直接内嵌，运行时用 data: URL 起线程
+      define: { __MCLOUD_WS_WORKER__: JSON.stringify(workers.ws) },
     });
     if (r.outputFiles.length !== 1) throw new Error(`${name}：期望 1 个产物，实际 ${r.outputFiles.length}`);
     out[name] = r.outputFiles[0].text;
   }
-  out['httpWorker'] = workers.http;
   out['wsWorker'] = workers.ws;
   return out;
 }
@@ -82,15 +77,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const all = await bundleStandalone();
   mkdirSync(OUT, { recursive: true });
   for (const [name, text] of Object.entries(all)) {
-    if (name === 'httpWorker' || name === 'wsWorker') continue;
+    if (name === 'wsWorker') continue;
     const p = join(OUT, `${name}.mjs`);
     writeFileSync(p, text);
     if (name === 'mcloud-sign') chmodSync(p, 0o755);
     console.log(`  ✅ dist/standalone/${name}.mjs（${(Buffer.byteLength(text) / 1024).toFixed(1)} KB）`);
   }
-  // 同步 WS / HTTP worker：**单文件版已经内嵌**；这里仍然写盘，给多文件分发/调试用。
+  // 同步 WS worker：**单文件版已经内嵌**；这里仍然写盘，给多文件分发/调试用。
   writeFileSync(join(OUT, 'wsWorker.mjs'), all.wsWorker);
   console.log(`  ✅ dist/standalone/wsWorker.mjs（${(Buffer.byteLength(all.wsWorker) / 1024).toFixed(1)} KB）`);
-  writeFileSync(join(OUT, 'httpWorker.mjs'), all.httpWorker);
-  console.log('  ✅ dist/standalone/httpWorker.mjs');
 }

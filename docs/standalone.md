@@ -17,11 +17,11 @@ dist/standalone/daily.mjs         只含日常
 dist/standalone/exchange.mjs      只含兑换
 dist/standalone/redflower.mjs     只含小红花
 dist/standalone/wsWorker.mjs      同步 WS 用的 worker（已内嵌 ws）
-dist/standalone/httpWorker.mjs    同步 HTTP 用的 worker（Node fetch）
 ```
 
-`mcloud-sign.mjs` 是**单文件**：构建时把 `httpWorker` / `wsWorker` 的源码内嵌，
-运行时用 `data:` URL 起线程 —— 只拷这一个 `.mjs` 就能跑，不需要旁边的两个 worker。
+`mcloud-sign.mjs` 是**单文件**：构建时把 `wsWorker` 的源码内嵌，运行时用 `data:` URL 起线程
+—— 只拷这一个 `.mjs` 就能跑。（HTTP 那层不需要 worker：端口是 Promise 之后直接 `await`
+Node 的 `fetch`，见 `src/standalone/httpBridge.ts` 头注。）
 `daily.mjs` / `exchange.mjs` / `redflower.mjs` 是给库调用者的多文件 bundle（不含 worker 需求）。
 
 ## 日常
@@ -171,7 +171,7 @@ await autoDrawRedFlower();
 ## 依赖与限制
 
 - 需要 Node 20+
-- HTTP 走 Node 原生 `fetch`（worker + Atomics 同步桥），**不依赖系统 curl**
+- HTTP 走 Node 原生 `fetch`（**直接 await**，没有同步桥），**不依赖系统 curl**
 - 部署时 `httpWorker.mjs` / `wsWorker.mjs` 要和 `mcloud-sign.mjs` 放在同一目录
 - WebSocket 走 worker + Atomics，worker 已打包 `ws`
 - v1 不支持 SMTP 邮件推送；HTTP 推送渠道可用

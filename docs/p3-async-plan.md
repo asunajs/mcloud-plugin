@@ -109,7 +109,8 @@
 
 **没做的（记在这里，别以为漏了）**：
 
-· `src/standalone/httpBridge.ts` 的 **worker + Atomics 同步桥还在**：`makeNodeFetcher` 现在返回
-  Promise（形状对齐端口），但实现仍是"起 worker 阻塞等结果"。CLI 一个进程只跑一条命令，
-  阻塞没有面板那种后果，所以这一步先不动；真要拆就删 `httpBridge.ts` + `httpWorker.ts`。
+· ~~CLI 的 worker + Atomics 同步桥~~ —— **已拆**（2026-11-16）：端口是 Promise 之后，
+  `makeNodeFetcher` 直接 `await` Node 的 `fetch`，`httpWorker.mjs` 已删。
+  证据：`test/nodeFetcher.test.ts`（6 条：JSON/二进制 body 逐字节、4xx 不算错、超时、连不上）+ 
+  真机 `mcloud-sign` 用假凭据跑完一整趟（上游回 05050006，链路没崩）。
 · `ws_*` / `smtp_send` 仍是同步 op（面板没给异步版）。直播听窗口的阻塞要等 P6 一起设计。

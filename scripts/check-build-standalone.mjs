@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT = join(ROOT, 'dist/standalone');
-const files = ['mcloud-sign.mjs', 'daily.mjs', 'exchange.mjs', 'redflower.mjs', 'wsWorker.mjs', 'httpWorker.mjs'];
+const files = ['mcloud-sign.mjs', 'daily.mjs', 'exchange.mjs', 'redflower.mjs', 'wsWorker.mjs'];
 let bad = 0;
 for (const f of files) {
   const p = join(OUT, f);
@@ -40,4 +40,4 @@ if (existsSync(cli) && process.platform !== 'win32') {
   }
 }
 if (bad > 0) process.exit(1);
-console.log('✅ 独立产物检查通过（mcloud-sign + daily/exchange/redflower + http/ws worker）');
+console.log('✅ 独立产物检查通过（mcloud-sign + daily/exchange/redflower + ws worker）');
