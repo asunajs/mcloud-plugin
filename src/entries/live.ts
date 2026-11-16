@@ -44,6 +44,7 @@ import { logTo } from '../ports/log.ts';
 import { defineTask } from '../host/panel/index.ts';
 import { runAuthRefresh } from '../mcloud/authRefresh.ts';
 import { blockersFor, setTaskBlockers, setTaskSummary, summaryFor, syncOwnTask } from '../mcloud/taskReadiness.ts';
+import { maskCode, traceBegin, traceStep } from '../mcloud/liveTrace.ts';
 import { appendRun, type RunStep } from '../mcloud/runLog.ts';
 import { labelOf, shortLabel } from '../mcloud/taskAccounts.ts';
 import { logBoth } from '../mcloud/log.ts';
@@ -107,13 +108,17 @@ function collectOnce(
 ): { steps: RunStep[]; detail: string[]; ok: boolean; note: string; stopped: boolean } {
   const steps: RunStep[] = [];
   const step = (name: string, fn: () => TaskOutcome): TaskOutcome => {
+    // ⚠ 追踪在**这一处**记：收口令那一段每一步都走它 ⇒ 一条也不用漏
+    const t0 = Date.now();
     try {
       const r = fn();
       steps.push({ name, ok: r.ok, note: r.note, idle: r.idle === true });
+      traceStep(deps.store, deps.nowIso, 'collect/' + name, r.note, { ok: r.ok, ms: Date.now() - t0 });
       return r;
     } catch (e) {
       const note = `抛异常 ${e instanceof Error ? e.message : String(e)}`;
       steps.push({ name, ok: false, note, idle: false });
+      traceStep(deps.store, deps.nowIso, 'collect/' + name, note, { ok: false, ms: Date.now() - t0 });
       return { ok: false, note };
     }
   };
@@ -279,6 +284,17 @@ function collectOnce(
         `验证「${fresh.value}」：${thisOne?.state === 'valid' ? '有效' : thisOne?.state === 'invalid' ? '无效' : '没结论'} —— ${v.note}`,
         deps.nowIso,
       );
+      // 追踪环里记**脱敏**的：口令原文会留在池里（那是业务数据），
+      // 环是"上一趟走到哪"的快照，没必要再存一份明文。
+      traceStep(
+        deps.store,
+        deps.nowIso,
+        'collect/verify',
+        maskCode(fresh.value) +
+          ' → ' +
+          (thisOne?.state === 'valid' ? '有效' : thisOne?.state === 'invalid' ? '无效' : '没结论'),
+        { ok: thisOne?.state === 'valid' },
+      );
       // ⚠ 这里**不 break**：继续听，直到"够 2 条有效"或听满窗口。
       continue;
     }
@@ -415,6 +431,8 @@ await defineTask(
   (p: TaskPayload) => {
     const startedMs = Date.now();
     const at = new Date(startedMs).toISOString();
+    // 追踪环：这一趟从空开始（环里永远是"上一趟到最近一趟"的现场，见 liveTrace.ts）
+    traceBegin(store, at);
     // ── ① 先收口令：**整趟只跑一次**，用第一个账号的凭据 ──────────────
     //
     // ⚠ 口令是**共享**的（一个账号听到，所有账号都能用），所以"听"这件事
@@ -475,6 +493,7 @@ await defineTask(
       });
       setTaskBlockers('直播', blockersFor(store, '直播'));
       setTaskSummary('直播', summaryFor(store, '直播'));
+      traceStep(store, at, 'done', `不领：${reason}`, { ok: false });
       return;
     }
 
@@ -495,6 +514,7 @@ await defineTask(
         }
         const cBad = c.steps.filter((x) => !x.ok).length;
         logBoth(store, !c.ok || cBad > 0 ? 'warn' : 'success', `口令：${c.note}`, at);
+      traceStep(store, at, 'collect/codes', c.note, { ok: c.ok && cBad === 0 });
       }
     }
 
@@ -562,6 +582,8 @@ await defineTask(
             ? `${bad} 项跳过（没有网页会话）`
             : `${hard} 项没成${bad > hard ? `、${bad - hard} 项跳过` : ''}`;
       logBoth(store, hard > 0 ? 'warn' : 'debug', `${tag} ${tail}`, at);
+      // 追踪环：一个账号一条（谁、成没成、一句话）
+      traceStep(store, at, 'account', `${who}：${tail}`, { ok: r.ok && hard === 0 });
     }
 
     // ⚠ 只算**真发了请求**的账号：什么都没做（口令没变/没有口令）不算"好了"。
@@ -579,6 +601,14 @@ await defineTask(
         ? `直播：${runs.length} 个账号都没领 —— ${runs[0]?.result.note ?? ''}`
         : `直播完成：${okCount}/${runs.length} 个账号好了`,
       at,
+    );
+
+    traceStep(
+      store,
+      at,
+      'done',
+      idleAll ? `${runs.length} 个账号都没领` : `${okCount}/${runs.length} 个账号好了`,
+      { ok: okCount === runs.length, ms: Date.now() - startedMs },
     );
 
     // 账号可能在运行期间被删/停用：卡片摘要和未就绪状态跟着重算。
