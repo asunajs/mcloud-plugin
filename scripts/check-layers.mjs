@@ -64,6 +64,12 @@ for (const file of files) {
     if (/\bfrom\s+'node:/.test(src)) {
       problems.push(`R3 ${r}：领域层不许 import node:*（面板引擎里没有）`);
     }
+    // 领域层也不许用 Node/引擎专有的全局（面板引擎里没有，写了在真机才炸）
+    for (const bad of ['Buffer', 'process.', 'setTimeout', 'setInterval', 'require(']) {
+      if (src.includes(bad)) {
+        problems.push(`R3 ${r}：领域层不许用 ${bad}（面板引擎里没有）`);
+      }
+    }
   }
 
   // R6：FileStore 只能用 LLRT 也有的 fs 子集（面板与 Node 都能跑）

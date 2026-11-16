@@ -17,13 +17,11 @@
     "allowImportingTsExtensions": true,
     "forceConsistentCasingInFileNames": true,
 
-    // 空数组 = **不许用任何 @types**。
-    //
-    // 这不是洁癖：插件最终跑在 QuickJS 沙箱里，那里没有 Node（没有 process / Buffer /
-    // fs / crypto / setTimeout）。如果 tsconfig 里带了 @types/node，我在这份源码里
-    // 顺手写个 `Buffer.from(...)` 也能通过类型检查，然后在面板里运行时报 undefined。
-    // 类型检查在这里的作用是**当围栏**，不是补全提示。
-    "types": [],
+    // Node 类型**开着**：宿主层（src/host/fs）要写 `node:fs`（面板引擎也提供它），
+    // CLI 也是 Node。领域层的围栏不再是"类型系统不给"，而是**可执行的门禁**：
+    // `scripts/check-layers.mjs` 的 R3 —— src/mcloud 里出现 node:* / Buffer / process /
+    // setTimeout 直接判红。写成门禁比写成 tsconfig 更明确，也能给准确的报错。
+    "types": ["node"],
 
     // `panel:host` 由面板引擎注入，不是 npm 包；类型在 src/types/panel-host.d.ts
     // （`declare module`，不需要 paths —— 业务层也**不准**直接 import 它，见 R1）

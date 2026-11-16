@@ -71,7 +71,7 @@ import type { TaskPayload } from './shared.ts';
 // 共享粗粒度 lane：听窗口是连续几十秒的占用，但不需要毫秒级；
 // 和日常排队即可。只有 exchange 和路由插件需要独占（见 shared.ts 文件头）。
 
-const store = makeStore();
+const store = await makeStore('mcloud-live');
 const transport = makeTransport(LONG_REQUEST_TIMEOUT_MS);
 const host = makeHost();
 

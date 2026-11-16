@@ -32,7 +32,7 @@ import { migrateLegacyExchange, syncTaskReadiness } from '../mcloud/taskReadines
 // 面板里"一个插件一条 JS 执行通道"是默认的，不需要再声明独占线程
 // （旧面板的 `worker_hint('exclusive')` 在这里没有对应物）。
 
-const store = makeStore();
+const store = await makeStore('mcloud');
 // 面板「插件配置」里那两格先并进 state —— **在迁移之前**：配置里显式给的
 // `exchange_enabled` 优先级高于"老库推测"（迁移只看那一格是不是空）。
 await syncConfigToState(store);

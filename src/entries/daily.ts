@@ -79,7 +79,7 @@ import {
 } from './shared.ts';
 import type { TaskPayload } from './shared.ts';
 
-const store = makeStore();
+const store = await makeStore('mcloud-daily');
 const transport = makeTransport(LONG_REQUEST_TIMEOUT_MS);
 
 // ⚠ 必须在 `BUDGET_MS` **之前**：预算就是加载期算的（下面 `dailyBudgetMs`），

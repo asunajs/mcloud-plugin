@@ -13,8 +13,10 @@ import { setRedpackEnabled } from '../mcloud/tasks/redpackState.ts';
 import { setTokenPkDraw, setTokenPkEnabled } from '../mcloud/tokenPkState.ts';
 import type { PkDrawConfig } from '../mcloud/tokenPkState.ts';
 import type { ListenDeps } from '../mcloud/tasks/liveListen.ts';
+import { dirname } from 'node:path';
 import { loadConfig, type StandaloneConfig } from './config.ts';
-import { FileStore } from './fileStore.ts';
+import { openFileStore } from '../host/fs/fileStore.ts';
+import { importLegacyStateFile } from '../host/fs/importLegacy.ts';
 import { makeNodeFetcher } from './httpBridge.ts';
 import { debug, installFetcher, installWs } from './hostApi.ts';
 import { makeWsBridge, type WsBridge } from './wsBridge.ts';
@@ -102,13 +104,16 @@ function seedAccounts(raw: Store, config: StandaloneConfig): void {
 export async function createRuntime(opts: { configPath?: string; stateFile?: string } = {}): Promise<Runtime> {
   const config = await loadConfig(opts.configPath);
   const stateFile = opts.stateFile ?? config.stateFile;
-  const rawStore = new FileStore(stateFile, new Date().toISOString());
-  try {
-    seedAccounts(rawStore, config);
-  } catch (e) {
-    rawStore.close();
-    throw e;
-  }
+  // 与面板**同一份实现、同一个目录布局**：CLI 指到面板那个目录就是同一份账号与凭据
+  const storeDir = dirname(stateFile);
+  const rawStore = openFileStore({
+    dir: storeDir,
+    plugin: 'cli',
+    nowIso: new Date().toISOString(),
+    legacy: () => importLegacyStateFile(storeDir, stateFile),
+  });
+  rawStore.ensureSchema();
+  seedAccounts(rawStore, config);
 
   const fetcher = makeNodeFetcher(config.http);
   installFetcher(fetcher);
@@ -162,7 +167,7 @@ export async function createRuntime(opts: { configPath?: string; stateFile?: str
     },
     close() {
       wsBridge?.dispose();
-      rawStore.close();
+      // 文件存储没有"长期持有"的锁（每次写一小会儿），这里不需要释放什么
     },
   };
   return runtime;
