@@ -6,7 +6,7 @@
 // ⚠ 这一层**不知道宿主存在**：不 import host，也不 import panel:host（见 check-layers R3）。
 
 import { readBag } from '../../store/keys.ts';
-import { rawStoreOf } from '../../store/scoped.ts';
+import { rawStoreOf, scoped } from '../../store/scoped.ts';
 import type { Store } from '../../store/types.ts';
 import { currentAccount, loadAccounts, maskAuth, selectAccount, upsertAccount } from '../../mcloud/accounts.ts';
 import { parseAuth } from '../../mcloud/auth.ts';
@@ -20,6 +20,7 @@ import type { PushDeps } from '../../mcloud/push.ts';
 import { parseQuery } from '../../mcloud/query.ts';
 import { uuidV4 } from '../../mcloud/rand.ts';
 import { jwtExpiryOf } from '../../mcloud/session.ts';
+import { resolveTaskAccounts } from '../../mcloud/taskAccounts.ts';
 import { syncTaskReadiness } from '../../mcloud/taskReadiness.ts';
 import type { HostWs } from '../../mcloud/tasks/base.ts';
 import { STATE_EXPAND, STATE_MONTH_BACKUP } from '../../mcloud/tasks/taskExpansion.ts';
@@ -84,6 +85,18 @@ export function parseJson(body: unknown): unknown {
 }
 
 export const JSON_HEADERS = { 'content-type': 'application/json; charset=utf-8' };
+
+/** 直播那一族读写的袋：`mcloud.live.*` 是 **account 键**，任务写在**第一个启用账号**
+ *  的袋里（口令是共享的，只用第一个号的凭据去拿）。
+ *
+ *  ⚠ 路由必须读**同一个**袋。读默认袋的实拍（2026-11-16 e2e ⑨）：任务把那趟的
+ *  「下一场几点醒」写进了 135 那个号的袋，`/api/live` 却在默认袋里找 ⇒ 页面永远
+ *  显示「日程太旧」，而 `/api/readings` 是好的 —— 两个页面对不上，最难查的那类。
+ */
+export function liveStore(deps: RouteDeps): Store {
+  const first = resolveTaskAccounts(deps.store, '直播', 'auto')[0] ?? '';
+  return first === '' ? deps.store : scoped(rawStoreOf(deps.store), first);
+}
 
 export function accountsView(store: Pick<Store, 'getState'>): {
   current: string;
