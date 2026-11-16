@@ -1159,9 +1159,9 @@ test('⚠ 保存账号选择校验的是**排期任务名**，不是内部步骤
     ['src/entries/live.ts', '直播'],
   ];
   for (const [f, name] of pairs) {
-    // 注册走 defineTask（P2 起）：名字是对象里的第一个键
+    // 注册走 registerTask（P5 收口）：名字是对象里的键
     assert.ok(
-      new RegExp(`defineTask\\(\\s*\\{\\s*name: '${name}'`).test(taskSource(f)),
+      new RegExp(`registerTask\\(\\s*\\{\\s*plugin: '[^']+',\\s*name: '${name}'`).test(taskSource(f)),
       `${f} 注册的名字要是 ${name}`,
     );
   }
