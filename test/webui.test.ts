@@ -830,9 +830,19 @@ test('⚠ 「跑一次」要**等它真跑完**再说结果（面板那个接口
   // 于是用户看到"跑完了"、读数却还是上一次的。
   assert.ok(/async function runTaskAndWait\(key, btn\)/.test(js), '缺"触发并等完"');
   assert.ok(/async function waitRun\(/.test(js), '缺"等这一次跑完"');
-  assert.ok(/\/api\/runs\?plugin=/.test(js), '判据要看面板的运行记录');
-  assert.ok(/if \(!one \|\| !one\.finished_at\) return null;/.test(js), '没有 finished_at 就是没跑完');
-  assert.ok(/Date\.parse\(String\(one\.started_at\)\.replace\(' ', 'T'\)\) < sinceMs/.test(js),
+  // 判据①：按面板回的 `run_id` 取那一条 —— 不用比时间，也不会挑错记录
+  assert.ok(/const runId = queued && queued\.run_id;/.test(js), '要用面板回的 run_id');
+  assert.ok(/\/api\/runs\/\$\{encodeURIComponent\(runId\)\}/.test(js), '按 id 取那一条记录');
+  // 判据②：兜底按插件筛。**不许**再带 `?task=` —— 新面板不认这个字段，带上就是 400
+  assert.ok(/\/api\/runs\?plugin=\$\{encodeURIComponent\(plugin\)\}&limit=20/.test(js), '兜底要看面板的运行记录');
+  const runFetches = js.split('\n').filter((l) => /fetch\(/.test(l) && /\/api\/runs\?plugin=/.test(l));
+  assert.ok(runFetches.length > 0, '兜底那次 fetch 还在');
+  assert.equal(
+    runFetches.filter((l) => /\btask=/.test(l)).length,
+    0,
+    '新面板不认 ?task=，带上就 400（2026-11-16 现场）',
+  );
+  assert.ok(/if \(msOf\(one\.started_at\) < sinceMs - 2000\) continue;/.test(js),
     '只认**这一次**（上一次的记录会立刻被当成"完成"）');
   // 按钮上写秒数 = 证明它还活着
   assert.ok(/btn\.textContent = `跑着呢 \$\{Math\.round\(ms \/ 1000\)\}s`/.test(js), '按钮要说"跑着呢 N 秒"');
@@ -842,6 +852,56 @@ test('⚠ 「跑一次」要**等它真跑完**再说结果（面板那个接口
   assert.ok(/await waitRun\('mcloud-live', '直播', t0, null\)/.test(js), '贴口令那条也要等');
   // 超时**不许**假装成功
   assert.ok(/if \(one === null\) \{\n\s+toast\('还没跑完/.test(js), '超时要老实说没跑完');
+});
+
+test('⚠ 面板的运行记录两种形状都要认（2026-11-16「跑完了不停止」）', () => {
+  // 现场：任务 22:45:44 就正常结束了，按钮还写着「跑着呢 76s」，一直等到 180 秒超时。
+  // 根因是判据只认 `finished_at`，而新面板（panel-llrt）给的是
+  // `ended_at` / `status`，`started_at` 还是**毫秒数** —— 三个字段全对不上。
+  //
+  // 这条测试**真跑那个函数**（从 app.js 里抠出来），不是拿正则量源码：
+  // 正则量得再准也量不出"字段名错了"。
+  const grab = (name: string) => {
+    const i = js.indexOf('function ' + name + '(');
+    assert.ok(i > 0, 'app.js 里找不到 ' + name + '()');
+    const j = js.indexOf('\n}\n', i);
+    assert.ok(j > i, name + '() 没找到结尾');
+    return js.slice(i, j + 3);
+  };
+  const fn = new Function(grab('msOf') + grab('normalizeRun') + '\nreturn { msOf, normalizeRun };')() as {
+    msOf: (v: unknown) => number;
+    normalizeRun: (one: unknown) => null | { ok: boolean; duration_ms: number; error: string };
+  };
+
+  // ① 新面板（panel-llrt）：毫秒数 + ended_at + status
+  const panel = fn.normalizeRun({
+    id: 38, plugin: 'mcloud-daily', task: '日常',
+    started_at: 1794840308681, ended_at: 1794840344148, status: 'ok', error: null,
+  });
+  assert.ok(panel, '新面板那条已结束的记录必须认出来（原来就是不认它）');
+  assert.equal(panel.ok, true, 'status=ok ⇒ ok');
+  assert.equal(panel.duration_ms, 35467, '用时按 ended_at-started_at 算（35.5 秒就是这次）');
+
+  // ② 还在跑：ended_at 为 null ⇒ 就是"还没完"，继续等
+  assert.equal(fn.normalizeRun({ started_at: 1794840308681, ended_at: null, status: 'ok' }), null);
+
+  // ③ 失败了要带上原因
+  const bad = fn.normalizeRun({ started_at: 1, ended_at: 2001, status: 'error', error: '2/2 个账号失败' });
+  assert.equal(bad && bad.ok, false, 'status=error ⇒ ok:false');
+  assert.equal(bad && bad.error, '2/2 个账号失败', '错误原因不能丢');
+
+  // ④ 旧面板：日期字符串 + finished_at + ok + duration_ms（别把老实例写死）
+  const old = fn.normalizeRun({
+    started_at: '2026-11-16 22:45:08', finished_at: '2026-11-16 22:45:44',
+    ok: true, duration_ms: 36000, error: '',
+  });
+  assert.equal(old && old.ok, true, '旧面板的 ok 照认');
+  assert.equal(old && old.duration_ms, 36000, '旧面板自带 duration_ms 就用它');
+
+  // ⑤ 乱七八糟的输入不许抛
+  assert.equal(fn.normalizeRun(null), null);
+  assert.equal(fn.normalizeRun({}), null);
+  assert.equal(fn.normalizeRun({ started_at: 1 }), null);
 });
 
 test('⚠ 跑的时候有「停止」，且触发请求不能挡住按钮状态', async () => {
