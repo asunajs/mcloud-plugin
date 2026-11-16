@@ -7596,3 +7596,17 @@ mcloud  [job] set_job_blockers 失败: {"message":"没有这个任务: mcloud-li
 `register_cron` 与 `set_job_schedule` 都只能由**它自己**调。
 彻底解要么面板给个"写之前先 ensure_loaded"，要么让界面插件改完顺手触发一次重载。
 
+
+**2026-11-16 复核（P5/P6 收口之后）**：上面那条「真缺口」**当前不可达**。
+
+`setTaskSchedule` 全仓库只有一个调用点（`taskReadiness.ts:185`，写的是「兑换」），
+界面上能改定时的也只有「兑换」那个弹窗（`ex-plan-cron` → `/exchange/plans` → 计划表 →
+`syncExchangeJob`）。「日常/直播」的调度在界面里只**读出来显示**（`scheduleText(job)`），
+要改得去面板任务页 —— 那条路直接写调度器的任务表（占位行也在表里），与插件是否加载无关。
+实测：改 `mcloud-daily/日常` → 200 且 `cron`/`cron_override` 立刻变；重启后仍在。
+
+顺带：复核时在**同一片区域**撞到另一个真问题 —— 重启后 `cron_override` 变 `null`、
+「恢复默认」消失、用户退不回插件给的那条。根因是面板给按需加载的插件造占位任务时，
+把**生效 cron**（已含用户覆盖）当成了 `base_cron`，而面板是拿 `cron != base_cron`
+推导「有没有改过」的。已在 panel 仓库修掉（`533729e`，5 条单测 + 真机完整循环）。
+两者现象像、根因不同，别混为一谈。
