@@ -28,7 +28,8 @@
     "shots": "node scripts/shots.mjs",
     "pack": "node scripts/pack.mjs",
     "build:panelllrt": "node scripts/build-panelllrt.mjs",
-    "pack:panel04": "node scripts/pack-panelllrt.mjs"
+    "pack:panel04": "node scripts/pack-panelllrt.mjs",
+    "install:panel-binary": "bash scripts/install-panel-binary.sh"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
