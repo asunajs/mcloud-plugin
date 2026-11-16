@@ -5,16 +5,15 @@
 // 测试全绿、CI 全绿，而面板加载的还是旧逻辑。这类错最贵的版本是
 // 「修了 bug 但没生效」，然后在真机上排查半天。
 //
-// 做法：重新打包一次，跟工作区里那四份逐字节比。
-// ⚠ 四个插件都要比 —— 只比 mcloud 的话，改了 daily 忘了构建是查不出来的。
+// 做法：重新打包一次，跟 dist/panel-llrt 里那四份逐字节比。
 
-import { readFileSync, existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ENTRIES, bundleAll, forbidden } from './build.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const OUTDIR = join(ROOT, 'plugins/js');
+const OUTDIR = join(ROOT, 'dist', 'panel-llrt');
 
 const fresh = await bundleAll();
 let bad = 0;
@@ -22,16 +21,16 @@ let bad = 0;
 for (const name of Object.keys(ENTRIES)) {
   const out = join(OUTDIR, `${name}.js`);
   if (!existsSync(out)) {
-    console.error(`❌ plugins/js/${name}.js 不存在 —— 先跑 \`npm run build\` 并提交产物`);
+    console.error(`❌ dist/panel-llrt/${name}.js 不存在 —— 先跑 \`npm run build\` 并提交产物`);
     bad++;
     continue;
   }
   const committed = readFileSync(out, 'utf8');
 
-  // 沙箱里没有的东西 —— 单查这一条，因为它比「产物过期」更隐蔽
+  // 面板里没有的东西 —— 单查这一条，因为它比「产物过期」更隐蔽
   const no = forbidden(committed);
   if (no.length > 0) {
-    console.error(`❌ ${name}：产物里出现了沙箱没有的东西：${no.join('、')}`);
+    console.error(`❌ ${name}：产物里出现了面板里没有的东西：${no.join('、')}`);
     bad++;
     continue;
   }
@@ -54,7 +53,7 @@ for (const name of Object.keys(ENTRIES)) {
 }
 
 if (bad > 0) {
-  console.error(`\n❌ ${bad} 个插件有问题。修：\`npm run build\` 然后把 plugins/js/*.js 一起提交。`);
+  console.error(`\n❌ ${bad} 个插件有问题。修：\`npm run build\` 然后把 dist/panel-llrt/*.js 一起提交。`);
   process.exit(1);
 }
 console.log('✅ 四个产物都与源码一致（没忘了重新构建）');

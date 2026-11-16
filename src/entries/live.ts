@@ -40,7 +40,8 @@
 // ⚠ 面板对 `budget_ms` 的上限是 10 分钟（`rust-plugin-panel/src/hostapi.rs`
 //   的 `MAX_DECLARED_BUDGET_MS`），5 分钟留足了余量。
 
-import { debug, register_cron, warn } from 'host-api';
+import { logTo } from '../ports/log.ts';
+import { defineTask } from '../host/panel/index.ts';
 import { runAuthRefresh } from '../mcloud/authRefresh.ts';
 import { blockersFor, setTaskBlockers, setTaskSummary, summaryFor } from '../mcloud/taskReadiness.ts';
 import { appendRun, type RunStep } from '../mcloud/runLog.ts';
@@ -131,7 +132,7 @@ function collectOnce(
   // ⓪ 原生 token 先判一次：到期自动续；不新鲜时门和 WS 都会一起失败。
   const auth = step('凭据续期', () => runAuthRefresh(deps));
   // 管道步骤成功时不进用户日志；这里给排查留一行 debug，证明自动判过。
-  debug(`凭据续期：${auth.note}`);
+  logTo('debug', `凭据续期：${auth.note}`);
 
   // ⓪ 先问一次**这个面板构建支不支持直播**。
   //
@@ -399,12 +400,18 @@ function drawOnce(
   };
 }
 
-register_cron(
-  '直播',
-  // 用户口径（2026-10-17）：「太频繁了，每天上午 10:30 / 下午 15:30 两次」。
-  // 每 5 分钟一跳太密 —— 而开播时刻是整点粒度，两次足够；没在播时第一次
-  // 调用就早退（零请求），见下面的「先验开播再决定要不要听」。
-  '30 10,15 * * *',
+defineTask(
+  {
+    name: '直播',
+    // 用户口径（2026-10-17）：「太频繁了，每天上午 10:30 / 下午 15:30 两次」。
+    // 没在播时第一次调用就早退（零请求）。
+    cron: '30 10,15 * * *',
+    budget_ms: BUDGET_MS,
+    // 直播也是环境型任务：面板任务列表里显示；没账号时“未就绪”。
+    surface: 'panel',
+    summary: summaryFor(store, '直播'),
+    blockers: blockersFor(store, '直播'),
+  },
   (p: TaskPayload) => {
     const startedMs = Date.now();
     const at = new Date(startedMs).toISOString();
@@ -578,13 +585,6 @@ register_cron(
     setTaskBlockers('直播', blockersFor(store, '直播'));
     setTaskSummary('直播', summaryFor(store, '直播'));
   },
-  {
-    budget_ms: BUDGET_MS,
-    // 直播也是环境型任务：面板任务列表里显示；没账号时“未就绪”。
-    surface: 'panel',
-    summary: summaryFor(store, '直播'),
-    blockers: blockersFor(store, '直播'),
-  },
 );
 
-debug(`mcloud-live：任务「直播」（预算 ${BUDGET_MS / 1000}s，共享粗粒度 lane）`);
+logTo('debug', `mcloud-live：任务「直播」（预算 ${BUDGET_MS / 1000}s，共享粗粒度 lane）`);

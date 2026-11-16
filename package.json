@@ -3,7 +3,7 @@
   "version": "0.4.2",
   "private": true,
   "type": "module",
-  "description": "mcloud 的 JS/TS 重写版 —— 可作为面板插件，也可独立运行（替代 mcloud-sign）",
+  "description": "mcloud 的 JS/TS 重写版 —— panel-llrt 的四个插件 + 一个 Node CLI（共用一份核心）",
   "bin": {
     "mcloud-sign": "./dist/standalone/mcloud-sign.mjs"
   },
@@ -21,14 +21,13 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
     "typecheck:standalone": "tsc -p tsconfig.standalone.json --noEmit",
     "test": "node --test \"test/*.test.ts\"",
-    "all": "npm run gen && npm run typecheck && npm test && npm run check-build && npm run check-split",
+    "all": "npm run gen && npm run typecheck && npm test && npm run check-build && npm run check-layers",
+    "check-layers": "node scripts/check-layers.mjs",
     "gen": "node scripts/gen-constants.mjs",
-    "check-split": "python3 scripts/split_check.py",
-    "e2e": "./scripts/e2e-mock.sh \"${PANEL_BIN:-../rust-plugin-panel/target/release/plugin-panel}\"",
+    "e2e": "./scripts/e2e-mock.sh \"${PANEL_BIN:-../panel-llrt/target/release/panel}\"",
     "shots": "node scripts/shots.mjs",
     "pack": "node scripts/pack.mjs",
-    "build:panelllrt": "node scripts/build-panelllrt.mjs",
-    "pack:panel04": "node scripts/pack-panelllrt.mjs",
+    "pack:panel04": "node scripts/pack.mjs",
     "install:panel-binary": "bash scripts/install-panel-binary.sh"
   },
   "devDependencies": {

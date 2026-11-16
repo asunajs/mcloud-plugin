@@ -1,7 +1,8 @@
 # mcloud-plugin
 
 把 [mcloud](https://github.com/asunajs/mcloud)（中国移动云盘的 Rust 自动化服务）**用 JS/TS 重写一份**，
-作为 [rust-plugin-panel](https://github.com/asunajs/panel) 的插件跑起来。
+作为面板（panel-llrt，0.4.x / 0.5.x）的四个插件跑起来；同一份核心也能当 Node CLI 跑
+（`mcloud-sign`，见 [`docs/standalone.md`](docs/standalone.md)）。
 
 两个目标**同等重要**：
 
@@ -142,7 +143,7 @@ PANEL_TOKEN_HASH="$(printf '%s' '<你的令牌>' | <面板二进制> hash-token)
 
 ## 面板为此补了什么
 
-插件这一版能成立，靠的是面板侧**六项新能力**（都在 `rust-plugin-panel` 里，已合入）：
+插件这一版能成立，靠的是面板侧**六项新能力**（当年在旧面板仓里补的，现已并入 panel-llrt）：
 
 | # | 能力 | 为什么这个插件非要 |
 |---|---|---|
@@ -164,10 +165,10 @@ mcloud-plugin/
     mcloud/                上游层：签名、信封、H5、登录、会话、口令池、直播…
       tasks/               每条任务的协议逻辑
     entries/               四个插件入口（mcloud / daily / exchange / live）
-  plugins/js/*.js          构建产物（单文件，提交进仓库，CI 检查是否最新）
+  dist/panel-llrt/*.js     构建产物（单文件，提交进仓库，CI 检查是否最新）
   plugins/mcloud/          WebUI 静态文件（原生 ESM + CSS，零依赖）
   mock/upstream.mjs        mock 上游（CI 全程只打它）
-  scripts/                 构建、e2e、拆分检查、截图
+  scripts/                 构建、e2e、状态断言、截图
   docs/                    见下
 ```
 
@@ -175,7 +176,8 @@ mcloud-plugin/
 
 | 文件 | 里面是什么 |
 |---|---|
-| [`docs/redesign-plan.md`](docs/redesign-plan.md) | **阶段与进度**（这一版的总纲，每完成一项就更新） |
+| [`docs/architecture.md`](docs/architecture.md) | **架构现状**：分层、import 规则、存储布局、产物、阶段状态 |
+| [`docs/redesign-plan.md`](docs/redesign-plan.md) | **上一版的设计总纲**（历史；现状看 `architecture.md`） |
 | [`docs/findings.md`](docs/findings.md) | 压出来的面板边界：怎么测的、什么数、改了什么 |
 | [`docs/howto-session.md`](docs/howto-session.md) | 使用者手册：怎么拿会话、怎么导入、失败了怎么看 |
 | [`docs/ui-wording.md`](docs/ui-wording.md) | 界面用词规则（**对用户不许说"上游"**） |
@@ -236,7 +238,7 @@ QuickJS 沙箱里没有 Node（没有 `fs` / `net` / `crypto` / npm 包），
 <https://github.com/asunajs/mcloud-plugin/releases>；同目录还有 `.sha256`。
 
 ```bash
-npm run build:panelllrt      # 产物 → dist/panel-llrt/（4 个 .js + 4 个清单 + mcloud.webui/）
+npm run build                # 产物 → dist/panel-llrt/（4 个 .js + 4 个清单 + mcloud.webui/）
 npm run pack:panel04         # → dist/mcloud-plugin-<version>-panel04.zip（+ .sha256、SHA256SUMS）
 ```
 
@@ -246,7 +248,7 @@ npm run pack:panel04         # → dist/mcloud-plugin-<version>-panel04.zip（+ 
 
 ```bash
 git worktree add /tmp/rel-v0.4.0 v0.4.0
-cd /tmp/rel-v0.4.0 && npm ci && npm run build:panelllrt && npm run pack:panel04
+cd /tmp/rel-v0.4.0 && npm ci && npm run build && npm run pack:panel04
 ```
 
 面板 → 插件卡片 → **配置** 里有表单（不再是裸 JSON），四份清单各自声明自己真读的格子：

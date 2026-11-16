@@ -7,7 +7,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
-import type { WsFrame } from 'host-api';
+import type { WsFrame } from '../ports/io.ts';
 import type { WsConfig } from './config.ts';
 
 interface OpenOpts {

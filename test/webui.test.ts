@@ -1155,7 +1155,11 @@ test('⚠ 保存账号选择校验的是**排期任务名**，不是内部步骤
     ['src/entries/live.ts', '直播'],
   ];
   for (const [f, name] of pairs) {
-    assert.ok(new RegExp(`register_cron\\(\\s*'${name}'`).test(srcOf(f)), `${f} 注册的名字要是 ${name}`);
+    // 注册走 defineTask（P2 起）：名字是对象里的第一个键
+    assert.ok(
+      new RegExp(`defineTask\\(\\s*\\{\\s*name: '${name}'`).test(srcOf(f)),
+      `${f} 注册的名字要是 ${name}`,
+    );
   }
 });
 
@@ -1259,13 +1263,15 @@ test('⚠ 面板缺直播支持时：当成**构建缺陷**报出来，并且别
     /logBoth\(store, 'error', c\.detail\[0\]/.test(live),
     '用 error 级别、且只印一行（段头+步骤+段尾说同一句话 = 噪声）',
   );
-  // logBoth 要真的支持 error/fatal 和语义类型
-  const logSrc = srcOf('src/mcloud/log.ts');
+  // logBoth 要真的支持 error/fatal 和语义类型（级别联合在端口里，log.ts 转发）
+  const logSrc = srcOf('src/mcloud/log.ts') + srcOf('src/ports/log.ts');
   assert.ok(/export type LogLevel =/.test(logSrc), 'logBoth 要有类型联合');
   for (const lv of ['debug', 'info', 'warn', 'error', 'fatal', 'start', 'success', 'fail']) {
     assert.ok(logSrc.includes(`'${lv}'`), `logBoth 要收 ${lv}`);
   }
-  assert.ok(/case 'fatal':\s*fatal\(msg\)/.test(logSrc), 'fatal 要真的转发给面板');
+  // 级别 → 宿主写法的映射在 host/panel/impl.ts 的 panelLogger（端口只定义联合）
+  const implSrc = srcOf('src/host/panel/impl.ts');
+  assert.ok(/case 'fatal':\s*emit\('error', '\[fatal\] '/.test(implSrc), 'fatal 要真的转发给面板');
   // 结论要缓存，别每次都探
   assert.ok(/export const CAP_TTL_MS/.test(cap), '要缓存');
 });
@@ -1319,7 +1325,7 @@ test('⚠ 日常**不设"今天跑过就跳过"**：一天两趟都跑，第二�
   assert.ok(/runDaily\(deps, \{[\s\S]{0,120}onPhase/.test(d), '步骤/阶段要边跑边打');
   assert.ok(/第二次跑是容错/.test(d), '理由要写在代码里（下次别又加回去）');
   // 面板侧那一格 `manual` 仍然有用（别的地方要判"谁触发的"）
-  const t = srcOf('src/host-api.d.ts');
+  const t = srcOf('src/ports/panel.ts');
   assert.ok(/manual\?: boolean;/.test(t), '载荷类型要有 manual');
 });
 
@@ -1414,21 +1420,28 @@ test('⚠ 跨账号的同一句解释只说一遍（领小红花那个括号）'
 
 test('CI 的 state 断言脚本：正例过、反例必须红（别让 CI 断言本身坏了没人知道）', () => {
   const dir = mkdtempSync(join(tmpdir(), 'ci-state-'));
-  // 类型写明：下面几条反例会改字段（runtime / error），别让 TS 按字面量推成 null
+  // 形状照 panel-llrt：任务在 `tasks`、表达式叫 `cron`（旧面板叫 jobs / schedule）。
+  // 类型写明：下面几条反例会改字段，别让 TS 按字面量推成 null
   const good: {
-    plugins: { name: string; runtime: string; error: string | null }[];
-    jobs: { name: string; plugin: string; schedule: string; last_error: string | null }[];
+    plugins: { name: string; error: string | null; suspended?: boolean }[];
+    tasks: {
+      name: string;
+      plugin: string;
+      cron: string;
+      last_error: string | null;
+      pending_adopt?: boolean;
+    }[];
   } = {
     plugins: [
-      { name: 'mcloud', runtime: 'js', error: null },
-      { name: 'mcloud-daily', runtime: 'js', error: null },
-      { name: 'mcloud-exchange', runtime: 'js', error: null },
-      { name: 'mcloud-live', runtime: 'js', error: null },
+      { name: 'mcloud', error: null },
+      { name: 'mcloud-daily', error: null },
+      { name: 'mcloud-exchange', error: null },
+      { name: 'mcloud-live', error: null },
     ],
-    jobs: [
-      { name: '日常', plugin: 'mcloud-daily', schedule: '0 8,20 * * *', last_error: null },
-      { name: '兑换', plugin: 'mcloud-exchange', schedule: '0 10 * * *', last_error: null },
-      { name: '直播', plugin: 'mcloud-live', schedule: '30 10,15 * * *', last_error: null },
+    tasks: [
+      { name: '日常', plugin: 'mcloud-daily', cron: '0 8,20 * * *', last_error: null },
+      { name: '兑换', plugin: 'mcloud-exchange', cron: '0 10 * * *', last_error: null },
+      { name: '直播', plugin: 'mcloud-live', cron: '30 10,15 * * *', last_error: null },
     ],
   };
   const run = (cmd: string, obj: unknown) => {
@@ -1447,17 +1460,25 @@ test('CI 的 state 断言脚本：正例过、反例必须红（别让 CI 断言
 
   // 反例：这些正是"CI 应该拦住"的形态，一个都不能放过
   const missingJob = structuredClone(good);
-  missingJob.jobs = missingJob.jobs.filter((j) => j.name !== '兑换');
+  missingJob.tasks = missingJob.tasks.filter((j) => j.name !== '兑换');
   assert.equal(run('ready', missingJob).status, 1, '少一条任务：ready 必须 1');
   assert.equal(run('loaded', missingJob).status, 1, '少一条任务：loaded 必须 1');
 
   const jobBack = structuredClone(good);
-  jobBack.jobs.push({ name: 'selftest', plugin: 'mcloud', schedule: '*/5 * * * *', last_error: null });
+  jobBack.tasks.push({ name: 'selftest', plugin: 'mcloud', cron: '*/5 * * * *', last_error: null });
   assert.equal(run('loaded', jobBack).status, 1, 'selftest 又变回任务了：必须红（防回归）');
 
-  const badRuntime = structuredClone(good);
-  badRuntime.plugins[0]!.runtime = 'py';
-  assert.equal(run('loaded', badRuntime).status, 1, 'runtime 不对：必须红');
+  const wrongOwner = structuredClone(good);
+  wrongOwner.tasks[0]!.plugin = 'mcloud-exchange';
+  assert.equal(run('loaded', wrongOwner).status, 1, '任务挂错插件：必须红');
+
+  const pending = structuredClone(good);
+  pending.tasks[0]!.pending_adopt = true;
+  assert.equal(run('loaded', pending).status, 1, '任务停在「待采纳」：必须红');
+
+  const suspended = structuredClone(good);
+  suspended.plugins[0]!.suspended = true;
+  assert.equal(run('loaded', suspended).status, 1, '插件被暂停：必须红');
 
   const err = structuredClone(good);
   err.plugins[1]!.error = 'boom';

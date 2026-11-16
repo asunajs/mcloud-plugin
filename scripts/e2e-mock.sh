@@ -59,14 +59,16 @@ for _ in $(seq 1 20); do
   sleep 0.3
 done
 
-echo "② 起面板（:$PANEL_PORT，PLUGINS_DIR=$HERE/plugins）"
+echo "② 起面板（:$PANEL_PORT，插件目录=$HERE/dist/panel-llrt）"
 # ⚠ `HOST_API_ALLOW_PRIVATE=1` 是必须的：这一趟的"上游"是**本机的 mock**
 #   （127.0.0.1），而面板的出站防护默认拒绝回环 —— 少了它会回
 #   「出站目标被 SSRF 防护拒绝：127.0.0.1」。只有真去请求 mock 才会暴露，
 #   "面板起来了、插件也加载了"的时候看起来一切正常。
-BIND_ADDR="127.0.0.1:$PANEL_PORT" \
-DB_PATH="$TMP/panel.db" \
-PLUGINS_DIR="$HERE/plugins" \
+# panel-llrt 的开关：数据目录 / 插件目录 / 明文口令放行；监听地址在 config.json 里
+mkdir -p "$TMP/data"
+printf '{"server":{"bind":"127.0.0.1:%s"}}' "$PANEL_PORT" > "$TMP/data/config.json"
+PANEL_DATA_DIR="$TMP/data" \
+PANEL_PLUGINS_DIR="$HERE/dist/panel-llrt" \
 PANEL_TOKEN="$TOKEN" \
 PANEL_ALLOW_PLAIN_TOKEN=1 \
 HOST_API_ALLOW_PRIVATE=1 \
@@ -85,7 +87,7 @@ except Exception:
     sys.exit(1)
 # ⚠ 就位判据是**新的三条任务**（见 docs/redesign-plan.md 阶段 ②）：
 #   任务已经按家族拆到三个插件里，而且合成了一条任务一个函数。
-jobs = {(j.get('plugin'), j.get('name')) for j in s.get('jobs', [])}
+jobs = {(j.get('plugin'), j.get('name')) for j in (s.get('tasks') or s.get('jobs') or [])}
 want = {('mcloud-daily', '日常'), ('mcloud-exchange', '兑换'), ('mcloud-live', '直播')}
 sys.exit(0 if want <= jobs else 1)
 PY
@@ -852,7 +854,7 @@ curl -fsS "${H[@]}" "$B/api/state" -o "$TMP/state2.json"
 python3 - "$TMP/state2.json" <<'CADPY'
 import json, sys
 s = json.load(open(sys.argv[1]))
-live = [j for j in s.get('jobs', []) if j.get('plugin') == 'mcloud-live']
+live = [j for j in (s.get('tasks') or s.get('jobs') or []) if j.get('plugin') == 'mcloud-live']
 assert len(live) == 1, f'直播插件该只有一条任务（听和领在同一条里），实际 {[j["name"] for j in live]}'
 d = live[0]
 assert d['name'] == '直播', d['name']

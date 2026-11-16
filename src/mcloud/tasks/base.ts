@@ -20,7 +20,7 @@ import type { CallResult, Transport } from '../client.ts';
 import type { SignInEnvelope } from '../envelope.ts';
 /** ⚠ `WsFrame` 来自宿主 API 的**类型声明**（`src/host-api.d.ts`）——
  *  它描述的是宿主返回的形状，插件这边不自己另立一份（两处定义必然漂移）。 */
-import type { WsFrame } from 'host-api';
+import type { WsFrame } from '../../ports/ws.ts';
 import { CLIENT_QUERY, EP_METHOD, REFERER_SIGN_IN, SHOW_LOADING, buildH5Request, resolveUrl } from '../h5.ts';
 import type { EndpointName } from '../h5.ts';
 import { SESSION_KEY, loadSession, saveSession } from '../../store/types.ts';
@@ -33,15 +33,8 @@ import { jwtExpiry } from '../session.ts';
  *
  *  ⚠ 它**不进 `TaskDeps`**：只有听弹幕那一个任务要它（[`ListenDeps`]），
  *  塞进公共 deps 会让"宿主必须提供长连接"变成所有任务的隐含前提。 */
-export interface HostWs {
-  wsOpen(
-    url: string,
-    opts: { headers?: Record<string, string>; timeout_ms?: number; tls?: 'rustls' | 'native' },
-  ): number;
-  wsSend(id: number, text: string): true;
-  wsRecv(id: number, timeout_ms?: number): WsFrame;
-  wsClose(id: number): true;
-}
+export type { HostWs } from '../../ports/ws.ts';
+import type { HostWs } from '../../ports/ws.ts';
 
 /** 业务主机的基址（`baseUrl` 空串 / 全空白 = 用真主机）。
  *

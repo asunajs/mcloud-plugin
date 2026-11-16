@@ -14,14 +14,8 @@
 // 页面路径沿用面板已有的约定（`plugins/<name>/index.html`），不给就默认那个。
 
 
-import {
-  debug,
-  error,
-  log,
-  register_nav,
-  register_route,
-  worker_hint,
-} from 'host-api';
+import { logTo } from '../ports/log.ts';
+import { panel } from '../host/panel/index.ts';
 import { mcloudRoutes } from '../mcloud/routes.ts';
 import type { RouteEntry } from '../mcloud/routes.ts';
 import {
@@ -35,9 +29,8 @@ import { timeoutForUrl } from '../mcloud/timeoutPolicy.ts';
 import { selftest } from '../selftest.ts';
 import { migrateLegacyExchange, syncTaskReadiness } from '../mcloud/taskReadiness.ts';
 
-// `mcloud` 是服务型插件，但 /beans/today 与 /beans/records 是逐账号 × 翻页的
-// 长只读链，声明了 >2s 的预算；没有独占线程会把同线程上其它插件一起拖住。
-worker_hint('exclusive');
+// 面板里"一个插件一条 JS 执行通道"是默认的，不需要再声明独占线程
+// （旧面板的 `worker_hint('exclusive')` 在这里没有对应物）。
 
 const store = makeStore();
 // 面板「插件配置」里那两格先并进 state —— **在迁移之前**：配置里显式给的
@@ -47,7 +40,7 @@ await syncConfigToState(store);
 // 先迁移再同步，否则第一条注册算出来的 blockers 会停在“还没有选账号”。
 const bootIso = new Date().toISOString();
 if (migrateLegacyExchange(store, bootIso)) {
-  log('老库迁移：兑换的账号选择沿用“全部账号”（这一版改成显式选择）');
+  logTo('info', '老库迁移：兑换的账号选择沿用“全部账号”（这一版改成显式选择）');
 }
 syncTaskReadiness(store);
 
@@ -61,11 +54,9 @@ const transport = makeTransport((url) => timeoutForUrl(url).ms);
 const host = makeHost();
 
 // ── 侧边栏入口 ──
-register_nav({
+panel.sidebar({
   // 侧栏/页面上显示的产品名：用户口径「移动云盘」（2026-11-13）
-  label: '移动云盘',
-  icon: '☁',
-  // 不写 path：面板默认 `plugins/mcloud/index.html`，正是我们放页面的地方
+  title: '移动云盘',
 });
 
 // ── 路由 ──
@@ -75,16 +66,16 @@ try {
     store,
     transport,
     now: () => new Date().toISOString(),
-    log: (msg) => log(msg),
+    log: (msg) => logTo('info', msg),
     ws: host,
     pushDeps: makePushDeps(transport),
   })) {
-    register_route(r.path, r.method, r.handler, r.budget_ms === undefined ? undefined : { budget_ms: r.budget_ms });
+    panel.registerRoute(r.path, r.method, r.handler, r.budget_ms);
     registered++;
   }
 } catch (e) {
   // 路由注册失败 = 整个界面点不动。必须让它可见，而不是留一个空白页面。
-  error(`路由注册失败（第 ${registered + 1} 条）：${e instanceof Error ? e.message : String(e)}`);
+  logTo('error', `路由注册失败（第 ${registered + 1} 条）：${e instanceof Error ? e.message : String(e)}`);
   throw e;
 }
 
@@ -110,7 +101,7 @@ const selftestRoute: RouteEntry = {
     };
   },
 };
-register_route(selftestRoute.path, selftestRoute.method, selftestRoute.handler);
+panel.registerRoute(selftestRoute.path, selftestRoute.method, selftestRoute.handler);
 
 store.setState('plugin.loaded_at', new Date().toISOString(), new Date().toISOString());
-debug(`mcloud（服务型）：${registered + 1} 条路由 + 侧边栏入口，**没有 cron 任务**`);
+logTo('debug', `mcloud（服务型）：${registered + 1} 条路由 + 侧边栏入口，**没有 cron 任务**`);

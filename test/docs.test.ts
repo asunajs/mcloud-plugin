@@ -107,10 +107,10 @@ test('⚠ `docs/design-history.md` 必须在开头就说清「这是历史」（
 
 // ── ④ 交叉引用：计划与 README 不能各说各话 ────────────────────────────
 
-test('README 说的任务数，与 `split_check` 断言的条数一致', () => {
+test('README 说的任务数，与 `ci_state_check` 断言的条数一致', () => {
   // 这一条把"文档说的"与"脚本在真面板上断言的"钉在一起 ——
   // 光改文档不改脚本（或反过来）都会红。
-  const split = readFileSync(resolve(root, 'scripts/split_check.py'), 'utf8');
+  const split = readFileSync(resolve(root, 'scripts/ci_state_check.py'), 'utf8');
   // ⚠ 查的是脚本里那张**映射表**，不是我凭记忆写的另一种写法
   //   （第一版按 `('mcloud-daily', '日常')` 找，而脚本里是
   //   `TASK_PLUGIN = {"日常": "mcloud-daily", ...}` —— 断言自己写错了格式）。
@@ -126,8 +126,8 @@ test('README 说的任务数，与 `split_check` 断言的条数一致', () => {
   }
   // 插件名单也要一致
   assert.ok(
-    split.includes('PLUGIN_NAMES = ["mcloud", "mcloud-daily", "mcloud-exchange", "mcloud-live"]'),
-    'split_check 的插件名单与 README 说的四条对不上',
+    split.includes('PLUGINS = ("mcloud", "mcloud-daily", "mcloud-exchange", "mcloud-live")'),
+    'ci_state_check 的插件名单与 README 说的四条对不上',
   );
   assert.ok(readme.includes('三条'), 'README 与 split_check 对不上了');
 });

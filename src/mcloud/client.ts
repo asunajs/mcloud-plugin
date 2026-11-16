@@ -15,7 +15,7 @@
 //    与「环境炸了（应该停下来）」——用异常表达会让调用方到处 try/catch，
 //    而且一旦漏 catch，任务会以「未知异常」结束，排查时看不到上游原话。
 
-import type { FetchError, FetchResult } from 'host-api';
+import type { FetchError, FetchResult } from '../ports/io.ts';
 
 /** 宿主 `http_fetch` 的返回：成功是 `FetchResult`，失败是 `FetchError`。
  *  （插件里由 main.ts 注入真实的 `http_fetch`，测试里注入桩 —— 桩也必须能造出失败形状，

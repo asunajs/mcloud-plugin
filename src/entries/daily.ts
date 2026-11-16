@@ -49,7 +49,8 @@
 // 秒返回。这是**刻意接受**的：宁可多一次便宜的整趟，也不要漏掉一整天。
 
 
-import { debug, register_cron, warn } from 'host-api';
+import { logTo } from '../ports/log.ts';
+import { defineTask } from '../host/panel/index.ts';
 import { runDaily } from '../mcloud/dailyRun.ts';
 import { blockersFor, setTaskBlockers, setTaskSummary, summaryFor } from '../mcloud/taskReadiness.ts';
 import { runAuthRefresh } from '../mcloud/authRefresh.ts';
@@ -119,11 +120,19 @@ const LAST_KEY = DAILY_LAST_KEY;
 
 // ── 注册 ──
 
-register_cron(
-  '日常',
-  // 白天每 30 分钟一跳：低配盒子不常在线时，上线之后的下一跳就能补上
-  // （面板不补跑，见文件头）。整趟成功后剩下的跳是零请求的秒返回。
-  '0 8,20 * * *',
+defineTask(
+  {
+    name: '日常',
+    // 白天两跳：低配盒子不常在线时，上线之后的那一跳就是兜底
+    // （面板不补跑，见文件头）。整趟成功后剩下那些跳是零请求的秒返回。
+    cron: '0 8,20 * * *',
+    budget_ms: BUDGET_MS,
+    // 日常是“随时跑都安全”的环境型任务：面板任务列表里显示，默认 cron 保留。
+    // 没账号时是“未就绪”（灰），不是“失败”（红）。
+    surface: 'panel',
+    summary: summaryFor(store, '日常'),
+    blockers: blockersFor(store, '日常'),
+  },
   (p: TaskPayload) => {
     const nowIso = new Date().toISOString();
     const startedMs = Date.parse(nowIso);
@@ -317,14 +326,6 @@ register_cron(
       !r.ok,
     );
   },
-  {
-    budget_ms: BUDGET_MS,
-    // 日常是“随时跑都安全”的环境型任务：面板任务列表里显示，默认 cron 保留。
-    // 没账号时是“未就绪”（灰），不是“失败”（红）。
-    surface: 'panel',
-    summary: summaryFor(store, '日常'),
-    blockers: blockersFor(store, '日常'),
-  },
 );
 
-debug(`mcloud-daily：任务「日常」（预算 ${BUDGET_MS / 1000}s，共享粗粒度 lane）`);
+logTo('debug', `mcloud-daily：任务「日常」（预算 ${BUDGET_MS / 1000}s，共享粗粒度 lane）`);

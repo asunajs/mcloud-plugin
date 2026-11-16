@@ -18,29 +18,26 @@
 //
 // # 老面板
 //
-// 这些宿主函数是这一版面板才有的。走 `globalThis.host`（两个运行时都会装）+ 可选调用，
-// 老面板上直接跳过，不让插件因为“面板太旧”而加载失败。
-//
-// ⚠ 不用 `import ... from 'host-api'`：单测（node --test）没有那个解析器，
-//   一个静态 import 就会让所有 import 了 routes 的测试整套挂掉。
+// 宿主能力走**端口访问器**（`panelAccess()`），不摸 `globalThis`：
+//   · 单测里没装宿主 ⇒ 返回 null ⇒ 这几条安静跳过（正是要的语义）
+//   · 面板/CLI 在组合根装一次
+//   · 业务代码里没有"某个全局对象可能有也可能没有"这种赌运气的地方
 
+import { panelAccess } from '../ports/panel.ts';
 import { loadAccounts } from './accounts.ts';
 import { legacyTaskAccountsKey, resolveTaskAccounts, saveTaskAccounts, taskAccountsKey } from './taskAccounts.ts';
 import { loadPlans, planSummary } from './exchangePlans.ts';
 
 type Store = { getState(k: string): string | null | undefined };
 
-const H = ((globalThis as Record<string, unknown>).host ??
-  (globalThis as Record<string, unknown>).host_api ??
-  {}) as Record<string, unknown>;
-
-function call(name: string, ...args: unknown[]): void {
-  const fn = H[name];
-  if (typeof fn !== 'function') return; // 老面板：没有这个能力，跳过
+function call(name: 'setJobSummary' | 'setJobBlockers' | 'setJobSchedule' | 'setJobPaused', ...args: unknown[]): void {
+  const p = panelAccess();
+  if (p === null) return; // 没有宿主（单测 / CLI 不注册任务）：跳过
   try {
-    (fn as (...a: unknown[]) => void)(...args);
+    const fn = p[name] as unknown as (...a: unknown[]) => void;
+    fn.apply(p, args);
   } catch {
-    // 任务还没注册（插件加载顺序）/ 面板拒绝：都不是插件该崩的理由。
+    // 任务还没注册（加载顺序）/ 面板拒绝：都不是插件该崩的理由。
   }
 }
 
@@ -114,22 +111,22 @@ export const TASK_KEYS: Record<string, string> = {
 
 /** 运行期设置一条任务在面板卡片上的一行人话。 */
 export function setTaskSummary(task: string, text: string): void {
-  call('set_job_summary', TASK_KEYS[task] ?? task, text);
+  call('setJobSummary', TASK_KEYS[task] ?? task, text);
 }
 
 /** 运行期设置一条任务的未就绪原因（空数组 = 就绪）。 */
 export function setTaskBlockers(task: string, blockers: string[]): void {
-  call('set_job_blockers', TASK_KEYS[task] ?? task, blockers);
+  call('setJobBlockers', TASK_KEYS[task] ?? task, blockers);
 }
 
 /** 运行期改一条任务的调度（写面板的 override，插件更新不会丢）。 */
 export function setTaskSchedule(task: string, expr: string, leadMs?: number): void {
-  call('set_job_schedule', TASK_KEYS[task] ?? task, { expr, lead_ms: leadMs });
+  call('setJobSchedule', TASK_KEYS[task] ?? task, { expr, lead_ms: leadMs });
 }
 
 /** 运行期启用/暂停一条任务的定时。 */
 export function setTaskPaused(task: string, paused: boolean): void {
-  call('set_job_paused', TASK_KEYS[task] ?? task, paused);
+  call('setJobPaused', TASK_KEYS[task] ?? task, paused);
 }
 
 /** 老库一次性迁移：上一版兑换默认“全部账号”，且定时默认是启用的。
@@ -154,7 +151,7 @@ export function migrateLegacyExchange(store: Store & { setState(k: string, v: st
 export function syncTaskReadiness(store: Store, tasks: string[] = ['日常', '兑换', '直播']): void {
   for (const task of tasks) {
     const key = TASK_KEYS[task] ?? task;
-    call('set_job_blockers', key, blockersFor(store, task));
-    call('set_job_summary', key, summaryFor(store, task));
+    call('setJobBlockers', key, blockersFor(store, task));
+    call('setJobSummary', key, summaryFor(store, task));
   }
 }
