@@ -59,7 +59,7 @@
   --font-mono: var(--mono);
   /* 样式表版本号：页面上的「样式自检」读它，用来判断浏览器用的是哪一份 style.css。
      改了本文件就把它加一（一个数字，别指望它自动同步）。 */
-  --style-ver: 156;
+  --style-ver: 157;
 }
 
 /* 为什么还留着这几个短名字：界面上还有 6 个区块这轮不重写
@@ -1131,6 +1131,14 @@ button.picker-row {
   text-align: left;
   color: inherit;
   font: inherit;
+  /* ⚠ 面板在 :root 上设了 `color-scheme: dark` ⇒ 裸 <button> 用的是 UA 的 ButtonFace
+     （深色下 **#6b6b6b**，还带一条 `2px outset` 立体边）。这行按钮只负责展开/折叠，
+     不该有自己的"脸"：不撤的话整条组头被盖成一坨灰，把 td 的 --surface 和白字全压掉
+     —— 2026-11-16 用户截图就是这个（八条灰杠）。
+     只撤"脸"，不碰面板画的控件（.btn / input 那些仍然归面板）。 */
+  appearance: none;
+  background: none;
+  border: 0;
 }
 
 .ex-group-toggle:hover .ex-group-name {
