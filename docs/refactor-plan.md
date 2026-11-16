@@ -68,7 +68,7 @@ drain → 四个入口全部要跟着 await（测试侧 327 处任务调用、97
 | 项 | 结果 |
 |---|---|
 | `npm run all` | typecheck + build + 1226 单测 + check-build + check-layers 全绿 |
-| 真面板（新构建的 panel-llrt）跑 `e2e-mock.sh` | 日常/兑换/直播三条任务 + 算力大作战字节级断言 + 口令池 + 领小红花 全过 |
+| 真面板（新构建的 panel-llrt）跑 `e2e-mock.sh` | **①–⑩ 全绿**（2026-11-16）：日常链、兑换干跑、直播门/听弹幕/六步领取、口令池写回、H5 三步换票、自动定时 —— 字节级断言全过 |
 | CLI | `MCLOUD_DATA_DIR=<tmp> mcloud-sign status` 能建出 store 并跑完一趟（无真凭据时按预期报"没有网页会话"） |
 | 老数据 | 首次启动从面板 SQLite 搬 key + 运行记录（单测覆盖：袋按账号拆、运行记录按任务归属） |
 | **真机换装（2026-11-16 17:26）** | 面板二进制换成 `2c5d027`（含多文件插件 + import 不设围栏），四个插件改成目录式装进 `~/panel-3030`：`failed_plugins: 0`；store 建在 `data/plugin-data/mcloud/`，搬过来 **3 个账号**、35 个全局键、4 份运行记录、400 行日志环 |
