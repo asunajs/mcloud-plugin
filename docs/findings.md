@@ -7561,3 +7561,30 @@ F-138 试过"两个单文件插件互相 import"——失败（`eval_script` 解
 `/readyz` 的 `failed_plugins`，非 0 就把最近 error/warn 日志打出来并退出 1 ——
 这两个坑都是它当场抓住的。
 
+
+## F-143 拆成四个插件之后，`set_job_summary` / `set_job_blockers` 一直是失效的
+
+**现象**（换装后每次启动 6 条 warn）：
+
+```
+mcloud  [job] set_job_summary  失败: {"message":"没有这个任务: mcloud-daily/日常"}
+mcloud  [job] set_job_blockers 失败: {"message":"没有这个任务: mcloud-live/直播"}
+```
+
+**原因**：面板的 `set_job_summary(name, …)` 只认**本插件自己的**任务 ——
+它按 `(当前插件, name)` 去查（错误串里拼的就是 `mcloud-daily/日常`）。
+而"这条任务卡在哪、为什么没跑"是 `mcloud`（服务插件）算出来的：
+它读状态、算好，再写给另外三个插件的任务 —— 从四个插件拆开那天起就写不进。
+
+**影响**：面板自己的「任务」页看不到摘要与阻塞原因（插件自己的界面看 `/api/readings`，
+那份是好的）。所以用户看到的差别是"插件页有说明、面板任务卡片是空的"，而不是功能坏了。
+
+**两条修法**（都还没做）：
+
+1. **面板加能力**：允许按"全局任务名"写（或让 `set_job_*` 接受 `plugin/task`）。
+   符合 `plugin-contract` 的 R5「缺能力先找面板加 API」。
+2. **插件侧各自收尾**：三个任务入口在自己那一趟跑完后，用 `blockersFor/summaryFor`
+   给自己写一次 —— 不需要面板改。代价是同一套判据要在三处调用（可抽一个 helper）。
+
+在定下来之前先**别把 warn 当噪音消掉**：它是"面板任务页缺说明"的唯一线索。
+
