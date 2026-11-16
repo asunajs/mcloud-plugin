@@ -23,6 +23,7 @@
         panel/    `panel:host` 的唯一使用者；四个插件的注册、路由分派、任务合成
         fs/       FileStore —— 面板与 Node CLI 共用的 JSON 存储
       entries/     四个薄入口（名字 + cron + budget，其余交给 mcloud/app）
+                   register.ts：三条任务共用的开场（建 store → 并配置 → 算预算 → 注册 → 写卡片）
       standalone/  Node CLI（mcloud-sign 与那几个子命令）
       types/       `panel:host` 的 `declare module`
 
