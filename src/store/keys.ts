@@ -131,6 +131,8 @@ export const KEY_SCOPE: Readonly<Record<string, KeyScope>> = {
   // 不属于某个号；而且它要能在**面板重启之后**还读得到（面板的内存日志环是重启就没的，
   // 见 findings F-085）。写的时候按"全局"落，界面上再按插件名过滤。
   'mcloud.log.ring': 'global',
+  // 直播这条链的追踪环：一趟一条，**全局**（跨账号，看的是"这一趟走到哪"）
+  'mcloud.live.trace': 'global',
   'mcloud.login.base': 'global',
   'mcloud.login.userDomainId': 'global',
   'mcloud.sign.stage': 'account',

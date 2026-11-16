@@ -16,9 +16,15 @@ test('听弹幕：每拍都判"够了没有 / 有没有新口令"，够了立刻
   // ⚠ 听到新的口令是**去验证**，不是收工：万一口令是废的，收工就白听了
   assert.match(d, /firstSeenMs >= runStartMs && !verified\.has\(c\.value\)/, '新的没验过的才验');
   assert.match(d, /runLiveDraw\(d, \{ codes: \[fresh\.value\] \}\)/, '当场拿这一条去领（领就是验证）');
+  // 窗口是"这一句到 continue 之间"，中间可以夹别的（追踪环就插在那里）——
+  // 判据只有一条：**不许 break**。窗口给到 900 字是因为中间现在多了一段 traceStep。
   assert.ok(
-    /验证「\$\{fresh\.value\}」[\s\S]{0,400}continue;/.test(d),
+    /验证「\$\{fresh\.value\}」[\s\S]{0,900}continue;/.test(d),
     '验完要**接着听**（continue），不许 break',
+  );
+  assert.ok(
+    !/验证「\$\{fresh\.value\}」[\s\S]{0,900}break;/.test(d),
+    '⚠ 验完不许 break（万一口令是废的，收工就白听了）',
   );
   // 停下要有话说，别让用户以为被截断
   assert.match(d, /listenStop/, '要说清为什么提前不听了');

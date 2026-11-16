@@ -11,6 +11,7 @@ import { listenReadingLine, loadListenState, runLiveListen } from '../../../mclo
 import { claimEnabled, collectCodes, loadDrawState, probeLiveRoom, runLiveDraw, setClaimEnabled } from '../../../mcloud/tasks/liveDraw.ts';
 import { loadWakePlan, planTrusted } from '../../../mcloud/tasks/liveAutoTask.ts';
 import { callRawText } from '../../../mcloud/client.ts';
+import { readTrace } from '../../../mcloud/liveTrace.ts';
 import { json, readBody } from '../support.ts';
 import type { RouteDeps, RouteEntry } from '../support.ts';
 
@@ -246,6 +247,15 @@ export function liveRoutes(deps: RouteDeps, base: string, verify: () => { ok: bo
           stored: loadLiveCodes(deps.store),
         });
       },
-    }
+    },
+
+    {
+      // **这一趟直播走到哪了**。出问题时第一眼看这里：
+      // 每条一步（collect/查开播 · collect/小红书主页口令 · collect/verify · account · done），
+      // 带时刻、成没成、一句话、耗时。环里永远是最近那一趟（见 mcloud/liveTrace.ts）。
+      path: `${base}/live/trace`,
+      method: 'GET',
+      handler: () => json(200, { at: deps.now(), entries: readTrace(deps.store) }),
+    },
   ];
 }
