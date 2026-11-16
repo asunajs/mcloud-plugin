@@ -45,7 +45,10 @@ export interface RouteResponse {
 export interface RouteEntry {
   path: string;
   method: string;
-  handler: (req: RouteRequest) => RouteResponse;
+  /** 路由处理。**可以是 async** —— 面板把 handler 的返回值 `await` 过再序列化
+   *  （`engine.rs::call_json`：`(async () => { const v = await __dispatch(...) })()` + `rt.idle()`），
+   *  所以上游一慢，这里 await 是"让出线程"，不是"多一层壳"。 */
+  handler: (req: RouteRequest) => RouteResponse | Promise<RouteResponse>;
   /** 这条路由的执行预算（毫秒）。不给就用面板的全局值（2000ms）。
    *
    *  ⚠ 面板的看门狗到点会把 handler **强制打断**并回一个 500（"路由处理超过预算 …
@@ -290,11 +293,11 @@ export function loadLoginBase(store: Pick<Store, 'getState'>): string {
   return store.getState(STATE_LOGIN_BASE) ?? '';
 }
 
-export function loginCall(
+export async function loginCall(
   deps: RouteDeps,
   req: BuiltRequest,
-): { ok: boolean; env: LoginEnvelope | null; error: string; tookMs: number } {
-  const res = callOnce(deps.transport, req);
+): Promise<{ ok: boolean; env: LoginEnvelope | null; error: string; tookMs: number }> {
+  const res = await callOnce(deps.transport, req);
   if (res.env === undefined) {
     return { ok: false, env: null, error: res.error ?? `http ${res.status}`, tookMs: res.tookMs };
   }
@@ -316,16 +319,16 @@ export type SliderSendResult =
   | { kind: 'exhausted' }
   | { kind: 'other'; note: string };
 
-export function autoPassSlider(
+export async function autoPassSlider(
   deps: RouteDeps,
   logTag: string,
-  fetchAnswer: () => { answer: string } | { error: string },
-  sendWith: (answer: string) => SliderSendResult,
-): { ok: true; remainGetTimes: number | null } | { ok: false; error: string } {
+  fetchAnswer: () => { answer: string } | { error: string } | Promise<{ answer: string } | { error: string }>,
+  sendWith: (answer: string) => SliderSendResult | Promise<SliderSendResult>,
+): Promise<{ ok: true; remainGetTimes: number | null } | { ok: false; error: string }> {
   for (let attempt = 1; attempt <= SLIDER_MAX_ATTEMPTS; attempt += 1) {
-    const got = fetchAnswer();
+    const got = await fetchAnswer();
     if ('error' in got) return { ok: false, error: got.error };
-    const r = sendWith(got.answer);
+    const r = await sendWith(got.answer);
     if (r.kind === 'sent') {
       deps.log(`${logTag}：滑块过了（第 ${attempt} 轮），验证码已发出`);
       return { ok: true, remainGetTimes: r.remainGetTimes };

@@ -41,7 +41,7 @@ import {
 } from '../src/mcloud/cloudUpload.ts';
 import { sha256Hex } from '../src/crypto/index.ts';
 
-test('⚠ 凭据判据：控制面带、**存储主机不带**（逐字照 mcloud 的 sends_authorization_to）', () => {
+test('⚠ 凭据判据：控制面带、**存储主机不带**（逐字照 mcloud 的 sends_authorization_to）', async () => {
   assert.equal(AUTH_DOMAINS.length, 4);
   // 控制面：personal-kd-njs.yun.139.com 是 yun.139.com 的子域 ⇒ 带
   assert.equal(sendsAuthorizationTo(`${PERSONAL_KD}${FILE_CREATE_PATH}`), true);
@@ -61,7 +61,7 @@ test('⚠ 凭据判据：控制面带、**存储主机不带**（逐字照 mclou
   assert.equal(hostOf('https://u:p@Host.Example.com:8443/x'), 'host.example.com', '去 userinfo 与端口、转小写');
 });
 
-test('发送层注入 Authorization：控制面带、存储主机不带、显式的不覆盖', () => {
+test('发送层注入 Authorization：控制面带、存储主机不带、显式的不覆盖', async () => {
   const auth = 'Basic abc';
   const create = authorizeRequest(
     { url: `${PERSONAL_KD}${FILE_CREATE_PATH}`, headers: {} as Record<string, string> },
@@ -81,7 +81,7 @@ test('发送层注入 Authorization：控制面带、存储主机不带、显式
   assert.equal(explicit.headers.Authorization, undefined);
 });
 
-test('⚠ `uploadUrl` 是**另一台主机**，PUT 那一枪必须被认出来"不带凭据"', () => {
+test('⚠ `uploadUrl` 是**另一台主机**，PUT 那一枪必须被认出来"不带凭据"', async () => {
   const bytes = deterministicFile('seed', 16);
   const { req, leaksCredential } = buildPutRequest(
     'https://storage.example.net/k?X-Amz-Signature=abc',
@@ -93,7 +93,7 @@ test('⚠ `uploadUrl` 是**另一台主机**，PUT 那一枪必须被认出来"�
   assert.equal(req.headers.authorization, undefined);
 });
 
-test('图片的 PUT 可以显式给 `image/jpeg`（缺省仍是 octet-stream）', () => {
+test('图片的 PUT 可以显式给 `image/jpeg`（缺省仍是 octet-stream）', async () => {
   const { req } = buildPutRequest('https://storage.example.net/k', deterministicFile('s', 8), 'upload', 'image/jpeg');
   assert.equal(req.headers['Content-Type'], 'image/jpeg');
   assert.equal(
@@ -102,7 +102,7 @@ test('图片的 PUT 可以显式给 `image/jpeg`（缺省仍是 octet-stream）'
   );
 });
 
-test('数据面那一枪的头：`upload-complete: ?1`（**带问号**）、origin 是**云盘域**', () => {
+test('数据面那一枪的头：`upload-complete: ?1`（**带问号**）、origin 是**云盘域**', async () => {
   const { req } = buildPutRequest('https://storage.example.net/k', deterministicFile('s', 8));
   assert.equal(req.headers['upload-complete'], '?1');
   assert.equal(PUT_UPLOAD_COMPLETE, '?1');
@@ -117,7 +117,7 @@ test('数据面那一枪的头：`upload-complete: ?1`（**带问号**）、orig
   assert.equal(b.headers['x-yun-sub-op-type'], '0');
 });
 
-test('① 的体：定位键是**两支不同**的（按 id / 按路径）', () => {
+test('① 的体：定位键是**两支不同**的（按 id / 按路径）', async () => {
   const base = { name: 'a.txt', size: 3, contentHash: 'x'.repeat(64) };
   const byId = JSON.parse(createBody({ ...base, locate: { key: 'parentFileId', value: 'F1' } })) as Record<string, unknown>;
   const byPath = JSON.parse(createBody({ ...base, locate: { key: 'parentPath', value: '/' } })) as Record<string, unknown>;
@@ -137,7 +137,7 @@ test('① 的体：定位键是**两支不同**的（按 id / 按路径）', () 
   ]);
 });
 
-test('⚠ create 的 content-type 是 `oct-stream`（少个 `et`），而 `octet-stream` 也是真值', () => {
+test('⚠ create 的 content-type 是 `oct-stream`（少个 `et`），而 `octet-stream` 也是真值', async () => {
   assert.equal(CREATE_CONTENT_TYPE, 'application/oct-stream');
   assert.equal(CREATE_CONTENT_TYPE_OCTET, 'application/octet-stream');
   assert.notEqual(CREATE_CONTENT_TYPE, CREATE_CONTENT_TYPE_OCTET, '两个不是一个值，别"统一"');
@@ -161,7 +161,7 @@ test('⚠ create 的 content-type 是 `oct-stream`（少个 `et`），而 `octet
   assert.equal(req.headers['x-huawei-channelSrc'], '10000023');
 });
 
-test('⚠ ① 的响应解析：`uploadUrl` 在 **`partInfos[0]`** 里（真机形状）', () => {
+test('⚠ ① 的响应解析：`uploadUrl` 在 **`partInfos[0]`** 里（真机形状）', async () => {
   // 实拍逐字（2026-10-14）：顶层**没有** `uploadUrl` 这个键
   const real = parseCreate(
     JSON.stringify({
@@ -189,7 +189,7 @@ test('⚠ ① 的响应解析：`uploadUrl` 在 **`partInfos[0]`** 里（真机�
   assert.equal(sendsAuthorizationTo(real.created!.uploadUrl), false);
 });
 
-test('① 的响应解析：正常 / 秒传（不用 PUT）/ 缺件 / 错码', () => {
+test('① 的响应解析：正常 / 秒传（不用 PUT）/ 缺件 / 错码', async () => {
   const ok = parseCreate(
     JSON.stringify({ code: 0, data: { fileId: 'F', uploadId: 'U', partInfos: [{ uploadUrl: 'https://s/k' }], rapidUpload: false } }),
   );
@@ -210,7 +210,7 @@ test('① 的响应解析：正常 / 秒传（不用 PUT）/ 缺件 / 错码', (
   assert.equal(parseCreate('不是 JSON').ok, false);
 });
 
-test('③ 的体是 4 键；判据看 code', () => {
+test('③ 的体是 4 键；判据看 code', async () => {
   const body = JSON.parse(completeBody('F', 'U', 'H')) as Record<string, unknown>;
   assert.deepEqual(Object.keys(body).sort(), ['contentHash', 'contentHashAlgorithm', 'fileId', 'uploadId']);
   assert.equal(body.contentHashAlgorithm, 'SHA256');
@@ -222,7 +222,7 @@ test('③ 的体是 4 键；判据看 code', () => {
   assert.equal(parseComplete('{}').ok, true, '没有 code 就按成功（这一族如此）');
 });
 
-test('`contentHash` 与 sha256 同源（夹具与日志要能复现）', () => {
+test('`contentHash` 与 sha256 同源（夹具与日志要能复现）', async () => {
   const bytes = deterministicFile('seed', 32);
   assert.equal(contentHashOf(bytes), sha256Hex(bytes));
   assert.equal(bytes.length, 32);
@@ -231,7 +231,7 @@ test('`contentHash` 与 sha256 同源（夹具与日志要能复现）', () => {
   assert.notDeepEqual(Array.from(deterministicFile('a', 8)), Array.from(deterministicFile('b', 8)));
 });
 
-test('⚠ `deterministicFile` **不许产出 NUL**（体当字符串过宿主，NUL 会截断 ⇒ 403）', () => {
+test('⚠ `deterministicFile` **不许产出 NUL**（体当字符串过宿主，NUL 会截断 ⇒ 403）', async () => {
   for (const n of [1, 8, 256, 1024]) {
     const b = deterministicFile('seed', n);
     assert.equal(b.length, n);
@@ -243,7 +243,7 @@ test('⚠ `deterministicFile` **不许产出 NUL**（体当字符串过宿主，
   assert.notDeepEqual(Array.from(deterministicFile('a', 16)), Array.from(deterministicFile('b', 16)));
 });
 
-test('`latin1FromBytes`：每字符一字节，且**大体不炸**（沙箱里 apply 十万实参抛 RangeError）', () => {
+test('`latin1FromBytes`：每字符一字节，且**大体不炸**（沙箱里 apply 十万实参抛 RangeError）', async () => {
   const big = new Uint8Array(100_000);
   for (let i = 0; i < big.length; i += 1) big[i] = i & 0xff;
   const s = latin1FromBytes(big);
@@ -254,13 +254,13 @@ test('`latin1FromBytes`：每字符一字节，且**大体不炸**（沙箱里 a
   assert.equal(latin1FromBytes(new Uint8Array(0)), '');
 });
 
-test('渠道是枚举的两个真值（没有"未识别走 web 兜底"那一档）', () => {
+test('渠道是枚举的两个真值（没有"未识别走 web 兜底"那一档）', async () => {
   assert.equal(CHANNEL_ANDROID, '10000023');
   assert.equal(CHANNEL_PC, '10200153');
 });
 
 
-test('⚠ 快照 createSnapshot：体 7 键，partInfos 没有 parallelHashCtx', () => {
+test('⚠ 快照 createSnapshot：体 7 键，partInfos 没有 parallelHashCtx', async () => {
   const body = JSON.parse(
     snapshotCreateBody({
       fileExtension: 'zip',
@@ -293,7 +293,7 @@ test('⚠ 快照 createSnapshot：体 7 键，partInfos 没有 parallelHashCtx',
   assert.equal(req.headers['x-yun-api-version'], 'v2');
 });
 
-test('快照 create 解析：三格必须齐；complete 的 data:null 也算成功', () => {
+test('快照 create 解析：三格必须齐；complete 的 data:null 也算成功', async () => {
   const create = parseSnapshotCreate(
     JSON.stringify({
       code: '0000',
@@ -308,13 +308,13 @@ test('快照 create 解析：三格必须齐；complete 的 data:null 也算成�
   assert.equal(parseSnapshotComplete(JSON.stringify({ code: '500', data: null })).ok, false);
 });
 
-test('快照 PUT：op 0/0（不是照片的 2/200）', () => {
+test('快照 PUT：op 0/0（不是照片的 2/200）', async () => {
   const { req } = buildPutRequest('https://s/x', new Uint8Array([1]), 'snapshot');
   assert.equal(req.headers['x-yun-op-type'], '0');
   assert.equal(req.headers['x-yun-sub-op-type'], '0');
 });
 
-test('⚠ create 的 exist：true=用户的 / false=我们的 / null 看有没有新上传会话', () => {
+test('⚠ create 的 exist：true=用户的 / false=我们的 / null 看有没有新上传会话', async () => {
   const base = { fileId: 'F', uploadId: 'U', rapidUpload: false, partInfos: [{ uploadUrl: 'https://s/x' }] };
   const own = parseCreate(JSON.stringify({ code: 0, data: { ...base, exist: false } }));
   assert.equal(own.created?.ownedByUs, true);

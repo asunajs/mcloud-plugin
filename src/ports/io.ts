@@ -1,14 +1,16 @@
-// 宿主 I/O 端口（**当前是同步形状**）。
+// 宿主 I/O 端口。
 //
-// # 为什么现在还是同步的
+// # 现在的形状（P3 / P4 之后）
 //
-// 面板的同步 op（http_fetch / sqlite_*_sync / ws_* / smtp_send）是给"同步步骤机"
-// 那一族留的拐杖。P3 把 http 换成 Promise、P4 把 sql 换成本地 JSON 之后，
-// 这个文件里只剩 ws 与 smtp 两条。所以它是个**过渡端口**，不是终态。
+// · fetch  —— **异步**（面板的 `host.fetch` 是真 async op；Node 侧是 fetch）
+// · sql    —— 只剩"从旧面板的库里搬一次"用（P4 之后状态在本地 JSON 里）
+// · smtp / ws_* —— 仍是同步：面板没给异步版，而它们不在热路径上
+//
+// 也就是说：**网络热路径已经全是异步的**，剩下这两条同步的是有意的例外。
 //
 // # 为什么用"配一次再取"
 //
-// 同步调用没法注入（调用点遍布业务层，签名改一下就传染到底）。所以在组合根
+// 端口没法逐层传（调用点遍布业务层）。所以在组合根
 // （四个 entry / CLI main）里 install 一次，业务层通过 io() 取。
 // 这是**唯一**允许的宿主单例，而且 P3/P4 之后它会缩到很小。
 
@@ -59,7 +61,12 @@ export interface SmtpOptions {
 }
 
 export interface Io {
-  fetch(url: string, opts?: FetchOptions): FetchOutcome;
+  /** 发一个请求。**异步**（P3）：面板侧是 `host.fetch`，Node 侧是 `fetch`。
+   *
+   *  ⚠ 为什么必须是异步：同步 op（`http_fetch`）背后是 `sync_bridge` ——
+   *  每次调用新起一个线程 + 新 runtime，而且**阻塞整个插件线程**：上游一慢，
+   *  这个插件的日志/界面/别的任务全排在后面。异步之后同一个线程可以继续干活。 */
+  fetch(url: string, opts?: FetchOptions): Promise<FetchOutcome>;
   /** 查询：行数组；宿主出错时给 `{error}`（保持宿主的形状，由调用方判） */
   sql(sql: string, params?: unknown[]): unknown;
   exec(sql: string, params?: unknown[]): unknown;

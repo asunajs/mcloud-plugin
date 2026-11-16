@@ -50,13 +50,13 @@ function add(
   });
 }
 
-test('没有记录 ⇒ 空数组（不是 null）', () => {
+test('没有记录 ⇒ 空数组（不是 null）', async () => {
   assert.deepEqual(readRuns(memStore()), []);
   assert.deepEqual(readRunsOf(memStore(), 'daily'), []);
   assert.equal(recentRuns(memStore(), 'daily').length, 0);
 });
 
-test('追加一条，能按 id 找回来', () => {
+test('追加一条，能按 id 找回来', async () => {
   const s = memStore();
   const id = add(s, 'daily', '2026-10-15T01:00:00.000Z');
   const r = readRun(s, id);
@@ -67,7 +67,7 @@ test('追加一条，能按 id 找回来', () => {
   assert.equal(readRun(s, 'daily-不存在'), null, '找不到给 null，不是空对象');
 });
 
-test('⚠ 只留最近 N 次（否则那一行会涨到几 MB，读一次就要全解析）', () => {
+test('⚠ 只留最近 N 次（否则那一行会涨到几 MB，读一次就要全解析）', async () => {
   const s = memStore();
   for (let i = 0; i < RUNS_PER_TASK + 7; i++) {
     // 每次隔一分钟，保证时刻单调
@@ -81,7 +81,7 @@ test('⚠ 只留最近 N 次（否则那一行会涨到几 MB，读一次就要�
   assert.ok(!runs.some((r) => r.note === '第 0 次'), '最旧的要被挤掉');
 });
 
-test('⚠ 保留是**按任务**算的（日常跑得少，不该被兑换挤掉）', () => {
+test('⚠ 保留是**按任务**算的（日常跑得少，不该被兑换挤掉）', async () => {
   const s = memStore();
   // 日常 3 条
   for (let i = 0; i < 3; i++) {
@@ -95,7 +95,7 @@ test('⚠ 保留是**按任务**算的（日常跑得少，不该被兑换挤掉
   assert.equal(readRunsOf(s, 'exchange').length, RUNS_PER_TASK);
 });
 
-test('⚠ 一条记录最多留 M 步（步数由上游待办条数决定，可能上百）', () => {
+test('⚠ 一条记录最多留 M 步（步数由上游待办条数决定，可能上百）', async () => {
   const s = memStore();
   const many = Array.from({ length: MAX_STEPS + 25 }, (_, i) => step(`第 ${i} 步`));
   const id = add(s, 'daily', '2026-10-15T01:00:00.000Z', { steps: many });
@@ -106,7 +106,7 @@ test('⚠ 一条记录最多留 M 步（步数由上游待办条数决定，可�
   assert.equal(r.steps[0]!.name, '第 0 步');
 });
 
-test('没截断时 `truncated` 是 false（不谎报）', () => {
+test('没截断时 `truncated` 是 false（不谎报）', async () => {
   const s = memStore();
   const id = add(s, 'daily', '2026-10-15T01:00:00.000Z', {
     steps: Array.from({ length: MAX_STEPS }, (_, i) => step(`第 ${i} 步`)),
@@ -114,7 +114,7 @@ test('没截断时 `truncated` 是 false（不谎报）', () => {
   assert.equal(readRun(s, id)!.truncated, false, `正好 ${MAX_STEPS} 步不算截断`);
 });
 
-test('⚠ 一句话截到 K 字（保留**尾部** —— 失败原因通常在后面）', () => {
+test('⚠ 一句话截到 K 字（保留**尾部** —— 失败原因通常在后面）', async () => {
   const s = memStore();
   const long = `开头这段是废话${'x'.repeat(600)}真正的原因在这里`;
   const id = add(s, 'daily', '2026-10-15T01:00:00.000Z', { note: long });
@@ -124,7 +124,7 @@ test('⚠ 一句话截到 K 字（保留**尾部** —— 失败原因通常在�
   assert.ok(r.note.startsWith('…'), '截断了要标出来');
 });
 
-test('步骤里的话也截（不然一步就能把那一行撑大）', () => {
+test('步骤里的话也截（不然一步就能把那一行撑大）', async () => {
   const s = memStore();
   const id = add(s, 'daily', '2026-10-15T01:00:00.000Z', {
     steps: [{ name: 'x'.repeat(300), ok: true, note: 'y'.repeat(900), idle: false }],
@@ -134,7 +134,7 @@ test('步骤里的话也截（不然一步就能把那一行撑大）', () => {
   assert.ok(r.steps[0]!.note.length <= MAX_NOTE);
 });
 
-test('同一个 id（同一毫秒跑两次）⇒ 覆盖，不追加两条一样的', () => {
+test('同一个 id（同一毫秒跑两次）⇒ 覆盖，不追加两条一样的', async () => {
   const s = memStore();
   add(s, 'daily', '2026-10-15T01:00:00.000Z', { note: '第一次' });
   add(s, 'daily', '2026-10-15T01:00:00.000Z', { note: '第二次' });
@@ -143,7 +143,7 @@ test('同一个 id（同一毫秒跑两次）⇒ 覆盖，不追加两条一样�
   assert.equal(runs[0]!.note, '第二次', '后来的覆盖前面的');
 });
 
-test('摘要：分别数出成功 / 失败 / 没做事（界面要分三色显示）', () => {
+test('摘要：分别数出成功 / 失败 / 没做事（界面要分三色显示）', async () => {
   const s = memStore();
   const id = add(s, 'daily', '2026-10-15T01:00:00.000Z', {
     ok: false,
@@ -161,7 +161,7 @@ test('摘要：分别数出成功 / 失败 / 没做事（界面要分三色显�
   assert.equal(sum.ok, false);
 });
 
-test('⚠ 摘要**不带 steps**（20 条 × 40 步全塞进读数 = 几百 KB 的首屏）', () => {
+test('⚠ 摘要**不带 steps**（20 条 × 40 步全塞进读数 = 几百 KB 的首屏）', async () => {
   const s = memStore();
   add(s, 'daily', '2026-10-15T01:00:00.000Z', { steps: Array.from({ length: 40 }, (_, i) => step(`第 ${i} 步`)) });
   const sum = recentRuns(s, 'daily')[0]!;
@@ -169,7 +169,7 @@ test('⚠ 摘要**不带 steps**（20 条 × 40 步全塞进读数 = 几百 KB �
   assert.ok(JSON.stringify(sum).length < 600, `摘要要短，实际 ${JSON.stringify(sum).length} 字节`);
 });
 
-test('`recentRuns` 新的在前，且能限条数', () => {
+test('`recentRuns` 新的在前，且能限条数', async () => {
   const s = memStore();
   for (let i = 0; i < 8; i++) {
     add(s, 'daily', new Date(Date.parse('2026-10-15T00:00:00.000Z') + i * 60_000).toISOString(), {
@@ -182,7 +182,7 @@ test('`recentRuns` 新的在前，且能限条数', () => {
   assert.equal(r[2]!.note, '第 5 次');
 });
 
-test('坏数据 ⇒ 空数组（不让界面 500）', () => {
+test('坏数据 ⇒ 空数组（不让界面 500）', async () => {
   const s = memStore();
   s.setState('mcloud.run.log', '这不是 JSON', '');
   assert.deepEqual(readRuns(s), []);
@@ -193,7 +193,7 @@ test('坏数据 ⇒ 空数组（不让界面 500）', () => {
   assert.equal(readRuns(s).length, 1);
 });
 
-test('耗时是**非负整数**（时钟回拨也不能给个负数）', () => {
+test('耗时是**非负整数**（时钟回拨也不能给个负数）', async () => {
   const s = memStore();
   const id = appendRun(s, {
     task: 'daily',
@@ -206,7 +206,7 @@ test('耗时是**非负整数**（时钟回拨也不能给个负数）', () => {
   assert.equal(readRun(s, id)!.ms, 0);
 });
 
-test('⚠ 同一次触发里**每个号各一条**记录（只按时间戳做 id 会互相覆盖）', () => {
+test('⚠ 同一次触发里**每个号各一条**记录（只按时间戳做 id 会互相覆盖）', async () => {
   // 现场：`recent` 连着五条都是「移动：14 成、2 失败」，另外两个号的记录没了 ——
   // 因为 id 是 `<任务>-<毫秒>`，三个号写的是同一个 id，后写的覆盖前面的。
   const store = memStore();

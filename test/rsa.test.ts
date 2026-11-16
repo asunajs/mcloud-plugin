@@ -35,14 +35,14 @@ function fixedRng(seed: number) {
   };
 }
 
-test('modPow：小值对照（含 exp=0、底数大于模数）', () => {
+test('modPow：小值对照（含 exp=0、底数大于模数）', async () => {
   assert.equal(modPow(2n, 10n, 1000n), 24n); // 1024 % 1000
   assert.equal(modPow(7n, 0n, 13n), 1n); // 任何数的 0 次方是 1
   assert.equal(modPow(12345n, 3n, 97n), 12345n ** 3n % 97n);
   assert.equal(modPow(5n, 3n, 3n), 2n, '底数要先取模');
 });
 
-test('SPKI 解析：认得出 1024 位公钥，且 e 是 65537', () => {
+test('SPKI 解析：认得出 1024 位公钥，且 e 是 65537', async () => {
   const { publicKey } = generateKeyPairSync('rsa', { modulusLength: 1024 });
   const spki = publicKey.export({ type: 'spki', format: 'der' }) as Buffer;
   const key = parseSpkiRsaPublicKey(spki.toString('base64'));
@@ -50,7 +50,7 @@ test('SPKI 解析：认得出 1024 位公钥，且 e 是 65537', () => {
   assert.equal(key.n.toString(2).length, 1024, '模长不是 1024 位');
 });
 
-test('**主线**：本模块加密 → Node 的私钥解出来 = 原文', () => {
+test('**主线**：本模块加密 → Node 的私钥解出来 = 原文', async () => {
   const { publicKey, privateKey } = generateKeyPairSync('rsa', { modulusLength: 1024 });
   const b64 = (publicKey.export({ type: 'spki', format: 'der' }) as Buffer).toString('base64');
 
@@ -64,14 +64,14 @@ test('**主线**：本模块加密 → Node 的私钥解出来 = 原文', () => 
   }
 });
 
-test('密文长度 = 模长（1024 位 ⇒ 128 字节）；补零漏了这里就不齐', () => {
+test('密文长度 = 模长（1024 位 ⇒ 128 字节）；补零漏了这里就不齐', async () => {
   const { publicKey } = generateKeyPairSync('rsa', { modulusLength: 1024 });
   const b64 = (publicKey.export({ type: 'spki', format: 'der' }) as Buffer).toString('base64');
   const ct = rsaEncryptBase64(b64, utf8('v'), fixedRng(7));
   assert.equal(fromBase64(ct).length, 128);
 });
 
-test('给定同一份随机 ⇒ 输出**逐字节可复现**（这就是 rng 做成入参换来的东西）', () => {
+test('给定同一份随机 ⇒ 输出**逐字节可复现**（这就是 rng 做成入参换来的东西）', async () => {
   const { publicKey } = generateKeyPairSync('rsa', { modulusLength: 1024 });
   const b64 = (publicKey.export({ type: 'spki', format: 'der' }) as Buffer).toString('base64');
   const a = rsaEncryptBase64(b64, utf8('v'), fixedRng(99));
@@ -82,7 +82,7 @@ test('给定同一份随机 ⇒ 输出**逐字节可复现**（这就是 rng 做
   assert.notEqual(a, rsaEncryptBase64(b64, utf8('v'), fixedRng(100)));
 });
 
-test('明文过长要**早失败**，不能悄悄截断', () => {
+test('明文过长要**早失败**，不能悄悄截断', async () => {
   const { publicKey } = generateKeyPairSync('rsa', { modulusLength: 1024 });
   const key = parseSpkiRsaPublicKey(
     (publicKey.export({ type: 'spki', format: 'der' }) as Buffer).toString('base64'),
@@ -92,7 +92,7 @@ test('明文过长要**早失败**，不能悄悄截断', () => {
   assert.equal(rsaEncryptPkcs1v15(key, new Uint8Array(117), fixedRng(1)).length, 128);
 });
 
-test('随机源坏掉（一直回 0）⇒ **抛错**，不能挂死', () => {
+test('随机源坏掉（一直回 0）⇒ **抛错**，不能挂死', async () => {
   const { publicKey } = generateKeyPairSync('rsa', { modulusLength: 1024 });
   const key = parseSpkiRsaPublicKey(
     (publicKey.export({ type: 'spki', format: 'der' }) as Buffer).toString('base64'),
@@ -101,12 +101,12 @@ test('随机源坏掉（一直回 0）⇒ **抛错**，不能挂死', () => {
   assert.throws(() => rsaEncryptPkcs1v15(key, utf8('v'), zeroRng), /随机源/);
 });
 
-test('不是 SPKI 的输入要直接抛（别"尽力而为"地猜）', () => {
+test('不是 SPKI 的输入要直接抛（别"尽力而为"地猜）', async () => {
   assert.throws(() => parseSpkiRsaPublicKey('AAAA'));
   assert.throws(() => parseSpkiRsaPublicKey(''));
 });
 
-test('**真公钥**（mcloud 那个 SKLAND_PUBLIC_KEY_B64）解析得出、且是 1024 位', () => {
+test('**真公钥**（mcloud 那个 SKLAND_PUBLIC_KEY_B64）解析得出、且是 1024 位', async () => {
   // 逐字来自 mcloud/crates/mcloud-crypto/src/lib.rs:49
   const REAL =
     'MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQC8KHAcHbkCn5rxGgGJE+07tY+pt86D/oZ7sA51FaEBv2jgno2TI9zHJVYKJynmiKpixgwUcv93EfWIrU/p/UCs5Vu+odS3I4UBp3R7IZ1A0W01FkumAHYW2PQpMm8ueQKPLUq/idkpG/9b2JDv/qU+Ks36nbUPwlW4CjdfrV+V9QIDAQAB';

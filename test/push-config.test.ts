@@ -49,7 +49,7 @@ const cfg = {
   tgBot: { token: 'tgtok_abcdefgh', chat_id: -100123 },
 };
 
-test('存进去是原值、读数里是掩码', () => {
+test('存进去是原值、读数里是掩码', async () => {
   const s = memStore();
   savePushConfig(s, cfg, '2026-10-15T00:00:00.000Z');
   // 原值在库里（要拿去发请求）
@@ -63,7 +63,7 @@ test('存进去是原值、读数里是掩码', () => {
   }
 });
 
-test('⚠ 非秘密字段**不掩**（host / port / msgtype / touser / chat_id / url）', () => {
+test('⚠ 非秘密字段**不掩**（host / port / msgtype / touser / chat_id / url）', async () => {
   // 掩多了会让界面没法显示"发到哪个邮箱"，那是另一个方向的坏
   const f = pushFields(cfg);
   assert.equal(f['email']!['host'], 'smtp.example.com', 'host 不是秘密');
@@ -75,7 +75,7 @@ test('⚠ 非秘密字段**不掩**（host / port / msgtype / touser / chat_id /
   assert.ok(f['bark']!['key']!.includes('（共 24 字符）'), f['bark']!['key']);
 });
 
-test('⚠ 掩码的两种写法都要防：短值全遮、长值留头尾', () => {
+test('⚠ 掩码的两种写法都要防：短值全遮、长值留头尾', async () => {
   // 短值：留头尾等于没掩
   assert.equal(maskSecret('abc123'), '（已配）', '6 个字符留 4 个等于没掩');
   assert.equal(maskSecret('abcdefgh'), '（已配）', '8 个字符是边界');
@@ -88,7 +88,7 @@ test('⚠ 掩码的两种写法都要防：短值全遮、长值留头尾', () =
   assert.equal(maskSecret(undefined), '');
 });
 
-test('配置坏了（手改过 / 老版本写的）⇒ 当作没配，不让界面 500', () => {
+test('配置坏了（手改过 / 老版本写的）⇒ 当作没配，不让界面 500', async () => {
   const s = memStore();
   s.setState(STATE_PUSH_CONFIG, '这不是 JSON', '');
   assert.deepEqual(loadPushConfig(s), {});
@@ -98,7 +98,7 @@ test('配置坏了（手改过 / 老版本写的）⇒ 当作没配，不让界�
   assert.deepEqual(loadPushConfig(s), {});
 });
 
-test('规则：坏条目被滤掉，好条目留下', () => {
+test('规则：坏条目被滤掉，好条目留下', async () => {
   const s = memStore();
   s.setState(STATE_PUSH_RULES, JSON.stringify([{ id: 'a', name: 'x' }, null, { name: '没有 id' }, '字符串']), '');
   const rules = loadPushRules(s);
@@ -106,7 +106,7 @@ test('规则：坏条目被滤掉，好条目留下', () => {
   assert.equal(rules[0]!.id, 'a');
 });
 
-test('绑定：三个键**永远都在**（缺的给空串，不是 undefined）', () => {
+test('绑定：三个键**永远都在**（缺的给空串，不是 undefined）', async () => {
   // 界面要拿它渲染三个下拉框；给 undefined 会让那个框变成"未选择"而不是"不发"
   const s = memStore();
   assert.deepEqual(loadPushBindings(s), { daily: '', exchange: '', live: '' });
@@ -120,12 +120,12 @@ test('绑定：三个键**永远都在**（缺的给空串，不是 undefined）
   assert.deepEqual(loadPushBindings(s), { daily: 'r1', exchange: 'r2', live: '' });
 });
 
-test('三个任务的键与名字对得上（界面与配置共用同一份）', () => {
+test('三个任务的键与名字对得上（界面与配置共用同一份）', async () => {
   assert.deepEqual(TASK_KEYS, ['daily', 'exchange', 'live']);
   assert.deepEqual(TASK_LABELS, { daily: '日常', exchange: '兑换', live: '直播' });
 });
 
-test('读数：`configured` 与 `channels[].configured` 一致', () => {
+test('读数：`configured` 与 `channels[].configured` 一致', async () => {
   const s = memStore();
   savePushConfig(s, cfg, '');
   const r = pushReading(s);
@@ -139,7 +139,7 @@ test('读数：`configured` 与 `channels[].configured` 一致', () => {
   for (const c of r.channels) assert.ok(c.hint.length > 0, `${c.id} 缺提示语`);
 });
 
-test('自定义模板：读数里只说"几个模板"，不铺开内容', () => {
+test('自定义模板：读数里只说"几个模板"，不铺开内容', async () => {
   const s = memStore();
   savePushConfig(s, { customPost: [{ url: 'https://x' }, { url: 'https://y' }] }, '');
   const r = pushReading(s);
@@ -148,7 +148,7 @@ test('自定义模板：读数里只说"几个模板"，不铺开内容', () => 
   assert.ok(!JSON.stringify(r).includes('https://x'), '模板 URL 不该进读数');
 });
 
-test('空配置 ⇒ 一个渠道都没配，但 10 个渠道都列出来（要能配）', () => {
+test('空配置 ⇒ 一个渠道都没配，但 10 个渠道都列出来（要能配）', async () => {
   const r = pushReading(memStore());
   assert.deepEqual(r.configured, []);
   assert.equal(r.channels.length, 10);
@@ -156,7 +156,7 @@ test('空配置 ⇒ 一个渠道都没配，但 10 个渠道都列出来（要�
   assert.deepEqual(r.bindings, { daily: '', exchange: '', live: '' });
 });
 
-test('`extra` 不进读数（那是原样并进请求体的自由字段，可能是秘密）', () => {
+test('`extra` 不进读数（那是原样并进请求体的自由字段，可能是秘密）', async () => {
   const s = memStore();
   savePushConfig(s, { pushplus: { token: 'T123456789', extra: { 偷偷的: 'SECRET_EXTRA' } } }, '');
   assert.ok(!JSON.stringify(pushReading(s)).includes('SECRET_EXTRA'));

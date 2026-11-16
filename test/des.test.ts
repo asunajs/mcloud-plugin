@@ -22,7 +22,7 @@ import {
 } from '../src/crypto/des.ts';
 import { fromBase64, fromHex, toHex, utf8 } from '../src/crypto/bytes.ts';
 
-test('FIPS 已知答案：key=133457799bbcdff1 / plain=0123456789abcdef ⇒ 85e813540f0ab405', () => {
+test('FIPS 已知答案：key=133457799bbcdff1 / plain=0123456789abcdef ⇒ 85e813540f0ab405', async () => {
   const key = fromHex('133457799bbcdff1');
   const pt = fromHex('0123456789abcdef');
   const l = ((pt[0]! << 24) | (pt[1]! << 16) | (pt[2]! << 8) | pt[3]!) >>> 0;
@@ -33,7 +33,7 @@ test('FIPS 已知答案：key=133457799bbcdff1 / plain=0123456789abcdef ⇒ 85e8
   assert.equal(hex, '85e813540f0ab405');
 });
 
-test('**黄金向量**：与 crypto-js 的 DES/ECB/NoPadding 逐条一致', () => {
+test('**黄金向量**：与 crypto-js 的 DES/ECB/NoPadding 逐条一致', async () => {
   // 现算自 crypto-js（同一份输入的输出），契约 = mcloud 的 `des_encrypt_b64`
   const cases: [string, string, string][] = [
     ['v', 'a9kbown8', 'qbl5L2OIDpM='],
@@ -49,7 +49,7 @@ test('**黄金向量**：与 crypto-js 的 DES/ECB/NoPadding 逐条一致', () =
   }
 });
 
-test('⚠ 非 ASCII：**照 Rust 按字节补**，与 mcloud-sign 的 TS 版**故意不一致**', () => {
+test('⚠ 非 ASCII：**照 Rust 按字节补**，与 mcloud-sign 的 TS 版**故意不一致**', async () => {
   // 这条分歧是真发现，不是我们抄错：
   //
   //   `des.rs`          pad_zero_to_block(message.**as_bytes()**)  ← 按**字节**补到 8 的倍数
@@ -71,7 +71,7 @@ test('⚠ 非 ASCII：**照 Rust 按字节补**，与 mcloud-sign 的 TS 版**�
   assert.equal(desEncryptBase64(s, 'bewicpxu'), 'RSMrad5srdCSTnwkESxxYqtza7qmIO+I');
 });
 
-test('零填充：长度是 8 的整数倍时**不补**（与 AES 的 PKCS7 相反）', () => {
+test('零填充：长度是 8 的整数倍时**不补**（与 AES 的 PKCS7 相反）', async () => {
   assert.equal(zeroPadToBlock(new Uint8Array(8), 8).length, 8, '补了就会多出一整块 0');
   assert.equal(zeroPadToBlock(new Uint8Array(16), 8).length, 16);
   assert.equal(zeroPadToBlock(new Uint8Array(9), 8).length, 16);
@@ -80,34 +80,34 @@ test('零填充：长度是 8 的整数倍时**不补**（与 AES 的 PKCS7 相�
   assert.equal(fromBase64('ZtzsBiRgkvYb0hYrnfp0+A==').length, 16);
 });
 
-test('空明文 ⇒ 空串（原实现如此：无块可加密，不是错误也不是全零块）', () => {
+test('空明文 ⇒ 空串（原实现如此：无块可加密，不是错误也不是全零块）', async () => {
   assert.equal(desEncryptBase64('', 'a9kbown8'), '');
   assert.equal(desEcbEncrypt(fitKey8('a9kbown8'), new Uint8Array(0)).length, 0);
 });
 
-test('`fit_key8`：截断到 8 字节、短了用 **\\0** 补齐', () => {
+test('`fit_key8`：截断到 8 字节、短了用 **\\0** 补齐', async () => {
   assert.equal(toHex(fitKey8('a9kbown8')), toHex(utf8('a9kbown8')));
   assert.equal(toHex(fitKey8('a9kbown8EXTRA')), toHex(utf8('a9kbown8')), '超长截断');
   assert.equal(toHex(fitKey8('ab')), '6162000000000000', '短了补 NUL');
 });
 
-test('输出是 **base64**（不是 hex —— AES 那边才是 hex）', () => {
+test('输出是 **base64**（不是 hex —— AES 那边才是 hex）', async () => {
   const out = desEncryptBase64('v', 'a9kbown8');
   assert.match(out, /^[A-Za-z0-9+/]+=*$/);
   assert.equal(out.length % 4, 0);
   assert.equal(fromBase64(out).length, 8, '8 字节明文 ⇒ 8 字节密文');
 });
 
-test('同一输入两次结果一致（ECB 无 IV、无随机）', () => {
+test('同一输入两次结果一致（ECB 无 IV、无随机）', async () => {
   assert.equal(desEncryptBase64('abc', 'a9kbown8'), desEncryptBase64('abc', 'a9kbown8'));
 });
 
-test('密钥长度不对要早失败', () => {
+test('密钥长度不对要早失败', async () => {
   assert.throws(() => desEcbEncrypt(new Uint8Array(7), utf8('x')), /8 字节/);
   assert.throws(() => desEcbEncrypt(new Uint8Array(9), utf8('x')), /8 字节/);
 });
 
-test('逐块独立：多块密文 = 各块单独加密的拼接（ECB 的定义）', () => {
+test('逐块独立：多块密文 = 各块单独加密的拼接（ECB 的定义）', async () => {
   const key = fitKey8('a9kbown8');
   const two = desEcbEncrypt(key, utf8('0123456789abcdef'));
   const first = desEcbEncrypt(key, utf8('01234567'));
@@ -115,7 +115,7 @@ test('逐块独立：多块密文 = 各块单独加密的拼接（ECB 的定义�
   assert.equal(toHex(two), toHex(first) + toHex(second));
 });
 
-test('⚠ 解密要**去掉 PKCS#5 填充**（AI 域的 Authorization 就靠这一格）', () => {
+test('⚠ 解密要**去掉 PKCS#5 填充**（AI 域的 Authorization 就靠这一格）', async () => {
   // 现场 2026-11-01：`disk:queryUserToken` 的 `account` 解出来是
   // `13700137001\x05\x05\x05\x05\x05`，多出来的五个 0x05 被拼进
   // `Basic mobile:<手机号>:<token>` ⇒ 服务端回 `01000002 鉴权失败`，

@@ -59,13 +59,13 @@ function depsWith(gapMs: [number, number] | undefined, c = clock()): { deps: Tas
   return { deps, sent, t: c.t };
 }
 
-test('appTask：换条时随机等 500–2000ms（并且真的动了时钟）', () => {
+test('appTask：换条时随机等 500–2000ms（并且真的动了时钟）', async () => {
   const { deps, t } = depsWith([500, 2000]);
   startAppTask(deps);
   const before = t.ms;
   let note = '';
   for (let i = 0; i < 20; i += 1) {
-    const out = runAppTaskStep(deps);
+    const out = await runAppTaskStep(deps);
     if (/下一条 #/.test(out.note)) {
       note = out.note;
       break;
@@ -80,13 +80,13 @@ test('appTask：换条时随机等 500–2000ms（并且真的动了时钟）', 
   assert.equal(t.ms - before >= waited, true, '说等了多少就要真的走过去多少');
 });
 
-test('appTask：`gapMs: [0,0]` 时不等（测试/手动场景）', () => {
+test('appTask：`gapMs: [0,0]` 时不等（测试/手动场景）', async () => {
   const { deps, t } = depsWith([0, 0]);
   startAppTask(deps);
   const before = t.ms;
   let note = '';
   for (let i = 0; i < 20; i += 1) {
-    const out = runAppTaskStep(deps);
+    const out = await runAppTaskStep(deps);
     if (/下一条 #/.test(out.note)) {
       note = out.note;
       break;
@@ -98,21 +98,21 @@ test('appTask：`gapMs: [0,0]` 时不等（测试/手动场景）', () => {
   assert.equal(t.ms, before, '一点都没等');
 });
 
-test('缺省（不传 `gapMs`）= **默认就隔**，不是"不等"', () => {
+test('缺省（不传 `gapMs`）= **默认就隔**，不是"不等"', async () => {
   const { deps } = depsWith(undefined);
   // 不传 gapMs ⇒ 走 DEFAULT_GAP_MS
   const ms = gapDelayMs(deps);
   assert.ok(ms >= DEFAULT_GAP_MS[0] && ms <= DEFAULT_GAP_MS[1], `默认区间 500–2000，实际 ${ms}`);
 });
 
-test('drain：`gap: true` 时步与步之间等，`gap` 不开就一步不等', () => {
+test('drain：`gap: true` 时步与步之间等，`gap` 不开就一步不等', async () => {
   const rows: Array<{ gap: boolean | undefined; waited: number }> = [];
   for (const gap of [true, false, undefined]) {
     const c = clock();
     const { deps } = depsWith([500, 2000], c);
     const start = c.t.ms;
     let n = 0;
-    drain(
+    await drain(
       () => {
         n += 1;
         return { ok: true, note: `第 ${n} 步`, idle: n >= 3 };
@@ -128,7 +128,7 @@ test('drain：`gap: true` 时步与步之间等，`gap` 不开就一步不等', 
   assert.equal(unset!.waited, 0, '不写 gap 就按老行为（不等）');
 });
 
-test('⚠ `waitMs` 遇到**不走的钟**不能死循环', () => {
+test('⚠ `waitMs` 遇到**不走的钟**不能死循环', async () => {
   const deps = { nowIso: NOW, nowMs: () => 1000 } as TaskDeps; // 永远 1000
   const t0 = Date.now();
   waitMs(deps, 5000);
@@ -136,7 +136,7 @@ test('⚠ `waitMs` 遇到**不走的钟**不能死循环', () => {
   assert.ok(cost < 1000, `假钟不走时要立刻撤（实际卡了 ${cost}ms）`);
 });
 
-test('`waitGap` 走假钟时等满再返回，返回的就是等掉的时长', () => {
+test('`waitGap` 走假钟时等满再返回，返回的就是等掉的时长', async () => {
   const c = clock(50);
   const { deps } = depsWith([500, 2000], c);
   const before = c.t.ms;
@@ -145,7 +145,7 @@ test('`waitGap` 走假钟时等满再返回，返回的就是等掉的时长', (
   assert.ok(c.t.ms - before >= waited - 50, `时钟要走够（差 ${c.t.ms - before - waited}ms）`);
 });
 
-test('同一条任务内部的连发也要隔（1005 固定入口：三枪）', () => {
+test('同一条任务内部的连发也要隔（1005 固定入口：三枪）', async () => {
   const c = clock(100);
   const { deps } = depsWith([500, 2000], c);
   // 换成 1005（`entry` 那一族：doTaskPost → page/doTask → 补打卡）
@@ -170,7 +170,7 @@ test('同一条任务内部的连发也要隔（1005 固定入口：三枪）', 
   };
   startAppTask(deps);
   for (let i = 0; i < 20; i += 1) {
-    const out = runAppTaskStep(deps);
+    const out = await runAppTaskStep(deps);
     if (out.idle) break;
   }
   // 只看 `entry` 阶段自己的那两枪（`doTask` 系列）——前面 `click` 阶段的打卡+访问日志

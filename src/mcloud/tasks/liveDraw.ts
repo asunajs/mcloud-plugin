@@ -186,12 +186,12 @@ export function setClaimEnabled(_store: Store, _on: boolean, _nowIso: string): v
  *  而口令只在直播那一小时有效 —— 于是"验证"被绑死在最难凑齐的时刻上。
  *
  *  ⚠ 它**不写任何状态**、不碰步骤机：跑多少次都无所谓。 */
-export function probeLiveRoom(deps: TaskDeps): { ok: boolean; note: string; balance?: number } {
+export async function probeLiveRoom(deps: TaskDeps): Promise<{ ok: boolean; note: string; balance?: number }> {
   const session = loadSession(deps.store);
   if (!session || !session.jwt) {
     return { ok: false, note: '这个号还没换到票 —— 上面「换票」那一步说了原因' };
   }
-  const res = callOnce(deps.transport, withSession(userInfoRequest(deps.baseUrl), session.jwt));
+  const res = await callOnce(deps.transport, withSession(userInfoRequest(deps.baseUrl), session.jwt));
   if (res.env === undefined) {
     return { ok: false, note: `读余额失败：${res.error ?? '未知失败'}` };
   }
@@ -245,10 +245,10 @@ export function stepRequest(
 }
 
 /** 推进一步。**一次调用最多发一个请求。** */
-export function runLiveDraw(
+export async function runLiveDraw(
   deps: TaskDeps,
   opts: { force?: boolean; codes?: readonly string[] } = {},
-): TaskOutcome {
+): Promise<TaskOutcome> {
   const TASK = 'live-room';
 
   // 不再做本地领取限制：有口令就去领。
@@ -331,16 +331,16 @@ export function runLiveDraw(
 
   // 每次发请求前重新读会话：换票之后必须拿**新票**重试，不能闭包缓存旧票。
   // 90001 不是“账号坏了”，而是 H5 的 jwttoken 没被认；这一层会主动换票并重试。
-  const read = () => {
+  const read = async () => {
     const cur = loadSession(deps.store);
     if (!cur || !cur.jwt) throw new LoginExpiredError('领小红花要先有票 —— 上面「换票」那一步说了原因');
-    const out = callOnce(deps.transport, withSession(step.request, cur.jwt));
+    const out = await callOnce(deps.transport, withSession(step.request, cur.jwt));
     if (out.env?.code === 90001) throw new LoginExpiredError();
     return out;
   };
   let res: CallResult;
   try {
-    res = withTokenGate(deps, read);
+    res = await withTokenGate(deps, read);
   } catch (e) {
     const note = e instanceof Error ? e.message : String(e);
     recordError(deps.store, TASK, note, deps.nowIso);

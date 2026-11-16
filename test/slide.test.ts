@@ -89,7 +89,7 @@ function makeCase(
   return { bg, piece };
 }
 
-test('**主线**：合成题面（答案自己摆的）能解对', () => {
+test('**主线**：合成题面（答案自己摆的）能解对', async () => {
   for (const at of [PAD, PAD + 1, 47, 147, 210, BG_W - PAD - PIECE]) {
     const want = at - PAD;
     const { bg, piece } = makeCase(7, at, PAD);
@@ -109,7 +109,7 @@ test('**主线**：合成题面（答案自己摆的）能解对', () => {
   }
 });
 
-test('⚠ 退化情形：拼图整块透明 ⇒ offset 是 0 **且置信度是 0**', () => {
+test('⚠ 退化情形：拼图整块透明 ⇒ offset 是 0 **且置信度是 0**', async () => {
   const bg = makeBg(7);
   const blank = new Uint8ClampedArray(PZ * PZ * 4); // 全透明
   const r = matchSlide(asImage(bg, BG_W, BG_H), asImage(blank, PZ, PZ), BG_W, BG_H, PZ, PZ);
@@ -118,7 +118,7 @@ test('⚠ 退化情形：拼图整块透明 ⇒ offset 是 0 **且置信度是 0
   assert.equal(usable(r), false, '算不出来 ⇒ 不该发那一枪');
 });
 
-test('边界：拼图与底图同宽 ⇒ 不越界；拼图比底图还宽 ⇒ 也不崩', () => {
+test('边界：拼图与底图同宽 ⇒ 不越界；拼图比底图还宽 ⇒ 也不崩', async () => {
   const { bg, piece } = makeCase(3, PAD, PAD);
   const r = matchSlide(asImage(bg, BG_W, BG_H), asImage(piece, BG_W, BG_H), BG_W, BG_H, BG_W, BG_H);
   assert.equal(r.offsetX, 0, '同宽时只有 offset 0 可试');
@@ -134,7 +134,7 @@ test('边界：拼图与底图同宽 ⇒ 不越界；拼图比底图还宽 ⇒ �
   assert.equal(r2.offsetX, 0);
 });
 
-test('`alpha === 128` 算**透明**（照抄原实现的边界归属）', () => {
+test('`alpha === 128` 算**透明**（照抄原实现的边界归属）', async () => {
   assert.equal(ALPHA_OPAQUE_THRESHOLD, 128);
   const bg = makeBg(7);
   const pz = new Uint8ClampedArray(PZ * PZ * 4);
@@ -144,7 +144,7 @@ test('`alpha === 128` 算**透明**（照抄原实现的边界归属）', () => 
   assert.ok(r.offsetX >= 0, '不该崩');
 });
 
-test('解码那一层：PNG 往返一次，像素逐字节不变（RGBA 与 RGB 都要）', () => {
+test('解码那一层：PNG 往返一次，像素逐字节不变（RGBA 与 RGB 都要）', async () => {
   const bg = makeBg(11);
   const back4 = decodeImage(
     new Uint8Array(encodePng({ width: BG_W, height: BG_H, data: bg, channels: 4 })),
@@ -167,7 +167,7 @@ test('解码那一层：PNG 往返一次，像素逐字节不变（RGBA 与 RGB 
   assert.equal(back3.data[0], 0);
 });
 
-test('`calcPuzzleOffset` 收 base64（题面就是这个形状）', () => {
+test('`calcPuzzleOffset` 收 base64（题面就是这个形状）', async () => {
   const at = 137 + PAD;
   const { bg, piece } = makeCase(7, at, PAD);
   const got = calcPuzzleOffset(
@@ -178,6 +178,6 @@ test('`calcPuzzleOffset` 收 base64（题面就是这个形状）', () => {
   assert.equal(usable(got), true);
 });
 
-test('坏图要**抛**，不能悄悄给一张"看着像图"的', () => {
+test('坏图要**抛**，不能悄悄给一张"看着像图"的', async () => {
   assert.throws(() => decodeImage(new Uint8Array([1, 2, 3, 4])));
 });

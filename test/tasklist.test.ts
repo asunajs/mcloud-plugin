@@ -48,14 +48,14 @@ function seededStore() {
   return store;
 }
 
-test('① body 逐字节：与实拍 content-length 62 一致', () => {
+test('① body 逐字节：与实拍 content-length 62 一致', async () => {
   const body = taskListV3Body();
   assert.equal(body, '{"marketname":"sign_in_3","clientVersion":"12.6.0","group":""}');
   // 上游实拍里这个请求的 content-length 就是 62 —— 独立于我们自己的第二个信源
   assert.equal(new TextEncoder().encode(body).length, 62);
 });
 
-test('① 发出去的头：content-type 带 charset、activityid 跟 marketname、jwttoken 小写', () => {
+test('① 发出去的头：content-type 带 charset、activityid 跟 marketname、jwttoken 小写', async () => {
   const req = buildH5Request({
     url: resolveUrl('taskListV3'),
     method: 'POST',
@@ -105,10 +105,10 @@ test('① 发出去的头：content-type 带 charset、activityid 跟 marketname
   );
 });
 
-test('② 逻辑层：成功时解析清单、写 state、把 cookie 并回去', () => {
+test('② 逻辑层：成功时解析清单、写 state、把 cookie 并回去', async () => {
   const store = seededStore();
   const seen: string[] = [];
-  const stub: Transport = (req) => {
+  const stub: Transport = async (req) => {
     seen.push(`${req.method} ${req.url}`);
     return {
       status: 200,
@@ -125,7 +125,7 @@ test('② 逻辑层：成功时解析清单、写 state、把 cookie 并回去',
     };
   };
 
-  const out = runTaskList({ store, transport: stub, nowIso: '2026-10-13T01:00:00.000Z' });
+  const out = await runTaskList({ store, transport: stub, nowIso: '2026-10-13T01:00:00.000Z' });
   assert.equal(out.ok, true);
   assert.equal(out.note, '清单 3 条，已完成 2 条');
   assert.deepEqual(seen, [`POST ${resolveUrl('taskListV3')}`]);
@@ -143,7 +143,7 @@ test('② 逻辑层：成功时解析清单、写 state、把 cookie 并回去',
   assert.equal(sess.savedAt, '2026-10-13T01:00:00.000Z');
 });
 
-test('② 逻辑层：业务失败 / HTTP 失败 / 非 JSON 都不抛异常，且写失败原因', () => {
+test('② 逻辑层：业务失败 / HTTP 失败 / 非 JSON 都不抛异常，且写失败原因', async () => {
   const cases: Array<[string, string]> = [
     ['biz', '{"code":1001,"msg":"今天已经签过了"}'],
     ['http', 'boom'],
@@ -151,12 +151,12 @@ test('② 逻辑层：业务失败 / HTTP 失败 / 非 JSON 都不抛异常，�
   ];
   for (const [name, body] of cases) {
     const store = seededStore();
-    const transport: Transport = () => ({
+    const transport: Transport = async () => ({
       status: name === 'http' ? 500 : 200,
       headers: {},
       body,
     });
-    const out = runTaskList({ store, transport, nowIso: '2026-10-13T01:00:00.000Z' });
+    const out = await runTaskList({ store, transport, nowIso: '2026-10-13T01:00:00.000Z' });
     assert.equal(out.ok, false, `${name} 应当失败`);
     assert.ok((out.note ?? '').length > 0, `${name} 要有可读的原因`);
     assert.ok(store.getState(STATE_LAST_ERROR), `${name} 要把失败原因写下来`);
@@ -164,13 +164,13 @@ test('② 逻辑层：业务失败 / HTTP 失败 / 非 JSON 都不抛异常，�
   }
 });
 
-test('② 逻辑层：没有会话时**一个请求都不发**', () => {
+test('② 逻辑层：没有会话时**一个请求都不发**', async () => {
   const store = memStore();
   store.ensureSchema();
   let called = 0;
-  const out = runTaskList({
+  const out = await runTaskList({
     store,
-    transport: () => {
+    transport: async () => {
       called += 1;
       return { status: 200, headers: {}, body: '{}' };
     },

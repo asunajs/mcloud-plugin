@@ -26,16 +26,16 @@ import type { TaskDeps, TaskOutcome } from '../src/mcloud/tasks/base.ts';
 const NOW = '2026-10-15T01:00:00.000Z';
 
 function deps(store: Store = memStore()): TaskDeps {
-  return { store, transport: () => ({ status: 200, headers: {}, body: '{}' }), nowIso: NOW };
+  return { store, transport: async () => ({ status: 200, headers: {}, body: '{}' }), nowIso: NOW };
 }
 
 const OPTS = { label: '测试', maxSteps: 10, deadlineMs: 60_000 };
 
 // ── 三个出口 ──────────────────────────────────────────────────────────
 
-test('出口 ①：`idle` ⇒ 停下，步数记对', () => {
+test('出口 ①：`idle` ⇒ 停下，步数记对', async () => {
   let n = 0;
-  const r = drain(
+  const r = await drain(
     () => {
       n++;
       return { ok: true, note: `第 ${n} 步` };
@@ -51,9 +51,9 @@ test('出口 ①：`idle` ⇒ 停下，步数记对', () => {
   assert.ok(r.note.length > 0, '停下时也要有一句结论');
 });
 
-test('出口 ①：`idle` 立刻停下（App 任务做完一条就报 idle）', () => {
+test('出口 ①：`idle` 立刻停下（App 任务做完一条就报 idle）', async () => {
   let n = 0;
-  const r = drain(
+  const r = await drain(
     () => {
       n++;
       return n >= 3 ? { ok: true, note: '走完了', idle: true } : { ok: true, note: `第 ${n} 步` };
@@ -66,9 +66,9 @@ test('出口 ①：`idle` 立刻停下（App 任务做完一条就报 idle）', 
   assert.match(r.note, /走完/);
 });
 
-test('出口 ②：`skipped` 也停下（receive / prizes 用它说「条件不成立」）', () => {
+test('出口 ②：`skipped` 也停下（receive / prizes 用它说「条件不成立」）', async () => {
   let n = 0;
-  const r = drain(
+  const r = await drain(
     () => {
       n++;
       return n >= 2
@@ -84,7 +84,7 @@ test('出口 ②：`skipped` 也停下（receive / prizes 用它说「条件不�
 
 // ── 那条差点漏掉的：签到三段式 ─────────────────────────────────────────
 
-test('⚠ 签到三段式：只调一次 ⇒ 提交了但回查不跑（这就是那个 bug）', () => {
+test('⚠ 签到三段式：只调一次 ⇒ 提交了但回查不跑（这就是那个 bug）', async () => {
   const store = memStore();
   const STAGE = 'mcloud.sign.stage';
   let calls = 0;
@@ -119,7 +119,7 @@ test('⚠ 签到三段式：只调一次 ⇒ 提交了但回查不跑（这就�
     store2.setState(STAGE, 'need-verify', NOW);
     return { ok: true, note: '签到已提交' };
   };
-  const r = drain(runSign2, deps(store2), {
+  const r = await drain(runSign2, deps(store2), {
     ...OPTS,
     label: '签到',
     more: () => (store2.getState(STAGE) ?? '') === 'need-verify',
@@ -129,9 +129,9 @@ test('⚠ 签到三段式：只调一次 ⇒ 提交了但回查不跑（这就�
   assert.match(r.note, /回查/);
 });
 
-test('`more()` 为 false 时**仍然先跑一次**（总得先跑一次才知道要干嘛）', () => {
+test('`more()` 为 false 时**仍然先跑一次**（总得先跑一次才知道要干嘛）', async () => {
   let n = 0;
-  const r = drain(
+  const r = await drain(
     () => {
       n++;
       return { ok: true, note: '今日已签到' };
@@ -144,9 +144,9 @@ test('`more()` 为 false 时**仍然先跑一次**（总得先跑一次才知道
   assert.equal(r.idle, true);
 });
 
-test('`more()` 一直在 true 时由 `maxSteps` 兜住（上游可能一直冒新待办）', () => {
+test('`more()` 一直在 true 时由 `maxSteps` 兜住（上游可能一直冒新待办）', async () => {
   let n = 0;
-  const r = drain(
+  const r = await drain(
     () => {
       n++;
       return { ok: true, note: `第 ${n} 步` };
@@ -162,9 +162,9 @@ test('`more()` 一直在 true 时由 `maxSteps` 兜住（上游可能一直冒�
 
 // ── 失败与上限 ────────────────────────────────────────────────────────
 
-test('某一步报错 ⇒ **立刻停**，说清是第几步', () => {
+test('某一步报错 ⇒ **立刻停**，说清是第几步', async () => {
   let n = 0;
-  const r = drain(
+  const r = await drain(
     () => {
       n++;
       return n === 3 ? { ok: false, note: '上游 500' } : { ok: true, note: `第 ${n} 步` };
@@ -179,9 +179,9 @@ test('某一步报错 ⇒ **立刻停**，说清是第几步', () => {
   assert.match(r.note, /上游 500/);
 });
 
-test('某一步抛异常 ⇒ 也停，而且异常信息带得上步骤', () => {
+test('某一步抛异常 ⇒ 也停，而且异常信息带得上步骤', async () => {
   let n = 0;
-  const r = drain(
+  const r = await drain(
     () => {
       n++;
       if (n === 2) throw new Error('boom');
@@ -199,17 +199,17 @@ test('某一步抛异常 ⇒ 也停，而且异常信息带得上步骤', () => 
   );
 });
 
-test('没有时间闸：步数跑满就停，不存在「走到时间上限」这一档', () => {
+test('没有时间闸：步数跑满就停，不存在「走到时间上限」这一档', async () => {
   // 2026-11-16：`deadlineMs`/`startedAt` 已删 —— 它们只会砍掉本来能做完的步骤，
   // 而且两个参数语义相反（"还剩多久" vs "已过多久"），一进循环就成立 ⇒ 0 步。
-  const r = drain(() => ({ ok: true, note: '一步' }), deps(), { ...OPTS, maxSteps: 5 });
+  const r = await drain(() => ({ ok: true, note: '一步' }), deps(), { ...OPTS, maxSteps: 5 });
   assert.equal(r.steps, 5, '该跑满步数上限');
   assert.equal(r.ok, true);
   assert.doesNotMatch(r.note, /时间上限/);
 });
 
-test('走满 `maxSteps` 且 `more()` 仍说还有 ⇒ **不算成功**（不许绿灯）', () => {
-  const r = drain(() => ({ ok: true, note: '一步' }), deps(), {
+test('走满 `maxSteps` 且 `more()` 仍说还有 ⇒ **不算成功**（不许绿灯）', async () => {
+  const r = await drain(() => ({ ok: true, note: '一步' }), deps(), {
     ...OPTS,
     maxSteps: 3,
     more: () => true,
@@ -220,9 +220,9 @@ test('走满 `maxSteps` 且 `more()` 仍说还有 ⇒ **不算成功**（不许�
   assert.match(r.note, /下一趟接着走/);
 });
 
-test('走满 `maxSteps` 但 `more()` 说没有了 ⇒ 正常收尾', () => {
+test('走满 `maxSteps` 但 `more()` 说没有了 ⇒ 正常收尾', async () => {
   let left = 2;
-  const r = drain(() => ({ ok: true, note: '一步' }), deps(), {
+  const r = await drain(() => ({ ok: true, note: '一步' }), deps(), {
     ...OPTS,
     maxSteps: 5,
     more: () => left --> 0,
@@ -232,8 +232,8 @@ test('走满 `maxSteps` 但 `more()` 说没有了 ⇒ 正常收尾', () => {
 
 // ── 摘要的形状 ────────────────────────────────────────────────────────
 
-test('`notes` 收齐每一步的原话（出问题时「走到哪一步」最要紧）', () => {
-  const r = drain(
+test('`notes` 收齐每一步的原话（出问题时「走到哪一步」最要紧）', async () => {
+  const r = await drain(
     (_d, ) => ({ ok: true, note: 'a' }),
     deps(),
     { ...OPTS, maxSteps: 3, more: () => true },
@@ -242,8 +242,8 @@ test('`notes` 收齐每一步的原话（出问题时「走到哪一步」最要
   assert.deepEqual(r.notes, ['a', 'a', 'a']);
 });
 
-test('`note` 是一行摘要 —— 进 runs 表，不该是一大段', () => {
-  const r = drain(() => ({ ok: true, note: '很长的原话'.repeat(50) }), deps(), {
+test('`note` 是一行摘要 —— 进 runs 表，不该是一大段', async () => {
+  const r = await drain(() => ({ ok: true, note: '很长的原话'.repeat(50) }), deps(), {
     ...OPTS,
     maxSteps: 1,
     more: () => false,

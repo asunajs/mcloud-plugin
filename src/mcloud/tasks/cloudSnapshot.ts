@@ -34,8 +34,8 @@ export interface SnapshotEntry {
   insertTime: string | undefined;
 }
 
-export function runCloudSnapshot(deps: TaskDeps): TaskOutcome {
-  return runTask(
+export async function runCloudSnapshot(deps: TaskDeps): Promise<TaskOutcome> {
+  return await runTask(
     deps,
     {
       task: 'cloud-snapshot',

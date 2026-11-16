@@ -15,7 +15,7 @@ import { memStore } from '../src/store/memory.ts';
 import type { BuiltRequest } from '../src/mcloud/h5.ts';
 import type { TaskDeps } from '../src/mcloud/tasks/base.ts';
 
-test('runDaily.detail 带「清理临时文件」和「今日云朵」', () => {
+test('runDaily.detail 带「清理临时文件」和「今日云朵」', async () => {
   const store = memStore();
   store.ensureSchema();
   const sent: BuiltRequest[] = [];
@@ -47,7 +47,7 @@ test('runDaily.detail 带「清理临时文件」和「今日云朵」', () => {
     gapMs: [0, 0],
   } as TaskDeps;
 
-  const r = runDaily(deps);
+  const r = await runDaily(deps);
   // 原生 token 的续期必须**排在所有任务之前**：到期那天先续，当前这一趟才用得上新 token。
   assert.equal(r.steps[0]?.name, '凭据续期', r.steps.map((s) => s.name).join(' → '));
   assert.ok(r.detail.some((l) => l.startsWith('清理临时文件：')), r.detail.join('\n'));
@@ -60,7 +60,7 @@ test('runDaily.detail 带「清理临时文件」和「今日云朵」', () => {
   assert.ok(!sent.some((q) => q.url.includes('/market/signin/public/cloudRecord?')));
 });
 
-test('runDaily 带「App 任务状态」那几行；旧的三条任务**不再出现**', () => {
+test('runDaily 带「App 任务状态」那几行；旧的三条任务**不再出现**', async () => {
   const store = memStore();
   store.ensureSchema();
   const nowIso = '2026-11-01T07:00:00.000Z';
@@ -80,7 +80,7 @@ test('runDaily 带「App 任务状态」那几行；旧的三条任务**不再�
   );
   const deps = { store, transport, nowIso, nowMs: () => Date.parse(nowIso), settleMs: 0, gapMs: [0, 0] } as TaskDeps;
 
-  const r = runDaily(deps);
+  const r = await runDaily(deps);
   const names = r.steps.map((s) => s.name);
   for (const gone of ['备份好礼', '开启通知领AI豆', '消息推送奖励（问状态）', '消息推送奖励（领）']) {
     assert.ok(!names.includes(gone), `旧任务「${gone}」已删，不该再出现：${names.join(' → ')}`);

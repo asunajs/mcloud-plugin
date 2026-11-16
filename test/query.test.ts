@@ -15,56 +15,56 @@ import assert from 'node:assert/strict';
 
 import { parseQuery } from '../src/mcloud/query.ts';
 
-test('基本形状', () => {
+test('基本形状', async () => {
   assert.deepEqual(parseQuery('id=abc&x=1'), { id: 'abc', x: '1' });
   assert.deepEqual(parseQuery('?id=abc'), { id: 'abc' }, '带问号也要认');
   assert.deepEqual(parseQuery(''), {});
 });
 
-test('⚠ `+` 是空格（表单编码），不是加号', () => {
+test('⚠ `+` 是空格（表单编码），不是加号', async () => {
   assert.deepEqual(parseQuery('q=a+b'), { q: 'a b' });
   assert.deepEqual(parseQuery('q=a%2Bb'), { q: 'a+b' }, '%2B 才是真的加号');
 });
 
-test('⚠ 值里可以有 `=`（只按**第一个** `=` 切）', () => {
+test('⚠ 值里可以有 `=`（只按**第一个** `=` 切）', async () => {
   // 按所有 `=` 切会让 `a` 变成 "b"、多出一个空键 —— 而 base64 参数里全是 `=`
   assert.deepEqual(parseQuery('a=b=c'), { a: 'b=c' });
   assert.deepEqual(parseQuery('token=abc=='), { token: 'abc==' });
 });
 
-test('⚠ 重复的键取**第一个**（与 `URLSearchParams.get` 一致）', () => {
+test('⚠ 重复的键取**第一个**（与 `URLSearchParams.get` 一致）', async () => {
   assert.deepEqual(parseQuery('a=1&a=2'), { a: '1' });
 });
 
-test('没有值的键 ⇒ 空串（不是 undefined）', () => {
+test('没有值的键 ⇒ 空串（不是 undefined）', async () => {
   assert.deepEqual(parseQuery('flag&x=1'), { flag: '', x: '1' });
   assert.deepEqual(parseQuery('a='), { a: '' });
 });
 
-test('⚠ 坏编码**不抛**（手敲的 `%zz` 不该让整个路由 500）', () => {
+test('⚠ 坏编码**不抛**（手敲的 `%zz` 不该让整个路由 500）', async () => {
   assert.deepEqual(parseQuery('x=%zz'), { x: '%zz' }, '原样返回');
   assert.deepEqual(parseQuery('x=%E4%B8'), { x: '%E4%B8' }, '半截的 UTF-8 也不抛');
   // 好的编码照常解
   assert.deepEqual(parseQuery('x=%E4%B8%AD'), { x: '中' });
 });
 
-test('空段被跳过（`&&` / 结尾的 `&`）', () => {
+test('空段被跳过（`&&` / 结尾的 `&`）', async () => {
   assert.deepEqual(parseQuery('a=1&&b=2&'), { a: '1', b: '2' });
 });
 
-test('非字符串输入 ⇒ 空对象（宿主没给 query 时）', () => {
+test('非字符串输入 ⇒ 空对象（宿主没给 query 时）', async () => {
   assert.deepEqual(parseQuery(undefined), {});
   assert.deepEqual(parseQuery(null), {});
   assert.deepEqual(parseQuery(123), {});
   assert.deepEqual(parseQuery({ id: 'x' }), {}, '给对象也返回空 —— 不猜');
 });
 
-test('⚠ 键也要解码（不然带中文/空格的键读不到）', () => {
+test('⚠ 键也要解码（不然带中文/空格的键读不到）', async () => {
   assert.deepEqual(parseQuery('%E4%B8%AD=x'), { 中: 'x' });
   assert.deepEqual(parseQuery('a+b=1'), { 'a b': '1' });
 });
 
-test('真实场景：运行记录的 id', () => {
+test('真实场景：运行记录的 id', async () => {
   // `daily-1760486400000` 里有 `-`，不需要转义；但 id 里带别的字符时要能解回来
   assert.deepEqual(parseQuery('id=daily-1760486400000'), { id: 'daily-1760486400000' });
   assert.deepEqual(parseQuery('id=a%3Db'), { id: 'a=b' });

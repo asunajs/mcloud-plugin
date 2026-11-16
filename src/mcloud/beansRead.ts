@@ -99,10 +99,12 @@ export interface BeanAccountDeps {
  *
  *  上游顺手回的 `set-cookie` 要并回会话那一格。翻页时每一枪都可能带回新的
  *  cookie —— 不并回去，下一枪就用旧 cookie 撞上游，看着像"上游坏了"其实是我们自己没续。 */
-function makeFetchPage(deps: BeanAccountDeps): (pageNumber: number) => ReturnType<typeof parseCloudRecords> {
+async function makeFetchPage(
+  deps: BeanAccountDeps,
+): Promise<(pageNumber: number) => Promise<ReturnType<typeof parseCloudRecords>>> {
   const nowIso = deps.nowIso ?? new Date().toISOString();
   const base = hostBase({ baseUrl: deps.baseUrl }, '');
-  return (pageNumber: number): ReturnType<typeof parseCloudRecords> => {
+  return async (pageNumber: number): Promise<ReturnType<typeof parseCloudRecords>> => {
     // ⚠ 每一枪现读会话（见上面"会话每一枪重读"）
     const session = loadSession(deps.store);
     if (session === null) throw new LoginExpiredError('这个账号还没有网页会话');
@@ -116,7 +118,7 @@ function makeFetchPage(deps: BeanAccountDeps): (pageNumber: number) => ReturnTyp
       saltKey: 1,
       session: sessionHeaders(session),
     });
-    const res = callOnce(deps.transport, req);
+    const res = await callOnce(deps.transport, req);
     if (res.setCookies.length > 0) {
       saveSession(
         deps.store,
@@ -151,8 +153,9 @@ function gateDeps(deps: BeanAccountDeps): Parameters<typeof withTokenGate>[0] {
  *  外面套 `withTokenGate`：票到期/被拒就当场换票重试（用户要的"无感刷新"）。
  *  抛错的语义都归"这个账号读不到"（无会话且换不出票 / 网络 / 上游码 / 翻不到底 /
  *  解不出 `insertTime`）—— 调用方按账号挪进 `failed[]`，**不影响别的账号**。 */
-export function readDayForAccount(deps: BeanAccountDeps, nowMs: number): BeanDay {
-  return withTokenGate(gateDeps(deps), () => beansReadDay(makeFetchPage(deps), nowMs));
+export async function readDayForAccount(deps: BeanAccountDeps, nowMs: number): Promise<BeanDay> {
+  const page = await makeFetchPage(deps);
+  return await withTokenGate(gateDeps(deps), () => beansReadDay(page, nowMs));
 }
 
 /** 明细窗口 → `days` 数字（`1/7/30/0`，`0` = 全部）。**不在名单里的值一律当"全部"。**
@@ -169,13 +172,14 @@ export function normalizeDays(raw: unknown): number {
  *
  *  与 [`readDayForAccount`] 同一层无感刷新（`withTokenGate`）：两条路由共用一条
  *  `cloudRecordV2`，票坏了都得当场换，不能只修其中一条。 */
-export function readRecordsForAccount(
+export async function readRecordsForAccount(
   deps: BeanAccountDeps,
   nowMs: number,
   days: number,
-): BeanRecords {
-  return withTokenGate(
+): Promise<BeanRecords> {
+  const page = await makeFetchPage(deps);
+  return await withTokenGate(
     gateDeps(deps),
-    () => beansReadRecords(makeFetchPage(deps), rangeSinceMs(days, nowMs), MAX_DETAIL_RECORDS),
+    () => beansReadRecords(page, rangeSinceMs(days, nowMs), MAX_DETAIL_RECORDS),
   );
 }

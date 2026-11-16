@@ -102,7 +102,7 @@ function seedAccounts(raw: Store, config: StandaloneConfig): void {
 }
 
 export async function createRuntime(opts: { configPath?: string; stateFile?: string } = {}): Promise<Runtime> {
-  const config = await loadConfig(opts.configPath);
+  const config = await await loadConfig(opts.configPath);
   const stateFile = opts.stateFile ?? config.stateFile;
   // 与面板**同一份实现、同一个目录布局**：CLI 指到面板那个目录就是同一份账号与凭据
   const storeDir = dirname(stateFile);
@@ -117,7 +117,7 @@ export async function createRuntime(opts: { configPath?: string; stateFile?: str
 
   const fetcher = makeNodeFetcher(config.http);
   installFetcher(fetcher);
-  const transport: Transport = (req) => {
+  const transport: Transport = async (req) => {
     const r = applyDefaultContentType(req);
     return fetcher(r.url, {
       method: r.method,

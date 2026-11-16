@@ -63,13 +63,13 @@ interface StepResult {
   lines?: string[];
 }
 
-function once(
+async function once(
   name: string,
-  fn: (d: TaskDeps) => TaskOutcome,
+  fn: (d: TaskDeps) => TaskOutcome | Promise<TaskOutcome>,
   deps: TaskDeps,
-): StepResult {
+): Promise<StepResult> {
   try {
-    const r = fn(deps);
+    const r = await fn(deps);
     // `skipped` 也是「这一步什么都没做」—— 运行记录里要显示成灰色，不是绿勾。
     return {
       name,
@@ -84,7 +84,7 @@ function once(
 }
 
 /** 一趟日常。返回一行结果 + 每一步的结果（落盘给界面读，同时进日志）。 */
-export function runDaily(
+export async function runDaily(
   deps: TaskDeps,
   opts: {
     onLine?: (line: string) => void;
@@ -92,12 +92,12 @@ export function runDaily(
     /** 长状态机的逐步原话（上传 / 打卡 / 重试）—— 不等整步结束。 */
     onNote?: (note: string) => void;
   } = {},
-): {
+): Promise<{
   ok: boolean;
   note: string;
   detail: string[];
   steps: DailyStep[];
-} {
+}> {
   // 真实起点：最后那行「用时 X 秒」用它算（**不是**日志时间戳用的那个冻结值）
   const started = Date.now();
   const steps: StepResult[] = [];
@@ -133,7 +133,7 @@ export function runDaily(
   // 之前放在最后一步，票到期那天前面所有任务先集体失败、最后才续上；
   // 现在先续，当前这一趟就能用新 token。离过期还远时一个请求都不发。
   opts.onPhase?.('凭据续期');
-  push(once('凭据续期', (d) => runAuthRefresh(d), deps));
+  push(await once('凭据续期', async (d) => await runAuthRefresh(d), deps));
 
   // ① 换票（H5 的 jwttoken 约 2 小时即废）。票新鲜时 `needExchange` 直接说不用。
   //
@@ -170,9 +170,9 @@ export function runDaily(
       }
       // ⚠ `runExchangeStep` 返回的是 `{ok, note, done}`，不是 `TaskOutcome` ——
       //   它用 `done` 而不是 `idle` 表示「这一趟走完了」。包一层对上 drain 的契约。
-      const r = drain(
-        (d) => {
-          const x = runExchangeStep(d, page);
+      const r = await drain(
+        async (d) => {
+          const x = await runExchangeStep(d, page);
           return { ok: x.ok, note: x.note, idle: x.done };
         },
         deps,
@@ -196,8 +196,8 @@ export function runDaily(
   opts.onPhase?.('签到');
   const signPending = () => (deps.store.getState(SIGN_STAGE) ?? '') === 'need-verify';
   push(
-    (() => {
-      const r = drain(runSign, deps, {
+    await (async () => {
+      const r = await drain(runSign, deps, {
         label: '签到',
         maxSteps: 4,
         more: signPending,
@@ -210,7 +210,7 @@ export function runDaily(
     ['签到翻倍', runMultiple],
     ['复活卡', runRevival],
   ] as const) {
-    push(once(name, fn, deps));
+    push(await once(name, fn, deps));
   }
 
   // ③ 任务拓展（状态机：读 → 随机文件+快照触发备份 → 清理自己造的；不再领云朵）
@@ -220,8 +220,8 @@ export function runDaily(
     push({ name: '任务拓展', ok: true, note: expKick.note, idle: true });
   } else {
     push(
-      (() => {
-        const r = drain(runExpansionStep, deps, {
+      await (async () => {
+        const r = await drain(runExpansionStep, deps, {
           label: '任务拓展',
           maxSteps: 12,
           onStep: (note) => opts.onNote?.(`任务拓展：${note}`),
@@ -237,8 +237,8 @@ export function runDaily(
   //   待办列表是**不全**的，App 任务就会漏做。
   //   所以这里 drain **整一轮**：两发，很便宜，而且读完就是完整读数。
   push(
-    (() => {
-      const r = drain(runAppTaskMatrix, deps, {
+    await (async () => {
+      const r = await drain(runAppTaskMatrix, deps, {
         label: 'App 任务矩阵',
         maxSteps: MATRIX_MARKETS.length,
       });
@@ -256,7 +256,7 @@ export function runDaily(
   if (kick !== null && kick.idle) {
     push({ name: 'App 任务', ok: true, note: kick.note, idle: true });
   } else {
-    const r = drain(runAppTaskStep, deps, {
+    const r = await drain(runAppTaskStep, deps, {
       label: 'App 任务',
       // ⚠ 20 步是"一条没成整趟停"那会儿的数：那时候每次最多做到第 10 步就收工了。
       //   现在逐条失败**不再中止**（2026-11-01，见 docs/app-task-ids.md），
@@ -296,7 +296,7 @@ export function runDaily(
   //       这一步仍要等下一次矩阵刷新才会看到（不赌「本地刚做完就算数」）。
   //     ⚠ 放在 ⑤ 领取AI豆 **之前**：那一族只认 `receiveList` 账本，
   //       这 20 豆不走它（抓包里 `receiveList` 只有 `cloudType=2` 下月可领）。
-  push(once('分享领奖', runShareClaim, deps));
+  push(await once('分享领奖', runShareClaim, deps));
 
   // ④.5 红包派对（移动云手机的活动站）—— 另一台主机、**另一套凭据**。
   //
@@ -309,7 +309,7 @@ export function runDaily(
   if (rpKick.idle === true || rpKick.skipped === true) {
     push({ name: '红包派对', ok: true, note: rpKick.note, idle: true });
   } else {
-    const r = drain(redpackStep, deps, {
+    const r = await drain(redpackStep, deps, {
       label: '红包派对',
       maxSteps: REDPACK_BUDGET.maxSteps,
       // 「进行中: X」这种内部进度走 debug（逐行的用户读数是上面那条通道）
@@ -345,7 +345,7 @@ export function runDaily(
   if (pkKick.idle === true || pkKick.skipped === true) {
     push({ name: '算力大作战', ok: true, note: pkKick.note, idle: true });
   } else {
-    const r = drain(tokenPkStep, deps, {
+    const r = await drain(tokenPkStep, deps, {
       label: '算力大作战',
       maxSteps: TOKENPK_BUDGET.maxSteps,
       // 「已登记 X —— 下一步 Y」这种内部进度走 debug；用户读数是下面那些逐行
@@ -371,7 +371,7 @@ export function runDaily(
   //      现在还需要知道的是那几条**现在什么状态** —— 见后面的「App 任务状态」。
   //    「做完了」信号是 `skipped: true`，所以不给 `more`。
   for (const [name, fn] of [['领取AI豆', runReceive]] as const) {
-    const r = drain(fn, deps, {
+    const r = await drain(fn, deps, {
       label: name,
       // ⚠ 领取这一类是"队列里一条一个请求"：**队列空了就停**（`more`），
       //   而不是靠步数上限兜 —— 靠上限兜的表现是"刚好领完"也被说成"没做完"。
@@ -389,7 +389,8 @@ export function runDaily(
 
   // ⑧ 收尾读数
   // 收尾几发都是**只读**：它们回答"现在有什么"，不是"这一趟做成了什么"。
-  push({ ...once('待领取奖品', runPrizes, deps), idle: true });
+  const prizeStep = await once('待领取奖品', runPrizes, deps);
+  push({ ...prizeStep, idle: true });
   // mcloud 2026-10-07 起把 `cloud-snapshot` / `task-list` 从任务注册里摘掉，
   // 读数改由「上游状态 / 数据」页按需取 —— 这里不再作为日常一步跑。
 
@@ -403,13 +404,13 @@ export function runDaily(
   const inUse = [activeAppTaskFileId(deps), activeExpansionFileId(deps)].filter(
     (x): x is string => x !== undefined,
   );
-  push(once('清理临时文件', (d) => runOwnedCleanup(d, { skip: inUse }), deps));
+  push(await once('清理临时文件', async (d) => await runOwnedCleanup(d, { skip: inUse }), deps));
 
   // ⑩ 今日云朵（参考实现 `afterTask::printTodayCloud` 那一行，但数据源用当前端点）。
   // 走 `cloudRecordV2`（与面板「今日AI豆」同一条链），不是参考实现的旧 `cloudRecord`；
   // 理由与真跑读数见 `tasks/todayCloud.ts` 文件头。
   // 走 `push` ⇒ 面板日志、CLI 日志、运行结束推送三处都会带上这一行。
-  push(once('今日云朵', runTodayCloud, deps));
+  push(await once('今日云朵', runTodayCloud, deps));
 
   // ⚠ `pending` 不是失败：动作做了、服务端还没确认，不能把整趟染红。
   const pendingCount = steps.filter((s) => s.pending === true).length;

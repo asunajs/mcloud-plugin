@@ -180,42 +180,12 @@ export function makeHost(): HostWs {
  *
  * 每个账号一条结果。调用方拿它决定怎么记 run / 怎么拼 note。
  * ⚠ 没选到账号时返回**空数组**（调用方据此**静默返回**，不记 run）——
- * 那不是失败，是"这条任务没配账号"。
  */
-export function forEachTaskAccount<T>(
-  base: Store,
-  task: string,
-  payload: { lateMs: number; manual?: boolean | undefined },
-  transport: Transport,
-  fn: (deps: TaskDeps, acctId: string, index: number, total: number) => T,
-): { acctId: string; result: T }[] {
-  // ⚠ `all` 在**这里**展开（不是存的时候）—— 以后新登录的账号也进得来。
-  // 手动触发（`manual=true`，老面板用 lateMs<0 兜底）只读 .manual；
-  // 定时触发只读 .auto —— 手动勾小号绝不会改到第二天的自动账号。
-  const mode: TaskAccountMode =
-    payload.manual === true || payload.lateMs < 0 ? 'manual' : 'auto';
-  const targets = resolveTaskAccounts(rawStoreOf(base), task, mode);
-  const out: { acctId: string; result: T }[] = [];
-  for (const [i, acctId] of targets.entries()) {
-    // ⚠ **每个账号一个 store**：`scoped(base, acctId)` 让这一趟里所有按账号的
-    //   读写都落到那一条的袋里。不这么做的话，循环里第二次跑的还是第一个号的
-    //   状态（"拿 A 的票发 B 的请求"），而那正是 F-048/F-049 那一类。
-    const one = scoped(rawStoreOf(base), acctId);
-    const deps = taskDeps(one, transport, payload);
-    out.push({ acctId, result: fn(deps, acctId, i, targets.length) });
-  }
-  return out;
-}
 
-/** 只给**一个**账号造 deps（多计划里每条计划一个账号）。 */
-export function depsForAccount(
-  base: Store,
-  acctId: string,
-  payload: { lateMs: number },
-  transport: Transport,
-): TaskDeps {
-  return taskDeps(scoped(rawStoreOf(base), acctId), transport, payload);
-}
+// ⚠ 这两个帮手原来在 mcloud/accountRuntime.ts 与 entries/shared.ts 各有一份（复制粘贴），
+//   P3 把它们做成 async 时立刻露馅：改了一处、另一处还是同步的 —— 编译期报"Promise 当值用"。
+//   现在只有一份（领域层），这里只 re-export。
+export { depsForAccount, forEachTaskAccount } from '../mcloud/accountRuntime.ts';
 
 export function taskDeps(
   store: Store,
@@ -225,7 +195,7 @@ export function taskDeps(
   // 云盘 / 邮箱那几族靠 `Authorization` 鉴权；构造器只给 x-yun-* 头。
   // ⚠ **按账号包一层**：transport 是四个入口共用的，注入时必须读**这个 deps 的 store**，
   //   否则多账号遍历会拿当前界面的号去发别人的请求。
-  const authorized: Transport = (req) => transport(authorizeRequest(req, loadAuthRaw(store)));
+  const authorized: Transport = async (req) => transport(authorizeRequest(req, loadAuthRaw(store)));
   return {
     store,
     transport: authorized,
@@ -305,9 +275,9 @@ export interface TaskPayload {
  *  这三件事（见 `client.ts`）。另造一个就是把这些再踩一遍。 */
 export function makePushDeps(transport: Transport): PushDeps {
   return {
-    http: (r) => {
+    http: async (r) => {
       // 返回值可能是 `{status,headers,body}` 也可能是失败形状 `{"error":…}`
-      const res = transport(r);
+      const res = await transport(r);
       if (isFetchError(res)) {
         return { ok: false, status: 0, body: '', error: res.error };
       }
@@ -330,14 +300,14 @@ export function makePushDeps(transport: Transport): PushDeps {
  *  @param text    正文（**这次运行的结果**，多行）
  *  @param hadFailure 这次有没有失败的一步（`minLevel: 'error'` 的规则只在 true 时发）
  */
-export function notify(
+export async function notify(
   store: Store,
   transport: Transport,
   taskKey: TaskKey,
   title: string,
   text: string,
   hadFailure: boolean,
-): PushResult | null {
+): Promise<PushResult | null> {
   const bindings = loadPushBindings(store);
   const ruleId = bindings[taskKey];
   if (ruleId === '') return null; // 没绑规则 ⇒ 不发（不是失败）
@@ -360,7 +330,7 @@ export function notify(
     return null;
   }
 
-  const result = sendPush(makePushDeps(transport), picked, title, text);
+  const result = await sendPush(makePushDeps(transport), picked, title, text);
   logTo('info', `推送（${rule.name}）：${result.line}`);
   return result;
 }

@@ -220,7 +220,7 @@ function decodeQr(m: QrMatrix): string {
 
 // ══════════════════════════════ ① 格式信息（对规范公布的表） ══════════════════════════════
 
-test('⚠ 格式信息逐位对上规范公布的表（8 个掩码 × 纠错级 L）', () => {
+test('⚠ 格式信息逐位对上规范公布的表（8 个掩码 × 纠错级 L）', async () => {
   // 这一条**不能省**：往返解码只能证明"编码与解码自洽"，两边一起错就测不出来。
   // 格式信息的 8 个常量是公开的，对上了说明 BCH(15,5) 与那个异或常量是对的。
   // 编码器内部会挑最优掩码，所以这里换不同载荷、读出它实际写进去的那一位串。
@@ -236,7 +236,7 @@ test('⚠ 格式信息逐位对上规范公布的表（8 个掩码 × 纠错级 
   assert.ok(seen.size >= 1, '至少要覆盖一个掩码');
 });
 
-test('⚠ 掩码编号真的用上了（不是恒定 0）', () => {
+test('⚠ 掩码编号真的用上了（不是恒定 0）', async () => {
   // 8 种掩码惩罚分不同 ⇒ 不同载荷应该挑出不同的掩码。
   // 恒为 0 的表现是"惩罚函数没生效"，而它不报错，只是码不是最优的。
   const masks = new Set<number>();
@@ -247,7 +247,7 @@ test('⚠ 掩码编号真的用上了（不是恒定 0）', () => {
 
 // ══════════════════════════════ ② 往返解码（最强的验法） ══════════════════════════════
 
-test('⚠ 往返：编码 → 解码 == 原文（真实载荷 + 各种长度）', () => {
+test('⚠ 往返：编码 → 解码 == 原文（真实载荷 + 各种长度）', async () => {
   const real =
     'https://yun.139.com/w/#/qrcLogin?dID=AABBCCDDEEFF00112233445566778899-ENDIN' +
     '&sID=FFEEDDCCBBAA99887766554433221100&cType=11&ver=8.8.6.20260829';
@@ -258,7 +258,7 @@ test('⚠ 往返：编码 → 解码 == 原文（真实载荷 + 各种长度）'
   }
 });
 
-test('往返：载荷里的字节是**逐字节**保住的（非 ASCII 也要）', () => {
+test('往返：载荷里的字节是**逐字节**保住的（非 ASCII 也要）', async () => {
   for (const p of ['云盘', 'émoji 🎉', 'a\tb\nc', '\u0000\u0001']) {
     assert.equal(decodeQr(encodeQr(p)), p, `没解回原文：${JSON.stringify(p)}`);
   }
@@ -266,7 +266,7 @@ test('往返：载荷里的字节是**逐字节**保住的（非 ASCII 也要）
 
 // ══════════════════════════════ ③ 结构不变量 ══════════════════════════════
 
-test('尺寸 = 4×版本 + 17；版本按容量选', () => {
+test('尺寸 = 4×版本 + 17；版本按容量选', async () => {
   for (let v = 1; v <= MAX_VERSION; v += 1) {
     const p = 'x'.repeat(byteCapacity(v));
     const m = encodeQr(p);
@@ -277,7 +277,7 @@ test('尺寸 = 4×版本 + 17；版本按容量选', () => {
   }
 });
 
-test('三个定位图案在位（7×7 的那个回字形）', () => {
+test('三个定位图案在位（7×7 的那个回字形）', async () => {
   const m = encodeQr('test');
   const { dark, size } = m;
   const at = (r: number, c: number) => dark[r * size + c]!;
@@ -313,7 +313,7 @@ test('三个定位图案在位（7×7 的那个回字形）', () => {
   }
 });
 
-test('定时图案：第 6 行 / 第 6 列从 8 到 size-9 交替', () => {
+test('定时图案：第 6 行 / 第 6 列从 8 到 size-9 交替', async () => {
   const m = encodeQr('x'.repeat(40));
   const { dark, size } = m;
   for (let i = 8; i < size - 8; i += 1) {
@@ -322,12 +322,12 @@ test('定时图案：第 6 行 / 第 6 列从 8 到 size-9 交替', () => {
   }
 });
 
-test('固定深色模块在 `(size-8, 8)`', () => {
+test('固定深色模块在 `(size-8, 8)`', async () => {
   const m = encodeQr('test');
   assert.ok(m.dark[(m.size - 8) * m.size + 8], '固定深色模块不见了');
 });
 
-test('校正图案：版本 2 起才有，且避开三个定位图案所在的角', () => {
+test('校正图案：版本 2 起才有，且避开三个定位图案所在的角', async () => {
   assert.equal(encodeQr('a').version, 1, '短载荷该用版本 1');
   // 版本 2 的校正图案中心在 (18,18)
   const m2 = encodeQr('x'.repeat(30));
@@ -340,7 +340,7 @@ test('校正图案：版本 2 起才有，且避开三个定位图案所在的�
 
 // ══════════════════════════════ ④ 容量与边界 ══════════════════════════════
 
-test('容量表单调增，且超长要**报错**而不是产出坏码', () => {
+test('容量表单调增，且超长要**报错**而不是产出坏码', async () => {
   let prev = 0;
   for (let v = 1; v <= MAX_VERSION; v += 1) {
     const c = byteCapacity(v);
@@ -350,7 +350,7 @@ test('容量表单调增，且超长要**报错**而不是产出坏码', () => {
   assert.throws(() => encodeQr('x'.repeat(byteCapacity(MAX_VERSION) + 1)), /太长/);
 });
 
-test('容量边界：正好装得下与多一个字节', () => {
+test('容量边界：正好装得下与多一个字节', async () => {
   for (const v of [1, 5, 9, 10]) {
     const cap = byteCapacity(v);
     assert.equal(encodeQr('x'.repeat(cap)).version, v, `正好 ${cap} 字节该是版本 ${v}`);
@@ -363,7 +363,7 @@ test('容量边界：正好装得下与多一个字节', () => {
 
 // ══════════════════════════════ ⑤ SVG 渲染 ══════════════════════════════
 
-test('SVG：含 4 模块静默区（少了它深色主题下扫不出来）', () => {
+test('SVG：含 4 模块静默区（少了它深色主题下扫不出来）', async () => {
   const payload = 'https://yun.139.com/w/#/qrcLogin?dID=X&sID=Y';
   const m = encodeQr(payload);
   const svg = qrSvg(payload, { scale: 6, quiet: 4 });
@@ -378,7 +378,7 @@ test('SVG：含 4 模块静默区（少了它深色主题下扫不出来）', ()
   assert.ok(!/M0 0h/.test(svg), '有深色模块落在静默区（左上角）');
 });
 
-test('SVG 是良构的：标签闭合、没有 NaN', () => {
+test('SVG 是良构的：标签闭合、没有 NaN', async () => {
   const svg = qrSvg('test');
   assert.ok(svg.startsWith('<svg ') && svg.endsWith('</svg>'));
   assert.ok(!svg.includes('NaN'), '有 NaN —— 某个尺寸算错了');
@@ -389,7 +389,7 @@ test('SVG 是良构的：标签闭合、没有 NaN', () => {
   }
 });
 
-test('SVG 的深色模块数与矩阵一致（没多画也没少画）', () => {
+test('SVG 的深色模块数与矩阵一致（没多画也没少画）', async () => {
   const payload = 'https://example.com/x';
   const m = encodeQr(payload);
   const svg = qrSvg(payload);
@@ -448,7 +448,7 @@ const GF_LOG: number[] = (() => {
   return log;
 })();
 
-test('⚠ 生成多项式对上规范 Annex A 的 α 指数表（纠错码字 > 8 个才算真检验）', () => {
+test('⚠ 生成多项式对上规范 Annex A 的 α 指数表（纠错码字 > 8 个才算真检验）', async () => {
   // ⚠ 这条不能用"自己往返"代替：把 `Math.pow(2, i) & 0xff` 当 α^i 用时，i ≥ 8 全变 0。
   //   而 n ≤ 8 的生成多项式根本用不到 α^8 —— v1（7 个纠错码字）一直是**对的**，
   //   正是它让那个 bug 看起来"没问题"（F-068）。
@@ -458,7 +458,7 @@ test('⚠ 生成多项式对上规范 Annex A 的 α 指数表（纠错码字 > 
   }
 });
 
-test('⚠ 黄金码字：真机载荷的 196 个码字逐字节命中**参考实现**', () => {
+test('⚠ 黄金码字：真机载荷的 196 个码字逐字节命中**参考实现**', async () => {
   const m = encodeQr(GOLDEN.payload);
   assert.equal(m.version, GOLDEN.version, '版本选错了（真机载荷 140 字节 ⇒ 版本 7）');
   const cw = readCodewords(m);
@@ -472,7 +472,7 @@ test('⚠ 黄金码字：真机载荷的 196 个码字逐字节命中**参考实
   );
 });
 
-test('⚠ 黄金矩阵：整张码逐格命中参考实现（数据位的**走法**只能这样验）', () => {
+test('⚠ 黄金矩阵：整张码逐格命中参考实现（数据位的**走法**只能这样验）', async () => {
   const m = encodeQr(GOLDEN.payload);
   assert.equal(m.size, GOLDEN.size);
   // ⚠ 掩码是黄金值的一部分：惩罚函数一改，这里就会红 —— 先确认那是**有意**的改动，

@@ -81,7 +81,7 @@ const MAC = pcClient('macos', 'AABBCCDDEEFF00112233445566778899-ENDIN');
 
 // ══════════════════════════════ 平台档案 ══════════════════════════════
 
-test('平台参数：windows / macos 的 clientType、cpid、version 各是一套', () => {
+test('平台参数：windows / macos 的 clientType、cpid、version 各是一套', async () => {
   assert.equal(clientType(WIN), '656');
   assert.equal(clientType(MAC), '710');
   assert.equal(cpid(WIN), '277');
@@ -90,7 +90,7 @@ test('平台参数：windows / macos 的 clientType、cpid、version 各是一�
   assert.equal(appVersion(MAC), '4.2.1');
 });
 
-test('⚠ `x-huawei-channelSrc` 是**常量**，不随平台变（这里错过的那个）', () => {
+test('⚠ `x-huawei-channelSrc` 是**常量**，不随平台变（这里错过的那个）', async () => {
   // 曾经让它与 appChannel 取同一个值 ⇒ mac 会发出 10301000。
   // 而它是登录必需的 5 个头之一，发错值上游回 `9999 登录失败！` ——
   // 看不出是头的问题。证据是客户端源码里那一行**字面量**。
@@ -102,7 +102,7 @@ test('⚠ `x-huawei-channelSrc` 是**常量**，不随平台变（这里错过�
   assert.equal(appChannel(MAC), '10301000');
 });
 
-test('⚠ 登录只发那 5 个头，`x-yun-app-channel` **不在里面**', () => {
+test('⚠ 登录只发那 5 个头，`x-yun-app-channel` **不在里面**', async () => {
   // 上一版多发了一个 x-yun-app-channel：把"登录前/登录后两套头"合并成一套。
   // 合并的后果**不是报错**，而是登录请求多带一个上游没预期的头 —— 静默的错。
   const h = pcHeaders(WIN);
@@ -119,14 +119,14 @@ test('⚠ 登录只发那 5 个头，`x-yun-app-channel` **不在里面**', () =
   assert.equal(Object.keys(pcBusinessHeaders(WIN)).length, 6);
 });
 
-test('⚠ `x-yun-client-info` 与 `x-DeviceInfo` 是**两个头、同一个值**', () => {
+test('⚠ `x-yun-client-info` 与 `x-DeviceInfo` 是**两个头、同一个值**', async () => {
   // 不是笔误：客户端源码里就是两行 setRequestHeader（大小写不同）
   const h = pcHeaders(WIN);
   assert.equal(h['x-yun-client-info'], h['x-DeviceInfo']);
   assert.ok(h['x-yun-client-info']!.includes(WIN.deviceId), '设备信息串里要有设备指纹');
 });
 
-test('设备信息串：14 段，第 3 段是版本、第 6 段是设备指纹', () => {
+test('设备信息串：14 段，第 3 段是版本、第 6 段是设备指纹', async () => {
   const seg = deviceInfo(WIN).split('|');
   assert.equal(seg.length, 14, `段数不对：${seg.length}`);
   assert.equal(seg[0], '');
@@ -145,7 +145,7 @@ test('设备信息串：14 段，第 3 段是版本、第 6 段是设备指纹',
   );
 });
 
-test('UA 反映平台（客户端自己就靠 UA 里的 mac 判断平台）', () => {
+test('UA 反映平台（客户端自己就靠 UA 里的 mac 判断平台）', async () => {
   assert.ok(userAgent(WIN).includes('Windows NT'));
   assert.ok(userAgent(MAC).includes('Macintosh'));
   assert.ok(!userAgent(WIN).includes('Macintosh'));
@@ -153,16 +153,16 @@ test('UA 反映平台（客户端自己就靠 UA 里的 mac 判断平台）', ()
 
 // ══════════════════════════════ 随机量 ══════════════════════════════
 
-test('设备指纹：32 位大写 hex + `-ENDIN`', () => {
+test('设备指纹：32 位大写 hex + `-ENDIN`', async () => {
   const d = newPcDeviceId();
   assert.match(d, /^[0-9A-F]{32}-ENDIN$/, `形态不对：${d}`);
 });
 
-test('`sID`：32 位**大写**十六进制', () => {
+test('`sID`：32 位**大写**十六进制', async () => {
   assert.match(newSessionId(), /^[0-9A-F]{32}$/);
 });
 
-test('⚠ 发码的 `random`：24 位**小写**十六进制（不是 UUID）', () => {
+test('⚠ 发码的 `random`：24 位**小写**十六进制（不是 UUID）', async () => {
   // 客户端源码里它是两段 `Math.random().toString(16).substring(2)` 拼出来的。
   // 长度（24）与字符集（小写 hex）**都由服务端校验** ——
   // 换成 UUID 会得到 36 字符带连字符的串，形态就不对了。
@@ -170,7 +170,7 @@ test('⚠ 发码的 `random`：24 位**小写**十六进制（不是 UUID）', (
   assert.match(r, /^[0-9a-f]{24}$/, `形态不对：${r}`);
 });
 
-test('两次生成不一样（不是常量）', () => {
+test('两次生成不一样（不是常量）', async () => {
   assert.notEqual(newSessionId(), newSessionId());
   assert.notEqual(newPcDeviceId(), newPcDeviceId());
   assert.notEqual(newSmsRandom(), newSmsRandom());
@@ -178,7 +178,7 @@ test('两次生成不一样（不是常量）', () => {
 
 // ══════════════════════════════ 二维码 ══════════════════════════════
 
-test('二维码载荷：四段 query 拼在 `#/qrcLogin` 之后，**不发任何请求**', () => {
+test('二维码载荷：四段 query 拼在 `#/qrcLogin` 之后，**不发任何请求**', async () => {
   const sid = 'FFEEDDCCBBAA99887766554433221100';
   const url = qrPayload(WIN, sid);
   assert.ok(url.startsWith(`${QR_LOGIN_URL}?`), url);
@@ -190,7 +190,7 @@ test('二维码载荷：四段 query 拼在 `#/qrcLogin` 之后，**不发任何
 
 // ══════════════════════════════ 登录方式 ══════════════════════════════
 
-test('pintype：扫码 21 / 短信 5 / 账密 9；ifOpenAccount 只有短信是 1', () => {
+test('pintype：扫码 21 / 短信 5 / 账密 9；ifOpenAccount 只有短信是 1', async () => {
   assert.equal(pintype('qr'), '21');
   assert.equal(pintype('sms'), '5');
   assert.equal(pintype('password'), '9');
@@ -198,7 +198,7 @@ test('pintype：扫码 21 / 短信 5 / 账密 9；ifOpenAccount 只有短信是 
   assert.equal(smsThirdloginBody(WIN, '13800000000', '123456')['extInfo']!['ifOpenAccount' as never], 1);
 });
 
-test('⚠ `thirdlogin` 请求体按 JSON key **字典序**，且三种方式共用同一个形状', () => {
+test('⚠ `thirdlogin` 请求体按 JSON key **字典序**，且三种方式共用同一个形状', async () => {
   const keys = Object.keys(qrThirdloginBody(WIN, 'S'));
   assert.deepEqual(keys, [
     'clientType',
@@ -216,7 +216,7 @@ test('⚠ `thirdlogin` 请求体按 JSON key **字典序**，且三种方式共�
   assert.deepEqual(Object.keys(passwordThirdloginBody(WIN, 'u', 'p')), keys);
 });
 
-test('三种方式的**值**差异：dycpwd 与 msisdn 各是什么', () => {
+test('三种方式的**值**差异：dycpwd 与 msisdn 各是什么', async () => {
   // 扫码：dycpwd = sID 原样，msisdn 空
   const qr = qrThirdloginBody(WIN, 'SID-1');
   assert.equal(qr['dycpwd'], 'SID-1');
@@ -235,7 +235,7 @@ test('三种方式的**值**差异：dycpwd 与 msisdn 各是什么', () => {
 
 // ══════════════════════════════ 口令哈希 ══════════════════════════════
 
-test('⚠ 口令哈希 = `SHA1("fetion.com.cn:" + 口令)` 的**大写** hex', () => {
+test('⚠ 口令哈希 = `SHA1("fetion.com.cn:" + 口令)` 的**大写** hex', async () => {
   assert.equal(PASSWORD_HASH_PREFIX, 'fetion.com.cn:');
   // 期望值由 Node 的 crypto 独立算出（不是"跑一遍看看是多少"）
   assert.equal(passwordHash('123456'), '871D0A9E95ABA22B4604224CFBA24E605FABBC34');
@@ -249,14 +249,14 @@ test('⚠ 口令哈希 = `SHA1("fetion.com.cn:" + 口令)` 的**大写** hex', (
 
 // ══════════════════════════════ 滑块 ══════════════════════════════
 
-test('⚠ 滑块答案加密：AES-128-CBC/PKCS7，输出 `base64(IV ‖ 密文)`', () => {
+test('⚠ 滑块答案加密：AES-128-CBC/PKCS7，输出 `base64(IV ‖ 密文)`', async () => {
   assert.equal(PUZZLE_AES_KEY, 'CREATPUZZLE03F9A');
   assert.equal(PUZZLE_AES_IV, 'E526E1F3F9765444');
   // 期望值由 Node 的 crypto 独立算出
   assert.equal(puzzleVerfycodeEncrypt('461'), 'RTUyNkUxRjNGOTc2NTQ0NPXSgBfdneawSGgfCa/g/Rg=');
 });
 
-test('⚠ 带滑块的发码体：字段名是 `puzzleVerfycode`（`verfy` 不是 `verify`）', () => {
+test('⚠ 带滑块的发码体：字段名是 `puzzleVerfycode`（`verfy` 不是 `verify`）', async () => {
   // 客户端源码在这里专门写了句「大坑！！！」—— 拼错的表现是服务端解不开。
   const body = sendSmsCodeBodyWithSlider(WIN, '13800000000', 'a'.repeat(24), '461');
   assert.ok('puzzleVerfycode' in body, `字段名不对：${Object.keys(body).join(',')}`);
@@ -268,7 +268,7 @@ test('⚠ 带滑块的发码体：字段名是 `puzzleVerfycode`（`verfy` 不�
   assert.equal(body['clientType'], clientType(WIN));
 });
 
-test('基础发码体：`mode` / `reqType` 是固定值，不暴露成参数', () => {
+test('基础发码体：`mode` / `reqType` 是固定值，不暴露成参数', async () => {
   const body = sendSmsCodeBody(WIN, '13800000000', 'b'.repeat(24));
   assert.deepEqual(body, {
     phoneNumber: '13800000000',
@@ -279,13 +279,13 @@ test('基础发码体：`mode` / `reqType` 是固定值，不暴露成参数', (
   });
 });
 
-test('取滑块体：`{account, type:2}`；路径是 `verfycode`（没有 i）', () => {
+test('取滑块体：`{account, type:2}`；路径是 `verfycode`（没有 i）', async () => {
   assert.deepEqual(sliderPuzzleBody('13800000000'), { account: '13800000000', type: 2 });
   assert.equal(SLIDER_PUZZLE_PATH, '/user/verfycode');
   assert.ok(!SLIDER_PUZZLE_PATH.includes('verifycode'), '拼成 verifycode 就错了');
 });
 
-test('`parseSliderPuzzle` → `sliderAnswer` 闭环：解出来就是答案（**不需要图像识别**）', () => {
+test('`parseSliderPuzzle` → `sliderAnswer` 闭环：解出来就是答案（**不需要图像识别**）', async () => {
   const answer = '461';
   const env = parseLoginEnvelope(
     JSON.stringify({
@@ -306,7 +306,7 @@ test('`parseSliderPuzzle` → `sliderAnswer` 闭环：解出来就是答案（**
   assert.equal(sliderAnswer(p), answer);
 });
 
-test('`sliderAnswer` 的自检：不是十进制数 / 超出图宽都要报错', () => {
+test('`sliderAnswer` 的自检：不是十进制数 / 超出图宽都要报错', async () => {
   const mk = (enc: string, width: number | null) => ({
     backgroundB64: 'x',
     puzzleB64: 'y',
@@ -326,7 +326,7 @@ test('`sliderAnswer` 的自检：不是十进制数 / 超出图宽都要报错',
   assert.equal(sliderAnswer(mk(puzzleVerfycodeEncrypt('0'), 640)), '0');
 });
 
-test('`parseSliderPuzzle` 缺字段要**报错并说出字段名**（别返回空图）', () => {
+test('`parseSliderPuzzle` 缺字段要**报错并说出字段名**（别返回空图）', async () => {
   const withData = (data: unknown) => parseLoginEnvelope(JSON.stringify({ code: '0000', data }));
   assert.throws(() => parseSliderPuzzle(withData({ puzzle: 'p', puzzleLeft: 'l' })), /缺少 picture/);
   assert.throws(
@@ -338,7 +338,7 @@ test('`parseSliderPuzzle` 缺字段要**报错并说出字段名**（别返回�
 
 // ══════════════════════════════ 信封与归类 ══════════════════════════════
 
-test('⚠ `code` 可能是数字也可能是字符串，两种都要归一', () => {
+test('⚠ `code` 可能是数字也可能是字符串，两种都要归一', async () => {
   assert.equal(parseLoginEnvelope('{"code":"0000"}').code, 0);
   assert.equal(parseLoginEnvelope('{"code":0}').code, 0);
   assert.equal(parseLoginEnvelope('{"code":"200059541"}').code, 200_059_541);
@@ -351,7 +351,7 @@ test('⚠ `code` 可能是数字也可能是字符串，两种都要归一', () 
   assert.equal(parseLoginEnvelope('{"code":"0000"}').rawCode, '0000');
 });
 
-test('⚠ 空响应要单独说 —— 它不是"JSON 解析失败"', () => {
+test('⚠ 空响应要单独说 —— 它不是"JSON 解析失败"', async () => {
   // 上游不肯给东西时就是**一个字都不回**。报成 `Unexpected end of JSON input` 的话，
   // 界面与日志里留的是内部术语，排障会往"我们解析错了"上找（真发生的事是上游没回应）。
   for (const body of ['', '   ', '\n']) {
@@ -361,16 +361,16 @@ test('⚠ 空响应要单独说 —— 它不是"JSON 解析失败"', () => {
   assert.throws(() => parseLoginEnvelope('{oops'), /不是 JSON/);
 });
 
-test('`message` 与 `msg` 两个键名都认', () => {
+test('`message` 与 `msg` 两个键名都认', async () => {
   assert.equal(parseLoginEnvelope('{"code":1,"message":"甲"}').message, '甲');
   assert.equal(parseLoginEnvelope('{"code":1,"msg":"乙"}').message, '乙');
 });
 
-test('不是 JSON 要报错（别当成"空响应"）', () => {
+test('不是 JSON 要报错（别当成"空响应"）', async () => {
   assert.throws(() => parseLoginEnvelope('<html>502</html>'), /不是 JSON/);
 });
 
-test('`isSuccessCode`：0 与 200 都算成功', () => {
+test('`isSuccessCode`：0 与 200 都算成功', async () => {
   assert.ok(isSuccessCode(0));
   assert.ok(isSuccessCode(200));
   assert.ok(!isSuccessCode(null));
@@ -378,7 +378,7 @@ test('`isSuccessCode`：0 与 200 都算成功', () => {
   assert.ok(!isSuccessCode(200_059_541));
 });
 
-test('⚠ `classifyPoll` 六个分支逐条', () => {
+test('⚠ `classifyPoll` 六个分支逐条', async () => {
   const c = (code: number | string, data?: unknown) =>
     classifyPoll(parseLoginEnvelope(JSON.stringify({ code, data })));
 
@@ -404,7 +404,7 @@ test('⚠ `classifyPoll` 六个分支逐条', () => {
   assert.equal(unknown.kind === 'other' ? unknown.code : null, 123_456);
 });
 
-test('⚠ `classifySendSms`：已发出 / 要滑块 / 滑块作废 三分支', () => {
+test('⚠ `classifySendSms`：已发出 / 要滑块 / 滑块作废 三分支', async () => {
   const c = (code: number | string, data?: unknown) =>
     classifySendSms(parseLoginEnvelope(JSON.stringify({ code, data })));
 
@@ -428,7 +428,7 @@ test('⚠ `classifySendSms`：已发出 / 要滑块 / 滑块作废 三分支', (
 
 // ══════════════════════════════ 会话推进 ══════════════════════════════
 
-test('⚠ 未扫码**不是错误**（当成错误会拿异常做流程控制，日志也会被刷满）', () => {
+test('⚠ 未扫码**不是错误**（当成错误会拿异常做流程控制，日志也会被刷满）', async () => {
   const s = newQrSession(WIN.deviceId, 1000);
   const r = applyPoll(s, { kind: 'not-scanned' }, 2000);
   assert.equal(r.ok, true);
@@ -436,7 +436,7 @@ test('⚠ 未扫码**不是错误**（当成错误会拿异常做流程控制，
   assert.equal(r.session.scanned, false);
 });
 
-test('已扫码 ⇒ 提示用户去手机上确认（唯一值得对外提示进度的中间态）', () => {
+test('已扫码 ⇒ 提示用户去手机上确认（唯一值得对外提示进度的中间态）', async () => {
   const s = newQrSession(WIN.deviceId, 1000);
   const r = applyPoll(s, { kind: 'scanned' }, 2000);
   assert.equal(r.ok, true);
@@ -445,7 +445,7 @@ test('已扫码 ⇒ 提示用户去手机上确认（唯一值得对外提示进
   assert.ok(r.note.includes('确认'), r.note);
 });
 
-test('⚠ 上游从"已扫码"**回退**成"没扫到"：不许把话改回"等手机扫码"', () => {
+test('⚠ 上游从"已扫码"**回退**成"没扫到"：不许把话改回"等手机扫码"', async () => {
   // 真机实测（2026-10-17）：手机扫到之后不到一分钟，上游又回了 200059541。
   // 这一支原来的写法把 note 改回"等手机扫码"，而界面上那一行显示的就是 note ——
   // 用户看到的变成「我明明扫了，它还在让我扫」，整件事的表现就是"没用"。
@@ -458,12 +458,12 @@ test('⚠ 上游从"已扫码"**回退**成"没扫到"：不许把话改回"等�
   assert.ok(back.note.includes('再扫'), `要说清下一步：${back.note}`);
 });
 
-test('⚠ 还没扫过时，"没扫到"仍然是"等手机扫码"（别把回退文案套到第一次）', () => {
+test('⚠ 还没扫过时，"没扫到"仍然是"等手机扫码"（别把回退文案套到第一次）', async () => {
   const r = applyPoll(newQrSession(WIN.deviceId, 1000), { kind: 'not-scanned' }, 2000);
   assert.equal(r.note, '等手机扫码');
 });
 
-test('成功 ⇒ 停，并把密文带出来', () => {
+test('成功 ⇒ 停，并把密文带出来', async () => {
   const s = newQrSession(WIN.deviceId, 1000);
   const r = applyPoll(s, { kind: 'success', encrypted: 'CT' }, 2000);
   assert.equal(r.stop, true);
@@ -472,7 +472,7 @@ test('成功 ⇒ 停，并把密文带出来', () => {
   assert.equal(r.encrypted, 'CT');
 });
 
-test('⚠ 限流 ⇒ 停，但**不换码**（换码会再吃一次限流）', () => {
+test('⚠ 限流 ⇒ 停，但**不换码**（换码会再吃一次限流）', async () => {
   const s = newQrSession(WIN.deviceId, 1000);
   const r = applyPoll(s, { kind: 'too-frequent' }, 2000);
   assert.equal(r.ok, true, '限流不是"登录失败"，不该标红');
@@ -481,7 +481,7 @@ test('⚠ 限流 ⇒ 停，但**不换码**（换码会再吃一次限流）', (
   assert.equal(r.session.sessionId, s.sessionId, '不许换 sID');
 });
 
-test('过期 / 会话错位 ⇒ 停且标失败，提示**重新出码**', () => {
+test('过期 / 会话错位 ⇒ 停且标失败，提示**重新出码**', async () => {
   for (const kind of ['expired', 'session-mismatch'] as const) {
     const r = applyPoll(newQrSession(WIN.deviceId, 1000), { kind }, 2000);
     assert.equal(r.stop, true, kind);
@@ -490,21 +490,21 @@ test('过期 / 会话错位 ⇒ 停且标失败，提示**重新出码**', () =>
   }
 });
 
-test('二维码 TTL：120 秒，`qrExpired` 按开始时刻算', () => {
+test('二维码 TTL：120 秒，`qrExpired` 按开始时刻算', async () => {
   const s = newQrSession(WIN.deviceId, 1000);
   assert.equal(qrExpiresAt(s), 1000 + QR_TTL_SECONDS * 1000);
   assert.equal(qrExpired(s, 1000 + 119_999), false);
   assert.equal(qrExpired(s, 1000 + 120_000), true);
 });
 
-test('⚠ 会话的 `deviceId` 与 `sessionId` 都要在里面（丢了任何一个轮询都会卡住）', () => {
+test('⚠ 会话的 `deviceId` 与 `sessionId` 都要在里面（丢了任何一个轮询都会卡住）', async () => {
   const s = newQrSession(WIN.deviceId, 1000);
   assert.equal(s.deviceId, WIN.deviceId, '设备指纹丢了 ⇒ 永远 200059541');
   assert.match(s.sessionId, /^[0-9A-F]{32}$/);
   assert.equal(s.done, false);
 });
 
-test('短信会话：手机号 + 24 位小写 hex 的 random', () => {
+test('短信会话：手机号 + 24 位小写 hex 的 random', async () => {
   const s = newSmsSession('13800000000', 1000);
   assert.equal(s.phone, '13800000000');
   assert.match(s.random, /^[0-9a-f]{24}$/);
@@ -514,7 +514,7 @@ test('短信会话：手机号 + 24 位小写 hex 的 random', () => {
 
 // ══════════════════════════════ 请求构造 ══════════════════════════════
 
-test('请求构造：路径、方法、头（设备头 + tid + content-type）', () => {
+test('请求构造：路径、方法、头（设备头 + tid + content-type）', async () => {
   const req = thirdloginRequest(WIN, 'tid-1', qrThirdloginBody(WIN, 'S'));
   assert.equal(req.url, `${LOGIN_HOST}${THIRD_LOGIN_PATH}`);
   assert.equal(req.method, 'POST');
@@ -525,7 +525,7 @@ test('请求构造：路径、方法、头（设备头 + tid + content-type）',
   assert.ok(!('x-yun-app-channel' in req.headers));
 });
 
-test('三个请求构造器各自的路径', () => {
+test('三个请求构造器各自的路径', async () => {
   assert.equal(
     sendSmsCodeRequest(WIN, 't', {}).url,
     `${LOGIN_HOST}${SEND_SMS_CODE_PATH}`,
@@ -538,7 +538,7 @@ test('三个请求构造器各自的路径', () => {
   assert.equal(SEND_SMS_CODE_PATH, '/user/sms/getSmsCode');
 });
 
-test('⚠ 登录主机**可以指到别处**（指到 mock；指不到的话 CI 会打真上游）', () => {
+test('⚠ 登录主机**可以指到别处**（指到 mock；指不到的话 CI 会打真上游）', async () => {
   const req = thirdloginRequest(WIN, 't', {}, 'http://127.0.0.1:19001');
   assert.equal(req.url, `http://127.0.0.1:19001${THIRD_LOGIN_PATH}`);
   // 尾部斜杠要容忍（配置里多打一个不该拼出 `//user/thirdlogin`）
@@ -546,14 +546,14 @@ test('⚠ 登录主机**可以指到别处**（指到 mock；指不到的话 CI 
   assert.equal(req2.url, `http://127.0.0.1:19001${THIRD_LOGIN_PATH}`);
 });
 
-test('登录主机与云盘业务主机不是同一台（所以它要自己的配置口子）', () => {
+test('登录主机与云盘业务主机不是同一台（所以它要自己的配置口子）', async () => {
   assert.ok(LOGIN_HOST.includes('user-njs'), LOGIN_HOST);
   assert.ok(!LOGIN_HOST.includes('m.mcloud.139.com'), '别把它写成业务主机');
 });
 
 // ══════════════════════════════ 成功响应解密 ══════════════════════════════
 
-test('⚠ 登录数据的解密是 **ECB**（不是 CBC）—— 模式用错会"解出来是乱码"', () => {
+test('⚠ 登录数据的解密是 **ECB**（不是 CBC）—— 模式用错会"解出来是乱码"', async () => {
   const info = { userInfo: { msisdn: '13800000000', nickname: '甲' } };
   const c = createCipheriv('aes-128-ecb', Buffer.from(LOGIN_AES_KEY, 'utf8'), null);
   const ct = Buffer.concat([c.update(JSON.stringify(info), 'utf8'), c.final()]);
@@ -569,7 +569,7 @@ test('⚠ 登录数据的解密是 **ECB**（不是 CBC）—— 模式用错会
 
 // ══════════════════════════════ 凭据 ══════════════════════════════
 
-test('⚠ 凭据是 `Basic base64("pc:<手机号>:<authToken>")` —— 前缀只有一个来源', () => {
+test('⚠ 凭据是 `Basic base64("pc:<手机号>:<authToken>")` —— 前缀只有一个来源', async () => {
   assert.equal(PC_AUTH_PREFIX, 'pc');
   assert.equal(APP_AUTH_PREFIX, 'mobile');
   const a = formatAuth('pc', '13800000000', 'TOK');
@@ -581,7 +581,7 @@ test('⚠ 凭据是 `Basic base64("pc:<手机号>:<authToken>")` —— 前缀�
   assert.throws(() => formatAuth('pc', '13800000000', ''), /缺少账号/);
 });
 
-test('`authFromUserInfo`：两个字段都必须是**非空字符串**', () => {
+test('`authFromUserInfo`：两个字段都必须是**非空字符串**', async () => {
   assert.equal(
     authFromUserInfo({ account: '13800000000', authToken: 'TOK' }),
     formatAuth('pc', '13800000000', 'TOK'),
@@ -593,7 +593,7 @@ test('`authFromUserInfo`：两个字段都必须是**非空字符串**', () => {
   assert.throws(() => authFromUserInfo({}), /缺少字段 account/);
 });
 
-test('手机号掩码：前 2 + `****` + 后 2；短号原样返回', () => {
+test('手机号掩码：前 2 + `****` + 后 2；短号原样返回', async () => {
   assert.equal(maskPhone('19900000001'), '19****01');
   assert.equal(maskPhone('13800000000'), '13****00');
   // ⚠ 短号原样返回：掩码成 `****` 会让"这是个短号"这件事消失，
@@ -602,7 +602,7 @@ test('手机号掩码：前 2 + `****` + 后 2；短号原样返回', () => {
   assert.equal(maskPhone(''), '');
 });
 
-test('`userDomainIdFrom`：只有登录响应里有它，取不到就是空串', () => {
+test('`userDomainIdFrom`：只有登录响应里有它，取不到就是空串', async () => {
   assert.equal(userDomainIdFrom({ userDomainId: 'D-1' }), 'D-1');
   assert.equal(userDomainIdFrom({ userDomainId: 1 }), '', '类型不对当没有，别猜');
   assert.equal(userDomainIdFrom({}), '');
@@ -610,7 +610,7 @@ test('`userDomainIdFrom`：只有登录响应里有它，取不到就是空串',
 
 // ══════════════════════════════ 账号标签与 id（跨模块） ══════════════════════════════
 
-test('⚠ `phoneOf` 要能读出 PC 凭据里的手机号（否则会多出重复账号）', () => {
+test('⚠ `phoneOf` 要能读出 PC 凭据里的手机号（否则会多出重复账号）', async () => {
   // PC 登录的凭据是 `Basic base64("pc:<手机号>:<token>")` —— 手机号在 **base64 里面**，
   // 只扫明文的话认不出。后果不只是"标签变成「账号 1」"：
   // **id 会变成 token 的哈希，而 token 每次登录都变 ⇒ 同一个号每登录一次就多一条。**
@@ -624,7 +624,7 @@ test('⚠ `phoneOf` 要能读出 PC 凭据里的手机号（否则会多出重�
   assert.equal(idOf(auth2), idOf(auth), 'token 变了 id 也该一样 —— 否则重复账号');
 });
 
-test('`phoneOf` 对旧的 H5 凭据（明文手机号）照旧工作', () => {
+test('`phoneOf` 对旧的 H5 凭据（明文手机号）照旧工作', async () => {
   assert.equal(phoneOf('SESSIONID=x; UID=13800000000'), '13800000000');
   assert.equal(phoneOf('随便一段没有号码的串'), undefined);
   // 畸形 base64 不许抛（这个函数只用来做标签与 id，不该把流程带崩）
@@ -632,7 +632,7 @@ test('`phoneOf` 对旧的 H5 凭据（明文手机号）照旧工作', () => {
   assert.equal(phoneOf('Basic'), undefined);
 });
 
-test('⚠ 登录那一族要**明确要 identity**（宿主会替我们要 gzip 却不给解压）', () => {
+test('⚠ 登录那一族要**明确要 identity**（宿主会替我们要 gzip 却不给解压）', async () => {
   // F-072：宿主的 HTTP 层会发 `accept-encoding: gzip`，但**不解压** ——
   // 而移动云盘只在响应够大时才压：登录成功那个 1–2 KB 的响应正好在阈值以上。
   // 所以这一条不是优化，是"能不能登录"的一部分。

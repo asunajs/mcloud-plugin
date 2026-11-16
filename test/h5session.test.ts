@@ -26,7 +26,7 @@ import {
   tyrzLoginRequest,
 } from '../src/mcloud/h5session.ts';
 
-test('① 原生族：Authorization 逐字用，body 是 `{"toSourceId":…}`，**无签名**', () => {
+test('① 原生族：Authorization 逐字用，body 是 `{"toSourceId":…}`，**无签名**', async () => {
   const r = specTokenRequest(SIGN_IN_RECIPE, 'Basic bW9iaWxlOjE=');
   assert.equal(r.url, `${BASE_USER_YUN}/user/querySpecTokenV2`);
   assert.equal(r.method, 'POST');
@@ -38,7 +38,7 @@ test('① 原生族：Authorization 逐字用，body 是 `{"toSourceId":…}`，
   assert.equal(specTokenRequest(SIGN_IN_RECIPE, 'B', 'http://m').url, 'http://m/user/querySpecTokenV2');
 });
 
-test('② 时间戳：GET、带 H5 那套头、**不带 jwttoken**（这一步正是为了拿票）', () => {
+test('② 时间戳：GET、带 H5 那套头、**不带 jwttoken**（这一步正是为了拿票）', async () => {
   const r = timestampRequest(SIGN_IN_RECIPE, 'https://p/', '/p');
   assert.equal(r.method, 'GET');
   assert.equal(r.body, undefined);
@@ -49,7 +49,7 @@ test('② 时间戳：GET、带 H5 那套头、**不带 jwttoken**（这一步�
   assert.equal(r.headers.jwttoken, undefined);
 });
 
-test('③ tyrzLogin：body 的键序是**字典序**、带 Origin 与四枚签名头', () => {
+test('③ tyrzLogin：body 的键序是**字典序**、带 Origin 与四枚签名头', async () => {
   const sign = makeSign('1700000000000');
   const r = tyrzLoginRequest(SIGN_IN_RECIPE, 'SSO', sign, 'https://ref/', '/p');
   assert.equal(
@@ -71,7 +71,7 @@ test('③ tyrzLogin：body 的键序是**字典序**、带 Origin 与四枚签�
   assert.equal(H5_SALT_KEY, 2);
 });
 
-test('页面 URL：`targetSourceId` 必须带、且排在 `token` **之后**', () => {
+test('页面 URL：`targetSourceId` 必须带、且排在 `token` **之后**', async () => {
   const u = pageUrl(SIGN_IN_RECIPE, 'SSO');
   assert.equal(
     u,
@@ -83,7 +83,7 @@ test('页面 URL：`targetSourceId` 必须带、且排在 `token` **之后**', (
   assert.ok(u.indexOf('token=') < u.indexOf('targetSourceId='));
 });
 
-test('页面 URL：没有 appID 的那一页 `enableShare=1` 落到**后面**（两处次序都是照抄）', () => {
+test('页面 URL：没有 appID 的那一页 `enableShare=1` 落到**后面**（两处次序都是照抄）', async () => {
   const p = { ...SIGN_IN_RECIPE, h5AppId: undefined, targetSourceId: undefined };
   const u = pageUrl(p, 'SSO');
   assert.ok(!u.includes('appID='), '`undefined` 是"没有这一枚"，不是空串');
@@ -91,7 +91,7 @@ test('页面 URL：没有 appID 的那一页 `enableShare=1` 落到**后面**（
   assert.ok(u.endsWith('&token=SSO&enableShare=1'), u);
 });
 
-test('① 解析：双层信封，`code` 是**字符串** `"0000"`', () => {
+test('① 解析：双层信封，`code` 是**字符串** `"0000"`', async () => {
   const ok = parseSsoToken('{"success":true,"code":"0000","message":"ok","data":{"token":"T"}}');
   assert.equal(ok.ok, true);
   assert.equal(ok.value, 'T');
@@ -103,14 +103,14 @@ test('① 解析：双层信封，`code` 是**字符串** `"0000"`', () => {
   assert.equal(parseSsoToken('不是 JSON').ok, false);
 });
 
-test('② 解析：数字与字符串都认，但**保持字符串**形态', () => {
+test('② 解析：数字与字符串都认，但**保持字符串**形态', async () => {
   assert.equal(parseServerTimestamp('{"code":0,"result":1700000000000}').value, '1700000000000');
   assert.equal(parseServerTimestamp('{"result":"1700000000000"}').value, '1700000000000');
   assert.equal(parseServerTimestamp('{"code":0}').ok, false);
   assert.equal(parseServerTimestamp('{"result":true}').ok, false, '布尔不是整数');
 });
 
-test('③ 解析：数字 0 与字符串 "0000" 都算成功；失败样本**没有 success 字段**', () => {
+test('③ 解析：数字 0 与字符串 "0000" 都算成功；失败样本**没有 success 字段**', async () => {
   const a = parseJwtToken('{"code":0,"msg":"success","result":{"token":"JWT","mobile":"13800000000"}}');
   assert.equal(a.ok, true);
   assert.equal(a.value!.jwt, 'JWT');
@@ -130,7 +130,7 @@ test('③ 解析：数字 0 与字符串 "0000" 都算成功；失败样本**没
   assert.equal(parseJwtToken('{"code":0,"result":{"token":"J"}}').ok, true);
 });
 
-test('凭据：带前缀的收下（**绝不**补第二次 `Basic `）', () => {
+test('凭据：带前缀的收下（**绝不**补第二次 `Basic `）', async () => {
   // 双前缀会得到 `Basic Basic bW9iaWxl…`，而上游回的是「非法的token！」
   // —— 那句话听起来像"凭据过期了"，会把排查带到隔壁
   assert.equal(normalizeAuthorization('Basic bW9iaWxlOjE=').value, 'Basic bW9iaWxlOjE=');
@@ -139,7 +139,7 @@ test('凭据：带前缀的收下（**绝不**补第二次 `Basic `）', () => {
   assert.equal(normalizeAuthorization('  Bearer eyJhbGci  ').value, 'Bearer eyJhbGci');
 });
 
-test('凭据：不管用户怎么贴，都归一成能直接当请求头的形状', () => {
+test('凭据：不管用户怎么贴，都归一成能直接当请求头的形状', async () => {
   const want = 'Basic bW9iaWxlOjE=';
   const cases: Array<[string, string]> = [
     ['裸 base64（没前缀）', 'bW9iaWxlOjE='],
@@ -170,7 +170,7 @@ test('凭据：不管用户怎么贴，都归一成能直接当请求头的形�
   assert.match(bad.error!, /认不出|形状/);
 });
 
-test('凭据：贴**明文** `pc:手机号:token|…` 会自动编成 Basic', () => {
+test('凭据：贴**明文** `pc:手机号:token|…` 会自动编成 Basic', async () => {
   const plain = 'pc:13700137001:3ybfyHGZ|1|RCS|1796100727482|abc';
   const r = normalizeAuthorization(plain);
   assert.equal(r.ok, true);
@@ -180,14 +180,14 @@ test('凭据：贴**明文** `pc:手机号:token|…` 会自动编成 Basic', ()
   assert.equal(back, plain);
 });
 
-test('`h5Headers`：`jwttoken` 只在给了票时才加，且头名小写', () => {
+test('`h5Headers`：`jwttoken` 只在给了票时才加，且头名小写', async () => {
   const noJwt = h5Headers(SIGN_IN_RECIPE, 'r', undefined, 'true');
   assert.equal(noJwt.jwttoken, undefined);
   const withJwt = h5Headers(SIGN_IN_RECIPE, 'r', 'J', 'true');
   assert.equal(withJwt.jwttoken, 'J');
   assert.equal(withJwt.jwtToken, undefined, '不能驼峰化');
 });
-test('口子给**空串**（= 用真上游）时 URL 仍然是绝对的 —— 2026-10-14 实机踩出来的洞', () => {
+test('口子给**空串**（= 用真上游）时 URL 仍然是绝对的 —— 2026-10-14 实机踩出来的洞', async () => {
   // ⚠ 背景：`loadBaseUrl()` 用 `''` 表示"没配 ⇒ 用真上游"（界面也这么显示），
   //   而构建函数原来写 `base ?? DEFAULT` —— `??` 只挡 `undefined`，空串一路穿到底
   //   ⇒ 拼出**相对 URL**（`/user/querySpecTokenV2`）⇒ 宿主报 `missing uri scheme`，

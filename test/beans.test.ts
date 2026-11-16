@@ -43,14 +43,14 @@ const bj = (day: number, h = 12, m = 0, s = 0, ms = 0): string => {
 
 // ══════════════════════════ 日界（东八区自然日）══════════════════════════
 
-test('dayStartMs：东八区日界，不是运行机器时区', () => {
+test('dayStartMs：东八区日界，不是运行机器时区', async () => {
   const start = dayStartMs(NOW_UTC_MS);
   // NOW_UTC_MS = 东八区 2026-10-17 12:00 ⇒ 日界 = 东八区 10-17 00:00 = UTC 10-16 16:00
   assert.equal(start, Date.UTC(2026, 9, 16, 16, 0, 0));
   assert.ok(BEIJING_OFFSET_SECS === 8 * 3600);
 });
 
-test('isToday：东八区左闭右开，跨 UTC 零点但仍在同一天', () => {
+test('isToday：东八区左闭右开，跨 UTC 零点但仍在同一天', async () => {
   // 东八区 2026-10-17 07:30 = UTC 2026-10-16 23:30 ⇒ UTC 上还是"昨天"，东八区上是"今天"
   const ts = Date.UTC(2026, 9, 16, 23, 30, 0);
   assert.equal(isToday(ts, NOW_UTC_MS), true);
@@ -58,7 +58,7 @@ test('isToday：东八区左闭右开，跨 UTC 零点但仍在同一天', () =>
   assert.equal(isToday(dayStartMs(NOW_UTC_MS) + 86_400_000, NOW_UTC_MS), false);
 });
 
-test('rangeSinceMs：`days=1` 从今天 0 点起、`days=7` 从上周同日 0 点起、`days<=0` 不限', () => {
+test('rangeSinceMs：`days=1` 从今天 0 点起、`days=7` 从上周同日 0 点起、`days<=0` 不限', async () => {
   const today = dayStartMs(NOW_UTC_MS);
   assert.equal(rangeSinceMs(1, NOW_UTC_MS), today);
   // 含今天共 7 天 ⇒ 回退 6 个自然日
@@ -69,14 +69,14 @@ test('rangeSinceMs：`days=1` 从今天 0 点起、`days=7` 从上周同日 0 �
   assert.equal(rangeSinceMs(-1, NOW_UTC_MS), undefined);
 });
 
-test('beanQuery：参数逐字（`aiDou=1`、`type=0`、`pageNumber`、`pageSize=100`）', () => {
+test('beanQuery：参数逐字（`aiDou=1`、`type=0`、`pageNumber`、`pageSize=100`）', async () => {
   assert.equal(beanQuery(1), 'aiDou=1&type=0&pageNumber=1&pageSize=100');
   assert.equal(beanQuery(7), 'aiDou=1&type=0&pageNumber=7&pageSize=100');
 });
 
 // ══════════════════════════ insertTime 归一（不猜时区）═══════════════════
 
-test('parseInsertTimeMs：认 Z / 认 ±HH:MM / 无偏移 ⇒ undefined（不猜）', () => {
+test('parseInsertTimeMs：认 Z / 认 ±HH:MM / 无偏移 ⇒ undefined（不猜）', async () => {
   assert.equal(parseInsertTimeMs('2026-10-16T16:00:00.000Z'), Date.UTC(2026, 9, 16, 16));
   assert.equal(parseInsertTimeMs(bj(17, 12)), NOW_UTC_MS);
   // 负偏移也要认（`-05:00` ⇒ UTC 上比串面晚 5 小时）
@@ -92,7 +92,7 @@ test('parseInsertTimeMs：认 Z / 认 ±HH:MM / 无偏移 ⇒ undefined（不猜
   assert.equal(parseInsertTimeMs('2026-02-30T00:00:00Z'), undefined);
 });
 
-test('parseInsertTimeMs：闰年 2-29 认得、非闰年 2-29 拒', () => {
+test('parseInsertTimeMs：闰年 2-29 认得、非闰年 2-29 拒', async () => {
   assert.ok(parseInsertTimeMs('2024-02-29T00:00:00Z') !== undefined);
   assert.equal(parseInsertTimeMs('2025-02-29T00:00:00Z'), undefined);
   // 世纪规则：2100 不是闰年（`% 100 === 0 && % 400 !== 0`）
@@ -102,7 +102,7 @@ test('parseInsertTimeMs：闰年 2-29 认得、非闰年 2-29 拒', () => {
 
 // ══════════════════════════ 解 result.records ════════════════════════════
 
-test('parseCloudRecords：认 `result.records`；`insertTime` 与 `inserttime` 两种键都收', () => {
+test('parseCloudRecords：认 `result.records`；`insertTime` 与 `inserttime` 两种键都收', async () => {
   const one = parseCloudRecords({
     records: [
       { num: 10, summary: 's1', mark: 'm1', insertTime: bj(17, 8) },
@@ -116,7 +116,7 @@ test('parseCloudRecords：认 `result.records`；`insertTime` 与 `inserttime` �
   assert.equal(one[1]!.insertTime, bj(17, 9));
 });
 
-test('parseCloudRecords：**没有 result.records 就抛**（不"两种形状都吃"）', () => {
+test('parseCloudRecords：**没有 result.records 就抛**（不"两种形状都吃"）', async () => {
   // `result` 直接给数组 —— 那是原实现特意避开的路径（形状不对要**响**，不能"兼容"过去）
   assert.throws(() => parseCloudRecords([{ num: 1 }]), /result 对象/);
   assert.throws(() => parseCloudRecords(undefined), /result 对象/);
@@ -133,7 +133,7 @@ const rec = (n: Partial<CloudRecord> & Pick<CloudRecord, 'num'>): CloudRecord =>
   ...n,
 });
 
-test('aggregateToday：进 `>=0` 走 gained、`<0` 走 spent（取正数），net = 差', () => {
+test('aggregateToday：进 `>=0` 走 gained、`<0` 走 spent（取正数），net = 差', async () => {
   const day = aggregateToday(
     [
       rec({ num: 10, insertTime: bj(17, 8) }),
@@ -153,7 +153,7 @@ test('aggregateToday：进 `>=0` 走 gained、`<0` 走 spent（取正数），ne
   assert.equal(day.gainedCount, 1);
 });
 
-test('aggregateToday：解不出的流水 ⇒ **抛**，不静默丢', () => {
+test('aggregateToday：解不出的流水 ⇒ **抛**，不静默丢', async () => {
   // 缺 insertTime
   assert.throws(() => aggregateToday([rec({ num: 5 })], NOW_UTC_MS), /没有 insertTime/);
   // 有 insertTime 但格式认不出（无偏移）
@@ -165,7 +165,7 @@ test('aggregateToday：解不出的流水 ⇒ **抛**，不静默丢', () => {
 
 // ══════════════════════════ readDay（今日，翻页翻到底）══════════════════
 
-test('readDay：不满一页只取第一页；装满就取下一页', () => {
+test('readDay：不满一页只取第一页；装满就取下一页', async () => {
   const calls: number[] = [];
   const fetch = (p: number): CloudRecord[] => {
     calls.push(p);
@@ -181,7 +181,7 @@ test('readDay：不满一页只取第一页；装满就取下一页', () => {
       rec({ num: -2, insertTime: bj(16, 20) }),
     ];
   };
-  const day = readDay(fetch, NOW_UTC_MS);
+  const day = await readDay(fetch, NOW_UTC_MS);
   assert.deepEqual(calls, [1, 2]);
   // 今日 = 100 页满 + 第二页那一条 `+5` = 105；支 = 0；昨天那条**不算**
   assert.equal(day.gained, 105);
@@ -190,15 +190,15 @@ test('readDay：不满一页只取第一页；装满就取下一页', () => {
   assert.equal(day.gainedCount, 101);
 });
 
-test('readDay：翻满 `MAX_PAGES` 还是满页 ⇒ 抛（不报可能少算的数）', () => {
+test('readDay：翻满 `MAX_PAGES` 还是满页 ⇒ 抛（不报可能少算的数）', async () => {
   const fetch = (): CloudRecord[] =>
     Array.from({ length: PAGE_SIZE }, () => rec({ num: 1, insertTime: bj(17, 1) }));
-  assert.throws(() => readDay(fetch, NOW_UTC_MS), /翻满 20 页/);
+  await assert.rejects(async () => await readDay(fetch, NOW_UTC_MS), /翻满 20 页/);
 });
 
 // ══════════════════════════ readRecords（明细，倒序 / undated / hasMore）═
 
-test('readRecords：解不出时间的**照样列**（排最后），窗口外才丢', () => {
+test('readRecords：解不出时间的**照样列**（排最后），窗口外才丢', async () => {
   const all: CloudRecord[] = [
     rec({ num: 10, summary: 'today', insertTime: bj(17, 8) }),
     rec({ num: -3, summary: 'yest', insertTime: bj(16, 8) }),
@@ -215,7 +215,7 @@ test('readRecords：解不出时间的**照样列**（排最后），窗口外�
   assert.equal(r.hasMore, false);
 });
 
-test('readRecords：`days=0` 不限窗口 ⇒ 全留（含时间解不出的）', () => {
+test('readRecords：`days=0` 不限窗口 ⇒ 全留（含时间解不出的）', async () => {
   const all: CloudRecord[] = [
     rec({ num: 1, insertTime: bj(1, 1) }),
     rec({ num: 2 }),
@@ -225,7 +225,7 @@ test('readRecords：`days=0` 不限窗口 ⇒ 全留（含时间解不出的）'
   assert.equal(r.undated, 1);
 });
 
-test('readRecords：撞 `MAX_DETAIL_RECORDS` ⇒ 截并 `hasMore=true`（不静默丢）', () => {
+test('readRecords：撞 `MAX_DETAIL_RECORDS` ⇒ 截并 `hasMore=true`（不静默丢）', async () => {
   const all: CloudRecord[] = Array.from(
     { length: MAX_DETAIL_RECORDS + 5 },
     (_, i) =>
@@ -237,17 +237,17 @@ test('readRecords：撞 `MAX_DETAIL_RECORDS` ⇒ 截并 `hasMore=true`（不静�
   assert.equal(r.hasMore, true);
 });
 
-test('readRecords：翻到 `MAX_PAGES` 还是满页 ⇒ 也标 `hasMore`（今日那条会抛，这一条**不抛**）', () => {
+test('readRecords：翻到 `MAX_PAGES` 还是满页 ⇒ 也标 `hasMore`（今日那条会抛，这一条**不抛**）', async () => {
   const fetch = (): CloudRecord[] =>
     Array.from({ length: PAGE_SIZE }, (_, i) =>
       rec({ num: 1, insertTime: bj(17, 1, Math.floor(i / 60), i % 60) }),
     );
-  const r = readRecords(fetch, undefined, MAX_DETAIL_RECORDS);
+  const r = await readRecords(fetch, undefined, MAX_DETAIL_RECORDS);
   assert.equal(r.hasMore, true);
 });
 
-test('readRecords：解不出的那一笔**已经在 records 里**（只是 `atMs=undefined`）', () => {
-  const r = readRecords(
+test('readRecords：解不出的那一笔**已经在 records 里**（只是 `atMs=undefined`）', async () => {
+  const r = await readRecords(
     () => [rec({ num: 5, summary: 'x' })],
     rangeSinceMs(1, NOW_UTC_MS),
     100,
@@ -267,7 +267,7 @@ test('readRecords：解不出的那一笔**已经在 records 里**（只是 `atM
 // 这一条钉住"声明了"这件事：哪天有人改回默认档，这里先红，而不是等界面 500。
 const PANEL_DEFAULT_BUDGET_MS = 2_000;
 const NOW_ISO = new Date(NOW_UTC_MS).toISOString();
-const exploding: Transport = () => {
+const exploding: Transport = async () => {
   throw new Error('这条测试不该发上游请求');
 };
 const routeBy = (path: string) => {
@@ -279,7 +279,7 @@ const routeBy = (path: string) => {
 };
 
 for (const path of ['beans/today', 'beans/records']) {
-  test(`${path}：声明了比面板默认档更宽的预算（不然读完就被看门狗打断成 500）`, () => {
+  test(`${path}：声明了比面板默认档更宽的预算（不然读完就被看门狗打断成 500）`, async () => {
     const r = routeBy(path);
     assert.ok(
       typeof r.budget_ms === 'number' && r.budget_ms > PANEL_DEFAULT_BUDGET_MS,

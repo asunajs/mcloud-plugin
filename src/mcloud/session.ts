@@ -235,12 +235,12 @@ export function sessionStatus(store: Store, nowIso: string): SessionStatus {
  *  为什么用「真发一次」而不是看 cookie 的过期字段：我们拿到的 cookie 串是**手工粘贴**的，
  *  属性段（`Expires`）在归一化时已经被丢掉了 —— 也就是说本地无从判断它是否过期。
  *  「上游还认不认」是唯一可靠、也唯一有意义的判据。 */
-export function verifySession(deps: {
+export async function verifySession(deps: {
   store: Store;
   transport: Transport;
   nowIso: string;
   baseUrl?: string | undefined;
-}): { ok: boolean; note: string } {
+}): Promise<{ ok: boolean; note: string }> {
   const s = loadSession(deps.store);
   if (!s) {
     const note = '没有会话';
@@ -260,7 +260,7 @@ export function verifySession(deps: {
     session: sessionHeaders(s),
   });
 
-  const res = callOnce(deps.transport, req);
+  const res = await callOnce(deps.transport, req);
   const ok = res.ok;
   const note = ok
     ? `会话有效（${res.tookMs}ms）`

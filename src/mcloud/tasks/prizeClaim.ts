@@ -173,7 +173,7 @@ const bareBase64 = (v: string): string => {
 };
 
 /** 一次请求：带签名/会话头、并把响应顺手给的 cookie 并回会话。 */
-function sendOnce(
+async function sendOnce(
   deps: PrizeDeps,
   spec: {
     path: string;
@@ -183,7 +183,7 @@ function sendOnce(
     contentType?: string | undefined;
     isDeviceId?: boolean | undefined;
   },
-): CallResult {
+): Promise<CallResult> {
   const session = loadSession(deps.store);
   const url =
     hostBase(deps, MCLOUD_HOST) + spec.path + (spec.query ? `?${spec.query}` : '');
@@ -200,7 +200,7 @@ function sendOnce(
     marketName: PRIZE_ACTIVITY,
     session: session ? sessionHeaders(session) : {},
   });
-  const res = callOnce(deps.transport, req);
+  const res = await callOnce(deps.transport, req);
   if (res.setCookies.length > 0 && session !== null) {
     saveSession(
       deps.store,
@@ -250,14 +250,14 @@ export function prizeCodeText(code: number, msg?: string | undefined): string {
 }
 
 /** 读一页列表。解析失败要如实说（不拿空数组冒充"没有待领取"）。 */
-function readListPage(deps: PrizeDeps, page: number): {
+async function readListPage(deps: PrizeDeps, page: number): Promise<{
   ok: boolean;
   note?: string;
   records: unknown[];
   totalCount?: number;
   totalPages?: number;
-} {
-  const res = sendOnce(deps, {
+}> {
+  const res = await sendOnce(deps, {
     path: EP_PRIZE.list,
     method: 'GET',
     query: `currPage=${page}&pageSize=${PRIZE_LIST_PAGE_SIZE}`,
@@ -331,7 +331,7 @@ function expireRank(item: PrizeItem): number {
  *  `failed` 与 `items` 可以同时有：第 2 页挂了，第 1 页的结果照样给，并说清"少读了哪一页"。
  *  完全不吞失败 —— 混成一句"没有待领取"会让一次网络/鉴权失败看起来像"这个号没奖品"，
  *  而奖品是会过期的（参考实现 `prize-records.ts` 的同一句话）。 */
-export function readPendingPrizes(deps: PrizeDeps): PrizeListResult {
+export async function readPendingPrizes(deps: PrizeDeps): Promise<PrizeListResult> {
   const map = new Map<string, PrizeItem>();
   let scanned = 0;
   let totalCount: number | undefined;
@@ -339,7 +339,7 @@ export function readPendingPrizes(deps: PrizeDeps): PrizeListResult {
   let failed: string | undefined;
 
   for (let page = 1; page <= PRIZE_LIST_MAX_PAGES; page += 1) {
-    const one = readListPage(deps, page);
+    const one = await readListPage(deps, page);
     if (!one.ok) {
       const why = one.note ?? '未知原因';
       failed = page === 1 ? why : `第 ${page} 页没读成：${why}`;
@@ -481,11 +481,11 @@ export interface ClaimStartResult {
  *   · 只在用户点「领取」时调用（不是页面打开就发）；
  *   · 同一件 60 秒内不重发（本地闸，别让上游回 1001）；
  *   · 失败时**不发**下一枪（滑块算不出来就不发 —— 和兑换那条同一个口径）。 */
-export function startPrizeClaim(
+export async function startPrizeClaim(
   deps: PrizeDeps,
   item: PrizeItem,
   accountLabel = '',
-): ClaimStartResult {
+): Promise<ClaimStartResult> {
   if (!item.claimable || item.oid === '') {
     return { ok: false, note: '这一条没有单号（oId），领不了 —— 刷新列表再试' };
   }
@@ -506,7 +506,7 @@ export function startPrizeClaim(
   }
 
   // ① 详情：拿到 `prizetype`（验证码要不要 MD5）与"是不是已经领过"
-  const detail = sendOnce(deps, {
+  const detail = await sendOnce(deps, {
     path: EP_PRIZE.detail,
     method: 'GET',
     query:
@@ -542,7 +542,7 @@ export function startPrizeClaim(
   const phone = item.phone ?? (accountLabel !== '' ? accountLabel : undefined);
 
   // ② 滑块题面：`picture` 是 JPEG、`puzzle` 是 PNG 竖切片（见文件头 ③）
-  const slide = sendOnce(deps, {
+  const slide = await sendOnce(deps, {
     path: EP_PRIZE.slide,
     method: 'POST',
     body: '{}',
@@ -597,7 +597,7 @@ export function startPrizeClaim(
     puzzleOffset: solution.offsetX,
     app: 0,
   });
-  const sms = sendOnce(deps, {
+  const sms = await sendOnce(deps, {
     path: EP_PRIZE.sms,
     method: 'POST',
     body,
@@ -676,11 +676,11 @@ export interface ClaimConfirmResult {
  *
  *  ⚠ 状态来自 `startPrizeClaim` 落的那一单：**没发过短信就不许确认**（否则拿旧单
  *  或别人的单去撞，只会换回一个看不懂的错误码）。 */
-export function confirmPrizeClaim(
+export async function confirmPrizeClaim(
   deps: PrizeDeps,
   oid: string,
   code: string,
-): ClaimConfirmResult {
+): Promise<ClaimConfirmResult> {
   const st = loadClaimState(deps.store);
   if (st === null || st.oid !== oid) {
     return { ok: false, note: '先点「领取」发验证码，再来填这一条' };
@@ -716,7 +716,7 @@ export function confirmPrizeClaim(
     smsCode,
     deviceId,
   });
-  const res = sendOnce(deps, {
+  const res = await sendOnce(deps, {
     path: EP_PRIZE.accept,
     method: 'POST',
     body,
@@ -784,13 +784,13 @@ export function confirmPrizeClaim(
  *  票真过期了就回一句人话，让用户自己再点（他点了才算重试）。
  *
  *  先换票这个动作本身是安全的：换票链不碰奖品。 */
-export function ensurePrizeToken(deps: PrizeDeps): { ok: boolean; note?: string | undefined } {
+export async function ensurePrizeToken(deps: PrizeDeps): Promise<{ ok: boolean; note?: string | undefined }> {
   // ⚠ 用真时钟：`jwtFresh` 比的是会话里那条 `at`（真实 ISO 时间），不是注入的假时钟
   if (jwtFresh(deps.store, Date.now(), FALLBACK_RECIPE)) return { ok: true };
   // 没有可换票的原生凭据 ⇒ **不拦**：手工贴进来的会话本来就是"只有 jwttoken"，
   // 那一张票可能还能用。让上游自己判（90001 会由调用方翻成"去账号页重新登录"）。
   if (loadAuthRaw(deps.store) === '') return { ok: true };
-  const r = exchangeOnce(
+  const r = await exchangeOnce(
     {
       store: deps.store,
       transport: deps.transport,
@@ -806,8 +806,8 @@ export function ensurePrizeToken(deps: PrizeDeps): { ok: boolean; note?: string 
  *
  *  `withTokenGate` 的约定是**成功就返回、票问题就抛 `LoginExpiredError`**；
  *  业务失败（`ok:false`）不算票问题，原样返回。 */
-export function withPrizeTokenGate<T>(deps: PrizeDeps, run: () => T): T {
-  return withTokenGate(
+export async function withPrizeTokenGate<T>(deps: PrizeDeps, run: () => T): Promise<T> {
+  return await withTokenGate(
     {
       store: deps.store,
       transport: deps.transport,

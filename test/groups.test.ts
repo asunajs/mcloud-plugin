@@ -3,18 +3,18 @@ import assert from 'node:assert/strict';
 import { GROUPS, TASK_META, groupView } from '../src/mcloud/groups.ts';
 import { memStore } from '../src/store/memory.ts';
 
-test('分组：每条任务的组都存在，且每组都有任务', () => {
+test('分组：每条任务的组都存在，且每组都有任务', async () => {
   const ids = new Set(GROUPS.map((g) => g.id));
   for (const t of TASK_META) assert.ok(ids.has(t.group), `${t.name} 的组 ${t.group} 不存在`);
   for (const g of GROUPS) assert.ok(TASK_META.some((t) => t.group === g.id), `组 ${g.id} 是空的`);
 });
 
-test('分组：任务名不重复', () => {
+test('分组：任务名不重复', async () => {
   const names = TASK_META.map((t) => t.name);
   assert.equal(new Set(names).size, names.length);
 });
 
-test('分组：路线图那两列 —— implemented 说做完了没，evidence 说能不能做', () => {
+test('分组：路线图那两列 —— implemented 说做完了没，evidence 说能不能做', async () => {
   const by = (n: string) => TASK_META.find((t) => t.name === n)!;
   // 已实现的必须有证据，而且不能是"做不了"的那两档。
   //
@@ -46,7 +46,7 @@ test('分组：路线图那两列 —— implemented 说做完了没，evidence 
   assert.equal(rp.risk, 'write-cloud', 'MONTHLY_2 会往云机装 APK');
 });
 
-test('分组视图：带上运行时状态，且不编造面板才知道的东西', () => {
+test('分组视图：带上运行时状态，且不编造面板才知道的东西', async () => {
   const store = memStore();
   store.setState('mcloud.last_error.sign', '上游 500', '2026-10-13T20:00:00Z');
   const v = groupView(store);

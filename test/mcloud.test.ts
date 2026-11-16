@@ -32,7 +32,7 @@ const wantSign = (saltKey: number, id: string, ts: string, nonce: string, other 
   return nodeMd5(`${salt}${id}${ts}${nonce}${other}${salt}`);
 };
 
-test('盐表与回落行为（未知 key 回落第 1 个，是上游行为）', () => {
+test('盐表与回落行为（未知 key 回落第 1 个，是上游行为）', async () => {
   assert.equal(saltFor(1), 'seedMdYYLIZfbCxg');
   assert.equal(saltFor(2), 'sekaMdYYLIZfbCfm');
   for (const k of [0, 3, 99, -1]) {
@@ -40,7 +40,7 @@ test('盐表与回落行为（未知 key 回落第 1 个，是上游行为）', 
   }
 });
 
-test('签名公式：salt 包裹两次，other 在尾盐之前', () => {
+test('签名公式：salt 包裹两次，other 在尾盐之前', async () => {
   // ① 空 other
   assert.equal(generateSignature('id1', 'ts1', 'n1', 1, ''), wantSign(1, 'id1', 'ts1', 'n1'));
   // ② 带 other（用第 2 个盐）
@@ -55,7 +55,7 @@ test('签名公式：salt 包裹两次，other 在尾盐之前', () => {
   );
 });
 
-test('timestamp 参与拼接时**不做数值归一化**（前导零必须保留）', () => {
+test('timestamp 参与拼接时**不做数值归一化**（前导零必须保留）', async () => {
   // 这条钉的是一个很容易「顺手优化掉」的行为：把 '007' 当数字处理会变成 '7'，
   // 签名就对不上，而上游只会回一句「签名错误」，在真机上很难查。
   assert.equal(generateSignature('id', '007', 'n', 1, ''), wantSign(1, 'id', '007', 'n'));
@@ -68,7 +68,7 @@ test('timestamp 参与拼接时**不做数值归一化**（前导零必须保留
   assert.equal(generateSignature('i', ts, 'n', 1, ''), wantSign(1, 'i', ts, 'n'));
 });
 
-test('签名头用线上小写名，签名值与公式一致', () => {
+test('签名头用线上小写名，签名值与公式一致', async () => {
   const h = signHeadersWith('i', 'n', '1700000000000', 1, '');
   assert.deepEqual(Object.keys(h).sort(), [
     'x-nonce',
@@ -82,7 +82,7 @@ test('签名头用线上小写名，签名值与公式一致', () => {
   assert.equal(h['x-signature'], generateSignature('i', '1700000000000', 'n', 1, ''));
 });
 
-test('签到信封：数字 code、字符串 code、msg/message 两种键名都能收', () => {
+test('签到信封：数字 code、字符串 code、msg/message 两种键名都能收', async () => {
   const a = parseSignInEnvelope('{"code":0,"msg":"success","result":[]}');
   assert.equal(a.code, 0);
   assert.equal(a.message, 'success');
@@ -110,7 +110,7 @@ test('签到信封：数字 code、字符串 code、msg/message 两种键名都�
   assert.throws(() => parseSignInEnvelope('[1,2,3]'), /不是对象/);
 });
 
-test('result 形状不同就各取各的，不做「两种都吃」的兼容', () => {
+test('result 形状不同就各取各的，不做「两种都吃」的兼容', async () => {
   // 原实现特意强调过：写一个「数组和对象都能吃」的解析器，
   // 上游改形状时这条链不会响。这里用两个取值函数把选择权交给调用方。
   const arr = parseSignInEnvelope('{"code":0,"result":[{"id":1}]}');
@@ -122,7 +122,7 @@ test('result 形状不同就各取各的，不做「两种都吃」的兼容', (
   assert.ok('beiyong1' in resultObject(obj));
 });
 
-test('H5 头画像：appversion 四段、jwttoken 小写、GET 不发 content-type', () => {
+test('H5 头画像：appversion 四段、jwttoken 小写、GET 不发 content-type', async () => {
   const common = {
     url: 'https://example.invalid/x',
     referer: 'https://example.invalid/r',
@@ -167,13 +167,13 @@ test('H5 头画像：appversion 四段、jwttoken 小写、GET 不发 content-ty
   assert.equal(withJwt.headers.cookie, 'a=1');
 });
 
-test('调用层：成功 / HTTP 失败 / 非 JSON / 传输层抛异常，都不抛给调用方', () => {
-  const okTransport: Transport = () => ({
+test('调用层：成功 / HTTP 失败 / 非 JSON / 传输层抛异常，都不抛给调用方', async () => {
+  const okTransport: Transport = async () => ({
     status: 200,
     headers: {},
     body: '{"code":0,"msg":"success","result":[]}',
   });
-  const r = callOnce(okTransport, {
+  const r = await callOnce(okTransport, {
     url: 'u',
     method: 'GET',
     headers: {},
@@ -184,56 +184,56 @@ test('调用层：成功 / HTTP 失败 / 非 JSON / 传输层抛异常，都不�
   assert.ok(r.tookMs >= 0);
   assert.equal(r.error, undefined);
 
-  const bizFail: Transport = () => ({ status: 200, headers: {}, body: '{"code":1001,"msg":"已签到"}' });
-  const f = callOnce(bizFail, { url: 'u', method: 'GET', headers: {}, body: undefined });
+  const bizFail: Transport = async () => ({ status: 200, headers: {}, body: '{"code":1001,"msg":"已签到"}' });
+  const f = await callOnce(bizFail, { url: 'u', method: 'GET', headers: {}, body: undefined });
   assert.equal(f.ok, false);
   assert.match(f.error ?? '', /code=1001/);
   assert.match(f.error ?? '', /msg=已签到/);
 
-  const http500: Transport = () => ({ status: 500, headers: {}, body: 'boom' });
-  const e5 = callOnce(http500, { url: 'u', method: 'GET', headers: {}, body: undefined });
+  const http500: Transport = async () => ({ status: 500, headers: {}, body: 'boom' });
+  const e5 = await callOnce(http500, { url: 'u', method: 'GET', headers: {}, body: undefined });
   assert.equal(e5.ok, false);
   assert.equal(e5.error, 'HTTP 500');
   assert.equal(e5.env, undefined);
 
-  const notJson: Transport = () => ({ status: 200, headers: {}, body: '<html>' });
-  const nj = callOnce(notJson, { url: 'u', method: 'GET', headers: {}, body: undefined });
+  const notJson: Transport = async () => ({ status: 200, headers: {}, body: '<html>' });
+  const nj = await callOnce(notJson, { url: 'u', method: 'GET', headers: {}, body: undefined });
   assert.equal(nj.ok, false);
   assert.match(nj.error ?? '', /不是 JSON/);
 
-  const thrown: Transport = () => {
+  const thrown: Transport = async () => {
     throw new Error('connection reset');
   };
-  const th = callOnce(thrown, { url: 'u', method: 'GET', headers: {}, body: undefined });
+  const th = await callOnce(thrown, { url: 'u', method: 'GET', headers: {}, body: undefined });
   assert.equal(th.status, 0);
   assert.equal(th.ok, false);
   assert.match(th.error ?? '', /connection reset/);
 });
 
-test('调用层：宿主失败返回的是 {"error":…}（没有 body）—— 不能当成正常结果', () => {
+test('调用层：宿主失败返回的是 {"error":…}（没有 body）—— 不能当成正常结果', async () => {
   // ⚠️ 这三条是被真面板打出来的。宿主 `http_fetch` 失败时返回 `{"error": msg}`，
   // 而不是 `{status, headers, body}` —— 文档里只写了成功形状。
   // 它**长得像正常结果**，于是 `res.body.length` 抛 TypeError，报错位置在插件里，
   // 看起来像插件自己的 bug。第一版的我就是这么找上门的（见 docs/findings.md F-006）。
-  const hostErr: Transport = () => ({ error: '请求失败: connection refused' });
-  const r1 = callOnce(hostErr, { url: 'u', method: 'GET', headers: {}, body: undefined });
+  const hostErr: Transport = async () => ({ error: '请求失败: connection refused' });
+  const r1 = await callOnce(hostErr, { url: 'u', method: 'GET', headers: {}, body: undefined });
   assert.equal(r1.ok, false);
   assert.equal(r1.status, 0);
   assert.match(r1.error ?? '', /connection refused/);
 
   // 形状再变也不该让插件崩（宿主改字段时，插件应该报「不认识」而不是抛异常）
-  const weird: Transport = () => undefined as never;
-  const r2 = callOnce(weird, { url: 'u', method: 'GET', headers: {}, body: undefined });
+  const weird: Transport = async () => undefined as never;
+  const r2 = await callOnce(weird, { url: 'u', method: 'GET', headers: {}, body: undefined });
   assert.equal(r2.ok, false);
   assert.match(r2.error ?? '', /形状不认识/);
 
-  const noBody: Transport = () => ({ status: 200, headers: {} }) as never;
-  const r3 = callOnce(noBody, { url: 'u', method: 'GET', headers: {}, body: undefined });
+  const noBody: Transport = async () => ({ status: 200, headers: {} }) as never;
+  const r3 = await callOnce(noBody, { url: 'u', method: 'GET', headers: {}, body: undefined });
   assert.equal(r3.ok, false);
   assert.match(r3.error ?? '', /形状不认识/);
 });
 
-test('cookie：多枚合一、Expires 里的逗号不能被当成分隔符', () => {
+test('cookie：多枚合一、Expires 里的逗号不能被当成分隔符', async () => {
   // 这一条是 cookie 解析的经典坑：`Expires=Wed, 21 Oct 2015 07:28:00 GMT` 里也有逗号
   const h = {
     'set-cookie':

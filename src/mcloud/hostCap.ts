@@ -49,7 +49,7 @@ interface Cached {
  *  `tls:"native" 需要宿主用 --features legacy-tls 构建`。
  *  所以"错误里提到 legacy-tls" = 不支持；**别的错误**（连接被拒、超时）=
  *  选项通过了、只是站点不存在 ⇒ 支持。 */
-export function probeNativeTls(transport: Transport): { verdict: CapVerdict; why: string } {
+export async function probeNativeTls(transport: Transport): Promise<{ verdict: CapVerdict; why: string }> {
   const r = transport({
     url: 'https://127.0.0.1:9/',
     method: 'GET',
@@ -66,11 +66,11 @@ export function probeNativeTls(transport: Transport): { verdict: CapVerdict; why
 }
 
 /** 拿结论：缓存新鲜就用缓存，否则重探。 */
-export function hostNativeTls(
+export async function hostNativeTls(
   store: Pick<Store, 'getState' | 'setState'>,
   nowIso: string,
   transport: Transport,
-): { verdict: CapVerdict; why: string; fresh: boolean } {
+): Promise<{ verdict: CapVerdict; why: string; fresh: boolean }> {
   const raw = store.getState(STATE_CAP);
   if (raw !== null && raw !== '') {
     try {
@@ -89,7 +89,7 @@ export function hostNativeTls(
       /* 坏了就重探 */
     }
   }
-  const p = probeNativeTls(transport);
+  const p = await probeNativeTls(transport);
   const v: Cached = { at: nowIso, verdict: p.verdict, why: p.why };
   store.setState(STATE_CAP, JSON.stringify(v), nowIso);
   return { ...p, fresh: false };

@@ -202,17 +202,17 @@ export function scheduleLeadReady(nowMs: number, targetMs: number, leadSec: numb
  *  就是**真下单** —— 一个"试一试"的按钮不该有这种后果。
  *
  *  真正下单走界面上的「立即兑换」（会二次确认）或**定时那一场**（时间闸 + 压整点）。 */
-export function runExchange(
+export async function runExchange(
   deps: TaskDeps,
   opts: { dryRun?: boolean; maxWaitMs?: number; targetHour?: number | null; target?: string } = {},
-): {
+): Promise<{
   ok: boolean;
   note: string;
   /** 这一趟**一个请求都没发**（离窗口还远 / 没账号）⇒ 入口据此不写日志。 */
   idle?: boolean;
   detail: string[];
   steps: RunStep[];
-} {
+}> {
   const started = Date.now();
   const steps: RunStep[] = [];
 
@@ -223,9 +223,9 @@ export function runExchange(
 
   /** 参考 mcloud 的 H5Client：票过期由任务自己无感续，不让用户看到"未登录"。
    *  只有**原生凭据**（auth）过期才会换不出来 —— 那时如实报"去重新登录"。 */
-  const ensureToken = (): boolean => {
+  const ensureToken = async (): Promise<boolean> => {
     if (jwtFresh(deps.store, Date.now(), FALLBACK_RECIPE)) return true;
-    const x = exchangeOnce(
+    const x = await exchangeOnce(
       {
         store: deps.store,
         transport: deps.transport,
@@ -301,11 +301,11 @@ export function runExchange(
   // ① 清单（只读）：顺带让用户在「数据」页看得到价格与余量
   //    ⚠ 票过期时先无感换票 —— 不换的话清单会读回来但 `limit` 整片缺失，
   //    界面会变成"50 件全判不了"（用户截图里的那个现场）。
-  if (!ensureToken()) {
+  if (!await ensureToken()) {
     return finish(false, '网页会话续期失败 —— 登录凭据可能已过期，去「账号」页重新登录一次');
   }
   try {
-    const l = runExchangeList(deps);
+    const l = await runExchangeList(deps);
     add('清单', l.ok, l.note);
   } catch (e) {
     add('清单', false, `抛异常 ${e instanceof Error ? e.message : String(e)}`);
@@ -366,19 +366,19 @@ export function runExchange(
   const multi = accounts.length > 1;
   const snaps = new Map<string, OrderSnapshot>();
   const offsets: string[] = [];
-  let r: ReturnType<typeof drain>;
+  let r: Awaited<ReturnType<typeof drain>>;
 
   if (multi) {
     // ── 阶段 A：每个账号各自推到"只差下单" ──
     for (const acc of accounts) {
       selectAccount(deps.store, acc.id, deps.nowIso);
-      if (!ensureToken()) {
+      if (!await ensureToken()) {
         add(`准备 ${maskAuth(loadAuthRaw(deps.store) ?? '')}`, false, '网页会话续期失败');
         continue;
       }
       clearOrder(deps);
       startOrder(deps, plan);
-      const a = drain(runOrderStep, deps, {
+      const a = await drain(runOrderStep, deps, {
         label: '兑换',
         maxSteps: 8,
         // 停在 `order` 之前 —— 下单那一枪留给阶段 B（那时才压整点）
@@ -407,7 +407,7 @@ export function runExchange(
       selectAccount(deps.store, acc.id, deps.nowIso);
       restoreOrder(deps.store, snap, deps.nowIso);
     }
-    const one = drain(runOrderStep, deps, {
+    const one = await drain(runOrderStep, deps, {
       label: '兑换',
       maxSteps: 10,
       // ⚠ 干跑：停在 `order` **之前** —— 一枪都不发

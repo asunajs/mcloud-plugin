@@ -21,7 +21,7 @@ const src =
   readFileSync(new URL('../src/mcloud/dailyRun.ts', import.meta.url), 'utf8') +
   readFileSync(new URL('../src/entries/daily.ts', import.meta.url), 'utf8');
 
-test('日常顺序：算力大作战在红包派对之后、领取类之前', () => {
+test('日常顺序：算力大作战在红包派对之后、领取类之前', async () => {
   const pk = src.indexOf('// ④.6 算力大作战');
   const rp = src.indexOf('// ④.5 红包派对');
   const claim = src.indexOf('// ⑤ 领取类');
@@ -57,9 +57,9 @@ function depsFor(tokenPkOn: boolean): { deps: TaskDeps; sent: BuiltRequest[] } {
   };
 }
 
-test('关掉开关：日常里这一步是灰的，且一个 tokenpk 请求都不发', () => {
+test('关掉开关：日常里这一步是灰的，且一个 tokenpk 请求都不发', async () => {
   const { deps, sent } = depsFor(false);
-  const r = runDaily(deps);
+  const r = await runDaily(deps);
   const step = r.steps.find((s) => s.name === '算力大作战');
   assert.ok(step !== undefined, r.steps.map((s) => s.name).join(' → '));
   assert.equal(step.idle, true);
@@ -70,9 +70,9 @@ test('关掉开关：日常里这一步是灰的，且一个 tokenpk 请求都�
   );
 });
 
-test('开着：日常真的会去拉 task/list（其余步骤照旧失败也不影响它被调用）', () => {
+test('开着：日常真的会去拉 task/list（其余步骤照旧失败也不影响它被调用）', async () => {
   const { deps, sent } = depsFor(true);
-  runDaily(deps);
+  await runDaily(deps);
   assert.ok(
     sent.some((q) => q.url.includes('/ycloud/tokenpk/task/list?marketName=National_TokenPK')),
     '没有发 task/list',

@@ -138,7 +138,7 @@ function callOf(deps: TaskDeps, st: RedpackState): ReturnType<typeof makeRedpack
  *  为什么不一次从头跑到尾：面板一次调用只有一个执行预算，而这一族最长的一条
  *  要等 15 秒（浏览确认）。`dailyRun` 那边用 `drain` 把"一次一步"包成
  *  "一次跑完"，所以日志上仍然是一步一行。 */
-export function redpackStep(deps: TaskDeps): TaskOutcome {
+export async function redpackStep(deps: TaskDeps): Promise<TaskOutcome> {
   const day = redpackDay(deps.nowIso);
   const base = loadRedpackBase(deps.store);
   const st = beginLeg(deps, day);
@@ -151,7 +151,7 @@ export function redpackStep(deps: TaskDeps): TaskOutcome {
       return readList(deps, st, base);
 
     case 'balanceBefore': {
-      const line = readBalanceLine(deps, st, base);
+      const line = await readBalanceLine(deps, st, base);
       if (line !== undefined) rpLine(st, line);
       st.phase = 'sign';
       save(deps, st);
@@ -168,7 +168,7 @@ export function redpackStep(deps: TaskDeps): TaskOutcome {
       return walk(deps, st, base);
 
     case 'balanceAfter': {
-      const line = readBalanceLine(deps, st, base);
+      const line = await readBalanceLine(deps, st, base);
       if (line !== undefined) rpLine(st, line);
       finishRedpack(st);
       save(deps, st);
@@ -206,11 +206,11 @@ function beginLeg(deps: TaskDeps, day: string): RedpackState {
  *  两发**必须在一次调用里**：SSO 票只活几分钟（本仓库直播族实测「换到 4 分钟后
  *  重放已被拒」）⇒ 拆成两步等下一趟，拿到的就是一张过期的票，
  *  而表现是"红包派对一直登录失败"。 */
-function login(deps: TaskDeps, st: RedpackState, base: string | undefined): TaskOutcome {
+async function login(deps: TaskDeps, st: RedpackState, base: string | undefined): Promise<TaskOutcome> {
   const auth = loadAuthRaw(deps.store);
   if (auth === '') return badLogin(deps, st, '这个号还没有原生凭据，先在账号页把它加上');
 
-  const ssoRes = callRawText(
+  const ssoRes = await callRawText(
     deps.transport,
     specTokenRequest({ toSourceId: REDPACK_SSO_SOURCE_ID }, auth),
   );
@@ -221,7 +221,7 @@ function login(deps: TaskDeps, st: RedpackState, base: string | undefined): Task
   }
 
   const deviceId = deps.store.getState(STATE_DEVICE_ID) ?? '';
-  const env = callRedpack(
+  const env = await callRedpack(
     deps.transport,
     tokenValidateRequest(callOf(deps, st), sso.value, deviceId, base),
   );
@@ -252,8 +252,8 @@ function badLogin(deps: TaskDeps, st: RedpackState, why: string): TaskOutcome {
  *
  *  读不到表 ⇒ 这一趟**什么都做不了**（后面每一条的判据都从这张表来），
  *  收尾并如实说没读到 —— 不能走到"逐条派发"那一段然后报"一条都没有"。 */
-function readList(deps: TaskDeps, st: RedpackState, base: string | undefined): TaskOutcome {
-  const env = callRedpack(deps.transport, taskListRequest(callOf(deps, st), base));
+async function readList(deps: TaskDeps, st: RedpackState, base: string | undefined): Promise<TaskOutcome> {
+  const env = await callRedpack(deps.transport, taskListRequest(callOf(deps, st), base));
   if (!env.ok) {
     finishRedpack(st);
     save(deps, st);
@@ -302,7 +302,7 @@ function toQueue(list: RedpackTaskList): RedpackQueueItem[] {
  *  ⚠ 只认**今天**那一格（`isToday === 1`）—— 解表那种"没有今天的就把第一条当今天"
  *  的兜底不能要：那会拿**昨天**那格的状态说**今天**的事（该不该签、签到奖多少钱）。
  *  没有今天那一格 ⇒ 整段跳过，一行都不打（照参照实现）。 */
-function dailySign(deps: TaskDeps, st: RedpackState, base: string | undefined): TaskOutcome {
+async function dailySign(deps: TaskDeps, st: RedpackState, base: string | undefined): Promise<TaskOutcome> {
   const sign = st.board.sign;
   if (sign === undefined) {
     st.phase = 'walk';
@@ -324,7 +324,7 @@ function dailySign(deps: TaskDeps, st: RedpackState, base: string | undefined): 
     return { ok: true, note: '今天这条签到先不做' };
   }
   rpLine(st, `去完成: 每日签到${suffixOf(sign.amount)}`);
-  const env = callRedpack(deps.transport, userSignRequest(callOf(deps, st), base));
+  const env = await callRedpack(deps.transport, userSignRequest(callOf(deps, st), base));
   const status = env.ok ? readWriteStatus(env.data) : undefined;
   if (!env.ok || status !== 1) {
     // ⚠ 签到是**严格**判据（照参照实现 `isOk && status === 1`）。它与"登记任务"
@@ -344,8 +344,8 @@ function dailySign(deps: TaskDeps, st: RedpackState, base: string | undefined): 
 }
 
 /** 签到刚拿到的那条奖（只读）。参照实现用的码是 `SIGN_1`。 */
-function signReward(deps: TaskDeps, st: RedpackState, base: string | undefined): TaskOutcome {
-  const line = readRewardLine({ deps, st, base }, 'SIGN_1', '每日签到');
+async function signReward(deps: TaskDeps, st: RedpackState, base: string | undefined): Promise<TaskOutcome> {
+  const line = await readRewardLine({ deps, st, base }, 'SIGN_1', '每日签到');
   if (line !== undefined) rpLine(st, line);
   st.phase = 'walk';
   save(deps, st);
@@ -364,7 +364,7 @@ function suffixOf(amount: number | undefined): string {
  *  一条任务**明确失败**时不中断整趟（参照实现也是逐条继续）—— 已经发出去的
  *  写请求收不回来，但后面每一条的判据来自刚读的那张表，与上一条成没成无关。
  *  失败那一行由 `redpackJobs` 写进台账，用户在日志里看得见。 */
-function walk(deps: TaskDeps, st: RedpackState, base: string | undefined): TaskOutcome {
+async function walk(deps: TaskDeps, st: RedpackState, base: string | undefined): Promise<TaskOutcome> {
   const job = st.job;
   if (job === undefined) {
     if (st.cursor >= st.queue.length) {
@@ -391,7 +391,7 @@ function walk(deps: TaskDeps, st: RedpackState, base: string | undefined): TaskO
   }
 
   const ctx: RedpackCtx = { deps, st, base };
-  const step: JobStep = runRedpackJob(ctx);
+  const step: JobStep = await runRedpackJob(ctx);
   if (step.kind === 'again') {
     save(deps, st);
     return { ok: true, note: `进行中: ${job.taskName}` };

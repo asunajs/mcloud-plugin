@@ -39,7 +39,7 @@ s.listen(0, '127.0.0.1', () => console.log(s.address().port));
     });
     const f = makeNodeFetcher({ timeoutMs: 5000, insecure: false, followRedirects: false });
     const body = 'A' + String.fromCharCode(0) + 'B';
-    const res = f(`http://127.0.0.1:${port}/echo?q=1`, {
+    const res = await f(`http://127.0.0.1:${port}/echo?q=1`, {
       method: 'POST',
       headers: { 'content-type': 'application/octet-stream', 'x-test': 'yes' },
       body,

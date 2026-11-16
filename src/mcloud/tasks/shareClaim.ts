@@ -53,7 +53,7 @@ export function claimedBeans(env: ReturnType<typeof parseSignInEnvelope>): numbe
 }
 
 /** 一行结果：`runDaily` 用 `once()` 调一次。** */
-export function runShareClaim(deps: TaskDeps): TaskOutcome {
+export async function runShareClaim(deps: TaskDeps): Promise<TaskOutcome> {
   // ① 幂等**先判**：本月领过就直说"领过了"——
   //    放到后面会被"任务表已经是已领取"抢先命中，说成「还没攒到领奖档」（误导）。
   const month = deps.nowIso.slice(0, 7);
@@ -75,7 +75,7 @@ export function runShareClaim(deps: TaskDeps): TaskOutcome {
   // ③ 发那一发。**复用 appTask 里已经验过主机/头/签名的 clickRequest** ——
   //    同路径不同主机曾让打卡回 200 而状态一条不变（appTask.ts 文件头那个坑），
   //    这里不另起一份构造。
-  const res = callRawText(deps.transport, clickRequest(deps, SHARE_TASK_ID));
+  const res = await callRawText(deps.transport, clickRequest(deps, SHARE_TASK_ID));
   if (!res.ok) {
     return { ok: false, note: `领20豆 没发出去：${res.error ?? '未知失败'}（下一趟重试）` };
   }
@@ -108,7 +108,7 @@ export function runShareClaim(deps: TaskDeps): TaskOutcome {
   //  ⚠ 两个市场各读一发（V3 一次一个市场），否则 434 在哪个市场里不一定被刷到。
   const settle = Math.min(Math.max(deps.settleMs ?? 5000, 0), 8_000);
   if (settle > 0) waitMs(deps, settle);
-  for (let i = 0; i < MATRIX_MARKETS.length; i++) runAppTaskMatrix(deps);
+  for (let i = 0; i < MATRIX_MARKETS.length; i++) await runAppTaskMatrix(deps);
   const after = readMatrix(deps.store)
     .flatMap((r) => r?.items ?? [])
     .find((item) => item.taskId === SHARE_TASK_ID);

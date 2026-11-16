@@ -130,7 +130,7 @@ function enteredRoom(extra: Partial<ListenerOptions> = {}): Listener {
 
 // ══════════════════════════ 一、`o` ⇒ PROVISION 只发一次 ══════════════════════════
 
-test('`o` ⇒ 一条 PROVISION（`["…"]`、command=3）；重复 `o` **不重发**', () => {
+test('`o` ⇒ 一条 PROVISION（`["…"]`、command=3）；重复 `o` **不重发**', async () => {
   const l = listener();
 
   const first = l.onFrame(SOCKJS_OPEN, T0);
@@ -150,7 +150,7 @@ test('`o` ⇒ 一条 PROVISION（`["…"]`、command=3）；重复 `o` **不重�
 
 // ══════════════════════════ 二、cmd=3 前后：enteredRoom 的判据 ══════════════════════════
 
-test('PROVISION 响应之前/之后：`enteredRoom` = 收到过 `o` **且**收到过 cmd=3', () => {
+test('PROVISION 响应之前/之后：`enteredRoom` = 收到过 `o` **且**收到过 cmd=3', async () => {
   const l = listener();
   l.onFrame(SOCKJS_OPEN, T0);
 
@@ -177,7 +177,7 @@ test('PROVISION 响应之前/之后：`enteredRoom` = 收到过 `o` **且**收�
   );
 });
 
-test('没收到 `o`、只收到 cmd=3 ⇒ `enteredRoom` 仍是 false（判据是两个都要）', () => {
+test('没收到 `o`、只收到 cmd=3 ⇒ `enteredRoom` 仍是 false（判据是两个都要）', async () => {
   const l = listener();
   l.onFrame(inbound(provisionAckBytes()), T0);
   const s = l.state();
@@ -190,7 +190,7 @@ test('没收到 `o`、只收到 cmd=3 ⇒ `enteredRoom` 仍是 false（判据是
 
 // ══════════════════════════ 三、心跳（抓包 §四：约 15 秒一次） ══════════════════════════
 
-test('心跳第一拍紧跟 PROVISION 的响应（抓包 §四：ack +515 ms、第一拍 +608 ms）', () => {
+test('心跳第一拍紧跟 PROVISION 的响应（抓包 §四：ack +515 ms、第一拍 +608 ms）', async () => {
   const l = listener();
   l.onFrame(SOCKJS_OPEN, T0);
 
@@ -201,7 +201,7 @@ test('心跳第一拍紧跟 PROVISION 的响应（抓包 §四：ack +515 ms、�
   assert.deepEqual([s.heartbeatCount, s.lastHeartbeatAtMs], [1, T0 + 515]);
 });
 
-test('`dueHeartbeat`：进房间之前不发；到 15 秒才发；同一时刻不重复发', () => {
+test('`dueHeartbeat`：进房间之前不发；到 15 秒才发；同一时刻不重复发', async () => {
   const l = listener();
   // 还没收到任何帧：心跳一次都不该有（抓包里 ack 之前没有任何 command=1）。
   assert.deepEqual([...l.dueHeartbeat(T0)], [], '没进房间就不发心跳');
@@ -224,7 +224,7 @@ test('`dueHeartbeat`：进房间之前不发；到 15 秒才发；同一时刻�
   assert.deepEqual([s.heartbeatCount, s.lastHeartbeatAtMs], [3, T0 + 515 + HEARTBEAT_MS + 15_132]);
 });
 
-test('`heartbeatMs` 可改（抓包那 5 拍的间隔是**实测**值，不是协议常量）', () => {
+test('`heartbeatMs` 可改（抓包那 5 拍的间隔是**实测**值，不是协议常量）', async () => {
   const l = enteredRoom({ heartbeatMs: 1000 });
   assert.deepEqual([...l.dueHeartbeat(T0 + 515 + 999)], []);
   assert.equal(l.dueHeartbeat(T0 + 515 + 1000).length, 1);
@@ -232,7 +232,7 @@ test('`heartbeatMs` 可改（抓包那 5 拍的间隔是**实测**值，不是�
 
 // ══════════════════════════ 四、服务端的 ack 回执与心跳回应：不回 ══════════════════════════
 
-test('服务端回下来的 cmd=1（心跳回应）与 cmd=0（ack 回执）⇒ 我们**不回**任何东西', () => {
+test('服务端回下来的 cmd=1（心跳回应）与 cmd=0（ack 回执）⇒ 我们**不回**任何东西', async () => {
   const l = enteredRoom();
 
   const srvHeartbeat = l.onFrame(inbound(encodeHeartbeat(T0 + 600)), T0 + 600);
@@ -246,7 +246,7 @@ test('服务端回下来的 cmd=1（心跳回应）与 cmd=0（ack 回执）⇒ 
 
 // ══════════════════════════ 五、弹幕 ⇒ 文本上抛 + ack ══════════════════════════
 
-test('收到 cmd=2 弹幕 ⇒ 文本上抛，并回一条 cmd=0 ack（**带被确认的 msgId**）', () => {
+test('收到 cmd=2 弹幕 ⇒ 文本上抛，并回一条 cmd=0 ack（**带被确认的 msgId**）', async () => {
   const l = enteredRoom();
   assert.equal(decodeMsync(danmakuBytes('1', 'x')).command, CMD_DANMAKU, '自检：手拼的字节要解成 cmd=2');
 
@@ -261,7 +261,7 @@ test('收到 cmd=2 弹幕 ⇒ 文本上抛，并回一条 cmd=0 ack（**带被�
   assert.equal(act.closed, undefined);
 });
 
-test('一条 `a[...]` 里两条消息（SockJS 会缓冲）⇒ 两条文本、两条 ack，顺序不乱', () => {
+test('一条 `a[...]` 里两条消息（SockJS 会缓冲）⇒ 两条文本、两条 ack，顺序不乱', async () => {
   const l = enteredRoom();
   const act = l.onFrame(
     inbound(danmakuBytes('1790147831719000001', '小红花口令：一键9图出圈'), danmakuBytes('1790147831719000002', '小红花口令：中秋美好存云盘')),
@@ -276,7 +276,7 @@ test('一条 `a[...]` 里两条消息（SockJS 会缓冲）⇒ 两条文本、�
   );
 });
 
-test('cmd=2 但**没有 msgId** ⇒ 不 ack（不许编一个），也不因此判坏帧', () => {
+test('cmd=2 但**没有 msgId** ⇒ 不 ack（不许编一个），也不因此判坏帧', async () => {
   const l = enteredRoom();
   // 手拼一条只有 command=2、没有 payload 的报文（抓包没有这种样本 ⇒ 未判定那一支）。
   const noMsgId = new Uint8Array([...varint((8 << 3) | 0), 2]);
@@ -289,7 +289,7 @@ test('cmd=2 但**没有 msgId** ⇒ 不 ack（不许编一个），也不因此�
 
 // ══════════════════════════ 六、关闭 ══════════════════════════
 
-test('服务端 `c[…]` ⇒ 报关闭（人话），并且之后再收到什么都没反应', () => {
+test('服务端 `c[…]` ⇒ 报关闭（人话），并且之后再收到什么都没反应', async () => {
   const l = enteredRoom();
 
   const act = l.onFrame(`${SOCKJS_CLOSE_PREFIX}3000,"Go away!"]`, T0 + 1000);
@@ -303,7 +303,7 @@ test('服务端 `c[…]` ⇒ 报关闭（人话），并且之后再收到什么
   assert.equal(typeof after.closed, 'string', '关闭原因重复报出去（幂等），调用方不会因为丢了一次消息就不知道');
 });
 
-test('空串帧：不算坏帧、不关闭，机器照常能用（抓包 §二 末帧 = 客户端关闭那一帧）', () => {
+test('空串帧：不算坏帧、不关闭，机器照常能用（抓包 §二 末帧 = 客户端关闭那一帧）', async () => {
   const l = enteredRoom();
   const blank = l.onFrame(CLIENT_CLOSE_FRAME, T0 + 1100);
   assert.deepEqual(blank.outbound, []);
@@ -318,7 +318,7 @@ test('空串帧：不算坏帧、不关闭，机器照常能用（抓包 §二 �
 
 // ══════════════════════════ 七、连续坏帧 ══════════════════════════
 
-test('连续解不开的帧到上限 ⇒ 要求收工（原因里有"解不开"与上限）', () => {
+test('连续解不开的帧到上限 ⇒ 要求收工（原因里有"解不开"与上限）', async () => {
   const l = enteredRoom({ malformedLimit: 3 });
 
   assert.equal(l.onFrame('a[{}]', T0 + 2000).closed, undefined, '第 1 个坏帧还不该收工');
@@ -332,7 +332,7 @@ test('连续解不开的帧到上限 ⇒ 要求收工（原因里有"解不开"�
   assert.deepEqual(after.outbound, [], '收工之后不再往这条连接写');
 });
 
-test('能被归类的帧会**清零**连续坏帧（Rust 那个 early-return bug 的回归）', () => {
+test('能被归类的帧会**清零**连续坏帧（Rust 那个 early-return bug 的回归）', async () => {
   // 坏 → 坏 →（可归类的一帧）→ 坏 → 坏：不算到上限；再来一个坏帧才收工。
   // ⚠ 少了清零就会在第 5 帧（坏 #3）收工 —— 那正是 Rust 修过的那个 bug：
   // 心跳 / `o` / `c[...]` 那些 early return 绕过了清零，一条正常帧流也会被攒满坏帧判死。
@@ -354,7 +354,7 @@ test('能被归类的帧会**清零**连续坏帧（Rust 那个 early-return bug
   assert.equal(typeof viaBlank.onFrame('a[{}]', T0 + 5).closed, 'string');
 });
 
-test('`malformedLimit = 0` ⇒ 不因为坏帧收工（Rust 的 0 = 一直挂着）', () => {
+test('`malformedLimit = 0` ⇒ 不因为坏帧收工（Rust 的 0 = 一直挂着）', async () => {
   const l = enteredRoom({ malformedLimit: 0 });
   for (let i = 0; i < 20; i += 1) {
     assert.equal(l.onFrame('a[{}]', T0 + 3000 + i).closed, undefined);
@@ -364,7 +364,7 @@ test('`malformedLimit = 0` ⇒ 不因为坏帧收工（Rust 的 0 = 一直挂着
 
 // ══════════════════════════ 八、`h`：未判定项 ══════════════════════════
 
-test('`h`（SockJS 心跳）⇒ 抓包零样本，判为**未判定**：不回帧、上报给调用方', () => {
+test('`h`（SockJS 心跳）⇒ 抓包零样本，判为**未判定**：不回帧、上报给调用方', async () => {
   const l = enteredRoom();
 
   const act = l.onFrame(SOCKJS_HEARTBEAT, T0 + 4000);
@@ -382,7 +382,7 @@ test('`h`（SockJS 心跳）⇒ 抓包零样本，判为**未判定**：不回�
 
 // ══════════════════════════ 九、SockJS 包/拆 ══════════════════════════
 
-test('`sockjsSendFrame` 是 `["<b64>"]`；`sockjsDataFrames` 能把它原样拆回来', () => {
+test('`sockjsSendFrame` 是 `["<b64>"]`；`sockjsDataFrames` 能把它原样拆回来', async () => {
   const bytes = danmakuBytes('1790147831719000005', '小红花口令：一键9图出圈');
   const frame = sockjsSendFrame(bytes);
   assert.equal(frame, `["${toBase64(bytes)}"]`, 'C→S 的发送形状（抓包 §二：`[` 46/46 全是 C→S）');
@@ -394,7 +394,7 @@ test('`sockjsSendFrame` 是 `["<b64>"]`；`sockjsDataFrames` 能把它原样拆�
   assert.equal(`a${frame}`.startsWith(SOCKJS_DATA_PREFIX), true, '入站形状带 `a[` 前缀（方向×前缀是满的）');
 });
 
-test('`sockjsDataFrames`：多条保序；不是 JSON 数组就抛（调用方据此记坏帧）', () => {
+test('`sockjsDataFrames`：多条保序；不是 JSON 数组就抛（调用方据此记坏帧）', async () => {
   const a = danmakuBytes('1', '甲');
   const b = danmakuBytes('2', '乙');
   const many = sockjsDataFrames(inbound(a, b));
@@ -410,7 +410,7 @@ test('`sockjsDataFrames`：多条保序；不是 JSON 数组就抛（调用方�
   assert.throws(() => sockjsDataFrames('a[["x"]]'), /base64 字符串/);
 });
 
-test('坏 base64 ⇒ 计成坏帧（判据是 `isMsync`，不是异常 —— 这条守的是"注释写的行为真的成立"）', () => {
+test('坏 base64 ⇒ 计成坏帧（判据是 `isMsync`，不是异常 —— 这条守的是"注释写的行为真的成立"）', async () => {
   // ⚠ 背景：`decodeMsync` 有意**不抛**（解不开就返回 `isMsync:false`），
   //   而 `fromBase64` 是宽容解码器 ⇒ 早先那版用 `try/catch` 判坏帧，
   //   结果是**那一支永远不触发**：`a["!!!!"]` 会被静默当成"解开了、只是没文本"。

@@ -100,7 +100,7 @@
 | P0 | 基线、本文档 | ✅ |
 | P1 | 删老面板目标（产物 / 构建 / CI / 检查脚本） | ✅ |
 | P2 | 端口化 + `defineTask`，全局收口 | 进行中 |
-| P3 | HTTP 全 async；CLI 同步重写 | — |
+| P3 | HTTP 全 async（`Transport` / `Io.fetch` 是 Promise）；CLI 的 worker 同步桥还在（见 p3-async-plan） | ✅ |
 | P4 | 存储换本地 JSON（含旧数据一次性导入） | ✅ |
 | P5 | 编排层 / 呈现层 / 路由拆分 | 🚧 路由已拆完（`src/app/routes/` 9 个文件）；`runTask`/`present` 未动 |
 | P6 | 直播收口 + trace | — |

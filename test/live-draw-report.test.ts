@@ -37,11 +37,11 @@ function state(rows: Partial<DrawRow>[], extra: Partial<DrawState> = {}): DrawSt
   };
 }
 
-test('没有跑过 ⇒ 没有结论（不是"一份空结论"）', () => {
+test('没有跑过 ⇒ 没有结论（不是"一份空结论"）', async () => {
   assert.equal(drawReport(null), null);
 });
 
-test('⚠ 四栏分开：领到 / 已领过 / 口令无效 / 本场已结束 / 未分类', () => {
+test('⚠ 四栏分开：领到 / 已领过 / 口令无效 / 本场已结束 / 未分类', async () => {
   const r = drawReport(
     state([
       { code: 'A', kind: 'succeeded' },
@@ -61,7 +61,7 @@ test('⚠ 四栏分开：领到 / 已领过 / 口令无效 / 本场已结束 / �
   assert.deepEqual(r.unparsable, ['F']);
 });
 
-test('⚠ `200118`（本场已结束）**不进**「口令无效」那一栏', () => {
+test('⚠ `200118`（本场已结束）**不进**「口令无效」那一栏', async () => {
   const r = drawReport(state([{ code: 'X', kind: 'kouling-expired' }]))!;
   assert.deepEqual(r.invalid, [], '混进 invalid 会让用户去重抄一条本来就对的口令');
   assert.deepEqual(r.expired, ['X']);
@@ -70,7 +70,7 @@ test('⚠ `200118`（本场已结束）**不进**「口令无效」那一栏', (
   assert.ok(/不是口令抄错|口令是对的/.test(r.line), `结论里要说清不是口令的问题：${r.line}`);
 });
 
-test('⚠ `other`（没见过的码）**不进**「口令无效」那一栏', () => {
+test('⚠ `other`（没见过的码）**不进**「口令无效」那一栏', async () => {
   // 混进去会触发一次毫无意义的 60 秒重听，而且把真正的原因藏起来
   const r = drawReport(state([{ code: 'Z', kind: 'other' }]))!;
   assert.deepEqual(r.invalid, []);
@@ -78,7 +78,7 @@ test('⚠ `other`（没见过的码）**不进**「口令无效」那一栏', ()
   assert.ok(r.line.includes('没见过的结果'), r.line);
 });
 
-test('⚠ 进账是 **⑥ − ①**，不是把各口令的 `flowerNum` 加起来', () => {
+test('⚠ 进账是 **⑥ − ①**，不是把各口令的 `flowerNum` 加起来', async () => {
   // 相加会漏掉「首次参与惊喜奖」进账的那几朵 —— 它**不属于任何一个口令**，
   // 而那正是"总数对不上"最常见的来源。
   const r = drawReport(
@@ -93,21 +93,21 @@ test('⚠ 进账是 **⑥ − ①**，不是把各口令的 `flowerNum` 加起�
   assert.ok(r.line.includes('120 → 135'), r.line);
 });
 
-test('读数缺一半时不瞎报进账（宁可不显示也不要报一个错的数）', () => {
+test('读数缺一半时不瞎报进账（宁可不显示也不要报一个错的数）', async () => {
   assert.equal(drawReport(state([], { balanceBefore: 100 }))!.gained, 0);
   assert.equal(drawReport(state([], { balanceAfter: 100 }))!.gained, 0);
   // 只有两边都在才有意义
   assert.equal(drawReport(state([], { balanceBefore: 100, balanceAfter: 120 }))!.gained, 20);
 });
 
-test('一条口令都没发出去时说"还没发出口令"，不说"领到 0 条"', () => {
+test('一条口令都没发出去时说"还没发出口令"，不说"领到 0 条"', async () => {
   // 两者含义不同：前者是"没开始/没口令"，后者是"发了但都没成"
   const r = drawReport(state([]))!;
   assert.equal(r.attempted, 0);
   assert.ok(r.line.includes('还没发出口令'), r.line);
 });
 
-test('全部领到时结论简短（别把四栏都写成"0 条"）', () => {
+test('全部领到时结论简短（别把四栏都写成"0 条"）', async () => {
   const r = drawReport(
     state(
       [
@@ -123,7 +123,7 @@ test('全部领到时结论简短（别把四栏都写成"0 条"）', () => {
   assert.ok(r.line.includes('2 条口令领到 2 条'), r.line);
 });
 
-test('同一份状态永远给同一份结论（纯函数）', () => {
+test('同一份状态永远给同一份结论（纯函数）', async () => {
   const s = state([{ code: 'A', kind: 'invalid-kouling' }], { balanceBefore: 1, balanceAfter: 1 });
   assert.deepEqual(drawReport(s), drawReport(s));
 });

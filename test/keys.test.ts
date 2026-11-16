@@ -75,7 +75,7 @@ function scannedKeys(): Set<string> {
   return found;
 }
 
-test('⚠ 源码里出现的每一个 `mcloud.*` 键都**登记过**（漏登记 = 下次多账号串号）', () => {
+test('⚠ 源码里出现的每一个 `mcloud.*` 键都**登记过**（漏登记 = 下次多账号串号）', async () => {
   // 这条是这一层的**守门人**：新加一个键却忘了分类 ⇒ 这里红。
   //
   // 不这么钉的话，漏登记的表现是"某个任务在多账号下串号"，而且**单账号测不出来**
@@ -88,20 +88,20 @@ test('⚠ 源码里出现的每一个 `mcloud.*` 键都**登记过**（漏登记
   );
 });
 
-test('登记表里的键都**真的存在**于源码（改名留下的尸体要清掉）', () => {
+test('登记表里的键都**真的存在**于源码（改名留下的尸体要清掉）', async () => {
   const all = scannedKeys();
   const stale = Object.keys(KEY_SCOPE).filter((k) => !all.has(k)).sort();
   assert.deepEqual(stale, [], `这些键在源码里已经不存在了：\n  ${stale.join('\n  ')}`);
 });
 
-test('没登记的键**抛**，不许静默当全局', () => {
+test('没登记的键**抛**，不许静默当全局', async () => {
   const raw = { getState: () => null };
   assert.throws(() => routeGet(raw, 'mcloud.没登记过'), UnregisteredKeyError);
   // 报错消息里要带键名 —— 否则只能靠猜是哪一个
   assert.throws(() => routeGet(raw, 'mcloud.没登记过'), /mcloud\.没登记过/);
 });
 
-test('⚠ 两账号各写同一个键 ⇒ 各读各的（这一类 bug 的核心）', () => {
+test('⚠ 两账号各写同一个键 ⇒ 各读各的（这一类 bug 的核心）', async () => {
   const store = memStore();
   store.ensureSchema();
   upsertAccount(store, A, NOW, 'A');
@@ -123,7 +123,7 @@ test('⚠ 两账号各写同一个键 ⇒ 各读各的（这一类 bug 的核心
   assert.equal(store.getState('mcloud.daily.done_date'), '2026-10-16', 'B 的是自己的');
 });
 
-test('⚠ 写一个字段**不会抹掉袋里别的任务的键**', () => {
+test('⚠ 写一个字段**不会抹掉袋里别的任务的键**', async () => {
   // 袋里躺着这个账号**所有任务**的键。只写一个字段却整体覆盖的话，
   // 表现是"跑完 A 任务之后 B 任务的进度没了" —— 而那是**随机的**，
   // 取决于哪个任务后跑，极难查。参考实现 `save_share_done_day` 注释里点明了这个坑。
@@ -138,7 +138,7 @@ test('⚠ 写一个字段**不会抹掉袋里别的任务的键**', () => {
   assert.equal(store.getState('mcloud.session'), '{"jwt":"X"}');
 });
 
-test('⚠ 没有账号时也走袋（**不许**有"没有作用域"的路径）', () => {
+test('⚠ 没有账号时也走袋（**不许**有"没有作用域"的路径）', async () => {
   // 留一条裸键路径，就等于留一条回到全局键的路 —— 而全局键就是那些 bug。
   const store = memStore();
   store.ensureSchema();
@@ -151,7 +151,7 @@ test('⚠ 没有账号时也走袋（**不许**有"没有作用域"的路径）'
   assert.ok((rawStoreOf(store).getState(acctBagKey(DEFAULT_ACCT)) ?? '').includes('单账号'));
 });
 
-test('配置类走扁平键（分账号反而错）', () => {
+test('配置类走扁平键（分账号反而错）', async () => {
   const store = memStore();
   store.ensureSchema();
   upsertAccount(store, A, NOW, 'A');
@@ -163,7 +163,7 @@ test('配置类走扁平键（分账号反而错）', () => {
   assert.equal(rawStoreOf(store).getState('mcloud.exchange.target_hour'), '10');
 });
 
-test('⚠ 删账号要能**一键清干净**（扁平键散落时根本清不掉）', () => {
+test('⚠ 删账号要能**一键清干净**（扁平键散落时根本清不掉）', async () => {
   const store = memStore();
   store.ensureSchema();
   upsertAccount(store, A, NOW, 'A');
@@ -178,7 +178,7 @@ test('⚠ 删账号要能**一键清干净**（扁平键散落时根本清不掉
   assert.deepEqual(readBag(raw, idOf(A)), {}, '袋是空的');
 });
 
-test('⚠ 删账号会**连袋一起清**（否则同号重加会继承旧状态）', () => {
+test('⚠ 删账号会**连袋一起清**（否则同号重加会继承旧状态）', async () => {
   const store = memStore();
   store.ensureSchema();
   upsertAccount(store, A, NOW, 'A');
@@ -202,7 +202,7 @@ test('⚠ 删账号会**连袋一起清**（否则同号重加会继承旧状态
   );
 });
 
-test('⚠ 迁移：老扁平键要搬进袋（`ordered_hour` 丢了会**重复下单**）', () => {
+test('⚠ 迁移：老扁平键要搬进袋（`ordered_hour` 丢了会**重复下单**）', async () => {
   const store = memStore();
   store.ensureSchema();
   upsertAccount(store, A, NOW, 'A');
@@ -224,7 +224,7 @@ test('⚠ 迁移：老扁平键要搬进袋（`ordered_hour` 丢了会**重复�
   assert.deepEqual(migrateFlatKeys(raw, NOW).moved, []);
 });
 
-test('迁移**不覆盖**袋里已有的值（袋比扁平键新）', () => {
+test('迁移**不覆盖**袋里已有的值（袋比扁平键新）', async () => {
   const store = memStore();
   store.ensureSchema();
   selectAccount(store, '', NOW);
@@ -235,7 +235,7 @@ test('迁移**不覆盖**袋里已有的值（袋比扁平键新）', () => {
   assert.equal(store.getState('mcloud.session'), '{"jwt":"袋里的"}', '袋里的优先');
 });
 
-test('坏袋当空袋（不让插件在加载时炸掉）', () => {
+test('坏袋当空袋（不让插件在加载时炸掉）', async () => {
   const store = memStore();
   store.ensureSchema();
   const raw = rawStoreOf(store);
@@ -244,7 +244,7 @@ test('坏袋当空袋（不让插件在加载时炸掉）', () => {
   assert.equal(store.getState('mcloud.session'), null);
 });
 
-test('前缀式键也认（`mcloud.last_error.<任务>` / `mcloud.h5.jwt.<配方>`）', () => {
+test('前缀式键也认（`mcloud.last_error.<任务>` / `mcloud.h5.jwt.<配方>`）', async () => {
   assert.equal(scopeOf('mcloud.last_error.sign'), 'account');
   assert.equal(scopeOf('mcloud.h5.jwt.sign-in'), 'account', '票按**配方**分，前缀要登记');
   assert.equal(scopeOf('mcloud.h5.jwt.msg-push-on'), 'account');
@@ -255,7 +255,7 @@ test('前缀式键也认（`mcloud.last_error.<任务>` / `mcloud.h5.jwt.<配方
   assert.equal(store.getState('mcloud.last_error.sign'), '失败了');
 });
 
-test('⚠ 票按配方分：一页一张，互不覆盖', () => {
+test('⚠ 票按配方分：一页一张，互不覆盖', async () => {
   const store = memStore();
   store.ensureSchema();
   store.setState('mcloud.h5.jwt.sign-in', '{"jwt":"签到那张"}', NOW);
@@ -264,7 +264,7 @@ test('⚠ 票按配方分：一页一张，互不覆盖', () => {
   assert.equal(store.getState('mcloud.h5.jwt.msg-push-on'), '{"jwt":"推送那张"}');
 });
 
-test('⚠ 空串要**照原样往返**（迁移必须行为不变）', () => {
+test('⚠ 空串要**照原样往返**（迁移必须行为不变）', async () => {
   // "写空串 = 删字段"看着更干净，但它**改了行为**：老的扁平键写空串之后读回来是
   // 空串，删字段之后读回来是 `null` —— 而两者的判断在调用点截然不同
   // （`x === ''` 与 `x === null` 不通用）。迁移的第一要求是**行为不变**，不是"顺便更干净"。
@@ -276,12 +276,12 @@ test('⚠ 空串要**照原样往返**（迁移必须行为不变）', () => {
   assert.equal(store.getState('mcloud.session'), '', '读回来还要是空串，不是 null');
 });
 
-test('⚠ 不许包两次（包两次会让 `mcloud.acct.*` 也去查登记表然后抛错）', () => {
+test('⚠ 不许包两次（包两次会让 `mcloud.acct.*` 也去查登记表然后抛错）', async () => {
   const store = memStore();
   assert.throws(() => scoped(store), /已经.*包过一次/);
 });
 
-test('袋的物理键形状固定（换实现时老数据要能读）', () => {
+test('袋的物理键形状固定（换实现时老数据要能读）', async () => {
   assert.equal(acctBagKey('abc'), `${ACCT_PREFIX}abc`);
   assert.equal(ACCT_PREFIX, 'mcloud.acct.');
 });

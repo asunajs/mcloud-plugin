@@ -72,10 +72,10 @@ export function ownedFileIds(deps: TaskDeps): string[] {
  *  `activeExpansionFileId`）：任务还没走到收尾，文件删了下一趟就用不了。
  *  它们留在名单里，等状态跨天/收摊后再清。
  */
-export function runOwnedCleanup(
+export async function runOwnedCleanup(
   deps: TaskDeps,
   opts: { skip?: readonly string[] | undefined } = {},
-): TaskOutcome {
+): Promise<TaskOutcome> {
   const all = load(deps);
   const skip = new Set(opts.skip ?? []);
   const ids = all.filter((id) => !skip.has(id));
@@ -87,7 +87,7 @@ export function runOwnedCleanup(
     };
   }
 
-  const res = callRawText(deps.transport, trashRequest(ids));
+  const res = await callRawText(deps.transport, trashRequest(ids));
   if (!res.ok) {
     return {
       ok: false,

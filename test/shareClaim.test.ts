@@ -110,7 +110,7 @@ function mkDepsWithMatrix(
 
 // ── ① 判据（纯函数，零 IO） ────────────────────────────────────────────
 
-test('判据：currstep=22 与「领20豆」都认，攒份数那档不认', () => {
+test('判据：currstep=22 与「领20豆」都认，攒份数那档不认', async () => {
   const parsed = parseMatrixItem(RAW_CLAIM_ROW)!;
   assert.equal(parsed.taskId, 434);
   assert.equal(parsed.currStep, SPECIAL_CLICK_STEP);
@@ -132,7 +132,7 @@ test('判据：currstep=22 与「领20豆」都认，攒份数那档不认', () 
 
 // ── ② 到账豆数只认 result.num ──────────────────────────────────────────
 
-test('claimedBeans 只认 result.num（数字串也认，缺了/0 不算）', () => {
+test('claimedBeans 只认 result.num（数字串也认，缺了/0 不算）', async () => {
   assert.equal(claimedBeans(parseSignInEnvelope(OK_20)), 20);
   assert.equal(claimedBeans(parseSignInEnvelope('{"code":0,"result":{"num":"7"}}')), 7);
   assert.equal(claimedBeans(parseSignInEnvelope('{"code":0,"result":{}}')), undefined);
@@ -142,23 +142,23 @@ test('claimedBeans 只认 result.num（数字串也认，缺了/0 不算）', ()
 
 // ── ③ 没有领奖档 / 幂等 ────────────────────────────────────────────────
 
-test('没攒到领奖档 ⇒ 不发请求', () => {
+test('没攒到领奖档 ⇒ 不发请求', async () => {
   const row = parseMatrixItem({ ...RAW_CLAIM_ROW, currstep: 3, button: { app: { text: '已完成' } } });
   const store = storeWith([row]);
   const { deps, sent } = mkDeps(store, () => ({ status: 200, body: OK_20 }));
-  const r = runShareClaim(deps);
+  const r = await runShareClaim(deps);
   assert.equal(r.ok, true);
   assert.equal(r.skipped, true);
   assert.equal(sent.length, 0, '一枪都不该发');
 });
 
-test('领奖档 ⇒ 发 task/click；回包 num=20 **且** 任务表变「已领取」才算到账', () => {
+test('领奖档 ⇒ 发 task/click；回包 num=20 **且** 任务表变「已领取」才算到账', async () => {
   const store = storeWith([parseMatrixItem(RAW_CLAIM_ROW)]);
   const { deps, sent } = mkDepsWithMatrix(store, {
     click: { status: 200, body: OK_20 },
     after: 'claimed',
   });
-  const r = runShareClaim(deps);
+  const r = await runShareClaim(deps);
   assert.equal(r.ok, true, r.note);
   assert.match(r.note, /领到 20 豆/);
   assert.match(r.note, /已领取/, '要说出任务表已确认');
@@ -170,32 +170,32 @@ test('领奖档 ⇒ 发 task/click；回包 num=20 **且** 任务表变「已领
   assert.equal(store.getState(STATE_SHARE_CLAIM_DONE), MONTH, '本月记下');
 });
 
-test('回包 num=20 但任务表仍是「领20豆」⇒ 不算成功、不记幂等（下一趟重试）', () => {
+test('回包 num=20 但任务表仍是「领20豆」⇒ 不算成功、不记幂等（下一趟重试）', async () => {
   const store = storeWith([parseMatrixItem(RAW_CLAIM_ROW)]);
   const { deps } = mkDepsWithMatrix(store, { click: { status: 200, body: OK_20 }, after: 'still' });
-  const r = runShareClaim(deps);
+  const r = await runShareClaim(deps);
   assert.equal(r.ok, false, r.note);
   assert.match(r.note, /还没变「已领取」/);
   assert.notEqual(store.getState(STATE_SHARE_CLAIM_DONE), MONTH, '绝不写幂等');
 });
 
-test('同一个月领过 ⇒ 整月不再发（task/click 不可回滚）', () => {
+test('同一个月领过 ⇒ 整月不再发（task/click 不可回滚）', async () => {
   const store = storeWith([parseMatrixItem(RAW_CLAIM_ROW)]);
   const { deps, sent } = mkDepsWithMatrix(store, { click: { status: 200, body: OK_20 }, after: 'claimed' });
-  const first = runShareClaim(deps);
+  const first = await runShareClaim(deps);
   assert.equal(first.ok, true, first.note);
   const clickCount = sent.filter((q) => q.url === CLICK_URL).length;
-  const again = runShareClaim(deps);
+  const again = await runShareClaim(deps);
   assert.equal(again.ok, true);
   assert.equal(again.skipped, true);
   assert.match(again.note, /已经领过/);
   assert.equal(sent.filter((q) => q.url === CLICK_URL).length, clickCount, '第二趟不再发领取');
 });
 
-test('换了月份 ⇒ 可以再领', () => {
+test('换了月份 ⇒ 可以再领', async () => {
   const store = storeWith([parseMatrixItem(RAW_CLAIM_ROW)]);
   const { deps, sent } = mkDepsWithMatrix(store, { click: { status: 200, body: OK_20 }, after: 'claimed' });
-  runShareClaim(deps);
+  await runShareClaim(deps);
   // 新周期：任务表回到「领20豆」这一档（真实里是服务端按新月份重开）
   store.setState(
     matrixKey(MATRIX_MARKETS[0]!),
@@ -211,7 +211,7 @@ test('换了月份 ⇒ 可以再领', () => {
     NOW,
   );
   const later = { ...deps, nowIso: '2026-12-01T04:00:00.000Z' } as TaskDeps;
-  const r = runShareClaim(later);
+  const r = await runShareClaim(later);
   assert.equal(r.ok, true, r.note);
   assert.equal(sent.filter((q) => q.url === CLICK_URL).length, 2);
 });
@@ -224,17 +224,17 @@ for (const [name, body] of [
   ['num=0', '{"code":0,"msg":"success","result":{"num":0}}'],
   ['回包不是 JSON', '<html>网关</html>'],
 ] as const) {
-  test(`服务端没认（${name}）⇒ 不记幂等`, () => {
+  test(`服务端没认（${name}）⇒ 不记幂等`, async () => {
     const store = storeWith([parseMatrixItem(RAW_CLAIM_ROW)]);
     const { deps } = mkDeps(store, () => ({ status: 200, body }));
-    const r = runShareClaim(deps);
+    const r = await runShareClaim(deps);
     assert.equal(r.ok, false, r.note);
     assert.match(r.note, /没认|认不出来/);
     assert.notEqual(store.getState(STATE_SHARE_CLAIM_DONE), MONTH, '绝不写幂等');
   });
 }
 
-test('请求都没发出去 ⇒ 不记幂等', () => {
+test('请求都没发出去 ⇒ 不记幂等', async () => {
   const store = storeWith([parseMatrixItem(RAW_CLAIM_ROW)]);
   const sent: BuiltRequest[] = [];
   const transport = ((req: BuiltRequest) => {
@@ -242,7 +242,7 @@ test('请求都没发出去 ⇒ 不记幂等', () => {
     return { error: '网络断了' };
   }) as never;
   const deps = { store, transport, nowIso: NOW, nowMs: () => Date.parse(NOW), settleMs: 0, gapMs: [0, 0] } as TaskDeps;
-  const r = runShareClaim(deps);
+  const r = await runShareClaim(deps);
   assert.equal(r.ok, false);
   assert.match(r.note, /没发出去/);
   assert.notEqual(store.getState(STATE_SHARE_CLAIM_DONE), MONTH);
@@ -250,13 +250,13 @@ test('请求都没发出去 ⇒ 不记幂等', () => {
 
 // ── ⑤ 领奖档不许进 appTask 的分享状态机 ────────────────────────────────
 
-test('领奖档被 pendingItems 排除（不再传文件/建外链）', () => {
+test('领奖档被 pendingItems 排除（不再传文件/建外链）', async () => {
   const store = storeWith([parseMatrixItem(RAW_CLAIM_ROW)]);
   const deps = { store, transport: (() => ({ status: 200, headers: {}, body: '{}' })) as never, nowIso: NOW, settleMs: 0, gapMs: [0, 0] } as TaskDeps;
   assert.deepEqual(pendingItems(deps).map((p) => p.itemId), [], '434 领奖档不该被挑成分享待办');
 });
 
-test('还在攒份数的 434 照样是分享待办（别把正常那一档也挡掉）', () => {
+test('还在攒份数的 434 照样是分享待办（别把正常那一档也挡掉）', async () => {
   const row = parseMatrixItem({ ...RAW_CLAIM_ROW, currstep: 3, button: { app: { text: '去完成' } } });
   const store = storeWith([row]);
   const deps = { store, transport: (() => ({ status: 200, headers: {}, body: '{}' })) as never, nowIso: NOW, settleMs: 0, gapMs: [0, 0] } as TaskDeps;
@@ -294,7 +294,7 @@ test('runDaily 有「分享领奖」这一步，且领奖档真发出那一发',
     gapMs: [0, 0],
   } as TaskDeps;
 
-  const r = runDaily(deps);
+  const r = await runDaily(deps);
   assert.ok(r.steps.some((s) => s.name === '分享领奖'), r.steps.map((s) => s.name).join(' → '));
   const claimHits = sent.filter((q) => q.url === CLICK_URL);
   assert.equal(claimHits.length, 1, `领奖那一发恰好一次，实际 ${claimHits.length}`);

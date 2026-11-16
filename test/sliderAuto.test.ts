@@ -68,9 +68,9 @@ function entryOf(rs: Entry[], path: string, method = 'POST'): Entry {
   return r;
 }
 
-function post(rs: Entry[], path: string, body?: unknown): any {
+async function post(rs: Entry[], path: string, body?: unknown): Promise<any> {
   const r = entryOf(rs, path);
-  const res = r.handler({ method: 'POST', path: r.path, body: body === undefined ? '' : JSON.stringify(body) });
+  const res = await r.handler({ method: 'POST', path: r.path, body: body === undefined ? '' : JSON.stringify(body) });
   return { status: res.status, json: res.body ? JSON.parse(res.body) : null };
 }
 
@@ -87,7 +87,7 @@ function gatedTransport(opts: {
 }): Transport {
   let sends = 0;
   let puzzles = 0;
-  return (req) => {
+  return async (req) => {
     opts.seen.push(req);
     if (req.url.endsWith(SLIDER_PUZZLE_PATH) || req.url.endsWith(APP_SLIDER_PUZZLE_PATH)) {
       const a = opts.answers?.[puzzles] ?? ANSWER;
@@ -118,13 +118,13 @@ function gatedTransport(opts: {
   };
 }
 
-test('⚠ PC：一次点击就把滑块过了（自动取题 → 解坐标 → 带答案重发）', () => {
+test('⚠ PC：一次点击就把滑块过了（自动取题 → 解坐标 → 带答案重发）', async () => {
   const store: Store = memStore();
   const seen: BuiltRequest[] = [];
   const rs = mcloudRoutes(testDeps(store, { transport: gatedTransport({ seen, blocked: 1 }), now: NOW }));
-  post(rs, '/login/sms/start', { phone: '13800000000', pcPlatform: 'win' });
+  await post(rs, '/login/sms/start', { phone: '13800000000', pcPlatform: 'win' });
 
-  const r = post(rs, '/login/sms/send');
+  const r = await post(rs, '/login/sms/send');
   assert.equal(r.status, 200);
   assert.equal(r.json.sent, true, `一次点击就该发出去：${JSON.stringify(r.json)}`);
   assert.ok(!('needSlider' in r.json), '不该再把"要滑块"抛给界面');
@@ -137,13 +137,13 @@ test('⚠ PC：一次点击就把滑块过了（自动取题 → 解坐标 → �
   assert.equal(answerOf(body2['puzzleVerfycode'] ?? ''), ANSWER, '带上去的坐标不对');
 });
 
-test('⚠ 手机端：同样一次点击过完（答案走 `puzzleVerfycodeEncrypt`）', () => {
+test('⚠ 手机端：同样一次点击过完（答案走 `puzzleVerfycodeEncrypt`）', async () => {
   const store: Store = memStore();
   const seen: BuiltRequest[] = [];
   const rs = mcloudRoutes(testDeps(store, { transport: gatedTransport({ seen, blocked: 1 }), now: NOW }));
-  post(rs, '/login/app/start', { phone: '13800000000' });
+  await post(rs, '/login/app/start', { phone: '13800000000' });
 
-  const r = post(rs, '/login/app/send');
+  const r = await post(rs, '/login/app/send');
   assert.equal(r.json.sent, true, `手机端一次点击就该发出去：${JSON.stringify(r.json)}`);
   const kinds = seen.map((x) => (x.url.endsWith(APP_SLIDER_PUZZLE_PATH) ? '题' : '码'));
   assert.deepEqual(kinds, ['码', '题', '码'], `上游请求顺序不对：${JSON.stringify(kinds)}`);
@@ -153,15 +153,15 @@ test('⚠ 手机端：同样一次点击过完（答案走 `puzzleVerfycodeEncry
   assert.equal(body2['phoneNumber'], '13800000000', 'App 发码体里要有手机号');
 });
 
-test('⚠ 一直拦：两轮之后**放弃并说人话**（不许假装成功、也不许无限重试）', () => {
+test('⚠ 一直拦：两轮之后**放弃并说人话**（不许假装成功、也不许无限重试）', async () => {
   const store: Store = memStore();
   const seen: BuiltRequest[] = [];
   // 全部拦下（blocked 设很大）
   const rs = mcloudRoutes(
     testDeps(store, { transport: gatedTransport({ seen, blocked: 99, alwaysBlock: true }), now: NOW }),
   );
-  post(rs, '/login/sms/start', { phone: '13800000000', pcPlatform: 'win' });
-  const r = post(rs, '/login/sms/send');
+  await post(rs, '/login/sms/start', { phone: '13800000000', pcPlatform: 'win' });
+  const r = await post(rs, '/login/sms/send');
   assert.equal(r.json.sent, undefined, `没发出去就不能报 sent：${JSON.stringify(r.json)}`);
   assert.match(r.json.note, /两轮/, `要说清放弃了：${r.json.note}`);
   // 上限 2 轮 ⇒ 最多 2 次取题（滑块**计失败次数**，无限重试会把配额烧光）
@@ -169,15 +169,15 @@ test('⚠ 一直拦：两轮之后**放弃并说人话**（不许假装成功、
   assert.equal(puzzleCalls, 2, `取题次数：${puzzleCalls}（应为 2）`);
 });
 
-test('⚠ 旧题作废（200059553）⇒ 换**新**题，不是拿旧答案再试', () => {
+test('⚠ 旧题作废（200059553）⇒ 换**新**题，不是拿旧答案再试', async () => {
   const store: Store = memStore();
   const seen: BuiltRequest[] = [];
   // 第一次带答案的那发回 200059553（旧挑战作废）
   const rs = mcloudRoutes(
     testDeps(store, { transport: gatedTransport({ seen, blocked: 1, exhaustedAt: 2 }), now: NOW }),
   );
-  post(rs, '/login/sms/start', { phone: '13800000000', pcPlatform: 'win' });
-  const r = post(rs, '/login/sms/send');
+  await post(rs, '/login/sms/start', { phone: '13800000000', pcPlatform: 'win' });
+  const r = await post(rs, '/login/sms/send');
   assert.equal(r.json.sent, true, `换新题之后要能发出去：${JSON.stringify(r.json)}`);
   const puzzleCalls = seen.filter((x) => x.url.endsWith(SLIDER_PUZZLE_PATH)).length;
   assert.equal(puzzleCalls, 2, `作废之后必须**重新取题**（取了 ${puzzleCalls} 次）`);

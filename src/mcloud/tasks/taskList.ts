@@ -39,8 +39,8 @@ function isFinished(t: unknown): boolean {
   return typeof state === 'string' && state.toUpperCase() === 'FINISH';
 }
 
-export function runTaskList(deps: TaskDeps): TaskOutcome {
-  return runTask(
+export async function runTaskList(deps: TaskDeps): Promise<TaskOutcome> {
+  return await runTask(
     deps,
     {
       task: 'task-list',

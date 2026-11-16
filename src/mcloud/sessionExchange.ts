@@ -330,10 +330,10 @@ export function clearAuth(store: Store, nowIso: string): void {
 /** 推进一步（**一次调用最多发一个请求**）。
  *
  *  返回 `done=true` 表示这一轮结束（成功或失败都算结束，好让界面的循环停下来）。 */
-export function runExchangeStep(
+export async function runExchangeStep(
   deps: TaskDeps,
   recipe: SessionRecipe = FALLBACK_RECIPE,
-): { ok: boolean; note: string; done: boolean } {
+): Promise<{ ok: boolean; note: string; done: boolean }> {
   const st = loadExchange(deps.store, recipe);
   // ⚠ 走 `loadAuthRaw`：多账号下"当前账号"才是这一轮要换票的那个
   const auth = loadAuthRaw(deps.store) || null;
@@ -368,7 +368,7 @@ export function runExchangeStep(
       Math.random,
       deps.baseUrl,
     );
-    const res = callRawText(deps.transport, req);
+    const res = await callRawText(deps.transport, req);
     if (!res.ok) return failStep(deps, st, `④ 换 deviceId 失败：${res.error ?? '未知失败'}`);
     const got = parseDeviceId(res.text);
     if (!got.ok || got.deviceId === undefined) return failStep(deps, st, `④ ${got.error}`);
@@ -390,7 +390,7 @@ export function runExchangeStep(
 
   // ① 换 SSO token
   if (st.step === 'spec-token') {
-    const res = callRawText(deps.transport, specTokenRequest(rp, auth, deps.baseUrl));
+    const res = await callRawText(deps.transport, specTokenRequest(rp, auth, deps.baseUrl));
     if (!res.ok) return failStep(deps, st, `① 换 SSO token 失败：${res.error ?? '未知失败'}`);
     const p = parseSsoToken(res.text);
     if (!p.ok || p.value === undefined) return failStep(deps, st, `① ${p.error}`);
@@ -403,7 +403,7 @@ export function runExchangeStep(
 
   // ② 取服务端时间戳
   if (st.step === 'timestamp') {
-    const res = callRawText(deps.transport, timestampRequest(rp, st.referer ?? '', deps.baseUrl));
+    const res = await callRawText(deps.transport, timestampRequest(rp, st.referer ?? '', deps.baseUrl));
     if (!res.ok) return failStep(deps, st, `② 取时间戳失败：${res.error ?? '未知失败'}`);
     const p = parseServerTimestamp(res.text);
     if (!p.ok || p.value === undefined) return failStep(deps, st, `② ${p.error}`);
@@ -420,7 +420,7 @@ export function runExchangeStep(
   if (ts === undefined || !st.ssoToken) {
     return finish(st, false, '③ 前置状态丢了（SSO token 或时间戳）—— SSO token 不缓存，得从头再来');
   }
-  const res = callRawText(
+  const res = await callRawText(
     deps.transport,
     tyrzLoginRequest(rp, st.ssoToken, makeSign(ts), st.referer ?? '', deps.baseUrl),
   );

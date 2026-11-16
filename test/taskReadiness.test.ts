@@ -41,7 +41,7 @@ function captureLogs() {
   return lines;
 }
 
-test('syncOwnTask：写的是**带插件前缀**的任务名（面板按 plugin/task 寻址）', () => {
+test('syncOwnTask：写的是**带插件前缀**的任务名（面板按 plugin/task 寻址）', async () => {
   const store = memStore();
   const calls = fakePanel();
   try {
@@ -54,7 +54,7 @@ test('syncOwnTask：写的是**带插件前缀**的任务名（面板按 plugin/
   }
 });
 
-test('⚠ 对方插件还没加载 ⇒ **debug**，不是 warn（否则每次启动 6 条假警报）', () => {
+test('⚠ 对方插件还没加载 ⇒ **debug**，不是 warn（否则每次启动 6 条假警报）', async () => {
   const store = memStore();
   const logs = captureLogs();
   fakePanel(() => '没有这个任务: mcloud-daily/日常');
@@ -70,7 +70,7 @@ test('⚠ 对方插件还没加载 ⇒ **debug**，不是 warn（否则每次启
   assert.equal(debugs.length, 6, '三条 × 两个动作，各一条 debug');
 });
 
-test('其它失败（不能改别人的任务 / 面板内部错）**必须留痕**', () => {
+test('其它失败（不能改别人的任务 / 面板内部错）**必须留痕**', async () => {
   const store = memStore();
   const logs = captureLogs();
   fakePanel(() => '不能改别的插件的任务：x/y');
@@ -84,7 +84,7 @@ test('其它失败（不能改别人的任务 / 面板内部错）**必须留痕
   assert.match(logs[0]?.msg ?? '', /不能改别的插件的任务/);
 });
 
-test('syncExchangeJob：没计划 ⇒ 暂停 + 未就绪；有计划 ⇒ 按整点并集排', () => {
+test('syncExchangeJob：没计划 ⇒ 暂停 + 未就绪；有计划 ⇒ 按整点并集排', async () => {
   const store = memStore();
   const calls = fakePanel();
   try {

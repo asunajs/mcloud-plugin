@@ -41,7 +41,7 @@ function storeWithQueue(items: unknown[]): Store {
 function deps(store: Store, calls: unknown[], body: unknown): TaskDeps {
   return {
     store,
-    transport: (req: unknown) => {
+    transport: async (req: unknown) => {
       calls.push(req);
       return { status: 200, headers: {}, body: JSON.stringify(body) };
     },
@@ -51,7 +51,7 @@ function deps(store: Store, calls: unknown[], body: unknown): TaskDeps {
 
 // ── 数量只认响应 ──────────────────────────────────────────────────────
 
-test('`receiveAmountOf` 只读 `result.receive`（缺了就是 undefined，不猜）', () => {
+test('`receiveAmountOf` 只读 `result.receive`（缺了就是 undefined，不猜）', async () => {
   assert.equal(receiveAmountOf({ code: 0, result: { receive: 12, total: 9000 } }), 12);
   assert.equal(receiveAmountOf({ code: 0, result: { receive: 0 } }), 0);
   assert.equal(receiveAmountOf({ code: 0, result: { total: 9000 } }), undefined);
@@ -59,49 +59,49 @@ test('`receiveAmountOf` 只读 `result.receive`（缺了就是 undefined，不�
   assert.equal(receiveAmountOf(null), undefined);
 });
 
-test('⚠ 报的数量必须是响应里的，不是队列那一条的 `cloudNum`', () => {
+test('⚠ 报的数量必须是响应里的，不是队列那一条的 `cloudNum`', async () => {
   const calls: unknown[] = [];
   // 清单上标着 78，服务端说这次只进 12 —— 只能说 12
   const store = storeWithQueue([
     { recordId: 'r1', cloudType: CLOUD_TYPE.NOW, raw: { cloudNum: 78, cloudType: 0 } },
   ]);
-  const out = runReceive(deps(store, calls, { code: 0, msg: 'success', result: { receive: 12 } }));
+  const out = await runReceive(deps(store, calls, { code: 0, msg: 'success', result: { receive: 12 } }));
   assert.equal(calls.length, 1, '这一类是要发请求的');
   assert.equal(out.ok, true);
   assert.match(out.note, /12/);
   assert.ok(!/78/.test(out.note), `不该出现队列里那个数字：${out.note}`);
 });
 
-test('⚠ 服务端回「领到 0 个」⇒ 如实说没进账，**不能报成功**', () => {
+test('⚠ 服务端回「领到 0 个」⇒ 如实说没进账，**不能报成功**', async () => {
   const calls: unknown[] = [];
   const store = storeWithQueue([
     { recordId: 'r1', cloudType: CLOUD_TYPE.NOW, raw: { cloudNum: 78, cloudType: 0 } },
   ]);
-  const out = runReceive(deps(store, calls, { code: 0, msg: 'success', result: { receive: 0 } }));
+  const out = await runReceive(deps(store, calls, { code: 0, msg: 'success', result: { receive: 0 } }));
   assert.equal(out.ok, false, '领到 0 个不是成功');
   assert.match(out.note, /0 个/);
   assert.match(out.note, /没进账|已经领过/);
   assert.ok(!/78/.test(out.note));
 });
 
-test('响应里没有 `receive` ⇒ 不猜、不当成功', () => {
+test('响应里没有 `receive` ⇒ 不猜、不当成功', async () => {
   const calls: unknown[] = [];
   const store = storeWithQueue([
     { recordId: 'r1', cloudType: CLOUD_TYPE.NOW, raw: { cloudNum: 5 } },
   ]);
-  const out = runReceive(deps(store, calls, { code: 0, msg: 'success', result: {} }));
+  const out = await runReceive(deps(store, calls, { code: 0, msg: 'success', result: {} }));
   assert.equal(out.ok, false);
   assert.match(out.note, /result\.receive/);
 });
 
 // ── cloudType 2（下月可领）一枪都不发 ─────────────────────────────────
 
-test('⚠ cloudType=2（下月可领）⇒ **一个请求都不发**，也不能报"领到 N 个"', () => {
+test('⚠ cloudType=2（下月可领）⇒ **一个请求都不发**，也不能报"领到 N 个"', async () => {
   const calls: unknown[] = [];
   const store = storeWithQueue([
     { recordId: 'r1', cloudType: CLOUD_TYPE.NEXT_MONTH, raw: { cloudNum: 78, cloudType: 2 } },
   ]);
-  const out = runReceive(deps(store, calls, { code: 0, msg: 'success', result: { receive: 0 } }));
+  const out = await runReceive(deps(store, calls, { code: 0, msg: 'success', result: { receive: 0 } }));
   assert.equal(calls.length, 0, '这一类 H5 只弹提示，不发请求');
   assert.equal(out.ok, true, '跳过不是失败');
   assert.equal(out.skipped, true);
@@ -111,12 +111,12 @@ test('⚠ cloudType=2（下月可领）⇒ **一个请求都不发**，也不能
   assert.equal(store.getState(STATE_QUEUE), '[]');
 });
 
-test('延期领取（cloudType=1）仍然走另一口端点', () => {
+test('延期领取（cloudType=1）仍然走另一口端点', async () => {
   const calls: unknown[] = [];
   const store = storeWithQueue([
     { recordId: 'r1', cloudType: CLOUD_TYPE.EXPANSION, raw: { cloudNum: 100, cloudType: 1 } },
   ]);
-  const out = runReceive(deps(store, calls, { code: 0, msg: 'success', result: 100 }));
+  const out = await runReceive(deps(store, calls, { code: 0, msg: 'success', result: 100 }));
   assert.equal(calls.length, 1);
   assert.equal(out.ok, true);
   assert.match(out.note, /延期/);

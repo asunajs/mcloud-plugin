@@ -29,20 +29,20 @@ function bytes(n: number, start = 0): Uint8Array {
   return out;
 }
 
-test('FIPS-197 附录 B 的已知答案（单块，验轮函数）', () => {
+test('FIPS-197 附录 B 的已知答案（单块，验轮函数）', async () => {
   const key = hexToBytes('000102030405060708090a0b0c0d0e0f');
   const pt = hexToBytes('00112233445566778899aabbccddeeff');
   const ct = aes128EncryptBlock(aes128KeyExpansion(key), pt);
   assert.equal(toHex(ct), '69c4e0d86a7b0430d8cdb78070b4c55a');
 });
 
-test('FIPS-197 附录 A 的密钥扩展（第 1 与第 10 组）', () => {
+test('FIPS-197 附录 A 的密钥扩展（第 1 与第 10 组）', async () => {
   const rk = aes128KeyExpansion(hexToBytes('2b7e151628aed2a6abf7158809cf4f3c'));
   assert.equal(toHex(rk.subarray(0, 16)), '2b7e151628aed2a6abf7158809cf4f3c');
   assert.equal(toHex(rk.subarray(160, 176)), 'd014f9a8c9ee2589e13f0cc8b6630ca6');
 });
 
-test('**主线**：CBC + PKCS7 与 Node 的 aes-128-cbc 逐字节一致', () => {
+test('**主线**：CBC + PKCS7 与 Node 的 aes-128-cbc 逐字节一致', async () => {
   for (const key of ['0123456789abcdef', 'short', 'x', '']) {
     for (const msg of ['', 'a', '0123456789abcde', '0123456789abcdef', 'x'.repeat(100), '中文也走一遍']) {
       const k = fitKey16(key);
@@ -54,12 +54,12 @@ test('**主线**：CBC + PKCS7 与 Node 的 aes-128-cbc 逐字节一致', () => 
   }
 });
 
-test('固定 IV 逐字是 `"0102030405060708"` 的 ASCII（不是 0x01 0x02…）', () => {
+test('固定 IV 逐字是 `"0102030405060708"` 的 ASCII（不是 0x01 0x02…）', async () => {
   // 抄成字节值 1,2,3… 是个很容易犯的错，而它只在"跟真实现对拍"时才暴露
   assert.equal(toHex(AES_FIXED_IV), '30313032303330343035303630373038');
 });
 
-test('`fit_key16`：截断到 16 字节、短了用 **\\0** 补齐', () => {
+test('`fit_key16`：截断到 16 字节、短了用 **\\0** 补齐', async () => {
   assert.equal(toHex(fitKey16('0123456789abcdef')), toHex(utf8('0123456789abcdef')));
   assert.equal(toHex(fitKey16('0123456789abcdefEXTRA')), toHex(utf8('0123456789abcdef')), '超长要截断');
   assert.equal(
@@ -69,14 +69,14 @@ test('`fit_key16`：截断到 16 字节、短了用 **\\0** 补齐', () => {
   );
 });
 
-test('PKCS7：长度正好是块长整数倍时**仍要补一整块**', () => {
+test('PKCS7：长度正好是块长整数倍时**仍要补一整块**', async () => {
   assert.equal(pkcs7Pad(new Uint8Array(16), 16).length, 32, '不补整块 ⇒ 解出来会少字节');
   assert.equal(pkcs7Pad(new Uint8Array(15), 16).length, 16);
   assert.equal(pkcs7Pad(new Uint8Array(0), 16).length, 16);
   assert.equal(pkcs7Pad(new Uint8Array(0), 16)[15], 16, '填充值 = 补了几个字节');
 });
 
-test('`aesEncryptCompatHex`：输出是 hex、长度 = 补齐后字节数 × 2', () => {
+test('`aesEncryptCompatHex`：输出是 hex、长度 = 补齐后字节数 × 2', async () => {
   // 这一条对着 `aes.rs` 的 `aes_encrypt_compat` 契约（字符串进、hex 出）
   const out = aesEncryptCompatHex('0123456789abcdef', 'x');
   assert.match(out, /^[0-9a-f]{32}$/, '1 字节明文 ⇒ 补成 16 字节 ⇒ 32 个 hex 字符');
@@ -86,21 +86,21 @@ test('`aesEncryptCompatHex`：输出是 hex、长度 = 补齐后字节数 × 2',
   assert.equal(aesEncryptCompatHex('0123456789abcdef', 'x'.repeat(64)).length, 160);
 });
 
-test('同一输入两次结果一致（固定 IV ⇒ **确定性的**，没有随机在里面）', () => {
+test('同一输入两次结果一致（固定 IV ⇒ **确定性的**，没有随机在里面）', async () => {
   assert.equal(
     aesEncryptCompatHex('0123456789abcdef', '特征体'),
     aesEncryptCompatHex('0123456789abcdef', '特征体'),
   );
 });
 
-test('参数不对要早失败：密钥长度、块长度、明文不是整数倍', () => {
+test('参数不对要早失败：密钥长度、块长度、明文不是整数倍', async () => {
   assert.throws(() => aes128KeyExpansion(new Uint8Array(15)), /16 字节/);
   assert.throws(() => aes128EncryptBlock(new Uint8Array(176), new Uint8Array(15)), /16 字节/);
   assert.throws(() => aes128CbcEncrypt(new Uint8Array(16), new Uint8Array(15), new Uint8Array(16)), /IV/);
   assert.throws(() => aes128CbcEncrypt(new Uint8Array(16), AES_FIXED_IV, new Uint8Array(17)), /整数倍/);
 });
 
-test('`bytes(n, start)` 那个小工具本身别写错（它被上面几条当输入用）', () => {
+test('`bytes(n, start)` 那个小工具本身别写错（它被上面几条当输入用）', async () => {
   assert.equal(toHex(bytes(4, 0xfe)), 'feff0001');
 });
 
@@ -130,7 +130,7 @@ import {
  *
  *  这是"不抄第二张表"换来的断言：抄表时这条是自证的（你抄的就是它），
  *  求逆时它是**真的在验**（算错一个元素这条就红）。 */
-test('逆 S 盒是正向 S 盒的逆排列（不抄第二张表的理由）', () => {
+test('逆 S 盒是正向 S 盒的逆排列（不抄第二张表的理由）', async () => {
   for (let a = 0; a < 256; a += 1) {
     assert.equal(INV_SBOX[SBOX_FOR_TEST[a]!], a, `INV_SBOX 与 SBOX 在 ${a} 处对不上`);
   }
@@ -173,7 +173,7 @@ const SBOX_FOR_TEST = (() => {
   return s;
 })();
 
-test('FIPS-197 附录 B：单块解密（验逆轮函数）', () => {
+test('FIPS-197 附录 B：单块解密（验逆轮函数）', async () => {
   const key = hexToBytes('000102030405060708090a0b0c0d0e0f');
   const ct = hexToBytes('69c4e0d86a7b0430d8cdb78070b4c55a');
   const pt = hexToBytes('00112233445566778899aabbccddeeff');
@@ -181,7 +181,7 @@ test('FIPS-197 附录 B：单块解密（验逆轮函数）', () => {
   assert.equal(toHex(aes128DecryptBlock(rk, ct)), toHex(pt), '逆密码解出来的不是原明文');
 });
 
-test('加密→解密是恒等（多种长度，含"正好一个块"）', () => {
+test('加密→解密是恒等（多种长度，含"正好一个块"）', async () => {
   const key = bytes(16, 7);
   const iv = bytes(16, 99);
   for (const n of [0, 1, 15, 16, 17, 31, 32, 100]) {
@@ -192,7 +192,7 @@ test('加密→解密是恒等（多种长度，含"正好一个块"）', () => 
   }
 });
 
-test('**主线**：CBC 解密与 Node 的 aes-128-cbc 逐字节一致', () => {
+test('**主线**：CBC 解密与 Node 的 aes-128-cbc 逐字节一致', async () => {
   const key = bytes(16, 1);
   const iv = bytes(16, 200);
   const msg = utf8('滑块缺口坐标 461 —— 混点非 ASCII，验字节而不是字符');
@@ -216,7 +216,7 @@ test('**主线**：CBC 解密与 Node 的 aes-128-cbc 逐字节一致', () => {
   assert.equal(toHex(new Uint8Array(back)), toHex(padded), '我们的密文 openssl 解不开');
 });
 
-test('**ECB 与 CBC 在多块时结果不同**（模式用错必被发现）', () => {
+test('**ECB 与 CBC 在多块时结果不同**（模式用错必被发现）', async () => {
   const key = bytes(16, 5);
   const iv = bytes(16, 6);
   // ⚠ 两个**相同**的明文块：ECB 下密文两块相同，CBC 下不同。
@@ -238,7 +238,7 @@ test('**ECB 与 CBC 在多块时结果不同**（模式用错必被发现）', (
   void ecb;
 });
 
-test('`aesEcbPkcs7DecryptHex`：hex 进、明文出（登录 userInfo 那条路）', () => {
+test('`aesEcbPkcs7DecryptHex`：hex 进、明文出（登录 userInfo 那条路）', async () => {
   const key = 'qPqDw263XgFgL3u8'; // 生产密钥（客户端 decryptByAes）
   const msg = utf8('{"userInfo":{"msisdn":"13800000000"}}');
   // 用 Node 的 ECB 造密文
@@ -247,7 +247,7 @@ test('`aesEcbPkcs7DecryptHex`：hex 进、明文出（登录 userInfo 那条路�
   assert.equal(aesEcbPkcs7DecryptHex(key, ct.toString('hex')), fromUtf8(msg));
 });
 
-test('`decryptWithDynamicIv`：`base64(IV ‖ 密文)` 且**自己带着 IV**', () => {
+test('`decryptWithDynamicIv`：`base64(IV ‖ 密文)` 且**自己带着 IV**', async () => {
   const key = utf8('CREATPUZZLE03F9A');
   const iv = utf8('E526E1F3F9765444');
   const answer = '461';
@@ -261,11 +261,11 @@ test('`decryptWithDynamicIv`：`base64(IV ‖ 密文)` 且**自己带着 IV**', 
   assert.throws(() => decryptWithDynamicIv(utf8('CREATPUZZLE03F9B'), payload), /填充/);
 });
 
-test('`decryptWithDynamicIv`：太短的输入要早失败（别报成"长度不是整数倍"）', () => {
+test('`decryptWithDynamicIv`：太短的输入要早失败（别报成"长度不是整数倍"）', async () => {
   assert.throws(() => decryptWithDynamicIv(utf8('k'), 'AAAA'), /太短/);
 });
 
-test('`pkcs7Unpad` 的校验不是装饰：密钥错时必须报错而不是静默截断', () => {
+test('`pkcs7Unpad` 的校验不是装饰：密钥错时必须报错而不是静默截断', async () => {
   const key = bytes(16, 9);
   const iv = bytes(16, 10);
   const ct = aes128CbcEncrypt(key, iv, pkcs7Pad(utf8('hello'), 16));
@@ -275,7 +275,7 @@ test('`pkcs7Unpad` 的校验不是装饰：密钥错时必须报错而不是静�
   assert.throws(() => pkcs7Unpad(new Uint8Array(20)), /整数倍/);
 });
 
-test('解密侧参数校验：密钥长度、块长度、空密文', () => {
+test('解密侧参数校验：密钥长度、块长度、空密文', async () => {
   assert.throws(() => aes128CbcDecrypt(bytes(15), bytes(16), bytes(16)), /密钥必须是 16 字节/);
   assert.throws(() => aes128CbcDecrypt(bytes(16), bytes(15), bytes(16)), /IV 必须是 16 字节/);
   assert.throws(() => aes128CbcDecrypt(bytes(16), bytes(16), new Uint8Array(0)), /整数倍/);

@@ -36,7 +36,7 @@ interface RunStep {
 }
 
 /** 直播领花要先有 H5 会话；gate 只换直播 JWT，不写 mcloud.session。 */
-function ensureSignInSession(deps: TaskDeps, label: string, log: CliLogger): boolean {
+async function ensureSignInSession(deps: TaskDeps, label: string, log: CliLogger): Promise<boolean> {
   if (!needExchange(deps.store, Date.now(), 'sign-in')) return true;
   const st = loadExchange(deps.store, 'sign-in');
   if (st === null || st.step === 'done') {
@@ -46,9 +46,9 @@ function ensureSignInSession(deps: TaskDeps, label: string, log: CliLogger): boo
       return false;
     }
   }
-  const r = drain(
-    (d) => {
-      const x = runExchangeStep(d, 'sign-in');
+  const r = await drain(
+    async (d) => {
+      const x = await runExchangeStep(d, 'sign-in');
       return { ok: x.ok, note: x.note, idle: x.done };
     },
     deps,
@@ -61,15 +61,15 @@ function ensureSignInSession(deps: TaskDeps, label: string, log: CliLogger): boo
   return true;
 }
 
-function collectOnce(
+async function collectOnce(
   deps: ListenDeps,
   runStartMs: number,
   listenMs: number,
-): { steps: RunStep[]; detail: string[]; ok: boolean; note: string; stopped: boolean } {
+): Promise<{ steps: RunStep[]; detail: string[]; ok: boolean; note: string; stopped: boolean }> {
   const steps: RunStep[] = [];
-  const step = (name: string, fn: () => TaskOutcome): TaskOutcome => {
+  const step = async (name: string, fn: () => TaskOutcome | Promise<TaskOutcome>): Promise<TaskOutcome> => {
     try {
-      const r = fn();
+      const r = await fn();
       steps.push({ name, ok: r.ok, note: r.note, idle: r.idle === true });
       return r;
     } catch (e) {
@@ -86,13 +86,13 @@ function collectOnce(
     stopped,
   });
 
-  const cap = hostNativeTls(deps.store, deps.nowIso, deps.transport);
+  const cap = await hostNativeTls(deps.store, deps.nowIso, deps.transport);
   if (cap.verdict === 'no') {
     steps.push({ name: '这个环境能不能直播', ok: false, note: capNote(cap.verdict), idle: false });
     return done(false, capNote(cap.verdict), true);
   }
 
-  const gateOut = drain(runLiveGate, deps, {
+  const gateOut = await drain(runLiveGate, deps, {
     label: '有没有开播',
     maxSteps: 3,
   });
@@ -120,7 +120,7 @@ function collectOnce(
     });
   }
 
-  step('小红书主页口令', () => runLiveRoom(deps));
+  await step('小红书主页口令', async () => await runLiveRoom(deps));
   const poolNow = loadPoolFrom(deps.store).pool;
   if (stopScraping(poolNow)) {
     steps.push({
@@ -136,7 +136,7 @@ function collectOnce(
   let listenNote = '';
   const deadline = runStartMs + listenMs;
   while (Date.now() < deadline) {
-    const r = step('听弹幕', () => runLiveListen(deps));
+    const r = await step('听弹幕', () => runLiveListen(deps));
     listenNote = r.note;
     if (!r.ok || r.idle) break;
     frames += 1;
@@ -149,16 +149,16 @@ function collectOnce(
   return done(true, `池里现在有 ${validCount(after)} 条能用的口令`);
 }
 
-function drawFor(
+async function drawFor(
   deps: TaskDeps,
   opts: { force: boolean; label: string; codes?: readonly string[] },
-): { ok: boolean; note: string; steps: RunStep[] } {
-  const r = drain(
+): Promise<{ ok: boolean; note: string; steps: RunStep[] }> {
+  const r = await drain(
     // 手动那一路必须把**人给的那几条**显式传进去：只写 `STATE_CODES` 不够 ——
     // `runLiveDraw` 不传 `codes` 时会从共享池里再挑（人给的在前，池里的跟在后面），
     // 于是「我输入一条、结果把上一场听来的也领了」。mcloud-sign 的
     // `drawRedFlower(codes)` 只打调用方给的那几条，CLI 要照这个。
-    (d) => runLiveDraw(d, opts.codes === undefined ? {} : { codes: opts.codes }),
+    async (d) => await runLiveDraw(d, opts.codes === undefined ? {} : { codes: opts.codes }),
     deps,
     {
       label: opts.label,
@@ -190,7 +190,7 @@ function accounts(rt: Runtime, only?: string): { id: string; label: string }[] {
 }
 
 /** 自动听直播 + 领花。没开播时只判断一次，不逐账号刷屏。 */
-export function autoDrawRedFlower(rt: Runtime): void {
+export async function autoDrawRedFlower(rt: Runtime): Promise<void> {
   const log = createCliLogger({ colorize: colorizeFrom(rt.config.common) });
   const all = accounts(rt);
   if (all.length === 0) {
@@ -205,10 +205,10 @@ export function autoDrawRedFlower(rt: Runtime): void {
     // `[ISO] [debug]` 格式，这里覆盖成 CLI 的 `[debug] HH:MM:SS`。
     onDanmaku: (text) => log.debug(`[WS] 弹幕: ${text}`),
   };
-  const auth = runAuthRefresh(collectDeps);
+  const auth = await runAuthRefresh(collectDeps);
   if (!auth.ok) log.warn(`凭据续期：${auth.note}`);
-  if (!ensureSignInSession(collectDeps, first.label, log)) return;
-  const collected = collectOnce(collectDeps, Date.now(), LISTEN_BUDGET_MS);
+  if (!await ensureSignInSession(collectDeps, first.label, log)) return;
+  const collected = await collectOnce(collectDeps, Date.now(), LISTEN_BUDGET_MS);
   for (const line of collected.detail) log[lineLevel(line)](line);
   if (collected.stopped) return;
 
@@ -220,14 +220,14 @@ export function autoDrawRedFlower(rt: Runtime): void {
   for (const [i, acct] of all.entries()) {
     log.info(`====== 账号 ${i + 1}【${acct.label}】 ======`);
     const deps = rt.depsFor(acct.id);
-    const auth = runAuthRefresh(deps);
+    const auth = await runAuthRefresh(deps);
     if (!auth.ok) log.warn(`凭据续期（${acct.label}）：${auth.note}`);
-    if (!ensureSignInSession(deps, acct.label, log)) {
+    if (!await ensureSignInSession(deps, acct.label, log)) {
       log.error('初始化失败，跳过');
       continue;
     }
     const before = loadDrawState(deps.store);
-    const r = drawFor(deps, { force: true, label: `${acct.label} 领小红花` });
+    const r = await drawFor(deps, { force: true, label: `${acct.label} 领小红花` });
     const printed = printDraw(deps, before, log);
     // 口令没变、上一轮已跑完 ⇒ 没有新结果可打，就把状态机那句「已跑完」说出来。
     if (!printed) log.info(r.note);
@@ -236,7 +236,7 @@ export function autoDrawRedFlower(rt: Runtime): void {
 }
 
 /** 手工口令：不监听，只把给出的口令逐账号领一遍。 */
-export function drawRedFlower(rt: Runtime, codes: string[]): void {
+export async function drawRedFlower(rt: Runtime, codes: string[]): Promise<void> {
   const log = createCliLogger({ colorize: colorizeFrom(rt.config.common) });
   if (codes.length === 0) {
     log.error('请提供至少一个口令');
@@ -252,16 +252,16 @@ export function drawRedFlower(rt: Runtime, codes: string[]): void {
     log.info('==============');
     log.info(`登录账号【${acct.label}】`);
     const deps = rt.depsFor(acct.id);
-    const auth = runAuthRefresh(deps);
+    const auth = await runAuthRefresh(deps);
     if (!auth.ok) log.warn(`凭据续期（${acct.label}）：${auth.note}`);
-    if (!ensureSignInSession(deps, acct.label, log)) continue;
+    if (!await ensureSignInSession(deps, acct.label, log)) continue;
     deps.store.setState(
       STATE_CODES,
       JSON.stringify({ at: now, codes, raw: codes.join(' '), how: '手工传入' }),
       now,
     );
     deps.store.setState(STATE_DRAW, '', now);
-    const r = drawFor(deps, { force: true, label: `${acct.label} 领小红花`, codes });
+    const r = await drawFor(deps, { force: true, label: `${acct.label} 领小红花`, codes });
     printDraw(deps, null, log);
     // 照 mcloud-sign：读余额失败就是「获取用户信息失败」，别拿内部步骤名糊上去。
     if (!r.ok) {

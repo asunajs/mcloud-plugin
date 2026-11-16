@@ -368,7 +368,7 @@ function listenerFor(
 }
 
 /** 推进一步。一次调用**最多两发上游请求**（与门同一条纪律）。 */
-export function runLiveListen(deps: ListenDeps): TaskOutcome {
+export async function runLiveListen(deps: ListenDeps): Promise<TaskOutcome> {
   const nowMs = Date.parse(deps.nowIso);
   const prev = loadListenState(deps.store);
   const windowMs = loadListenSeconds(deps.store) * 1000;
@@ -407,15 +407,15 @@ export function runLiveListen(deps: ListenDeps): TaskOutcome {
 
   switch (st.step) {
     case 'handshake':
-      return handshakeStep(deps, st);
+      return await handshakeStep(deps, st);
     case 'rooms':
-      return roomsStep(deps, st, nowMs);
+      return await roomsStep(deps, st, nowMs);
     case 'userToken':
-      return userTokenStep(deps, st);
+      return await userTokenStep(deps, st);
     case 'roomBeat':
-      return roomBeatStep(deps, st, nowMs);
+      return await roomBeatStep(deps, st, nowMs);
     case 'apply':
-      return applyStep(deps, st, nowMs);
+      return await applyStep(deps, st, nowMs);
     case 'open':
       return openStep(deps, st, nowMs);
     case 'listen':
@@ -461,21 +461,21 @@ function stepFail(deps: ListenDeps, st: ListenState, note: string): TaskOutcome 
 }
 
 /** ①+②：换 SSO 再换直播侧 JWT。**必须同一次调用**（SSO 只活几分钟 —— 门那边实测过）。 */
-function handshakeStep(deps: ListenDeps, st: ListenState): TaskOutcome {
+async function handshakeStep(deps: ListenDeps, st: ListenState): Promise<TaskOutcome> {
   const base = loadGateBaseOf(deps.store);
   const auth = loadAuthRaw(deps.store);
   if (auth === '') {
     return stepFail(deps, st, '听弹幕要**原生凭据**（`Authorization`）：先去界面贴一份');
   }
 
-  const r1 = callRawText(deps.transport, gateSpecTokenRequest(auth, base));
+  const r1 = await callRawText(deps.transport, gateSpecTokenRequest(auth, base));
   if (!r1.ok) return stepFail(deps, st, `① 换 SSO token 失败：${r1.error ?? '未知失败'}`);
   const sso = parseSsoToken(r1.text);
   if (!sso.ok || sso.value === undefined) {
     return stepFail(deps, st, `① 换 SSO token 失败：${sso.error ?? '响应里没有 data.token'}`);
   }
 
-  const r2 = callRawText(deps.transport, cmpassLoginRequest(sso.value, base));
+  const r2 = await callRawText(deps.transport, cmpassLoginRequest(sso.value, base));
   if (!r2.ok) return stepFail(deps, st, `② 换直播侧 JWT 失败：${r2.error ?? '未知失败'}`);
   const env = parseCmlive(r2.text);
   if (!env.ok || env.value === undefined) {
@@ -494,14 +494,14 @@ function handshakeStep(deps: ListenDeps, st: ListenState): TaskOutcome {
 }
 
 /** ③ 两个页签各一发 → 合并 → 找那个主播的**在播**房间。 */
-function roomsStep(deps: ListenDeps, st: ListenState, nowMs: number): TaskOutcome {
+async function roomsStep(deps: ListenDeps, st: ListenState, nowMs: number): Promise<TaskOutcome> {
   const base = loadGateBaseOf(deps.store);
   const jwt = st.jwt ?? '';
   if (jwt === '') return stepFail(deps, st, '③ 没有票（上一拍的 JWT 不在）');
 
   const groups: LiveRoom[][] = [];
   for (const tabId of GATE_TAB_IDS) {
-    const r = callRawText(deps.transport, tabContentListRequest(tabId, jwt, base));
+    const r = await callRawText(deps.transport, tabContentListRequest(tabId, jwt, base));
     if (!r.ok) return stepFail(deps, st, `③ 页签 ${tabId} 失败：${r.error ?? '未知失败'}`);
     const env = parseCmlive(r.text);
     if (!env.ok || env.value === undefined) {
@@ -585,11 +585,11 @@ function hours(ms: number): string {
  *
  *  ⚠⚠ 2026-10-14 实机：漏了这一步（拿门的 JWT 当 WS 凭据）⇒ **一条弹幕都收不到**
  *  （只有自己的心跳回包）。表现与"这间房没人说话"完全一样，所以我先误判成后者。 */
-function userTokenStep(deps: ListenDeps, st: ListenState): TaskOutcome {
+async function userTokenStep(deps: ListenDeps, st: ListenState): Promise<TaskOutcome> {
   const base = loadGateBaseOf(deps.store);
   const jwt = st.jwt ?? '';
   if (jwt === '') return stepFail(deps, st, '③ 没有票（上一拍的 JWT 不在）');
-  const r = callRawText(deps.transport, userTokenRequest(jwt, base));
+  const r = await callRawText(deps.transport, userTokenRequest(jwt, base));
   if (!r.ok) return stepFail(deps, st, `③ 取 WS 凭据失败：${r.error ?? '未知失败'}`);
   const parsed = parseUserToken(r.text);
   if (!parsed.ok || parsed.value === undefined) {
@@ -602,14 +602,14 @@ function userTokenStep(deps: ListenDeps, st: ListenState): TaskOutcome {
 }
 
 /** ④ roomBeat → `chatRoomId`。**没有它就不该开 WS**（抓包 §一/§5.2 的判据）。 */
-function roomBeatStep(deps: ListenDeps, st: ListenState, nowMs: number): TaskOutcome {
+async function roomBeatStep(deps: ListenDeps, st: ListenState, nowMs: number): Promise<TaskOutcome> {
   void nowMs;
   const base = loadGateBaseOf(deps.store);
   const jwt = st.jwt ?? '';
   if (st.roomId === undefined || jwt === '') {
     return stepFail(deps, st, '④ 缺房间号或票（上一拍的状态不完整）');
   }
-  const r = callRawText(deps.transport, roomBeatRequest(st.roomId, jwt, base));
+  const r = await callRawText(deps.transport, roomBeatRequest(st.roomId, jwt, base));
   if (!r.ok) return stepFail(deps, st, `④ roomBeat 失败：${r.error ?? '未知失败'}`);
   const parsed = parseRoomBeat(r.text);
   if (!parsed.ok || parsed.value === undefined) {
@@ -643,7 +643,7 @@ function roomBeatStep(deps: ListenDeps, st: ListenState, nowMs: number): TaskOut
  *
  *  ⚠ 两个签名头**服务端不校验**（抓包 §8.6 反证实验：打全 0 照样 `code:0`），
  *  但仍然按实拍算式算出来 —— 报文与原客户端一致，别的地方才不会在某天突然露出来。 */
-function applyStep(deps: ListenDeps, st: ListenState, nowMs: number): TaskOutcome {
+async function applyStep(deps: ListenDeps, st: ListenState, nowMs: number): Promise<TaskOutcome> {
   const auth = loadAuthRaw(deps.store);
   const parsed = parseAuthorization(auth);
   if (parsed === null) return stepFail(deps, st, '⑤ 进房间要手机号（`userName` 用 `cmlive_c_<手机>`）');
@@ -656,7 +656,7 @@ function applyStep(deps: ListenDeps, st: ListenState, nowMs: number): TaskOutcom
     // 没配口子 ⇒ `applyRoomRequest` 自己用真主机（`BASE_VIDEO_IM`）
     base: loadImBase(deps.store),
   });
-  const r = callRawText(deps.transport, req);
+  const r = await callRawText(deps.transport, req);
   if (!r.ok) return stepFail(deps, st, `⑤ 进房间失败：${r.error ?? '未知失败'}`);
   const out = parseApplyRoom(r.text);
   if (!out.ok) return stepFail(deps, st, `⑤ 进房间失败：${out.error}`);

@@ -121,17 +121,17 @@ function advance(a: PkAttempt, step: string, data?: Record<string, string>): voi
   if (data !== undefined) a.data = { ...(a.data ?? {}), ...data };
 }
 
-function send(deps: TaskDeps, req: BuiltRequest): RawTextResult {
-  return callRawText(deps.transport, req);
+async function send(deps: TaskDeps, req: BuiltRequest): Promise<RawTextResult> {
+  return await callRawText(deps.transport, req);
 }
 
 /** 推进一步（**一次调用最多一发上游请求**）。 */
-export function stepAction(deps: TaskDeps, s: PkSession, a: PkAttempt): ActionOutcome {
+export async function stepAction(deps: TaskDeps, s: PkSession, a: PkAttempt): Promise<ActionOutcome> {
   const data = a.data ?? {};
 
   // ── 登记 / 预约 ───────────────────────────────────────────────────
   if (a.step === 'reserve') {
-    const res = send(deps, reserveRequest(s, a.taskId, a.key, deps.baseUrl));
+    const res = await send(deps, reserveRequest(s, a.taskId, a.key, deps.baseUrl));
     if (!res.ok) return fail(`预约「${a.name}」没成：${res.error ?? '未知失败'}`);
     return done(`已预约「${a.name}」`);
   }
@@ -144,7 +144,7 @@ export function stepAction(deps: TaskDeps, s: PkSession, a: PkAttempt): ActionOu
       advance(a, next);
       return more(`「${a.name}」已经登记过 —— 下一步「${next}」`);
     }
-    const res = send(deps, clickRequest(s, a.taskId, a.key, deps.baseUrl));
+    const res = await send(deps, clickRequest(s, a.taskId, a.key, deps.baseUrl));
     if (!res.ok) return fail(`登记「${a.name}」没成：${res.error ?? '未知失败'}`);
     const next = firstActionStep(a.key);
     if (next === 'done') return done(`已点「${a.name}」—— 这一条只认点击`);
@@ -166,7 +166,7 @@ export function stepAction(deps: TaskDeps, s: PkSession, a: PkAttempt): ActionOu
       contentHash: hash,
       timestampMs: ts,
     });
-    const res = send(deps, req);
+    const res = await send(deps, req);
     if (!res.ok) return fail(`备份快照没建起来：${res.error ?? '未知失败'}`);
     const parsed = parseSnapshotCreate(res.text);
     if (!parsed.ok || !parsed.created) return fail(`备份快照响应解析不了：${parsed.error ?? ''}`);
@@ -187,7 +187,7 @@ export function stepAction(deps: TaskDeps, s: PkSession, a: PkAttempt): ActionOu
     if (!data.snapUploadUrl || !data.snapUploadId) return fail('备份快照缺 uploadUrl/uploadId');
     const { req, leaksCredential } = buildPutRequest(data.snapUploadUrl, EMPTY_ZIP, 'snapshot');
     if (leaksCredential) return fail('备份快照的目标主机不该带凭据 ⇒ 不发');
-    const res = send(deps, req);
+    const res = await send(deps, req);
     if (!res.ok) return fail(`备份快照体没传成：${res.error ?? '未知失败'}`);
     advance(a, 'snapshot-complete');
     return more('备份快照体已传 —— 下一步确认');
@@ -203,7 +203,7 @@ export function stepAction(deps: TaskDeps, s: PkSession, a: PkAttempt): ActionOu
       size: Number(data.snapSize ?? EMPTY_ZIP.length),
       timestampMs: Number(data.snapTs ?? depsNowMs(deps)),
     });
-    const res = send(deps, req);
+    const res = await send(deps, req);
     const parsed = res.ok ? parseSnapshotComplete(res.text) : { ok: false, error: res.error };
     if (!parsed.ok) return fail(`备份快照没确认：${parsed.error ?? '未知失败'}`);
     return done(`备份了一次文件（含快照）——「${a.name}」`);
@@ -215,7 +215,7 @@ export function stepAction(deps: TaskDeps, s: PkSession, a: PkAttempt): ActionOu
     if (fileId === undefined || fileId === '') return fail('分享文件：上传没有给出 fileId');
     const req = getOutLinkRequest(deps, [fileId]);
     if (req === undefined) return fail('分享文件：造不出外链请求（缺账号）');
-    const res = send(deps, req);
+    const res = await send(deps, req);
     if (!res.ok) return fail(`分享文件：建外链没成（${res.error ?? '未知失败'}）`);
     return done(`分享了一个文件 ——「${a.name}」`);
   }
@@ -226,7 +226,7 @@ export function stepAction(deps: TaskDeps, s: PkSession, a: PkAttempt): ActionOu
     let logFallbackAuth = false;
     const auth = parseAuth(loadAuthRaw(deps.store));
     if (auth === undefined || auth.token === '') return fail('云笔记：这个号没有 authToken');
-    const res = send(deps, noteAuthRequest(auth.token, auth.phone));
+    const res = await send(deps, noteAuthRequest(auth.token, auth.phone));
     if (!res.ok) return fail(`云笔记鉴权没成：${res.error ?? '未知失败'}`);
     let headers = parseNoteHeaders(res.text);
     if (headers === undefined) {
@@ -261,7 +261,7 @@ export function stepAction(deps: TaskDeps, s: PkSession, a: PkAttempt): ActionOu
     } catch {
       headers = {};
     }
-    const res = send(
+    const res = await send(
       deps,
       noteCreateRequest(data.noteId ?? '', data.noteTitle ?? '', auth?.phone ?? '', headers, Date.now()),
     );
@@ -293,13 +293,13 @@ export function stepAction(deps: TaskDeps, s: PkSession, a: PkAttempt): ActionOu
     } catch {
       headers = {};
     }
-    const res = send(deps, noteDeleteRequest(data.noteId ?? '', headers));
+    const res = await send(deps, noteDeleteRequest(data.noteId ?? '', headers));
     return done(res.ok ? `建了一条云笔记（已移进回收站）——「${a.name}」` : `云笔记删失败（旧实现也忽略）：${res.error ?? ''}`);
   }
 
   // ── 邮箱 AI 链（aiAssistant / aiCamera 共用前三步）──────────────────
   if (a.step === 'ai-mail-sso') {
-    const res = send(deps, mailSpecTokenRequest(deps));
+    const res = await send(deps, mailSpecTokenRequest(deps));
     if (!res.ok) return fail(`灵犀：换邮箱 SSO 没成（${res.error ?? '未知失败'}）`);
     const p = parseSsoToken(res.text);
     if (!p.ok || p.value === undefined) return fail(`灵犀：${p.error ?? '邮箱 SSO 响应里没有 token'}`);
@@ -308,7 +308,7 @@ export function stepAction(deps: TaskDeps, s: PkSession, a: PkAttempt): ActionOu
   }
 
   if (a.step === 'ai-mail-login') {
-    const res = send(deps, mailLoginRequest(data.sso ?? ''));
+    const res = await send(deps, mailLoginRequest(data.sso ?? ''));
     if (!res.ok) return fail(`灵犀：邮箱登录没成（${res.error ?? '未知失败'}）`);
     const sess = parseMailSession(res.text);
     if (sess === undefined) return fail('灵犀：邮箱登录响应里没有 sid/rmkey');
@@ -317,7 +317,7 @@ export function stepAction(deps: TaskDeps, s: PkSession, a: PkAttempt): ActionOu
   }
 
   if (a.step === 'ai-query') {
-    const res = send(
+    const res = await send(
       deps,
       queryUserTokenRequest({ sid: data.sid ?? '', rmkey: data.rmkey ?? '' }, data.cguid ?? newCguid()),
     );
@@ -335,7 +335,7 @@ export function stepAction(deps: TaskDeps, s: PkSession, a: PkAttempt): ActionOu
   }
 
   if (a.step === 'ai-chat') {
-    const res = send(deps, aiChatRequest(data.authz ?? '', data.domain ?? '', '你好'));
+    const res = await send(deps, aiChatRequest(data.authz ?? '', data.domain ?? '', '你好'));
     const sse = res.ok ? parseSse(res.text) : { events: 0, text: '' };
     // ⚠ 没回话**不判死**：与 App 任务 609 同一条口径（成败看服务端认不认）
     return done(
@@ -348,7 +348,7 @@ export function stepAction(deps: TaskDeps, s: PkSession, a: PkAttempt): ActionOu
   if (a.step === 'ai-recognize') {
     const native = parseAuth(loadAuthRaw(deps.store))?.raw ?? '';
     const tid = uuidV4().replace(/-/g, '').slice(0, 16);
-    const res = send(deps, aiRecognizeRequest(native, data.domain ?? '', tid, s.deviceId ?? ''));
+    const res = await send(deps, aiRecognizeRequest(native, data.domain ?? '', tid, s.deviceId ?? ''));
     const rec = res.ok ? parseAiRecognize(res.text) : undefined;
     if (rec === undefined || !rec.success || rec.fileId === undefined) {
       return fail(`AI 相机识图没成：${rec?.message ?? res.error ?? '没有 fileId'}`);
@@ -360,7 +360,7 @@ export function stepAction(deps: TaskDeps, s: PkSession, a: PkAttempt): ActionOu
   if (a.step === 'ai-camera-chat') {
     const native = parseAuth(loadAuthRaw(deps.store))?.raw ?? '';
     const tid = uuidV4().replace(/-/g, '').slice(0, 16);
-    const res = send(
+    const res = await send(
       deps,
       aiCameraChatRequest(native, data.domain ?? '', data.fileId ?? '', data.camTaskId ?? '', tid),
     );
@@ -374,7 +374,7 @@ export function stepAction(deps: TaskDeps, s: PkSession, a: PkAttempt): ActionOu
 
   // ── 开启智能相册（openAlbum）──────────────────────────────────────
   if (a.step === 'smart-album') {
-    const res = send(deps, smartAlbumRequest(s, deps.baseUrl));
+    const res = await send(deps, smartAlbumRequest(s, deps.baseUrl));
     if (!res.ok) return fail(`开启智能相册没成（${res.error ?? '未知失败'}）`);
     return done(`开启了智能相册 ——「${a.name}」`);
   }
@@ -387,7 +387,7 @@ export function stepAction(deps: TaskDeps, s: PkSession, a: PkAttempt): ActionOu
  *
  *  ⚠ 起上传这一步不能单独占一次调用：`runUploadStep` 在没有排队上传时回 `idle`，
  *  而 `drain` 见到 `idle` 就收工 —— 表现是"文件一步都没传"却当成做完了。 */
-function stepUpload(deps: TaskDeps, a: PkAttempt, data: Record<string, string>): ActionOutcome {
+async function stepUpload(deps: TaskDeps, a: PkAttempt, data: Record<string, string>): Promise<ActionOutcome> {
   const key = STATE_TOKENPK_UPLOAD;
   const jpg = a.key === 'uploadPhoto' || a.key === 'backup';
   const seed = data.uploadSeed ?? randomHex(16);
@@ -419,7 +419,7 @@ function stepUpload(deps: TaskDeps, a: PkAttempt, data: Record<string, string>):
     });
     advance(a, 'upload', { uploadSeed: seed });
   }
-  const out = runUploadStep(deps, bytes, key);
+  const out = await runUploadStep(deps, bytes, key);
   if (!out.ok) return fail(`上传「${a.name}」没成：${out.note}`);
   if (!uploadDone(deps, key)) return more(`上传中 —— ${out.note}`);
   const fileId = loadUpload(deps, key)?.fileId ?? '';
@@ -440,13 +440,13 @@ function stepUpload(deps: TaskDeps, a: PkAttempt, data: Record<string, string>):
 }
 
 /** 领奖那一发（独立于动作：`SUCCESS` 的任务才走这里）。 */
-export function claimAction(
+export async function claimAction(
   deps: TaskDeps,
   s: PkSession,
   taskId: number,
   name: string,
-): { ok: boolean; note: string; prizes: string[] } {
-  const res = callRawText(deps.transport, receiveRequest(s, taskId, deps.baseUrl));
+): Promise<{ ok: boolean; note: string; prizes: string[] }> {
+  const res = await callRawText(deps.transport, receiveRequest(s, taskId, deps.baseUrl));
   if (!res.ok) return { ok: false, note: `领奖「${name}」没成：${res.error ?? '未知失败'}`, prizes: [] };
   const env = parsePk(res.text);
   if (!env.ok) {

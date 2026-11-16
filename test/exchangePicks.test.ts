@@ -35,7 +35,7 @@ const visibleHtml = html.replace(/<!--[\s\S]*?-->/g, '');
  *  而这一版 app.js 的注释里明写着"这里原来读的是 `e.reading.prizes`"。 */
 const jsCode = js.replace(/^\s*\/\/.*$/gm, '');
 
-test('手动兑换不再让用户存目标：清单行直接兑换', () => {
+test('手动兑换不再让用户存目标：清单行直接兑换', async () => {
   // 目标保存 / 下拉都删了：手动兑换直接在清单行点「立即兑换」。
   assert.ok(!visibleHtml.includes('id="ex-plan"'), '不该再有隐藏目标格');
   assert.ok(!visibleHtml.includes('id="ex-pick-btn"'), '不该再有奖品下拉');
@@ -43,7 +43,7 @@ test('手动兑换不再让用户存目标：清单行直接兑换', () => {
   assert.ok(/data-buy-idx/.test(js), '清单行仍要有立即兑换');
 });
 
-test('⚠ 下拉与「奖品清单」那张表读**同一份**缓存（`picks`）', () => {
+test('⚠ 下拉与「奖品清单」那张表读**同一份**缓存（`picks`）', async () => {
   // 原来表格读的是 `e.reading.prizes` —— 而那个读数里**根本没有 `prizes` 这一格**
   // （`readExchangeList` 回的是摘要，可兑的那部分键叫 `ok`）⇒ 表格恒空、
   // 界面永远说"还没有清单读数"，而目标只能手打。这条就是钉住那个死形状。
@@ -54,7 +54,7 @@ test('⚠ 下拉与「奖品清单」那张表读**同一份**缓存（`picks`�
   assert.ok(/<th>奖品<\/th><th>编号<\/th>/.test(js), '表格要有编号那一列');
 });
 
-test('⚠ 手动刷新：清单旁一颗「读一次」，后端那条路由**只读清单**', () => {
+test('⚠ 手动刷新：清单旁一颗「读一次」，后端那条路由**只读清单**', async () => {
   assert.ok(/\$\('ex-read'\)/.test(js), '界面没取用 ex-read');
   assert.ok(!/ex-picks-refresh/.test(js), '旧的「刷新清单」入口已删');
   assert.ok(/function refreshPicks\(\)/.test(js), '缺 refreshPicks');
@@ -67,7 +67,7 @@ test('⚠ 手动刷新：清单旁一颗「读一次」，后端那条路由**�
   }
 });
 
-test('点开这一屏会**自动补一枪**；票新且有缓存才跳过，票过期则无感续票重读', () => {
+test('点开这一屏会**自动补一枪**；票新且有缓存才跳过，票过期则无感续票重读', async () => {
   // 判据有两层：① 今天这份缓存有没有；② 两小时那张票还新不新。
   // 票过期时不能把"50 件全判不了"甩给用户 —— 先续票再重读（参考 mcloud 的 H5Client）。
   assert.ok(/function autoFetchPicksOnce\(\)/.test(js), '缺 autoFetchPicksOnce');
@@ -82,7 +82,7 @@ test('点开这一屏会**自动补一枪**；票新且有缓存才跳过，票�
   assert.ok(!/setInterval\([^)]*autoFetchPicksOnce/.test(js), '不许挂定时器去自动刷清单');
 });
 
-test('⚠ 存目标要**同时**写「用户要换的那句」与「这一单在排队」—— 少一格定时链永远不动', () => {
+test('⚠ 存目标要**同时**写「用户要换的那句」与「这一单在排队」—— 少一格定时链永远不动', async () => {
   // 2026-10-17 mock 实测到的真缺陷：`/exchange/order` 原来只调 `startOrder`，
   // 而它写的是 `mcloud.exchange.order.plan`（这一单的）；定时链读的是
   // `mcloud.exchange.plan`（`exchangeRun.ts` 的 `PLAN_KEY`）⇒ 界面上存住了、
@@ -97,7 +97,7 @@ test('⚠ 存目标要**同时**写「用户要换的那句」与「这一单在
   assert.ok(/if \(query !== ''\) deps\.store\.setState\(/.test(h), '空查询该只失败、不清目标');
 });
 
-test('⚠ 缓存是**账号级**的，且"每天清一次"发生在读的时候（本地写一格，不打上游）', () => {
+test('⚠ 缓存是**账号级**的，且"每天清一次"发生在读的时候（本地写一格，不打上游）', async () => {
   const keys = srcOf('src/store/keys.ts');
   assert.ok(/'mcloud\.exchangelist\.pick': 'account'/.test(keys), '这一格必须按账号存（每个号清单不同）');
   // 读视图时顺手判过期：点开这一屏就是"今天第一次看"
@@ -107,7 +107,7 @@ test('⚠ 缓存是**账号级**的，且"每天清一次"发生在读的时候�
   assert.ok(/store\.setState\(STATE_PICK, '', nowIso\)/.test(list), '过期要**就地写空**，不是留着每次判');
 });
 
-test('兑换页对齐原页面：关注 / 分组 / 二次确认 / 本地判定 / 立即兑换', () => {
+test('兑换页对齐原页面：关注 / 分组 / 二次确认 / 本地判定 / 立即兑换', async () => {
   for (const id of ['ex-subs', 'ex-confirm-first', 'ex-local-judge', 'ex-filter', 'ex-verdict', 'ex-result', 'ex-account']) {
     assert.ok(html.includes(`id="${id}"`), `缺 ${id}`);
   }

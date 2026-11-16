@@ -371,13 +371,13 @@ export function buildRecords(
  *  本模块不认识 store / transport / host-api —— 与 `routes.ts` 那条"逻辑不 import
  *  host-api"的纪律同一套。翻页失败（网络 / 码非 0 / 形状不对）**原样抛**，
  *  由上层按账号隔离。 */
-export type FetchPage = (pageNumber: number) => CloudRecord[];
+export type FetchPage = (pageNumber: number) => CloudRecord[] | Promise<CloudRecord[]>;
 
 /** 翻到短页为止，返回全部流水 + 是否"撞满页还没到底"（`truncated`）。 */
-function fetchAll(fetch: FetchPage): { all: CloudRecord[]; truncated: boolean } {
+async function fetchAll(fetch: FetchPage): Promise<{ all: CloudRecord[]; truncated: boolean }> {
   const all: CloudRecord[] = [];
   for (let page = 1; page <= MAX_PAGES; page += 1) {
-    const batch = fetch(page);
+    const batch = await fetch(page);
     const full = batch.length === PAGE_SIZE;
     all.push(...batch);
     if (!full) return { all, truncated: false };
@@ -391,8 +391,8 @@ function fetchAll(fetch: FetchPage): { all: CloudRecord[]; truncated: boolean } 
  *
  *  翻满 `MAX_PAGES` 还是满页 ⇒ 抛错（"没拿到全部，不报一个可能少算的数"）——
  *  调用方据此把该账号挪进 `failed`，不影响别的账号。 */
-export function readDay(fetch: FetchPage, nowMs: number): BeanDay {
-  const { all, truncated } = fetchAll(fetch);
+export async function readDay(fetch: FetchPage, nowMs: number): Promise<BeanDay> {
+  const { all, truncated } = await fetchAll(fetch);
   if (truncated) {
     throw new Error(`AI豆流水翻满 ${MAX_PAGES} 页仍是满页，读不到底 —— 不报一个可能少算的数`);
   }
@@ -402,11 +402,11 @@ export function readDay(fetch: FetchPage, nowMs: number): BeanDay {
 /** 只读：拉一个账号的**全部**流水，按窗口过滤、倒序、截到 `limit`。
  *
  *  与 [`readDay`] 共用翻页口径，区别只在"可能不全"做成 `hasMore` 标志而不是抛错。 */
-export function readRecords(
+export async function readRecords(
   fetch: FetchPage,
   sinceMs: number | undefined,
   limit: number,
-): BeanRecords {
-  const { all, truncated } = fetchAll(fetch);
+): Promise<BeanRecords> {
+  const { all, truncated } = await fetchAll(fetch);
   return buildRecords(all, sinceMs, limit, truncated);
 }

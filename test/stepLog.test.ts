@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 
 import { lineLevel, stepTally, userLine } from '../src/mcloud/tasks/stepLog.ts';
 
-test('lineLevel：做了事 + 明确拿到奖励才 success', () => {
+test('lineLevel：做了事 + 明确拿到奖励才 success', async () => {
   assert.equal(lineLevel('签到：领到 3 云朵'), 'success');
   assert.equal(lineLevel('签到：网盘签到成功，获得 3 云朵'), 'success');
   // 参考 mcloud-sign：除第一次外，签到回的是「今日已签到」状态，不是 success
@@ -21,7 +21,7 @@ test('lineLevel：做了事 + 明确拿到奖励才 success', () => {
   assert.equal(lineLevel('领取AI豆：未获得奖励'), 'info');
 });
 
-test('lineLevel：普通读数/状态是 info，不是 success', () => {
+test('lineLevel：普通读数/状态是 info，不是 success', async () => {
   assert.equal(lineLevel('AI豆快照：流水 0 条'), 'info');
   assert.equal(lineLevel('消息推送奖励（问状态）：暂无，已开启 10 天'), 'info');
   assert.equal(lineLevel('App 任务矩阵（只看）：已完成 11 条，另有 3 条没做完'), 'info');
@@ -36,19 +36,19 @@ test('lineLevel：普通读数/状态是 info，不是 success', () => {
   );
 });
 
-test('每月一次的任务做过之后，日志不再反复出现', () => {
+test('每月一次的任务做过之后，日志不再反复出现', async () => {
   assert.equal(userLine({ name: '签到翻倍', ok: true, note: '这个月已经翻倍过了' }), null);
   assert.equal(userLine({ name: '复活卡', ok: true, note: '这个月已经领过复活卡了' }), null);
   assert.notEqual(userLine({ name: '复活卡', ok: true, note: '已用掉一张卡' }), null);
 });
 
-test('lineLevel：跳过/今天已经做过是 debug', () => {
+test('lineLevel：跳过/今天已经做过是 debug', async () => {
   assert.equal(lineLevel('签到：今天已经签过了'), 'debug');
   assert.equal(lineLevel('领取AI豆：今天没有可领的'), 'debug');
   assert.equal(lineLevel('备份好礼：跳过（今天领过了）'), 'debug');
 });
 
-test('等服务端确认不是失败：日志不许写没成、段尾不许算没成', () => {
+test('等服务端确认不是失败：日志不许写没成、段尾不许算没成', async () => {
   const line = userLine({
     name: 'App 任务',
     ok: true,
@@ -60,7 +60,7 @@ test('等服务端确认不是失败：日志不许写没成、段尾不许算�
   assert.deepEqual(stepTally([{ ok: true, pending: true, note: line! }]), { bad: 0, hard: 0 });
 });
 
-test('lineLevel：没成是 fail，要用户动手是 warn', () => {
+test('lineLevel：没成是 fail，要用户动手是 warn', async () => {
   assert.equal(lineLevel('复活卡：没成 —— 服务端说：2025年无云朵记录'), 'fail');
   assert.equal(lineLevel('App 任务：没成 —— 请前往移动云盘手动完成'), 'fail');
   assert.equal(lineLevel('请前往移动云盘手动完成：447'), 'warn');

@@ -33,7 +33,7 @@ export const STATE_STAGE = 'mcloud.sign.stage';
 /** 今天已经签到成功的日子（`YYYY-MM-DD`）—— 后面几趟只报「已签到」，不再重复打。 */
 export const STATE_SIGN_DONE = 'mcloud.sign.done';
 
-export function runSign(deps: TaskDeps): TaskOutcome {
+export async function runSign(deps: TaskDeps): Promise<TaskOutcome> {
   const session = loadSession(deps.store);
   if (!session) {
     return { ok: false, note: '还没有网页会话 —— 上面「换票」那一步说了原因' };
@@ -49,7 +49,7 @@ export function runSign(deps: TaskDeps): TaskOutcome {
 
   // ③ 回查：上一次已经把签到提交出去了，这次看结果
   if (stage === 'need-verify') {
-    const info = fetchInfoV3({ store: deps.store, transport: deps.transport, baseUrl: deps.baseUrl });
+    const info = await fetchInfoV3({ store: deps.store, transport: deps.transport, baseUrl: deps.baseUrl });
     if (!info.ok) return { ok: false, note: `回查失败：${info.error}` };
     if (info.info.todaySigned) {
       deps.store.setState(STATE_STAGE, '', deps.nowIso);
@@ -61,7 +61,7 @@ export function runSign(deps: TaskDeps): TaskOutcome {
   }
 
   // ① 问状态
-  const info = fetchInfoV3({ store: deps.store, transport: deps.transport, baseUrl: deps.baseUrl });
+  const info = await fetchInfoV3({ store: deps.store, transport: deps.transport, baseUrl: deps.baseUrl });
   if (!info.ok) return { ok: false, note: `查询签到状态失败：${info.error}` };
   if (info.info.todaySigned) {
     // 参考实现原话（`mcloud-sign/packages/core/src/tasks/sign/task.ts`）：
@@ -72,7 +72,7 @@ export function runSign(deps: TaskDeps): TaskOutcome {
 
   // ② 动手
   const deviceId = session.deviceId;
-  const out = runTask(
+  const out = await runTask(
     deps,
     {
       task: 'sign',

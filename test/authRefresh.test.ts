@@ -39,7 +39,7 @@ const cred = (platform: string, phone: string, token: string): string =>
   rebuildAuthorization(platform, phone, token);
 const DAY = 86_400_000;
 
-test('`Authorization` 解三段；token 里含冒号也**不许被截断**', () => {
+test('`Authorization` 解三段；token 里含冒号也**不许被截断**', async () => {
   const raw = cred('mobile', '13700137001', 'tok|en|with|pipes');
   const seg = parseAuthorization(raw);
   assert.deepEqual(seg, { platform: 'mobile', phone: '13700137001', token: 'tok|en|with|pipes' });
@@ -52,13 +52,13 @@ test('`Authorization` 解三段；token 里含冒号也**不许被截断**', () 
   assert.equal(parseAuthorization(''), null);
 });
 
-test('`rebuildAuthorization` 返回的是**带 `Basic ` 前缀的整串**', () => {
+test('`rebuildAuthorization` 返回的是**带 `Basic ` 前缀的整串**', async () => {
   const out = rebuildAuthorization('mobile', '13700137001', 'TOK');
   assert.ok(out.startsWith('Basic '), '不带上一个会与"刚登录的账号"发出不同的头');
   assert.equal(fromUtf8(fromBase64(out.slice(6))), 'mobile:13700137001:TOK');
 });
 
-test('`userDomainId` 藏在 jwttoken 的 **sub** 里（真机 payload 只有 iss/iat/sub/exp）', () => {
+test('`userDomainId` 藏在 jwttoken 的 **sub** 里（真机 payload 只有 iss/iat/sub/exp）', async () => {
   const mk = (payload: Record<string, unknown>): string =>
     ['H', toBase64(utf8(JSON.stringify(payload))), 'S'].join('.').replace(/=+$/, '');
   // 真机形状：顶层没有，sub 是**一段 JSON 文本**
@@ -79,7 +79,7 @@ test('`userDomainId` 藏在 jwttoken 的 **sub** 里（真机 payload 只有 iss
   assert.equal(jwtPayload('nope'), null);
 });
 
-test('过期段 = token 的**第 4 段**（竖线分段），解不出是 **0** 不是 undefined', () => {
+test('过期段 = token 的**第 4 段**（竖线分段），解不出是 **0** 不是 undefined', async () => {
   assert.equal(tokenExpireMs('a|b|c|1893456000000'), 1893456000000);
   assert.equal(tokenExpireMs('a|b|c|notanumber'), 0, '解不出 ⇒ 0（在判据里 = 该刷）');
   assert.equal(tokenExpireMs('no-pipes-at-all'), 0);
@@ -88,7 +88,7 @@ test('过期段 = token 的**第 4 段**（竖线分段），解不出是 **0** 
   assert.equal(credentialExpireMs('不是凭据'), -1, '解不开 ⇒ -1（= manual-only）');
 });
 
-test('⚠ 判据是**三档**，不是"刷/不刷"两档', () => {
+test('⚠ 判据是**三档**，不是"刷/不刷"两档', async () => {
   assert.equal(decide(-1, NOW_MS), 'manual-only', '凭据坏了：要重新登录，不是"晚点再刷"');
   assert.equal(decide(0, NOW_MS), 'needed', '没有过期段：当成该刷');
   assert.equal(decide(NOW_MS + 3 * DAY, NOW_MS), 'needed');
@@ -96,20 +96,20 @@ test('⚠ 判据是**三档**，不是"刷/不刷"两档', () => {
   assert.equal(decide(NOW_MS + 30 * DAY, NOW_MS, 40), 'needed', '提前量给大了就该刷');
 });
 
-test('⚠ 边界是 `<=`：剩余**正好**等于提前量时算"该刷"', () => {
+test('⚠ 边界是 `<=`：剩余**正好**等于提前量时算"该刷"', async () => {
   assert.equal(decide(NOW_MS + 10 * DAY, NOW_MS), 'needed', '刚好 10 天 ⇒ 该刷');
   assert.equal(decide(NOW_MS + 10 * DAY + 1, NOW_MS), 'not-yet');
   assert.equal(decide(NOW_MS + DEFAULT_LEAD_DAYS * DAY, NOW_MS), 'needed', '默认提前量也是 10 天');
 });
 
-test('`clientType`：App 412、PC 414', () => {
+test('`clientType`：App 412、PC 414', async () => {
   assert.equal(clientTypeFor('mobile'), APP_CLIENT_TYPE);
   assert.equal(clientTypeFor('pc'), PC_CLIENT_TYPE);
   assert.equal(APP_CLIENT_TYPE, '412');
   assert.equal(PC_CLIENT_TYPE, '414');
 });
 
-test('请求体：**键序**照实拍（userDomainId 在前），且值走过转义', () => {
+test('请求体：**键序**照实拍（userDomainId 在前），且值走过转义', async () => {
   const req = refreshRequest(cred('mobile', '1', 'T'), '112233', 'mobile');
   assert.equal(req.method, 'POST');
   assert.ok(req.url.endsWith('/user/auth/refreshToken'), req.url);
@@ -120,7 +120,7 @@ test('请求体：**键序**照实拍（userDomainId 在前），且值走过转
   assert.equal(JSON.parse(weird.body!).userDomainId, 'a"b');
 });
 
-test('⚠ 判成功要看**两处**：success 与 code', () => {
+test('⚠ 判成功要看**两处**：success 与 code', async () => {
   const ok = parseRefresh('{"success":true,"code":"0000","data":{"token":"NEW","expireTime":2592000}}');
   assert.equal(ok.ok, true);
   assert.equal(ok.result!.token, 'NEW');
@@ -137,7 +137,7 @@ test('⚠ 判成功要看**两处**：success 与 code', () => {
   assert.match(parseRefresh('{"code":"9","msg":"随便"}').error!, /随便/);
 });
 
-test('重拼 + 落库前的兜底校验', () => {
+test('重拼 + 落库前的兜底校验', async () => {
   const raw = cred('mobile', '13700137001', 'OLD');
   const applied = applyRefreshResult(raw, { token: 'NEW' });
   assert.equal(applied.ok, true);
@@ -152,7 +152,7 @@ test('重拼 + 落库前的兜底校验', () => {
   assert.equal(assertUsable('垃圾').ok, false);
 });
 
-test('剩余天数只给文案用；过期段缺失时不给数字（不编）', () => {
+test('剩余天数只给文案用；过期段缺失时不给数字（不编）', async () => {
   assert.equal(daysLeft(NOW_MS + 3 * DAY, NOW_MS), 3);
   assert.equal(daysLeft(0, NOW_MS), undefined);
   assert.equal(daysLeft(-1, NOW_MS), undefined);
@@ -180,10 +180,10 @@ function mkStore(raw: string) {
   return store;
 }
 
-test('⚠ `not-yet`：**一个请求都不发**（每天跑不等于每天打上游）', () => {
+test('⚠ `not-yet`：**一个请求都不发**（每天跑不等于每天打上游）', async () => {
   const store = mkStore(cred('mobile', '13700137001', `a|b|c|${NOW_MS + 30 * DAY}`));
   let sent = 0;
-  const out = runAuthRefresh({
+  const out = await runAuthRefresh({
     store,
     transport: (() => {
       sent += 1;
@@ -197,10 +197,10 @@ test('⚠ `not-yet`：**一个请求都不发**（每天跑不等于每天打上
   assert.match(out.note, /还有 30 天|还远/);
 });
 
-test('⚠ `manual-only`：凭据解不开时**也不打上游**，而且说"要重新贴"', () => {
+test('⚠ `manual-only`：凭据解不开时**也不打上游**，而且说"要重新贴"', async () => {
   const store = mkStore('不是凭据');
   let sent = 0;
-  const out = runAuthRefresh({
+  const out = await runAuthRefresh({
     store,
     transport: (() => {
       sent += 1;
@@ -215,7 +215,7 @@ test('⚠ `manual-only`：凭据解不开时**也不打上游**，而且说"要�
   assert.equal(out.ok, true, '这一档不是"任务失败"，是"这事得你做"');
 });
 
-test('⚠ 该刷但手里没有用户域 ⇒ **照样刷**（上游不要求它）', () => {
+test('⚠ 该刷但手里没有用户域 ⇒ **照样刷**（上游不要求它）', async () => {
   // 用户的原话：「据我所知，刷新不需要这个 id，或者如果需要这个 id 的唯一源也不是 jwt」。
   // 2026-10-17 真机实测：只发 `{"clientType":"414"}` 一样回
   // `{"success":true,"code":"0000","data":{"token":…}}`。
@@ -224,7 +224,7 @@ test('⚠ 该刷但手里没有用户域 ⇒ **照样刷**（上游不要求它�
   const raw = cred('mobile', '13700137001', `a|b|c|${NOW_MS + 1 * DAY}`);
   const store = mkStore(raw);
   const seen: { body?: string | undefined }[] = [];
-  const out = runAuthRefresh({
+  const out = await runAuthRefresh({
     store,
     transport: ((req: { body?: string | undefined }) => {
       seen.push(req);
@@ -251,10 +251,10 @@ test('⚠ 该刷但手里没有用户域 ⇒ **照样刷**（上游不要求它�
   }
 });
 
-test('拿掉凭据：不刷（先贴一份）', () => {
+test('拿掉凭据：不刷（先贴一份）', async () => {
   const store = memStore();
   store.ensureSchema();
-  const out = runAuthRefresh({
+  const out = await runAuthRefresh({
     store,
     transport: (() => ({ status: 200, headers: {}, body: '{}' })) as never,
     nowIso: NOW_ISO,
@@ -264,7 +264,7 @@ test('拿掉凭据：不刷（先贴一份）', () => {
   assert.match(out.note, /先加/);
 });
 
-test('真刷一枪：请求形状对、新凭据落库、且**拒绝落库**路径有效', () => {
+test('真刷一枪：请求形状对、新凭据落库、且**拒绝落库**路径有效', async () => {
   const days = 1;
   const raw = cred('mobile', '13700137001', `a|b|c|${NOW_MS + days * DAY}`);
   const store = mkStore(raw);
@@ -274,7 +274,7 @@ test('真刷一枪：请求形状对、新凭据落库、且**拒绝落库**路�
   store.setState('mcloud.h5.jwt', JSON.stringify({ at: NOW_ISO, jwt: `H.${payload}.S` }), NOW_ISO);
 
   const sent: BuiltRequest[] = [];
-  const out = runAuthRefresh(
+  const out = await runAuthRefresh(
     {
       store,
       transport: ((req: BuiltRequest) => {
@@ -306,13 +306,13 @@ test('真刷一枪：请求形状对、新凭据落库、且**拒绝落库**路�
   );
 });
 
-test('上游回失败 ⇒ 不落库（旧凭据原样留着）', () => {
+test('上游回失败 ⇒ 不落库（旧凭据原样留着）', async () => {
   const raw = cred('mobile', '13700137001', `a|b|c|${NOW_MS}`);
   const store = mkStore(raw);
   const payload = toBase64(utf8(JSON.stringify({ sub: '{"userDomainId":"1"}' })))
     .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   store.setState('mcloud.h5.jwt', JSON.stringify({ at: NOW_ISO, jwt: `H.${payload}.S` }), NOW_ISO);
-  const out = runAuthRefresh(
+  const out = await runAuthRefresh(
     {
       store,
       transport: (() => ({ status: 200, headers: {}, body: '{"success":false,"code":"0505","message":"没戏"}' })) as never,
@@ -326,14 +326,14 @@ test('上游回失败 ⇒ 不落库（旧凭据原样留着）', () => {
   assert.equal(store.getState(STATE_AUTH), raw, '失败了就不该动库里的凭据');
 });
 
-test('⚠ 有用户域时仍然带上（照实拍形状：`userDomainId` 在前）', () => {
+test('⚠ 有用户域时仍然带上（照实拍形状：`userDomainId` 在前）', async () => {
   const raw = cred('mobile', '13700137001', `a|b|c|${NOW_MS + 1 * DAY}`);
   const store = mkStore(raw);
   // ⚠ 域现在在**账号**上（登录响应写进去的），不是全局一格 —— 见 F-076
   const up = upsertAccount(store, raw, NOW_ISO, undefined, undefined, '1125330776486986478');
   selectAccount(store, up.account.id, NOW_ISO);
   const seen: { body?: string | undefined }[] = [];
-  const out = runAuthRefresh({
+  const out = await runAuthRefresh({
     store,
     transport: ((req: { body?: string | undefined }) => {
       seen.push(req);
@@ -363,14 +363,14 @@ test('⚠ 有用户域时仍然带上（照实拍形状：`userDomainId` 在前�
 // 根因：`loadAuthRaw` 读的是 `Account.auth`（账号列表那一格），而续期把新串写进
 // `STATE_AUTH`（或 `scoped()` 路由到的账号袋）—— 卡片读列表 ⇒ 天数永远不变。
 
-test('⚠ 刷完把新串写回**账号记录**（卡片上的天数才会变）', () => {
+test('⚠ 刷完把新串写回**账号记录**（卡片上的天数才会变）', async () => {
   const raw = cred('pc', '13700137001', `a|b|c|${NOW_MS + 1 * DAY}`);
   const store = memStore();
   store.ensureSchema();
   const up = upsertAccount(store, raw, NOW_ISO, '测试', 'win');
   selectAccount(store, up.account.id, NOW_ISO);
 
-  const out = runAuthRefresh(
+  const out = await runAuthRefresh(
     { store, transport: okTransport(), nowIso: NOW_ISO, baseUrl: undefined },
     true,
   );
@@ -391,7 +391,7 @@ test('⚠ 刷完把新串写回**账号记录**（卡片上的天数才会变）
   assert.equal(out.note, '已续期，还能用 30 天');
 });
 
-test('⚠ 点哪一条就刷哪一条：**不许**刷成当前账号', () => {
+test('⚠ 点哪一条就刷哪一条：**不许**刷成当前账号', async () => {
   const a = cred('pc', '19100000001', `A|1|RCS|${NOW_MS + 1 * DAY}|a`);
   const b = cred('pc', '19100000002', `B|1|RCS|${NOW_MS + 1 * DAY}|b`);
   const store = memStore();
@@ -401,7 +401,7 @@ test('⚠ 点哪一条就刷哪一条：**不许**刷成当前账号', () => {
   selectAccount(store, ua.account.id, NOW_ISO); // 当前是「甲」
 
   const seen: string[] = [];
-  const out = runAuthRefresh(
+  const out = await runAuthRefresh(
     {
       store,
       transport: ((req: { headers?: Record<string, string> }) => {
@@ -432,7 +432,7 @@ test('⚠ 点哪一条就刷哪一条：**不许**刷成当前账号', () => {
   assert.equal(list.find((x) => x.id === ua.account.id)!.auth, a, '「甲」不许被顺手刷掉');
 });
 
-test('⚠ 刷的那一枪必须带 `Basic ` 前缀（缺了上游回 05050009，是假线索）', () => {
+test('⚠ 刷的那一枪必须带 `Basic ` 前缀（缺了上游回 05050009，是假线索）', async () => {
   // 用户从 mcloud 复制过来的那串**没有** `Basic `（288 vs 294 字符），
   // `parseAuth` 容忍缺前缀 ⇒ 账号看着正常，但请求头是坏的。
   const b64 = Buffer.from(`pc:13600136002:C6l6qV71|1|RCS|${NOW_MS + 17 * DAY}|x`, 'utf8').toString('base64');
@@ -442,7 +442,7 @@ test('⚠ 刷的那一枪必须带 `Basic ` 前缀（缺了上游回 05050009，
   const up = upsertAccount(store, b64, NOW_ISO, '移动', 'win');
   selectAccount(store, up.account.id, NOW_ISO);
   const seen: string[] = [];
-  const out = runAuthRefresh(
+  const out = await runAuthRefresh(
     {
       store,
       transport: ((req: { headers?: Record<string, string> }) => {

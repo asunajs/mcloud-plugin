@@ -30,7 +30,7 @@ function mk(payload: string, prefix = 'Basic '): string {
   return prefix + btoa(bin);
 }
 
-test('PC 凭据：平台是 `pc`，手机号在 base64 里', () => {
+test('PC 凭据：平台是 `pc`，手机号在 base64 里', async () => {
   const a = parseAuth(mk('pc:13800138000:tok|a|b|1735689600000'));
   assert.ok(a);
   assert.equal(a.platform, PC_AUTH_PREFIX);
@@ -42,7 +42,7 @@ test('PC 凭据：平台是 `pc`，手机号在 base64 里', () => {
   assert.ok(a.raw.startsWith('Basic '), '落盘形态恒带 `Basic ` 前缀');
 });
 
-test('手机端凭据：平台是 `mobile`', () => {
+test('手机端凭据：平台是 `mobile`', async () => {
   const a = parseAuth(mk('mobile:13900139000:tok'));
   assert.ok(a);
   assert.equal(a.platform, APP_AUTH_PREFIX);
@@ -51,14 +51,14 @@ test('手机端凭据：平台是 `mobile`', () => {
   assert.equal(isPcAuth(a), false);
 });
 
-test('⚠ `Basic ` 前缀可有可无', () => {
+test('⚠ `Basic ` 前缀可有可无', async () => {
   const noPrefix = parseAuth(mk('pc:13800138000:tok', ''));
   assert.ok(noPrefix);
   assert.equal(noPrefix.platform, 'pc');
   assert.equal(noPrefix.phone, '13800138000');
 });
 
-test('⚠ "只替换第一处 `Basic `"：前缀之前的**非字母表字符会被过滤掉**', () => {
+test('⚠ "只替换第一处 `Basic `"：前缀之前的**非字母表字符会被过滤掉**', async () => {
   // 参考实现是 `auth.replace("Basic ", "")`（JS 语义）⇒ 只去掉**第一处**
   // `Basic `，其余原样保留；而宽容 base64 会把字母表以外的字符**丢掉**。
   //
@@ -80,7 +80,7 @@ test('⚠ "只替换第一处 `Basic `"：前缀之前的**非字母表字符会
   );
 });
 
-test('⚠ 宽容 base64：忽略字母表以外的字符（严格模式会整条不可用）', () => {
+test('⚠ 宽容 base64：忽略字母表以外的字符（严格模式会整条不可用）', async () => {
   // 参考实现刻意不用严格 base64：Node 的 Buffer.from 会忽略这些字符，
   // 而严格模式报错 ⇒ "上游塞了个空白字符"会变成"凭据整条不可用"
   const good = mk('pc:13800138000:tok');
@@ -90,7 +90,7 @@ test('⚠ 宽容 base64：忽略字母表以外的字符（严格模式会整条
   assert.equal(a.phone, '13800138000');
 });
 
-test('⚠ 解不开就 `undefined`（不抛）—— 余 1 是无解的', () => {
+test('⚠ 解不开就 `undefined`（不抛）—— 余 1 是无解的', async () => {
   // 过滤后长度模 4 余 1 ⇒ 构不成任何字节，必须判不可用
   assert.equal(parseAuth('Basic A'), undefined, '长度 1 余 1');
   assert.equal(parseAuth('Basic'), undefined, '空');
@@ -99,7 +99,7 @@ test('⚠ 解不开就 `undefined`（不抛）—— 余 1 是无解的', () => 
   assert.equal(parseAuth('Basic !!!'), undefined, '全是字母表外字符');
 });
 
-test('⚠ 缺段不报错：上游实测有缺段的样本', () => {
+test('⚠ 缺段不报错：上游实测有缺段的样本', async () => {
   // 报错会让一条"能用但信息不全"的凭据变成不可用 —— 代价不对等
   const only = parseAuth(mk('pc'));
   assert.ok(only, '只有一段也要能解出来');
@@ -111,13 +111,13 @@ test('⚠ 缺段不报错：上游实测有缺段的样本', () => {
   assert.equal(isPcAuth(only), true);
 });
 
-test('token 含 `:` ⇒ 只取前 3 段（第 4 段起丢弃）', () => {
+test('token 含 `:` ⇒ 只取前 3 段（第 4 段起丢弃）', async () => {
   const a = parseAuth(mk('pc:13800138000:a:b:c'));
   assert.ok(a);
   assert.equal(a.token, 'a', 'splitn(4) ⇒ token 只有第一段');
 });
 
-test('expire：token 第 4 段，非法/缺/0 都归 0', () => {
+test('expire：token 第 4 段，非法/缺/0 都归 0', async () => {
   assert.equal(parseAuth(mk('pc:1:t|1|2|1700000000000'))?.expire, 1700000000000);
   assert.equal(parseAuth(mk('pc:1:t'))?.expire, 0, '缺第 4 段');
   assert.equal(parseAuth(mk('pc:1:t|1|2|notanumber'))?.expire, 0, '非数字');
@@ -127,7 +127,7 @@ test('expire：token 第 4 段，非法/缺/0 都归 0', () => {
   assert.equal(parseAuth(mk('pc:1:t|1|2|123.9'))?.expire, 0, '小数不是朴素十进制');
 });
 
-test('`raw` 恒为 `Basic <clean>`（落盘形态统一），但**不**做空白清理', () => {
+test('`raw` 恒为 `Basic <clean>`（落盘形态统一），但**不**做空白清理', async () => {
   const b64 = mk('pc:13800138000:tok', '');
   const a = parseAuth('Basic ' + b64);
   assert.ok(a);

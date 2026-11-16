@@ -162,11 +162,11 @@ export function startUpload(
 }
 
 /** 推进一步。`bytes` 只在 `put` 那一步需要（第 ① ③ 枪只用摘要）。 */
-export function runUploadStep(
+export async function runUploadStep(
   deps: TaskDeps,
   bytes?: Uint8Array,
   key: string = STATE_UPLOAD,
-): TaskOutcome {
+): Promise<TaskOutcome> {
   const st = loadUpload(deps, key);
   if (!st) return { ok: true, idle: true, note: '没有在排队的上传' };
   if (st.step === 'done') return { ok: true, idle: true, note: '这一次上传已经走完' };
@@ -185,7 +185,7 @@ export function runUploadStep(
       channel: st.channel,
       contentType: st.contentType,
     });
-    const res = callRawText(deps.transport, req);
+    const res = await callRawText(deps.transport, req);
     if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? '未知失败'}` };
     const parsed = parseCreate(res.text);
     if (!parsed.ok || !parsed.created) return { ok: false, note: `${label}：${parsed.error}` };
@@ -243,14 +243,14 @@ export function runUploadStep(
         note: `${label}：目标主机落在应带凭据的域里（不是预签名直传该有的形状）⇒ 不发，先查 create 的响应`,
       };
     }
-    const res = callRawText(deps.transport, req);
+    const res = await callRawText(deps.transport, req);
     if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? '未知失败'}` };
     save(deps, { ...st, step: 'complete' }, key);
     return { ok: true, note: `${label}：${body.length} 字节已发（HTTP ${res.status}）—— 下一步确认` };
   }
 
   // complete
-  const res = callRawText(
+  const res = await callRawText(
     deps.transport,
     buildCompleteRequest(st.fileId!, st.uploadId!, st.contentHash, st.op ?? 'backup', st.channel ?? 'android'),
   );

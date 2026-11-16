@@ -103,7 +103,7 @@ function samplingOf(bytes: Uint8Array, comp: number): [number, number] {
 
 // ══════════════════════════════ 识别 ══════════════════════════════
 
-test('isJpeg 认得出 JPEG，认不出 PNG / 垃圾', () => {
+test('isJpeg 认得出 JPEG，认不出 PNG / 垃圾', async () => {
   for (const name of Object.values(FIXTURES)) {
     assert.equal(isJpeg(fixture(name)), true, `${name} 应该被认成 JPEG`);
   }
@@ -157,7 +157,7 @@ test('680×400 4:2:0 底图：尺寸、像素、边缘、性能', (t) => {
 
 // ══════════════════════════════ 各种采样因子 ══════════════════════════════
 
-test('64×48 4:4:4：像素与 Pillow 一致', () => {
+test('64×48 4:4:4：像素与 Pillow 一致', async () => {
   const bytes = fixture(FIXTURES.small444);
   assert.deepEqual(samplingOf(bytes, 0), [1, 1]);
   const img = decodeJpeg(bytes);
@@ -169,7 +169,7 @@ test('64×48 4:4:4：像素与 Pillow 一致', () => {
   assertRgb(img, 40, 38, [235, 190, 49]);
 });
 
-test('64×48 4:2:2：水平 2:1 上采样', () => {
+test('64×48 4:2:2：水平 2:1 上采样', async () => {
   const bytes = fixture(FIXTURES.small422);
   assert.deepEqual(samplingOf(bytes, 0), [2, 1]);
   const img = decodeJpeg(bytes);
@@ -181,7 +181,7 @@ test('64×48 4:2:2：水平 2:1 上采样', () => {
   assertRgb(img, 40, 38, [235, 190, 49]);
 });
 
-test('67×45 4:1:1：水平 4:1 + 奇数尺寸的 MCU 补齐', () => {
+test('67×45 4:1:1：水平 4:1 + 奇数尺寸的 MCU 补齐', async () => {
   const bytes = fixture(FIXTURES.small411);
   assert.deepEqual(samplingOf(bytes, 0), [4, 1], '夹具必须真的是 4:1:1');
   const img = decodeJpeg(bytes);
@@ -196,7 +196,7 @@ test('67×45 4:1:1：水平 4:1 + 奇数尺寸的 MCU 补齐', () => {
   assertRgb(img, 66, 44, [244, 245, 239]); // 最右列 / 最下行：补齐区不能把图撑错
 });
 
-test('灰度 67×45：单分量、奇数尺寸', () => {
+test('灰度 67×45：单分量、奇数尺寸', async () => {
   const bytes = fixture(FIXTURES.gray);
   const graySof = markerOffset(bytes, 0xc0);
   assert.ok(graySof >= 0);
@@ -220,7 +220,7 @@ test('灰度 67×45：单分量、奇数尺寸', () => {
 
 // ══════════════════════════════ DRI / RSTn ══════════════════════════════
 
-test('DRI=3 的重启文件：RSTn 边界处不漂移', () => {
+test('DRI=3 的重启文件：RSTn 边界处不漂移', async () => {
   const bytes = fixture(FIXTURES.restart);
   const dri = markerOffset(bytes, 0xdd);
   assert.ok(dri >= 0, '夹具里应该有 DRI 段');
@@ -239,7 +239,7 @@ test('DRI=3 的重启文件：RSTn 边界处不漂移', () => {
 
 // ══════════════════════════════ SOF1 / 拒绝的子集 ══════════════════════════════
 
-test('SOF1（extended sequential）能解', () => {
+test('SOF1（extended sequential）能解', async () => {
   const bytes = fixture(FIXTURES.small444).slice();
   const sof = markerOffset(bytes, 0xc0);
   assert.ok(sof >= 0);
@@ -250,7 +250,7 @@ test('SOF1（extended sequential）能解', () => {
   assertRgb(img, 40, 38, [235, 190, 49]);
 });
 
-test('progressive（SOF2）给中文错误，并带 progressive/渐进', () => {
+test('progressive（SOF2）给中文错误，并带 progressive/渐进', async () => {
   const bytes = fixture(FIXTURES.small444).slice();
   const sof = markerOffset(bytes, 0xc0);
   assert.ok(sof >= 0);
@@ -261,7 +261,7 @@ test('progressive（SOF2）给中文错误，并带 progressive/渐进', () => {
   );
 });
 
-test('算术编码（SOF9）被拒绝', () => {
+test('算术编码（SOF9）被拒绝', async () => {
   const bytes = fixture(FIXTURES.small444).slice();
   const sof = markerOffset(bytes, 0xc0);
   assert.ok(sof >= 0);
@@ -272,7 +272,7 @@ test('算术编码（SOF9）被拒绝', () => {
   );
 });
 
-test('12-bit 精度被拒绝', () => {
+test('12-bit 精度被拒绝', async () => {
   const bytes = fixture(FIXTURES.small444).slice();
   const sof = markerOffset(bytes, 0xc0);
   assert.ok(sof >= 0);
@@ -283,7 +283,7 @@ test('12-bit 精度被拒绝', () => {
   );
 });
 
-test('4 分量（CMYK/YCCK）被拒绝，2 分量也不硬解', () => {
+test('4 分量（CMYK/YCCK）被拒绝，2 分量也不硬解', async () => {
   const makeSof = (ncomp: number): Uint8Array => {
     const body: number[] = [8, 0, 16, 0, 16, ncomp]; // 精度 8、16×16
     for (let i = 0; i < ncomp; i += 1) body.push(i + 1, 0x11, 0);
@@ -302,7 +302,7 @@ test('4 分量（CMYK/YCCK）被拒绝，2 分量也不硬解', () => {
 
 // ══════════════════════════════ 坏数据 ══════════════════════════════
 
-test('截断的 JPEG 抛错（不返回半张图）', () => {
+test('截断的 JPEG 抛错（不返回半张图）', async () => {
   const main = fixture(FIXTURES.bg);
   for (const frac of [0.2, 0.6, 0.95]) {
     const cut = main.subarray(0, Math.floor(main.length * frac));
@@ -314,7 +314,7 @@ test('截断的 JPEG 抛错（不返回半张图）', () => {
   }
 });
 
-test('垃圾数据 / 空数据抛错', () => {
+test('垃圾数据 / 空数据抛错', async () => {
   assert.throws(() => decodeJpeg(new Uint8Array(0)), /不是 JPEG/);
   assert.throws(() => decodeJpeg(Uint8Array.from([1, 2, 3, 4])), /不是 JPEG/);
   assert.throws(() => decodeJpeg(Uint8Array.from([0xff, 0xd8, 0xff, 0xd9])), /SOF|SOS/);

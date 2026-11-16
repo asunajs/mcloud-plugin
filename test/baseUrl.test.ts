@@ -37,7 +37,7 @@ import { smidUploadRequest, newFingerprint } from '../src/mcloud/smid.ts';
 
 const ABS = /^https?:\/\//;
 
-test('口子给空串/空白 ⇒ 每一条族的 URL 仍然是绝对的（真上游那一档）', () => {
+test('口子给空串/空白 ⇒ 每一条族的 URL 仍然是绝对的（真上游那一档）', async () => {
   const sign = makeSign('1791965211987');
   const cases: Array<{ name: string; url: string }> = [
     { name: 'h5① specToken', url: specTokenRequest(SIGN_IN_RECIPE, 'Basic x', '').url },
@@ -63,14 +63,14 @@ test('口子给空串/空白 ⇒ 每一条族的 URL 仍然是绝对的（真上
   assert.match(flowerUserInfo('   ').url, ABS);
 });
 
-test('口子非空时**整个源被替换**（mock 就是这么接进来的）', () => {
+test('口子非空时**整个源被替换**（mock 就是这么接进来的）', async () => {
   const m = 'http://127.0.0.1:19000';
   assert.equal(specTokenRequest(SIGN_IN_RECIPE, 'Basic x', m).url, `${m}/user/querySpecTokenV2`);
   assert.equal(flowerUserInfo(m).url.startsWith(`${m}/ycloud/`), true, flowerUserInfo(m).url);
   assert.equal(roomBeatRequest('147868', 'jwt', m).url.startsWith(`${m}/api/`), true);
 });
 
-test('⚠ 基址是**空串**时不许拼出相对 URL（现场踩到的 `missing scheme`）', () => {
+test('⚠ 基址是**空串**时不许拼出相对 URL（现场踩到的 `missing scheme`）', async () => {
   // 现场那句是 `bad uri: /ycloud/signin/page/taskExpansion is missing scheme` ——
   // 它看起来像"上游坏了"，其实是 `deps.baseUrl ?? HOST` 里的 `??` 只挡 undefined，
   // 空串拼出来的就是 `/ycloud/...`（没有主机）。

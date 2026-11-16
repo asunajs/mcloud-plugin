@@ -1,5 +1,9 @@
 # P3 执行手册：同步 → 异步
 
+> **状态：已执行完（2026-11-16）。** 结果见文末「执行记录」；下面保留动手前的账，
+> 因为"为什么这么做"比"做了什么"更值得留。
+
+
 > 这是**动手前的账**。P3 是整个重构最后一块，也是一块必须一次做完的 ——
 > `Transport` 一旦变成 `Promise`，整条调用链都得 `await`，半途停下就是"类型不过、跑不起来"。
 > 所以先把范围量出来，再决定窗口。
@@ -76,3 +80,36 @@
 
 `git switch main && git branch -D p3-async`。因为 P3 是纯形状变换，**没有数据迁移**，
 回滚不需要动 store（这点和 P4 不同）。
+
+---
+
+## 执行记录（2026-11-16）
+
+**做法**：TS compiler API 写的机械变换（不是手改）。三步：
+
+1. 从 `transport` 反向找调用者，闭包出"要变 async 的函数集合"（96 个）+ 要插 `await` 的调用点（246 处）；
+2. 给集合里的声明加 `async`、返回类型包 `Promise<>`、调用点插 `await`；
+3. `tsc` 收剩余：错误从 137 → 0 靠的是几类固定形状（`drain` 的回调、per-account 跑批、
+   路由 handler、`once()` 这类管道帮手、`AwaitExpression` 与属性访问的优先级）。
+测试侧同一套办法跑了一遍（355 个 `await` + 284 个 `async`），最后靠 `tsc -p tsconfig.test.json` 收敛。
+
+**顺手清掉的重复**：`forEachTaskAccount` / `depsForAccount` 原来在 `mcloud/accountRuntime.ts`
+与 `entries/shared.ts` 各有一份（复制粘贴）。做成 async 时立刻露馅（改了一处、另一处还是同步），
+现在只有领域层那一份，`entries/shared.ts` 只 re-export。
+
+**结果**：
+
+| 项 | 值 |
+|---|---|
+| 单测 | 1242 条全绿（含 `test/livemock`） |
+| 门禁 | typecheck（src + test + standalone）/ build / check-build / check-layers 全绿 |
+| 真机 | 影子实例 + 真账号跑日常：`3 个账号：3 成功 / 0 失败`，48 步，与异步之前**逐项一致** |
+| 不阻塞（这才是目的） | 任务跑着的时候并发打 `/api/readings`：**0.17–0.19s 返回** |
+| 线上 | 换装后 61 条路由（+`/live/trace`）、`failed_plugins: 0` |
+
+**没做的（记在这里，别以为漏了）**：
+
+· `src/standalone/httpBridge.ts` 的 **worker + Atomics 同步桥还在**：`makeNodeFetcher` 现在返回
+  Promise（形状对齐端口），但实现仍是"起 worker 阻塞等结果"。CLI 一个进程只跑一条命令，
+  阻塞没有面板那种后果，所以这一步先不动；真要拆就删 `httpBridge.ts` + `httpWorker.ts`。
+· `ws_*` / `smtp_send` 仍是同步 op（面板没给异步版）。直播听窗口的阻塞要等 P6 一起设计。

@@ -36,7 +36,7 @@ function cred(platform: string, phone: string): string {
   return `Basic ${Buffer.from(`${platform}:${phone}:TOKEN`, 'utf8').toString('base64')}`;
 }
 
-test('列表：加两个账号、同一个再加一次是**更新**而不是新增', () => {
+test('列表：加两个账号、同一个再加一次是**更新**而不是新增', async () => {
   const store = memStore();
   upsertAccount(store, A1, NOW);
   upsertAccount(store, A2, NOW);
@@ -47,21 +47,21 @@ test('列表：加两个账号、同一个再加一次是**更新**而不是新�
   assert.equal(loadAccounts(store).find((a) => a.id === '13700137001')?.auth, A1 + 'more');
 });
 
-test('id 用手机号（人能对上）；认不出手机号就用短哈希', () => {
+test('id 用手机号（人能对上）；认不出手机号就用短哈希', async () => {
   assert.equal(idOf(A1), '13700137001');
   assert.equal(phoneOf(A1), '13700137001');
   assert.equal(phoneOf('no-phone-here'), undefined);
   assert.match(idOf('no-phone-here'), /^anon-[0-9a-z]+$/);
 });
 
-test('界面看到的只有**掩码**：不许把凭据本身递出去', () => {
+test('界面看到的只有**掩码**：不许把凭据本身递出去', async () => {
   const m = maskAuth(A1);
   assert.match(m, /^1\*{4}2716 · \d+ 字符$/);
   assert.ok(!m.includes('xxxx'), `掩码里不许出现凭据片段：${m}`);
   assert.ok(!m.includes('13700137001'), '手机号也不整条给');
 });
 
-test('删掉的正好是"当前"那一格 ⇒ 当前也要清掉（不留指向空气的 id）', () => {
+test('删掉的正好是"当前"那一格 ⇒ 当前也要清掉（不留指向空气的 id）', async () => {
   const store = memStore();
   upsertAccount(store, A1, NOW);
   assert.equal(selectAccount(store, '13700137001', NOW), true);
@@ -71,7 +71,7 @@ test('删掉的正好是"当前"那一格 ⇒ 当前也要清掉（不留指向�
   assert.equal(store.getState(STATE_CURRENT_ACCOUNT), '');
 });
 
-test('选一个不在列表里的 id ⇒ 拒绝（不改状态）', () => {
+test('选一个不在列表里的 id ⇒ 拒绝（不改状态）', async () => {
   const store = memStore();
   upsertAccount(store, A1, NOW);
   selectAccount(store, '13700137001', NOW);
@@ -79,7 +79,7 @@ test('选一个不在列表里的 id ⇒ 拒绝（不改状态）', () => {
   assert.equal(currentAccount(store)?.id, '13700137001');
 });
 
-test('⭐ 回落：列表为空 / 没设当前 ⇒ 旧的单凭据照原样工作', () => {
+test('⭐ 回落：列表为空 / 没设当前 ⇒ 旧的单凭据照原样工作', async () => {
   const store = memStore();
   store.setState(STATE_AUTH, A1, NOW);
   assert.equal(loadAuthRaw(store), A1, '没有列表时就走单账号那格');
@@ -91,7 +91,7 @@ test('⭐ 回落：列表为空 / 没设当前 ⇒ 旧的单凭据照原样工�
   assert.equal(loadAuthRaw(store), A1, '清掉当前 ⇒ 回落到单账号那格');
 });
 
-test('坏数据不许把任务弄挂：JSON 烂掉 / 不是数组 / 条目缺字段 ⇒ 当成"没有列表"', () => {
+test('坏数据不许把任务弄挂：JSON 烂掉 / 不是数组 / 条目缺字段 ⇒ 当成"没有列表"', async () => {
   const store = memStore();
   store.setState(STATE_AUTH, A1, NOW);
   for (const bad of ['{不是 json', '"字符串"', '{"a":1}', '[{"id":"x"},{"auth":"y"}]', '[]']) {
@@ -101,7 +101,7 @@ test('坏数据不许把任务弄挂：JSON 烂掉 / 不是数组 / 条目缺字
   }
 });
 
-test('当前账号的凭据就是 loadAuthRaw 的返回值（听弹幕/领花都靠这一条）', () => {
+test('当前账号的凭据就是 loadAuthRaw 的返回值（听弹幕/领花都靠这一条）', async () => {
   const store = memStore();
   upsertAccount(store, A1, NOW);
   upsertAccount(store, A2, NOW);
@@ -117,7 +117,7 @@ test('当前账号的凭据就是 loadAuthRaw 的返回值（听弹幕/领花都
 // `mcloud.login.userDomainId` 里，换账号登录一次就把上一号的域盖掉 ——
 // 而它决定业务请求里的 `x-yun-uni`。参考实现就是账号级（`Account::user_domain_id`）。
 
-test('⚠ 用户域跟着**账号**走：换账号不会串味', () => {
+test('⚠ 用户域跟着**账号**走：换账号不会串味', async () => {
   const store = memStore();
   store.ensureSchema();
   const a = upsertAccount(store, cred('pc', '13800000001'), NOW, undefined, 'win', '111');
@@ -140,7 +140,7 @@ test('⚠ 用户域跟着**账号**走：换账号不会串味', () => {
   );
 });
 
-test('⚠ 贴凭据那条路拿不到域 ⇒ **保留**原来那份，不许抹掉', () => {
+test('⚠ 贴凭据那条路拿不到域 ⇒ **保留**原来那份，不许抹掉', async () => {
   const store = memStore();
   store.ensureSchema();
   const first = upsertAccount(store, cred('pc', '13800000003'), NOW, undefined, 'win', '333');
@@ -154,7 +154,7 @@ test('⚠ 贴凭据那条路拿不到域 ⇒ **保留**原来那份，不许抹�
   assert.equal(third.account.userDomainId, '444');
 });
 
-test('⚠ 没有当前账号 / 账号没有域 ⇒ `null`（不是空串、不是编一个）', () => {
+test('⚠ 没有当前账号 / 账号没有域 ⇒ `null`（不是空串、不是编一个）', async () => {
   const store = memStore();
   store.ensureSchema();
   assert.equal(currentAccountDomain(store), null, '一个账号都没有');
@@ -168,7 +168,7 @@ test('⚠ 没有当前账号 / 账号没有域 ⇒ `null`（不是空串、不�
   assert.equal(currentAccountDomain(store), '555');
 });
 
-test('⚠ 换票拿到票之后，把用户域**补到当前账号**上（老账号自愈）', () => {
+test('⚠ 换票拿到票之后，把用户域**补到当前账号**上（老账号自愈）', async () => {
   // 账号上那一格只有"登录那一刻"才会写。老账号（登录域还是全局一格那版）永远缺它，
   // 而换票**每天都会跑** —— 跑一次自愈一次，不写的话 `x-yun-uni` 那类请求永远缺一格。
   const store = memStore();
@@ -198,7 +198,7 @@ test('⚠ 换票拿到票之后，把用户域**补到当前账号**上（老账
 // 看着"正常"），可这一格是**原样当 `Authorization` 头**发出去的 ⇒ 上游回
 // `05050009 非法的token！`，一句指向"凭据过期"的假线索。
 
-test('⚠ 缺 `Basic ` 前缀的凭据要**归一**（否则请求头是坏的）', () => {
+test('⚠ 缺 `Basic ` 前缀的凭据要**归一**（否则请求头是坏的）', async () => {
   const b64 = Buffer.from('pc:13600136002:C6l6qV71|1|RCS|1793754829497|x', 'utf8').toString('base64');
   assert.equal(normalizeAuth(b64), `Basic ${b64}`, '缺前缀要补上');
   assert.equal(normalizeAuth(`Basic ${b64}`), `Basic ${b64}`, '有了就别重复加');
@@ -208,7 +208,7 @@ test('⚠ 缺 `Basic ` 前缀的凭据要**归一**（否则请求头是坏的�
   assert.equal(normalizeAuth('不是凭据'), '不是凭据');
 });
 
-test('⚠ 缺前缀的凭据落库之后：id 认得出手机号、不会再存成 anon-xxxx', () => {
+test('⚠ 缺前缀的凭据落库之后：id 认得出手机号、不会再存成 anon-xxxx', async () => {
   const store = memStore();
   store.ensureSchema();
   const b64 = Buffer.from('pc:13600136002:C6l6qV71|1|RCS|1793754829497|x', 'utf8').toString('base64');
@@ -221,7 +221,7 @@ test('⚠ 缺前缀的凭据落库之后：id 认得出手机号、不会再存�
   assert.equal(loadAccounts(store).length, 1, '同一个号不该出现两条');
 });
 
-test('⚠ 老库里"没有前缀"的行，读出来就要是好的（不迁移也不影响发请求）', () => {
+test('⚠ 老库里"没有前缀"的行，读出来就要是好的（不迁移也不影响发请求）', async () => {
   const store = memStore();
   store.ensureSchema();
   const b64 = Buffer.from('pc:13600136002:C6l6qV71|1|RCS|1793754829497|x', 'utf8').toString('base64');
@@ -240,7 +240,7 @@ test('⚠ 老库里"没有前缀"的行，读出来就要是好的（不迁移�
 
 // ─────────── 按账号的代码路径**不许**读"全局的当前账号"（F-081） ───────────
 
-test('⚠ `loadAuthRaw(scoped(id))` 必须给**那个账号**的凭据，不是当前账号的', () => {
+test('⚠ `loadAuthRaw(scoped(id))` 必须给**那个账号**的凭据，不是当前账号的', async () => {
   const store = memStore();
   store.ensureSchema();
   const a = upsertAccount(store, cred('pc', '13800000011'), NOW, '甲', 'win');
@@ -252,7 +252,7 @@ test('⚠ `loadAuthRaw(scoped(id))` 必须给**那个账号**的凭据，不是�
   assert.equal(loadAuthRaw(store), a.account.auth, '裸 store 仍然按"当前账号"');
 });
 
-test('⚠ 换票的状态键要带**这个账号**的 id，不是当前账号的', () => {
+test('⚠ 换票的状态键要带**这个账号**的 id，不是当前账号的', async () => {
   const store = memStore();
   store.ensureSchema();
   const a = upsertAccount(store, cred('pc', '13800000021'), NOW, '甲', 'win');

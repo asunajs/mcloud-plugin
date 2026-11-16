@@ -341,7 +341,7 @@ export const STEP_TEXT: Record<Step, string> = {
 };
 
 /** 推进一步。**一次调用只发一个请求**（`warm-1` → `warm-2` 之间还夹一次 500ms 等待）。 */
-export function runOrderStep(deps: TaskDeps): TaskOutcome {
+export async function runOrderStep(deps: TaskDeps): Promise<TaskOutcome> {
   const st = loadState(deps);
   if (!st) return { ok: true, idle: true, note: '没有在排队的兑换（先用 startOrder 起一单）' };
   const query = deps.store.getState(STATE_PLAN) ?? '';
@@ -357,7 +357,7 @@ export function runOrderStep(deps: TaskDeps): TaskOutcome {
 
   // ① 清单：读 + 判"该不该发"
   if (step === 'list') {
-    const res = callRawText(
+    const res = await callRawText(
       deps.transport,
       signedReq(deps, {
         url: `${hostBase(deps, MCLOUD_HOST)}/ycloud/signin/page/exchangeList?client=app&clientVersion=${encodeURIComponent(EXCHANGE_CLIENT_VERSION)}`,
@@ -396,7 +396,7 @@ export function runOrderStep(deps: TaskDeps): TaskOutcome {
 
   // ② 余额
   if (step === 'balance') {
-    const res = callRawText(
+    const res = await callRawText(
       deps.transport,
       signedReq(deps, { url: `${hostBase(deps, MCLOUD_HOST)}/ycloud/signin/page/infoV3?client=app`, method: 'GET' }),
     );
@@ -445,7 +445,7 @@ export function runOrderStep(deps: TaskDeps): TaskOutcome {
     // 它是契约的一部分（`task.ts:86-88`：两枪的顺序与间隔）。
     if (step === 'warm-2') spinUntil(depsNowMs(deps) + PREHEAT_DELAY_MS, deps);
     const keyword = step === 'warm-1' ? VISIT_LOG_KEYWORD_EXCHANGE : VISIT_LOG_KEYWORD_EXCHANGE_TIMES;
-    const res = callRawText(
+    const res = await callRawText(
       deps.transport,
       signedReq(deps, {
         url: `${hostBase(deps, MCLOUD_HOST)}/ycloud/visitlog/journaling?module=uservisit&optkeyword=${encodeURIComponent(keyword)}&sourceid=1002&marketName=${encodeURIComponent(VISIT_LOG_MARKET_NAME)}`,
@@ -465,7 +465,7 @@ export function runOrderStep(deps: TaskDeps): TaskOutcome {
 
   // ④ 取题面 + 本地解 ⇒ **解不出就不发**
   if (step === 'slide') {
-    const res = callRawText(
+    const res = await callRawText(
       deps.transport,
       signedReq(deps, {
         url: `${hostBase(deps, MCLOUD_HOST)}/ycloud/auth-service/slide/getSlide`,
@@ -549,7 +549,7 @@ export function runOrderStep(deps: TaskDeps): TaskOutcome {
       isDeviceId: true, // 这条**要** isdeviceid，而取滑块那条不要
     });
     req.headers.origin = MCLOUD_HOST;
-    const res = callRawText(deps.transport, req);
+    const res = await callRawText(deps.transport, req);
     if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? '未知失败'}` };
 
     let code: number | undefined;
@@ -580,7 +580,7 @@ export function runOrderStep(deps: TaskDeps): TaskOutcome {
   // ⑥ 复查余额差 —— 这才是"成交"的判据
   if (step === 'verify') {
     const before = deps.store.getState(STATE_BASE);
-    const res = callRawText(
+    const res = await callRawText(
       deps.transport,
       signedReq(deps, { url: `${hostBase(deps, MCLOUD_HOST)}/ycloud/signin/page/infoV3?client=app`, method: 'GET' }),
     );

@@ -207,7 +207,7 @@ export async function loadConfig(path?: string): Promise<StandaloneConfig> {
   if (!existsSync(found)) throw new Error(`配置文件不存在：${found}`);
   const abs = resolve(found);
   const dir = resolve(abs, '..');
-  const raw = await readConfigFile(abs);
+  const raw = await await readConfigFile(abs);
   let accounts = accountSeeds(raw);
   accounts = mergeLegacyAuth(accounts, dir);
 

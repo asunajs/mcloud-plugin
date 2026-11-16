@@ -5,17 +5,17 @@
 
 import type { FetchOptions, FetchResult, FetchError } from '../ports/io.ts';
 
-type Fetcher = (url: string, options?: FetchOptions) => FetchResult | FetchError;
+type Fetcher = (url: string, options?: FetchOptions) => Promise<FetchResult | FetchError>;
 
-let fetcher: Fetcher = () => ({ error: '独立版 HTTP 还没初始化（createRuntime 未调用）' });
+let fetcher: Fetcher = async () => ({ error: '独立版 HTTP 还没初始化（createRuntime 未调用）' });
 
 /** 由 runtime 注入 fetcher（默认是 Node worker 的 fetch）。 */
 export function installFetcher(f: Fetcher): void {
   fetcher = f;
 }
 
-export function http_fetch(url: string, options?: FetchOptions): FetchResult | FetchError {
-  return fetcher(url, options);
+export async function http_fetch(url: string, options?: FetchOptions): Promise<FetchResult | FetchError> {
+  return await fetcher(url, options);
 }
 
 function stamp(level: string, msg: unknown): void {

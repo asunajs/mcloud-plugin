@@ -29,7 +29,7 @@ function task(over: Partial<PkTask> & { id: number }): PkTask {
   };
 }
 
-test('平台优先序：先 ios（抓包那端），再 android/other/harmony', () => {
+test('平台优先序：先 ios（抓包那端），再 android/other/harmony', async () => {
   const t = task({
     id: 1,
     button: {
@@ -44,7 +44,7 @@ test('平台优先序：先 ios（抓包那端），再 android/other/harmony', 
   assert.equal(stepKeyOf(task({ id: 3, button: {} })), '');
 });
 
-test('分类：SUCCESS→领、FINISH→跳过、RESERVE→预约、未知→需手动', () => {
+test('分类：SUCCESS→领、FINISH→跳过、RESERVE→预约、未知→需手动', async () => {
   const plan = planTasks([
     task({ id: 1, state: 'SUCCESS', button: { ios: { ext: 'loginPc', action: 'toPcClient', text: '' } } }),
     task({ id: 2, state: 'FINISH' }),
@@ -63,7 +63,7 @@ test('分类：SUCCESS→领、FINISH→跳过、RESERVE→预约、未知→需
   assert.equal(plan.skipped, 1);
 });
 
-test('月上限：SUCCESS 仍可领；WAIT 到了上限就不做', () => {
+test('月上限：SUCCESS 仍可领；WAIT 到了上限就不做', async () => {
   const plan = planTasks([
     task({ id: 1, state: 'SUCCESS', monthlyCompleted: 7, monthlyLimit: 7 }),
     task({ id: 2, state: 'WAIT', monthlyCompleted: 7, monthlyLimit: 7 }),
@@ -75,13 +75,13 @@ test('月上限：SUCCESS 仍可领；WAIT 到了上限就不做', () => {
   assert.equal(byId.get(3), 'run', 'monthlyLimit=0 = 没有上限');
 });
 
-test('RESERVE + SUCCESS ⇒ 什么都不做（预约成功不是奖品）', () => {
+test('RESERVE + SUCCESS ⇒ 什么都不做（预约成功不是奖品）', async () => {
   const plan = planTasks([task({ id: 8, state: 'SUCCESS', taskType: 'RESERVE' })]);
   assert.equal(plan.actions.length, 0);
   assert.equal(plan.skipped, 1);
 });
 
-test('同一 id 出现两次只做第一格（页面也会重影）', () => {
+test('同一 id 出现两次只做第一格（页面也会重影）', async () => {
   const plan = planTasks([
     task({ id: 2, state: 'WAIT' }),
     task({ id: 2, state: 'WAIT', name: '重影' }),
@@ -89,14 +89,14 @@ test('同一 id 出现两次只做第一格（页面也会重影）', () => {
   assert.equal(plan.actions.length, 1);
 });
 
-test('formatTokenCount：亿 / 万 / 原数（逐字照参照实现）', () => {
+test('formatTokenCount：亿 / 万 / 原数（逐字照参照实现）', async () => {
   assert.equal(formatTokenCount(999), '999');
   assert.equal(formatTokenCount(500000), '50万');
   assert.equal(formatTokenCount(2_200_648_000), '22.0亿');
   assert.equal(formatTokenCount(0), '0');
 });
 
-test('summaryOf：逐字照参照实现；全空给那句兜底', () => {
+test('summaryOf：逐字照参照实现；全空给那句兜底', async () => {
   assert.equal(
     summaryOf({
       claimed: 2,
@@ -124,7 +124,7 @@ test('summaryOf：逐字照参照实现；全空给那句兜底', () => {
   );
 });
 
-test('tasksFrom：null 的月上限按 0 收；available=false 的奖品不收', () => {
+test('tasksFrom：null 的月上限按 0 收；available=false 的奖品不收', async () => {
   const tasks = tasksFrom([
     {
       id: 2,

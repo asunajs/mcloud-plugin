@@ -10,7 +10,7 @@ import { parseNoteCreated } from '../src/mcloud/tasks/appTaskExtra.ts';
 
 const src = (p: string): string => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8');
 
-test('建笔记判据：空模板不算建成，有 noteid 才算', () => {
+test('建笔记判据：空模板不算建成，有 noteid 才算', async () => {
   // 真机实拍（2026-11-12，鉴权没通过）：200 + 这个形状
   assert.equal(parseNoteCreated('{"version":"","noteid":"","createtime":"","title":"","notestatus":0}'), undefined);
   assert.equal(parseNoteCreated('{"noteid":"  abc123  "}'), 'abc123');
@@ -19,20 +19,20 @@ test('建笔记判据：空模板不算建成，有 noteid 才算', () => {
   assert.equal(parseNoteCreated('not json'), undefined);
 });
 
-test('云笔记鉴权：拿不到 headers.app_auth 就用 auth 兜底（不再直接放弃）', () => {
+test('云笔记鉴权：拿不到 headers.app_auth 就用 auth 兜底（不再直接放弃）', async () => {
   const d = src('src/mcloud/tasks/tokenPkActions.ts');
   assert.match(d, /let headers = parseNoteHeaders\(res\.text\);/, '先按老路取 headers');
   assert.match(d, /headers = \{ app_auth: raw \};/, '取不到就拿 auth 整串当 app_auth');
   assert.ok(!/鉴权响应里没有 headers\.app_auth'\);/.test(d), '不许再"没有 app_auth 就 fail"');
 });
 
-test('建笔记：按 parseNoteCreated 判成败，不许"200 就算建了"', () => {
+test('建笔记：按 parseNoteCreated 判成败，不许"200 就算建了"', async () => {
   const d = src('src/mcloud/tasks/tokenPkActions.ts');
   assert.match(d, /parseNoteCreated\(res\.text\)/, '要看回包里的 noteid');
   assert.match(d, /云笔记没建成/, '没建成要如实说');
 });
 
-test('算力大作战：上传/快照造的文件要登记，链尾才删得掉', () => {
+test('算力大作战：上传/快照造的文件要登记，链尾才删得掉', async () => {
   const d = src('src/mcloud/tasks/tokenPkActions.ts');
   assert.match(d, /import \{ registerOwnedFile \} from '\.\/ownedFiles\.ts';/, '要引登记表');
   assert.match(d, /registerOwnedFile\(deps, fileId\)/, '上传完登记 fileId');

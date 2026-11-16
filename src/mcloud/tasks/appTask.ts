@@ -264,10 +264,10 @@ export function clickRequest(
  *  ⚠ 这一枪我一开始**整个漏了** —— 少了它，打卡回 200 但状态不变。 */
 /** 打卡之后补访问日志（参考实现 `click_with_key()` 的第二发）。
  *  只发一次；失败也只记明细，不挡后面的动作。 */
-function journalOnce(deps: TaskDeps, st: TaskState): { note: string; state: TaskState } {
+async function journalOnce(deps: TaskDeps, st: TaskState): Promise<{ note: string; state: TaskState }> {
   if (st.journaled === true) return { note: '', state: st };
   const market = st.data?.marketName ?? 'sign_in_3';
-  const res = callRawText(deps.transport, journalingRequest(deps, st.itemId, market));
+  const res = await callRawText(deps.transport, journalingRequest(deps, st.itemId, market));
   return {
     note: res.ok
       ? `访问日志已发（HTTP ${res.status}）`
@@ -829,7 +829,7 @@ function specialPhase(st: TaskState): TaskPhase | undefined {
 }
 
 /** 推进一步，一次调用一个请求。 */
-export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
+export async function runAppTaskStep(deps: TaskDeps): Promise<TaskOutcome> {
   const loaded = load(deps);
   if (!loaded) return { ok: true, idle: true, note: '没有在跑的 app-task' };
   let st: TaskState = loaded;
@@ -867,7 +867,7 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
     waitMs(deps, wait);
     // 生产环境默认 5 秒；测试传 0 时直接用它手里的 mock 矩阵。
     if ((deps.settleMs ?? 5000) > 0) {
-      for (let i = 0; i < MATRIX_MARKETS.length; i++) runAppTaskMatrix(deps);
+      for (let i = 0; i < MATRIX_MARKETS.length; i++) await runAppTaskMatrix(deps);
     }
     const dead = clickedButIneffective(deps, st);
     // 逐条失败的那些（没打卡/没传成功，只在 `failed` 里）也要进 `unconfirmed`：
@@ -913,7 +913,7 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
   if (st.phase === 'upload') {
     // currStep != 0 的上传族没有打卡这一发；visitlog 仍补一次（best-effort）。
     if (st.journaled !== true) {
-      const j = journalOnce(deps, st);
+      const j = await journalOnce(deps, st);
       st = j.state;
       save(deps, st);
       if (j.note !== '') return { ok: true, note: j.note };
@@ -948,7 +948,7 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
       const up = loadUpload(deps);
       return finishUpload(up?.ownedByUs === true ? up.fileId : undefined);
     }
-    const out = runUploadStep(deps);
+    const out = await runUploadStep(deps);
     if (out.idle) {
       // 没有上传状态（或旧的已失效）：重新起一个，不能当成传完。
       beginUpload(deps, st.itemId, '');
@@ -969,7 +969,7 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
 
   // ①b 记访问日志（漏了它打卡不生效）
   if (st.phase === 'visit') {
-    const res = callRawText(deps.transport, journalingRequest(deps, st.itemId));
+    const res = await callRawText(deps.transport, journalingRequest(deps, st.itemId));
     if (!res.ok) return itemFailed(deps, st, `记访问日志失败：${res.error ?? '未知失败'}`);
     save(deps, { ...st, phase: 'click', day: today(deps) });
     return { ok: true, note: `已记访问日志 #${st.itemId}（HTTP ${res.status}）—— 下一步打卡` };
@@ -1010,7 +1010,7 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
     if (freshClicked(st, deps).includes(st.itemId)) {
       // ⚠ 不重发（`task/click` 不可回滚），而且**必须换下一条** ——
       //   早先这里把 phase 又设回 `click`，于是永远停在同一条上（真机上一眼看出来的）。
-      const j = journalOnce(deps, st);
+      const j = await journalOnce(deps, st);
       const stj = j.state;
       const jn = j.note !== '' ? `；${j.note}` : '';
       if (stj.uploadAfter === true) {
@@ -1030,13 +1030,13 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
       const out = advance(deps, stj);
       return { ok: true, note: `#${stj.itemId} 今天已经点过了 —— 不重发。${jn}${out.note}` };
     }
-    const res = callRawText(deps.transport, clickRequest(deps, st.itemId));
+    const res = await callRawText(deps.transport, clickRequest(deps, st.itemId));
     // 打卡失败也只是**这一条**没成（参考实现里它是 `continue` 下一条，不是整趟停）。
     if (!res.ok) return itemFailed(deps, st, `打卡失败：${res.error ?? '未知失败'}`);
     // 点了就记下来（哪怕响应不理想 —— 不可回滚的东西不能"当没发过"）
     const clicked = [...freshClicked(st, deps), st.itemId];
     // 参考实现：`task/click` 之后补一发 visitlog（`click_with_key` 的第二发）。
-    const j = journalOnce(deps, { ...st, clicked });
+    const j = await journalOnce(deps, { ...st, clicked });
     const stj = j.state;
     const jn = j.note !== '' ? `；${j.note}` : '';
     const sp = specialPhase(stj);
@@ -1066,13 +1066,13 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
   // ③ 特殊动作（入口 / 入口页 / 分享 / 邮件转存）
   if (st.phase === 'entry') {
     const market = st.data?.marketName ?? 'sign_in_3';
-    const a = callRawText(deps.transport, entryPostRequest(deps, market));
+    const a = await callRawText(deps.transport, entryPostRequest(deps, market));
     // ⚠ 同一阶段里的连发也要隔（0.5–2 秒）：三枪连着打，上游那边还没记完上一枪。
     waitGap(deps);
-    const b = callRawText(deps.transport, entryGetRequest(deps));
+    const b = await callRawText(deps.transport, entryGetRequest(deps));
     waitGap(deps);
     // 409 / 1005 的“补那一发”都是 task2（参考实现 409 实测靠它翻 FINISH）。
-    const c = callRawText(deps.transport, clickRequest(deps, st.itemId, 'task2'));
+    const c = await callRawText(deps.transport, clickRequest(deps, st.itemId, 'task2'));
     const bits = [a.ok ? 'doTaskPost ok' : `doTaskPost 没成：${a.error ?? ''}`, b.ok ? 'page/doTask ok' : `page/doTask 没成：${b.error ?? ''}`];
     if (!c.ok) bits.push(`补打卡没成：${c.error ?? '未知失败'}`);
     const out = advance(deps, doneState(deps, st));
@@ -1094,18 +1094,18 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
     const market = st.data?.marketName ?? 'sign_in_3';
     const bits: string[] = [];
     // 第 1 轮
-    const a1 = callRawText(deps.transport, entryPostRequest(deps, market));
+    const a1 = await callRawText(deps.transport, entryPostRequest(deps, market));
     bits.push(a1.ok ? 'doTaskPost ok' : `doTaskPost 没成：${a1.error ?? ''}`);
     waitGap(deps);
-    const c1 = callRawText(deps.transport, clickRequest(deps, st.itemId, 'task'));
+    const c1 = await callRawText(deps.transport, clickRequest(deps, st.itemId, 'task'));
     bits.push(c1.ok ? 'key=task ok' : `key=task 没成：${c1.error ?? ''}`);
     // 第 2 轮（两轮之间要隔 —— 抓包里两轮相差约 35 秒；这里用任务间隔，
     // 不硬等 35 秒：`currstep` 的推进由服务端结算，隔一个 gap 足够让上一枪落账）
     waitGap(deps);
-    const a2 = callRawText(deps.transport, entryPostRequest(deps, market));
+    const a2 = await callRawText(deps.transport, entryPostRequest(deps, market));
     bits.push(a2.ok ? 'doTaskPost#2 ok' : `doTaskPost#2 没成：${a2.error ?? ''}`);
     waitGap(deps);
-    const c2 = callRawText(deps.transport, clickRequest(deps, st.itemId, 'task2'));
+    const c2 = await callRawText(deps.transport, clickRequest(deps, st.itemId, 'task2'));
     bits.push(c2.ok ? 'key=task2 ok' : `key=task2 没成：${c2.error ?? ''}`);
     const out = advance(deps, doneState(deps, st));
     return {
@@ -1117,21 +1117,21 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
 
   if (st.phase === 'portal') {
     const market = st.data?.marketName ?? 'sign_in_3';
-    const a = callRawText(deps.transport, entryPostRequest(deps, market));
+    const a = await callRawText(deps.transport, entryPostRequest(deps, market));
     waitGap(deps);
-    const b = callRawText(deps.transport, entryGetRequest(deps));
+    const b = await callRawText(deps.transport, entryGetRequest(deps));
     const link = st.data?.link ?? '';
     const url = link === '' ? undefined : portalUrl(link, deps);
     let page = '没有入口链接';
     if (url !== undefined) {
       waitGap(deps);
-      const p = callRawText(deps.transport, portalPageRequest(deps, url));
+      const p = await callRawText(deps.transport, portalPageRequest(deps, url));
       page = p.ok ? `入口页 HTTP ${p.status}（${p.text.length} 字节）` : `入口页没取成：${p.error ?? ''}`;
     }
     // 1017 的 gate 在 currstep=1 时不会打，参考实现用 task2 补；604 的 gate 会自己打。
     if (st.itemId === 1017) {
       waitGap(deps);
-      const c = callRawText(deps.transport, clickRequest(deps, st.itemId, 'task2'));
+      const c = await callRawText(deps.transport, clickRequest(deps, st.itemId, 'task2'));
       if (!c.ok) page += `；补打卡没成：${c.error ?? ''}`;
     }
     const bits = [a.ok ? 'doTaskPost ok' : 'doTaskPost 没成', b.ok ? 'page/doTask ok' : 'page/doTask 没成', page];
@@ -1173,7 +1173,7 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
     };
     const req = getOutLinkRequest(deps, [fileId]);
     if (!req) return trashNext(`外链请求没造出来（拿不到手机号/凭据？）`);
-    const res = callRawText(deps.transport, req);
+    const res = await callRawText(deps.transport, req);
     // ⚠ 分享失败也**不拖垮整趟**（参考实现里它只是这一条的 problem）——
     //   但"这一条没成"这件事必须说出来，见上面 `trashNext` 的注释。
     if (!res.ok) {
@@ -1206,7 +1206,7 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
       ids = [];
     }
     const req = delOutLinkRequest(deps, ids);
-    const res = req ? callRawText(deps.transport, req) : undefined;
+    const res = req ? await callRawText(deps.transport, req) : undefined;
     // 外链删没删成，文件都要收尾（外链没了，文件留着也没有用途）。
     // ⚠ 只认 `fileOwned === true`：判不了的一律不删。
     if (st.fileId !== undefined && st.fileOwned === true) {
@@ -1242,7 +1242,7 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
 
   // ③b 1020 邮件转存：一次一步
   if (st.phase === 'mailLogin') {
-    const res = callRawText(deps.transport, mailSpecTokenRequest(deps));
+    const res = await callRawText(deps.transport, mailSpecTokenRequest(deps));
     if (!res.ok) return itemFailed(deps, st, `邮箱 SSO token 失败：${res.error ?? '未知失败'}`);
     const parsed = parseSsoToken(res.text);
     if (!parsed.ok || parsed.value === undefined) {
@@ -1259,7 +1259,7 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
 
   if (st.phase === 'mailLogin2') {
     const sso = st.data?.sso ?? '';
-    const res = callRawText(deps.transport, mailLoginRequest(sso));
+    const res = await callRawText(deps.transport, mailLoginRequest(sso));
     if (!res.ok) return itemFailed(deps, st, `邮箱登录失败：${res.error ?? '未知失败'}`);
     const sess = parseMailSession(res.text);
     if (!sess) return itemFailed(deps, st, '邮箱登录响应里没有 var.sid / var.rmkey');
@@ -1293,7 +1293,7 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
       const out = advance(deps, doneState(deps, st));
       return { ok: true, note: `云笔记 #${st.itemId}：没有 authToken，跳过。${out.note}` };
     }
-    const res = callRawText(deps.transport, noteAuthRequest(auth.token, auth.phone));
+    const res = await callRawText(deps.transport, noteAuthRequest(auth.token, auth.phone));
     if (!res.ok) return itemFailed(deps, st, `云笔记鉴权失败：${res.error ?? '未知失败'}`);
     const headers = parseNoteHeaders(res.text);
     if (!headers) {
@@ -1318,7 +1318,7 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
     } catch {
       headers = {};
     }
-    const res = callRawText(
+    const res = await callRawText(
       deps.transport,
       noteCreateRequest(st.data?.noteId ?? '', st.data?.title ?? '', auth?.phone ?? '', headers, Date.now()),
     );
@@ -1336,7 +1336,7 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
     } catch {
       headers = {};
     }
-    const res = callRawText(deps.transport, noteDeleteRequest(st.data?.noteId ?? '', headers));
+    const res = await callRawText(deps.transport, noteDeleteRequest(st.data?.noteId ?? '', headers));
     const out = advance(deps, doneState(deps, st));
     return {
       ok: true,
@@ -1346,9 +1346,9 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
 
   if (st.phase === 'mailActiveAction') {
     const sess = { sid: st.data?.sid ?? '', rmkey: st.data?.rmkey ?? '' };
-    const a = callRawText(deps.transport, mailAutologinRequest(sess));
+    const a = await callRawText(deps.transport, mailAutologinRequest(sess));
     waitGap(deps);
-    const b = callRawText(deps.transport, marketClickRequest(st.itemId, 'sign_in_3'));
+    const b = await callRawText(deps.transport, marketClickRequest(st.itemId, 'sign_in_3'));
     const out = advance(deps, doneState(deps, st));
     return {
       ok: true,
@@ -1358,7 +1358,7 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
 
   if (st.phase === 'sendMailAction') {
     const sess = { sid: st.data?.sid ?? '', rmkey: st.data?.rmkey ?? '' };
-    const a = callRawText(deps.transport, getComposeIdRequest(sess));
+    const a = await callRawText(deps.transport, getComposeIdRequest(sess));
     const composeId = a.ok ? parseComposeId(a.text) : undefined;
     if (!composeId) {
       return itemFailed(
@@ -1370,7 +1370,7 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
     const auth = parseAuth(loadAuthRaw(deps.store));
     const account = `${auth?.phone ?? ''}@139.com`;
     waitGap(deps);
-    const b = callRawText(
+    const b = await callRawText(
       deps.transport,
       composeMailRequest(sess, {
         composeId,
@@ -1388,7 +1388,7 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
     //   同一会话两个 cguid，"这次活跃算不算这个会话的"就说不清了（评审 2026-11-01）。
     if (code.ok) waitGap(deps);
     const pe = code.ok
-      ? callRawText(deps.transport, peActiveReportRequest(sess, st.data?.cguid ?? newCguid(), Date.now()))
+      ? await callRawText(deps.transport, peActiveReportRequest(sess, st.data?.cguid ?? newCguid(), Date.now()))
       : undefined;
     // ⚠ 参考实现这一发打的是 `taskClickV2` —— 但那个口**已经死了**：
     //   `caiyun…:7071/ycloud/signin/task/taskClickV2` 回 **404 访问资源不存在**，
@@ -1400,7 +1400,7 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
     if (!already && pe !== undefined) waitGap(deps);
     const c = already
       ? { ok: true, status: 0, text: '', chars: 0, tookMs: 0, error: undefined }
-      : callRawText(deps.transport, clickRequest(deps, 1004));
+      : await callRawText(deps.transport, clickRequest(deps, 1004));
     const out = advance(deps, doneState(deps, st));
     return {
       // ⚠ 业务失败**不停整趟**（参考实现里 runner 失败只记账，continue 下一条）：
@@ -1416,7 +1416,7 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
     const auth = parseAuth(loadAuthRaw(deps.store));
     const s = loadSession(deps.store);
     const tid = uuidV4().replace(/-/g, '').slice(0, 16);
-    const res = callRawText(
+    const res = await callRawText(
       deps.transport,
       aiRecognizeRequest(auth?.raw ?? '', st.data?.domain ?? '', tid, s?.deviceId ?? ''),
     );
@@ -1436,7 +1436,7 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
   if (st.phase === 'camChat') {
     const auth = parseAuth(loadAuthRaw(deps.store));
     const tid = uuidV4().replace(/-/g, '').slice(0, 16);
-    const res = callRawText(
+    const res = await callRawText(
       deps.transport,
       aiCameraChatRequest(
         auth?.raw ?? '',
@@ -1461,7 +1461,7 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
 
   if (st.phase === 'aiQuery') {
     const sess = { sid: st.data?.sid ?? '', rmkey: st.data?.rmkey ?? '' };
-    const res = callRawText(
+    const res = await callRawText(
       deps.transport,
       queryUserTokenRequest(sess, st.data?.cguid ?? newCguid()),
     );
@@ -1491,7 +1491,7 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
   if (st.phase === 'aiStatus') {
     const phone = st.data?.phone ?? '';
     const rsa = encryptPhone(phone);
-    const res = callRawText(deps.transport, cloudTaskStatusRequest(rsa, st.itemId));
+    const res = await callRawText(deps.transport, cloudTaskStatusRequest(rsa, st.itemId));
     const cs = res.ok ? parseCloudTaskStatus(res.text) : undefined;
     save(deps, { ...st, phase: 'aiChat', day: today(deps) });
     return {
@@ -1505,7 +1505,7 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
   if (st.phase === 'aiChat') {
     const auth = st.data?.auth ?? '';
     const domain = st.data?.domain ?? '';
-    const res = callRawText(deps.transport, aiChatRequest(auth, domain, '你好'));
+    const res = await callRawText(deps.transport, aiChatRequest(auth, domain, '你好'));
     const sse = res.ok ? parseSse(res.text) : { events: 0, text: '' };
     const out = advance(deps, doneState(deps, st));
     return {
@@ -1546,7 +1546,7 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
       return { ok: true as const, note: 'PDF 已传完 —— 下一步转换' };
     };
     if (uploadDone(deps)) return pdfUploaded();
-    const out = runUploadStep(deps, utf8(makePdf(ts)));
+    const out = await runUploadStep(deps, utf8(makePdf(ts)));
     if (uploadDone(deps)) return pdfUploaded();
     if (!out.ok) return itemFailed(deps, st, out.note);
     return out;
@@ -1555,7 +1555,7 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
   if (st.phase === 'pdfConvert') {
     const sess = { sid: st.data?.sid ?? '', rmkey: st.data?.rmkey ?? '' };
     const ts = Number(st.data?.pdfTs ?? Date.now());
-    const res = callRawText(
+    const res = await callRawText(
       deps.transport,
       convertPdfRequest(
         sess,
@@ -1588,19 +1588,19 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
   if (st.phase === 'billViewAction') {
     const sess = { sid: st.data?.sid ?? '', rmkey: st.data?.rmkey ?? '' };
     const cguid = st.data?.cguid ?? newCguid();
-    const a = callRawText(deps.transport, billPageRequest(sess, cguid));
+    const a = await callRawText(deps.transport, billPageRequest(sess, cguid));
     // ⚠ 这一阶段原先一口气 6 枪（账单页 → 搜邮件 → 标已读 → 读信 → 埋点）：
     //   中间没有一拍，等于把"看账单"这件事在一秒里演完。逐枪之间隔 0.5–2 秒。
     waitGap(deps);
-    const b = callRawText(deps.transport, billMailsSearchRequest(sess, cguid));
+    const b = await callRawText(deps.transport, billMailsSearchRequest(sess, cguid));
     const mid = b.ok ? firstField(b.text, 'mid') : undefined;
     if (!mid) {
       return itemFailed(deps, st, '账单：邮件列表里取不到 mid');
     }
     waitGap(deps);
-    const c = callRawText(deps.transport, markMailReadRequest(sess, cguid, mid));
+    const c = await callRawText(deps.transport, markMailReadRequest(sess, cguid, mid));
     waitGap(deps);
-    const d = callRawText(deps.transport, readMessageRequest(sess, cguid, mid));
+    const d = await callRawText(deps.transport, readMessageRequest(sess, cguid, mid));
     const mq: boolean[] = [];
     waitGap(deps);
     for (const [actionType, clientType, channel] of [
@@ -1608,14 +1608,14 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
       ['1003', '2', ''],
       ['1017', '1', '10242400'],
     ] as const) {
-      const r = callRawText(
+      const r = await callRawText(
         deps.transport,
         mailReportToMqRequest(sess, cguid, String(Math.random()), actionType, clientType, mid, channel),
       );
       mq.push(r.ok);
     }
     waitGap(deps);
-    const e = callRawText(deps.transport, logBehaviorActionRequest(sess, 111631, 261, cguid, '110542_6'));
+    const e = await callRawText(deps.transport, logBehaviorActionRequest(sess, 111631, 261, cguid, '110542_6'));
     const out = advance(deps, doneState(deps, st));
     return {
       ok: true,
@@ -1625,7 +1625,7 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
 
   if (st.phase === 'mailDirs') {
     const sess = { sid: st.data?.sid ?? '', rmkey: st.data?.rmkey ?? '' };
-    const res = callRawText(deps.transport, mailDirsRequest(sess, st.data?.cguid ?? newCguid()));
+    const res = await callRawText(deps.transport, mailDirsRequest(sess, st.data?.cguid ?? newCguid()));
     const dir = res.ok ? firstField(res.text, 'directoryId') : undefined;
     save(deps, {
       ...st,
@@ -1643,7 +1643,7 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
 
   if (st.phase === 'mailSearch') {
     const sess = { sid: st.data?.sid ?? '', rmkey: st.data?.rmkey ?? '' };
-    const res = callRawText(deps.transport, mailSearchRequest(sess, st.data?.cguid ?? newCguid()));
+    const res = await callRawText(deps.transport, mailSearchRequest(sess, st.data?.cguid ?? newCguid()));
     const mid = res.ok ? firstField(res.text, 'mid') : undefined;
     if (!mid) {
       return itemFailed(deps, st, `邮件列表里取不到 mid：${res.error ?? '响应里没有 mid'}`);
@@ -1654,7 +1654,7 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
 
   if (st.phase === 'mailBackup') {
     const sess = { sid: st.data?.sid ?? '', rmkey: st.data?.rmkey ?? '' };
-    const res = callRawText(
+    const res = await callRawText(
       deps.transport,
       mailBackupRequest(sess, st.data?.cguid ?? newCguid(), st.data?.mid ?? '', st.data?.directoryId ?? ''),
     );
@@ -1680,7 +1680,7 @@ export function runAppTaskStep(deps: TaskDeps): TaskOutcome {
     return { ok: true, note: `这条的文件不是我们造的 ⇒ 不删。${out.note}` };
   }
   const fileId = st.fileId;
-  const res = callRawText(deps.transport, trashRequest(deps, [fileId]));
+  const res = await callRawText(deps.transport, trashRequest(deps, [fileId]));
   const parsed = res.ok
     ? parseTrashResult(res.text)
     : { ok: false, code: '', why: res.error ?? '未知失败' };

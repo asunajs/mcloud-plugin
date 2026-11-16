@@ -31,7 +31,7 @@ import type { SignInEnvelope } from '../src/mcloud/envelope.ts';
 const env = (code: number | undefined, result?: unknown, message = ''): SignInEnvelope =>
   ({ code, message, result, ok: code === 0 }) as SignInEnvelope;
 
-test('请求体形态：四个端点**各不相同**（"POST 就该有 JSON body"是错的）', () => {
+test('请求体形态：四个端点**各不相同**（"POST 就该有 JSON body"是错的）', async () => {
   const ui = userInfoRequest();
   assert.equal(ui.method, 'POST');
   assert.equal(ui.body, '{}');
@@ -60,7 +60,7 @@ test('请求体形态：四个端点**各不相同**（"POST 就该有 JSON body
   }
 });
 
-test('draw：口令走 **query**，中文必须百分号编码', () => {
+test('draw：口令走 **query**，中文必须百分号编码', async () => {
   const r = drawRequest('中秋口令');
   assert.equal(
     r.url,
@@ -71,7 +71,7 @@ test('draw：口令走 **query**，中文必须百分号编码', () => {
   assert.equal(r.body, undefined);
 });
 
-test('这一族共用的头：activityid 是**签到族那个**、UA 是小红花那个 iPad UA', () => {
+test('这一族共用的头：activityid 是**签到族那个**、UA 是小红花那个 iPad UA', async () => {
   const r = drawRequest('X');
   assert.equal(r.headers.activityid, 'sign_in_3', '实拍如此，不是直播专属 id');
   assert.equal(r.headers.appversion, '12.6.0.0');
@@ -86,18 +86,18 @@ test('这一族共用的头：activityid 是**签到族那个**、UA 是小红�
   assert.equal(r.headers.cookie, undefined);
 });
 
-test('复活花那一口是这条链上**唯一的 GET**', () => {
+test('复活花那一口是这条链上**唯一的 GET**', async () => {
   const r = queryRevivalFlowersRequest();
   assert.equal(r.method, 'GET');
   assert.ok(r.url.endsWith('/redFlower/queryRevivalFlowers'));
 });
 
-test('埋点是固定 5 条，顺序即常量表', () => {
+test('埋点是固定 5 条，顺序即常量表', async () => {
   assert.equal(JOURNALING_EVENTS.length, 5);
   assert.equal(JOURNALING_EVENTS[4], 'National_LiveRoomFeedback_flowerBtn', '只有这条是实拍证实的');
 });
 
-test('判定：成功要 `code===0` **且** result 在（只有 code 不算成功）', () => {
+test('判定：成功要 `code===0` **且** result 在（只有 code 不算成功）', async () => {
   const ok = classifyDraw(env(0, { prizeId: 7, flowerNum: 10, prizeName: '小红花', prizeType: 1 }));
   assert.equal(ok.kind, 'succeeded');
   assert.equal(ok.result!.flowerNum, 10);
@@ -108,7 +108,7 @@ test('判定：成功要 `code===0` **且** result 在（只有 code 不算成�
   assert.equal(classifyDraw(undefined).kind, 'unparsable');
 });
 
-test('判定：四个业务码各归各位，其余是"未分类"', () => {
+test('判定：四个业务码各归各位，其余是"未分类"', async () => {
   assert.equal(classifyDraw(env(CODE_KOULING_ALREADY_DRAWN)).kind, 'already-drawn');
   assert.equal(classifyDraw(env(CODE_KOULING_INVALID)).kind, 'invalid-kouling');
   assert.equal(classifyDraw(env(CODE_KOULING_EXPIRED)).kind, 'kouling-expired');
@@ -116,7 +116,7 @@ test('判定：四个业务码各归各位，其余是"未分类"', () => {
   assert.equal(classifyDraw(env(200103)).kind, 'other', '红花数不够出自别的接口');
 });
 
-test('⚠ 刻意分叉：只有 200108 算"口令认错了"，200118 **不是**', () => {
+test('⚠ 刻意分叉：只有 200108 算"口令认错了"，200118 **不是**', async () => {
   const invalid = classifyDraw(env(CODE_KOULING_INVALID));
   const expired = classifyDraw(env(CODE_KOULING_EXPIRED));
 
@@ -134,7 +134,7 @@ test('⚠ 刻意分叉：只有 200108 算"口令认错了"，200118 **不是**'
   assert.equal(rejectedKouling(classifyDraw(env(609))), false);
 });
 
-test('人话：没领到的一律带原因，不许只写"失败"', () => {
+test('人话：没领到的一律带原因，不许只写"失败"', async () => {
   assert.equal(drawLine('X', classifyDraw(env(0, { flowerNum: 15 }))), '口令「X」领到 15 朵');
   assert.match(drawLine('X', classifyDraw(env(CODE_KOULING_ALREADY_DRAWN))), /已兑换过/);
   assert.match(drawLine('X', classifyDraw(env(CODE_KOULING_INVALID))), /口令无效/);
@@ -144,7 +144,7 @@ test('人话：没领到的一律带原因，不许只写"失败"', () => {
   assert.match(drawLine('X', classifyDraw(env(609))), /609/);
 });
 
-test('余额：`flowerCnt` **必须**在 —— 缺了是 undefined，不是 0', () => {
+test('余额：`flowerCnt` **必须**在 —— 缺了是 undefined，不是 0', async () => {
   assert.equal(parseBalance(env(0, { flowerCnt: 235 })), 235);
   assert.equal(parseBalance(env(0, { flowerCnt: '235' })), 235, '字符串数字也认');
   // ⚠ 静默成 0 会让"余额从 235 变成 0"看起来像一次正常读数
@@ -153,7 +153,7 @@ test('余额：`flowerCnt` **必须**在 —— 缺了是 undefined，不是 0',
   assert.equal(parseBalance(undefined), undefined);
 });
 
-test('⚠ baseUrl 必须能把这族的源**整个换掉**（否则"指到 mock"对它无效）', () => {
+test('⚠ baseUrl 必须能把这族的源**整个换掉**（否则"指到 mock"对它无效）', async () => {
   // 这条是踩出来的：第一版把真上游写死在构造器里，于是本地 E2E 里那几步
   // **真的打到了 m.mcloud.139.com**（拿假 jwt 被 90001 挡下，没碰到账号，
   // 但"CI 全程只打 mock"这条纪律已经破了）。真机上出这种错就是污染真环境。

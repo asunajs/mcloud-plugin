@@ -29,7 +29,7 @@ function prose(text: string): string {
 
 // ── ① 死链 ────────────────────────────────────────────────────────────
 
-test('⚠ README 里每个相对链接都真的存在（死链没人报错，只有人点到才知道）', () => {
+test('⚠ README 里每个相对链接都真的存在（死链没人报错，只有人点到才知道）', async () => {
   const bad: string[] = [];
   for (const m of prose(readme).matchAll(/\]\(([^)]+)\)/g)) {
     const href = m[1]!.trim();
@@ -42,7 +42,7 @@ test('⚠ README 里每个相对链接都真的存在（死链没人报错，只
   assert.deepEqual(bad, [], `这些链接指向不存在的路径：${bad.join(', ')}`);
 });
 
-test('⚠ 文档目录里的每个 `.md` 都在 README 的文档表里被提到', () => {
+test('⚠ 文档目录里的每个 `.md` 都在 README 的文档表里被提到', async () => {
   // 少一个就是"有人写了文档但没人知道它在哪"。
   const docs = readdirSync(resolve(root, 'docs'))
     .filter((f) => f.endsWith('.md'))
@@ -53,7 +53,7 @@ test('⚠ 文档目录里的每个 `.md` 都在 README 的文档表里被提到'
 
 // ── ② 不许描述已经删掉的结构 ─────────────────────────────────────────
 
-test('⚠ README 里提「已删掉的结构」时**必须同时标出那是旧的**', () => {
+test('⚠ README 里提「已删掉的结构」时**必须同时标出那是旧的**', async () => {
   // 完全不提是最差的做法之一（新来的人不知道为什么要这么设计），
   // 但**只提不标**更糟 —— 那会让人照着去找不存在的东西。
   // 所以判据不是"不许出现这个词"，而是"出现时周围有没有对照标记"。
@@ -72,7 +72,7 @@ test('⚠ README 里提「已删掉的结构」时**必须同时标出那是旧�
   }
 });
 
-test('README 必须说清现在是**三条**任务（而不是 25 条 / 12 条）', () => {
+test('README 必须说清现在是**三条**任务（而不是 25 条 / 12 条）', async () => {
   const p = prose(readme);
   assert.ok(/三条任务|三条\b/.test(p), 'README 没说清现在是三条任务');
   for (const name of ['日常', '兑换', '直播']) {
@@ -80,7 +80,7 @@ test('README 必须说清现在是**三条**任务（而不是 25 条 / 12 条�
   }
 });
 
-test('README 必须说清是**四条**插件，且四条都在', () => {
+test('README 必须说清是**四条**插件，且四条都在', async () => {
   // ⚠ 查**原文**而不是去掉行内代码之后的正文：插件名在表格里是 `` `mcloud-daily` ``，
   //   `prose()` 会把反引号里的内容删掉，于是这里永远找不到（第一版就是这样红的）。
   for (const plugin of ['mcloud', 'mcloud-daily', 'mcloud-exchange', 'mcloud-live']) {
@@ -89,13 +89,13 @@ test('README 必须说清是**四条**插件，且四条都在', () => {
   assert.ok(/四条插件/.test(prose(readme)), 'README 没说清现在是四条插件');
 });
 
-test('README 必须指向阶段计划（那是进度的唯一权威）', () => {
+test('README 必须指向阶段计划（那是进度的唯一权威）', async () => {
   assert.ok(readme.includes('docs/redesign-plan.md'), 'README 没有指向 redesign-plan');
 });
 
 // ── ③ 历史文档必须标清是历史 ─────────────────────────────────────────
 
-test('⚠ `docs/design-history.md` 必须在开头就说清「这是历史」（否则和 README 打架）', () => {
+test('⚠ `docs/design-history.md` 必须在开头就说清「这是历史」（否则和 README 打架）', async () => {
   const hist = readFileSync(resolve(root, 'docs/design-history.md'), 'utf8');
   const head = hist.slice(0, 1200);
   assert.ok(/历史/.test(head), '开头没说这是历史');
@@ -107,7 +107,7 @@ test('⚠ `docs/design-history.md` 必须在开头就说清「这是历史」（
 
 // ── ④ 交叉引用：计划与 README 不能各说各话 ────────────────────────────
 
-test('README 说的任务数，与 `ci_state_check` 断言的条数一致', () => {
+test('README 说的任务数，与 `ci_state_check` 断言的条数一致', async () => {
   // 这一条把"文档说的"与"脚本在真面板上断言的"钉在一起 ——
   // 光改文档不改脚本（或反过来）都会红。
   const split = readFileSync(resolve(root, 'scripts/ci_state_check.py'), 'utf8');
@@ -134,7 +134,7 @@ test('README 说的任务数，与 `ci_state_check` 断言的条数一致', () =
 
 // ── ⑤ 用词规则要**可执行**（不然它只是一张纸） ──────────────────────
 
-test('⚠ UI 里不许有**字面 Markdown 标记**（HTML 不渲染它，会原样显示）', () => {
+test('⚠ UI 里不许有**字面 Markdown 标记**（HTML 不渲染它，会原样显示）', async () => {
   // 实测抓到的：`<p class="hint">「提前多少毫秒发」是**你到云端的传输耗时**。</p>`
   // —— 页面上真的显示出了那四个星号。HTML 不是 Markdown，`**` 就是两个字符。
   // ⚠ 截图之前看不出来（静态测试不会"看"页面）—— 这类缺陷只有渲染才暴露。
@@ -145,7 +145,7 @@ test('⚠ UI 里不许有**字面 Markdown 标记**（HTML 不渲染它，会原
   assert.deepEqual(hits, [], `可见文本里出现了字面 Markdown：${hits.join(' / ')}`);
 });
 
-test('⚠ 界面里不许出现用词规则禁掉的那些词', () => {
+test('⚠ 界面里不许出现用词规则禁掉的那些词', async () => {
   // `docs/ui-wording.md` 写了规则，但规则写成文档就只是"一张纸" ——
   // 这一版的新界面就是**规则写完才做的**，于是当场踩了四处（`上游` ×4）。
   // 所以把它变成测试：改了界面忘了改用词，这里红。
@@ -174,7 +174,7 @@ test('⚠ 界面里不许出现用词规则禁掉的那些词', () => {
   }
 });
 
-test('用词规则里要求的替代说法，界面上真的有', () => {
+test('用词规则里要求的替代说法，界面上真的有', async () => {
   const ui = readFileSync(resolve(root, 'plugins/mcloud/index.html'), 'utf8');
   // 「上游」要写成「移动云盘」
   assert.ok(ui.includes('移动云盘'), '界面上没出现「移动云盘」—— 那「上游」该叫什么？');
@@ -184,7 +184,7 @@ test('用词规则里要求的替代说法，界面上真的有', () => {
   assert.ok(ui.includes('扫码登录'), '缺「扫码登录」');
 });
 
-test('用词规则文档自己要与现状一致（不许还写着「高级」那一角）', () => {
+test('用词规则文档自己要与现状一致（不许还写着「高级」那一角）', async () => {
   const w = readFileSync(resolve(root, 'docs/ui-wording.md'), 'utf8');
   // 「高级」那一角已经删了；文档里提它必须是在说"没有它了"
   let at = w.indexOf('「高级」');
@@ -198,7 +198,7 @@ test('用词规则文档自己要与现状一致（不许还写着「高级」�
   }
 });
 
-test('⚠ 文档里不许让人去找**已经删掉的任务**（比死链更隐蔽的误导）', () => {
+test('⚠ 文档里不许让人去找**已经删掉的任务**（比死链更隐蔽的误导）', async () => {
   // 死链点一下就发现；"去找一个不存在的任务"要点半天才发现。
   // 25 条任务合并成 3 条之后，文档里还留着 `session-check` 这种名字。
   // ⚠ **不含 `ui-wording.md`**：它是**规则表**，天生要把禁掉的那些词列出来
@@ -227,7 +227,7 @@ test('⚠ 文档里不许让人去找**已经删掉的任务**（比死链更隐
   }
 });
 
-test('⚠ 长 token 的容器必须能断行（不然会把整块撑破、下面的文字也不换行）', () => {
+test('⚠ 长 token 的容器必须能断行（不然会把整块撑破、下面的文字也不换行）', async () => {
   // 用户圈出来的现象是"说明文字被切在'不受影'那里"。看着像文字被裁，
   // 根因却在**上一行**：`<code class="finger">` 里那串指纹有几十个字符、
   // 中间没有空格 —— 它把容器撑宽，撑宽之后下面那段自然也不换行了。

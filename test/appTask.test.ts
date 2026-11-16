@@ -37,14 +37,14 @@ const NOW = '2026-10-14T01:00:00.000Z';
 
 /** 推进一步，并把 `visit`（记访问日志 —— "我点了哪条任务"）那一枪带过。
  *  它是打卡的**前置**，测试关心的是"点了没点"，所以默认带过。 */
-function step(deps: TaskDeps): { ok?: boolean; idle?: boolean; note: string } {
+async function step(deps: TaskDeps): Promise<{ ok?: boolean; idle?: boolean; note: string }> {
   const parse = (): { phase?: string; itemId?: number } =>
     JSON.parse(deps.store.getState(STATE_TASK) ?? '{}') as { phase?: string; itemId?: number };
   const before = parse().itemId;
-  const r = runAppTaskStep(deps);
+  const r = await runAppTaskStep(deps);
   // 老流程是 `visit` → `click`：同一条要**再推一步**才真的点到。
   // 现在是先 click：点完已经换到下一条（itemId 变了），不能再替下一条点一枪。
-  if (parse().phase === 'click' && parse().itemId === before) return runAppTaskStep(deps);
+  if (parse().phase === 'click' && parse().itemId === before) return await runAppTaskStep(deps);
   return r;
 }
 /** 打卡那一枪发了几次（别数总数 —— visit 也是请求）。 */
@@ -142,7 +142,7 @@ function mkDeps(groups: Record<string, unknown[]>) {
   return { deps: { store, transport, nowIso: NOW, baseUrl: undefined, settleMs: 0, gapMs: [0, 0] } as TaskDeps, sent, store };
 }
 
-test('待办：只挑 `todo`，**"不做"名单里的不发**', () => {
+test('待办：只挑 `todo`，**"不做"名单里的不发**', async () => {
   const { deps } = mkDeps({
     [MATRIX_MARKETS[0]!]: [
       { taskId: 115, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '点一下' },
@@ -157,7 +157,7 @@ test('待办：只挑 `todo`，**"不做"名单里的不发**', () => {
   assert.equal(pend[0]!.needUpload, false, '115 是"只点一下"那一类');
 });
 
-test('待办：需要传文件的那些被认出来（106 / 113 / beiyong1 两道门）', () => {
+test('待办：需要传文件的那些被认出来（106 / 113 / beiyong1 两道门）', async () => {
   const { deps } = mkDeps({
     [MATRIX_MARKETS[0]!]: [
       { taskId: 106, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '上传文件' },
@@ -173,7 +173,7 @@ test('待办：需要传文件的那些被认出来（106 / 113 / beiyong1 两�
   assert.equal(by[116], true, '名字门命中');
 });
 
-test('起一趟**一个请求都不发**；没有待办 ⇒ idle', () => {
+test('起一趟**一个请求都不发**；没有待办 ⇒ idle', async () => {
   const { deps, sent } = mkDeps({});
   const out = startAppTask(deps);
   assert.equal(out.idle, true);
@@ -181,7 +181,7 @@ test('起一趟**一个请求都不发**；没有待办 ⇒ idle', () => {
   assert.equal(sent.length, 0);
 });
 
-test('跨天的 done 不算今天起过（否则上传任务会被永远跳过）', () => {
+test('跨天的 done 不算今天起过（否则上传任务会被永远跳过）', async () => {
   const { deps } = mkDeps({
     [MATRIX_MARKETS[0]!]: [{ taskId: 106, state: 'WAIT', enable: 1, groupId: 'day', name: '手动上传一个文件' }],
   });
@@ -198,7 +198,7 @@ test('跨天的 done 不算今天起过（否则上传任务会被永远跳过�
   assert.equal(st.day, NOW.slice(0, 10));
 });
 
-test('月门：本月备份确认没开且 <20 号 ⇒ 跳过 month 任务；true/没读到不跳', () => {
+test('月门：本月备份确认没开且 <20 号 ⇒ 跳过 month 任务；true/没读到不跳', async () => {
   const mk = (backup: boolean | undefined) => {
     const { deps, store } = mkDeps({
       [MATRIX_MARKETS[0]!]: [
@@ -215,13 +215,13 @@ test('月门：本月备份确认没开且 <20 号 ⇒ 跳过 month 任务；tru
   assert.equal(pendingItems(mk(undefined)).length, 1, '不知道 ⇒ 不跳');
 });
 
-test('409 固定入口：两发上报 + 补一发 task2', () => {
+test('409 固定入口：两发上报 + 补一发 task2', async () => {
   const { deps, sent } = mkDeps({
     [MATRIX_MARKETS[0]!]: [{ taskId: 409, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '从固定入口访问云朵中心' }],
   });
   startAppTask(deps);
   for (let i = 0; i < 12; i++) {
-    const out = runAppTaskStep(deps);
+    const out = await runAppTaskStep(deps);
     if (out.idle) break;
   }
   const urls = sent.map((r) => r.url);
@@ -233,7 +233,7 @@ test('409 固定入口：两发上报 + 补一发 task2', () => {
   );
 });
 
-test('1005 已经走起来（currstep=1）：不再打默认 key，只补 task2', () => {
+test('1005 已经走起来（currstep=1）：不再打默认 key，只补 task2', async () => {
   const { deps, sent } = mkDeps({
     [MATRIX_MARKETS[0]!]: [
       { taskId: 1005, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '从固定入口进入云朵中心', currStep: 1 },
@@ -241,7 +241,7 @@ test('1005 已经走起来（currstep=1）：不再打默认 key，只补 task2'
   });
   startAppTask(deps);
   for (let i = 0; i < 12; i++) {
-    const out = runAppTaskStep(deps);
+    const out = await runAppTaskStep(deps);
     if (out.idle) break;
   }
   const clicks = sent.filter((r) => r.url.includes('task/click'));
@@ -249,7 +249,7 @@ test('1005 已经走起来（currstep=1）：不再打默认 key，只补 task2'
   assert.ok(clicks[0]!.url.includes('key=task2'));
 });
 
-test('1017 入口页：取 button.email.link，再用 task2 补一发', () => {
+test('1017 入口页：取 button.email.link，再用 task2 补一发', async () => {
   const { deps, sent } = mkDeps({
     [MATRIX_MARKETS[0]!]: [
       {
@@ -264,7 +264,7 @@ test('1017 入口页：取 button.email.link，再用 task2 补一发', () => {
   });
   startAppTask(deps);
   for (let i = 0; i < 15; i++) {
-    const out = runAppTaskStep(deps);
+    const out = await runAppTaskStep(deps);
     if (out.idle) break;
   }
   const urls = sent.map((r) => r.url);
@@ -275,13 +275,13 @@ test('1017 入口页：取 button.email.link，再用 task2 补一发', () => {
   );
 });
 
-test('609 AI 助手：换票 → 登录 → 派生鉴权 → 状态 → SSE 对话', () => {
+test('609 AI 助手：换票 → 登录 → 派生鉴权 → 状态 → SSE 对话', async () => {
   const { deps, sent } = mkDeps({
     [MATRIX_MARKETS[0]!]: [{ taskId: 609, state: 'UNFINISH', enable: 1, groupId: 'time', name: '和AI助手对话' }],
   });
   startAppTask(deps);
   for (let i = 0; i < 25; i++) {
-    const out = runAppTaskStep(deps);
+    const out = await runAppTaskStep(deps);
     if (out.idle) break;
   }
   const urls = sent.map((r) => r.url);
@@ -290,13 +290,13 @@ test('609 AI 助手：换票 → 登录 → 派生鉴权 → 状态 → SSE 对�
   assert.ok(urls.some((u) => u.includes('assistant/chat/v2/add')), 'SSE 对话');
 });
 
-test('107 云笔记：鉴权 → 建 → 删', () => {
+test('107 云笔记：鉴权 → 建 → 删', async () => {
   const { deps, sent } = mkDeps({
     [MATRIX_MARKETS[0]!]: [{ taskId: 107, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '创建云笔记' }],
   });
   startAppTask(deps);
   for (let i = 0; i < 20; i++) {
-    const out = runAppTaskStep(deps);
+    const out = await runAppTaskStep(deps);
     if (out.idle) break;
   }
   const urls = sent.map((r) => r.url);
@@ -305,13 +305,13 @@ test('107 云笔记：鉴权 → 建 → 删', () => {
   assert.ok(urls.some((u) => u.includes('moveToRecycleBin.do')));
 });
 
-test('472 邮箱活跃：autologin + 市场打卡', () => {
+test('472 邮箱活跃：autologin + 市场打卡', async () => {
   const { deps, sent } = mkDeps({
     [MATRIX_MARKETS[0]!]: [{ taskId: 472, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '体验 139 邮箱' }],
   });
   startAppTask(deps);
   for (let i = 0; i < 20; i++) {
-    const out = runAppTaskStep(deps);
+    const out = await runAppTaskStep(deps);
     if (out.idle) break;
   }
   const urls = sent.map((r) => r.url);
@@ -319,13 +319,13 @@ test('472 邮箱活跃：autologin + 市场打卡', () => {
   assert.ok(urls.some((u) => u.includes('taskClickV2')));
 });
 
-test('1004 发邮件：composeId → compose → **PE 活跃上报** → 打卡', () => {
+test('1004 发邮件：composeId → compose → **PE 活跃上报** → 打卡', async () => {
   const { deps, sent } = mkDeps({
     [MATRIX_MARKETS[0]!]: [{ taskId: 1004, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '给好友发邮件' }],
   });
   startAppTask(deps);
   for (let i = 0; i < 20; i++) {
-    const out = runAppTaskStep(deps);
+    const out = await runAppTaskStep(deps);
     if (out.idle) break;
   }
   const urls = sent.map((r) => r.url);
@@ -339,13 +339,13 @@ test('1004 发邮件：composeId → compose → **PE 活跃上报** → 打卡'
   assert.equal(urls.some((u) => u.includes('taskClickV2')), false, 'taskClickV2 已经死了，别再打');
 });
 
-test('585 AI 相机：识图 → 对话', () => {
+test('585 AI 相机：识图 → 对话', async () => {
   const { deps, sent } = mkDeps({
     [MATRIX_MARKETS[0]!]: [{ taskId: 585, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '体验AI相机' }],
   });
   startAppTask(deps);
   for (let i = 0; i < 25; i++) {
-    const out = runAppTaskStep(deps);
+    const out = await runAppTaskStep(deps);
     if (out.idle) break;
   }
   const urls = sent.map((r) => r.url);
@@ -353,25 +353,25 @@ test('585 AI 相机：识图 → 对话', () => {
   assert.ok(urls.some((u) => u.includes('assistant/chat/v2/add')));
 });
 
-test('1014 PDF 转换：传 PDF → convertPdfFromYunFile', () => {
+test('1014 PDF 转换：传 PDF → convertPdfFromYunFile', async () => {
   const { deps, sent } = mkDeps({
     [MATRIX_MARKETS[0]!]: [{ taskId: 1014, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '体验PDF转换' }],
   });
   startAppTask(deps);
   for (let i = 0; i < 30; i++) {
-    const out = runAppTaskStep(deps);
+    const out = await runAppTaskStep(deps);
     if (out.idle) break;
   }
   assert.ok(sent.some((r) => r.url.includes('convertPdfFromYunFile')));
 });
 
-test('1029 我的账单：页 → 找 mid → 标读 → 读信 → 3 发 MQ → 像素', () => {
+test('1029 我的账单：页 → 找 mid → 标读 → 读信 → 3 发 MQ → 像素', async () => {
   const { deps, sent } = mkDeps({
     [MATRIX_MARKETS[0]!]: [{ taskId: 1029, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '查看我的账单' }],
   });
   startAppTask(deps);
   for (let i = 0; i < 30; i++) {
-    const out = runAppTaskStep(deps);
+    const out = await runAppTaskStep(deps);
     if (out.idle) break;
   }
   const urls = sent.map((r) => r.url);
@@ -381,13 +381,13 @@ test('1029 我的账单：页 → 找 mid → 标读 → 读信 → 3 发 MQ →
   assert.ok(urls.some((u) => u.includes('logBehaviorAction')));
 });
 
-test('1028 AI 工作台：派生鉴权 → 对话', () => {
+test('1028 AI 工作台：派生鉴权 → 对话', async () => {
   const { deps, sent } = mkDeps({
     [MATRIX_MARKETS[0]!]: [{ taskId: 1028, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '体验AI工作台' }],
   });
   startAppTask(deps);
   for (let i = 0; i < 25; i++) {
-    const out = runAppTaskStep(deps);
+    const out = await runAppTaskStep(deps);
     if (out.idle) break;
   }
   const urls = sent.map((r) => r.url);
@@ -395,26 +395,26 @@ test('1028 AI 工作台：派生鉴权 → 对话', () => {
   assert.ok(urls.some((u) => u.includes('assistant/chat/v2/add')));
 });
 
-test('434 分享：建外链后立刻删（不空发）', () => {
+test('434 分享：建外链后立刻删（不空发）', async () => {
   const { deps, sent } = mkDeps({
     [MATRIX_MARKETS[0]!]: [{ taskId: 434, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '分享文件领好礼' }],
   });
   startAppTask(deps);
   for (let i = 0; i < 30; i++) {
-    const out = runAppTaskStep(deps);
+    const out = await runAppTaskStep(deps);
     if (out.idle) break;
   }
   assert.ok(sent.some((r) => r.url.includes('getOutLink')), '要建外链');
   assert.ok(sent.some((r) => r.url.includes('delOutLink')), '建完要删');
 });
 
-test('1020 邮件转存：换票 → 登录 → 目录 → 找邮件 → 转存', () => {
+test('1020 邮件转存：换票 → 登录 → 目录 → 找邮件 → 转存', async () => {
   const { deps, sent } = mkDeps({
     [MATRIX_MARKETS[0]!]: [{ taskId: 1020, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '重要邮件存储云盘' }],
   });
   startAppTask(deps);
   for (let i = 0; i < 20; i++) {
-    const out = runAppTaskStep(deps);
+    const out = await runAppTaskStep(deps);
     if (out.idle) break;
   }
   const urls = sent.map((r) => r.url);
@@ -425,7 +425,7 @@ test('1020 邮件转存：换票 → 登录 → 目录 → 找邮件 → 转存'
   assert.ok(urls.some((u) => u.includes('disk:backupMail')), '转存');
 });
 
-test('没有待办时要说清“还有几条没搬”，且“刻意不做”的不算', () => {
+test('没有待办时要说清“还有几条没搬”，且“刻意不做”的不算', async () => {
   const { deps } = mkDeps({
     [MATRIX_MARKETS[0]!]: [
       { taskId: 999, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '未知任务' },
@@ -438,7 +438,7 @@ test('没有待办时要说清“还有几条没搬”，且“刻意不做”�
   assert.match(out.note, /App 里手动做/);
 });
 
-test('打卡那一枪的形状：**GET**、主机**带端口**、`key=task&id=`', () => {
+test('打卡那一枪的形状：**GET**、主机**带端口**、`key=task&id=`', async () => {
   const { deps } = mkDeps({});
   const req = clickRequest(deps, 115);
   assert.equal(req.method, 'GET');
@@ -453,7 +453,7 @@ test('打卡那一枪的形状：**GET**、主机**带端口**、`key=task&id=`'
   assert.ok(req.url.includes('?'), '它是 GET **却是写** —— 参数在查询串上');
 });
 
-test('⚠ 同一轮**不重发**打卡（不可回滚的东西不能"当没发过"）', () => {
+test('⚠ 同一轮**不重发**打卡（不可回滚的东西不能"当没发过"）', async () => {
   const { deps, sent, store } = mkDeps({
     [MATRIX_MARKETS[0]!]: [
       { taskId: 115, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '点一下' },
@@ -461,21 +461,21 @@ test('⚠ 同一轮**不重发**打卡（不可回滚的东西不能"当没发�
     ],
   });
   startAppTask(deps);
-  const r1 = step(deps); // 记日志 + 点第一条
+  const r1 = await step(deps); // 记日志 + 点第一条
   assert.equal(r1.ok, true, r1.note);
   assert.equal(clicks(sent), 1);
   assert.match(r1.note, /下一条 #431/, '⚠ 点完必须**换下一条**（原地打转是真机上的 bug）');
   // 手工把游标退回第一条（模拟"读数没刷新，又轮到它"）
   const st = JSON.parse(store.getState(STATE_TASK)!) as Record<string, unknown>;
   store.setState(STATE_TASK, JSON.stringify({ ...st, itemId: 115, phase: 'click' }), NOW);
-  const r2 = step(deps);
+  const r2 = await step(deps);
   assert.equal(r2.ok, true);
   assert.match(r2.note, /已经点过/);
   assert.equal(clicks(sent), 1, '⚠ 不许再发一枪');
   assert.match(r2.note, /下一条 #431/, '换到下一条，不原地打转');
 });
 
-test('⚠ 收尾**不许发空 `fileIds`**', () => {
+test('⚠ 收尾**不许发空 `fileIds`**', async () => {
   const { deps, sent } = mkDeps({});
   const req = trashRequest(deps, []);
   assert.equal(JSON.parse(req.body!).fileIds.length, 0, '这个构造器本身不管挡');
@@ -488,7 +488,7 @@ test('⚠ 收尾**不许发空 `fileIds`**', () => {
     JSON.stringify({ gi: 0, ii: 0, phase: 'trash', itemId: 106, clicked: [], day: NOW.slice(0, 10) }),
     NOW,
   );
-  const out = runAppTaskStep(d2);
+  const out = await runAppTaskStep(d2);
   assert.equal(out.ok, true, out.note);
   assert.match(out.note, /不发空数组/);
   assert.equal(s2.filter((r) => r.url.includes('batchTrash')).length, 0, '⚠ 一枪都不发');
@@ -496,7 +496,7 @@ test('⚠ 收尾**不许发空 `fileIds`**', () => {
   void pendingItems;
 });
 
-test('收尾那一枪：体是 `{fileIds:[…]}`，信封是**字符串 code + success**', () => {
+test('收尾那一枪：体是 `{fileIds:[…]}`，信封是**字符串 code + success**', async () => {
   const { deps } = mkDeps({});
   const req = trashRequest(deps, ['F1']);
   assert.equal(req.method, 'POST');
@@ -504,29 +504,29 @@ test('收尾那一枪：体是 `{fileIds:[…]}`，信封是**字符串 code + s
   assert.deepEqual(JSON.parse(req.body!), { fileIds: ['F1'] });
 });
 
-test('走完一条带收尾的（需要传文件的那条）：**点 → 传 → 收尾**（参考实现 106 的顺序）', () => {
+test('走完一条带收尾的（需要传文件的那条）：**点 → 传 → 收尾**（参考实现 106 的顺序）', async () => {
   const { deps, sent, store } = mkDeps({
     [MATRIX_MARKETS[0]!]: [{ taskId: 106, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '上传文件' }],
   });
   startAppTask(deps);
   assert.equal((JSON.parse(store.getState(STATE_TASK)!) as { phase: string }).phase, 'click');
-  const r1 = runAppTaskStep(deps); // 先打卡
+  const r1 = await runAppTaskStep(deps); // 先打卡
   assert.equal(r1.ok, true, r1.note);
   assert.equal((JSON.parse(store.getState(STATE_TASK)!) as { phase: string }).phase, 'upload', '打完卡才传文件');
   const clickAt = sent.findIndex((r) => r.url.includes('task/click'));
-  const r2 = runAppTaskStep(deps); // 传（秒传 ⇒ 一枪就完）
+  const r2 = await runAppTaskStep(deps); // 传（秒传 ⇒ 一枪就完）
   assert.equal(r2.ok, true, r2.note);
   const createAt = sent.findIndex((r) => r.url.includes('file/create'));
   assert.ok(clickAt >= 0 && createAt > clickAt, '所有任务都先 click，再上传');
   assert.equal((JSON.parse(store.getState(STATE_TASK)!) as { phase: string }).phase, 'trash', '传完直接收尾，不能再点一次');
-  const r3 = runAppTaskStep(deps); // 收尾
+  const r3 = await runAppTaskStep(deps); // 收尾
   assert.equal(r3.ok, true, r3.note);
   assert.match(r3.note, /回收站/);
   assert.equal(sent.filter((r) => r.url.includes('batchTrash')).length, 1);
   assert.deepEqual(JSON.parse(sent.at(-1)!.body!), { fileIds: ['F1'] }, '收尾带的就是刚传上去的那个 id');
 });
 
-test('上传族 currStep != 0：按参考实现不打卡（106 走起来后不再点）', () => {
+test('上传族 currStep != 0：按参考实现不打卡（106 走起来后不再点）', async () => {
   const { deps, sent } = mkDeps({
     [MATRIX_MARKETS[0]!]: [
       { taskId: 106, state: 'WAIT', enable: 1, groupId: 'day', name: '手动上传一个文件', currStep: 1 },
@@ -534,26 +534,26 @@ test('上传族 currStep != 0：按参考实现不打卡（106 走起来后不�
   });
   startAppTask(deps);
   for (let i = 0; i < 10; i++) {
-    const r = runAppTaskStep(deps);
+    const r = await runAppTaskStep(deps);
     if (r.idle) break;
   }
   assert.equal(clicks(sent), 0, 'currStep=1 的上传任务按 should_click 不该打卡');
   assert.equal(sent.filter((r) => r.url.includes('file/create')).length, 1, '但文件还要照传');
 });
 
-test('⚠ 点过的名单**按天重置**（矩阵读数是慢的，同一份读数会被反复消费）', () => {
+test('⚠ 点过的名单**按天重置**（矩阵读数是慢的，同一份读数会被反复消费）', async () => {
   const { deps, store, sent } = mkDeps({
     [MATRIX_MARKETS[0]!]: [{ taskId: 115, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '点一下' }],
   });
   startAppTask(deps);
-  step(deps);
+  await step(deps);
   assert.equal(clicks(sent), 1);
   // ⚠ 读数没刷新（还是 todo）⇒ 上一发**没有服务端确认**，不能被当成"今天做完了"。
   //   本地动作不是成功，下一趟必须能重试。
   const out2 = startAppTask(deps);
   assert.notEqual(out2.idle, true, `未确认的任务必须能重试：${out2.note}`);
-  step(deps);
-  runAppTaskStep(deps); // settle：用新矩阵复查（测试 settleMs=0）
+  await step(deps);
+  await runAppTaskStep(deps); // settle：用新矩阵复查（测试 settleMs=0）
   assert.equal(clicks(sent), 2, '未确认的任务要能重试');
   const after = JSON.parse(store.getState(STATE_TASK)!) as {
     clicked: number[];
@@ -567,11 +567,11 @@ test('⚠ 点过的名单**按天重置**（矩阵读数是慢的，同一份读
   store.setState(STATE_TASK, JSON.stringify({ ...st, day: '2026-10-14' }), NOW);
   const out3 = startAppTask(nextDay);
   assert.equal(out3.idle, undefined, `换一天该能再做：${out3.note}`);
-  step(nextDay);
+  await step(nextDay);
   assert.equal(clicks(sent), 3, '换一天就该能再做');
 });
 
-test('⚠ **只做"知道该做什么"的那些**（mcloud 账本里"未实现"的一律不动）', () => {
+test('⚠ **只做"知道该做什么"的那些**（mcloud 账本里"未实现"的一律不动）', async () => {
   // 真机读数（2026-10-14）：548/549/550/607 在 mcloud 的 `docs/app-task-status.md` 里
   // **全是"未实现"** ⇒ 点了四枪全回 HTTP 200、状态一条没变。
   // mcloud 的口径是**逐条实拍**：只有真知道"这条要做什么动作"的才动手。
@@ -593,12 +593,12 @@ test('⚠ **只做"知道该做什么"的那些**（mcloud 账本里"未实现"�
   const out = startAppTask(deps);
   assert.equal(out.ok, true, out.note);
   assert.match(out.note, /从 #106 开始/, `实际：${out.note}`);
-  runAppTaskStep(deps);
+  await runAppTaskStep(deps);
   assert.equal(clicks(sent), 1, '只点 115 那一发');
   assert.equal(sent.filter((r) => /id=(548|549|550|551|607)/.test(r.url)).length, 0, '⚠ 那五条一个都不许碰');
 });
 
-test('动作和复查之间必须有间隔：settle 前不拿旧矩阵判成功/失败', () => {
+test('动作和复查之间必须有间隔：settle 前不拿旧矩阵判成功/失败', async () => {
   const { deps: base, store } = mkDeps({
     [MATRIX_MARKETS[0]!]: [{ taskId: 115, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '点一下' }],
   });
@@ -614,17 +614,17 @@ test('动作和复查之间必须有间隔：settle 前不拿旧矩阵判成功/
     },
   } as TaskDeps;
   startAppTask(deps);
-  step(deps);
+  await step(deps);
   const phase = (): string => (JSON.parse(store.getState(STATE_TASK)!) as { phase: string }).phase;
   assert.equal(phase(), 'settle', '动作完必须先进入 settle');
-  const out = runAppTaskStep(deps);
+  const out = await runAppTaskStep(deps);
   assert.ok(spins >= 5, `必须等满 5 秒再复查（实际 spin ${spins} 次）`);
   assert.equal(phase(), 'done', '等完才复查并收摊');
   assert.match(out.note, /复查完成/);
   assert.notEqual(out.ok, false, '等待本身不能报失败');
 });
 
-test('⚠ **判据是状态变了，不是 HTTP 200** —— 点了没生效要如实报出来', () => {
+test('⚠ **判据是状态变了，不是 HTTP 200** —— 点了没生效要如实报出来', async () => {
   // 115 记成"今天已点过"、再加 431 ⇒ 这一趟走 431，收摊时回头报 115（状态没变）
   const { deps } = mkDeps({
     [MATRIX_MARKETS[0]!]: [
@@ -641,9 +641,9 @@ test('⚠ **判据是状态变了，不是 HTTP 200** —— 点了没生效要�
   //   已经在 431 上、收摊时回头报 115 的那一步。
   // ⚠ 辅助 `step()` 已经把 `visit` + `click` 一起做掉了，而"点了没生效"的警告
   //   就在**点完换下一条**那一步报出来 ⇒ 结论看**这一下**，不用再推一步。
-  step(deps);
+  await step(deps);
   // 动作完先进入 settle；**等复查那一步**才拿新矩阵判"没生效"。
-  const r = runAppTaskStep(deps);
+  const r = await runAppTaskStep(deps);
   assert.equal(r.ok, false, `有"点了没生效"的 ⇒ 不能报成 ok：${r.note}`);
   assert.match(r.note, /本机动过|点了但状态没变/);
   assert.match(r.note, /#115/);
@@ -651,7 +651,7 @@ test('⚠ **判据是状态变了，不是 HTTP 200** —— 点了没生效要�
 
 // ───────────────────────── 收尾的两条漏（PDF / 分享） ─────────────────────────
 
-test('PDF 转换完**不能直接换下一条**：先收尾，再 advance', () => {
+test('PDF 转换完**不能直接换下一条**：先收尾，再 advance', async () => {
   const { deps, sent } = mkDeps({
     [MATRIX_MARKETS[0]!]: [{ taskId: 1014, state: 'UNFINISH', enable: 1, groupId: 'g1', name: 'PDF 转换' }],
   });
@@ -671,21 +671,21 @@ test('PDF 转换完**不能直接换下一条**：先收尾，再 advance', () =
     }),
     NOW,
   );
-  const r1 = runAppTaskStep(deps);
+  const r1 = await runAppTaskStep(deps);
   assert.match(r1.note, /下一步收尾/);
   assert.equal(
     (JSON.parse(deps.store.getState(STATE_TASK)!) as { phase: string }).phase,
     'trash',
     '转换完必须进收尾，不能把 fileId 丢掉',
   );
-  const r2 = runAppTaskStep(deps);
+  const r2 = await runAppTaskStep(deps);
   assert.match(r2.note, /回收站/);
   assert.equal(sent.filter((r) => r.url.includes('batchTrash')).length, 1);
   assert.deepEqual(JSON.parse(sent.at(-1)!.body!), { fileIds: ['FPDF'] });
   assert.deepEqual(ownedFileIds(deps), [], '收尾成功后要注销');
 });
 
-test('分享：删完外链再收尾；判不了归属的文件绝不删', () => {
+test('分享：删完外链再收尾；判不了归属的文件绝不删', async () => {
   const { deps, sent } = mkDeps({
     [MATRIX_MARKETS[0]!]: [{ taskId: 434, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '分享' }],
   });
@@ -705,10 +705,10 @@ test('分享：删完外链再收尾；判不了归属的文件绝不删', () =>
     }),
     NOW,
   );
-  const r1 = runAppTaskStep(deps);
+  const r1 = await runAppTaskStep(deps);
   assert.match(r1.note, /下一步收尾/);
   assert.equal((JSON.parse(deps.store.getState(STATE_TASK)!) as { phase: string }).phase, 'trash');
-  const r2 = runAppTaskStep(deps);
+  const r2 = await runAppTaskStep(deps);
   assert.match(r2.note, /回收站/);
   assert.equal(sent.filter((r) => r.url.includes('batchTrash')).length, 1);
   assert.deepEqual(ownedFileIds(deps), []);
@@ -732,12 +732,12 @@ test('分享：删完外链再收尾；判不了归属的文件绝不删', () =>
     }),
     NOW,
   );
-  const r3 = runAppTaskStep(other.deps);
+  const r3 = await runAppTaskStep(other.deps);
   assert.match(r3.note, /外链已删/);
   assert.equal(other.sent.filter((r) => r.url.includes('batchTrash')).length, 0, '❌ 不能删用户的文件');
 });
 
-test('收尾阶段：fileOwned === false ⇒ 一枪 batchTrash 都不发', () => {
+test('收尾阶段：fileOwned === false ⇒ 一枪 batchTrash 都不发', async () => {
   const { deps, sent } = mkDeps({
     [MATRIX_MARKETS[0]!]: [{ taskId: 106, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '上传文件' }],
   });
@@ -755,13 +755,13 @@ test('收尾阶段：fileOwned === false ⇒ 一枪 batchTrash 都不发', () =>
     }),
     NOW,
   );
-  const out = runAppTaskStep(deps);
+  const out = await runAppTaskStep(deps);
   assert.equal(out.ok, true, out.note);
   assert.match(out.note, /不是我们造的/);
   assert.equal(sent.filter((r) => r.url.includes('batchTrash')).length, 0);
 });
 
-test('链尾清理要跳过“今天还在任务里用”的文件', () => {
+test('链尾清理要跳过“今天还在任务里用”的文件', async () => {
   const { deps, store } = mkDeps({});
   const put = (st: Record<string, unknown>) =>
     store.setState(STATE_TASK, JSON.stringify({ gi: 0, ii: 0, itemId: 106, clicked: [], ...st }), NOW);
@@ -789,12 +789,12 @@ test('链尾清理要跳过“今天还在任务里用”的文件', () => {
 /** 让某个 URL 片段挂掉（其余照旧走 mkDeps 的 mock）。 */
 function failOn(deps: TaskDeps, match: string): TaskDeps {
   const orig = deps.transport;
-  (deps as unknown as { transport: typeof orig }).transport = (req) =>
-    req.url.includes(match) ? { error: 'mock 让它挂' } : orig(req);
+  (deps as unknown as { transport: typeof orig }).transport = async (req) =>
+    req.url.includes(match) ? { error: 'mock 让它挂' } : await orig(req);
   return deps;
 }
 
-test('⚠ 某一条没成**不拖垮整趟**：AI 对话没回话只记一笔，接着做下一条', () => {
+test('⚠ 某一条没成**不拖垮整趟**：AI 对话没回话只记一笔，接着做下一条', async () => {
   const { deps, store } = mkDeps({
     [MATRIX_MARKETS[0]!]: [
       { taskId: 609, state: 'UNFINISH', enable: 1, groupId: 'time', name: '和AI助手对话' },
@@ -817,13 +817,13 @@ test('⚠ 某一条没成**不拖垮整趟**：AI 对话没回话只记一笔，
     NOW,
   );
   failOn(deps, 'chat/v2/add');
-  const out = runAppTaskStep(deps);
+  const out = await runAppTaskStep(deps);
   assert.equal(out.ok, true, '⚠ 以前这里回 false ⇒ drain 当场停，后面每条都没机会做');
   assert.match(out.note, /没取到输出/);
   assert.match(out.note, /下一条 #547/, '这一条记下之后就换下一条');
 });
 
-test('⚠ 某一条的鉴权失败只跳过这一条（`failed` 记原因，不拖垮整趟）', () => {
+test('⚠ 某一条的鉴权失败只跳过这一条（`failed` 记原因，不拖垮整趟）', async () => {
   const { deps, store } = mkDeps({
     [MATRIX_MARKETS[0]!]: [
       { taskId: 1020, state: 'UNFINISH', enable: 1, groupId: 'month', name: '完成一次邮件转存' },
@@ -845,7 +845,7 @@ test('⚠ 某一条的鉴权失败只跳过这一条（`failed` 记原因，不�
     NOW,
   );
   failOn(deps, 'querySpecToken');
-  const out = runAppTaskStep(deps);
+  const out = await runAppTaskStep(deps);
   assert.equal(out.ok, true, '鉴权失败是"这一条没成"，不是"整趟别做了"');
   assert.match(out.note, /邮箱 SSO token/);
   assert.match(out.note, /继续下一条/);
@@ -854,7 +854,7 @@ test('⚠ 某一条的鉴权失败只跳过这一条（`failed` 记原因，不�
   assert.deepEqual((st.failed ?? []).map((f) => f.id), [1020], '原因要留下（收尾如实报）');
 });
 
-test('⚠ 这一趟失败过的那几条**不回头再撞**（同一天、同一趟）', () => {
+test('⚠ 这一趟失败过的那几条**不回头再撞**（同一天、同一趟）', async () => {
   // ⚠ 失败那条必须是**最小的 id**（409 < 547）：不然 `advance` 里就算不滤掉 `failed`，
   //   按 id 升序也会先挑到 547 —— 那种用例恒过，抓不住任何东西（评审 2026-11-01）。
   const { deps, store } = mkDeps({
@@ -879,12 +879,12 @@ test('⚠ 这一趟失败过的那几条**不回头再撞**（同一天、同一
     NOW,
   );
   failOn(deps, 'querySpecToken');
-  runAppTaskStep(deps); // 409 挂 ⇒ failed=[409]，换到 547（**不许**再挑回 409）
+  await runAppTaskStep(deps); // 409 挂 ⇒ failed=[409]，换到 547（**不许**再挑回 409）
   const st = JSON.parse(store.getState(STATE_TASK)!) as { itemId: number };
   assert.equal(st.itemId, 547);
 });
 
-test('逐条台账：434 必须排在**最后**（它只消费"这一趟传上去的文件"）', () => {
+test('逐条台账：434 必须排在**最后**（它只消费"这一趟传上去的文件"）', async () => {
   // 参考实现 `app_task.rs:1727-1731`：计划按 taskId 升序，然后把 434 挪到末尾。
   // 434 的 id 比 522/106 都小 —— 不挪的话它永远排在"传文件"前面 ⇒ 手里空着 ⇒
   // 每次都「没有可分享的文件，跳过分享任务」。
@@ -898,7 +898,7 @@ test('逐条台账：434 必须排在**最后**（它只消费"这一趟传上�
   assert.deepEqual(pendingItems(deps).map((p) => p.itemId), [106, 522, 434], '106 → 522 → **434 垫底**');
 });
 
-test('同一个 taskId 在两个市场各出现一次 ⇒ 待办里只算一条（重影会骗人）', () => {
+test('同一个 taskId 在两个市场各出现一次 ⇒ 待办里只算一条（重影会骗人）', async () => {
   // 现场：522 在 sign_in_3 与 newsign_139mail 都有。打卡那一枪只带 `id`、不带市场，
   // 点一次两处都算 ⇒ 列表里留一条就够，否则"待办 17 条"里有一条是影子。
   const { deps } = mkDeps({
@@ -908,7 +908,7 @@ test('同一个 taskId 在两个市场各出现一次 ⇒ 待办里只算一条�
   assert.deepEqual(pendingItems(deps).map((p) => p.itemId), [522]);
 });
 
-test('⚠ 要邮箱会话的 runner 一律**先登录**（否则带空 sid 出去）', () => {
+test('⚠ 要邮箱会话的 runner 一律**先登录**（否则带空 sid 出去）', async () => {
   // 现场 2026-11-01 自测：`advance` 换条目时 `data` 会丢，直接进 `sendMailAction`
   // / `pdfUpload`/`billViewAction` 的话带出去的是**空 sid** —— 1004 回
   // `FA_INVALID_PARAMETER`、1014 回 `FA_INVALID_SESSION User Session Expired`。
@@ -935,14 +935,14 @@ test('⚠ 要邮箱会话的 runner 一律**先登录**（否则带空 sid 出�
       }),
       NOW,
     );
-    const out = runAppTaskStep(deps); // 打卡那一发
+    const out = await runAppTaskStep(deps); // 打卡那一发
     const st = JSON.parse(store.getState(STATE_TASK)!) as { phase?: string };
     assert.equal(st.phase, 'mailLogin', `#${id} 打完卡必须先去登邮箱（实际 ${String(st.phase)}）`);
     assert.match(out.note, /mailLogin|邮箱|登录/);
   }
 });
 
-test('113 使用PC客户端：上传按 **PC 档**发头（不是把安卓档换个渠道号）', () => {
+test('113 使用PC客户端：上传按 **PC 档**发头（不是把安卓档换个渠道号）', async () => {
   // 参考实现 `app_task.rs` 为 113 单开 `UPLOAD_ONE_PC`，头画像整组不同：
   // 少 `x-huawei-channelSrc` / `x-yun-sub-op-type`，多 `x-yun-market-source` /
   // `x-yun-module-type` / `x-yun-svc-type`，client-info 也换成 PC 那串。
@@ -954,7 +954,7 @@ test('113 使用PC客户端：上传按 **PC 档**发头（不是把安卓档换
   });
   startAppTask(deps);
   for (let i = 0; i < 12; i++) {
-    const out = runAppTaskStep(deps);
+    const out = await runAppTaskStep(deps);
     if (out.idle) break;
   }
   const create = sent.find((r) => r.url.includes('file/create'));
@@ -972,7 +972,7 @@ test('113 使用PC客户端：上传按 **PC 档**发头（不是把安卓档换
   });
   startAppTask(d2);
   for (let i = 0; i < 12; i++) {
-    const out = runAppTaskStep(d2);
+    const out = await runAppTaskStep(d2);
     if (out.idle) break;
   }
   const c2 = s2.find((r) => r.url.includes('file/create'));
@@ -981,7 +981,7 @@ test('113 使用PC客户端：上传按 **PC 档**发头（不是把安卓档换
   assert.ok(c2.headers['x-yun-sub-op-type'] !== undefined, '安卓档有 sub-op-type');
 });
 
-test('分享建链失败 / 没 linkID：仍要收尾（文件不许留在网盘）', () => {
+test('分享建链失败 / 没 linkID：仍要收尾（文件不许留在网盘）', async () => {
   // 评审 2026-11-01：这条支路原来没用例 —— 建链失败就 advance，`trash` 永远不跑。
   const { deps, store, sent } = mkDeps({
     [MATRIX_MARKETS[0]!]: [{ taskId: 434, state: 'UNFINISH', enable: 1, groupId: 'month', name: '分享文件领好礼' }],
@@ -1005,7 +1005,7 @@ test('分享建链失败 / 没 linkID：仍要收尾（文件不许留在网盘�
   failOn(deps, 'getOutLink');
   let sawTrash = false;
   for (let i = 0; i < 8; i++) {
-    const r = runAppTaskStep(deps);
+    const r = await runAppTaskStep(deps);
     if (sent.some((x) => x.url.includes('batchTrash'))) sawTrash = true;
     if (r.idle) break;
   }
@@ -1014,7 +1014,7 @@ test('分享建链失败 / 没 linkID：仍要收尾（文件不许留在网盘�
   assert.equal(st.fileId, undefined, '收尾之后不许还留着 fileId');
 });
 
-test('`currstep != 0` 的条目：**不打卡**，收尾后也不再被挑回来（1014 那次 60 步死循环）', () => {
+test('`currstep != 0` 的条目：**不打卡**，收尾后也不再被挑回来（1014 那次 60 步死循环）', async () => {
   const { deps, sent } = mkDeps({
     [MATRIX_MARKETS[0]!]: [
       { taskId: 1014, state: 'UNFINISH', enable: 1, groupId: 'time', name: '体验PDF转换', currStep: 1 },
@@ -1022,7 +1022,7 @@ test('`currstep != 0` 的条目：**不打卡**，收尾后也不再被挑回来
   });
   startAppTask(deps);
   for (let i = 0; i < 25; i++) {
-    const r = runAppTaskStep(deps);
+    const r = await runAppTaskStep(deps);
     if (r.idle) break;
   }
   assert.equal(
@@ -1038,7 +1038,7 @@ test('`currstep != 0` 的条目：**不打卡**，收尾后也不再被挑回来
   );
 });
 
-test('1014 的 PDF：240×240 小页 + **xref 偏移真的对**（转换后端是 AI，按面积算量）', () => {
+test('1014 的 PDF：240×240 小页 + **xref 偏移真的对**（转换后端是 AI，按面积算量）', async () => {
   // `makePdf` 是纯函数，直接验字节；上传那段由 1014 那条 e2e 用例覆盖。
   const pdf = makePdf(1793600000000);
   assert.ok(pdf.startsWith('%PDF-1.4'), pdf.slice(0, 20));
@@ -1056,7 +1056,7 @@ test('1014 的 PDF：240×240 小页 + **xref 偏移真的对**（转换后端�
   assert.match(pdf, /\(asign pdf 1793600000000\) Tj/);
 });
 
-test('434 分享：建外链失败**不能静默**（要记进 failed，复查点名）', () => {
+test('434 分享：建外链失败**不能静默**（要记进 failed，复查点名）', async () => {
   // 现场问题（2026-11-02）：建链失败只写一句 note 就 `ok: true`，
   // 于是日志看着像"分享过了"，云朵没涨，而复查那句话里一个字都不提。
   const { deps } = mkDeps({
@@ -1069,7 +1069,7 @@ test('434 分享：建外链失败**不能静默**（要记进 failed，复查�
   startAppTask(deps);
   const notes: string[] = [];
   for (let i = 0; i < 30; i++) {
-    const out = runAppTaskStep(deps);
+    const out = await runAppTaskStep(deps);
     notes.push(out.note);
     if (out.idle) break;
   }
@@ -1082,7 +1082,7 @@ test('434 分享：建外链失败**不能静默**（要记进 failed，复查�
   assert.ok(settle !== '', '要有复查那一步');
 });
 
-test('434 分享：链内两处动作之间不是 0ms（传完→建链、建链→删链）', () => {
+test('434 分享：链内两处动作之间不是 0ms（传完→建链、建链→删链）', async () => {
   const t = { ms: Date.parse(NOW) };
   const { deps } = mkDeps({
     [MATRIX_MARKETS[0]!]: [{ taskId: 434, state: 'UNFINISH', enable: 1, groupId: 'g1', name: '分享文件领好礼' }],
@@ -1097,7 +1097,7 @@ test('434 分享：链内两处动作之间不是 0ms（传完→建链、建链
     return tr(r);
   };
   for (let i = 0; i < 40; i++) {
-    const out = runAppTaskStep(clocked);
+    const out = await runAppTaskStep(clocked);
     if (out.idle) break;
   }
   const at = (re: RegExp) => hits.filter((h) => re.test(h.url)).map((h) => h.at);
@@ -1111,7 +1111,7 @@ test('434 分享：链内两处动作之间不是 0ms（传完→建链、建链
 
 // ── 619：两轮打卡（2026-11-14 实拍，见 appTaskRules.ts 的 ENTRY_TWICE_TASK_IDS） ──
 
-test('619 两轮打卡：doTaskPost→key=task、doTaskPost→key=task2，且不发 market/signin/page/doTask', () => {
+test('619 两轮打卡：doTaskPost→key=task、doTaskPost→key=task2，且不发 market/signin/page/doTask', async () => {
   const { deps, sent } = mkDeps({
     [MATRIX_MARKETS[0]!]: [{ taskId: 619, state: 'WAIT', enable: 1, groupId: 'month', name: '从“我的”入口访问云朵中心' }],
   });
@@ -1121,12 +1121,12 @@ test('619 两轮打卡：doTaskPost→key=task、doTaskPost→key=task2，且不
   while (guard < 12) {
     const st = JSON.parse(deps.store.getState(STATE_TASK) ?? '{}') as { phase?: string };
     if (st.phase === 'done') break;
-    step(deps);
+    await step(deps);
     guard += 1;
     if (st.phase === 'entryTwice') break;
   }
   // 再推一步执行 entryTwice 本体
-  runAppTaskStep(deps);
+  await runAppTaskStep(deps);
 
   const urls = sent.map((r) => r.url);
   const clicks = urls.filter((u) => u.includes('/ycloud/signin/task/click'));
@@ -1152,7 +1152,7 @@ test('619 两轮打卡：doTaskPost→key=task、doTaskPost→key=task2，且不
   );
 });
 
-test('409 仍然走原来那套入口（含 page/doTask），619 的改法不外溢', () => {
+test('409 仍然走原来那套入口（含 page/doTask），619 的改法不外溢', async () => {
   const { deps, sent } = mkDeps({
     [MATRIX_MARKETS[0]!]: [{ taskId: 409, state: 'WAIT', enable: 1, groupId: 'month', name: '云朵中心入口' }],
   });
@@ -1161,10 +1161,10 @@ test('409 仍然走原来那套入口（含 page/doTask），619 的改法不外
   while (guard < 12) {
     const st = JSON.parse(deps.store.getState(STATE_TASK) ?? '{}') as { phase?: string };
     if (st.phase === 'done' || st.phase === 'entry') break;
-    step(deps);
+    await step(deps);
     guard += 1;
   }
-  runAppTaskStep(deps);
+  await runAppTaskStep(deps);
   const urls = sent.map((r) => r.url);
   // ⚠ 409 老流程里**本来就有** `key=task`（那是"先打卡"那一发），
   //   两者真正的区别是入口页那一发：409 发 `market/signin/page/doTask`，619 不发。

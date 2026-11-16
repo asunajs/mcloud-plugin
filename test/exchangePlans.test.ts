@@ -35,7 +35,7 @@ function store(plans: ExchangePlan[]) {
   };
 }
 
-test('并集 cron：只取启用计划的整点，去重排序', () => {
+test('并集 cron：只取启用计划的整点，去重排序', async () => {
   const plans = [
     plan({ id: 'a', cron: '0 20 * * *' }),
     plan({ id: 'b', cron: '0 10,20 * * *' }),
@@ -45,7 +45,7 @@ test('并集 cron：只取启用计划的整点，去重排序', () => {
   assert.equal(unionCron([]), '0 10 * * *');
 });
 
-test('到点分发：只跑目标整点匹配且启用的计划', () => {
+test('到点分发：只跑目标整点匹配且启用的计划', async () => {
   const plans = [
     plan({ id: 'a', cron: '0 10 * * *', prizeId: 111 }),
     plan({ id: 'b', cron: '0 20 * * *', prizeId: 222 }),
@@ -59,7 +59,7 @@ test('到点分发：只跑目标整点匹配且启用的计划', () => {
   assert.deepEqual(duePlans(plans, at10 + 60_000), []);
 });
 
-test('提前量取最大；下一次目标取最早', () => {
+test('提前量取最大；下一次目标取最早', async () => {
   const plans = [
     plan({ id: 'a', cron: '0 10 * * *', leadSec: 60 }),
     plan({ id: 'b', cron: '0 20 * * *', leadSec: 300 }),
@@ -70,12 +70,12 @@ test('提前量取最大；下一次目标取最早', () => {
   assert.equal(nextPlanTargetMs(plans, now), new Date(2026, 9, 19, 10, 0, 0, 0).getTime());
 });
 
-test('目标：有 prizeId 用 id，没有才退回名字', () => {
+test('目标：有 prizeId 用 id，没有才退回名字', async () => {
   assert.equal(planTarget(plan({ prizeId: 424242 })), '424242');
   assert.equal(planTarget(plan({ prizeId: undefined, prizeName: '旧名字' })), '旧名字');
 });
 
-test('老计划只迁移一次：有标记后不再看旧键', () => {
+test('老计划只迁移一次：有标记后不再看旧键', async () => {
   const s = store([]);
   s.setState('mcloud.exchange.schedule.plan', '旧目标');
   s.setState('mcloud.exchange.plans.migrated', '1');
@@ -83,7 +83,7 @@ test('老计划只迁移一次：有标记后不再看旧键', () => {
   assert.equal(loadPlans(s as never).length, 0);
 });
 
-test('摘要：条数 + 下次时间；全暂停说清楚', () => {
+test('摘要：条数 + 下次时间；全暂停说清楚', async () => {
   const now = new Date(2026, 9, 19, 8, 0, 0, 0).getTime();
   const s = store([plan({ cron: '0 10 * * *' }), plan({ id: 'p2', cron: '0 20 * * *' })]);
   assert.match(planSummary(s as never, now), /^2 个计划 · 下次 10-19 10:00$/);

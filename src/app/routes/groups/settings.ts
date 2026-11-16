@@ -16,7 +16,7 @@ import { json, loginPlatform, readBody } from '../support.ts';
 import type { RouteDeps, RouteEntry } from '../support.ts';
 
 /** settings 组。deps 是路由依赖；base 是 /plugins/mcloud/api；verify 是「拿当前会话验一次」。 */
-export function settingsRoutes(deps: RouteDeps, base: string, verify: () => { ok: boolean; note: string }): RouteEntry[] {
+export function settingsRoutes(deps: RouteDeps, base: string, verify: () => Promise<{ ok: boolean; note: string }>): RouteEntry[] {
   void verify;
   return [
 {
@@ -35,7 +35,7 @@ export function settingsRoutes(deps: RouteDeps, base: string, verify: () => { ok
 {
       path: `${base}/session`,
       method: 'POST',
-      handler: (req) => {
+      handler: async (req) => {
         const body = readBody(req);
 
         if (body.clear === true) {
@@ -53,7 +53,7 @@ export function settingsRoutes(deps: RouteDeps, base: string, verify: () => { ok
 
         importSession(deps.store, parsed.session, deps.now());
         // 导入后立刻真验一次：「能不能用」要靠上游回答，不是靠格式对不对
-        const check = verify();
+        const check = await verify();
         const st = sessionStatus(deps.store, deps.now());
         // 日志只出结论与脱敏摘要
         deps.log(`导入会话：${check.note}（cookie ${st.cookie}）`);
@@ -64,8 +64,8 @@ export function settingsRoutes(deps: RouteDeps, base: string, verify: () => { ok
 {
       path: `${base}/session/verify`,
       method: 'POST',
-      handler: () => {
-        const check = verify();
+      handler: async () => {
+        const check = await verify();
         return json(200, {
           verified: check.ok,
           note: check.note,

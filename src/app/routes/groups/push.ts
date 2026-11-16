@@ -10,7 +10,7 @@ import { json, parseJson } from '../support.ts';
 import type { RouteDeps, RouteEntry } from '../support.ts';
 
 /** push 组。deps 是路由依赖；base 是 /plugins/mcloud/api；verify 是「拿当前会话验一次」。 */
-export function pushRoutes(deps: RouteDeps, base: string, verify: () => { ok: boolean; note: string }): RouteEntry[] {
+export function pushRoutes(deps: RouteDeps, base: string, verify: () => Promise<{ ok: boolean; note: string }>): RouteEntry[] {
   void verify;
   return [
 {
@@ -110,13 +110,13 @@ export function pushRoutes(deps: RouteDeps, base: string, verify: () => { ok: bo
       // 这个按钮把这三件事分开：它直接发一条，成不成当场告诉你。
       path: `${base}/push/test`,
       method: 'POST',
-      handler: () => {
+      handler: async () => {
         const cfg = loadPushConfig(deps.store);
         const chans = configuredChannels(cfg);
         if (chans.length === 0) {
           return json(200, { ok: false, line: '一个渠道都没配', results: [] });
         }
-        const r = sendPush(deps.pushDeps, cfg, '云盘 · 试发', '这是一条试发的推送。\n收到就说明配置对了。');
+        const r = await sendPush(deps.pushDeps, cfg, '云盘 · 试发', '这是一条试发的推送。\n收到就说明配置对了。');
         deps.log(`试发推送：${r.line}`);
         return json(200, { ok: r.failed === 0 && r.sent > 0, line: r.line, results: r.results });
       },

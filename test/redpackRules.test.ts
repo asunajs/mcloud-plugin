@@ -48,7 +48,7 @@ import {
  *  长得跟"上游真没给"一模一样。 */
 const dataOf = (v: unknown): unknown => v;
 
-test('四档归类：缺格算未完成，陌生码算"不认识"（⇒ 不发写）', () => {
+test('四档归类：缺格算未完成，陌生码算"不认识"（⇒ 不发写）', async () => {
   assert.equal(classify(0), 'todo');
   assert.equal(classify(undefined), 'todo', '缺 `userStatus` 是新条目的正常形状，照参照实现的 `?? 0`');
   assert.equal(classify(1), 'done');
@@ -58,7 +58,7 @@ test('四档归类：缺格算未完成，陌生码算"不认识"（⇒ 不发�
   for (const odd of [2, 5, 99, -1]) assert.equal(classify(odd), 'unknown', `状态 ${odd}`);
 });
 
-test('状态码的人话：不认识的**如实说不认识**，不折进"未完成"', () => {
+test('状态码的人话：不认识的**如实说不认识**，不折进"未完成"', async () => {
   assert.equal(statusText(0), '未完成');
   assert.equal(statusText(1), '已完成');
   assert.equal(statusText(3), '奖品已兑完');
@@ -68,7 +68,7 @@ test('状态码的人话：不认识的**如实说不认识**，不折进"未完
   assert.equal(statusLabel(undefined), '未完成', '缺格与陌生码是两件事');
 });
 
-test('钱的两种读法**都留着**：余额不补零，任务与奖励补两位', () => {
+test('钱的两种读法**都留着**：余额不补零，任务与奖励补两位', async () => {
   // 真机读数：`余额: 可用3元，累计4.6元` / `去完成: 每日签到 (0.10元)`
   assert.equal(yuanRaw(300), '3');
   assert.equal(yuanRaw(460), '4.6');
@@ -92,7 +92,7 @@ const TABLE = {
   configTaskMonthlyList: [{ id: 31, taskCode: 'MONTHLY_2', taskName: '在云手机里安装应用', userStatus: 3 }],
 };
 
-test('解任务表：组序、金额取值顺序、签到只认今天那一格', () => {
+test('解任务表：组序、金额取值顺序、签到只认今天那一格', async () => {
   const list = parseTaskList(TABLE);
   assert.deepEqual(
     list.groups.map((g) => g.title),
@@ -111,7 +111,7 @@ test('解任务表：组序、金额取值顺序、签到只认今天那一格',
   assert.equal(findTask(list, '不存在'), undefined);
 });
 
-test('签到那一格：**没有今天那一格就不做签到**（不拿第一条当今天）', () => {
+test('签到那一格：**没有今天那一格就不做签到**（不拿第一条当今天）', async () => {
   const noToday = parseTaskList({
     ...TABLE,
     configTaskSignList: [{ isToday: 0, status: 1, signAmount: 10 }],
@@ -122,7 +122,7 @@ test('签到那一格：**没有今天那一格就不做签到**（不拿第一�
   assert.deepEqual(parseTaskList('不是对象').tasks, []);
 });
 
-test('编号：只收数字与非空字符串，其余一律不发', () => {
+test('编号：只收数字与非空字符串，其余一律不发', async () => {
   assert.equal(sendableId(7), 7);
   assert.equal(sendableId('7'), '7', '上游给字符串就照字符串发回去');
   for (const bad of [undefined, null, NaN, '', '   ', {}, [], true]) {
@@ -130,7 +130,7 @@ test('编号：只收数字与非空字符串，其余一律不发', () => {
   }
 });
 
-test('派发：三张码表 + 认不出来的一律走"需手动完成（未知任务）"', () => {
+test('派发：三张码表 + 认不出来的一律走"需手动完成（未知任务）"', async () => {
   assert.deepEqual([...BROWSE_TASKS], ['NOVICE_2', 'NOVICE_3', 'MONTHLY_1']);
   assert.deepEqual([...DIRECT_TASKS], ['MONTHLY_4', 'MONTHLY_5']);
   assert.equal(dispatchKind('NOVICE_2'), 'browse');
@@ -143,7 +143,7 @@ test('派发：三张码表 + 认不出来的一律走"需手动完成（未知�
   assert.equal(manualReason('什么新码'), '未知任务');
 });
 
-test('题库：题面认识且**选项里有那句**才给字母；否则不硬猜', () => {
+test('题库：题面认识且**选项里有那句**才给字母；否则不硬猜', async () => {
   assert.equal(Object.keys(KNOWN_ANSWERS).length, 15);
   assert.equal(ANSWER_LETTERS, 'ABCD');
   const q = '移动云手机是否需要充电使用？';
@@ -155,7 +155,7 @@ test('题库：题面认识且**选项里有那句**才给字母；否则不硬�
   assert.equal(answerLetter({ id: 1, question: q, options: ['需要', '也许'] }), undefined);
 });
 
-test('题库响应：`topicOption` 是字符串套 JSON，解不出来给空数组', () => {
+test('题库响应：`topicOption` 是字符串套 JSON，解不出来给空数组', async () => {
   const t = parseTopic({ list: [{ id: 5, topicContent: '移动云手机是否需要充电使用？', topicOption: '["需要","不需要"]' }] });
   assert.deepEqual(t, { id: 5, question: '移动云手机是否需要充电使用？', options: ['需要', '不需要'] });
   assert.deepEqual(parseTopic({ list: [{ id: 5, topicContent: 'x', topicOption: '坏 JSON' }] })?.options, []);
@@ -163,7 +163,7 @@ test('题库响应：`topicOption` 是字符串套 JSON，解不出来给空数�
   assert.equal(parseTopic({ list: [] }), undefined);
 });
 
-test('云机：两档合成一条列表，锁屏那台不能用', () => {
+test('云机：两档合成一条列表，锁屏那台不能用', async () => {
   const nested = parsePhones(dataOf({ data: { subscribeDetails: [{ instanceId: 'I1', subsProdInstances: [{ lockStatus: 'Y' }] }] } }));
   assert.deepEqual(nested, [{ instanceId: 'I1', locked: true }], '`data.data` 是对象时要往里取一层');
   const flat = parsePhones(dataOf({ subscribeDetails: [{ instanceId: 'I2' }, { instanceId: '', subsProdInstances: [] }] }));
@@ -178,12 +178,12 @@ test('云机：两档合成一条列表，锁屏那台不能用', () => {
   assert.deepEqual(parsePhones(dataOf({})), []);
 });
 
-test('应用列表：没有包名的项丢掉（参照实现是 `continue`）', () => {
+test('应用列表：没有包名的项丢掉（参照实现是 `continue`）', async () => {
   const apps = parseApps(dataOf({ list: [{ id: 1, packageId: 9, packageName: 'a.b', apkName: 'A' }, { id: 2, packageName: '' }] }));
   assert.deepEqual(apps, [{ id: 1, packageId: '9', packageName: 'a.b', apkName: 'A' }]);
 });
 
-test('装机状态：`data` 是数组或 `{list:[…]}` 两种形状都认，只看第一个实例', () => {
+test('装机状态：`data` 是数组或 `{list:[…]}` 两种形状都认，只看第一个实例', async () => {
   assert.equal(readInstallStatus(dataOf([{ instanceList: [{ installStatus: 2 }] }])), INSTALL_STATUS_EXISTS);
   assert.equal(readInstallStatus(dataOf({ list: [{ instanceList: [{ installStatus: 0 }] }] })), 0);
   assert.equal(readInstallStatus(dataOf({ list: [] })), undefined);
@@ -195,7 +195,7 @@ test('装机状态：`data` 是数组或 `{list:[…]}` 两种形状都认，只
   assert.equal(readInstallProgress(dataOf({ taskStatus: '2' })), 2, '数字字符串也收');
 });
 
-test('余额 / 奖励 / 票：缺格就当没有，不补一个数出来', () => {
+test('余额 / 奖励 / 票：缺格就当没有，不补一个数出来', async () => {
   assert.deepEqual(readBalance(dataOf({ info: { canAmount: 300, totalAmount: 460 } })), { can: 300, total: 460 });
   assert.deepEqual(readBalance(dataOf({})), { can: undefined, total: undefined });
   assert.deepEqual(readReward(dataOf({ lastUserPrize: { prizeName: '云朵', prizeAmount: 50 } })), { name: '云朵', cents: 50 });

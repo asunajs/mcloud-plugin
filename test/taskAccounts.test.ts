@@ -26,13 +26,13 @@ function store() {
   return s;
 }
 
-test('日常默认自动全部；兑换默认自动为空', () => {
+test('日常默认自动全部；兑换默认自动为空', async () => {
   const s = store();
   assert.deepEqual(resolveTaskAccounts(s, '日常', 'auto'), ['a', 'b']);
   assert.deepEqual(resolveTaskAccounts(s, '兑换', 'auto'), []);
 });
 
-test('手动选小号不改自动；自动仍按 auto 跑', () => {
+test('手动选小号不改自动；自动仍按 auto 跑', async () => {
   const s = store();
   saveTaskAccounts(s, '日常', { all: false, ids: ['a'] }, NOW, 'auto');
   saveTaskAccounts(s, '日常', { follow: false, all: false, ids: ['b'] }, NOW, 'manual');
@@ -41,7 +41,7 @@ test('手动选小号不改自动；自动仍按 auto 跑', () => {
   assert.deepEqual(loadTaskAccounts(s, '日常'), { all: false, ids: ['a'] });
 });
 
-test('manual 缺省/跟随自动 ⇒ 回落到 auto', () => {
+test('manual 缺省/跟随自动 ⇒ 回落到 auto', async () => {
   const s = store();
   saveTaskAccounts(s, '日常', { all: false, ids: ['a'] }, NOW, 'auto');
   assert.equal(loadManualTaskAccounts(s, '日常').follow, true);
@@ -50,7 +50,7 @@ test('manual 缺省/跟随自动 ⇒ 回落到 auto', () => {
   assert.deepEqual(resolveTaskAccounts(s, '日常', 'manual'), ['a']);
 });
 
-test('每个任务独立：日常的手动不影响直播/兑换', () => {
+test('每个任务独立：日常的手动不影响直播/兑换', async () => {
   const s = store();
   saveTaskAccounts(s, '日常', { follow: false, all: false, ids: ['b'] }, NOW, 'manual');
   assert.deepEqual(resolveTaskAccounts(s, '直播', 'manual'), ['a', 'b']);
@@ -58,7 +58,7 @@ test('每个任务独立：日常的手动不影响直播/兑换', () => {
   assert.deepEqual(resolveTaskAccounts(s, '日常', 'manual'), ['b']);
 });
 
-test('旧键读成 auto，新键优先；手动键单独', () => {
+test('旧键读成 auto，新键优先；手动键单独', async () => {
   const s = store();
   s.setState(legacyTaskAccountsKey('直播'), JSON.stringify({ all: false, ids: ['b'] }), NOW);
   assert.deepEqual(resolveTaskAccounts(s, '直播', 'auto'), ['b']);
