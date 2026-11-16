@@ -218,11 +218,16 @@ export async function loadConfig(path?: string): Promise<StandaloneConfig> {
     ? standalone.stateFile
     : '.mcloud/state.json';
 
+  // `MCLOUD_DATA_DIR` 压倒一切：指到面板那个 `plugin-data/mcloud` 就是**同一份**
+  // 账号与凭据（面板与 CLI 共用一套本地 JSON 存储，见 host/fs/fileStore.ts 文件头）。
+  // 目录里没有 state.json 也照样能用 —— 它只是给"老状态一次性导入"看的。
+  const envDir = (process.env['MCLOUD_DATA_DIR'] ?? '').trim();
+
   return {
     path: abs,
     dir,
     accounts,
-    stateFile: resolve(dir, stateRaw),
+    stateFile: envDir === '' ? resolve(dir, stateRaw) : resolve(envDir, 'state.json'),
     http: {
       timeoutMs: numberOr(http.timeoutMs, 20_000),
       insecure: boolOr(http.insecure, false),
