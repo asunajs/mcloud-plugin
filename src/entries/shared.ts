@@ -36,7 +36,8 @@ export type { DrainResult } from '../drain.ts';
 import type { Transport } from '../mcloud/client.ts';
 import { applyDefaultContentType, hostFetchOptions, isFetchError } from '../mcloud/client.ts';
 import type { Store } from '../store/types.ts';
-import { hostStore } from '../store/host.ts';
+import { openFileStore, panelStoreDir } from '../host/fs/fileStore.ts';
+import { importFromPanelSqlite } from '../host/panel/legacy.ts';
 import { rawStoreOf, scoped } from '../store/scoped.ts';
 import { resolveTaskAccounts, type TaskAccountMode } from '../mcloud/taskAccounts.ts';
 import { migrateFlatKeys } from '../store/keys.ts';
@@ -95,9 +96,21 @@ export function makeTransport(
   };
 }
 
-/** 造 store 并建表。四个插件各建一份（`hostStore()` 背后是同一张 SQLite）。 */
-export function makeStore(): Store {
-  const store = hostStore();
+/** 造 store 并建目录。四个插件 + CLI 指到**同一个目录**（本地 JSON，见 host/fs/fileStore.ts）。
+ *
+ *  @param plugin 写者身份（`mcloud` / `mcloud-daily` / …）：运行记录按写者分文件
+ *
+ *  ⚠ 这里要 await：目录来自 `host.plugin_data_dir()`（异步）。
+ *    入口在加载期顶层 await 一次就够 —— 每个插件一次。 */
+export async function makeStore(plugin: string): Promise<Store> {
+  const dataDir = await panel.pluginDataDir();
+  const dir = panelStoreDir(dataDir);
+  const store = openFileStore({
+    dir,
+    plugin,
+    nowIso: new Date().toISOString(),
+    legacy: () => importFromPanelSqlite(dir),
+  });
   store.ensureSchema();
   // ⚠ 包一层之后 `store.getState/setState` 对**按账号的键**会自动落到当前账号的袋里
   //   （见 `store/scoped.ts`）。调用点不用知道账号的存在 —— 这是有意的：

@@ -49,11 +49,15 @@ export function selftest(store: Store): SelftestResult {
   const raw = utf8('mcloud-plugin');
   checks.push(['base64 往返', fromUtf8(fromBase64(toBase64(raw))) === 'mcloud-plugin']);
 
-  // ④ SQLite 真的能写能读（顺带验证占位符与自增主键）
+  // ④ 状态存储真的能写能读（运行记录一条 + 聚合读回来）
+  //
+  //    ⚠ 这一项**不再验 SQLite**：P4 起状态是本地 JSON（host/fs/fileStore.ts），
+  //    面板的 SQLite 只在"从旧库搬一次"时才用。所以这里验的是 **Store 接口**，
+  //    面板与 CLI 走同一份实现 —— 在哪个宿主里绿都算数。
   let id = 0;
   let statsOk = false;
   /** ④ 挂了的话，**把原因带出来**（自检存在的意义就是"哪一项、为什么"）。 */
-  let sqliteWhy = '';
+  let storeWhy = '';
   try {
     id = store.recordRun({
       task: '__selftest__',
@@ -71,10 +75,10 @@ export function selftest(store: Store): SelftestResult {
     // ⚠ 但**原因必须带出来**：只报"失败"两个字的自检，查起来要重新走一遍
     //   （F-064 就是这么被拖了一整轮的）。
     statsOk = false;
-    sqliteWhy = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+    storeWhy = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
   }
-  checks.push(['sqlite 自增主键返回', id > 0]);
-  checks.push(['sqlite 聚合查询可用', statsOk]);
+  checks.push(['状态存储：运行记录能落一条', id > 0]);
+  checks.push(['状态存储：聚合读得回来', statsOk]);
 
   // ⑤ 宿主的 **native TLS** 后端在不在。
   //
@@ -108,7 +112,7 @@ export function selftest(store: Store): SelftestResult {
     ok: bad.length === 0,
     detail:
       (bad.length === 0 ? `${checks.length}/${checks.length} 通过` : `失败：${bad.join('、')}`) +
-      (sqliteWhy === '' ? '' : `（sqlite：${sqliteWhy}）`) +
+      (storeWhy === '' ? '' : `（状态存储：${storeWhy}）`) +
       (tlsWhy === '' ? '' : `（tls：${tlsWhy}）`) +
       ` · ${caps}`,
     checks: checks.map(([name, ok]) => ({ name, ok })),

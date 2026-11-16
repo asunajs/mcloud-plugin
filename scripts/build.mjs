@@ -62,8 +62,9 @@ export async function bundleAll() {
       // es2022（不是 es2020）：入口在加载期有顶层 await（配置同步）。
       target: 'es2022',
       platform: 'neutral',
-      // panel:host 由面板注入；业务代码只能通过 src/host/panel 拿宿主能力
-      external: ['panel:host'],
+      // panel:host 由面板注入（不是 npm 包）；
+      // node:* 是**引擎内置**（LLRT 提供 node:fs / node:path 等），不打进产物。
+      external: ['panel:host', 'node:*'],
       write: false,
       minify: false,
       legalComments: 'none',

@@ -49,7 +49,7 @@ import {
 
 // 一个插件一条 JS 执行通道（面板默认）；开抢那一下不会被别的插件的任务拖住。
 
-const store = makeStore();
+const store = await makeStore('mcloud-exchange');
 const transport = makeTransport(LONG_REQUEST_TIMEOUT_MS);
 
 // 面板「插件配置」里那两格先并进 state（判据见 mcloud/configOverlay.ts 文件头）。
