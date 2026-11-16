@@ -11,7 +11,7 @@
 // 这是发布给商店的资产；本地装实例还是走 `npm run deploy:panel`（不经过 zip）。
 
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -38,16 +38,34 @@ const zipPath = join(outDir, zipName);
 
 // ① 产物得是**刚构建**的：先 npm run build:panelllrt
 const files = [];
-for (const n of PLUGINS) {
-  for (const f of [`${n}.js`, `${n}.panel.json`]) {
-    const p = join(DIST, f);
-    if (!existsSync(p)) die(`缺 ${f}（先 npm run build:panelllrt）`);
-    files.push({ name: f, path: p });
+/** 递归收集（目录式产物要连 lib/ 一起打）。 */
+function collect(dir, prefix, out) {
+  for (const name of readdirSync(dir)) {
+    const p = join(dir, name);
+    const rel = prefix === '' ? name : `${prefix}/${name}`;
+    if (statSync(p).isDirectory()) collect(p, rel, out);
+    else out.push({ name: rel, path: p });
   }
+}
+
+for (const n of PLUGINS) {
+  const manifest = `${n}.panel.json`;
+  if (!existsSync(join(DIST, manifest))) die(`缺 ${manifest}（先 npm run build）`);
+  files.push({ name: manifest, path: join(DIST, manifest) });
+
+  // 两种形状都认：单文件 `<n>.js` / 目录式 `<n>/index.js`
+  const single = join(DIST, `${n}.js`);
+  if (existsSync(single)) {
+    files.push({ name: `${n}.js`, path: single });
+    continue;
+  }
+  const dirEntry = join(DIST, n, 'index.js');
+  if (!existsSync(dirEntry)) die(`缺 ${n}.js 或 ${n}/index.js（先 npm run build）`);
+  collect(join(DIST, n), n, files);
 }
 for (const f of WEBUI_FILES) {
   const p = join(DIST, 'mcloud.webui', f);
-  if (!existsSync(p)) die(`缺 mcloud.webui/${f}（先 npm run build:panelllrt）`);
+  if (!existsSync(p)) die(`缺 mcloud.webui/${f}（先 npm run build）`);
   files.push({ name: `mcloud.webui/${f}`, path: p });
 }
 
@@ -61,7 +79,8 @@ for (const f of files) {
   }
 }
 for (const n of PLUGINS) {
-  if (!files.some((f) => f.name === `${n}.js`)) die(`${n}.js 不在包根目录（0.4 要求平铺）`);
+  const ok = files.some((f) => f.name === `${n}.js`) || files.some((f) => f.name === `${n}/index.js`);
+  if (!ok) die(`${n} 的入口不在包根目录（0.4 要求 <name>.js 或 <name>/index.js 平铺）`);
 }
 
 const entries = files.map((f) => ({ name: f.name, data: readFileSync(f.path) }));

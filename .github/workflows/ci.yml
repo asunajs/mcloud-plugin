@@ -47,10 +47,13 @@ jobs:
       - name: 单元测试（密码学对 Node 的 crypto 逐用例比对）
         run: npm test
 
-      # 产物是提交进仓库的（面板加载的是它）。只跑测的话，完全可以
-      # 「源码改了、忘了重新构建」——全绿，而面板跑的还是旧逻辑。
-      - name: 产物与源码一致
-        run: npm run check-build
+      # 产物**不再提交**（dist/ 是 gitignore 的），所以这里改成"连打两次，逐字节一致"：
+      # 防的是打包不确定（时间戳、并行顺序、随机的 chunk 名）。
+      # 忘了重新构建这件事由 deploy/pack 兜住 —— 它们自己会先 build。
+      - name: 构建产物可复现
+        run: |
+          npm run build
+          npm run check-build
 
   panel-e2e:
     name: 在真面板里跑（真 ARM64）

@@ -121,6 +121,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       process.exit(1);
     }
   }
+  // 清掉另一种形状（目录式）的旧产物：面板发现插件时**先看 <name>.js**，
+  // 两个都在不会报错，但"改了一份、面板读的是另一份"会非常难查。
+  for (const name of Object.keys(ENTRIES)) {
+    rmSync(join(OUTDIR, name), { recursive: true, force: true });
+  }
   copyWebui();
   copyManifests();
   console.log(`✅ 打包完成：4 个插件，合计 ${total.toFixed(1)} KB`);

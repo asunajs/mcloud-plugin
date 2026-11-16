@@ -27,7 +27,7 @@
 |---|---|---|
 | R1 | 只有 `src/host/panel/*` 能 `import 'panel:host'` | `scripts/check-layers.mjs` |
 | R2 | 只有 `src/host/panel/task.ts` 能写 `globalThis.__handlers` | 同上 |
-| R3 | `core/`、`app/` 不许 import `host/`；不许 `node:*` / `process` / `Buffer` / `setTimeout` | 同上 + tsconfig `types: []` |
+| R3 | `src/mcloud/` 等业务层不许 import `host/`、不许 `node:*` / `process` / `Buffer` / `setTimeout` | `scripts/check-layers.mjs`（tsconfig 的 `types` 留着 Node —— 宿主层要写文件，围栏改成可执行的门禁更准） |
 | R4 | 所有 I/O 走端口；产物里出现同步宿主 op 判红 | `scripts/check-contract.mjs` |
 | R5 | 缺能力先找面板加 API，不在插件里造同步桥 | 人工（面板 `plugin-contract.md` R6） |
 | R6 | `src/host/fs` 只用 LLRT 也有的 fs 子集 | `scripts/check-layers.mjs` |
@@ -39,21 +39,24 @@
 ## 3. 存储：本地 JSON（含凭据）
 
     <store>/
-      meta.json                   schema 版本 / 插件版本 / 创建时间
-      config.json                 设置（面板「插件配置」表单写的就是它）
-      accounts.json               账号表
-      auth/<acct>.json            凭据（0600）
-      state/<acct>/<plugin>.json  每插件 × 账号的状态袋（写者唯一）
-      state/<acct>/shared.json    跨插件共享的账号级状态
-      runs/<plugin>.json          运行记录（最近 N 次）
-      pool.json                   口令池
-      logs/<plugin>.json          环形日志
+      meta.json                   schema 版本 / 插件版本 / 创建时间（存在 = 已初始化过）
+      config.json                 设置（面板「插件配置」表单写的就是它；CLI 自己一份）
+      shared.json                 全局键：账号表、配置镜像、口令池、环形日志…
+      state/<acct>.json           账号袋（一个号一个文件，里面的键名与实现无关）
+      runs/<plugin>.json          运行记录（写者唯一：四个插件各写各的）
+
+- **账号袋为什么不按插件拆文件**：拆了要先有一张"每个键归谁"的 owner 表，
+  收益只是少几次短锁 —— 先把"别再每次一个线程"做掉，这件事留到真需要时。
+- **环形日志与全局键在 `shared.json`**：四个插件都会写（日志每行一次），
+  所以写一律过目录锁；读不加锁（原子 rename 保证读到完整文件）。
+- **凭据也在这些文件里** ⇒ 每次写后 `chmodSync(0o600)`。
+- **旧数据**：`meta.json` 不存在时跑一次导入（面板 SQLite 的 `state`/`mcloud_runs`，
+  或 CLI 老的 `state.json`），导入在锁里做 ⇒ 四个插件同时首启也只搬一遍。
 
 - **面板**：`<data>/plugin-data/mcloud/`（`host.plugin_data_dir()` 的约定）；
   另三个插件用 `join(dirname(自己的 data_dir), 'mcloud')` 指过去。
 - **CLI**：`MCLOUD_DATA_DIR` 或 `~/.mcloud`。指到面板那个目录 = 两边共用账号与凭据。
-- **写**：tmp + `renameSync`（原子）；凭据写完 `chmodSync(0o600)`；
-  跨宿主互斥用 `mkdirSync(lock)` + 陈旧锁超时。
+- **写**：tmp + `renameSync`（原子）；跨进程互斥用 `mkdirSync(lock)` + 陈旧锁超时。
 - **为什么不是 SQLite**：面板的 `sqlite_*_sync` 每次调用**新起一个线程 + 一个新 runtime**
   （`sync_bridge::run`），而业务侧有 305 处读写；换成文件之后一次运行只有"装载 + 落盘"两次 I/O。
   附带好处：CLI 与面板共用同一份数据，不用再维护两套。
@@ -86,11 +89,22 @@
 | P1 | 删老面板目标（产物 / 构建 / CI / 检查脚本） | ✅ |
 | P2 | 端口化 + `defineTask`，全局收口 | 进行中 |
 | P3 | HTTP 全 async；CLI 同步重写 | — |
-| P4 | 存储换本地 JSON（含旧数据一次性导入） | — |
+| P4 | 存储换本地 JSON（含旧数据一次性导入） | ✅ |
 | P5 | 编排层 / 呈现层 / 路由拆分 | — |
 | P6 | 直播收口 + trace | — |
-| P7 | 目录式插件（共用核心）+ 界面分块 | — |
+| P7 | 目录式插件（共用核心）+ 界面分块 | ✅ 产物可用（见下） |
 
-> 面板要能加载**目录式插件**（`plugins/<name>/index.js` + 相对 import）才做得了 P7；
-> 装机的那份二进制比这个能力早 22 秒（`15:28:31` vs 提交 `15:28:53`），要重装。
-> 在它跟上之前，产物仍是单文件（同一份源码，行为一致）。
+### P7 的两种产物形状
+
+| 形状 | 命令 | 什么时候用 |
+|---|---|---|
+| 单文件（**默认**） | `npm run build` | 面板**没有**多文件插件能力时（≤ 0.5.1 的已发布版）。四个包各自内联核心 |
+| 目录式 + 共用核心 | `npm run build:dir` | 面板有 `plugins/<name>/index.js` + 相对 import 时。四个入口 import **同一份** `mcloud/lib/` |
+
+`npm run deploy:panel` 会**自动选**：它读目标实例的二进制里有没有"import 的文件不存在"
+那句错误串（多文件插件是 commit `9af5403` 才进面板的，而 `panel version` 没变号）。
+要强制某一种：`MCLOUD_PKG=single|dir`。
+
+> 实测（隔离实例 + 临时插件）：目录式插件 + **跨目录** `import '../mcloud/lib/…'` 能加载；
+> 单文件插件做同样的相对 import 会失败（`Failed to resolve`）。所以"共用核心"只能走目录式。
+> 代价：四个插件是一套 —— 删掉 `mcloud/` 会让另外三个起不来（部署脚本整份拷贝、备份成对做）。
