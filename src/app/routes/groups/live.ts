@@ -12,7 +12,7 @@ import { claimEnabled, collectCodes, loadDrawState, probeLiveRoom, runLiveDraw, 
 import { loadWakePlan, planTrusted } from '../../../mcloud/tasks/liveAutoTask.ts';
 import { callRawText } from '../../../mcloud/client.ts';
 import { readTrace } from '../../../mcloud/liveTrace.ts';
-import { json, readBody } from '../support.ts';
+import { json, liveStore, readBody } from '../support.ts';
 import type { RouteDeps, RouteEntry } from '../support.ts';
 
 /** live 组。deps 是路由依赖；base 是 /plugins/mcloud/api；verify 是「拿当前会话验一次」。 */
@@ -26,26 +26,26 @@ export function liveRoutes(deps: RouteDeps, base: string, verify: () => Promise<
       method: 'GET',
       handler: async () =>
         json(200, {
-          reading: readLiveReading(deps.store),
-          codes: loadLiveCodes(deps.store),
-          url: loadLiveUrl(deps.store),
+          reading: readLiveReading(liveStore(deps)),
+          codes: loadLiveCodes(liveStore(deps)),
+          url: loadLiveUrl(liveStore(deps)),
           emptyShellHintChars: EMPTY_SHELL_HINT_CHARS,
           // 口令池（业务档，照 mcloud）：**口令的权威来源**（读数只是最近一次抓取的快照）。
           // 界面要能看见「够没够 2 条有效」「还要等多久才能再抓」「哪些判过无效」。
-          pool: readPoolSummary(deps.store, localStamp(Date.parse(deps.now())), Date.parse(deps.now())),
+          pool: readPoolSummary(liveStore(deps), localStamp(Date.parse(deps.now())), Date.parse(deps.now())),
           // 直播日程（门）：只读探针的读数 —— 门开没开、看到几间房、「下一场」在 pool 里
-          gate: readGateReading(deps.store),
+          gate: readGateReading(liveStore(deps)),
           // 听弹幕（第二十三轮）：窗口里的过程事实 —— 收到几帧、几条弹幕、哪几条口令
           listen: {
-            reading: loadListenState(deps.store),
-            line: listenReadingLine(loadListenState(deps.store)),
+            reading: loadListenState(liveStore(deps)),
+            line: listenReadingLine(loadListenState(liveStore(deps))),
           },
           // 直播自动定时（mcloud 的 `live_auto`）：**下一次几点醒**。
           // 它只有读数、没有动作 —— 定时器算时刻，听弹幕那条链到点才动。
           auto: (() => {
             const nowMs = Date.parse(deps.now());
-            const plan = loadWakePlan(deps.store);
-            const sum = readPoolSummary(deps.store, localStamp(nowMs), nowMs);
+            const plan = loadWakePlan(liveStore(deps));
+            const sum = readPoolSummary(liveStore(deps), localStamp(nowMs), nowMs);
             return {
               nextStart: sum.nextStart ?? '',
               wakeAt: plan?.wakeAt ?? '',
@@ -66,9 +66,9 @@ export function liveRoutes(deps: RouteDeps, base: string, verify: () => Promise<
             '能自动的只有「抓主页 + 列出看到的口令」。',
           // 写那半（领小红花）：默认关，开关在这里
           claim: {
-            enabled: claimEnabled(deps.store),
-            codes: collectCodes(deps.store, Date.parse(deps.now())),
-            state: loadDrawState(deps.store),
+            enabled: claimEnabled(liveStore(deps)),
+            codes: collectCodes(liveStore(deps), Date.parse(deps.now())),
+            state: loadDrawState(liveStore(deps)),
           },
         }),
     },
@@ -80,10 +80,10 @@ export function liveRoutes(deps: RouteDeps, base: string, verify: () => Promise<
       method: 'POST',
       handler: async () => {
         const r = await probeLiveRoom({
-          store: deps.store,
+          store: liveStore(deps),
           transport: deps.transport,
           nowIso: deps.now(),
-          baseUrl: loadBaseUrl(deps.store),
+          baseUrl: loadBaseUrl(liveStore(deps)),
         });
         deps.log(`小红花探针：${r.note}`);
         return json(200, r);
@@ -99,9 +99,9 @@ export function liveRoutes(deps: RouteDeps, base: string, verify: () => Promise<
         if (typeof body.enabled !== 'boolean') {
           return json(400, { error: '需要 {"enabled": true|false}' });
         }
-        setClaimEnabled(deps.store, body.enabled, deps.now());
+        setClaimEnabled(liveStore(deps), body.enabled, deps.now());
         deps.log(`领小红花：${body.enabled ? '已开启（会真往账号里写）' : '已关闭'}`);
-        return json(200, { enabled: claimEnabled(deps.store) });
+        return json(200, { enabled: claimEnabled(liveStore(deps)) });
       },
     },
 
@@ -116,14 +116,14 @@ export function liveRoutes(deps: RouteDeps, base: string, verify: () => Promise<
       handler: async () => {
         const out = await runLiveDraw(
           {
-            store: deps.store,
+            store: liveStore(deps),
             transport: deps.transport,
             nowIso: deps.now(),
-            baseUrl: loadBaseUrl(deps.store),
+            baseUrl: loadBaseUrl(liveStore(deps)),
           },
           { force: true }, // 手动那一枪不受开关限制（开关只管 cron）
         );
-        const state = loadDrawState(deps.store);
+        const state = loadDrawState(liveStore(deps));
         return json(200, {
           ok: out.ok,
           note: out.note,
@@ -140,18 +140,18 @@ export function liveRoutes(deps: RouteDeps, base: string, verify: () => Promise<
       method: 'POST',
       handler: async () => {
         const out = await runLiveGate({
-          store: deps.store,
+          store: liveStore(deps),
           transport: deps.transport,
           nowIso: deps.now(),
         });
-        const st = loadGateState(deps.store);
+        const st = loadGateState(liveStore(deps));
         return json(200, {
           ok: out.ok,
           note: out.note,
           done: st?.step === 'done' || out.idle === true,
           step: st?.step ?? 'handshake',
-          reading: readGateReading(deps.store),
-          pool: readPoolSummary(deps.store, localStamp(Date.parse(deps.now())), Date.parse(deps.now())),
+          reading: readGateReading(liveStore(deps)),
+          pool: readPoolSummary(liveStore(deps), localStamp(Date.parse(deps.now())), Date.parse(deps.now())),
         });
       },
     },
@@ -163,21 +163,21 @@ export function liveRoutes(deps: RouteDeps, base: string, verify: () => Promise<
       path: `${base}/live/listen/step`,
       method: 'POST',
       handler: async () => {
-        const st0 = loadListenState(deps.store);
+        const st0 = loadListenState(liveStore(deps));
         if (deps.ws === undefined) {
           // ⚠ 宿主没有长连接能力时**明确说不**，而不是走到一半才发现
           //   （Python / Node 适配器都是"函数存在、调用时抛"）。
           return json(503, { error: '宿主没有长连接能力（ws_*）—— 这一族只有嵌入式 JS 宿主有' });
         }
         const out = await runLiveListen({
-          store: deps.store,
+          store: liveStore(deps),
           transport: deps.transport,
           host: deps.ws,
           nowIso: deps.now(),
-          baseUrl: loadBaseUrl(deps.store),
+          baseUrl: loadBaseUrl(liveStore(deps)),
           lateMs: 0,
         });
-        const st = loadListenState(deps.store);
+        const st = loadListenState(liveStore(deps));
         return json(200, {
           ok: out.ok,
           note: out.note,
@@ -196,7 +196,7 @@ export function liveRoutes(deps: RouteDeps, base: string, verify: () => Promise<
       path: `${base}/live/raw`,
       method: 'GET',
       handler: async () => {
-        const url = loadLiveUrl(deps.store);
+        const url = loadLiveUrl(liveStore(deps));
         const res = await callRawText(deps.transport, {
           url,
           method: 'GET',
@@ -221,7 +221,7 @@ export function liveRoutes(deps: RouteDeps, base: string, verify: () => Promise<
       handler: async (req) => {
         const body = readBody(req);
         if (body.clear === true) {
-          clearLiveCodes(deps.store, deps.now());
+          clearLiveCodes(liveStore(deps), deps.now());
           deps.log('直播口令：已清空');
           return json(200, { cleared: true });
         }
@@ -236,7 +236,7 @@ export function liveRoutes(deps: RouteDeps, base: string, verify: () => Promise<
         if (!raw.trim()) {
           return json(400, { error: '需要 {"codes": "<口令，一行一条>"} 或 {"clear": true}' });
         }
-        const r = saveLiveCodes(deps.store, raw, deps.now());
+        const r = saveLiveCodes(liveStore(deps), raw, deps.now());
         if (!r.ok) return json(400, { error: r.error ?? '解不出口令' });
         // ⚠ 口令不是账号凭据（它是**共享资源**，谁拿到都能用），所以这里如实回显
         deps.log(`直播口令：存了 ${r.codes.length} 条（${r.how}）`);
@@ -244,7 +244,7 @@ export function liveRoutes(deps: RouteDeps, base: string, verify: () => Promise<
           saved: r.codes.length,
           codes: r.codes,
           how: r.how,
-          stored: loadLiveCodes(deps.store),
+          stored: loadLiveCodes(liveStore(deps)),
         });
       },
     },
@@ -255,7 +255,7 @@ export function liveRoutes(deps: RouteDeps, base: string, verify: () => Promise<
       // 带时刻、成没成、一句话、耗时。环里永远是最近那一趟（见 mcloud/liveTrace.ts）。
       path: `${base}/live/trace`,
       method: 'GET',
-      handler: async () => json(200, { at: deps.now(), entries: readTrace(deps.store) }),
+      handler: async () => json(200, { at: deps.now(), entries: readTrace(liveStore(deps)) }),
     },
   ];
 }

@@ -1069,6 +1069,9 @@ test('⚠ 直播：口令只收**一次**（一个账号听到，所有账号都
   assert.ok(/const listenDeadline =[\s\S]{0,200}(?:ctx\.budgetMs|BUDGET_MS) - 20_000/.test(live), '截止按整趟算');
   // 收口令那一段的日志不挂在某个账号名下
   assert.ok(/logBoth\(store, 'start', '口令', at\)/.test(live), '收口令要单独一段');
+  // ⚠ 直播要顺手刷新「自动定时」（下一场 + 1 小时）。丢了调用点不会报错，
+  // 只会让「睡到下一场」永远不生效 —— 2026-11-16 的 e2e ⑨ 逮到过一次。
+  assert.ok(/runLiveAuto\(/.test(live), '直播要顺手刷新自动定时');
 });
 
 test('⚠ 直播收口令读**第一个账号的袋**，不能读模块级 store', async () => {

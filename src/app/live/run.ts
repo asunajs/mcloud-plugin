@@ -6,11 +6,14 @@
 import { forEachTaskAccount } from '../../mcloud/accountRuntime.ts';
 import { traceBegin, traceStep } from '../../mcloud/liveTrace.ts';
 import { logBoth } from '../../mcloud/log.ts';
+import { logTo } from '../../ports/log.ts';
 import { appendRun } from '../../mcloud/runLog.ts';
 import type { RunStep } from '../../mcloud/runLog.ts';
 import { labelOf, shortLabel } from '../../mcloud/taskAccounts.ts';
 import { blockersFor, setTaskBlockers, setTaskSummary, summaryFor } from '../../mcloud/taskReadiness.ts';
+import { runLiveAuto } from '../../mcloud/tasks/liveAutoTask.ts';
 import { collectCodes } from '../../mcloud/tasks/liveDraw.ts';
+import { loadListenSeconds } from '../../mcloud/tasks/liveListen.ts';
 import { clearLiveCodes, loadLiveCodes } from '../../mcloud/tasks/liveRoom.ts';
 import { lineLevel, lineText, onceHint, stepTally } from '../../mcloud/tasks/stepLog.ts';
 import type { TaskPayload } from '../../ports/panel.ts';
@@ -48,6 +51,15 @@ export async function runLive(ctx: LiveCtx, p: TaskPayload): Promise<void> {
     // 否则没开播也会每个号打一次「领小红花没开」，再给每个号印一句「都成了」。
     let stopAll = false;
     const runs = await forEachTaskAccount(store, '直播', p, transport, async (deps, _acct, index) => {
+      // ⓪ 每趟先算一次「下一场几点醒」（**零上游请求**，只读池里那份日程）。
+      //
+      //   ⚠ 手动、自动两条路**都要**算：它决定的是「下次什么时候自己去看」，
+      //     跟这一趟怎么拿到口令无关。只写在 collectOnce 里就会漏掉手动那趟。
+      //   ⚠ 用**第一个账号**的 deps：`mcloud.live.wake_plan` 是 account 袋。
+      if (index === 0) {
+        const auto = runLiveAuto(deps, { windowMs: loadListenSeconds(deps.store) * 1000 });
+        logTo('debug', `自动定时：${auto.note}`);
+      }
       if (index === 0 && !manual) {
         const one = await collectOnce(ctx, deps, startedMs);
         collected = one;
