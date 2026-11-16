@@ -16,6 +16,7 @@
       app/routes/  路由：原来 mcloud/routes.ts 那 3400 行，按界面块拆成一堆组文件
       app/live/    直播那条任务的一次运行：collect（收口令）/ draw（按账号领）/ run（编排+日志）
       app/daily/   日常那条任务的一次运行：run（逐账号跑 + 日志 + 运行记录 + 推送）
+      app/exchange/ 兑换那条任务的一次运行：run（按计划分发 + 日志 + 记录 + 推送）
       store/       状态语义：键的作用域（哪个键跟账号、哪个是全局）、账号袋
       ports/       端口接口：io（fetch/sql/smtp/ws）/ log / panel / ws
       host/
@@ -104,7 +105,7 @@
 | P2 | 端口化 + `defineTask`，全局收口 | 进行中 |
 | P3 | HTTP 全 async（`Transport` / `Io.fetch` 是 Promise）；CLI 的 worker 同步桥还在（见 p3-async-plan） | ✅ |
 | P4 | 存储换本地 JSON（含旧数据一次性导入） | ✅ |
-| P5 | 编排层 / 呈现层 / 路由拆分 | 🚧 路由拆完（`app/routes/` 9 文件）；日常与直播的编排也搬出去了（`app/daily`、`app/live`）；`runTask` 统一 runner / `present` / 兑换 未动 |
+| P5 | 编排层 / 呈现层 / 路由拆分 | 🚧 路由拆完；三条任务的编排都搬出 entries（`app/daily`、`app/exchange`、`app/live`，入口 90/100/82 行）；`runTask` 统一 runner 与 `present` 未动 |
 | P6 | 直播收口成一个 invocation + trace | ✅ 入口 82 行只做注册；编排在 `src/app/live/{collect,draw,run}.ts`；`GET /live/trace` 真机验过 |
 | P7 | 目录式插件（共用核心）+ 界面分块 | ✅ 产物可用（见下） |
 
