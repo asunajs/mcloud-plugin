@@ -7610,3 +7610,37 @@ mcloud  [job] set_job_blockers 失败: {"message":"没有这个任务: mcloud-li
 把**生效 cron**（已含用户覆盖）当成了 `base_cron`，而面板是拿 `cron != base_cron`
 推导「有没有改过」的。已在 panel 仓库修掉（`533729e`，5 条单测 + 真机完整循环）。
 两者现象像、根因不同，别混为一谈。
+
+---
+
+## F-144 「跑完了不停止」—— 判据认的是**旧面板的字段名**
+
+**现象**（2026-11-16 22:46，用户截图）：任务 22:45:44 就写了「日常完成 3/3 · 正常结束」，
+界面按钮还挂着「跑着呢 76s」，直到 180 秒超时才改口说「还没跑完」。
+
+**根因**：`runRecordOf()` 等的是「面板的运行记录里 `finished_at` 有值」，而 panel-llrt 三处都不一样：
+
+| 插件以为 | 面板实际 |
+|---|---|
+| `GET /api/runs?plugin=&task=&limit=1` | **不认 `?task=`** —— 未知字段直接 400 |
+| `one.finished_at` | `ended_at` |
+| `one.ok` / `one.duration_ms` | `status`（`ok`/`error`），没有 `duration_ms` |
+| `Date.parse(started_at)` | `started_at` 是**毫秒数**，`Date.parse` 得 NaN |
+
+于是那个函数**永远**返回 null —— 任务早跑完了，界面还在数秒。
+
+**改法**：`POST …/run` 回的 `run_id` 拿住，优先 `GET /api/runs/{id}` 取那一条（不用比时间，
+也不会挑错记录）；兜底按 `?plugin=&limit=20` 自己挑这一次。两种形状由 `normalizeRun()`
+统一成 `{ok, duration_ms, error}`（旧面板的 `finished_at`/`ok`/`duration_ms` 照认）。
+
+**为什么一直没发现**：静态测试当时钉的正是**错的那一行**
+（`assert.ok(/if \(!one \|\| !one\.finished_at\) return null;/)`）—— 它锁住了 bug，
+改对了反而红。现在那条测试改成**真跑函数**（把 `msOf`/`normalizeRun` 从 app.js 抠出来喂两种
+面板形状），并补了反向例：改回 `finished_at` ⇒ 当场红。
+
+**教训**：凡是「插件猜面板字段」的地方，静态正则不算测试；要拿**面板真回的那一坨**喂进去。
+
+面板侧的真身在 `panel-llrt/src/web.rs`：`api_runs`（列表，SELECT 出来就是
+`id/plugin/task/started_at/ended_at/status/error`）、`api_run_one`（`{run, logs}`）、
+`RUNS_WHERE`（只按 `plugin`/`q`/游标筛 —— 没有 `task`）。`docs/api.md` 第 39 行起写了
+「认不出的键直接 400」，但**没列响应字段** —— 所以改字段名时那边不会提醒你。
