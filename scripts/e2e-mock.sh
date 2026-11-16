@@ -27,6 +27,21 @@ TMP="$(mktemp -d)"
 # 差别只在那对引号上）。写脚本时这里踩过一次，留个note。
 H=(-H "X-Panel-Token:$TOKEN")
 W=("${H[@]}" -H "x-panel:1")   # 写接口要 x-panel: 1（面板 CSRF，插件路由同样适用 —— 见 F-007）
+
+# 写接口有**令牌桶**（面板 ratelimit.rs 的 WRITE：突发 30 次，之后每 2 秒补一个）。
+# 这套脚本会超过它 —— 一旦 429，就等一轮再来。这是真实客户端该做的事，
+# 不是"绕过限流"：限流挡的是洪水，脚本是串行的一步一枪。
+try_write() {
+  local out="$1"; shift
+  local i code
+  for i in 1 2 3 4 5 6 7 8; do
+    code=$(curl -sS -o "$out" -w '%{http_code}' "$@")
+    [ "$code" != "429" ] && return 0
+    sleep 2.5
+  done
+  printf '❌ 写接口一直 429：%s\n' "$*" >&2
+  return 1
+}
 B="http://127.0.0.1:$PANEL_PORT"
 
 # 面板的「手动跑一次」是**异步**的（POST 只回 `{ok, run_id}`，任务在后台跑）。
@@ -136,13 +151,13 @@ PY
 done
 
 echo "③ 指向 mock + 导入假会话"
-curl -fsS "${W[@]}" -X POST -d "{\"baseUrl\":\"http://127.0.0.1:$MOCK_PORT\"}" "$B/plugins/mcloud/api/config"; echo
+try_write "/dev/null" "${W[@]}" -X POST -d "{\"baseUrl\":\"http://127.0.0.1:$MOCK_PORT\"}" "$B/plugins/mcloud/api/config"; echo
 # 清空 mock 的请求记录要在**导入之前** —— 导入会立刻真验一次（打 infoV3），
 # 那一次也是要断言的（它就是"体检"那一口）
 curl -fsS -X POST "http://127.0.0.1:$MOCK_PORT/_debug/requests/clear" > /dev/null
-curl -fsS "${W[@]}" -X POST \
+try_write "$TMP/import.json" "${W[@]}" -X POST \
   -d '{"session":"{\"cookie\":\"mockcookie=1\",\"jwt\":\"mock-jwttoken\"}"}' \
-  "$B/plugins/mcloud/api/session" > "$TMP/import.json"
+  "$B/plugins/mcloud/api/session"
 python3 - "$TMP/import.json" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
@@ -158,9 +173,9 @@ PY
 #   一个请求都不发。所以 e2e 必须先把一个账号加进来（与 `split_check.py` 的「前置」同一条路）。
 #   以前这里不需要，因为那时任务只认"当前账号"。
 AUTH="Basic $(python3 -c 'import base64,time; exp=int((time.time()+30*86400)*1000); print(base64.b64encode(f"pc:13500135000:tok|1|2|{exp}".encode()).decode())')"
-curl -fsS "${W[@]}" -X POST "$B/plugins/mcloud/api/accounts" \
+try_write "$TMP/acct.json" "${W[@]}" -X POST "$B/plugins/mcloud/api/accounts" \
   -H 'content-type: application/json' -H 'x-panel: 1' \
-  -d "{\"op\":\"add\",\"pcPlatform\":\"win\",\"auth\":\"$AUTH\"}" > "$TMP/acct.json"
+  -d "{\"op\":\"add\",\"pcPlatform\":\"win\",\"auth\":\"$AUTH\"}"
 python3 - "$TMP/acct.json" <<'PY2'
 import json, sys
 d = json.load(open(sys.argv[1]))
@@ -180,7 +195,7 @@ echo "④ 跑三条任务（新模型：一条任务 = 一个函数从头跑到�
 
 # —— 日常：整条链一次跑完 ——
 RUNS0=$(task_runs mcloud-daily 日常)
-curl -fsS "${W[@]}" -X POST "$B/api/tasks/mcloud-daily/%E6%97%A5%E5%B8%B8/run" -o "$TMP/daily.json"
+try_write "$TMP/daily.json" "${W[@]}" -X POST "$B/api/tasks/mcloud-daily/%E6%97%A5%E5%B8%B8/run"
 wait_task_done mcloud-daily 日常 "$RUNS0"
 printf '   日常 ✓\n'
 
@@ -244,8 +259,8 @@ PY
 # ⚠ 走**干跑**路由（`/plugins/mcloud/api/exchange/try`）而不是"真跑任务"：
 #   干跑做完清单/余额/预热/取题就停，**一枪都不发** —— 这既是按钮的语义，
 #   也是 e2e 想要的（它只验"清单请求的形状"，不该真下单）。
-curl -fsS "${W[@]}" -X POST "$B/plugins/mcloud/api/exchange/try" \
-  -H 'content-type: application/json' -H 'x-panel: 1' -d '{}' -o "$TMP/exchange.json"
+try_write "$TMP/exchange.json" "${W[@]}" -X POST "$B/plugins/mcloud/api/exchange/try" \
+  -H 'content-type: application/json' -H 'x-panel: 1' -d '{}'
 printf '   兑换 ✓\n'
 python3 - "$TMP/exchange.json" <<'PY'
 import json, sys
@@ -269,11 +284,11 @@ PY
 # —— 直播：口令笔记（公开 GET）+ 门 + 听窗口 ——
 # 口令笔记抓的是**第三方页面**，所以先把它指到 mock 的 /xhs/profile
 # —— 本仓库唯一会打外站的一条链。CI 里不指走的话它会去敲小红书（不稳，也不该）。
-curl -fsS "${W[@]}" -X POST \
+try_write /dev/null "${W[@]}" -X POST \
   -d "{\"liveUrl\":\"http://127.0.0.1:$MOCK_PORT/xhs/profile\"}" \
   "$B/plugins/mcloud/api/config" >/dev/null
 RUNS0=$(task_runs mcloud-live 直播)
-curl -fsS "${W[@]}" -X POST "$B/api/tasks/mcloud-live/%E7%9B%B4%E6%92%AD/run" -o "$TMP/live-run.json"
+try_write "$TMP/live-run.json" "${W[@]}" -X POST "$B/api/tasks/mcloud-live/%E7%9B%B4%E6%92%AD/run"
 wait_task_done mcloud-live 直播 "$RUNS0"
 printf '   直播 ✓\n'
 python3 - "$TMP/live-run.json" <<'PY'
@@ -290,7 +305,7 @@ sleep 0.3
 # ⚠ 这里再跑一次「直播」任务 —— 口令笔记那一段（原来独立的 `live-room`）
 #   现在在它里面。判据不变：**mock 侧不该有新请求**。
 RUNS0=$(task_runs mcloud-live 直播)
-curl -fsS -o /dev/null "${W[@]}" -X POST "$B/api/tasks/mcloud-live/%E7%9B%B4%E6%92%AD/run"
+try_write /dev/null "${W[@]}" -X POST "$B/api/tasks/mcloud-live/%E7%9B%B4%E6%92%AD/run"
 wait_task_done mcloud-live 直播 "$RUNS0"
 curl -fsS "${H[@]}" "$B/plugins/mcloud/api/live" -o "$TMP/live-pool.json"
 curl -fsS "http://127.0.0.1:$MOCK_PORT/_debug/requests" -o "$TMP/mock.json"
@@ -499,9 +514,9 @@ PY
 # 上游请求（面板单次执行预算只有 2000ms，跑完一整条链会被判超时，而那时账已经记了）。
 # 脚本里就用 for 循环扮演那个浏览器。
 echo "⑤ 领小红花（写）：先存口令，再一步步推完"
-curl -fsS -o /dev/null "${W[@]}" -X POST -H 'content-type: application/json' \
+try_write /dev/null "${W[@]}" -X POST -H 'content-type: application/json' \
   -d '{"codes":"新口令甲\n过期的口令"}' "$B/plugins/mcloud/api/live/codes"
-curl -fsS -o /dev/null "${W[@]}" -X POST "$B/plugins/mcloud/api/live/claim" \
+try_write /dev/null "${W[@]}" -X POST "$B/plugins/mcloud/api/live/claim" \
   -H 'content-type: application/json' -d '{"enabled":true}'
 # ⚠ 清一次 mock 的请求记录：下面断言的是"这一步**恰好**发了这 11 个、顺序固定"，
 #   不清的话会把前面自动那趟（收口令/埋点）也算进来。
@@ -513,7 +528,7 @@ DRAW_JSON="$TMP/draw.json"
 draw_until_done() {
   local i
   for i in $(seq 1 20); do
-    curl -fsS "${W[@]}" -X POST "$B/plugins/mcloud/api/live/draw/step" -o "$DRAW_JSON"
+    try_write "$DRAW_JSON" "${W[@]}" -X POST "$B/plugins/mcloud/api/live/draw/step"
     if python3 -c "import json,sys; sys.exit(0 if json.load(open('$DRAW_JSON'))['done'] else 1)"; then
       printf '   推完（第 %s 步）\n' "$i"
       return 0
@@ -607,7 +622,7 @@ print(f'   ✅ 写回：领到=valid（有效 {n} 条，stopScraping={n >= 2}）
 POOLPY1
 
 # 再存两条能领到的口令，跑完第二轮 ⇒ 池里 3 条有效 ⇒ 按口径**停止抓取**
-curl -fsS -o /dev/null "${W[@]}" -X POST -H 'content-type: application/json' \
+try_write /dev/null "${W[@]}" -X POST -H 'content-type: application/json' \
   -d '{"codes":"池甲 池乙"}' "$B/plugins/mcloud/api/live/codes"
 draw_until_done
 curl -fsS "${H[@]}" "$B/plugins/mcloud/api/live" -o "$TMP/pool2.json"
@@ -637,10 +652,10 @@ echo "⑥ H5 换票：原生凭据 → 三步 → jwttoken"
 #   **当前账号**的原生凭据（`loadAuthRaw`），所以 mock 回的 SSO 票、Referer 里那些
 #   值都跟脚本写死的不一样，仍然会在 referer 那几条断言上红。
 #   前半段（三条请求的顺序、签名自洽）是有效的；剩下的要按多账号口径重写一遍。
-curl -fsS -o /dev/null "${W[@]}" -X POST -H 'content-type: application/json' \
+try_write /dev/null "${W[@]}" -X POST -H 'content-type: application/json' \
   -d '{"authorization":"Basic bW9iaWxlOjEzODAwMDAwMDAwOnRva2Vu"}' "$B/plugins/mcloud/api/h5/auth"
 for i in 1 2 3 4 5; do
-  curl -fsS "${W[@]}" -X POST "$B/plugins/mcloud/api/h5/step" -o "$TMP/h5.json"
+  try_write "$TMP/h5.json" "${W[@]}" -X POST "$B/plugins/mcloud/api/h5/step"
   if python3 -c "import json,sys; sys.exit(0 if json.load(open('$TMP/h5.json'))['done'] else 1)"; then
     printf '   换完（第 %s 步）\n' "$i"
     break
@@ -648,13 +663,15 @@ for i in 1 2 3 4 5; do
   if [ "$i" = 5 ]; then echo "❌ 5 步还没换完" >&2; cat "$TMP/h5.json" >&2; exit 1; fi
 done
 curl -fsS "${H[@]}" "$B/plugins/mcloud/api/h5" -o "$TMP/h5status.json"
+curl -fsS "${H[@]}" "$B/plugins/mcloud/api/session" -o "$TMP/sess.json"
 curl -fsS "http://127.0.0.1:$MOCK_PORT/_debug/requests" -o "$TMP/mock.json"
-python3 - "$TMP/h5status.json" "$TMP/mock.json" "$TMP/h5.json" <<'H5PY'
+python3 - "$TMP/h5status.json" "$TMP/mock.json" "$TMP/h5.json" "$TMP/sess.json" <<'H5PY'
 import hashlib, json, sys
 
 status = json.load(open(sys.argv[1]))
 reqs = json.load(open(sys.argv[2]))
 final = json.load(open(sys.argv[3]))
+sess = json.load(open(sys.argv[4]))
 
 # ⚠ 过滤器必须把**第 4 步（smid 上报）**算进来 —— 漏了它，`h5` 就只有 3 条，
 # 而断言会以"顺序不对"的面目出现（其实请求是发全了的）
@@ -738,8 +755,8 @@ if smid is not None:
     assert all(c in '0123456789abcdef' for c in smid_body['data']), 'data 该是 hex'
     assert len(smid_body['data']) % 32 == 0, 'AES-CBC+PKCS7 ⇒ 16 字节对齐'
 # ⚠ 换到的 deviceId 要落进会话（领取类接口靠它；没有它回 615 而文案说"活动太火爆"）。
-# `/api/h5` 不回显凭据，所以这里断在**换票结果那句话**上，而不是断在会话原文上。
-assert 'deviceId' in (status['exchange'].get('note') or ''), status['exchange']
+# 断在 `/api/session` 的 deviceId 上，**不是**断在某句文案里 —— 文案会改，凭据不会。
+assert sess['deviceId'], sess
 assert status['exchange']['step'] == 'done', status['exchange']
 assert status['exchange']['ok'] is True, status['exchange']
 print('   ✅ H5 换票：四步顺序固定（含 smid）、签名自洽、x-timestamp 用服务端的、凭据不回显')
@@ -751,12 +768,12 @@ H5PY
 #   （`toSourceId` 不同 —— 直播侧是 `017027`）。放在 ⑥ 之前的话，
 #   ⑥ 那段"四步顺序固定"的断言会多出两发、以"顺序不对"的面目失败。
 echo "⑦ 直播日程（门）：三步、只读、结果落池"
-curl -fsS -o /dev/null "${W[@]}" -X POST -H 'content-type: application/json' \
+try_write /dev/null "${W[@]}" -X POST -H 'content-type: application/json' \
   -d "{\"gateBase\":\"http://127.0.0.1:$MOCK_PORT\"}" "$B/plugins/mcloud/api/config"
 
 # 一步一发（handshake 步内部两发：SSO 只活几分钟 ⇒ ①② 不能拆开 —— 见 liveGateTask.ts）
 for i in 1 2 3 4; do
-  curl -fsS "${W[@]}" -X POST "$B/plugins/mcloud/api/live/gate/step" -o "$TMP/gate.json"
+  try_write "$TMP/gate.json" "${W[@]}" -X POST "$B/plugins/mcloud/api/live/gate/step"
   if python3 -c "import json,sys; sys.exit(0 if json.load(open('$TMP/gate.json'))['done'] else 1)"; then
     printf '   探完（第 %s 步）\n' "$i"
     break
@@ -835,8 +852,8 @@ GATEPY
 # ⚠ 顺序：它接在门后面 —— 因为听弹幕的第一步就是**自己走一遍门**（换票 → 看页签 → roomBeat）。
 # ⚠ 它用 `wsBase` 这个**另一个口子**（`ws://`，带端口），与门的 `gateBase` 不是同一个。
 echo "⑧ 听弹幕（WS/SockJS）"
-curl -fsS "${W[@]}" -X POST \
-  -d "{\"wsBase\":\"ws://127.0.0.1:$MOCK_PORT\",\"imBase\":\"http://127.0.0.1:$MOCK_PORT\"}" "$B/plugins/mcloud/api/config" > /dev/null
+try_write /dev/null "${W[@]}" -X POST \
+  -d "{\"wsBase\":\"ws://127.0.0.1:$MOCK_PORT\",\"imBase\":\"http://127.0.0.1:$MOCK_PORT\"}" "$B/plugins/mcloud/api/config"
 curl -fsS "${W[@]}" "$B/plugins/mcloud/api/config" -o "$TMP/config-ws.json"
 python3 - "$TMP/config-ws.json" <<'CFGWS'
 import json, sys
@@ -854,7 +871,7 @@ curl -fsS "${W[@]}" -X POST "$B/_debug/requests/clear" > /dev/null 2>&1 || true
 curl -fsS "${W[@]}" "http://127.0.0.1:$MOCK_PORT/_debug/requests/clear" > /dev/null
 # 链是 6 步（handshake/rooms/**userToken**/roomBeat/**apply**/open）⇒ 最多 8 次尝试
 for i in 1 2 3 4 5 6 7 8; do
-  curl -fsS "${W[@]}" -X POST "$B/plugins/mcloud/api/live/listen/step" -o "$TMP/listen-$i.json"
+try_write "$TMP/listen-$i.json" "${W[@]}" -X POST "$B/plugins/mcloud/api/live/listen/step"
   if python3 -c "import json,sys; s=json.load(open('$TMP/listen-$i.json')); sys.exit(0 if s.get('step') in ('listen','done') else 1)"; then break; fi
   if [ "$i" = 8 ]; then echo "❌ 8 步还没进到 listen/打开 WS" >&2; cat "$TMP/listen-1.json" >&2; exit 1; fi
 done
@@ -880,7 +897,7 @@ WSPY
 # 推一条弹幕（`command=2`，文本在 MSync.9→.2→.6→.4→.2）—— 插件该解出文本、回 ack、把口令落池
 curl -fsS "${W[@]}" -X POST -d '{"text":"小红花口令：一键9图出圈"}' \
   "http://127.0.0.1:$MOCK_PORT/_debug/ws/danmaku" -o "$TMP/pushed.json"
-curl -fsS "${W[@]}" -X POST "$B/plugins/mcloud/api/live/listen/step" -o "$TMP/listen-after.json"
+try_write "$TMP/listen-after.json" "${W[@]}" -X POST "$B/plugins/mcloud/api/live/listen/step"
 curl -fsS "${W[@]}" "http://127.0.0.1:$MOCK_PORT/_debug/ws" -o "$TMP/ws2.json"
 curl -fsS "${H[@]}" "$B/plugins/mcloud/api/live" -o "$TMP/live-listen.json"
 python3 - "$TMP/ws2.json" "$TMP/live-listen.json" <<'DANPY'
@@ -904,7 +921,7 @@ DANPY
 #   而它算出来的时刻必须等于"池里那间预告场的开播时间 + 1 小时"。
 # ⚠ `live-auto` 已经合成进「直播」任务（②-1）—— 它只算时刻、零请求，
 #   所以这里再跑一次直播任务来推进它
-curl -fsS "${W[@]}" -X POST "$B/api/tasks/mcloud-live/%E7%9B%B4%E6%92%AD/run" -o /dev/null
+try_write /dev/null "${W[@]}" -X POST "$B/api/tasks/mcloud-live/%E7%9B%B4%E6%92%AD/run"
 curl -fsS "${W[@]}" "$B/plugins/mcloud/api/live" -o "$TMP/live-auto.json"
 python3 - "$TMP/live-auto.json" <<'AUTOPY'
 import json, sys
@@ -930,13 +947,14 @@ AUTOPY
 # （@every 30s 领）。判据是「领那条必须比每 5 分钟快」—— 因为听到之后最多
 # 5 分钟才动手是不可接受的（口令是**当场有效**的东西）。
 #
-# 新模型把「听」和「领」合进**同一条任务**的一个听窗口：`@every 1m` + 70 秒预算，
-# 窗口里连听几十秒，然后**紧接着**领。所以那条「衔接延迟」根本不存在了 ——
-# 听到的那一刻就在同一个函数里往下走。
+# 新模型把「听」和「领」合进**同一条任务**的一个听窗口：窗口里连听几十秒，然后
+# **紧接着**领。所以那条「衔接延迟」根本不存在了 —— 听到的那一刻就在同一个函数里往下走。
 #
-# ⚠ 判据跟着换：不再问「领的节拍够不够快」，而是问
-#   ①「听」和「领」是不是**同一条任务**（分开就又回到衔接延迟的问题）
-#   ② 那条任务的周期是不是**分钟级**（不能是 5 分钟以上）
+# ⚠ 判据是这三条（都不看具体时钟）：
+#   ①「听」和「领」是**同一条任务**（分开就又回到衔接延迟的问题）
+#   ② 它有**长预算**（一个听窗口要连续占几十秒）
+#   ③ 时钟是**用户定的那两跳**（2026-10-17 口径：每天 10:30 / 15:30）—— 开播日期不固定，
+#      所以是「碰运气」两次；具体时刻属于业务口径，改了要用户点头，这里只是把它钉住。
 curl -fsS "${H[@]}" "$B/api/state" -o "$TMP/state2.json"
 python3 - "$TMP/state2.json" <<'CADPY'
 import json, sys
@@ -945,8 +963,8 @@ live = [j for j in (s.get('tasks') or s.get('jobs') or []) if j.get('plugin') ==
 assert len(live) == 1, f'直播插件该只有一条任务（听和领在同一条里），实际 {[j["name"] for j in live]}'
 d = live[0]
 assert d['name'] == '直播', d['name']
-expr = d.get('expr') or d.get('schedule') or ''
-assert expr == '@every 1m', f'直播的调度是 {expr!r}，应当是 @every 1m（分钟级听窗口）'
+expr = d.get('cron') or d.get('cron_base') or d.get('expr') or d.get('schedule') or ''
+assert expr == '30 10,15 * * *', f'直播的调度是 {expr!r}，应当是用户定的两跳 30 10,15 * * *'
 # 长预算：一个听窗口要连续占几十秒
 assert (d.get('budget_ms') or 0) >= 60000, f'听窗口需要长预算，实际 {d.get("budget_ms")}'
 print(f'   ✅ 衔接：听与领在**同一条任务**里（{expr}，预算 {d["budget_ms"]}ms）—— 没有衔接延迟')
