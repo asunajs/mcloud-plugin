@@ -66,16 +66,26 @@ export function routesSource(): string {
  *  P6 把编排从 `entries/live.ts` 搬到了 `src/app/live/`（入口只剩注册）。
  *  那些"源码里要有这一手"的断言要读**整份**，只读入口会假红。 */
 export function liveSource(): string {
-  const entry = 'src/entries/live.ts';
-  const dir = new URL('../src/app/live/', import.meta.url);
-  const parts = readdirSync(dir).filter((n) => n.endsWith('.ts')).sort();
-  return [entry, ...parts.map((n) => 'src/app/live/' + n)]
-    .map((rel) => readFileSync(new URL('../' + rel, import.meta.url), 'utf8'))
-    .join('\n');
+  return sourceOf('src/entries/live.ts', 'src/app/live/');
 }
 
 /** 读一份任务源码：直播那块已经拆到 app/live/，所以要走 {@link liveSource}。 */
 export function taskSource(rel: string): string {
   if (rel === 'src/entries/live.ts') return liveSource();
+  if (rel === 'src/entries/daily.ts') return dailySource();
   return readFileSync(new URL('../' + rel, import.meta.url), 'utf8');
+}
+
+/** **整份**日常源码（入口 + app/daily/*）。同 {@link liveSource}：入口只剩注册。 */
+export function dailySource(): string {
+  return sourceOf('src/entries/daily.ts', 'src/app/daily/');
+}
+
+/** 入口 + 某个 app/ 子目录里所有 .ts，拼成一份可 grep 的源码。 */
+export function sourceOf(entryRel: string, dirRel: string): string {
+  const dir = new URL('../' + dirRel, import.meta.url);
+  const parts = readdirSync(dir).filter((n) => n.endsWith('.ts')).sort();
+  return [entryRel, ...parts.map((n) => dirRel + n)]
+    .map((rel) => readFileSync(new URL('../' + rel, import.meta.url), 'utf8'))
+    .join('\n');
 }

@@ -30,7 +30,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { liveSource, routesSource, taskSource } from './helpers.ts';
+import { dailySource, liveSource, routesSource, taskSource } from './helpers.ts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -778,7 +778,7 @@ test('⚠ 界面上**没有**「连接」这种按钮（参考实现里换票是
 });
 
 test('⚠ 任务自己**开一轮**换票（`runExchangeStep` 只接着走，不会开始）', async () => {
-  const daily = srcOf('src/entries/daily.ts') + srcOf('src/mcloud/dailyRun.ts');
+  const daily = dailySource() + srcOf('src/mcloud/dailyRun.ts');
   // ⚠ 两种情况都要开新的：没有那一轮（`null`）、上一轮已经 `done`（票过期要再换）
   // ⚠ 必须用**这一趟这个账号**的 store（多账号下模块级那份会读到别的号的票 —— F-095）
   assert.ok(/const st = loadExchange\(deps\.store, page\);/.test(daily), '先看那一轮的状态（按账号）');
@@ -791,7 +791,7 @@ test('⚠ 任务自己**开一轮**换票（`runExchangeStep` 只接着走，不
 });
 
 test('⚠ 日志一行一步，形状照参考实现（成功 / 跳过 / 失败 + 原因）', async () => {
-  const daily = srcOf('src/entries/daily.ts') + srcOf('src/mcloud/dailyRun.ts');
+  const daily = dailySource() + srcOf('src/mcloud/dailyRun.ts');
   // `mcloud-sign` 的 logger 有 start/success/fail 三种类型，控制台打 `[success] … 成功 签到`
   // 一行一个用户认得的任务，结论只有三种说法（`tasks/stepLog.ts::userLine`）
   assert.ok(/const line = userLine\(one\);/.test(daily), '日志行走 userLine');
@@ -808,7 +808,7 @@ test('⚠ 日志一行一步，形状照参考实现（成功 / 跳过 / 失败 
   assert.ok(/note\.includes\('还有没做完的'\)/.test(stepLog), '现在的写法');
   assert.ok(/export function trimNote\(name: string, note: string\): string/.test(stepLog), '要剥掉重复的"步骤名："');
   assert.ok(/服务端说：\$\{msg\}/.test(stepLog), '`code=500 msg=…` 要说人话');
-  assert.ok(/from '\.\.\/mcloud\/tasks\/stepLog\.ts'/.test(daily), '日常要用共享的那两个');
+  assert.ok(/from '\.\.\/(?:\.\.\/)?mcloud\/tasks\/stepLog\.ts'/.test(daily), '日常要用共享的那两个');
   assert.ok(/from '\.\.\/(?:\.\.\/)?mcloud\/tasks\/stepLog\.ts'/.test(liveSource()), '直播也要用同一套');
   assert.ok(/const line = userLine\(one\);/.test(daily), '格式由 `userLine` 决定：`签到：网盘签到成功` / `复活卡：没成 —— 原因`');
   // 段头 / 段尾：照 mcloud-sign，用 start/success/fail 着色，不再画 `------【】------`
@@ -1208,7 +1208,7 @@ test('⚠ 票的事内部处理：界面不提"手机端凭据几点过期"（�
   // 卡片上不许出现这条 —— 那是机制，不是用户要做的事
   assert.ok(!/手机端凭据/.test(js), '账号卡不许写"手机端凭据…"');
   // 续不上时才给下一步，且不提时间
-  const d = srcOf('src/entries/daily.ts') + srcOf('src/mcloud/dailyRun.ts');
+  const d = dailySource() + srcOf('src/mcloud/dailyRun.ts');
   assert.ok(/登录状态失效了，去「账号」页重新导入会话/.test(d), '走投无路时给动作');
   assert.ok(!/手机端凭据 \$\{clock\} 过期了/.test(d), '别把"几点过期"摆给用户');
   // 续票本身要按账号（F-095）
@@ -1318,7 +1318,7 @@ test('⚠ 日志终端先连 SSE，再异步补历史（否则任务跑完才看
 });
 
 test('⚠ 日常**不设"今天跑过就跳过"**：一天两趟都跑，第二趟是兜底', async () => {
-  const d = srcOf('src/entries/daily.ts');
+  const d = dailySource();
   // 那道闸必须没了 —— 插件没法证明所有小任务都到了预期，跳过就等于放弃兜底
   assert.ok(!/doneToday && !manual/.test(d), '不许再有"今天跑过就跳过"');
   assert.ok(/forEachTaskAccount\(store, '日常', p, transport, (?:async )?\(deps, acctId\) =>/.test(d), '每个账号都照跑');
@@ -1412,7 +1412,7 @@ test('⚠ 跨账号的同一句解释只说一遍（领小红花那个括号）'
   const log = srcOf('src/mcloud/tasks/stepLog.ts');
   assert.ok(/export function onceHint/.test(log), '要有 onceHint');
   assert.ok(/ONCE_HINTS = \['（要先在服务端那边开启）'\]/.test(log), '只对固定后缀生效，别做"任意重复就去重"');
-  const d = srcOf('src/entries/daily.ts');
+  const d = dailySource();
   assert.ok(/const onceHints = new Set<string>\(\)/.test(d), 'daily 一趟一个 set');
   assert.ok(/onceHint\(line, onceHints\)/.test(d), 'daily 记日志时过一遍');
   const l = liveSource();
