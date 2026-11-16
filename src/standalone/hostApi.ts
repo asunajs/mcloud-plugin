@@ -3,7 +3,7 @@
 // 源码里所有 `import ... from 'host-api'` 在独立构建时都指到这里。
 // 注意：这里不是给面板用的；面板构建仍然把 host-api 标成 external，由面板注入。
 
-import type { FetchOptions, FetchResult, FetchError } from 'host-api';
+import type { FetchOptions, FetchResult, FetchError } from '../ports/io.ts';
 
 type Fetcher = (url: string, options?: FetchOptions) => FetchResult | FetchError;
 

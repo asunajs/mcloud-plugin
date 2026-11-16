@@ -9,7 +9,8 @@
 //
 // 目标存 **prizeId**（稳定），名字只用于显示；老库只有名字时按名字兼容。
 
-import { debug, log, register_cron, worker_hint } from 'host-api';
+import { logTo } from '../ports/log.ts';
+import { defineTask, panel } from '../host/panel/index.ts';
 import { runAuthRefresh } from '../mcloud/authRefresh.ts';
 import { hourKey } from '../mcloud/exchangeTiming.ts';
 import { loadAccounts } from '../mcloud/accounts.ts';
@@ -46,8 +47,7 @@ import {
   unionCron,
 } from '../mcloud/exchangePlans.ts';
 
-// 独占线程：开抢那一下不能被别的任务拖住（见 shared.ts 文件头）
-worker_hint('exclusive');
+// 一个插件一条 JS 执行通道（面板默认）；开抢那一下不会被别的插件的任务拖住。
 
 const store = makeStore();
 const transport = makeTransport(LONG_REQUEST_TIMEOUT_MS);
@@ -57,7 +57,7 @@ await syncConfigToState(store);
 
 // 老库迁移：上一版只有一条全局计划，按当时选的账号拆成多条。
 if (migrateLegacyPlan(store, new Date().toISOString())) {
-  log('老库迁移：兑换的旧单计划已按账号拆成多条计划');
+  logTo('info', '老库迁移：兑换的旧单计划已按账号拆成多条计划');
 }
 
 const bootAll = loadPlans(store);
@@ -65,14 +65,26 @@ const bootPlans = enabledPlans(bootAll);
 const bootCron = bootPlans.length > 0 ? unionCron(bootPlans) : DEFAULT_SCHEDULE_CRON;
 const bootLeadMs = maxLeadMs(bootPlans);
 
-register_cron(
-  '兑换',
-  bootCron,
+defineTask(
+  {
+    name: '兑换',
+    cron: bootCron,
+    budget_ms: BUDGET_MS,
+    // 提前量取所有计划里最大的那个；具体某条计划提前少一点也没关系，
+    // `runExchange` 的时间闸会在窗口前等，不会提前发单。
+    lead_ms: bootLeadMs,
+    // 兑换是**插件页面管理的功能实例**：配置全在云盘页；面板任务列表只负责叫醒与记录。
+    surface: 'plugin',
+    summary: planSummary(store),
+    blockers: blockersFor(store, '兑换'),
+  },
   (p: TaskPayload) => {
     const startedMs = Date.now();
     const at = new Date(startedMs).toISOString();
-    const targetMs = Date.parse(p.scheduledAt);
-    if (!Number.isFinite(targetMs)) return;
+    // ⚠ 面板**不发** scheduledAt（由 defineTask 合成）。解析不出来就按"现在"算 ——
+    //   以前这里 `return`，而适配层给的是空串 ⇒ 这条任务在新面板上一次都没跑过。
+    const parsedTarget = Date.parse(p.scheduledAt);
+    const targetMs = Number.isFinite(parsedTarget) ? parsedTarget : startedMs;
 
     // 这一拍的目标整点，哪些计划该跑（cron 的日/月/周匹配也在这里判）。
     const plans = duePlans(loadPlans(store), targetMs);
@@ -205,22 +217,13 @@ register_cron(
       );
     }
   },
-  {
-    budget_ms: BUDGET_MS,
-    // 提前量取所有计划里最大的那个；具体某条计划提前少一点也没关系，
-    // `runExchange` 的时间闸会在窗口前等，不会提前发单。
-    lead_ms: bootLeadMs,
-    // 兑换是**插件页面管理的功能实例**：面板任务列表不显示它，配置全在云盘页。
-    surface: 'plugin',
-    // 新装先暂停：等用户建好计划、点“启用”再跑。已有安装的 paused 由面板保留。
-    paused: bootPlans.length === 0,
-    manage_url: '#/plugin/mcloud',
-    summary: planSummary(store),
-    blockers: blockersFor(store, '兑换'),
-  },
 );
 
-debug(
+// 新装先暂停：等用户建好计划、再点“启用”。（面板没有"注册时带 paused"这个口子，
+// 所以暂停是注册之后单独说一次；已有安装的开关由面板自己保留。）
+if (bootPlans.length === 0) panel.setJobPaused('兑换', true);
+
+logTo('debug', 
   'mcloud-exchange：任务「兑换」（预算 ' +
     BUDGET_MS / 1000 +
     's，独占线程）—— ' +

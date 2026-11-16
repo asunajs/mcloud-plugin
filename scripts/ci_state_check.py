@@ -1,13 +1,9 @@
 #!/usr/bin/env python3
-"""CI 里对 `/api/state` 的断言 —— **单独一个脚本**，不写在 workflow 的 heredoc 里。
+"""CI 里对 /api/state 的断言 —— **单独一个脚本**，不写在 workflow 的 heredoc 里。
 
-为什么：
-
-1. workflow 的 `run: |` 里嵌 heredoc 是**最容易错**的写法 —— 结束符前的缩进在
-   YAML 里合法、在 bash 里就不认（`PY` 必须顶格），一改就静默坏掉。这里改成
-   「一个命令 + 一个参数」，workflow 里只剩下调用。
-2. 这些断言**本机也能跑**（对着正在跑的面板存一份 state.json 就行），
-   不用等 CI 红了才发现写错。
+为什么单独一个：
+1. workflow 的 `run: |` 里嵌 heredoc 是最容易错的写法（结束符必须顶格）；
+2. 这些断言**本机也能跑**（对着正在跑的面板存一份 state.json 就行），不用等 CI 红了才发现写错。
 
 用法：
 
@@ -15,7 +11,8 @@
     python3 scripts/ci_state_check.py loaded   state.json   # 插件/任务/无错，逐条断言
     python3 scripts/ci_state_check.py selftest selftest.json
 
-`ready` 只回 0/1 不说话（轮询里一句话一句会刷屏）；另外两个失败时把现场打出来。
+⚠ 面板换到 panel-llrt 之后形状变了：任务在 `tasks`（不是 `jobs`），表达式叫 `cron`
+  （不是 `schedule`）。这里两种都认 —— 插件仓的 CI 不该因为"面板换了个字段名"整片红。
 """
 
 import json
@@ -32,10 +29,18 @@ def load(path):
         return json.load(f)
 
 
+def tasks_of(state):
+    """任务表：新面板叫 tasks，老面板叫 jobs。"""
+    rows = state.get("tasks")
+    if not isinstance(rows, list):
+        rows = state.get("jobs", [])
+    return {t.get("name"): t for t in rows if not t.get("deleted")}
+
+
 def ready(state):
-    names = {p["name"] for p in state.get("plugins", [])}
-    jobs = {j["name"] for j in state.get("jobs", []) if not j.get("deleted")}
-    return set(PLUGINS) <= names and set(JOBS) <= jobs
+    names = {p.get("name") for p in state.get("plugins", [])}
+    jobs = tasks_of(state)
+    return set(PLUGINS) <= names and set(JOBS) <= set(jobs)
 
 
 def cmd_ready(path):
@@ -48,24 +53,24 @@ def cmd_ready(path):
 
 def cmd_loaded(path):
     state = load(path)
-    plugins = {p["name"]: p for p in state.get("plugins", [])}
+    plugins = {p.get("name"): p for p in state.get("plugins", [])}
     problems = []
 
-    # ① 四个插件都在、都是 js、都没报错、没被停用
+    # ① 四个插件都在、都没报错、没被停用/暂停
     for name in PLUGINS:
         p = plugins.get(name)
         if not p:
             problems.append(f"没有加载 {name}（只有 {sorted(plugins)}）")
             continue
-        if p.get("runtime") != "js":
-            problems.append(f"{name} 的 runtime 是 {p.get('runtime')}，应该是 js")
         if p.get("error") not in (None, ""):
             problems.append(f"{name} 加载报错：{p.get('error')}")
         if p.get("disabled"):
             problems.append(f"{name} 被停用了")
+        if p.get("suspended"):
+            problems.append(f"{name} 被暂停了")
 
     # ② 三条任务挂在对的插件上，而且有表达式
-    jobs = {j["name"]: j for j in state.get("jobs", []) if not j.get("deleted")}
+    jobs = tasks_of(state)
     for task, owner in JOBS.items():
         j = jobs.get(task)
         if not j:
@@ -73,14 +78,14 @@ def cmd_loaded(path):
             continue
         if j.get("plugin") != owner:
             problems.append(f"任务「{task}」挂在 {j.get('plugin')} 上，应该是 {owner}")
-        if not j.get("schedule"):
+        if not (j.get("cron") or j.get("schedule")):
             problems.append(f"任务「{task}」没有调度表达式")
+        if j.get("pending_adopt"):
+            problems.append(f"任务「{task}」还停在「待采纳」—— 安装时要采纳计划建议")
         if j.get("last_error") not in (None, ""):
             problems.append(f"任务「{task}」上次报错：{j.get('last_error')}")
 
-    # ③ `selftest` / `diag` 是**路由**，不该再出现在任务列表里。
-    #    这条是防回归的：它们曾经是两条 cron 任务，改掉之后 CI 还在等它们，
-    #    而那段只在 tag 上跑 ⇒ 一直红着没人看见（第一次打 tag 才发现）。
+    # ③ `selftest` / `diag` 是**路由**，不该再出现在任务列表里（防回归）
     for gone in ("selftest", "diag"):
         if gone in jobs:
             problems.append(f"任务列表里不该再有「{gone}」（它已经改成路由了）")
@@ -96,12 +101,12 @@ def cmd_loaded(path):
 
 def cmd_selftest(path):
     r = load(path)
-    bad = [c["name"] for c in r.get("checks", []) if not c["ok"]]
+    checks = r.get("checks") or []
+    bad = [c.get("name") for c in checks if not c.get("ok")]
     if r.get("ok") is not True:
         print(f"❌ 沙箱自检没过：{bad} / {r.get('detail')}")
-        for c in r.get("checks", []):
-            if not c["ok"]:
-                print(f"   · {c['name']}")
+        for name in bad:
+            print(f"   · {name}")
         return 1
     print(f"✅ 沙箱内自检通过：{r.get('detail')}")
     return 0

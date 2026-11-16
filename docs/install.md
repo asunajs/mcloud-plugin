@@ -12,14 +12,14 @@
 1. 打开 <https://github.com/asunajs/mcloud-plugin/releases>，下载最新的
    `mcloud-plugin-<版本>-panel04.zip`（同目录有 `.sha256`，装之前可以先对一下）；
 2. 面板左侧「插件管理」→ 点上传，选中那个 zip（**整包，不用解压**）；
-3. 等两秒。四张卡片出现、状态「已启用」。面板任务列表里有两条（日常 / 直播）：
+3. 等两秒。四张卡片出现、状态「已启用」。面板任务列表里有三条（日常 / 兑换 / 直播）：
 
    | 任务 | 表达式 | 说明 |
    |---|---|---|
    | 日常 | `0 8,20 * * *` | 签到、领取、App 任务… |
    | 直播 | `30 10,15 * * *` | 听口令 + 领小红花 |
 
-   **兑换不在面板任务列表里**：它在「云盘 → 兑换 → 定时抢兑」里配置。
+   **兑换的计划在「云盘 → 兑换 → 定时抢兑」里配**（面板那条任务只负责叫醒与记录）。
    一条计划 = 一个账号 + 一个目标 + 一个整点（提前量/截止/次数也在这一条里）；
    两个号换不同的东西或不同的时间，就建两条计划。新装默认暂停；点「添加计划」并保存后
    面板那条「兑换」会自动启用，cron 取所有启用计划整点的并集。
@@ -43,13 +43,13 @@ mcloud.webui/{index.html,style.css,app.js,boot.js}
 
 面板的上传口（`/api/plugins/upload`）解压规则是：
 
-- 相对 `PLUGINS_DIR` 展开 —— 所以 zip 根目录就是 `js/` 和 `mcloud/`；
+- 相对 `PLUGINS_DIR` 展开 —— 所以 zip 根目录就是那四份 `.js`、四份清单和 `mcloud.webui/`；
 - 会**剥掉统一的外层目录**（`mcloud-plugin-0.1.0/js/…` 也认）；
 - 拒绝符号链接、拒绝任何以 `.` 开头的路径段（`.env`、`.git/…`）；
 - `.DS_Store` / `__MACOSX` 这类压缩噪音**跳过**（不算失败）；
 - 上限：总解压 64 MiB、单文件 32 MiB、2000 条目。
 
-`npm run pack` 就是按这套规则打的，而且**打之前按同一套规则自己验一遍**
+`npm run pack:panel04` 就是按这套规则打的，而且**打之前按同一套规则自己验一遍**
 （`scripts/pack.mjs`）—— 不是"打出来就完事"，等上传被拒时才查就晚了。
 
 ## 三、不用 zip 的手动安装
@@ -57,14 +57,15 @@ mcloud.webui/{index.html,style.css,app.js,boot.js}
 ```sh
 git clone https://github.com/asunajs/mcloud-plugin
 cd mcloud-plugin
-npm ci && npm run build        # 产出 plugins/js/*.js
-# 把 plugins/ 下这两样拷进面板的 PLUGINS_DIR：
-#   js/mcloud*.js
-#   mcloud/（index.html app.js style.css）
+npm ci && npm run build        # 产出 dist/panel-llrt/（四份 .js + 四份清单 + mcloud.webui/）
+# 把 dist/panel-llrt/ 下的东西整份拷进面板的插件目录：
+#   ~/panel-3030/plugins/{mcloud,mcloud-daily,mcloud-exchange,mcloud-live}.js
+#   ~/panel-3030/plugins/*.panel.json
+#   ~/panel-3030/plugins/mcloud.webui/
 ```
 
-面板扫描 `PLUGINS_DIR/js/*.js`，所以**改完源码要重新 build 再拷**；
-只拷 `src/` 是跑不起来的（面板加载的是构建产物）。
+也可以直接 `npm run deploy:panel`（构建 + 样式门禁 + 整份拷贝 + 逐个 cmp）。
+面板扫描的是**构建产物**，所以改完源码要重新 build 再拷；只拷 `src/` 跑不起来。
 
 ## 四、升级
 
@@ -74,9 +75,9 @@ npm ci && npm run build        # 产出 plugins/js/*.js
 ## 五、自己发一个版本（维护者）
 
 ```sh
-npm run all             # 门：类型检查 / 测试 / 产物一致 / 调度断言
-npm version --no-git-tag-version 0.2.0   # 改 package.json（tag 会跟它比）
-npm run build && npm run pack            # 出 dist/mcloud-plugin-0.2.0.zip
+npm run all             # 门：类型检查 / 测试 / 产物一致
+npm version --no-git-tag-version 0.4.3   # 改 package.json（tag 会跟它比）
+npm run build && npm run pack:panel04    # 出 dist/mcloud-plugin-0.4.3-panel04.zip
 git add -A && git commit -m "release v0.2.0" && git tag v0.2.0 && git push --follow-tags
 ```
 

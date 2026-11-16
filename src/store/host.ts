@@ -9,7 +9,7 @@
 // state 是可恢复步骤机的地基：执行预算只有 2000ms、而且打断不了阻塞中的宿主调用，
 // 一次调用做不完一个流程，所以「做到哪一步了」必须落盘。
 
-import { sqlite_exec, sqlite_query } from 'host-api';
+import { io } from '../ports/io.ts';
 import type { RunRecord, RunStat, SqlParam, Store } from './types.ts';
 
 /** 宿主的 `sqlite_*` 在出错时**返回** `{error}` 而不是抛（`jshost.rs` 的
@@ -19,7 +19,7 @@ import type { RunRecord, RunStat, SqlParam, Store } from './types.ts';
  *  每一枪 INSERT 都失败，而自检只报"没拿到自增主键"。
  *  所以这一层**把错误抛出去** —— 抛了才有栈，才有话说。 */
 function sqlQ(sql: string, params: SqlParam[]): Record<string, SqlParam>[] {
-  const rows = sqlite_query(sql, params) as unknown as Record<string, SqlParam>[] | { error?: string };
+  const rows = io().sql(sql, params) as unknown as Record<string, SqlParam>[] | { error?: string };
   if (!Array.isArray(rows)) {
     throw new Error(`sqlite_query 失败：${(rows as { error?: string }).error ?? '未知错误'}`);
   }
@@ -27,7 +27,7 @@ function sqlQ(sql: string, params: SqlParam[]): Record<string, SqlParam>[] {
 }
 
 function sqlX(sql: string, params: SqlParam[]): { changes: number; lastInsertRowid: number } {
-  const r = sqlite_exec(sql, params) as unknown as { changes?: number; lastInsertRowid?: number; error?: string };
+  const r = io().exec(sql, params) as unknown as { changes?: number; lastInsertRowid?: number; error?: string };
   if (typeof r?.error === 'string' && r.error !== '') {
     throw new Error(`sqlite_exec 失败：${r.error}`);
   }

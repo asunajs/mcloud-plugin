@@ -77,10 +77,11 @@ for _ in $(seq 1 30); do
   sleep 0.2
 done
 
-echo "② 起面板（:$PANEL_PORT，PLUGINS_DIR=$HERE/plugins）"
-BIND_ADDR="127.0.0.1:$PANEL_PORT" \
-DB_PATH="$TMP/panel.db" \
-PLUGINS_DIR="$HERE/plugins" \
+echo "② 起面板（:$PANEL_PORT，插件目录=$HERE/dist/panel-llrt）"
+mkdir -p "$TMP/data"
+printf '{"server":{"bind":"127.0.0.1:%s"}}' "$PANEL_PORT" > "$TMP/data/config.json"
+PANEL_DATA_DIR="$TMP/data" \
+PANEL_PLUGINS_DIR="$HERE/dist/panel-llrt" \
 PANEL_TOKEN="$TOKEN" \
 PANEL_ALLOW_PLAIN_TOKEN=1 \
 HOST_API_ALLOW_PRIVATE=1 \
@@ -96,7 +97,7 @@ try:
     s = json.load(open(sys.argv[1]))
 except Exception:
     sys.exit(1)
-jobs = {(j.get('plugin'), j.get('name')) for j in s.get('jobs', [])}
+jobs = {(j.get('plugin'), j.get('name')) for j in (s.get('tasks') or s.get('jobs') or [])}
 want = {('mcloud-daily', '日常'), ('mcloud-exchange', '兑换'), ('mcloud-live', '直播')}
 sys.exit(0 if want <= jobs else 1)
 PY

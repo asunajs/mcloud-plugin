@@ -25,11 +25,8 @@
     // 类型检查在这里的作用是**当围栏**，不是补全提示。
     "types": [],
 
-    // 源码里 import 'host-api' 由面板的 Resolver 提供，不是 npm 包。
-    // 声明放在 src/host-api.d.ts，路径映射让 tsc 认它。
-    "paths": {
-      "host-api": ["./src/host-api.d.ts"]
-    }
+    // `panel:host` 由面板引擎注入，不是 npm 包；类型在 src/types/panel-host.d.ts
+    // （`declare module`，不需要 paths —— 业务层也**不准**直接 import 它，见 R1）
   },
   "include": ["src/**/*.ts"],
   "exclude": ["src/standalone/**"]

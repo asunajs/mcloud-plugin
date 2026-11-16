@@ -16,7 +16,7 @@
 // 而那正是要验的东西之一 —— 只读探测盖不住占位符与自增主键。
 
 import { fromBase64, fromUtf8, md5Hex, sha256Hex, toBase64, utf8 } from './crypto/index.ts';
-import { http_fetch } from 'host-api';
+import { io } from './ports/io.ts';
 import { sandboxCaps } from './mcloud/caps.ts';
 import type { Store } from './store/types.ts';
 
@@ -88,8 +88,8 @@ export function selftest(store: Store): SelftestResult {
   let nativeTls = false;
   let tlsWhy = '';
   try {
-    // ⚠ `http_fetch` 失败时是**返回** `{error}`，不是抛（见 host-api.d.ts）
-    const r = http_fetch('https://127.0.0.1:9/', { tls: 'native', timeout_ms: 2000 });
+    // ⚠ 失败时是**返回** `{error}`，不是抛（见 ports/io.ts 的 FetchError）
+    const r = io().fetch('https://127.0.0.1:9/', { tls: 'native', timeout_ms: 2000 });
     const err = (r as unknown as { error?: string }).error ?? '';
     nativeTls = !/legacy-tls/.test(err);
     if (!nativeTls) tlsWhy = err;

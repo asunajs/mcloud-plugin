@@ -26,17 +26,9 @@
 // 只写一遍，四个产物各自把自己用到的那部分打进去。
 // 体积换来的东西是：改一处协议层，四个插件一起更新，不会有版本漂移。
 
-import {
-  http_fetch,
-  log,
-  self_config,
-  smtp_send,
-  warn,
-  ws_close,
-  ws_open,
-  ws_recv,
-  ws_send,
-} from 'host-api';
+import { io } from '../ports/io.ts';
+import { logTo } from '../ports/log.ts';
+import { panel } from '../host/panel/index.ts';
 import type { HostWs, TaskDeps } from '../mcloud/tasks/base.ts';
 import { drain } from '../drain.ts';
 export { drain } from '../drain.ts';
@@ -99,7 +91,7 @@ export function makeTransport(
     // client.ts 的 callOnce 负责认形状（实测踩过，见 docs/findings.md F-006）
     // 纯策略在 `mcloud/timeoutPolicy.ts`（Node 里可测）；这里只做接线。
     const ms = typeof timeoutMs === 'number' ? timeoutMs : timeoutMs(r.url);
-    return http_fetch(r.url, hostFetchOptions(r, ms));
+    return io().fetch(r.url, hostFetchOptions(r, ms));
   };
 }
 
@@ -115,7 +107,7 @@ export function makeStore(): Store {
   const { moved } = migrateFlatKeys(store, new Date().toISOString());
   const s = scoped(store);
   if (moved.length > 0) {
-    log(`状态迁移：${moved.length} 个键搬进账号袋（${moved.join(', ')}）`);
+    logTo('info', `状态迁移：${moved.length} 个键搬进账号袋（${moved.join(', ')}）`);
   }
   return s;
 }
@@ -130,18 +122,18 @@ export function makeStore(): Store {
 export async function syncConfigToState(store: Store): Promise<OverlayResult> {
   let raw: unknown = null;
   try {
-    raw = await self_config();
+    raw = await panel.selfConfig();
   } catch (e) {
-    warn('读插件配置失败（按"没配过"继续）：' + (e instanceof Error ? e.message : String(e)));
+    logTo('warn', '读插件配置失败（按"没配过"继续）：' + (e instanceof Error ? e.message : String(e)));
     return { applied: [], kept: [], ignored: [] };
   }
   const out = applyConfigOverlay(store, raw, new Date().toISOString());
   if (out.applied.length > 0) {
-    log(`插件配置已写进面板状态：${out.applied.join('，')}（改了要重载对应任务插件才用上）`);
+    logTo('info', `插件配置已写进面板状态：${out.applied.join('，')}（改了要重载对应任务插件才用上）`);
   }
   if (out.ignored.length > 0) {
     // 认不出来的值要报出来 —— 静默跳过等于"填了没反应"
-    warn(`插件配置里有认不出来的值，已跳过：${out.ignored.join('，')}`);
+    logTo('warn', `插件配置里有认不出来的值，已跳过：${out.ignored.join('，')}`);
   }
   return out;
 }
@@ -152,10 +144,10 @@ export async function syncConfigToState(store: Store): Promise<OverlayResult> {
  *  调用时抛」（见面板 docs/host-api.md）。所以任何用到它的任务都必须能在测试里换桩。 */
 export function makeHost(): HostWs {
   return {
-    wsOpen: (url, opts) => ws_open(url, opts),
-    wsSend: (id, text) => ws_send(id, text),
-    wsRecv: (id, timeoutMs) => ws_recv(id, timeoutMs),
-    wsClose: (id) => ws_close(id),
+    wsOpen: (url, opts) => io().wsOpen(url, opts),
+    wsSend: (id, text) => io().wsSend(id, text),
+    wsRecv: (id, timeoutMs) => io().wsRecv(id, timeoutMs),
+    wsClose: (id) => io().wsClose(id),
   };
 }
 
@@ -311,11 +303,10 @@ export function makePushDeps(transport: Transport): PushDeps {
     smtp: (opts) => {
       // ⚠ 失败是**抛错**，错误文本是服务器那句原话（`535 bad credentials`）——
       //   `sendPush` 那边接住了并原样写进读数。
-      const res = smtp_send(opts);
-      return { ok: res.ok === true, response: String(res.response ?? '') };
+      return io().smtp(opts);
     },
     nowMs: () => Date.now(),
-    log: (msg) => log(msg),
+    log: (msg) => logTo('info', msg),
   };
 }
 
@@ -342,7 +333,7 @@ export function notify(
   if (rule === undefined) {
     // 规则被删了而绑定还在 ⇒ 说清，然后不发。**不静默** ——
     // 用户会以为"配了就该收到"，而收到的是沉默。
-    warn(`推送规则「${ruleId}」不存在了（${TASK_LABELS[taskKey]} 还绑着它）—— 这次没发`);
+    logTo('warn', `推送规则「${ruleId}」不存在了（${TASK_LABELS[taskKey]} 还绑着它）—— 这次没发`);
     return null;
   }
   if (rule.minLevel === 'error' && !hadFailure) return null;
@@ -352,12 +343,12 @@ export function notify(
   const picked: PushConfig =
     rule.channels.length === 0 ? cfg : pickChannels(cfg, rule.channels);
   if (configuredChannels(picked).length === 0) {
-    warn(`推送规则「${rule.name}」一个渠道都没配上 —— 这次没发`);
+    logTo('warn', `推送规则「${rule.name}」一个渠道都没配上 —— 这次没发`);
     return null;
   }
 
   const result = sendPush(makePushDeps(transport), picked, title, text);
-  log(`推送（${rule.name}）：${result.line}`);
+  logTo('info', `推送（${rule.name}）：${result.line}`);
   return result;
 }
 

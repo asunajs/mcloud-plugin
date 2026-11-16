@@ -2,13 +2,15 @@ name: CI
 
 # 两个 job，成本差很多，所以触发条件不同：
 #
-#   check       ~30 秒。类型检查、测试、常量可复现、产物与源码一致。
+#   check       ~40 秒。类型检查、测试、常量可复现、产物与源码一致。
 #               **每次推送都跑** —— 它便宜，而且这几条正是「本地忘了跑」的那种错。
-#   panel-e2e   ~5 分钟（要现构建面板的 Rust）。插件的真正验收是「在真面板里能跑」，
-#               所以它必须在 CI 里，但没必要每次推送都跑 —— 只在 tag / 手动 / PR 上跑。
+#   panel-e2e   ~8 分钟（要现构建面板的 Rust）。插件的真正验收是「在真面板里能跑」，
+#               所以它必须在 CI 里，但没必要每次推送都跑 —— 只在手动 / tag 上跑。
 #
-# 真 ARM64 硬件（ubuntu-24.04-arm）：目标机是低配 ARM 盒子，而这个插件是拿它压边界的，
-# 用 x86 跑 E2E 得到的结论不能直接搬到目标平台。
+# 真 ARM64 硬件（ubuntu-24.04-arm）：目标机是低配 ARM 盒子。
+#
+# ⚠ 只面向 panel-llrt（0.4/0.5 线）。旧面板（rust-plugin-panel / 0.3.x）的产物
+#   本仓不再构建，那条 CI 分支也随 P1 删掉了（要取回看 tag legacy-0.4.2-sync）。
 
 on:
   push:
@@ -39,7 +41,7 @@ jobs:
           git diff --exit-code -- src/crypto/tables.ts \
             || { echo "❌ src/crypto/tables.ts 与生成脚本的结果不一致"; exit 1; }
 
-      - name: 类型检查（src 不许出现 Node 类型）
+      - name: 类型检查（核心层不许出现 Node 类型）
         run: npm run typecheck
 
       - name: 单元测试（密码学对 Node 的 crypto 逐用例比对）
@@ -52,9 +54,8 @@ jobs:
 
   panel-e2e:
     name: 在真面板里跑（真 ARM64）
-    # ⚠ 现在**只在手动触发时**跑，因为它的 mock 夹具已经落后于真实行为
-    #   （逐条修是另一件事，见 docs/findings.md F-115）。留着它、并把已经修好的
-    #   断言留在里面，是为了下次有人补夹具时能直接跑 —— 而不是删掉假装没这回事。
+    # 手动触发才跑：它要现构建面板的 Rust（~8 分钟），而且 mock 夹具仍在补齐
+    # （见 docs/findings.md F-115）。已经修好的断言留在里面，别删。
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04-arm
     steps:
@@ -72,49 +73,42 @@ jobs:
         with:
           workspaces: panel
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: 装依赖并构建插件产物
+        working-directory: plugin
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
       - name: 构建面板
         run: cargo build --release
         working-directory: panel
 
-      - name: 起面板（PLUGINS_DIR 指向本仓库的插件）
-        working-directory: panel
+      - name: 起面板（插件目录指向本仓库构建产物）
+        working-directory: plugin
         run: |
           set -euo pipefail
           TMP=$(mktemp -d)
           echo "TMP=$TMP" >> "$GITHUB_ENV"
-          # ⚠ `PANEL_ALLOW_PLAIN_TOKEN=1` 不能省：面板默认拒绝明文口令，会**直接退出**
-          #   （日志里一行 Error）。少了它的症状是"等 30 秒没等到插件"，
-          #   很容易被误判成"插件加载慢"——踩过一次，写在这里。
+          mkdir -p "$TMP/data"
+          # panel-llrt：监听地址在 data/config.json 里（不是环境变量）
+          printf '{"server":{"bind":"127.0.0.1:18795"}}' > "$TMP/data/config.json"
+          # ⚠ PANEL_ALLOW_PLAIN_TOKEN=1 不能省：面板默认拒绝明文口令，会**直接退出**。
+          #   少了它的症状是"等 30 秒没等到插件"，很容易被误判成"插件加载慢"。
+          PANEL_DATA_DIR="$TMP/data" \
+          PANEL_PLUGINS_DIR="$GITHUB_WORKSPACE/plugin/dist/panel-llrt" \
           PANEL_TOKEN=ci-token-plugin \
           PANEL_ALLOW_PLAIN_TOKEN=1 \
-          BIND_ADDR=127.0.0.1:18795 \
-          DB_PATH="$TMP/panel.db" \
-          PLUGINS_DIR="$GITHUB_WORKSPACE/plugin/plugins" \
-            ./target/release/plugin-panel > "$TMP/panel.log" 2>&1 &
+            "$GITHUB_WORKSPACE/panel/target/release/panel" > "$TMP/panel.log" 2>&1 &
           echo "PID=$!" >> "$GITHUB_ENV"
 
-      # 等引擎把插件装完，**不能只等 HTTP 起来**。
-      #
-      # 第一次跑就是在这一步红的：`/api/state` 一开始能返回 200 时引擎还没装完插件，
-      # `plugins` 是空数组 —— 断言在插件装好前 40 毫秒就下了结论。
-      # 这是这个项目里反复出现的一类错（「断言下得太早」），所以这里等的是
-      # **任务真的出现在调度器里**，而不是接口通不通。
-      #
-      # 两个坑都踩过，写在配置里免得后人重踩：
-      #   ① `/api/state` 没法区分「没有插件」和「还没装完」（F-003）
-      #   ② 任务定义在 **`jobs`** 字段里；`tasks` 是「正在跑的调用」（F-004）
-      #   ③ 循环里等到就 break，**等不到必须 exit 1** —— 第一版忘了，
-      #      于是 60 次都没等到也算这一步成功，错误被推到下一步、变得难查
+      # 等引擎把插件装完，**不能只等 HTTP 起来**（F-003：接口早 40ms 通，插件还是空数组）。
+      # 断言写在 scripts/ci_state_check.py 里，不写 heredoc（缩进一改就静默坏）。
       - name: 等插件装好（不是等接口通）
         run: |
           set -euo pipefail
-          # ⚠ 等的是**插件与任务都真的就位**，不是"接口通了"。
-          #   这个坑踩过：`/api/state` 早早返回 200 时 `plugins` 还是空数组，
-          #   断言在插件装好前 40 毫秒就下了结论（F-003）。
-          #
-          # ⚠ 断言写在 `scripts/ci_state_check.py` 里，**不写 heredoc**：
-          #   `run: |` 里的 heredoc 结束符必须顶格，一改缩进就静默坏掉；
-          #   而且本机也能拿一份 state.json 直接验（不用等 CI 红）。
           got=0
           for i in $(seq 1 60); do
             curl -fsS -H 'X-Panel-Token: ci-token-plugin' \
@@ -132,7 +126,7 @@ jobs:
           import json, os
           s = json.load(open(os.environ['TMP'] + '/state.json'))
           print('plugins =', [p['name'] for p in s.get('plugins', [])])
-          print('jobs    =', [j['name'] for j in s.get('jobs', [])])
+          print('tasks   =', [t['name'] for t in (s.get('tasks') or s.get('jobs') or [])])
           "
             exit 1
           fi
@@ -140,34 +134,20 @@ jobs:
       - name: 插件加载了、任务登记了、没有错
         run: python3 plugin/scripts/ci_state_check.py loaded "$TMP/state.json"
 
-      - name: 沙箱内的自检必须通过（这是 M0 的核心证据）
+      - name: 沙箱内的自检必须通过
         run: |
           set -euo pipefail
-          # 自检是**路由**不是任务（用户不该在任务列表里看到"自检"），所以这里是 GET。
-          # 它验的是沙箱这一层（QuickJS + 无 TextEncoder/Buffer/crypto + SQLite）：
-          # 「Node 里绿」和「沙箱里绿」是两件事，不对的话表现是"上游回签名错误"。
+          # 自检是**路由**不是任务，所以这里是 GET。
           curl -fsS -H 'X-Panel-Token: ci-token-plugin' \
             http://127.0.0.1:18795/plugins/mcloud/api/selftest -o "$TMP/selftest.json"
           python3 plugin/scripts/ci_state_check.py selftest "$TMP/selftest.json"
 
-      # ⚠ 这里原来还有一段「跑 10 次 diag，验负延迟被排除」——`diag` 也改成路由了，
-      #   没有任务可跑。那件事（手动触发的负延迟不进统计）是**面板**的行为，
-      #   由面板自己的用例守（`engine.rs` / `scripts/smoke.py`），插件 CI 不该再验一遍。
-
-      # ══════════ 对着 mock 上游跑完整条链（CI 绝不碰真账号）══════════
-      #
-      # 这一段直接用仓库里的 `scripts/e2e-mock.sh` —— 和你在本机跑的是**同一份脚本**。
-      # 以前这里是手写的三大段（起 mock / 导入 / 断言字节），本机和 CI 各写一遍，
-      # 改一处就要改两处；现在只有一份，脚本里那些断言（query 逐字、备份好礼两步、
-      # 签名自洽）在两边都成立。
-      #
-      # 为什么值得：这些断言本来只有"真机出问题"才会发现 —— 签名写错、参数抄错、
-      # 步骤顺序错。CI 里对着 mock 断言，就能在提交时抓到，而且**永远不碰你的账号**。
-      - name: 对着 mock 上游跑完整条链（同一个脚本，本机也能跑）
+      # 对着 mock 上游跑完整条链（CI 绝不碰真账号）—— 与本地同一份脚本
+      - name: 对着 mock 上游跑完整条链
         run: |
           set -euo pipefail
           mkdir -p "$TMP/mock-e2e"
-          E2E_KEEP=0 bash plugin/scripts/e2e-mock.sh "$GITHUB_WORKSPACE/panel/target/release/plugin-panel" 18950 \
+          E2E_KEEP=0 bash plugin/scripts/e2e-mock.sh "$GITHUB_WORKSPACE/panel/target/release/panel" 18950 \
             2>&1 | tee "$TMP/mock-e2e/out.log"
 
       - name: 失败时把面板日志打出来

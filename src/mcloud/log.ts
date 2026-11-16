@@ -16,19 +16,12 @@
  *  ⚠ 两个都写是有意的：面板那条带时间戳/级别/插件名，是**权威**；环那条只为
  *    "面板重启之后界面还能看见上一次"。只写一处都会缺一块（见 `logRing.ts`）。
  */
-import { debug, error, fail, fatal, log, start, success, warn } from 'host-api';
+import { logTo } from '../ports/log.ts';
 import type { Store } from '../store/types.ts';
 import { appendRing } from './logRing.ts';
 
-export type LogLevel =
-  | 'debug'
-  | 'info'
-  | 'warn'
-  | 'error'
-  | 'fatal'
-  | 'start'
-  | 'success'
-  | 'fail';
+export type { LogLevel } from '../ports/log.ts';
+import type { LogLevel } from '../ports/log.ts';
 
 export function logBoth(
   store: Pick<Store, 'getState' | 'setState'>,
@@ -39,31 +32,8 @@ export function logBoth(
   /** @deprecated 只为兼容既有调用点保留；**不再**当作日志时间戳（见下面那段）。 */
   nowIso: string,
 ): void {
-  switch (level) {
-    case 'debug':
-      debug(msg);
-      break;
-    case 'warn':
-      warn(msg);
-      break;
-    case 'error':
-      error(msg);
-      break;
-    case 'fatal':
-      fatal(msg);
-      break;
-    case 'start':
-      start(msg);
-      break;
-    case 'success':
-      success(msg);
-      break;
-    case 'fail':
-      fail(msg);
-      break;
-    default:
-      log(msg);
-  }
+  // 级别 → 宿主的写法由宿主决定（面板映到 info/warn/error 并保留前缀，CLI 自己着色）
+  logTo(level, msg);
   // ⚠ 环里记的是**真实发生时刻**，不是调用方传进来的 `nowIso`。
   //   那个值是**一次 run 里冻结的**（为"跨零点算日界"设计的），拿它当时间戳会让
   //   一整趟的日志看起来全在同一毫秒（2026-11-16 现场：14 行只跨 12 毫秒，
