@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.4.1 · 插件 `mcloud-exchange`
+//   mcloud-plugin 0.4.2 · 插件 `mcloud-exchange`
 
 // src/entries/exchange.ts
 import { debug as debug2, log as log3, register_cron, worker_hint } from "host-api";
@@ -5510,7 +5510,6 @@ import {
 
 // src/drain.ts
 function drain(step, deps, opts) {
-  const startedAt = opts.startedAt ?? Date.now();
   const notes = [];
   let steps = 0;
   let lastNote = "";
@@ -5522,15 +5521,6 @@ function drain(step, deps, opts) {
         idle: true,
         steps,
         note: `${opts.label}：${steps} 步走完${lastNote ? ` —— ${lastNote}` : ""}`,
-        notes
-      };
-    }
-    if (Date.now() - startedAt > opts.deadlineMs) {
-      return {
-        ok: true,
-        idle: false,
-        steps,
-        note: `${opts.label}：走到时间上限（${opts.deadlineMs}ms / ${steps} 步），下一次接着走`,
         notes
       };
     }
@@ -5558,6 +5548,15 @@ function drain(step, deps, opts) {
         notes
       };
     }
+  }
+  if (opts.more !== void 0 && opts.more()) {
+    return {
+      ok: false,
+      idle: false,
+      steps,
+      note: `${opts.label}：走满 ${opts.maxSteps} 步还没完 —— 下一趟接着走${lastNote ? `（最后一步：${brief(lastNote, opts.label)}）` : ""}`,
+      notes
+    };
   }
   return {
     ok: true,
@@ -6223,7 +6222,7 @@ function logBoth(store2, level, msg, nowIso) {
     default:
       log2(msg);
   }
-  appendRing(store2, nowIso, level, msg);
+  appendRing(store2, (/* @__PURE__ */ new Date()).toISOString(), level, msg);
 }
 
 // src/mcloud/tasks/stepLog.ts
@@ -6279,7 +6278,7 @@ function exchangeOnce(deps, recipe) {
       return { ok: x.ok, note: x.note, idle: x.done };
     },
     taskDeps2,
-    { label: `换票（${recipe}）`, maxSteps: 4, deadlineMs: 3e4, startedAt: Date.now() }
+    { label: `换票（${recipe}）`, maxSteps: 4 }
   );
   return { ok: r.ok && jwtFresh(deps.store, Date.now(), recipe), note: r.note };
 }
@@ -6400,8 +6399,6 @@ function runExchange(deps, opts = {}) {
       const a = drain(runOrderStep, deps, {
         label: "兑换",
         maxSteps: 8,
-        deadlineMs: Math.min(DEADLINE_MS, started + 3e4),
-        startedAt: started,
         // 停在 `order` 之前 —— 下单那一枪留给阶段 B（那时才压整点）
         more: () => currentStep(deps.store) !== "order" && currentStep(deps.store) !== null
       });
@@ -6424,8 +6421,6 @@ function runExchange(deps, opts = {}) {
     const one = drain(runOrderStep, deps, {
       label: "兑换",
       maxSteps: 10,
-      deadlineMs: DEADLINE_MS,
-      startedAt: started,
       // ⚠ 干跑：停在 `order` **之前** —— 一枪都不发
       ...opts.dryRun ? { more: () => currentStep(deps.store) !== "order" && currentStep(deps.store) !== null } : {}
     });

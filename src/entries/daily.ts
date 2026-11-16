@@ -160,11 +160,9 @@ register_cron(
     const onceHints = new Set<string>();
     // 先打一行，别让用户只看到插件加载的三行
     logBoth(store, 'start', '日常 · 开始', nowIso);
-    // ⚠ **整趟的硬截止**：宿主按"一次运行"计预算（默认 600 秒，含所有账号），
-    //   而每个账号原先各按自己的开始时间算截止 ⇒ 3 个号叠起来能超过它、被强杀
-    //   （2026-11-03 08:05：`执行超过预算 300s，被强制中断（疑似死循环）`）。
-    //   留 25 秒给"写记录 + 发推送"。
-    const hardStopAt = Date.now() + BUDGET_MS - 25_000;
+    // ⚠ 这里**没有**整趟硬截止：插件不再自己叠时间限制（用户口径 2026-11-16
+    //   「不需要任何内部时间限制，这个没搞懂有什么作用除了制造麻烦」）。
+    //   运行时长由面板的执行预算管（`budget_ms`），超了是面板的事，日志也看得见。
     const runs = forEachTaskAccount(store, '日常', p, transport, (deps, acctId) => {
       const who = labelOf(store, acctId);
       const tag = `[${shortLabel(who)}]`;
@@ -172,14 +170,7 @@ register_cron(
       logBoth(store, 'start', tag, nowIso);
       const skippedSteps: string[] = [];
       let prev = '';
-      // 预算不够再跑下一个号时**干净收尾**（留 40 秒）：剩下的下次再来，
-      // 而不是被宿主一刀砍掉、连这一趟的记录都没有。
-      if (hardStopAt - Date.now() < 40_000) {
-        logBoth(store, 'warn', `${tag} 预算快到了（还剩 ${Math.max(0, Math.round((hardStopAt - Date.now()) / 1000))} 秒），这个号下次再跑`, nowIso);
-        return { name: '日常', ok: true, note: '预算到点，这个号下次再跑', detail: [], steps: [], skipped: true };
-      }
       const r = runDaily(deps, {
-        deadlineAt: hardStopAt,
         onPhase: (phase) => logBoth(store, 'info', `${tag} ${phase}…`, nowIso),
         // 上传 / 访问日志 / 打卡这些是**排查细节**，走 debug；
         // info 只留用户能看懂的任务结论。

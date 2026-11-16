@@ -122,6 +122,8 @@ function collectOnce(
     ok,
     note,
     stopped,
+    // 听口令那一支不发领取请求 ⇒ 这里明确"没做事"，收尾统计不算"好了"
+    didWork: false,
   });
 
   logBoth(store, 'start', '直播口令：开始查开播', deps.nowIso);
@@ -148,8 +150,6 @@ function collectOnce(
   const gateOut = drain(runLiveGate, deps, {
     label: '有没有开播',
     maxSteps: 3,
-    deadlineMs: 40_000,
-    startedAt: runStartMs,
   });
   // ⚠ 必须读**这个账号**的袋（deps.store），不能读模块级 `store`：
   //   模块级是 `default` 袋，直播检查/池子都写在第一个账号的袋里；读错袋
@@ -268,8 +268,6 @@ function collectOnce(
         label: `验证「${fresh.value}」`,
         maxSteps: 8,
         // 一条口令的验证 = 读余额 → 领 → 回读余额，给 25 秒足够
-        deadlineMs: 25_000,
-        startedAt: Date.now(),
         gap: true,
       });
       const nowPet = loadPoolFrom(deps.store).pool;
@@ -327,7 +325,7 @@ function drawOnce(
   deps: TaskDeps,
   runStartMs: number,
   onlyCodes: readonly string[] | null,
-): { steps: RunStep[]; detail: string[]; ok: boolean; note: string } {
+): { steps: RunStep[]; detail: string[]; ok: boolean; note: string; didWork: boolean } {
   // 每次领取前先判一次原生 token：到期就自动续，离到期还远则零请求。
   const auth = runAuthRefresh(deps);
   const before = loadDrawState(deps.store);
@@ -339,23 +337,24 @@ function drawOnce(
     maxSteps: 12,
     // 一次抽奖 = 一步，连着抽就是连发 ⇒ 步与步之间随机隔 0.5–2 秒（`deps.gapMs`）
     gap: true,
-    deadlineMs: Math.max(15_000, runStartMs + BUDGET_MS - Date.now() - 3_000),
-    startedAt: runStartMs,
   });
   // `drain` 的 `brief` 对超长 note 会退成「领小红花：好了」，用户根本不知道
   // 领没领到。这里直接读本轮落盘的 summary（`3 条领到 2 条，进账 10 朵`）。
   const st = loadDrawState(deps.store);
-  // 这一趟是“新领”还是“口令没变、没重复发请求”：后者把上次结果标成「上次」，
-  // 免得用户连点几次都看到同一段，以为在报假数据。
-  // 是否“没发新请求”：看**跑之前和跑完之后是不是同一轮**（startedAt 不变），
-  // 不能看 drain 的收尾 note —— 新跑完的一轮也会被状态机写成“已跑完”。
-  // ⚠ **本次到底有没有领**：状态机起新一轮时会把 `startedAt` 写成"现在"。
-  //   以前这里靠"before/after 是同一轮"来判 `replay`，然后把**上次**的结果
-  //   当成这次的结果播出来（还带 `success` 绿灯）——
-  //   用户的原话：「日志离谱的说 success 上次成功，上次关你屁事啊」。
-  //   现在只有"这一趟真的起了一轮"才播结果；否则明说本次没领。
-  const freshRound = st !== null && st.startedAt === deps.nowIso;
-  const rows = freshRound ? (st?.results ?? []) : [];
+  // **本次到底有没有真做事** —— 判据只有一条：这一趟 drain 有没有走到
+  // "真的发了请求"那一步。
+  //
+  // ⚠ 别再用时间戳去猜（以前拿状态里的 startedAt 和 deps.nowIso 比相等）：
+  //   · 时间戳是**全局冻结值**，一次 run 里所有行都一样 ⇒ 猜不出"这轮是不是新的"；
+  //   · 2026-11-16 11:59:48 现场：整趟 14 行只跨 12 毫秒（根本没发请求），
+  //     却把**上一轮**的 `results` 当成本轮战果播了出来（「领到 5 朵 / 10 朵」+
+  //     「3/3 个账号好了」）。用户的原话：「上次成功关你屁事啊」。
+  //
+  // `drain` 的 `steps` 是"真的执行了几步"，`notes` 是每步原话；"口令没变/没有口令/
+  // 这一轮已跑完"这三种收尾**一步都不发请求**，状态机自己也是这么说的。
+  const idleNoRequest = /没再发请求|没有口令|已跑完|那一轮已跑完/.test(r.note);
+  const didWork = r.steps > 0 && !idleNoRequest;
+  const rows = didWork ? (st?.results ?? []) : [];
   const steps: RunStep[] = [
     {
       name: '凭据续期',
@@ -374,11 +373,11 @@ function drawOnce(
       idle: false,
     };
   }));
-  const finalNote = freshRound && st?.step === 'done' && st.summary
+  const finalNote = didWork && st?.step === 'done' && st.summary
     ? st.summary
-    : freshRound
+    : didWork
       ? r.note
-      : `本次没领 —— ${r.note}`;
+      : `本次没发请求 —— ${r.note}`;
   // `drain` 收尾时 `idle` 常为 true（状态机“走完”），不能拿它当“没领”。
   // 只有明确说没开/跳过才算 idle；领到/好了是实打实的结果。
   const noClaim = /没开|跳过|没有可|不用领|无需/.test(finalNote);
@@ -386,8 +385,9 @@ function drawOnce(
     name: '领小红花',
     ok: r.ok,
     note: finalNote,
-    // 没真跑一轮 ⇒ `idle`（界面上是灰色 info，不是成功绿灯）
-    idle: freshRound ? r.idle === true && noClaim : true,
+    // 没真发请求 ⇒ `idle`（灰色 info，**不是**成功绿灯）。
+    // 用户口径：什么都没做还盖绿灯，就是假成功。
+    idle: didWork ? r.idle === true && noClaim : true,
     pending: r.pending === true,
   });
   return {
@@ -395,6 +395,7 @@ function drawOnce(
     detail: steps.map((s) => userLine(s)).filter((x): x is string => x !== null),
     ok: r.ok,
     note: finalNote,
+    didWork,
   };
 }
 
@@ -556,7 +557,9 @@ register_cron(
       logBoth(store, hard > 0 ? 'warn' : 'debug', `${tag} ${tail}`, at);
     }
 
-    const okCount = runs.filter((x) => x.result.ok).length;
+    // ⚠ 只算**真发了请求**的账号：什么都没做（口令没变/没有口令）不算"好了"。
+    //   2026-11-16 现场就是三个号一步没做、日志写「3/3 个账号好了」。
+    const okCount = runs.filter((x) => x.result.ok && (x.result as { didWork?: boolean }).didWork !== false).length;
     const idleAll =
       runs.length > 0 &&
       runs.every(

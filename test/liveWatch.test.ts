@@ -29,9 +29,14 @@ test('播报：不许再出现「上次：」这种把上一轮当这一轮的�
   const d = src('src/entries/live.ts');
   assert.ok(!/prefix = replay \? '上次：'/.test(d), '旧的 replay 前缀必须删掉');
   assert.ok(!/`\$\{prefix\}/.test(d), '不许再拼那个前缀');
-  // 只有"这一趟真的起了一轮"才播结果
-  assert.match(d, /const freshRound = st !== null && st\.startedAt === deps\.nowIso;/, '按"本轮时间戳"判是否本次');
-  assert.match(d, /本次没领/, '没跑就要明说没领');
+  // ⚠ 2026-11-16 改：判"本轮有没有做事"**不许**用时间戳。
+  //   时间戳是一次 run 里冻结的同一个值 ⇒ 猜不出这轮是不是新的；
+  //   11:59:48 现场就是 14 行只跨 12 毫秒、却把上一轮结果当本轮播了。
+  assert.ok(!/st\.startedAt === deps\.nowIso/.test(d), '不许再用冻结时间戳判"本轮"');
+  assert.match(d, /const didWork = r\.steps > 0 && !idleNoRequest;/, '按"真的走了几步 + 有没有发请求"判');
+  assert.match(d, /本次没发请求/, '没发请求就要明说');
+  // 收尾统计只算真做了事的账号（"3/3 个账号好了"不许把什么都不算进去）
+  assert.match(d, /didWork !== false/, '收尾统计要排除没做事的账号');
 });
 
 test('领小红花：没得领时要把判据印出来（池/可领/上一轮/已领过）', () => {
@@ -39,7 +44,8 @@ test('领小红花：没得领时要把判据印出来（池/可领/上一轮/�
   assert.match(d, /池里 \$\{pool\.codes\.length\} 条/, 'idle 时印池子条数');
   assert.match(d, /这个号能领 \$\{codes\.length\} 条/, '印这个号能领几条');
   assert.match(d, /上一轮 \$\{done\.length\} 条/, '印上一轮几条');
-  assert.match(d, /上次那轮：\$\{s\.summary/, '口令没变时也要说清是"上次那轮"');
+  // 2026-11-16：那句改写 `drawReport(s)?.line`（统一措辞，含"已领过"那一栏）
+  assert.match(d, /上次那轮：\$\{drawReport\(s\)\?\.line/, '口令没变时也要说清是"上次那轮"');
 });
 
 test('池子：2 条有效 = 够了（VALID_ENOUGH 是抓取停止的唯一判据）', () => {

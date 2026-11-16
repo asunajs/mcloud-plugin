@@ -85,7 +85,7 @@ export function exchangeOnce(deps: TokenGateDeps, recipe: SessionRecipe): { ok: 
       return { ok: x.ok, note: x.note, idle: x.done };
     },
     taskDeps,
-    { label: `换票（${recipe}）`, maxSteps: 4, deadlineMs: 30_000, startedAt: Date.now() },
+    { label: `换票（${recipe}）`, maxSteps: 4 },
   );
   return { ok: r.ok && jwtFresh(deps.store, Date.now(), recipe), note: r.note };
 }

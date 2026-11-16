@@ -15,20 +15,30 @@
 //
 // 现在任务可以声明长预算（`{ budget_ms }`），就可以在一次触发里连跑多步，
 // 直到状态机自己说「没得做了」。面板上就变成「一次运行 = 一条任务 = 一个结果」。
+//
+// # 为什么这里**没有**时间闸（2026-11-16 删掉）
+//
+// 以前有 `deadlineMs` + `startedAt`：跑到"还剩多少毫秒"就主动收手。它带来的是
+// **纯麻烦**，没有一分好处：
+//
+//   · 两个参数语义相反 —— 调用点传的是「还剩多久」（如 `runStart + 600s - now`），
+//     而这里算的是 `now - startedAt`（「已经过了多久」）。前面步骤一多，
+//     一进循环就成立 ⇒ **0 步**退出，却还返回 `ok: true`。
+//     2026-11-16 10:30 现场的「领小红花：走到时间上限（16166ms / 0 步）」+
+//     「直播完成：3/3 个账号好了」就是它：三个号一步没做，日志说全好了。
+//   · 就算语义写对，它也只会**砍掉本来能做完的步骤**（用户原话：「不需要任何内部
+//     时间限制，这个没搞懂有什么作用除了制造麻烦」）。
+//
+// 现在只剩一道护栏：`maxSteps`（**步数**，不是时间）。上游可能一直派新活
+//（App 任务就是真实例子：做完一条，读数刷新后又冒一条），所以要有上限；
+// 走满上限就**如实说没走完**，不假装成功。
+//
+// 运行时长由**面板的执行预算**管（`register_cron` / `register_route` 的 `budget_ms`），
+// 那是外部的、看得见的；插件自己不再叠一层。
 
 import { waitGap, type TaskDeps, type TaskOutcome } from './mcloud/tasks/base.ts';
 
 /** 把一条「一次一步」的状态机在**一次触发里**跑到走完。
- *
- *  # 这是整个重写的核心原语
- *
- *  老的 25 条任务里有一半是状态机（任务拓展、App 任务、领小红花、换票），
- *  每次触发只推进一步 —— 因为全局执行预算是 2 秒，一次触发发不了几个请求。
- *  于是「任务拓展」在面板上表现为一条**永远在跑**的任务，用户看不出它到底做完没有。
- *
- *  现在任务可以声明长预算（`{ budget_ms }`），就可以在一次触发里连跑多步，
- *  直到状态机自己说「没得做了」（`idle`）或者碰到上限。面板上就变成
- *  「一次运行 = 一条任务 = 一个结果」。
  *
  *  # 什么时候算「走完」——三个出口，缺一不可
  *
@@ -47,14 +57,12 @@ import { waitGap, type TaskDeps, type TaskOutcome } from './mcloud/tasks/base.ts
  *  回查**再也**不会发生。签到等于没确认。
  *  （这个 bug 是重写时差点漏掉的：老的「一次一步 + 每 15 分钟」结构恰好绕开了它。）
  *
- *  # 两道上限都要有
+ *  # 唯一的护栏：`maxSteps`
  *
- *  - `maxSteps`：状态机可能因为上游一直给新待办而**永不**停
- *    （App 任务是真实例子：做完一条，读数刷新后又冒一条）。
- *  - `deadlineMs`：比任务的 `budget_ms` 略小 —— 到点主动收手，
- *    留下「还差多少」的信息，而不是被看门狗当成死循环掐断。
- *    **主动收手和被掐断在日志里长得完全不一样**，前者能继续，后者只会留下
- *    「疑似死循环」这句误导人的话。
+ *  状态机可能因为上游一直给新待办而**永不**停。走满 `maxSteps` 时：
+ *  · 调用方给了 `more()` 且它仍说"还有" ⇒ `ok: false`（**没走完就是没走完**，
+ *    不冒充成功；下一趟接着走）
+ *  · 否则（没有 `more` 判据）⇒ `ok: true`，用最后一步自己的原话收尾
  */
 export function drain(
   step: (d: TaskDeps) => TaskOutcome,
@@ -62,8 +70,6 @@ export function drain(
   opts: {
     label: string;
     maxSteps: number;
-    deadlineMs: number;
-    startedAt?: number;
     /** 「状态里还有没做完的段吗」。给了就在每轮**开头**判（第一轮除外 ——
      *  总得先跑一次才知道要干嘛）。没给就只认 `idle` / `skipped`。 */
     more?: () => boolean;
@@ -75,11 +81,10 @@ export function drain(
      *  什么时候该开：这一条 drain 的"一步"**就是**一个独立任务时（领取AI豆 是
      *  "队列里一条一个请求"）—— 各条之间不该连着打。
      *  什么时候别开：一步只是同一条任务内部的一段（上传→确认→转换），
-     *  开了会把整条拉长，白吃预算；那种要按**任务边界**等（见 `appTask.advance`）。 */
+     *  开了会把整条拉长；那种要按**任务边界**等（见 `appTask.advance`）。 */
     gap?: boolean | undefined;
   },
 ): DrainResult {
-  const startedAt = opts.startedAt ?? Date.now();
   const notes: string[] = [];
   let steps = 0;
   // 上一步的原话。摘要里要带上它 —— 「2 步走完」不告诉任何人发生了什么，
@@ -96,15 +101,6 @@ export function drain(
         idle: true,
         steps,
         note: `${opts.label}：${steps} 步走完${lastNote ? ` —— ${lastNote}` : ''}`,
-        notes,
-      };
-    }
-    if (Date.now() - startedAt > opts.deadlineMs) {
-      return {
-        ok: true,
-        idle: false,
-        steps,
-        note: `${opts.label}：走到时间上限（${opts.deadlineMs}ms / ${steps} 步），下一次接着走`,
         notes,
       };
     }
@@ -135,6 +131,20 @@ export function drain(
         notes,
       };
     }
+  }
+
+  // 走满 `maxSteps`。**区分两种**：调用方还有判据且仍说"还有" ⇒ 没走完，
+  // 不许报成功（否则就是"跑了 40 步没做完"却绿灯）。
+  if (opts.more !== undefined && opts.more()) {
+    return {
+      ok: false,
+      idle: false,
+      steps,
+      note:
+        `${opts.label}：走满 ${opts.maxSteps} 步还没完 —— 下一趟接着走` +
+        `${lastNote ? `（最后一步：${brief(lastNote, opts.label)}）` : ''}`,
+      notes,
+    };
   }
 
   return {

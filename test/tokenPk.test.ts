@@ -343,8 +343,9 @@ test('月上限到了的那条不做（连 click 都不发）', () => {
   assert.equal(sent.filter((x) => x === 'POST /ycloud/tokenpk/task/step/click').length, 1, sent.join(', '));
 });
 
-test('预算常量：90 秒是"从日常开始算"的里程碑（必须留得下领奖这一步）', () => {
+test('这一族只有步数上限：插件不设内部时间限制（2026-11-16 口径）', () => {
   assert.equal(TOKENPK_BUDGET.maxSteps, 80);
-  // 2026-11-02 15:55 现场：45 秒那档领奖领到一半被截，紧接着领取AI豆 0 步
-  assert.equal(TOKENPK_BUDGET.deadlineMs, 90_000);
+  // 2026-11-02 15:55 那次"领奖领到一半被截、紧接着 0 步"正是时间闸造成的；
+  // 现在整类删掉，运行时长归面板的执行预算。
+  assert.ok(!('deadlineMs' in TOKENPK_BUDGET));
 });

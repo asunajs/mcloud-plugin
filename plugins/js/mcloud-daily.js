@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.4.1 · 插件 `mcloud-daily`
+//   mcloud-plugin 0.4.2 · 插件 `mcloud-daily`
 
 // src/entries/daily.ts
 import { debug as debug2, register_cron } from "host-api";
@@ -1420,7 +1420,6 @@ function runTask(deps, spec, judge) {
 
 // src/drain.ts
 function drain(step, deps, opts) {
-  const startedAt = opts.startedAt ?? Date.now();
   const notes = [];
   let steps = 0;
   let lastNote = "";
@@ -1432,15 +1431,6 @@ function drain(step, deps, opts) {
         idle: true,
         steps,
         note: `${opts.label}：${steps} 步走完${lastNote ? ` —— ${lastNote}` : ""}`,
-        notes
-      };
-    }
-    if (Date.now() - startedAt > opts.deadlineMs) {
-      return {
-        ok: true,
-        idle: false,
-        steps,
-        note: `${opts.label}：走到时间上限（${opts.deadlineMs}ms / ${steps} 步），下一次接着走`,
         notes
       };
     }
@@ -1468,6 +1458,15 @@ function drain(step, deps, opts) {
         notes
       };
     }
+  }
+  if (opts.more !== void 0 && opts.more()) {
+    return {
+      ok: false,
+      idle: false,
+      steps,
+      note: `${opts.label}：走满 ${opts.maxSteps} 步还没完 —— 下一趟接着走${lastNote ? `（最后一步：${brief(lastNote, opts.label)}）` : ""}`,
+      notes
+    };
   }
   return {
     ok: true,
@@ -7665,7 +7664,7 @@ function readBalanceLine(deps, st, base) {
 }
 
 // src/mcloud/tasks/redpack.ts
-var REDPACK_BUDGET = { maxSteps: 90, deadlineMs: 6e4 };
+var REDPACK_BUDGET = { maxSteps: 90 };
 function redpackOn(deps) {
   return redpackEnabled(deps.store);
 }
@@ -8618,7 +8617,7 @@ function tasksFrom(result) {
 }
 
 // src/mcloud/tasks/tokenPk.ts
-var TOKENPK_BUDGET = { maxSteps: 80, deadlineMs: 9e4 };
+var TOKENPK_BUDGET = { maxSteps: 80 };
 function summaryFromState(st, draw) {
   return summaryOf({
     claimed: st.claimedCount,
@@ -9396,7 +9395,7 @@ function exchangeOnce(deps, recipe) {
       return { ok: x.ok, note: x.note, idle: x.done };
     },
     taskDeps2,
-    { label: `换票（${recipe}）`, maxSteps: 4, deadlineMs: 3e4, startedAt: Date.now() }
+    { label: `换票（${recipe}）`, maxSteps: 4 }
   );
   return { ok: r.ok && jwtFresh(deps.store, Date.now(), recipe), note: r.note };
 }
@@ -9665,11 +9664,6 @@ function once(name, fn, deps) {
 }
 function runDaily(deps, opts = {}) {
   const started = Date.now();
-  const cap = (ms) => {
-    const at = opts.deadlineAt;
-    if (at === void 0) return ms;
-    return Math.max(5e3, Math.min(ms, at - Date.now() - 8e3));
-  };
   const steps = [];
   const detail = [];
   const push = (r) => {
@@ -9702,7 +9696,7 @@ function runDaily(deps, opts = {}) {
           return { ok: x.ok, note: x.note, idle: x.done };
         },
         deps,
-        { label: `换票（${PAGE_LABEL[page]}）`, maxSteps: 4, deadlineMs: cap(3e4), startedAt: started }
+        { label: `换票（${PAGE_LABEL[page]}）`, maxSteps: 4 }
       );
       push({ name: `换票（${PAGE_LABEL[page]}）`, ok: r.ok, note: r.note, idle: r.idle });
     } else {
@@ -9716,8 +9710,6 @@ function runDaily(deps, opts = {}) {
       const r = drain(runSign, deps, {
         label: "签到",
         maxSteps: 4,
-        deadlineMs: cap(2e4),
-        startedAt: started,
         more: signPending
       });
       return { name: "签到", ok: r.ok, note: r.note, idle: r.idle };
@@ -9738,8 +9730,6 @@ function runDaily(deps, opts = {}) {
         const r = drain(runExpansionStep, deps, {
           label: "任务拓展",
           maxSteps: 12,
-          deadlineMs: cap(45e3),
-          startedAt: started,
           onStep: (note) => opts.onNote?.(`任务拓展：${note}`)
         });
         return { name: "任务拓展", ok: r.ok, note: r.note, idle: r.idle };
@@ -9750,9 +9740,7 @@ function runDaily(deps, opts = {}) {
     (() => {
       const r = drain(runAppTaskMatrix, deps, {
         label: "App 任务矩阵",
-        maxSteps: MATRIX_MARKETS.length,
-        deadlineMs: cap(25e3),
-        startedAt: started
+        maxSteps: MATRIX_MARKETS.length
       });
       return { name: "App 任务矩阵（只看）", ok: r.ok, note: r.note, idle: true };
     })()
@@ -9766,13 +9754,11 @@ function runDaily(deps, opts = {}) {
       // ⚠ 20 步是"一条没成整趟停"那会儿的数：那时候每次最多做到第 10 步就收工了。
       //   现在逐条失败**不再中止**（2026-11-01，见 docs/app-task-ids.md），
       //   十来条各自 2~6 步 ⇒ 20 步会在半路截断（截断不报错，下一次接着走，
-      //   但用户看到的是"这一趟只做了一半"）。时间上限仍是 60s 那道硬闸。
+      //   但用户看到的是"这一趟只做了一半"）。现在没有时间闸，只受步数上限约束。
       maxSteps: 40,
       // ⚠ 60 秒是**没有任务间间隔**时的数。现在每条之间随机隔 0.5–2 秒
       //   （`gapMs`，十几条就是 10–25 秒）⇒ 预算必须跟着放宽，否则会被硬闸截在半路
       //   （截断不报错，用户看到的是"这一趟只做了一半"）。
-      deadlineMs: cap(9e4),
-      startedAt: started,
       // 上传 / 访问日志 / 打卡 / 重试逐步打出来；否则日志只剩最后一句
       // 「这一趟没有全确认」，用户看不到文件到底传没传。
       onStep: (note) => opts.onNote?.(`App 任务：${note}`)
@@ -9797,8 +9783,6 @@ function runDaily(deps, opts = {}) {
     const r = drain(redpackStep, deps, {
       label: "红包派对",
       maxSteps: REDPACK_BUDGET.maxSteps,
-      deadlineMs: REDPACK_BUDGET.deadlineMs,
-      startedAt: started,
       // 「进行中: X」这种内部进度走 debug（逐行的用户读数是上面那条通道）
       onStep: (note) => opts.onNote?.(`红包派对：${note}`)
     });
@@ -9818,8 +9802,6 @@ function runDaily(deps, opts = {}) {
     const r = drain(tokenPkStep, deps, {
       label: "算力大作战",
       maxSteps: TOKENPK_BUDGET.maxSteps,
-      deadlineMs: TOKENPK_BUDGET.deadlineMs,
-      startedAt: started,
       // 「已登记 X —— 下一步 Y」这种内部进度走 debug；用户读数是下面那些逐行
       onStep: (note) => opts.onNote?.(`算力大作战：${note}`)
     });
@@ -9839,12 +9821,9 @@ function runDaily(deps, opts = {}) {
       // ⚠ 领取这一类是"队列里一条一个请求"：**队列空了就停**（`more`），
       //   而不是靠步数上限兜 —— 靠上限兜的表现是"刚好领完"也被说成"没做完"。
       maxSteps: 24,
-      // ⚠ 这一格必须**大于前面所有步的预算**：`deadlineMs` 是从日常开始算的
-      //   （`startedAt: started` 全链共享）。2026-11-02 15:55 现场：算力大作战
-      //   跑到 45 秒被截，而领取的 40 秒早已过 ⇒ 「走到时间上限（40000ms / 0 步）」，
+      // 2026-11-02 15:55 现场（历史上这里还夹过"整趟预算"）：算力大作战
+      //   跑到 45 秒被截，而后面那一步的"剩余预算"早已过 ⇒ 0 步（时间闸已删，见 F-137），
       //   这一天剩下的 AI豆 一颗都没领。150 秒 = 前面全跑满也还能领。
-      deadlineMs: cap(15e4),
-      startedAt: started,
       // ⚠ 这一条 drain 的"一步"**就是一个独立条目**（队列里一条一个请求）⇒
       //   条与条之间要隔（`gapMs`，0.5–2 秒），否则就是一串连发。
       gap: true,
@@ -10281,7 +10260,7 @@ function logBoth(store2, level, msg, nowIso) {
     default:
       log(msg);
   }
-  appendRing(store2, nowIso, level, msg);
+  appendRing(store2, (/* @__PURE__ */ new Date()).toISOString(), level, msg);
 }
 
 // src/mcloud/dailyState.ts
@@ -10970,19 +10949,13 @@ register_cron(
     const today2 = nowIso.slice(0, 10);
     const onceHints = /* @__PURE__ */ new Set();
     logBoth(store, "start", "日常 · 开始", nowIso);
-    const hardStopAt = Date.now() + BUDGET_MS - 25e3;
     const runs = forEachTaskAccount(store, "日常", p, transport, (deps, acctId) => {
       const who = labelOf(store, acctId);
       const tag = `[${shortLabel(who)}]`;
       logBoth(store, "start", tag, nowIso);
       const skippedSteps = [];
       let prev = "";
-      if (hardStopAt - Date.now() < 4e4) {
-        logBoth(store, "warn", `${tag} 预算快到了（还剩 ${Math.max(0, Math.round((hardStopAt - Date.now()) / 1e3))} 秒），这个号下次再跑`, nowIso);
-        return { name: "日常", ok: true, note: "预算到点，这个号下次再跑", detail: [], steps: [], skipped: true };
-      }
       const r2 = runDaily(deps, {
-        deadlineAt: hardStopAt,
         onPhase: (phase) => logBoth(store, "info", `${tag} ${phase}…`, nowIso),
         // 上传 / 访问日志 / 打卡这些是**排查细节**，走 debug；
         // info 只留用户能看懂的任务结论。

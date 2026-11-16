@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.4.1 · 插件 `mcloud-live`
+//   mcloud-plugin 0.4.2 · 插件 `mcloud-live`
 
 // src/entries/live.ts
 import { debug as debug2, register_cron } from "host-api";
@@ -3556,7 +3556,7 @@ function logBoth(store2, level, msg, nowIso) {
     default:
       log(msg);
   }
-  appendRing(store2, nowIso, level, msg);
+  appendRing(store2, (/* @__PURE__ */ new Date()).toISOString(), level, msg);
 }
 
 // src/mcloud/tasks/stepLog.ts
@@ -3690,7 +3690,6 @@ function clearError(store2, task, nowIso) {
 
 // src/drain.ts
 function drain(step, deps, opts) {
-  const startedAt = opts.startedAt ?? Date.now();
   const notes = [];
   let steps = 0;
   let lastNote = "";
@@ -3702,15 +3701,6 @@ function drain(step, deps, opts) {
         idle: true,
         steps,
         note: `${opts.label}：${steps} 步走完${lastNote ? ` —— ${lastNote}` : ""}`,
-        notes
-      };
-    }
-    if (Date.now() - startedAt > opts.deadlineMs) {
-      return {
-        ok: true,
-        idle: false,
-        steps,
-        note: `${opts.label}：走到时间上限（${opts.deadlineMs}ms / ${steps} 步），下一次接着走`,
         notes
       };
     }
@@ -3738,6 +3728,15 @@ function drain(step, deps, opts) {
         notes
       };
     }
+  }
+  if (opts.more !== void 0 && opts.more()) {
+    return {
+      ok: false,
+      idle: false,
+      steps,
+      note: `${opts.label}：走满 ${opts.maxSteps} 步还没完 —— 下一趟接着走${lastNote ? `（最后一步：${brief(lastNote, opts.label)}）` : ""}`,
+      notes
+    };
   }
   return {
     ok: true,
@@ -3785,7 +3784,7 @@ function exchangeOnce(deps, recipe) {
       return { ok: x.ok, note: x.note, idle: x.done };
     },
     taskDeps3,
-    { label: `换票（${recipe}）`, maxSteps: 4, deadlineMs: 3e4, startedAt: Date.now() }
+    { label: `换票（${recipe}）`, maxSteps: 4 }
   );
   return { ok: r.ok && jwtFresh(deps.store, Date.now(), recipe), note: r.note };
 }
@@ -4583,7 +4582,7 @@ function runLiveDraw(deps, opts = {}) {
       return {
         ok: true,
         idle: true,
-        note: `口令没变（${codes.length} 条都是这个号领过的），本次没再发请求；上次那轮：${s.summary ?? ""}`
+        note: `口令没变（${codes.length} 条都是这个号领过的），本次没再发请求；上次那轮：${drawReport(s)?.line ?? s.summary ?? ""}`
       };
     }
     s = {
@@ -4719,9 +4718,12 @@ function judge(s, label, res, nowIso) {
       st.balanceAfter = v;
       st.step = "done";
       st.finishedAt = nowIso;
-      const gained = (st.balanceAfter ?? 0) - (st.balanceBefore ?? 0);
-      const okCount = st.results.filter((r) => r.kind === "succeeded").length;
-      st.summary = `${st.results.length} 条口令领到 ${okCount} 条，进账 ${gained} 朵（${st.balanceBefore} → ${st.balanceAfter}）`;
+      st.summary = drawReport(st)?.line ?? "";
+      if (st.summary === "") {
+        const gained = (st.balanceAfter ?? 0) - (st.balanceBefore ?? 0);
+        const okCount = st.results.filter((r) => r.kind === "succeeded").length;
+        st.summary = `${st.results.length} 条口令领到 ${okCount} 条，进账 ${gained} 朵`;
+      }
       return { state: st, ok: true, note: st.summary };
     }
     default:
@@ -4730,6 +4732,43 @@ function judge(s, label, res, nowIso) {
 }
 function sameList(a, b) {
   return a.length === b.length && a.every((v, i) => v === b[i]);
+}
+function drawReport(st) {
+  if (st === null) return null;
+  const of = (k) => st.results.filter((r) => r.kind === k).map((r) => r.code);
+  const succeeded = st.results.filter((r) => r.kind === "succeeded").length;
+  const gained = st.balanceBefore === void 0 || st.balanceAfter === void 0 ? 0 : st.balanceAfter - st.balanceBefore;
+  const parts = [];
+  if (st.results.length === 0) parts.push("还没发出口令");
+  else parts.push(`${st.results.length} 条口令领到 ${succeeded} 条`);
+  const already = of("already-drawn");
+  if (already.length > 0) {
+    parts.push(`${already.length} 条已经领过（200112 已兑换过，不是没领成）`);
+  }
+  const expired = of("kouling-expired");
+  if (expired.length > 0) {
+    parts.push(`${expired.length} 条口令认识但本场已经结束了（不是口令抄错）`);
+  }
+  const invalid = of("invalid-kouling");
+  if (invalid.length > 0) parts.push(`${invalid.length} 条口令无效`);
+  const other = [...of("other"), ...of("unparsable")];
+  if (other.length > 0) parts.push(`${other.length} 条回了没见过的结果`);
+  if (st.balanceBefore !== void 0 && st.balanceAfter !== void 0) {
+    parts.push(`进账 ${gained} 朵（${st.balanceBefore} → ${st.balanceAfter}）`);
+  }
+  return {
+    attempted: st.results.length,
+    succeeded,
+    gained,
+    balanceBefore: st.balanceBefore,
+    balanceAfter: st.balanceAfter,
+    alreadyDrawn: already,
+    invalid,
+    expired,
+    other: of("other"),
+    unparsable: of("unparsable"),
+    line: parts.join(" · ")
+  };
 }
 
 // src/mcloud/liveGate.ts
@@ -6563,7 +6602,9 @@ function collectOnce(deps, runStartMs) {
     detail: steps.map((s) => userLine(s)).filter((x) => x !== null),
     ok,
     note: note2,
-    stopped
+    stopped,
+    // 听口令那一支不发领取请求 ⇒ 这里明确"没做事"，收尾统计不算"好了"
+    didWork: false
   });
   logBoth(store, "start", "直播口令：开始查开播", deps.nowIso);
   const auth = step("凭据续期", () => runAuthRefresh(deps));
@@ -6575,9 +6616,7 @@ function collectOnce(deps, runStartMs) {
   }
   const gateOut = drain(runLiveGate, deps, {
     label: "有没有开播",
-    maxSteps: 3,
-    deadlineMs: 4e4,
-    startedAt: runStartMs
+    maxSteps: 3
   });
   const gate = readGateReading(deps.store);
   const liveCount = gate === null ? 0 : gate.liveCount;
@@ -6659,8 +6698,6 @@ function collectOnce(deps, runStartMs) {
         label: `验证「${fresh.value}」`,
         maxSteps: 8,
         // 一条口令的验证 = 读余额 → 领 → 回读余额，给 25 秒足够
-        deadlineMs: 25e3,
-        startedAt: Date.now(),
         gap: true
       });
       const nowPet = loadPoolFrom(deps.store).pool;
@@ -6711,14 +6748,13 @@ function drawOnce(deps, runStartMs, onlyCodes) {
       label: "领小红花",
       maxSteps: 12,
       // 一次抽奖 = 一步，连着抽就是连发 ⇒ 步与步之间随机隔 0.5–2 秒（`deps.gapMs`）
-      gap: true,
-      deadlineMs: Math.max(15e3, runStartMs + BUDGET_MS - Date.now() - 3e3),
-      startedAt: runStartMs
+      gap: true
     }
   );
   const st = loadDrawState(deps.store);
-  const freshRound = st !== null && st.startedAt === deps.nowIso;
-  const rows = freshRound ? st?.results ?? [] : [];
+  const idleNoRequest = /没再发请求|没有口令|已跑完|那一轮已跑完/.test(r.note);
+  const didWork = r.steps > 0 && !idleNoRequest;
+  const rows = didWork ? st?.results ?? [] : [];
   const steps = [
     {
       name: "凭据续期",
@@ -6737,21 +6773,23 @@ function drawOnce(deps, runStartMs, onlyCodes) {
       idle: false
     };
   }));
-  const finalNote = freshRound && st?.step === "done" && st.summary ? st.summary : freshRound ? r.note : `本次没领 —— ${r.note}`;
+  const finalNote = didWork && st?.step === "done" && st.summary ? st.summary : didWork ? r.note : `本次没发请求 —— ${r.note}`;
   const noClaim = /没开|跳过|没有可|不用领|无需/.test(finalNote);
   steps.push({
     name: "领小红花",
     ok: r.ok,
     note: finalNote,
-    // 没真跑一轮 ⇒ `idle`（界面上是灰色 info，不是成功绿灯）
-    idle: freshRound ? r.idle === true && noClaim : true,
+    // 没真发请求 ⇒ `idle`（灰色 info，**不是**成功绿灯）。
+    // 用户口径：什么都没做还盖绿灯，就是假成功。
+    idle: didWork ? r.idle === true && noClaim : true,
     pending: r.pending === true
   });
   return {
     steps,
     detail: steps.map((s) => userLine(s)).filter((x) => x !== null),
     ok: r.ok,
-    note: finalNote
+    note: finalNote,
+    didWork
   };
 }
 register_cron(
@@ -6869,7 +6907,7 @@ register_cron(
       const tail = bad === 0 ? allIdle ? `跳过：${r.steps[0]?.note ?? "这一步没做"}` : "都成了" : hard === 0 ? `${bad} 项跳过（没有网页会话）` : `${hard} 项没成${bad > hard ? `、${bad - hard} 项跳过` : ""}`;
       logBoth(store, hard > 0 ? "warn" : "debug", `${tag} ${tail}`, at);
     }
-    const okCount = runs.filter((x) => x.result.ok).length;
+    const okCount = runs.filter((x) => x.result.ok && x.result.didWork !== false).length;
     const idleAll = runs.length > 0 && runs.every(
       (x) => x.result.ok && x.result.steps.length > 0 && x.result.steps.every((s) => s.idle === true)
     );

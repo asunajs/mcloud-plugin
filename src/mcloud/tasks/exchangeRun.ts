@@ -381,8 +381,6 @@ export function runExchange(
       const a = drain(runOrderStep, deps, {
         label: '兑换',
         maxSteps: 8,
-        deadlineMs: Math.min(DEADLINE_MS, started + 30_000),
-        startedAt: started,
         // 停在 `order` 之前 —— 下单那一枪留给阶段 B（那时才压整点）
         more: () => currentStep(deps.store) !== 'order' && currentStep(deps.store) !== null,
       });
@@ -412,8 +410,6 @@ export function runExchange(
     const one = drain(runOrderStep, deps, {
       label: '兑换',
       maxSteps: 10,
-      deadlineMs: DEADLINE_MS,
-      startedAt: started,
       // ⚠ 干跑：停在 `order` **之前** —— 一枪都不发
       ...(opts.dryRun
         ? { more: () => currentStep(deps.store) !== 'order' && currentStep(deps.store) !== null }

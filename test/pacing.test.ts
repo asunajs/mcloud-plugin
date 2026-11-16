@@ -118,7 +118,7 @@ test('drain：`gap: true` 时步与步之间等，`gap` 不开就一步不等', 
         return { ok: true, note: `第 ${n} 步`, idle: n >= 3 };
       },
       deps,
-      { label: 'x', maxSteps: 5, deadlineMs: 10_000, ...(gap === undefined ? {} : { gap }) },
+      { label: 'x', maxSteps: 5, ...(gap === undefined ? {} : { gap }) },
     );
     rows.push({ gap, waited: c.t.ms - start });
   }

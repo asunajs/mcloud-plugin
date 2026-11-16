@@ -36,6 +36,7 @@ export function logBoth(
   //   （例：面板二进制编漏了直播要的那条 TLS 路）。warn 会被读成"偶发，下次再看"。
   level: LogLevel,
   msg: string,
+  /** @deprecated 只为兼容既有调用点保留；**不再**当作日志时间戳（见下面那段）。 */
   nowIso: string,
 ): void {
   switch (level) {
@@ -63,5 +64,9 @@ export function logBoth(
     default:
       log(msg);
   }
-  appendRing(store, nowIso, level, msg);
+  // ⚠ 环里记的是**真实发生时刻**，不是调用方传进来的 `nowIso`。
+  //   那个值是**一次 run 里冻结的**（为"跨零点算日界"设计的），拿它当时间戳会让
+  //   一整趟的日志看起来全在同一毫秒（2026-11-16 现场：14 行只跨 12 毫秒，
+  //   于是面板算出「用时 0.0 秒」）。日界判断继续用 `nowIso`，时间戳不再用它。
+  appendRing(store, new Date().toISOString(), level, msg);
 }

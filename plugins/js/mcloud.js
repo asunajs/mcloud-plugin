@@ -2,7 +2,7 @@
 //
 //   改代码：编辑 src/，然后 `npm run build`
 //   只在构建产物上改动的东西，下一次构建就没了
-//   mcloud-plugin 0.4.1 · 插件 `mcloud`
+//   mcloud-plugin 0.4.2 · 插件 `mcloud`
 
 // src/entries/mcloud.ts
 import {
@@ -15,7 +15,7 @@ import {
 } from "host-api";
 
 // src/version.ts
-var PLUGIN_VERSION = "0.4.1";
+var PLUGIN_VERSION = "0.4.2";
 
 // src/store/keys.ts
 var DEFAULT_ACCT = "default";
@@ -6865,7 +6865,6 @@ function readRing(store2) {
 
 // src/drain.ts
 function drain(step, deps, opts) {
-  const startedAt = opts.startedAt ?? Date.now();
   const notes = [];
   let steps = 0;
   let lastNote = "";
@@ -6877,15 +6876,6 @@ function drain(step, deps, opts) {
         idle: true,
         steps,
         note: `${opts.label}：${steps} 步走完${lastNote ? ` —— ${lastNote}` : ""}`,
-        notes
-      };
-    }
-    if (Date.now() - startedAt > opts.deadlineMs) {
-      return {
-        ok: true,
-        idle: false,
-        steps,
-        note: `${opts.label}：走到时间上限（${opts.deadlineMs}ms / ${steps} 步），下一次接着走`,
         notes
       };
     }
@@ -6913,6 +6903,15 @@ function drain(step, deps, opts) {
         notes
       };
     }
+  }
+  if (opts.more !== void 0 && opts.more()) {
+    return {
+      ok: false,
+      idle: false,
+      steps,
+      note: `${opts.label}：走满 ${opts.maxSteps} 步还没完 —— 下一趟接着走${lastNote ? `（最后一步：${brief(lastNote, opts.label)}）` : ""}`,
+      notes
+    };
   }
   return {
     ok: true,
@@ -6960,7 +6959,7 @@ function exchangeOnce(deps, recipe) {
       return { ok: x.ok, note: x.note, idle: x.done };
     },
     taskDeps,
-    { label: `换票（${recipe}）`, maxSteps: 4, deadlineMs: 3e4, startedAt: Date.now() }
+    { label: `换票（${recipe}）`, maxSteps: 4 }
   );
   return { ok: r.ok && jwtFresh(deps.store, Date.now(), recipe), note: r.note };
 }
@@ -7129,8 +7128,6 @@ function runExchange(deps, opts = {}) {
       const a = drain(runOrderStep, deps, {
         label: "兑换",
         maxSteps: 8,
-        deadlineMs: Math.min(DEADLINE_MS, started + 3e4),
-        startedAt: started,
         // 停在 `order` 之前 —— 下单那一枪留给阶段 B（那时才压整点）
         more: () => currentStep(deps.store) !== "order" && currentStep(deps.store) !== null
       });
@@ -7153,8 +7150,6 @@ function runExchange(deps, opts = {}) {
     const one = drain(runOrderStep, deps, {
       label: "兑换",
       maxSteps: 10,
-      deadlineMs: DEADLINE_MS,
-      startedAt: started,
       // ⚠ 干跑：停在 `order` **之前** —— 一枪都不发
       ...opts.dryRun ? { more: () => currentStep(deps.store) !== "order" && currentStep(deps.store) !== null } : {}
     });
@@ -7985,7 +7980,7 @@ function runLiveDraw(deps, opts = {}) {
       return {
         ok: true,
         idle: true,
-        note: `口令没变（${codes.length} 条都是这个号领过的），本次没再发请求；上次那轮：${s.summary ?? ""}`
+        note: `口令没变（${codes.length} 条都是这个号领过的），本次没再发请求；上次那轮：${drawReport(s)?.line ?? s.summary ?? ""}`
       };
     }
     s = {
@@ -8121,9 +8116,12 @@ function judge(s, label, res, nowIso) {
       st.balanceAfter = v;
       st.step = "done";
       st.finishedAt = nowIso;
-      const gained = (st.balanceAfter ?? 0) - (st.balanceBefore ?? 0);
-      const okCount = st.results.filter((r) => r.kind === "succeeded").length;
-      st.summary = `${st.results.length} 条口令领到 ${okCount} 条，进账 ${gained} 朵（${st.balanceBefore} → ${st.balanceAfter}）`;
+      st.summary = drawReport(st)?.line ?? "";
+      if (st.summary === "") {
+        const gained = (st.balanceAfter ?? 0) - (st.balanceBefore ?? 0);
+        const okCount = st.results.filter((r) => r.kind === "succeeded").length;
+        st.summary = `${st.results.length} 条口令领到 ${okCount} 条，进账 ${gained} 朵`;
+      }
       return { state: st, ok: true, note: st.summary };
     }
     default:
@@ -8141,8 +8139,9 @@ function drawReport(st) {
   const parts = [];
   if (st.results.length === 0) parts.push("还没发出口令");
   else parts.push(`${st.results.length} 条口令领到 ${succeeded} 条`);
-  if (st.balanceBefore !== void 0 && st.balanceAfter !== void 0) {
-    parts.push(`进账 ${gained} 朵（${st.balanceBefore} → ${st.balanceAfter}）`);
+  const already = of("already-drawn");
+  if (already.length > 0) {
+    parts.push(`${already.length} 条已经领过（200112 已兑换过，不是没领成）`);
   }
   const expired = of("kouling-expired");
   if (expired.length > 0) {
@@ -8152,13 +8151,16 @@ function drawReport(st) {
   if (invalid.length > 0) parts.push(`${invalid.length} 条口令无效`);
   const other = [...of("other"), ...of("unparsable")];
   if (other.length > 0) parts.push(`${other.length} 条回了没见过的结果`);
+  if (st.balanceBefore !== void 0 && st.balanceAfter !== void 0) {
+    parts.push(`进账 ${gained} 朵（${st.balanceBefore} → ${st.balanceAfter}）`);
+  }
   return {
     attempted: st.results.length,
     succeeded,
     gained,
     balanceBefore: st.balanceBefore,
     balanceAfter: st.balanceAfter,
-    alreadyDrawn: of("already-drawn"),
+    alreadyDrawn: already,
     invalid,
     expired,
     other: of("other"),

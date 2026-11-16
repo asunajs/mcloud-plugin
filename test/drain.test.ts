@@ -199,38 +199,35 @@ test('某一步抛异常 ⇒ 也停，而且异常信息带得上步骤', () => 
   );
 });
 
-test('时间上限 ⇒ **主动收手**（不是被看门狗掐断），并且说得出「还差多少」', () => {
-  const t0 = Date.now();
-  let n = 0;
-  const r = drain(
-    () => {
-      n++;
-      // 每步假装花 30ms，deadline 设 50ms ⇒ 第二步之后就该收手
-      while (Date.now() - t0 < n * 30) {
-        /* 空转 */
-      }
-      return { ok: true, note: `第 ${n} 步` };
-    },
-    deps(),
-    { ...OPTS, maxSteps: 100, deadlineMs: 50, startedAt: t0 },
-  );
-  assert.equal(r.ok, true, '主动收手是**成功**，不是失败 —— 下一次触发接着走');
-  assert.equal(r.idle, false);
-  assert.ok(n < 100, `该在时间上限收手，实际跑了 ${n} 步`);
-  assert.match(r.note, /时间上限/);
-  assert.match(r.note, /下一次接着走/);
+test('没有时间闸：步数跑满就停，不存在「走到时间上限」这一档', () => {
+  // 2026-11-16：`deadlineMs`/`startedAt` 已删 —— 它们只会砍掉本来能做完的步骤，
+  // 而且两个参数语义相反（"还剩多久" vs "已过多久"），一进循环就成立 ⇒ 0 步。
+  const r = drain(() => ({ ok: true, note: '一步' }), deps(), { ...OPTS, maxSteps: 5 });
+  assert.equal(r.steps, 5, '该跑满步数上限');
+  assert.equal(r.ok, true);
+  assert.doesNotMatch(r.note, /时间上限/);
 });
 
-test('`startedAt` 能接着上一段的计时（一条链里多个 drain 共享预算）', () => {
-  const t0 = Date.now() - 10_000; // 假装这一段之前已经花了 10 秒
-  const r = drain(() => ({ ok: true, note: 'x' }), deps(), {
+test('走满 `maxSteps` 且 `more()` 仍说还有 ⇒ **不算成功**（不许绿灯）', () => {
+  const r = drain(() => ({ ok: true, note: '一步' }), deps(), {
     ...OPTS,
-    maxSteps: 100,
-    deadlineMs: 5_000, // 5 秒 < 已花的 10 秒 ⇒ 一轮都不该跑
-    startedAt: t0,
+    maxSteps: 3,
+    more: () => true,
   });
-  assert.equal(r.steps, 0);
-  assert.match(r.note, /时间上限/);
+  assert.equal(r.steps, 3);
+  assert.equal(r.ok, false, '没走完就是没走完');
+  assert.match(r.note, /还没完/);
+  assert.match(r.note, /下一趟接着走/);
+});
+
+test('走满 `maxSteps` 但 `more()` 说没有了 ⇒ 正常收尾', () => {
+  let left = 2;
+  const r = drain(() => ({ ok: true, note: '一步' }), deps(), {
+    ...OPTS,
+    maxSteps: 5,
+    more: () => left --> 0,
+  });
+  assert.equal(r.ok, true);
 });
 
 // ── 摘要的形状 ────────────────────────────────────────────────────────
