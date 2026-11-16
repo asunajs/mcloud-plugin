@@ -45,8 +45,18 @@ src/standalone/** Node CLI
 | P4 | 存储换本地 JSON（含一次性导入）；面板与 CLI 共用一份实现 | ✅ |
 | P7 | 目录式插件：四个入口 import **同一份** `mcloud/lib/`；部署按面板能力自动选形状 | ✅ |
 | P3 | 同步 → 异步：`Transport` / `Io.fetch` 变 Promise，`drain`/任务/入口/路由全部 await | ✅ |
-| P5 | `src/app/runTask.ts` 统一 runner + `src/present/*` + 路由拆分 + 任务编排搬出 entries | 🚧 路由✅、三条任务编排✅（`app/{daily,exchange,live}`，入口 90/100/82 行）；runTask / present 未动 |
+| P5 | 统一 runner + 呈现层 + 路由拆分 + 任务编排搬出 entries | ✅ 路由（`app/routes/` 9 组）、三条任务编排（`app/{daily,exchange,live}`，入口 41/68/67 行）、统一 runner（`entries/register.ts`）；呈现层就是 `mcloud/tasks/stepLog.ts` 那一份（见下） |
 | P6 | 直播收口成一个 invocation（门→连→听→领→关）+ trace 环 + `GET api/live/trace` | ✅ trace 环 + `GET /api/live/trace`；收口完成（`src/app/live/`：collect / draw / run，入口只剩注册） |
+
+### P5 的两个落地位置（与原计划不同，理由记在这）
+
+- **统一 runner 落在 `src/entries/register.ts`，不是 `src/app/runTask.ts`**。
+  runner 要调 `defineTask`（宿主侧），而 `src/app/**` 被 R3 拦着不许 import `host/`
+  —— 这条规则是对的：编排层不该知道宿主长什么样。所以「注册任务」这件事留在入口层。
+- **呈现层不再新开 `src/present/`**。原来计划的「level / 文案 / 去重 / 计数收一处」，
+  现在就是 `src/mcloud/tasks/stepLog.ts`（`lineLevel` / `lineText` / `userLine` /
+  `onceHint` / `stepTally` / `trimNote`），三条任务都走它、没有第二份实现。
+  再搬成 `src/present/stepLines.ts` 只是改名字，不值当（会把 15 处 import 和几条源码断言一起搅一遍）。
 
 ### P3 为什么还没做
 
