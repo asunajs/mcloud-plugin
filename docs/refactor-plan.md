@@ -48,6 +48,23 @@ src/standalone/** Node CLI
 | P5 | 统一 runner + 呈现层 + 路由拆分 + 任务编排搬出 entries | ✅ 路由（`app/routes/` 9 组）、三条任务编排（`app/{daily,exchange,live}`，入口 41/68/67 行）、统一 runner（`entries/register.ts`）；呈现层就是 `mcloud/tasks/stepLog.ts` 那一份（见下） |
 | P6 | 直播收口成一个 invocation（门→连→听→领→关）+ trace 环 + `GET api/live/trace` | ✅ trace 环 + `GET /api/live/trace`；收口完成（`src/app/live/`：collect / draw / run，入口只剩注册） |
 
+### 遗留问题 F-143 的实地核对（2026-11-16，**没复现**）
+
+原记录：「界面改直播/日常的调度时，若那个插件没加载，改动会静默失效」。
+在影子实例上按面板真实接口核了一遍（`POST /api/tasks/{plugin}/{name}/schedule`）：
+
+| 步骤 | 结果 |
+|---|---|
+| 开机后 `/api/state` | 三条任务**都在**（`mcloud-daily/日常` `mcloud-exchange/兑换` `mcloud-live/直播`），cron 是插件注册的那条 |
+| `POST .../mcloud-daily/日常/schedule {"expr":"0 9 * * *"}` | 200，`cron` 与 `cron_override` 都变成 `0 9 * * *` |
+| 重启面板后再读 | `cron` 仍是 `0 9 * * *`（**没丢**） |
+
+结论：面板会把任务行与调度落库，插件没加载不影响改调度 —— 这条不再需要插件侧兜底。
+
+顺带发现一个**面板侧**的小毛病（不在本仓库，留给面板那边）：重启之后 `cron` 是覆盖后的值、
+但 `cron_override` 变成 `null`（落库时把覆盖值当成了 base），界面会因此**不显示「恢复默认」**，
+用户就没法退回去了。
+
 ### P5 的两个落地位置（与原计划不同，理由记在这）
 
 - **统一 runner 落在 `src/entries/register.ts`，不是 `src/app/runTask.ts`**。
