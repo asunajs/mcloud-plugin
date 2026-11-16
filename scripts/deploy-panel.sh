@@ -40,12 +40,19 @@ cd "$ROOT"
 # 出**共用核心**的目录形态（四个插件 import 同一份 lib/，只有一份核心）；
 # 不支持时退回单文件（四个包各自内联，行为一致，只是体积大）。
 #
-# 判据用面板二进制里的那句错误串：多文件插件是 2026-11-16 才进面板的
-# （commit 9af5403），而 `panel version` 那会儿还没变号，光看版本分不出来。
+# 判据**必须真起一次**：多文件插件是 2026-11-16 才进面板的（commit 9af5403），
+# 而 `panel version` 那会儿没变号（还是 0.5.1）；字符串也判不了 ——
+# 静态链接的 release 二进制里搜不到那句中文常量（实测新旧两个都"搜不到"，
+# 但旧的那个不认 ../ 跨目录 import）。所以用 scripts/panel-supports-dir-plugins.sh
+# 起一个临时实例、装一个最小目录插件，看它能不能加载。
 PANEL_BIN_FILE="${PANEL_BIN_FILE:-$(dirname "$DEST")/panel}"
 MULTIFILE=0
-if [ -f "$PANEL_BIN_FILE" ] && grep -aq 'import 的文件不存在' "$PANEL_BIN_FILE"; then
-  MULTIFILE=1
+if [ "${MCLOUD_PKG:-auto}" = "auto" ] && [ -x "$PANEL_BIN_FILE" ]; then
+  if bash "$HERE/panel-supports-dir-plugins.sh" "$PANEL_BIN_FILE"; then
+    MULTIFILE=1
+  else
+    echo "（探测：$PANEL_BIN_FILE 不支持目录式插件 —— 或者这次探测没起来）"
+  fi
 fi
 if [ "${MCLOUD_PKG:-auto}" = "single" ] || { [ "${MCLOUD_PKG:-auto}" = "auto" ] && [ "$MULTIFILE" = 0 ]; }; then
   echo "→ 产物形状：单文件（面板「$PANEL_BIN_FILE」没有多文件插件能力）"
@@ -120,8 +127,25 @@ echo "✅ $(( ${#PLUGINS[@]} + ${#WEBUI_FILES[@]} )) 个文件逐个 cmp 一致"
 if [ "$RESTART" = 1 ]; then
   echo "→ 重启 launchd 服务（${PANEL_LABEL:-dev.panel}）"
   launchctl kickstart -k "gui/$(id -u)/${PANEL_LABEL:-dev.panel}"
-  echo "✅ 已重启；看日志确认真加载了："
-  echo "   sqlite3 \"$HOME/panel-3030/data/panel.db\" \"select plugin, message from logs order by id desc limit 5\""
+  # ⚠ **装完必须自己看一眼加载结果**（2026-11-16 撞了两次）：
+  #   · 目录式产物要是把 npm 包（fflate）留成裸 import ⇒ 加载期 "Error resolving module"
+  #   · 或者产物里还留着 `.ts` 说明符 ⇒ "import 的文件不存在"
+  #   两种都表现为"面板起来了、但某个插件是灰的"，而 zip/cmp 全绿。
+  BASE_URL="${PANEL_BASE_URL:-http://127.0.0.1:3030}"
+  for i in $(seq 1 20); do
+    sleep 1
+    READY="$(curl -fsS -m 2 "$BASE_URL/readyz" 2>/dev/null || true)"
+    [ -n "$READY" ] && break
+  done
+  echo "   readyz: ${READY:-（连不上）}"
+  if printf '%s' "${READY:-}" | grep -q '"failed_plugins":0'; then
+    echo "✅ 已重启：没有加载失败的插件"
+  else
+    echo "❌ 有插件没加载起来 —— 最近日志：" >&2
+    sqlite3 "$HOME/panel-3030/data/panel.db" \
+      "select plugin, level, substr(message,1,240) from logs where level in ('error','warn') order by id desc limit 8" >&2 2>/dev/null || true
+    exit 1
+  fi
 else
   cat <<'TIP'
 

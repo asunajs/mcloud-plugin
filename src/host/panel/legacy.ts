@@ -12,8 +12,17 @@ import type { RunRecord } from '../../store/types.ts';
 import { importLegacyRows } from '../fs/importLegacy.ts';
 
 function rowsOf(v: unknown): Record<string, unknown>[] | null {
-  // 宿主失败时返回 {error}（不是抛）；空库时表都不存在，也是这一档
+  // ⚠ 面板的 `sqlite_query_sync` 回的是 **`{ rows, truncated }`**，不是裸数组
+  //   （见 panel 的 `db_query`）。2026-11-16 就是按裸数组写的 ⇒ 搬了 0 条、
+  //   而且因为它"看起来像没旧数据"，一声不响。
   if (Array.isArray(v)) return v as Record<string, unknown>[];
+  if (v !== null && typeof v === 'object' && Array.isArray((v as { rows?: unknown }).rows)) {
+    return (v as { rows: Record<string, unknown>[] }).rows;
+  }
+  // 宿主失败时是 `{error}`（不是抛）；表不存在也是这一档
+  if (v !== null && typeof v === 'object' && 'error' in v) return null;
+  // 其它形状：**别静默** —— 报出来，否则下次还是"搬了 0 条，谁也不知道"
+  logTo('warn', '旧状态导入：面板返回的形状不认识（既不是 rows 也不是 error）：' + JSON.stringify(v).slice(0, 200));
   return null;
 }
 

@@ -105,6 +105,12 @@
 那句错误串（多文件插件是 commit `9af5403` 才进面板的，而 `panel version` 没变号）。
 要强制某一种：`MCLOUD_PKG=single|dir`。
 
+> ⚠ 目录式产物的构建方式必须是 **`bundle:true` + 把相对 import 全标 external**：
+> 面板不解析 npm 包（裸包名 `fflate` 会在加载期 `Error resolving module`），
+> 而自己人要保持文件边界（四个插件共用、栈里是真实文件名）。`bundle:false` 两头都做不到。
+> 另外 esbuild 会把手脚瘦掉的类型 import 留成 `import "../x.ts";`（**副作用形式**），
+> 改写 `.ts → .js` 必须覆盖这种形状。两处都踩过（F-142）。
+
 > 实测（隔离实例 + 临时插件）：目录式插件 + **跨目录** `import '../mcloud/lib/…'` 能加载；
 > 单文件插件做同样的相对 import 会失败（`Failed to resolve`）。所以"共用核心"只能走目录式。
 > 代价：四个插件是一套 —— 删掉 `mcloud/` 会让另外三个起不来（部署脚本整份拷贝、备份成对做）。

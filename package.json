@@ -30,6 +30,7 @@
     "shots": "node scripts/shots.mjs",
     "pack": "node scripts/pack.mjs",
     "pack:panel04": "node scripts/pack.mjs",
+    "deploy:panel": "bash scripts/deploy-panel.sh",
     "install:panel-binary": "bash scripts/install-panel-binary.sh"
   },
   "devDependencies": {

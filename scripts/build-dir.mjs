@@ -33,9 +33,15 @@ const LIB_BASE = 'src';
  *  产物必须是 `.js`。面板的 Resolver 两种都认（没写扩展名会补 .js），
  *  这里显式改成 .js：产物自己就是自解释的，不依赖宿主的补全规则。 */
 function rewriteSpecifiers(text) {
-  return text
-    .replace(/(from\s*)(['"])(\.{1,2}\/[^'"]+)\.ts\2/g, '$1$2$3.js$2')
-    .replace(/(import\s*\(\s*)(['"])(\.{1,2}\/[^'"]+)\.ts\2/g, '$1$2$3.js$2');
+  return (
+    text
+      .replace(/(from\s*)(['"])(\.{1,2}\/[^'"]+)\.ts\2/g, '$1$2$3.js$2')
+      .replace(/(import\s*\(\s*)(['"])(\.{1,2}\/[^'"]+)\.ts\2/g, '$1$2$3.js$2')
+      // 副作用形式的 `import "../x.ts";` —— 这是"绑定的值一个都没用到"（只用在类型位置）
+      // 时 esbuild 留在产物里的形状。它照样要改成 .js：留着 .ts 面板就报
+      // 「import 的文件不存在：../mcloud/accounts.ts」（2026-11-16 真撞到过）。
+      .replace(/(\n\s*import\s+)(['"])(\.{1,2}\/[^'"]+)\.ts\2/g, '$1$2$3.js$2')
+  );
 }
 
 function must(cond, msg) {
@@ -60,16 +66,30 @@ function sources(dir) {
   return out;
 }
 
-console.log('→ 编译核心（模块边界保留，不 bundle）');
+console.log('→ 编译核心（自己的模块保持文件边界，npm 包就地内联）');
 const res = await build({
   entryPoints: sources(join(ROOT, LIB_BASE)),
   outdir: join(OUTDIR, 'mcloud', 'lib'),
   outbase: LIB_BASE,
-  bundle: false,
+  // ⚠ 这里必须是 **bundle:true + 把相对 import 全部标成 external**：
+  //   面板不解析 npm 包（`import { unzlibSync } from 'fflate'` 会以
+  //   "Error resolving module 'fflate'" 挂在加载期 —— 2026-11-16 真撞到过），
+  //   而我们的**自己人**要留成一个个文件（四个插件才共用得上、栈里才有真实文件名）。
+  //   bundle:false 做不到这一点：它连 npm 包也不解析。
+  bundle: true,
+  plugins: [
+    {
+      name: 'keep-own-modules',
+      setup(b) {
+        // 相对路径 = 我们自己人：原样留着（后面再把 .ts 改写成 .js）
+        b.onResolve({ filter: /^\.{1,2}\// }, (a) => ({ path: a.path, external: true }));
+      },
+    },
+  ],
   format: 'esm',
   target: 'es2022',
   platform: 'neutral',
-  // bundle:false ⇒ 没有 external 这回事：import 原样留着（panel:host / node:* 由引擎解析）
+  external: ['panel:host', 'node:*'],
   write: false,
   minify: false,
   legalComments: 'none',
