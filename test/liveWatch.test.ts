@@ -5,11 +5,12 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import { liveSource } from './helpers.ts';
 
 const src = (p: string): string => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8');
 
 test('听弹幕：每拍都判"够了没有 / 有没有新口令"，够了立刻停', async () => {
-  const d = src('src/entries/live.ts');
+  const d = liveSource();
   // 循环体里必须有这两道提前退出
   assert.match(d, /const tickPet = loadPoolFrom\(deps\.store\)\.pool;/, '每拍要读一次池子');
   assert.match(d, /if \(stopScraping\(tickPet\)\) \{/, '够 2 条有效就停');
@@ -32,7 +33,7 @@ test('听弹幕：每拍都判"够了没有 / 有没有新口令"，够了立刻
 });
 
 test('播报：不许再出现「上次：」这种把上一轮当这一轮的说法', async () => {
-  const d = src('src/entries/live.ts');
+  const d = liveSource();
   assert.ok(!/prefix = replay \? '上次：'/.test(d), '旧的 replay 前缀必须删掉');
   assert.ok(!/`\$\{prefix\}/.test(d), '不许再拼那个前缀');
   // ⚠ 2026-11-16 改：判"本轮有没有做事"**不许**用时间戳。

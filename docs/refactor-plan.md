@@ -46,7 +46,7 @@ src/standalone/** Node CLI
 | P7 | 目录式插件：四个入口 import **同一份** `mcloud/lib/`；部署按面板能力自动选形状 | ✅ |
 | P3 | 同步 → 异步：`Transport` / `Io.fetch` 变 Promise，`drain`/任务/入口/路由全部 await | ✅ |
 | P5 | `src/app/runTask.ts` 统一 runner + `src/present/*` + 路由拆分（3429 行 → 目录） | 🚧 路由拆分✅（`src/app/routes/`：support/readings + 8 个组，60 条路由）；runner 与 present 还没动 |
-| P6 | 直播收口成一个 invocation（门→连→听→领→关）+ trace 环 + `GET api/live/trace` | 🚧 trace 环✅（`src/mcloud/liveTrace.ts` + `GET /api/live/trace`，真机验过）；收口待做 |
+| P6 | 直播收口成一个 invocation（门→连→听→领→关）+ trace 环 + `GET api/live/trace` | ✅ trace 环 + `GET /api/live/trace`；收口完成（`src/app/live/`：collect / draw / run，入口只剩注册） |
 
 ### P3 为什么还没做
 

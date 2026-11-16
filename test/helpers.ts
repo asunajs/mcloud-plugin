@@ -60,3 +60,22 @@ export function routesSource(): string {
     .map((rel) => readFileSync(new URL('../' + rel, import.meta.url), 'utf8'))
     .join('\n');
 }
+
+/** **整份**直播源码（入口 + app/live/*）。
+ *
+ *  P6 把编排从 `entries/live.ts` 搬到了 `src/app/live/`（入口只剩注册）。
+ *  那些"源码里要有这一手"的断言要读**整份**，只读入口会假红。 */
+export function liveSource(): string {
+  const entry = 'src/entries/live.ts';
+  const dir = new URL('../src/app/live/', import.meta.url);
+  const parts = readdirSync(dir).filter((n) => n.endsWith('.ts')).sort();
+  return [entry, ...parts.map((n) => 'src/app/live/' + n)]
+    .map((rel) => readFileSync(new URL('../' + rel, import.meta.url), 'utf8'))
+    .join('\n');
+}
+
+/** 读一份任务源码：直播那块已经拆到 app/live/，所以要走 {@link liveSource}。 */
+export function taskSource(rel: string): string {
+  if (rel === 'src/entries/live.ts') return liveSource();
+  return readFileSync(new URL('../' + rel, import.meta.url), 'utf8');
+}
