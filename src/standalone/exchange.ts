@@ -18,13 +18,13 @@ function pickAccounts(rt: Runtime, who?: string | number): { id: string; label: 
     .map((a) => ({ id: a.id, label: a.label }));
 }
 
-function exchangeOne(
+async function exchangeOne(
   rt: Runtime,
   prize: string | number,
   who?: string | number,
   offset = 10,
   skipWait = false,
-): boolean {
+): Promise<boolean> {
   const picked = pickAccounts(rt, who);
   if (picked.length === 0) {
     console.log('[兑换] 没有匹配的启用账号');
@@ -33,7 +33,7 @@ function exchangeOne(
   let allOk = true;
   for (const acct of picked) {
     const deps = rt.depsFor(acct.id);
-    const r = runExchange(deps, {
+    const r = await runExchange(deps, {
       target: String(prize),
       // 旧版 offset 是“整点前多少秒”，任务层自己会算窗口；这里只把它作为
       // 等待上限的提示，不改变下单时刻。
@@ -59,10 +59,10 @@ export async function exchange(
   try {
     if (Array.isArray(prizeIdOrName)) {
       for (const [prize, account] of prizeIdOrName) {
-        exchangeOne(rt, prize, account, offset, skipWait);
+        await exchangeOne(rt, prize, account, offset, skipWait);
       }
     } else {
-      exchangeOne(rt, prizeIdOrName, accountOrOffset, offset, skipWait);
+      await exchangeOne(rt, prizeIdOrName, accountOrOffset, offset, skipWait);
     }
   } finally {
     rt.close();
@@ -80,7 +80,7 @@ export async function printExchangeList(configPath?: string): Promise<void> {
       return;
     }
     const deps = rt.depsFor(acct.id);
-    const r = runExchangeList(deps);
+    const r = await runExchangeList(deps);
     console.log(r.note);
   } finally {
     rt.close();

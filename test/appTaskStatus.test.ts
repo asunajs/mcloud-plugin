@@ -37,7 +37,7 @@ function real434(): MatrixItem {
   return { taskId: 434, name: "分享文件领好礼<span id='share_title'>1/7</span>", description: '5豆*7+20豆', groupId: 'month', state: 'WAIT', limitType: 'MONTH', enable: 1, currStep: 4, buttonOutText: '已完成' };
 }
 
-test('四条真机读数 → 四句人话', () => {
+test('四条真机读数 → 四句人话', async () => {
   assert.equal(describeStatus(real549()), '备份文件领好礼：本月已完成，下月再来');
   assert.equal(describeStatus(real551()), '连续31天开启云盘APP通知：已开启 29/31 天');
   assert.equal(describeStatus(real1021()), '连续31天开启邮箱APP通知：还没开启（去 App 打开）');
@@ -47,7 +47,7 @@ test('四条真机读数 → 四句人话', () => {
   assert.equal(describeStatus({ ...real522(), process: 100 }), '当月上传文件满100个：已累计 100/100（已满）');
 });
 
-test('⚠ `process` 每条都有（其它任务是 0）⇒ 不许画成「已累计 0」', () => {
+test('⚠ `process` 每条都有（其它任务是 0）⇒ 不许画成「已累计 0」', async () => {
   // 现场：2026-11-02 自测，五条播报全变成「已累计 0」——因为 `process` 这一格每条都带
   assert.equal(
     describeStatus({ ...real551(), process: 0 }),
@@ -61,7 +61,7 @@ test('⚠ `process` 每条都有（其它任务是 0）⇒ 不许画成「已累
   assert.equal(describeStatus({ ...real549(), process: 3 }), '备份文件领好礼：已累计 3');
 });
 
-test('⚠ 上游没写按钮文案 ⇒ 不出现（不猜"待办"）', () => {
+test('⚠ 上游没写按钮文案 ⇒ 不出现（不猜"待办"）', async () => {
   const bare: MatrixItem = { taskId: 549, name: '备份文件领好礼', state: 'WAIT' };
   assert.equal(describeStatus(bare), undefined);
   const store = memStore();
@@ -70,12 +70,12 @@ test('⚠ 上游没写按钮文案 ⇒ 不出现（不猜"待办"）', () => {
   assert.deepEqual(appTaskStatusLines(store), [], '一条都读不出来 ⇒ 整个状态步不出现');
 });
 
-test('认不出来的按钮文案**照抄**（别自己造状态词）', () => {
+test('认不出来的按钮文案**照抄**（别自己造状态词）', async () => {
   assert.equal(describeStatus({ taskId: 607, name: '下月签到领惊喜福利', buttonOutText: '立即预定' }), '下月签到领惊喜福利：下月再来（现在还不能做）');
   assert.equal(describeStatus({ taskId: 999, name: '某某任务', buttonOutText: '去瞅瞅' }), '某某任务：去瞅瞅');
 });
 
-test('两个市场同一条：去重，优先"有进度"的那份', () => {
+test('两个市场同一条：去重，优先"有进度"的那份', async () => {
   const store = memStore();
   store.ensureSchema();
   const mk = (g: string, items: MatrixItem[]) =>
@@ -87,7 +87,7 @@ test('两个市场同一条：去重，优先"有进度"的那份', () => {
   assert.deepEqual(lines, ['连续31天开启云盘APP通知：已开启 29/31 天']);
 });
 
-test('备份开关没开时，549 那行补一句', () => {
+test('备份开关没开时，549 那行补一句', async () => {
   const store = memStore();
   store.ensureSchema();
   store.setState(matrixKey('sign_in_3'), JSON.stringify({ group: 'sign_in_3', at: NOW, done: 0, todo: 1, skip: 0, todoNames: [], items: [real549()] }), NOW);
@@ -96,7 +96,7 @@ test('备份开关没开时，549 那行补一句', () => {
   assert.deepEqual(appTaskStatusLines(store, { backupOn: true }), ['备份文件领好礼：本月已完成，下月再来']);
 });
 
-test('434：今天这一趟已经分享过 ⇒ 明说"每天只算一次"（不然看着像没动）', () => {
+test('434：今天这一趟已经分享过 ⇒ 明说"每天只算一次"（不然看着像没动）', async () => {
   const store = memStore();
   store.ensureSchema();
   store.setState(matrixKey('sign_in_3'), JSON.stringify({ group: 'sign_in_3', at: NOW, done: 0, todo: 1, skip: 0, todoNames: [], items: [real434()] }), NOW);
@@ -110,7 +110,7 @@ test('434：今天这一趟已经分享过 ⇒ 明说"每天只算一次"（不�
   assert.deepEqual(appTaskStatusLines(store, { nowIso: NOW }), ['分享文件领好礼：已完成 1/7']);
 });
 
-test('按 STATUS_TASKS 的顺序输出，且只播报表里的 id', () => {
+test('按 STATUS_TASKS 的顺序输出，且只播报表里的 id', async () => {
   const store = memStore();
   store.ensureSchema();
   const items = [real434(), real1021(), real551(), real549(), real522(), { taskId: 607, name: '别的', buttonOutText: '立即预定' }];

@@ -57,7 +57,7 @@ function walk(dir: string, out: string[] = []): string[] {
  *  一次性全换会把日志里的步骤名搅乱 —— 但**报错文案**里已经改成"登录信息"了。 */
 const BANNED = ['上游', '旧尾', '新尾', '用户域', '落库'];
 
-test('⚠ 源码里（非注释）不许再出现内部黑话', () => {
+test('⚠ 源码里（非注释）不许再出现内部黑话', async () => {
   const files = walk('src');
   assert.ok(files.length > 20, `扫到的文件太少：${files.length}`);
   const hits: string[] = [];
@@ -85,7 +85,7 @@ test('⚠ 源码里（非注释）不许再出现内部黑话', () => {
 
 const UI_BANNED = ['旧版'];
 
-test('⚠ 插件界面里（非注释）也不许出现「旧版」这种仓库里的词', () => {
+test('⚠ 插件界面里（非注释）也不许出现「旧版」这种仓库里的词', async () => {
   const html = fs
     .readFileSync('plugins/mcloud/index.html', 'utf8')
     .replace(/<!--[\s\S]*?-->/g, '');
@@ -104,7 +104,7 @@ test('⚠ 插件界面里（非注释）也不许出现「旧版」这种仓库�
   assert.deepEqual(hits, [], `界面文案里还有黑话：\n${hits.join('\n')}`);
 });
 
-test('「这份是沿用的」要说在展开面板里，不在按钮标签上', () => {
+test('「这份是沿用的」要说在展开面板里，不在按钮标签上', async () => {
   const html = fs.readFileSync('plugins/mcloud/index.html', 'utf8');
   const js = fs.readFileSync('plugins/mcloud/app.js', 'utf8');
   // 两份自动选择器（日常 / 直播）各有一条说明
@@ -116,7 +116,7 @@ test('「这份是沿用的」要说在展开面板里，不在按钮标签上',
   assert.ok(!/acct-label`,?\s*`?\$\{label\}（/.test(js), '按钮标签里不许拼括号说明');
 });
 
-test('⚠ 续期那几句提示是**人话**（且长短合适）', () => {
+test('⚠ 续期那几句提示是**人话**（且长短合适）', async () => {
   // 用户点一次「刷新」，看到的就是这几个字之一。
   const ok = '已续期，还能用 30 天';
   assert.ok(ok.length < 20, '成功提示要短');

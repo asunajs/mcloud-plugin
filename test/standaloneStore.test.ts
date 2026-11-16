@@ -13,7 +13,7 @@ const ISO = '2026-10-20T00:00:00.000Z';
 const BAG = 'mcloud.acct.';
 const bag = (id: string): string => BAG + id;
 
-test('FileStore：账号袋落到 state/<id>.json、重启可恢复', () => {
+test('FileStore：账号袋落到 state/<id>.json、重启可恢复', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'mcloud-store-'));
   const a = openFileStore({ dir, plugin: 'mcloud', nowIso: ISO });
   a.setState(bag('x'), JSON.stringify({ 'mcloud.session': '{"cookie":"c=1"}' }), ISO);
@@ -34,7 +34,7 @@ test('FileStore：账号袋落到 state/<id>.json、重启可恢复', () => {
   assert.equal(statSync(join(dir, 'state', 'x.json')).mode & 0o077, 0, '状态文件不许组/其他人可读');
 });
 
-test('FileStore：两个写者（两个插件）同时写不互相覆盖', () => {
+test('FileStore：两个写者（两个插件）同时写不互相覆盖', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'mcloud-store-'));
   const daily = openFileStore({ dir, plugin: 'mcloud-daily', nowIso: ISO });
   const live = openFileStore({ dir, plugin: 'mcloud-live', nowIso: ISO });
@@ -50,7 +50,7 @@ test('FileStore：两个写者（两个插件）同时写不互相覆盖', () =>
   assert.equal(shared['mcloud.log.ring'], '[]');
 });
 
-test('FileStore：run 统计排除负延迟，分位数按值取（与内存实现同口径）', () => {
+test('FileStore：run 统计排除负延迟，分位数按值取（与内存实现同口径）', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'mcloud-store-'));
   const s = openFileStore({ dir, plugin: 'mcloud-daily', nowIso: ISO });
   for (const lateMs of [-100, 10, 20, 30]) {
@@ -67,7 +67,7 @@ test('FileStore：run 统计排除负延迟，分位数按值取（与内存实�
   assert.equal(other.lateStats('日常').n, 0);
 });
 
-test('旧数据一次性导入：state 表 + mcloud_runs → 文件（袋按号拆、运行记录按任务归属）', () => {
+test('旧数据一次性导入：state 表 + mcloud_runs → 文件（袋按号拆、运行记录按任务归属）', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'mcloud-store-'));
   const moved = importLegacyRows(dir, {
     keys: [

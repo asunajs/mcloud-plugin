@@ -17,17 +17,17 @@ export interface DailyAccountResult {
 }
 
 /** 跑所有启用账号；account 为空 = 全部。 */
-export function runDailyAll(rt: Runtime, opts: { account?: string } = {}): DailyAccountResult[] {
+export async function runDailyAll(rt: Runtime, opts: { account?: string } = {}): Promise<DailyAccountResult[]> {
   const base = rt.store;
   const out: DailyAccountResult[] = [];
   const only = opts.account;
   const runs =
     only === undefined
-      ? forEachTaskAccount(base, '日常', { lateMs: 0 }, rt.transport, (deps) => runDaily(deps))
-      : (() => {
+      ? await forEachTaskAccount(base, '日常', { lateMs: 0 }, rt.transport, async (deps) => await runDaily(deps))
+      : await (async () => {
           const hit = loadAccounts(rt.rawStore).find((a) => a.id === only || a.label === only);
           if (hit === undefined) return [];
-          return [{ acctId: hit.id, result: runDaily(depsForAccount(base, hit.id, { lateMs: 0 }, rt.transport)) }];
+          return [{ acctId: hit.id, result: await runDaily(depsForAccount(base, hit.id, { lateMs: 0 }, rt.transport)) }];
         })();
   for (const one of runs) {
     const r = one.result;

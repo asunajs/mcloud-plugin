@@ -11,18 +11,18 @@ import { userInfoRequest } from '../src/mcloud/liveFlower.ts';
 import { drawRequest, journalingRequest, firstParticipateGiveRequest } from '../src/mcloud/liveFlower.ts';
 import { tyrzLoginRequest, SIGN_IN_RECIPE, makeSign } from '../src/mcloud/h5session.ts';
 
-test('有体且没声明 ⇒ 补 `application/json;charset=UTF-8`（带 charset，逐字抄真实现）', () => {
+test('有体且没声明 ⇒ 补 `application/json;charset=UTF-8`（带 charset，逐字抄真实现）', async () => {
   assert.equal(CONTENT_TYPE_JSON, 'application/json;charset=UTF-8');
   const r = applyDefaultContentType({ url: 'u', method: 'POST', headers: {}, body: '{}' });
   assert.equal(r.headers['content-type'], CONTENT_TYPE_JSON);
 });
 
-test('无体 ⇒ **不补**（`draw` 的实拍就是 `content-length: 0`、无 content-type）', () => {
+test('无体 ⇒ **不补**（`draw` 的实拍就是 `content-length: 0`、无 content-type）', async () => {
   const r = applyDefaultContentType({ url: 'u', method: 'POST', headers: {}, body: undefined });
   assert.equal(r.headers['content-type'], undefined);
 });
 
-test('已声明 ⇒ **不覆盖**（否则线上会出现两枚 content-type）', () => {
+test('已声明 ⇒ **不覆盖**（否则线上会出现两枚 content-type）', async () => {
   // `journaling` 声明的是表单，不能被补成 json —— 补错了这一枪就废
   const r = applyDefaultContentType({
     url: 'u',
@@ -39,13 +39,13 @@ test('已声明 ⇒ **不覆盖**（否则线上会出现两枚 content-type）'
   assert.equal(r2.headers['Content-Type'], 'text/plain');
 });
 
-test('不改原对象（纯函数）', () => {
+test('不改原对象（纯函数）', async () => {
   const src = { url: 'u', method: 'POST' as const, headers: { a: 'b' }, body: '{}' };
   applyDefaultContentType(src);
   assert.deepEqual(src.headers, { a: 'b' });
 });
 
-test('逐条按真实现的形状过一遍：哪几个该补、哪几个不该', () => {
+test('逐条按真实现的形状过一遍：哪几个该补、哪几个不该', async () => {
   const cases: [string, boolean][] = [
     ['user/info', true], //  构造器不设 ⇒ 传输层补（**真机实测过**：不补这条它回 404/90001 家族）
     ['tyrzLogin', true], //  同上 —— 就是这一条在真机上先回 404
@@ -73,7 +73,7 @@ test('逐条按真实现的形状过一遍：哪几个该补、哪几个不该',
 
 // ── hostFetchOptions：`tls` 只对 https 生效（e2e 能在默认构建上跑的原因）──────
 
-test("hostFetchOptions：https + tls ⇒ 带上；http + tls ⇒ **丢掉**", () => {
+test("hostFetchOptions：https + tls ⇒ 带上；http + tls ⇒ **丢掉**", async () => {
   // ⚠ 这条守卫不是"顺手":宿主对 `tls:"native"` 是**先校验选项再发请求**
   //   （面板 `hostapi::parse_tls_choice`）⇒ 给 http 请求填它，在没有 `legacy-tls`
   //   的宿主上会直接报错，连"反正用不上"的机会都没有。

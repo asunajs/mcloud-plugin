@@ -8,7 +8,7 @@ import test from 'node:test';
 
 const src = (p: string): string => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8');
 
-test('听弹幕：每拍都判"够了没有 / 有没有新口令"，够了立刻停', () => {
+test('听弹幕：每拍都判"够了没有 / 有没有新口令"，够了立刻停', async () => {
   const d = src('src/entries/live.ts');
   // 循环体里必须有这两道提前退出
   assert.match(d, /const tickPet = loadPoolFrom\(deps\.store\)\.pool;/, '每拍要读一次池子');
@@ -31,7 +31,7 @@ test('听弹幕：每拍都判"够了没有 / 有没有新口令"，够了立刻
   assert.match(d, /const verified = new Set<string>\(\);/, '同一条口令不重复验');
 });
 
-test('播报：不许再出现「上次：」这种把上一轮当这一轮的说法', () => {
+test('播报：不许再出现「上次：」这种把上一轮当这一轮的说法', async () => {
   const d = src('src/entries/live.ts');
   assert.ok(!/prefix = replay \? '上次：'/.test(d), '旧的 replay 前缀必须删掉');
   assert.ok(!/`\$\{prefix\}/.test(d), '不许再拼那个前缀');
@@ -45,7 +45,7 @@ test('播报：不许再出现「上次：」这种把上一轮当这一轮的�
   assert.match(d, /didWork !== false/, '收尾统计要排除没做事的账号');
 });
 
-test('领小红花：没得领时要把判据印出来（池/可领/上一轮/已领过）', () => {
+test('领小红花：没得领时要把判据印出来（池/可领/上一轮/已领过）', async () => {
   const d = src('src/mcloud/tasks/liveDraw.ts');
   assert.match(d, /池里 \$\{pool\.codes\.length\} 条/, 'idle 时印池子条数');
   assert.match(d, /这个号能领 \$\{codes\.length\} 条/, '印这个号能领几条');
@@ -54,7 +54,7 @@ test('领小红花：没得领时要把判据印出来（池/可领/上一轮/�
   assert.match(d, /上次那轮：\$\{drawReport\(s\)\?\.line/, '口令没变时也要说清是"上次那轮"');
 });
 
-test('池子：2 条有效 = 够了（VALID_ENOUGH 是抓取停止的唯一判据）', () => {
+test('池子：2 条有效 = 够了（VALID_ENOUGH 是抓取停止的唯一判据）', async () => {
   const d = src('src/mcloud/koulingPool.ts');
   assert.match(d, /VALID_ENOUGH = 2/);
   assert.match(d, /validCount\(pool\) >= VALID_ENOUGH/, 'stopScraping 按 validCount 判');

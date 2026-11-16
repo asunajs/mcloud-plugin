@@ -64,15 +64,15 @@ import { waitGap, type TaskDeps, type TaskOutcome } from './mcloud/tasks/base.ts
  *    不冒充成功；下一趟接着走）
  *  · 否则（没有 `more` 判据）⇒ `ok: true`，用最后一步自己的原话收尾
  */
-export function drain(
-  step: (d: TaskDeps) => TaskOutcome,
+export async function drain(
+  step: (d: TaskDeps) => TaskOutcome | Promise<TaskOutcome>,
   deps: TaskDeps,
   opts: {
     label: string;
     maxSteps: number;
     /** 「状态里还有没做完的段吗」。给了就在每轮**开头**判（第一轮除外 ——
      *  总得先跑一次才知道要干嘛）。没给就只认 `idle` / `skipped`。 */
-    more?: () => boolean;
+    more?: () => boolean | Promise<boolean>;
     /** 每步的原话（**立刻**回调）。给长状态机用：文件上传、任务重试这些过程
      *  要能在日志里看到，而不是等整趟 drain 结束只剩一句结论。 */
     onStep?: ((note: string, step: number) => void) | undefined;
@@ -84,7 +84,7 @@ export function drain(
      *  开了会把整条拉长；那种要按**任务边界**等（见 `appTask.advance`）。 */
     gap?: boolean | undefined;
   },
-): DrainResult {
+): Promise<DrainResult> {
   const notes: string[] = [];
   let steps = 0;
   // 上一步的原话。摘要里要带上它 —— 「2 步走完」不告诉任何人发生了什么，
@@ -95,7 +95,7 @@ export function drain(
     // 条与条之间隔一会儿（第一轮不等 —— 前面没有"上一条"）
     if (i > 0 && opts.gap === true) waitGap(deps);
     // 第一轮永远跑（总得先跑一次才知道要干嘛）；之后由调用方说还有没有未完成的段
-    if (i > 0 && opts.more && !opts.more()) {
+    if (i > 0 && opts.more && !(await opts.more())) {
       return {
         ok: true,
         idle: true,
@@ -106,7 +106,7 @@ export function drain(
     }
     let r: TaskOutcome;
     try {
-      r = step(deps);
+      r = await step(deps);
     } catch (e) {
       // 状态机设计上不抛；真抛了就是插件自己的 bug，要说出来而不是吞掉
       notes.push(`抛异常：${e instanceof Error ? e.message : String(e)}`);
@@ -135,7 +135,7 @@ export function drain(
 
   // 走满 `maxSteps`。**区分两种**：调用方还有判据且仍说"还有" ⇒ 没走完，
   // 不许报成功（否则就是"跑了 40 步没做完"却绿灯）。
-  if (opts.more !== undefined && opts.more()) {
+  if (opts.more !== undefined && (await opts.more())) {
     return {
       ok: false,
       idle: false,

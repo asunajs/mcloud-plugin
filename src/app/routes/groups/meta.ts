@@ -12,7 +12,7 @@ import { json } from '../support.ts';
 import type { RouteDeps, RouteEntry, RouteRequest } from '../support.ts';
 
 /** meta 组。deps 是路由依赖；base 是 /plugins/mcloud/api；verify 是「拿当前会话验一次」。 */
-export function metaRoutes(deps: RouteDeps, base: string, verify: () => { ok: boolean; note: string }): RouteEntry[] {
+export function metaRoutes(deps: RouteDeps, base: string, verify: () => Promise<{ ok: boolean; note: string }>): RouteEntry[] {
   void verify;
   return [
 {

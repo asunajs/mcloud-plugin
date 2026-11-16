@@ -375,7 +375,7 @@ export function readBackupOn(store: { getState(k: string): string | null | undef
   }
 }
 
-export function runExpansionStep(deps: TaskDeps): TaskOutcome {
+export async function runExpansionStep(deps: TaskDeps): Promise<TaskOutcome> {
   let st = load(deps) ?? { step: 'read' as ExpandStep };
 
   if (st.step === 'done') return { ok: true, idle: true, note: '这一趟已经走完' };
@@ -397,7 +397,7 @@ export function runExpansionStep(deps: TaskDeps): TaskOutcome {
   //    否则 `uploadDone()` 会把对方传完的文件当成自己传完了。
   if (st.step === 'upload') {
     if (uploadDone(deps, STATE_UPLOAD_EXPANSION)) return afterUpload(deps, st, label);
-    const out = runUploadStep(deps, undefined, STATE_UPLOAD_EXPANSION);
+    const out = await runUploadStep(deps, undefined, STATE_UPLOAD_EXPANSION);
     if (uploadDone(deps, STATE_UPLOAD_EXPANSION)) return afterUpload(deps, st, label);
     if (out.idle) {
       // 槽位是空的（从没起 / 被清掉）⇒ **重新起一个**，绝不能当成"传完了"：
@@ -419,7 +419,7 @@ export function runExpansionStep(deps: TaskDeps): TaskOutcome {
       contentHash: hash,
       timestampMs: Number.isFinite(timestamp) ? timestamp : Date.now(),
     });
-    const res = callRawText(deps.transport, req);
+    const res = await callRawText(deps.transport, req);
     if (!res.ok) {
       save(deps, { ...st, step: 'recheck', snapError: `建快照失败：${res.error ?? '未知失败'}` });
       return { ok: true, note: `${label}：没成（${res.error ?? '未知失败'}）—— 照实记下，继续复查` };
@@ -450,7 +450,7 @@ export function runExpansionStep(deps: TaskDeps): TaskOutcome {
       return { ok: true, note: `${label}：没成（状态缺 uploadUrl/uploadId）—— 照实记下，继续复查` };
     }
     const { req } = buildPutRequest(st.snapUploadUrl, EMPTY_ZIP, 'snapshot');
-    const res = callRawText(deps.transport, req);
+    const res = await callRawText(deps.transport, req);
     if (!res.ok) {
       save(deps, { ...st, step: 'recheck', snapError: `快照 PUT 失败：${res.error ?? '未知失败'}` });
       return { ok: true, note: `${label}：没成（${res.error ?? '未知失败'}）—— 照实记下，继续复查` };
@@ -472,7 +472,7 @@ export function runExpansionStep(deps: TaskDeps): TaskOutcome {
       size: st.snapSize ?? EMPTY_ZIP.length,
       timestampMs: st.snapTimestamp ?? Date.now(),
     });
-    const res = callRawText(deps.transport, req);
+    const res = await callRawText(deps.transport, req);
     const parsed = res.ok ? parseSnapshotComplete(res.text) : { ok: false, error: res.error };
     if (!parsed.ok) {
       save(deps, { ...st, step: 'recheck', snapError: parsed.error });
@@ -512,7 +512,7 @@ export function runExpansionStep(deps: TaskDeps): TaskOutcome {
             : `备份仍未开启（${v.why}）—— 上传已发，下一趟再读`,
       );
     }
-    const res = callRawText(deps.transport, trashRequest([fileId]));
+    const res = await callRawText(deps.transport, trashRequest([fileId]));
     // ⚠ 清失败**不推进游标**：文件还在网盘里，下一趟要接着清（链尾那一枪也还留着它）。
     if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? '未知失败'}（文件先留着，下一趟再清）` };
     const parsed = parseTrashResult(res.text);
@@ -531,7 +531,7 @@ export function runExpansionStep(deps: TaskDeps): TaskOutcome {
   }
 
   if (st.step === 'read' || st.step === 'recheck') {
-    const res = callRawText(deps.transport, signedGet(deps, '/ycloud/signin/page/taskExpansion'));
+    const res = await callRawText(deps.transport, signedGet(deps, '/ycloud/signin/page/taskExpansion'));
     if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? '未知失败'}` };
     let read: ExpandRead;
     try {

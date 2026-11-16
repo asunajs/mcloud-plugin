@@ -67,7 +67,7 @@ export interface TokenGateDeps {
  *
  *  成功判据不是 `drain` 的 `ok`，是**换完之后这一页的票真的新鲜了**（`jwtFresh`）——
  *  "这一轮走完了"和"票能用了"是两件事，只有后者算成。 */
-export function exchangeOnce(deps: TokenGateDeps, recipe: SessionRecipe): { ok: boolean; note: string } {
+export async function exchangeOnce(deps: TokenGateDeps, recipe: SessionRecipe): Promise<{ ok: boolean; note: string }> {
   const auth = loadAuthRaw(deps.store);
   if (auth === '') return { ok: false, note: '没有可换票的原生凭据 —— 先加一个账号' };
   const started = startExchange(deps.store, auth, deps.nowIso, recipe);
@@ -78,9 +78,9 @@ export function exchangeOnce(deps: TokenGateDeps, recipe: SessionRecipe): { ok: 
     nowIso: deps.nowIso,
     baseUrl: deps.baseUrl,
   };
-  const r = drain(
-    (d) => {
-      const x = runExchangeStep(d, recipe);
+  const r = await drain(
+    async (d) => {
+      const x = await runExchangeStep(d, recipe);
       // `runExchangeStep` 用 `done` 而不是 `idle` 表示"这一趟走完"，包一层对上 drain 的契约
       return { ok: x.ok, note: x.note, idle: x.done };
     },
@@ -94,21 +94,21 @@ export function exchangeOnce(deps: TokenGateDeps, recipe: SessionRecipe): { ok: 
  *
  *  ⚠ `read` 每一枪都要**重新读会话**（不能在外层闭包缓存票）—— 否则换完票重试还拿旧票，
  *  永远撞 90001。这个前提由 `beansRead.ts::makeFetchPage` 满足（它每次调用里 `loadSession`）。 */
-export function withTokenGate<T>(
+export async function withTokenGate<T>(
   deps: TokenGateDeps,
-  read: () => T,
+  read: () => T | Promise<T>,
   recipe: SessionRecipe = FALLBACK_RECIPE,
-): T {
-  const doRefresh = deps.refreshToken ?? ((rp): { ok: boolean; note: string } => exchangeOnce(deps, rp));
+): Promise<T> {
+  const doRefresh = deps.refreshToken ?? (async (rp): Promise<{ ok: boolean; note: string }> => await exchangeOnce(deps, rp));
 
   // ① 到期主动续一轮（票新鲜就不动 —— 常见路径一次换票都不发）。
-  if (!jwtFresh(deps.store, Date.now(), recipe)) doRefresh(recipe);
+  if (!jwtFresh(deps.store, Date.now(), recipe)) await doRefresh(recipe);
 
   // ② 读；`90001` 就换票重试，最多 `MAX_RESETS` 次。
   let resets = 0;
   for (;;) {
     try {
-      return read();
+      return await read();
     } catch (e) {
       if (!(e instanceof LoginExpiredError)) throw e;
       if (resets >= MAX_RESETS) {
@@ -117,7 +117,7 @@ export function withTokenGate<T>(
       }
       resets++;
       // 换完（成没成都）回去重读：换成了新票大概率读得过；没换成还是 90001，`resets` 累加到上限。
-      doRefresh(recipe);
+      await doRefresh(recipe);
     }
   }
 }

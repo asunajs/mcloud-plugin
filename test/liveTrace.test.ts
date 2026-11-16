@@ -14,7 +14,7 @@ import { testDeps } from './helpers.ts';
 
 const NOW = '2026-11-16T10:30:00.000Z';
 
-test('追踪环：一趟开始时清空，之后一条条按顺序读回来', () => {
+test('追踪环：一趟开始时清空，之后一条条按顺序读回来', async () => {
   const store = memStore();
   traceStep(store, NOW, 'collect/查开播', '开播了', { ok: true, ms: 120 });
   traceStep(store, NOW, 'account', '小号：都成了', { ok: true });
@@ -29,7 +29,7 @@ test('追踪环：一趟开始时清空，之后一条条按顺序读回来', ()
   assert.equal(one?.ok, false);
 });
 
-test('追踪环：有上限（不能把 state 撑大），旧的先丢', () => {
+test('追踪环：有上限（不能把 state 撑大），旧的先丢', async () => {
   const store = memStore();
   traceBegin(store, NOW);
   for (let i = 0; i < TRACE_MAX + 30; i++) traceStep(store, NOW, 'step' + String(i));
@@ -39,20 +39,20 @@ test('追踪环：有上限（不能把 state 撑大），旧的先丢', () => {
   assert.equal(all[all.length - 1]?.step, 'step' + String(TRACE_MAX + 29));
 });
 
-test('追踪环：坏值当空（别让一个坏 JSON 把任务带崩）', () => {
+test('追踪环：坏值当空（别让一个坏 JSON 把任务带崩）', async () => {
   const store = memStore();
   store.setState(TRACE_KEY, '{不是数组', NOW);
   assert.deepEqual(readTrace(store), []);
 });
 
-test('⚠ 口令进环要脱敏（原文留在池里就够，环是快照）', () => {
+test('⚠ 口令进环要脱敏（原文留在池里就够，环是快照）', async () => {
   const masked = maskCode('云盘AI高效复盘');
   assert.ok(masked.startsWith('云盘'), masked);
   assert.ok(!masked.includes('高效复盘'), '不能把口令原文写进追踪环：' + masked);
   assert.ok(masked.includes(String('云盘AI高效复盘'.length)), '要能看出长度：' + masked);
 });
 
-test('GET /api/live/trace：把环交出去（界面/curl 直接看）', () => {
+test('GET /api/live/trace：把环交出去（界面/curl 直接看）', async () => {
   const store = memStore();
   const routes = mcloudRoutes(testDeps(store));
   const r = routes.find((x) => x.path.endsWith('/api/live/trace'));
@@ -60,7 +60,7 @@ test('GET /api/live/trace：把环交出去（界面/curl 直接看）', () => {
   assert.equal(r.method, 'GET');
   traceBegin(store, NOW);
   traceStep(store, NOW, 'collect/查开播', '开播了', { ok: true });
-  const out = r.handler({ method: 'GET', path: '/plugins/mcloud/api/live/trace', query: '' }) as {
+  const out = await r.handler({ method: 'GET', path: '/plugins/mcloud/api/live/trace', query: '' }) as {
     status: number;
     body: string;
   };

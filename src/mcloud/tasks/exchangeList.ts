@@ -230,8 +230,8 @@ export function summarizeList(prizes: ExchangePrize[]): Omit<ExchangeReading, 'a
 }
 
 /** 读一次清单（只读）。 */
-export function runExchangeList(deps: TaskDeps): TaskOutcome {
-  return runTask(
+export async function runExchangeList(deps: TaskDeps): Promise<TaskOutcome> {
+  return await runTask(
     deps,
     {
       task: 'exchange-list',

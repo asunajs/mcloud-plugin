@@ -68,7 +68,7 @@ function idsUsed(text: string): Set<string> {
 
 // ── ① id 对得上 ────────────────────────────────────────────────────────
 
-test('`app.js` 取用的每个 id 都真的存在（写错 = 那段渲染静默不生效）', () => {
+test('`app.js` 取用的每个 id 都真的存在（写错 = 那段渲染静默不生效）', async () => {
   const declared = idsIn(html);
   const dynamic = idsIn(js);
   const used = [...idsUsed(js)].sort();
@@ -83,7 +83,7 @@ test('`app.js` 取用的每个 id 都真的存在（写错 = 那段渲染静默�
 
 // ── ② 按钮都挂了处理器 ────────────────────────────────────────────────
 
-test('界面里挂的按钮都有对应的处理器（挂错 = 点了没反应）', () => {
+test('界面里挂的按钮都有对应的处理器（挂错 = 点了没反应）', async () => {
   const buttons = [...html.matchAll(/<(button|input|textarea)[^>]*id="([A-Za-z0-9_-]+)"/g)].map(
     (m) => m[2] as string,
   );
@@ -91,7 +91,7 @@ test('界面里挂的按钮都有对应的处理器（挂错 = 点了没反应�
   assert.deepEqual(unbound, [], `这些控件在 app.js 里从没被取用过：${unbound.join(', ')}`);
 });
 
-test('⚠ 每个按钮都**真的挂上了**处理器（不只是被 `$()` 取用过）', () => {
+test('⚠ 每个按钮都**真的挂上了**处理器（不只是被 `$()` 取用过）', async () => {
   // 旧版的问题不是"有按钮没绑"，而是"绑了但点了没反应"。
   // 所以判据要比"被取用过"更严：必须在 `addEventListener` 里出现过。
   const buttons = [...stripComments(html).matchAll(/<button[^>]*id="([A-Za-z0-9_-]+)"/g)].map(
@@ -102,7 +102,7 @@ test('⚠ 每个按钮都**真的挂上了**处理器（不只是被 `$()` 取�
   assert.deepEqual(unhandled, [], `这些按钮没有 addEventListener：${unhandled.join(', ')}`);
 });
 
-test('数据页「刷新」强取，自动进页走缓存', () => {
+test('数据页「刷新」强取，自动进页走缓存', async () => {
   const js = srcOf('plugins/mcloud/app.js');
   assert.ok(/async function fetchBeans\(force = false\)/.test(js), 'fetchBeans 要能区分强刷');
   assert.ok(/refresh=1/.test(js), '刷新要带 refresh=1');
@@ -110,7 +110,7 @@ test('数据页「刷新」强取，自动进页走缓存', () => {
   assert.ok(/来自缓存/.test(js), '命中缓存要说明');
 });
 
-test('⚠ 每个动作都走 `act(...)`（统一提示 + 失败可见 + 之后重画）', () => {
+test('⚠ 每个动作都走 `act(...)`（统一提示 + 失败可见 + 之后重画）', async () => {
   // 旧版每个按钮各写一遍 try/catch + 提示 + 刷新，于是有的忘了刷新
   // （点了没反应）、有的错误只 console.log（用户看不见）。
   // `act()` 是那个统一包装 —— 绕开它的按钮会重新长出那些毛病。
@@ -198,7 +198,7 @@ test('⚠ 页面用到的每个类都有定义（面板那份或自己那份）�
   );
 });
 
-test('样式表里没有指向不存在 id 的孤儿规则（改名留下的死规则）', () => {
+test('样式表里没有指向不存在 id 的孤儿规则（改名留下的死规则）', async () => {
   const declared = idsIn(html);
   const dynamic = idsIn(js);
   // ⚠ 必须把**十六进制色值**排掉：`#fff` / `#0969da` 与 id 选择器长得一样，
@@ -213,7 +213,7 @@ test('样式表里没有指向不存在 id 的孤儿规则（改名留下的死�
 
 // ── ④ 读数只走一个接口 ────────────────────────────────────────────────
 
-test('⚠ 读数**只走一个**聚合接口（一个区块一个接口会让用户不知道看哪个）', () => {
+test('⚠ 读数**只走一个**聚合接口（一个区块一个接口会让用户不知道看哪个）', async () => {
   assert.ok(js.includes("api('/readings')"), '读数的入口必须是 `/readings`');
   // 旧版那些「一个区块一个接口」的读数调用不许回来
   const banned = ['/api/live', '/api/matrix', '/api/exchange', '/api/groups', '/api/h5', '/caps'];
@@ -225,7 +225,7 @@ test('⚠ 读数**只走一个**聚合接口（一个区块一个接口会让用
   }
 });
 
-test('动作接口都是**写**（带 `x-panel: 1`），否则会被面板挡成 403', () => {
+test('动作接口都是**写**（带 `x-panel: 1`），否则会被面板挡成 403', async () => {
   // 面板的写路由要求这个头（防跨站请求伪造）。忘了的表现是 403 加一句
   // 「写接口要求请求头 x-panel: 1」—— 不是静默失败，但用户看不懂。
   const posts = [...js.matchAll(/method: 'POST'/g)].length;
@@ -238,7 +238,7 @@ test('动作接口都是**写**（带 `x-panel: 1`），否则会被面板挡成
 
 // ── ⑤ 菜单栏与区块一一对应 ────────────────────────────────────────────
 
-test('⚠ 菜单栏六块，与六个区块一一对应（少一块 = 用户点不到）', () => {
+test('⚠ 菜单栏六块，与六个区块一一对应（少一块 = 用户点不到）', async () => {
   // 2026-11-13：导航改用面板的分段控件（`.seg-item` + `aria-pressed`），不再自造下划线 tabs
   const items = [...html.matchAll(/class="seg-item[^"]*" (?:type="button" )?data-block="([a-z]+)"/g)].map(
     (m) => m[1] as string,
@@ -260,7 +260,7 @@ test('⚠ 菜单栏六块，与六个区块一一对应（少一块 = 用户点�
   assert.deepEqual(blocks.sort(), items.slice().sort(), '有区块没进菜单（等于藏起来了）');
 });
 
-test('⚠ 界面上没有「设置」页，也没有那六个地址口子（那是搭测试环境的东西）', () => {
+test('⚠ 界面上没有「设置」页，也没有那六个地址口子（那是搭测试环境的东西）', async () => {
   // 用户的原话：「彻底清空设置页面，这些 mock 内容压根不能交给用户使用，
   // 用户看不懂，还会导致一堆问题」。删的是**界面**；`/config` 那条路由还在
   // （e2e 靠它把基址指到 mock），只是不再从界面上暴露。
@@ -280,7 +280,7 @@ test('⚠ 界面上没有「设置」页，也没有那六个地址口子（那�
   assert.ok(!h.includes('acct-config'), '「账号配置」跳的是设置页，它跟着一起删');
 });
 
-test('⚠ 没有「高级」开关（藏东西让人怀疑"是不是有更重要的没显示"）', () => {
+test('⚠ 没有「高级」开关（藏东西让人怀疑"是不是有更重要的没显示"）', async () => {
   const h = stripComments(html);
   // ⚠ 判据是「**有没有那个开关**」，不是「有没有那个词」：
   //   （原来「设置」页里有一句用户可见的好句子——「所有口子都平铺在这里 ——
@@ -295,7 +295,7 @@ test('⚠ 没有「高级」开关（藏东西让人怀疑"是不是有更重要
   assert.ok(!/data-adv|toggle-adv/.test(h), '不许再有「高级」那种折叠开关');
 });
 
-test('⚠ 没有「推进一步」那种给面板用的按钮（任务是**一次跑完**的）', () => {
+test('⚠ 没有「推进一步」那种给面板用的按钮（任务是**一次跑完**的）', async () => {
   const h = stripComments(html);
   for (const bad of ['推进一步', '走一步', '算一次', '现在探一次', '只验证']) {
     assert.ok(!h.includes(bad), `「${bad}」是给旧状态机用的按钮文案，用户看不懂也不该点`);
@@ -308,7 +308,7 @@ test('⚠ 没有「推进一步」那种给面板用的按钮（任务是**一�
   assert.ok(!html.includes('id="ex-run"'), '兑换页不再有干跑按钮');
 });
 
-test('⚠ 奖品清单旁边就有「读一次」（提示答应的事要在原地兑现）', () => {
+test('⚠ 奖品清单旁边就有「读一次」（提示答应的事要在原地兑现）', async () => {
   const h = stripComments(html);
   // 标题行的形状：`.row.between` 里左边是 `h3`、右边那颗按钮
   assert.ok(
@@ -331,7 +331,7 @@ test('⚠ 奖品清单旁边就有「读一次」（提示答应的事要在原�
   assert.ok(!/还没有清单读数 —— 点「现在试一次」/.test(js), '别再指那颗被日志挤出去的按钮');
 });
 
-test('打开页面就画一次；**读数不许自动刷**（不然"我点了一下"和"它自己变了"分不清）', () => {
+test('打开页面就画一次；**读数不许自动刷**（不然"我点了一下"和"它自己变了"分不清）', async () => {
   assert.ok(/\nload\(\);\s*$/.test(js.trimEnd() + '\n'), '末尾要有一次 `load()`');
 
   // ⚠ 这条原来写的是"**禁止** `setInterval`"。但参考实现的扫码登录**就是**
@@ -374,7 +374,7 @@ test('打开页面就画一次；**读数不许自动刷**（不然"我点了一
 
 // ── ⑥ 客户端形态只有**一个**入口，而且它是真的 ────────────────────────
 
-test('⚠ 形态只有一个入口（设置页那个下拉框不许回来）', () => {
+test('⚠ 形态只有一个入口（设置页那个下拉框不许回来）', async () => {
   // 这一条是用户报的：「点击这个不会切换二维码，是没必要吗」。
   // 查下来是**两个控件**：设置页的「登录时冒充的客户端」（真在生效）与
   // 添加账号弹窗的「客户端形态」（没接上）。同一件事两个控件 = 用户改了
@@ -393,7 +393,7 @@ test('⚠ 形态只有一个入口（设置页那个下拉框不许回来）', (
   );
 });
 
-test('⚠ 形态真的进了请求（不是只改个高亮）', () => {
+test('⚠ 形态真的进了请求（不是只改个高亮）', async () => {
   // 判据要能"有牙"：出码与短信这两条**必须**把选择带上（后端据它冻进会话），
   // 账密与凭据那两条本来就在带。少一处 = 那一路静默用错形态。
   assert.ok(
@@ -419,7 +419,7 @@ test('⚠ 形态真的进了请求（不是只改个高亮）', () => {
 
 // ── ⑦ 出码之后**真的去问上游**（F-067：这条链从来没跑过）──────────────
 
-test('⚠ 出码之后必须开始轮询（`startQrPoll` 不许只定义不调用）', () => {
+test('⚠ 出码之后必须开始轮询（`startQrPoll` 不许只定义不调用）', async () => {
   // F-067 的现场：`startQrPoll` 定义了、注释里也写着"出码后 setInterval"，
   // 但**没有任何一处调用它** —— 于是出码之后面板从来不问上游，
   // 手机扫了、在手机上点了确认，这边永远不知道。用户的原话是「这二维码扫不了」。
@@ -451,7 +451,7 @@ test('⚠ 出码之后必须开始轮询（`startQrPoll` 不许只定义不调�
   );
 });
 
-test('⚠ 轮询**没问成**要退一步（空响应不等于"码没了"）', () => {
+test('⚠ 轮询**没问成**要退一步（空响应不等于"码没了"）', async () => {
   // F-070 现场：真机上移动云盘会连着回几个空体。2 秒一次地硬问，既把限流喂得更狠，
   // 也更容易错过"手机上确认成功"那一枪 —— 而那一枪只在一瞬间有效。
   assert.ok(/function backoffQrPoll\(base\)/.test(js), '缺退避');
@@ -469,7 +469,7 @@ test('⚠ 轮询**没问成**要退一步（空响应不等于"码没了"）', (
   );
 });
 
-test('⚠ 过期的码不许画得像还活着（"剩 0 秒"看起来完全像还能扫）', () => {
+test('⚠ 过期的码不许画得像还活着（"剩 0 秒"看起来完全像还能扫）', async () => {
   assert.ok(
     /if \(qr\.expired\)[\s\S]{0,600}?二维码过期了/.test(js),
     '读数说这张码过期了 ⇒ 撤掉码 + 直说"点「生成二维码」重新出码"',
@@ -481,7 +481,7 @@ test('⚠ 过期的码不许画得像还活着（"剩 0 秒"看起来完全像�
   );
 });
 
-test('⚠「手机端」页签下不出现「客户端形态」（那一路没有 win/mac 之分）', () => {
+test('⚠「手机端」页签下不出现「客户端形态」（那一路没有 win/mac 之分）', async () => {
   // 用户的原话：「手机端哪来的 macOS 和 Windows」。
   // 形态是弹窗级的（扫码 / 短信 / 账密 / 凭据都按它来），但**手机端那一路走
   // App 自己的身份**，摆着那两个按钮不是信息、是噪音 —— 所以按页签收起来。
@@ -501,7 +501,7 @@ test('⚠「手机端」页签下不出现「客户端形态」（那一路没�
   );
 });
 
-test('⚠ 轮询回来那一行要**带倒计时**（不然第一次轮询之后倒计时就没了）', () => {
+test('⚠ 轮询回来那一行要**带倒计时**（不然第一次轮询之后倒计时就没了）', async () => {
   // 画码时 `renderLogin` 拼的是「note · 剩 N 秒」，而轮询每 2 秒把那行重写一次 ——
   // 轮询那一侧不带倒计时的话，用户第一次看到的就是一句没有倒计时的提示，
   // 而"这张码还活着吗"全靠那一行（F-068）。
@@ -516,7 +516,7 @@ test('⚠ 轮询回来那一行要**带倒计时**（不然第一次轮询之后
 
 // ── ⑧ 手机号 / 验证码：**一屏**，排布照参考实现的登录页（F-069）────────
 
-test('⚠ 一屏：手机号那格右端嵌着「获取验证码」，下面验证码，再下面整宽「登录」', () => {
+test('⚠ 一屏：手机号那格右端嵌着「获取验证码」，下面验证码，再下面整宽「登录」', async () => {
   // 用户的原话：「设计下排布，可以搜索参考」——然后把**参考实现自己的登录页**
   // 截图发过来。那一页是一屏：
   //     手机号  [ 请输入手机号 | 获取验证码 ]
@@ -559,7 +559,7 @@ test('⚠ 一屏：手机号那格右端嵌着「获取验证码」，下面验�
   );
 });
 
-test('⚠ 「获取验证码」这一个按钮干两件事：先开会话再发码（用户看到的是一屏）', () => {
+test('⚠ 「获取验证码」这一个按钮干两件事：先开会话再发码（用户看到的是一屏）', async () => {
   // 参考实现是一屏，而这一侧的后端**要先有会话**才肯发码（`/login/sms/start`
   // 校验号码、并把形态冻进会话）——所以界面里把两步串起来，而不是让用户点两次。
   assert.ok(/async function requestCode\(kind\)/.test(js), '缺 `requestCode`');
@@ -577,7 +577,7 @@ test('⚠ 「获取验证码」这一个按钮干两件事：先开会话再发�
   assert.ok(/body: \{ phone, pcPlatform: addPc \}/.test(js), 'start 要带上当前形态');
 });
 
-test('⚠ 两个主按钮按**位数**开关，不是点了才报错', () => {
+test('⚠ 两个主按钮按**位数**开关，不是点了才报错', async () => {
   assert.ok(/function gate\(btnId, value, need\)/.test(js), '缺 `gate`');
   // 手机号那一格的门禁在 <p-sms-code> 控件里（length="11"：满 11 位才放开行内按钮）
   assert.ok(
@@ -600,7 +600,7 @@ test('⚠ 两个主按钮按**位数**开关，不是点了才报错', () => {
   assert.ok(!/length === 6\)[^;]*\.click\(\)/.test(js), '填满 6 位不许自动提交（点了才算）');
 });
 
-test('⚠ 发码之后要进重发倒计时（连点只会喂限流）', () => {
+test('⚠ 发码之后要进重发倒计时（连点只会喂限流）', async () => {
   // 第 182 轮：倒计时本身搬进了面板的 <p-sms-code>（ui.js；ui-kit-check 在面板那侧
   // 真点过：位数门禁、倒计时文案、stopResend 恢复）。这页要保证的是**接线**：
   assert.ok(
@@ -629,7 +629,7 @@ test('⚠ 发码之后要进重发倒计时（连点只会喂限流）', () => {
   );
 });
 
-test('⚠ 验证码框要用 `one-time-code`（别写成 off）', () => {
+test('⚠ 验证码框要用 `one-time-code`（别写成 off）', async () => {
   // MDN：短信 / 邮件 / 验证器来的 OTP 就用这个值，系统会把收到的码直接填进来。
   for (const kind of ['sms', 'app']) {
     assert.ok(
@@ -644,7 +644,7 @@ test('⚠ 验证码框要用 `one-time-code`（别写成 off）', () => {
   assert.ok(!/autocomplete="off"/.test(html), '别把自动填充关掉（MDN 那条明确不建议）');
 });
 
-test('⚠ 说明文字里的号码要打码（它会一直留在屏幕上）', () => {
+test('⚠ 说明文字里的号码要打码（它会一直留在屏幕上）', async () => {
   assert.ok(/function maskPhone\(p\)/.test(js), '缺 `maskPhone`');
   assert.ok(/\*\*\*\*/.test(js), '要打码成 `138****0000` 那种');
   assert.ok(/验证码已发到 \$\{maskPhone\(s\.phone\)\}/.test(js), '那一行说明要用它');
@@ -656,7 +656,7 @@ test('⚠ 说明文字里的号码要打码（它会一直留在屏幕上）', (
   }
 });
 
-test('⚠ 界面里**不许再有滑块图**（坐标是解出来的，摆图等于要人眼看像素）', () => {
+test('⚠ 界面里**不许再有滑块图**（坐标是解出来的，摆图等于要人眼看像素）', async () => {
   // 用户的原话：「手机号登录需要滑块，你这是让我肉眼看像素吗」。
   // 参考实现是协议优先：自动取题 → 解坐标 → 带答案重发，人只负责等短信。
   for (const id of ['slider-box', 'slider-bg', 'slider-note', 'app-slider-box', 'app-slider-bg', 'app-slider-note']) {
@@ -667,7 +667,7 @@ test('⚠ 界面里**不许再有滑块图**（坐标是解出来的，摆图等
   assert.ok(/if \(!r\.sent\) throw new Error\(r\.note/.test(js), '发码那一路要收成"成了/没成"两种');
 });
 
-test('⚠ 登录成功之后弹窗要**自己关掉**（四条进账号的路都要）', () => {
+test('⚠ 登录成功之后弹窗要**自己关掉**（四条进账号的路都要）', async () => {
   // 用户的原话：「登录成功弹窗不自动关闭」。原来只有扫码与贴凭据顺手关了，
   // 短信与手机端登进去之后弹窗还杵在那儿 —— 用户只能自己点「关闭」。
   assert.ok(/function closeAddDialog\(\)/.test(js), '缺统一的收尾函数');
@@ -696,7 +696,7 @@ test('⚠ 登录成功之后弹窗要**自己关掉**（四条进账号的路都
   );
 });
 
-test('⚠ 提示里不许有黑话（这是给用户看的）', () => {
+test('⚠ 提示里不许有黑话（这是给用户看的）', async () => {
   // 用户的原话：「不要提示黑话啊，这是给用户看的，一堆用户看不懂的话」。
   // 上一版那句是：「凭据已续期（旧尾 7eyts- → 新尾 OFDUM-；上游说还能用 2592000 秒
   // （这一枪没带用户域 —— 上游不要求），新过期还剩 30 天）—— 已重起一轮换票…」
@@ -711,7 +711,7 @@ test('⚠ 提示里不许有黑话（这是给用户看的）', () => {
   assert.ok(!/凭据 \$\{x\.expireDays\} 天后/.test(js), '别再写"凭据 N 天后"');
 });
 
-test('⚠ 运行日志是**终端样式**，接的是面板的日志流（SSE）', () => {
+test('⚠ 运行日志是**终端样式**，接的是面板的日志流（SSE）', async () => {
   // 用户的原话：「先把日志接过来，终端样式的运行日志」。
   // 数据源是面板自己的 `/api/logs/stream`（插件里每句 log 都在那儿），
   // 不是插件那套"一次一条"的运行记录 —— 那个适合列表，不适合"看着它跑"。
@@ -741,7 +741,7 @@ test('⚠ 运行日志是**终端样式**，接的是面板的日志流（SSE）
   assert.ok(/function reload\(\)[\s\S]{0,200}?close\(\)[\s\S]{0,200}?open\(\)/.test(js), 'reload 要真的重连');
 });
 
-test('⚠ 「最近几次」那一整块**没有了**（用户看不懂那串"未登录：state 里没有会话"）', () => {
+test('⚠ 「最近几次」那一整块**没有了**（用户看不懂那串"未登录：state 里没有会话"）', async () => {
   // 用户的原话：「这一块没必要了，用户看不懂」。它列的是每步的原始结果，
   // 而那正是"看着它跑"该由**日志**回答的事。
   for (const id of ['daily-recent', 'daily-steps', 'daily-when', 'ex-recent', 'ex-steps', 'live-recent', 'live-steps']) {
@@ -751,7 +751,7 @@ test('⚠ 「最近几次」那一整块**没有了**（用户看不懂那串"�
   assert.ok(!/renderRecent/.test(js), '画它的函数也该删（留着就是死代码）');
 });
 
-test('⚠ 第二行那句"它自己什么时候跑"来自**面板的任务表**，不是写死的文案', () => {
+test('⚠ 第二行那句"它自己什么时候跑"来自**面板的任务表**，不是写死的文案', async () => {
   // 原来是写死的「白天每 30 分钟跑一次」，而排期早改成 `0 8,20 * * *` ——
   // 用户看到的就是一句错话。
   assert.ok(/fetch\('\/api\/state'/.test(js), '要读面板的任务表');
@@ -768,7 +768,7 @@ test('⚠ 第二行那句"它自己什么时候跑"来自**面板的任务表**�
   assert.ok(!/Promise\.all\(\[[^\]]*api\('\/readings'\)/.test(js), '不许再并行拉（会自己撞自己）');
 });
 
-test('⚠ 界面上**没有**「连接」这种按钮（参考实现里换票是任务自己做的事）', () => {
+test('⚠ 界面上**没有**「连接」这种按钮（参考实现里换票是任务自己做的事）', async () => {
   // 用户看到红字「未登录：state 里没有会话」时，我第一版在账号卡上加了个「连接」——
   // 用户的原话：「这个连接是什么鬼，看看 mcloud」。参考实现里没有这一步：
   // 换票（拿网页会话）是**任务自己**在跑之前做的。
@@ -777,7 +777,7 @@ test('⚠ 界面上**没有**「连接」这种按钮（参考实现里换票是
   assert.ok(!/howto-session/.test(js), '界面里不许出现 docs 路径');
 });
 
-test('⚠ 任务自己**开一轮**换票（`runExchangeStep` 只接着走，不会开始）', () => {
+test('⚠ 任务自己**开一轮**换票（`runExchangeStep` 只接着走，不会开始）', async () => {
   const daily = srcOf('src/entries/daily.ts') + srcOf('src/mcloud/dailyRun.ts');
   // ⚠ 两种情况都要开新的：没有那一轮（`null`）、上一轮已经 `done`（票过期要再换）
   // ⚠ 必须用**这一趟这个账号**的 store（多账号下模块级那份会读到别的号的票 —— F-095）
@@ -790,7 +790,7 @@ test('⚠ 任务自己**开一轮**换票（`runExchangeStep` 只接着走，不
   assert.ok(!/startExchange\(store, /.test(daily), '不许再用模块级 store 开票');
 });
 
-test('⚠ 日志一行一步，形状照参考实现（成功 / 跳过 / 失败 + 原因）', () => {
+test('⚠ 日志一行一步，形状照参考实现（成功 / 跳过 / 失败 + 原因）', async () => {
   const daily = srcOf('src/entries/daily.ts') + srcOf('src/mcloud/dailyRun.ts');
   // `mcloud-sign` 的 logger 有 start/success/fail 三种类型，控制台打 `[success] … 成功 签到`
   // 一行一个用户认得的任务，结论只有三种说法（`tasks/stepLog.ts::userLine`）
@@ -824,7 +824,7 @@ test('⚠ 日志一行一步，形状照参考实现（成功 / 跳过 / 失败 
 });
 
 
-test('⚠ 「跑一次」要**等它真跑完**再说结果（面板那个接口只是"交给它了"）', () => {
+test('⚠ 「跑一次」要**等它真跑完**再说结果（面板那个接口只是"交给它了"）', async () => {
   // 原来的写法是 `act(btn, () => runTask('daily'), '跑完了 —— 看下面的每一步')`：
   // 触发接口是异步的，它回 `{ok:true}` 只表示"收下了"，任务还要跑几十秒 ——
   // 于是用户看到"跑完了"、读数却还是上一次的。
@@ -844,7 +844,7 @@ test('⚠ 「跑一次」要**等它真跑完**再说结果（面板那个接口
   assert.ok(/if \(one === null\) \{\n\s+toast\('还没跑完/.test(js), '超时要老实说没跑完');
 });
 
-test('⚠ 跑的时候有「停止」，且触发请求不能挡住按钮状态', () => {
+test('⚠ 跑的时候有「停止」，且触发请求不能挡住按钮状态', async () => {
   const js = srcOf('plugins/mcloud/app.js');
   const html = srcOf('plugins/mcloud/index.html');
   for (const id of ['daily-stop', 'live-stop']) {
@@ -859,7 +859,7 @@ test('⚠ 跑的时候有「停止」，且触发请求不能挡住按钮状态'
   assert.ok(/stopBtn\.hidden = false;/.test(body), '跑起来要显示停止按钮');
 });
 
-test('⚠ 每个号一个 chip，点开看那一次的每一步（三块任务页都有）', () => {
+test('⚠ 每个号一个 chip，点开看那一次的每一步（三块任务页都有）', async () => {
   // 用户要的是"哪个号成了"一眼看到 —— 而不是去翻日志或那一长串步骤表。
   for (const [box, detail] of [
     ['daily-accounts', 'daily-account-detail'],
@@ -889,7 +889,7 @@ test('⚠ 每个号一个 chip，点开看那一次的每一步（三块任务�
   assert.ok(!/换票/.test(js), '界面代码里不许出现「换票」这种词');
 });
 
-test('定时弹窗：cron / 提前秒数 / 截止时间 / 每号次数', () => {
+test('定时弹窗：cron / 提前秒数 / 截止时间 / 每号次数', async () => {
   for (const id of ['ex-plan-cron', 'ex-plan-until', 'ex-plan-lead-sec', 'ex-plan-max', 'ex-plan-account']) {
     assert.ok(html.includes(`id="${id}"`), `缺 ${id}`);
   }
@@ -904,7 +904,7 @@ test('定时弹窗：cron / 提前秒数 / 截止时间 / 每号次数', () => {
   assert.ok(/提前 \$\{leadSec\}s 启动/.test(js), '预览要写提前秒数');
 });
 
-test('⚠ 定时抢兑由弹窗负责，页面上不再铺一块定时设置', () => {
+test('⚠ 定时抢兑由弹窗负责，页面上不再铺一块定时设置', async () => {
   // 入口在清单/关注行的「定时」；弹窗里有时刻、提前量和实时预览。
   assert.ok(/id="ex-plan-dialog"/.test(html), '缺定时弹窗');
   assert.ok(/function openPlanDialog\(/.test(js), '缺打开弹窗');
@@ -914,7 +914,7 @@ test('⚠ 定时抢兑由弹窗负责，页面上不再铺一块定时设置', (
   assert.ok(/return m === 0 \? `\$\{h\} 小时` : `\$\{h\} 小时 \$\{m\} 分`;/.test(js), '超过一小时要进位');
 });
 
-test('⚠ 运行日志重启后还在（面板的内存环重启就空，插件自己留一份）', () => {
+test('⚠ 运行日志重启后还在（面板的内存环重启就空，插件自己留一份）', async () => {
   // 用户的原话：「你每次重启后运行日志里的旧记录就没了」。
   // 面板的 SSE 底子是内存环；插件这一侧把同样的行写进 state（SQLite），重启照旧在。
   assert.ok(/path: `\$\{base\}\/log\/tail`/.test(routesSource()), '缺 /log/tail');
@@ -938,7 +938,7 @@ test('⚠ 运行日志重启后还在（面板的内存环重启就空，插件�
   assert.ok(/\^\\d\{4\}-\\d\{2\}-\\d\{2\}/.test(js), '两种时间形状都要吃');
 });
 
-test('⚠ 级别下拉对**历史**也生效（原来只管实时流：选「只看错误」下面照样一排 info）', () => {
+test('⚠ 级别下拉对**历史**也生效（原来只管实时流：选「只看错误」下面照样一排 info）', async () => {
   // 用户圈的正是这个自相矛盾：页头写「只显示「只看错误」」，行里全是 `info`。
   // 根因：`level` 是发给服务端的参数，而服务端只滤**实时流**；
   // 历史是本地从 `/log/tail` 铺的，不经那道闸 ⇒ 必须在 `seed()` 里自己滤。
@@ -956,7 +956,7 @@ test('⚠ 级别下拉对**历史**也生效（原来只管实时流：选「只
   assert.ok(/LEVEL_RANK\[lv\] \?\? 0/.test(js), '未知级别要按最低档');
 });
 
-test('⚠ 页头那个数报**屏上摆了几行**，不再报服务端环（用户：「按筛选结果更新缓冲数一起改了吧」）', () => {
+test('⚠ 页头那个数报**屏上摆了几行**，不再报服务端环（用户：「按筛选结果更新缓冲数一起改了吧」）', async () => {
   // 原来那句是 `mcloud-live · 缓冲 15 行 · 只显示「只看错误」` —— 筛到屏上只剩 6 行，
   // 页头还报环里的全量。同一句话里"只显示 X"和"缓冲 15"自己打自己。
   assert.ok(/function setMeta\(tail\)/.test(js), '页头那句要有一个统一的出处');
@@ -979,7 +979,7 @@ test('⚠ 页头那个数报**屏上摆了几行**，不再报服务端环（用
   assert.ok(/if \(meta\.textContent !== text\) meta\.textContent = text;/.test(js), '写之前要比一下');
 });
 
-test('⚠ 直播页第一行说"在听什么"，不是"池子里有几条口令"', () => {
+test('⚠ 直播页第一行说"在听什么"，不是"池子里有几条口令"', async () => {
   // 用户的原话：这两件事接不上。顺序必须是：正在听 > 下一场几点 > 还没探到。
   assert.ok(/const listening = !!\s*\(/.test(js), '先判在不在听');
   assert.ok(/lr\.step === 'listen'/.test(js) && /windowStartMs/.test(js), '用窗口起点判活，不拿过期状态');
@@ -998,7 +998,7 @@ test('⚠ 直播页第一行说"在听什么"，不是"池子里有几条口令"
   assert.ok(/g\.target \|\| '目标主播'/.test(js), '旧读数没有名字时要有个不别扭的兜底');
 });
 
-test('直播页能设听弹幕时长（照 mcloud Rust 的 5–1800 秒）', () => {
+test('直播页能设听弹幕时长（照 mcloud Rust 的 5–1800 秒）', async () => {
   const html = srcOf('plugins/mcloud/index.html');
   assert.ok(html.includes('id="live-listen-seconds"'), '要有输入框');
   assert.ok(/id="live-listen-seconds"[^>]*min="5"[^>]*max="1800"/.test(html), '范围要写清 5–1800');
@@ -1007,7 +1007,7 @@ test('直播页能设听弹幕时长（照 mcloud Rust 的 5–1800 秒）', () 
   assert.ok(/听弹幕中/.test(srcOf('src/entries/live.ts')), '长连接期间要打进度，不能 70 秒零日志');
 });
 
-test('直播日志不刷屏：听弹幕每拍不落一条，零口令不报成功', () => {
+test('直播日志不刷屏：听弹幕每拍不落一条，零口令不报成功', async () => {
   const live = srcOf('src/entries/live.ts');
   assert.ok(!/while \(Date\.now\(\) < listenDeadline\)[\s\S]{0,300}step\('听弹幕'/.test(live), '循环里不能每拍 push 一条步骤');
   assert.ok(/listenPushed/.test(live), '听完只落一条结论');
@@ -1015,14 +1015,14 @@ test('直播日志不刷屏：听弹幕每拍不落一条，零口令不报成�
   assert.ok(/跳过：/.test(live), '全都没领时不能写成都成了');
 });
 
-test('⚠ 听弹幕那行只说人关心的：几条弹幕、几条口令', () => {
+test('⚠ 听弹幕那行只说人关心的：几条弹幕、几条口令', async () => {
   const src = srcOf('src/mcloud/tasks/liveListen.ts');
   assert.ok(/收到 \$\{st\.danmakuFrames\} 条弹幕/.test(src), '要报弹幕数');
   assert.ok(/捡到 \$\{st\.codes\.length\} 条口令/.test(src), '要报口令数');
   assert.ok(!/帧 \$\{st\.frames\}/.test(src), '帧数/心跳是排查用的，不进这行');
 });
 
-test('⚠ 兑换页那一行不许把"翻译表"当字符串印出来（`[object Object]`）', () => {
+test('⚠ 兑换页那一行不许把"翻译表"当字符串印出来（`[object Object]`）', async () => {
   // `e.verdictText` 是一张 `verdict → 中文` 的表；`setText` 会 `String(表)`。
   assert.ok(!/setText\('ex-note', r \? e\.verdictText/.test(js), '不许把整张表塞进这一行');
   // ⚠ 2026-10-17：数据源的名字从 `rows` 换成 `exPicks`（全量清单那份缓存）。
@@ -1034,14 +1034,14 @@ test('⚠ 兑换页那一行不许把"翻译表"当字符串印出来（`[object
   assert.ok(/\$\{esc\(say\(p\.verdict\)\)\}/.test(js), '表格要用翻译后的说法');
 });
 
-test('⚠ 直播页的时间说人话（`2026-10-20 14:30:00` → `10-20 14:30`）', () => {
+test('⚠ 直播页的时间说人话（`2026-10-20 14:30:00` → `10-20 14:30`）', async () => {
   assert.ok(/function shortWhen\(v\)/.test(js), '缺 shortWhen');
   assert.ok(/if \(day === today\) return `今天 \$\{hm\}`;/.test(js), '今天直说');
   assert.ok(/if \(day === tomorrow\) return `明天 \$\{hm\}`;/.test(js), '明天直说');
   assert.ok(/const next = shortWhen\(pool\.nextStart/.test(js), 'hero 里要用它');
 });
 
-test('⚠ 直播那两句内部说法（门开着/门关着）不许出现在给用户看的句子里', () => {
+test('⚠ 直播那两句内部说法（门开着/门关着）不许出现在给用户看的句子里', async () => {
   for (const f of ['src/mcloud/tasks/liveRoomRules.ts', 'src/mcloud/liveGate.ts', 'src/mcloud/tasks/liveListen.ts']) {
     const src = srcOf(f);
     assert.ok(!/门关着：|门开着：/.test(src), `${f} 里还有"门"这种说法`);
@@ -1050,20 +1050,20 @@ test('⚠ 直播那两句内部说法（门开着/门关着）不许出现在给
   assert.ok(/现在没在听：谁都没开播/.test(srcOf('src/mcloud/tasks/liveRoomRules.ts')), '没播要说"没在听"');
 });
 
-test('⚠ 老记录里的旧说法就地翻掉（冷却十几小时，不能等下次真探）', () => {
+test('⚠ 老记录里的旧说法就地翻掉（冷却十几小时，不能等下次真探）', async () => {
   const src = srcOf('src/mcloud/tasks/liveListen.ts');
   assert.ok(src.includes('门关着（合并后 (\\d+) 间房）'), '要把"合并后 N 间房"翻过来');
   assert.ok(/\.replace\(\/门关着\/g, '现在没在听'\)/.test(src), '老记录里的"门关着"也要翻');
 });
 
-test('⚠ 直播：口令只收**一次**（一个账号听到，所有账号都能用）', () => {
+test('⚠ 直播：口令只收**一次**（一个账号听到，所有账号都能用）', async () => {
   const live = srcOf('src/entries/live.ts');
   // 用户口径 2026-10-17：「一个听到其他人就能用了」
   assert.ok(/function collectOnce\(/.test(live), '收口令要独立成一支');
   assert.ok(/function drawOnce\(/.test(live), '领取才是按账号的那一支');
   assert.ok(/if \(index === 0 && !manual\) \{[\s\S]{0,160}?collectOnce\(deps, startedMs\)/.test(live),
     '只有第一个账号去收，且人贴了口令就不收');
-  assert.ok(/return drawOnce\(deps, startedMs, manual \? manualCodes : null\);/.test(live), '每个账号都领（手动只领贴的那条）');
+  assert.ok(/return (?:await )?drawOnce\(deps, startedMs, manual \? manualCodes : null\);/.test(live), '每个账号都领（手动只领贴的那条）');
   // 听窗口不能再按账号摊预算
   assert.ok(!/runLive\(deps, startedMs\)/.test(live), '不再有"每账号跑一遍"');
   assert.ok(/const listenDeadline =[\s\S]{0,200}BUDGET_MS - 20_000/.test(live), '截止按整趟算');
@@ -1071,7 +1071,7 @@ test('⚠ 直播：口令只收**一次**（一个账号听到，所有账号都
   assert.ok(/logBoth\(store, 'start', '口令', at\)/.test(live), '收口令要单独一段');
 });
 
-test('⚠ 直播收口令读**第一个账号的袋**，不能读模块级 store', () => {
+test('⚠ 直播收口令读**第一个账号的袋**，不能读模块级 store', async () => {
   const live = srcOf('src/entries/live.ts');
   const start = live.indexOf('function collectOnce(');
   const end = live.indexOf('function drawOnce(');
@@ -1085,7 +1085,7 @@ test('⚠ 直播收口令读**第一个账号的袋**，不能读模块级 store
   assert.ok(!/loadPoolFrom\(store\)/.test(body), '不许再读模块级 store');
 });
 
-test('⚠ 每行日志都带账号短名前缀（昵称原样，手机号 3+4）', () => {
+test('⚠ 每行日志都带账号短名前缀（昵称原样，手机号 3+4）', async () => {
   for (const f of ['src/entries/daily.ts', 'src/entries/live.ts', 'src/entries/exchange.ts']) {
     const s = srcOf(f);
     assert.ok(/const tag = `\[\$\{shortLabel\(who\)\}\]`;/.test(s), `${f} 缺短名前缀`);
@@ -1100,7 +1100,7 @@ test('⚠ 每行日志都带账号短名前缀（昵称原样，手机号 3+4）
   );
 });
 
-test('⚠ 直播没开始就整趟跳过：不逐账号输出「领小红花没开 / 都成了」', () => {
+test('⚠ 直播没开始就整趟跳过：不逐账号输出「领小红花没开 / 都成了」', async () => {
   const live = srcOf('src/entries/live.ts');
   // 第一段说“没在播”时，后面的账号连 drawOnce 都不进
   assert.ok(/if \(one\.stopped\) stopAll = true;/.test(live), '要记住“整趟停”');
@@ -1120,7 +1120,7 @@ test('⚠ 直播没开始就整趟跳过：不逐账号输出「领小红花没�
   );
 });
 
-test('⚠ 先验开播再决定要不要听（参考 mcloud `live_room.rs:1603`）', () => {
+test('⚠ 先验开播再决定要不要听（参考 mcloud `live_room.rs:1603`）', async () => {
   const live = srcOf('src/entries/live.ts');
   assert.ok(/if \(gate === null \|\| gate\.active !== true\) \{/.test(live), '没开播要早退');
   assert.ok(/今天没有直播（谁都没在播）/.test(live), '一间都没播');
@@ -1134,7 +1134,7 @@ test('⚠ 先验开播再决定要不要听（参考 mcloud `live_room.rs:1603`�
   assert.ok(!/'\*\/5 \* \* \* \*'/.test(live), '每 5 分钟太频繁');
 });
 
-test('⚠ 门失败 ≠ 今天没直播（参考 mcloud-sign `hasActiveLiveRoom`：警告一句、继续试）', () => {
+test('⚠ 门失败 ≠ 今天没直播（参考 mcloud-sign `hasActiveLiveRoom`：警告一句、继续试）', async () => {
   const live = srcOf('src/entries/live.ts');
   assert.ok(/if \(!gateOut\.ok\) \{/.test(live), '门失败要单独一条路');
   assert.ok(/（继续试一次）/.test(live), '一天两次机会，偶发失败别丢掉整场');
@@ -1143,7 +1143,7 @@ test('⚠ 门失败 ≠ 今天没直播（参考 mcloud-sign `hasActiveLiveRoom`
 });
 
 
-test('⚠ 保存账号选择校验的是**排期任务名**，不是内部步骤名（曾经每次 400）', () => {
+test('⚠ 保存账号选择校验的是**排期任务名**，不是内部步骤名（曾经每次 400）', async () => {
   const routes = routesSource();
   const ta = srcOf('src/mcloud/taskAccounts.ts');
   assert.ok(/export const SCHEDULED_TASKS = \['日常', '兑换', '直播'\] as const;/.test(ta), '要有这一份');
@@ -1164,13 +1164,13 @@ test('⚠ 保存账号选择校验的是**排期任务名**，不是内部步骤
   }
 });
 
-test('⚠ 账号选择：取消一格 = 剩下那些（不能反成"只留这一格"）', () => {
+test('⚠ 账号选择：取消一格 = 剩下那些（不能反成"只留这一格"）', async () => {
   // `all:true` 时每一格都是勾着的；按"勾了它"去推会得到 ids:['移动'] —— 正好反了
   assert.ok(/const ids = \[\.\.\.panel\.querySelectorAll\('input\[data-pick\]'\)\]/.test(js), '要以 DOM 为准');
   assert.ok(!/const has = \(cur\.picked \|\| \[\]\)\.includes\(id\);/.test(js), '别再自己推');
 });
 
-test('⚠ 日志筛在「提醒以上」时必须自己解释（用户：「没看到任何日志」）', () => {
+test('⚠ 日志筛在「提醒以上」时必须自己解释（用户：「没看到任何日志」）', async () => {
   assert.ok(/function levelNote\(\)/.test(js), '要有个"当前筛选叫什么"的小函数');
   assert.ok(/只显示「\$\{only\}」/.test(js), '空态要说清筛选');
   assert.ok(/切回「全部」/.test(js), '要给出怎么看到');
@@ -1178,12 +1178,12 @@ test('⚠ 日志筛在「提醒以上」时必须自己解释（用户：「没�
   assert.ok(/const hidden = only === '' \? '' : ` · 日志只显示「\$\{only\}」，这趟的行大多被挡掉了`;/.test(js), '提示要跟结果一起说');
 });
 
-test('⚠ 级别要从 `TERMS[k].el()` 里取（`TERMS[k].level` 是 undefined）', () => {
+test('⚠ 级别要从 `TERMS[k].el()` 里取（`TERMS[k].level` 是 undefined）', async () => {
   assert.ok(/const lv = TERMS\[key\] \? TERMS\[key\]\.el\(\)\.level\.value : 'info';/.test(js), '要经 el()');
   assert.ok(!/TERMS\[key\]\.level \?/.test(js), '别直接读 .level');
 });
 
-test('⚠ 级别下拉每次进页面都回「全部」（浏览器会恢复上次的选择 ⇒ 空屏）', () => {
+test('⚠ 级别下拉每次进页面都回「全部」（浏览器会恢复上次的选择 ⇒ 空屏）', async () => {
   assert.ok(/function resetTermLevels\(\)/.test(js), '要有显式复位');
   assert.ok(/el\.level\.value = 'info';/.test(js), '回「全部」');
   assert.ok(/addEventListener\('pageshow', resetTermLevels\)/.test(js), 'pageshow 之后再复位一次（恢复发生在它之前）');
@@ -1191,7 +1191,7 @@ test('⚠ 级别下拉每次进页面都回「全部」（浏览器会恢复上�
   assert.ok(!/autocomplete="off"/.test(srcOf('plugins/mcloud/index.html')), 'HTML 里不许出现');
 });
 
-test('⚠ 自检要探「宿主有没有 native TLS」——直播那条链全靠它', () => {
+test('⚠ 自检要探「宿主有没有 native TLS」——直播那条链全靠它', async () => {
   const st = srcOf('src/selftest.ts');
   // 面板被重编成不带 `--features legacy-tls` 时，直播第一步就 warn「没成」，
   // 而自检那时候是绿的 —— 2026-10-17 真撞到过。
@@ -1202,7 +1202,7 @@ test('⚠ 自检要探「宿主有没有 native TLS」——直播那条链全�
   assert.ok(/!\/legacy-tls\/\.test\(err\)/.test(st), '判据是"错误里没有 legacy-tls 那句"');
 });
 
-test('⚠ 票的事内部处理：界面不提"手机端凭据几点过期"（用户不关心）', () => {
+test('⚠ 票的事内部处理：界面不提"手机端凭据几点过期"（用户不关心）', async () => {
   const s = srcOf('src/mcloud/session.ts');
   assert.ok(/export function jwtExpiryOf\(raw: string, nowIso: string\)/.test(s), '内部要有"票还有效吗"的判据');
   // 卡片上不许出现这条 —— 那是机制，不是用户要做的事
@@ -1216,7 +1216,7 @@ test('⚠ 票的事内部处理：界面不提"手机端凭据几点过期"（�
 });
 
 
-test('⚠ 三个号同一句话时合成一枚 chip（三枚一模一样的是噪声）', () => {
+test('⚠ 三个号同一句话时合成一枚 chip（三枚一模一样的是噪声）', async () => {
   const js = srcOf('plugins/mcloud/app.js');
   assert.ok(/new Set\(sameRun\.map\(restOf\)\)\.size === 1/.test(js), '要判"是不是同一句话"');
   assert.ok(/name\.textContent = `\$\{sameRun\.length\} 个账号`/.test(js), '合成后要说清是几个号');
@@ -1224,7 +1224,7 @@ test('⚠ 三个号同一句话时合成一枚 chip（三枚一模一样的是�
   assert.ok(/const sameRun = list\.filter\(\(x\) => x\.at === runAt\);/.test(js), '只比同一趟');
 });
 
-test('⚠ 「领小红花没开」是全局开关，不许画成账号 chip（同一句话只说一遍）', () => {
+test('⚠ 「领小红花没开」是全局开关，不许画成账号 chip（同一句话只说一遍）', async () => {
   const js = srcOf('plugins/mcloud/app.js');
   assert.ok(
     /const liveRecent = \(l\.recent \|\| \[\]\)\.filter\(\s*\(x\) => !\/领小红花没开\/\.test/.test(js),
@@ -1233,7 +1233,7 @@ test('⚠ 「领小红花没开」是全局开关，不许画成账号 chip（�
   assert.ok(/renderAcctChips\('live-accounts', 'live-account-detail', liveRecent\)/.test(js), '传滤过的');
 });
 
-test('⚠ 颜色一律走面板 token（写死的深色在浅色主题下会翻车）', () => {
+test('⚠ 颜色一律走面板 token（写死的深色在浅色主题下会翻车）', async () => {
   const css = srcOf('plugins/mcloud/style.css');
   // 面板 theme.css 里**没有** --bg-2 / --fg-dim 这两个名字
   assert.ok(!/var\(--bg-2/.test(css), '--bg-2 不是面板的 token');
@@ -1247,7 +1247,7 @@ test('⚠ 颜色一律走面板 token（写死的深色在浅色主题下会翻�
   }
 });
 
-test('⚠ 面板缺直播支持时：当成**构建缺陷**报出来，并且别再去试', () => {
+test('⚠ 面板缺直播支持时：当成**构建缺陷**报出来，并且别再去试', async () => {
   const live = srcOf('src/entries/live.ts');
   const cap = srcOf('src/mcloud/hostCap.ts');
   // 判据要在最前面（门之前）—— 否则每条路都以同一条 TLS 报错收场
@@ -1277,7 +1277,7 @@ test('⚠ 面板缺直播支持时：当成**构建缺陷**报出来，并且别
   assert.ok(/export const CAP_TTL_MS/.test(cap), '要缓存');
 });
 
-test('⚠ 「数据」页第一格是主动请求的：开这一页自己取，只有"要新的"才点刷新', () => {
+test('⚠ 「数据」页第一格是主动请求的：开这一页自己取，只有"要新的"才点刷新', async () => {
   const js = srcOf('plugins/mcloud/app.js');
   const html = srcOf('plugins/mcloud/index.html');
   // 切到「数据」就自动取一次
@@ -1295,7 +1295,7 @@ test('⚠ 「数据」页第一格是主动请求的：开这一页自己取，�
   assert.ok(/当前余额/.test(html) && /缓存 2 小时/.test(html), '数据页要说清当前余额和 2 小时缓存');
 });
 
-test('WebUI 里不再有「推送」这一块（配置/试发/规则全删）', () => {
+test('WebUI 里不再有「推送」这一块（配置/试发/规则全删）', async () => {
   const html = srcOf('plugins/mcloud/index.html');
   const js = srcOf('plugins/mcloud/app.js');
   assert.ok(!html.includes('data-block="push"'), '菜单里不该还有推送');
@@ -1306,7 +1306,7 @@ test('WebUI 里不再有「推送」这一块（配置/试发/规则全删）', 
   assert.ok(!/post\('push\//.test(js), '不该再从界面调 push 接口');
 });
 
-test('⚠ 日志终端先连 SSE，再异步补历史（否则任务跑完才看到日志）', () => {
+test('⚠ 日志终端先连 SSE，再异步补历史（否则任务跑完才看到日志）', async () => {
   const js = srcOf('plugins/mcloud/app.js');
   const start = js.indexOf('function open() {', js.indexOf('function makeTerm('));
   const end = js.indexOf('function connect(q) {', start);
@@ -1317,11 +1317,11 @@ test('⚠ 日志终端先连 SSE，再异步补历史（否则任务跑完才看
   assert.ok(/if \(shown > 0\) return;/.test(js), '历史回来时实时已有行就不许清屏');
 });
 
-test('⚠ 日常**不设"今天跑过就跳过"**：一天两趟都跑，第二趟是兜底', () => {
+test('⚠ 日常**不设"今天跑过就跳过"**：一天两趟都跑，第二趟是兜底', async () => {
   const d = srcOf('src/entries/daily.ts');
   // 那道闸必须没了 —— 插件没法证明所有小任务都到了预期，跳过就等于放弃兜底
   assert.ok(!/doneToday && !manual/.test(d), '不许再有"今天跑过就跳过"');
-  assert.ok(/forEachTaskAccount\(store, '日常', p, transport, \(deps, acctId\) =>/.test(d), '每个账号都照跑');
+  assert.ok(/forEachTaskAccount\(store, '日常', p, transport, (?:async )?\(deps, acctId\) =>/.test(d), '每个账号都照跑');
   // 允许在 `onPhase` 前面夹别的选项（2026-11-03 起先是 `deadlineAt`，整趟硬截止）
   assert.ok(/runDaily\(deps, \{[\s\S]{0,120}onPhase/.test(d), '步骤/阶段要边跑边打');
   assert.ok(/第二次跑是容错/.test(d), '理由要写在代码里（下次别又加回去）');
@@ -1331,7 +1331,7 @@ test('⚠ 日常**不设"今天跑过就跳过"**：一天两趟都跑，第二�
 });
 
 
-test('⚠ App 任务：已完成默认折叠、点开是按组展开的', () => {
+test('⚠ App 任务：已完成默认折叠、点开是按组展开的', async () => {
   const js = srcOf('plugins/mcloud/app.js');
   // 折叠行：带组标记与条数
   assert.ok(/data-more="1" data-g="\$\{esc\(g\.group\)\}" data-n="\$\{restItems\.length\}"/.test(js), '折叠行要带组和条数');
@@ -1345,7 +1345,7 @@ test('⚠ App 任务：已完成默认折叠、点开是按组展开的', () => 
   assert.ok(todoAt > 0 && moreAt > todoAt, '折叠行要排在"没做完"那几条之后');
 });
 
-test('任务状态可切账号；每条带 taskId 和未完成时的步进', () => {
+test('任务状态可切账号；每条带 taskId 和未完成时的步进', async () => {
   const html = srcOf('plugins/mcloud/index.html');
   const js = srcOf('plugins/mcloud/app.js');
   assert.ok(/id="matrix-account"/.test(html), '任务状态卡要有账号下拉');
@@ -1365,7 +1365,7 @@ test('任务状态可切账号；每条带 taskId 和未完成时的步进', () 
   assert.ok(/renderData\(r\.data \|\| \{\}, r\.account \|\| \{\}\)/.test(js), 'renderData 必须拿到账号表（否则下拉是空的）');
 });
 
-test('⚠「本次运行」按钮上的账号要真的更新（manual 那两个 id 不是按 key 拼的）', () => {
+test('⚠「本次运行」按钮上的账号要真的更新（manual 那两个 id 不是按 key 拼的）', async () => {
   const js = srcOf('plugins/mcloud/app.js');
   const html = srcOf('plugins/mcloud/index.html');
   // 现场 2026-11-01 截图：按钮写「本次运行：跟随自动」，展开面板里只有「测试」打勾。
@@ -1379,7 +1379,7 @@ test('⚠「本次运行」按钮上的账号要真的更新（manual 那两个 
   }
 });
 
-test('⚠ 备份那一行不许自相矛盾：没成要写「没成」并带上原因', () => {
+test('⚠ 备份那一行不许自相矛盾：没成要写「没成」并带上原因', async () => {
   const js = srcOf('plugins/mcloud/app.js');
   // 现场 2026-11-01：「本月备份：未开启（任务拓展：已完成）」—— 两句互相打脸。
   // 现在 done 只在复查读到备份已开启时成立；没成/判不了各有自己的词。
@@ -1389,7 +1389,7 @@ test('⚠ 备份那一行不许自相矛盾：没成要写「没成」并带上�
   assert.ok(/shortWhy\(backup\.why, 60\)/.test(js), '这一行是副标题，原因要截短');
 });
 
-test('⚠ App 任务徽章**照抄上游那句**，不许一刀切印成「待做」（mcloud 的同一个错：`694e35f`）', () => {
+test('⚠ App 任务徽章**照抄上游那句**，不许一刀切印成「待做」（mcloud 的同一个错：`694e35f`）', async () => {
   const js = srcOf('plugins/mcloud/app.js');
   // 一刀切那个词不许回来（用户原话：「这个待做容易误导，请与原接口文案一致」）
   assert.ok(!/'待做'/.test(js), '界面上还有写死的「待做」标签');
@@ -1408,7 +1408,7 @@ test('⚠ App 任务徽章**照抄上游那句**，不许一刀切印成「待�
   assert.ok(/<span class="badge \$\{view\.badge\}">\$\{esc\(view\.label\)\}<\/span>/.test(js), '徽章文案没转义');
 });
 
-test('⚠ 跨账号的同一句解释只说一遍（领小红花那个括号）', () => {
+test('⚠ 跨账号的同一句解释只说一遍（领小红花那个括号）', async () => {
   const log = srcOf('src/mcloud/tasks/stepLog.ts');
   assert.ok(/export function onceHint/.test(log), '要有 onceHint');
   assert.ok(/ONCE_HINTS = \['（要先在服务端那边开启）'\]/.test(log), '只对固定后缀生效，别做"任意重复就去重"');
@@ -1419,7 +1419,7 @@ test('⚠ 跨账号的同一句解释只说一遍（领小红花那个括号）'
   assert.ok(/onceHint\(line, onceHints\)/.test(l), '直播那条链也一样');
 });
 
-test('CI 的 state 断言脚本：正例过、反例必须红（别让 CI 断言本身坏了没人知道）', () => {
+test('CI 的 state 断言脚本：正例过、反例必须红（别让 CI 断言本身坏了没人知道）', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'ci-state-'));
   // 形状照 panel-llrt：任务在 `tasks`、表达式叫 `cron`（旧面板叫 jobs / schedule）。
   // 类型写明：下面几条反例会改字段，别让 TS 按字面量推成 null
@@ -1492,7 +1492,7 @@ test('CI 的 state 断言脚本：正例过、反例必须红（别让 CI 断言
   );
 });
 
-test('每个任务都有独立的自动/本次账号选择器，手动不回写自动', () => {
+test('每个任务都有独立的自动/本次账号选择器，手动不回写自动', async () => {
   const html = srcOf('plugins/mcloud/index.html');
   for (const id of ['daily-acct-btn', 'daily-manual-btn', 'live-acct-btn', 'live-manual-btn']) {
     assert.ok(html.includes(`id="${id}"`), `缺少 ${id}`);
@@ -1504,7 +1504,7 @@ test('每个任务都有独立的自动/本次账号选择器，手动不回写�
 });
 
 
-test('⚠ 领奖块与弹窗里不许出现滑块图 / 偏移量 / 像素输入（人眼分不出像素）', () => {
+test('⚠ 领奖块与弹窗里不许出现滑块图 / 偏移量 / 像素输入（人眼分不出像素）', async () => {
   const h = stripComments(html);
   const from = h.indexOf('id="block-prizes"');
   const to = h.indexOf('id="block-data"');
@@ -1529,7 +1529,7 @@ test('⚠ 领奖块与弹窗里不许出现滑块图 / 偏移量 / 像素输入�
   }
 });
 
-test('顶栏要印插件版本（跑的是哪一版）', () => {
+test('顶栏要印插件版本（跑的是哪一版）', async () => {
   const html = srcOf('plugins/mcloud/index.html');
   const js = srcOf('plugins/mcloud/app.js');
   assert.match(html, /id="plugin-ver"/, '顶栏要有版本位');
@@ -1537,13 +1537,13 @@ test('顶栏要印插件版本（跑的是哪一版）', () => {
   assert.equal(/v0\.\d+\.\d+/.test(html), false, '界面里不许写死版本号');
 });
 
-test('版本那一格：空时整格消失，颜色走本文件的 token', () => {
+test('版本那一格：空时整格消失，颜色走本文件的 token', async () => {
   const css = srcOf('plugins/mcloud/style.css');
   assert.match(css, /#plugin-ver:empty\s*\{[^}]*display:\s*none/, '没有版本时不许留空药丸');
   assert.equal(/var\(--muted/.test(css), false, '本文件没有 --muted，别自造一个恒等于硬编码的变量');
 });
 
-test('account picker 的 legacy 说明也写死 id（拼出来在 manual 上不存在）', () => {
+test('account picker 的 legacy 说明也写死 id（拼出来在 manual 上不存在）', async () => {
   const js = srcOf('plugins/mcloud/app.js');
   assert.equal(/\$\x60\$\{cfg\.key\}-acct-/.test(js), false, '别再拼 `${cfg.key}-acct-*` 的 id');
   assert.match(js, /legacy: 'daily-acct-legacy'/, 'daily 那条要有 legacy');
@@ -1552,7 +1552,7 @@ test('account picker 的 legacy 说明也写死 id（拼出来在 manual 上不�
 
 // ── ⑧ 日志流：新面板（panel-llrt）的帧形状 ─────────────────────────────
 
-test('日志：新面板的帧走默认 message 事件，按插件过滤、从前缀还原级别、时间戳吃 epoch 毫秒', () => {
+test('日志：新面板的帧走默认 message 事件，按插件过滤、从前缀还原级别、时间戳吃 epoch 毫秒', async () => {
   const js = srcOf('plugins/mcloud/app.js');
   // 新面板没有事件名（裸 `data:` 帧）——只挂 `addEventListener('log')` 会一帧都收不到
   assert.ok(/es\.onmessage = paintPanel;/.test(js), '必须挂默认 message 事件');

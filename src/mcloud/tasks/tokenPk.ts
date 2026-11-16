@@ -135,7 +135,7 @@ function queued(a: PkAction): PkQueued {
 }
 
 /** 推进一步。**一次调用最多一发上游请求**（动作层保证）。 */
-export function tokenPkStep(deps: TaskDeps): TaskOutcome {
+export async function tokenPkStep(deps: TaskDeps): Promise<TaskOutcome> {
   const st = beginLeg(deps.store, deps.nowIso);
   const s = pkSession(deps);
 
@@ -148,7 +148,7 @@ export function tokenPkStep(deps: TaskDeps): TaskOutcome {
           note: '还没有可用的 H5 票（日常第①步换票没成）—— 这一族这一趟没做',
         };
       }
-      const res = callRawText(deps.transport, listRequest(s, deps.baseUrl));
+      const res = await callRawText(deps.transport, listRequest(s, deps.baseUrl));
       if (!res.ok) return { ok: false, note: `任务列表没读到：${res.error ?? '未知失败'}` };
       const env = parsePk(res.text);
       if (!env.ok) {
@@ -191,7 +191,7 @@ export function tokenPkStep(deps: TaskDeps): TaskOutcome {
       if (s === undefined) {
         return { ok: false, note: 'H5 票没了 —— 这一族这一趟没做完' };
       }
-      const out = stepAction(deps, s, st.attempt);
+      const out = await stepAction(deps, s, st.attempt);
       if (!out.finished) {
         save(deps, st);
         return { ok: true, note: out.note };
@@ -217,7 +217,7 @@ export function tokenPkStep(deps: TaskDeps): TaskOutcome {
       // 动作做完服务端要一点时间才记上（参照实现睡 3 秒再复查）。抓包只看到"页面重开时
       // 已经是 SUCCESS"，看不出这个延迟 —— 按参照实现取 3 秒；测试里 `settleMs:0` 跳过。
       waitMs(deps, deps.settleMs ?? 3000);
-      const res = callRawText(deps.transport, listRequest(s, deps.baseUrl));
+      const res = await callRawText(deps.transport, listRequest(s, deps.baseUrl));
       if (!res.ok) return { ok: false, note: `复查没读到任务表：${res.error ?? '未知失败'}` };
       const env = parsePk(res.text);
       if (!env.ok) return { ok: false, note: `复查没成：服务端说 ${env.message || `code=${env.code}`}` };
@@ -261,7 +261,7 @@ export function tokenPkStep(deps: TaskDeps): TaskOutcome {
         return { ok: true, note: '该领的领完了 —— 下一步收尾读数' };
       }
       const name = st.names[String(id)] ?? `#${id}`;
-      const r = claimAction(deps, s, id, name);
+      const r = await claimAction(deps, s, id, name);
       st.claimedIds.push(id);
       if (r.ok) {
         st.claimedCount += 1;
@@ -279,7 +279,7 @@ export function tokenPkStep(deps: TaskDeps): TaskOutcome {
     // ⑤ 领抽奖次数（参照实现的收尾第一发；**是写**，但幂等：没有可换的就是 0/0）
     case 'chance': {
       if (s === undefined) return { ok: false, note: 'H5 票没了 —— 没法读抽奖次数' };
-      const res = callRawText(deps.transport, chanceRequest(s, deps.baseUrl));
+      const res = await callRawText(deps.transport, chanceRequest(s, deps.baseUrl));
       if (!res.ok) {
         // 收尾失败不染红整趟：汇总句里只是少一格
         st.phase = 'progress';
@@ -312,7 +312,7 @@ export function tokenPkStep(deps: TaskDeps): TaskOutcome {
       // 先读一次"还剩几次"：上限是**我们**的约束，真实次数是**服务端**的约束 ——
       // 拿上限去撞 0 次机会只会白挨一发业务错误（抓包 §1 表 ④ 就是这个口）。
       if (ledger.remaining === undefined) {
-        const rr = callRawText(deps.transport, remainChanceRequest(s, deps.baseUrl));
+        const rr = await callRawText(deps.transport, remainChanceRequest(s, deps.baseUrl));
         if (rr.ok) {
           const renv = parsePk(rr.text);
           if (renv.ok) {
@@ -338,7 +338,7 @@ export function tokenPkStep(deps: TaskDeps): TaskOutcome {
               : `还剩 ${ledger.remaining} 次抽奖机会 —— 下一步抽`,
         };
       }
-      const res = callRawText(deps.transport, lotteryRequest(s, deps.baseUrl));
+      const res = await callRawText(deps.transport, lotteryRequest(s, deps.baseUrl));
       if (!res.ok) {
         // 抽奖是"花次数"的写口：一失败就停手（别连抽把次数全烧在错误上），记一行
         st.failed.push({ id: 0, name: '抽奖', why: `抽奖没成：${res.error ?? '未知失败'}` });
@@ -379,7 +379,7 @@ export function tokenPkStep(deps: TaskDeps): TaskOutcome {
     // ⑥ 算力进度（只读）
     case 'progress': {
       if (s === undefined) return { ok: false, note: 'H5 票没了 —— 没法读进度' };
-      const res = callRawText(deps.transport, progressRequest(s, deps.baseUrl));
+      const res = await callRawText(deps.transport, progressRequest(s, deps.baseUrl));
       if (res.ok) {
         const env = parsePk(res.text);
         if (env.ok) st.usedToken = parseProgress(env.result).usedToken;

@@ -431,7 +431,7 @@ export function buildCustomPost(
 /** 投递时要用到的宿主能力。**注入**（这个文件不引 host-api）。 */
 export interface PushDeps {
   /** 发一个 HTTP 请求。 */
-  http(req: BuiltRequest): { ok: boolean; status: number; body: string; error?: string | undefined };
+  http(req: BuiltRequest): Promise<{ ok: boolean; status: number; body: string; error?: string | undefined }>;
   /** 发一封邮件（面板的 `smtp_send`）。形状见 `host-api.d.ts` 的 `SmtpOpts`。 */
   smtp(opts: {
     host: string;
@@ -470,24 +470,24 @@ export interface PushResult {
 }
 
 /** 按配置发一条。**每个配了的渠道都发一遍**，一个失败不影响别的。 */
-export function sendPush(
+export async function sendPush(
   deps: PushDeps,
   config: PushConfig,
   title: string,
   text: string,
-): PushResult {
+): Promise<PushResult> {
   const results: ChannelResult[] = [];
   const add = (channel: PushChannel, outcome: ChannelResult['outcome'], note: string): void => {
     results.push({ channel, label: CHANNEL_LABELS[channel], outcome, note });
   };
 
   /** 发一个已经建好的请求，按 HTTP 状态归结果。 */
-  const deliver = (channel: PushChannel, built: Built): void => {
+  const deliver = async (channel: PushChannel, built: Built): Promise<void> => {
     if (!built.ok) {
       add(channel, 'skipped', built.skip);
       return;
     }
-    const res = deps.http(built.request);
+    const res = await deps.http(built.request);
     if (!res.ok) {
       add(channel, 'failed', res.error ?? `HTTP ${res.status}`);
       return;
@@ -502,14 +502,14 @@ export function sendPush(
   };
 
   // ① pushplus
-  if (config.pushplus) deliver('pushplus', buildPushplus(config.pushplus, title, text));
+  if (config.pushplus) await deliver('pushplus', buildPushplus(config.pushplus, title, text));
   // ② Server酱
-  if (config.serverChan) deliver('serverChan', buildServerChan(config.serverChan, title, text));
+  if (config.serverChan) await deliver('serverChan', buildServerChan(config.serverChan, title, text));
 
   // ③ 企业微信应用：**两步**
   if (config.workWeixin) {
     const c = config.workWeixin;
-    const tok = deps.http(buildWorkWeixinToken(c));
+    const tok = await deps.http(buildWorkWeixinToken(c));
     let accessToken: string | undefined;
     if (tok.ok && tok.status >= 200 && tok.status < 300) {
       try {
@@ -524,7 +524,7 @@ export function sendPush(
       //   那只会往上游留一条失败记录，而真正的原因（corpid 不对）看不出来。
       add('workWeixin', 'failed', tok.ok ? '换 access_token 失败（响应里没有）' : `换 access_token 失败：${tok.error ?? `HTTP ${tok.status}`}`);
     } else {
-      deliver('workWeixin', {
+      await deliver('workWeixin', {
         ok: true,
         request: buildWorkWeixinMessage(c, accessToken, title, text),
       });
@@ -532,15 +532,15 @@ export function sendPush(
   }
 
   // ④ 企业微信机器人
-  if (config.workWeixinBot) deliver('workWeixinBot', buildWorkWeixinBot(config.workWeixinBot, title, text));
+  if (config.workWeixinBot) await deliver('workWeixinBot', buildWorkWeixinBot(config.workWeixinBot, title, text));
   // ⑤ Telegram
-  if (config.tgBot) deliver('tgBot', buildTgBot(config.tgBot, title, text));
+  if (config.tgBot) await deliver('tgBot', buildTgBot(config.tgBot, title, text));
   // ⑥ Bark
-  if (config.bark) deliver('bark', buildBark(config.bark, title, text));
+  if (config.bark) await deliver('bark', buildBark(config.bark, title, text));
   // ⑦ 回逍
-  if (config.twoIm) deliver('twoIm', buildTwoIm(config.twoIm, title, text));
+  if (config.twoIm) await deliver('twoIm', buildTwoIm(config.twoIm, title, text));
   // ⑧ 钉钉
-  if (config.dingTalk) deliver('dingTalk', buildDingTalk(config.dingTalk, title, text, deps.nowMs()));
+  if (config.dingTalk) await deliver('dingTalk', buildDingTalk(config.dingTalk, title, text, deps.nowMs()));
 
   // ⑨ 邮件：**走面板的 `smtp_send`**（不是 HTTP）
   if (config.email) {
@@ -583,7 +583,7 @@ export function sendPush(
         }
         continue;
       }
-      const res = deps.http(built.request);
+      const res = await deps.http(built.request);
       if (!res.ok) {
         anyFailed = true;
         add('customPost', 'failed', res.error ?? `HTTP ${res.status}`);

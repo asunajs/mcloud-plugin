@@ -273,7 +273,7 @@ function deps(store: ReturnType<typeof memStore>, transport: Transport, host: Ho
  *  `member/apply`）时，写死 4 的写法会让所有用例一起红，而红的原因与它们要守的
  *  判据无关 —— 那种"改一处红一片"的测试很快就会被改成"随便多推几步"。
  *  这里按 `step` 判，`listen` / `done` 就停。 */
-function advanceToListen(
+async function advanceToListen(
   store: ReturnType<typeof memStore>,
   transport: Transport,
   host: HostWs,
@@ -281,7 +281,7 @@ function advanceToListen(
 ) {
   const notes: string[] = [];
   for (let i = 0; i < 9; i += 1) {
-    const out = runLiveListen(deps(store, transport, host, nowIso));
+    const out = await runLiveListen(deps(store, transport, host, nowIso));
     notes.push(out.note);
     const step = loadListenState(store)?.step;
     if (step === 'listen' || step === 'done' || step === undefined) break;
@@ -291,22 +291,22 @@ function advanceToListen(
 
 // ── ① 冷却：门关着时一发都不发 ──────────────────────────────────────────
 
-test('门关着 ⇒ 记一次冷却，冷却期内**一发请求都不发**', () => {
+test('门关着 ⇒ 记一次冷却，冷却期内**一发请求都不发**', async () => {
   const store = memStore();
   store.setState(STATE_AUTH, AUTH, NOW);
   const up = fakeUpstream({ live: false });
   const f = fakeHost([]);
 
   // 第一次：handshake → rooms 两步走完，rooms 得出"没在播"
-  const a = runLiveListen(deps(store, up.transport, f.host));
+  const a = await runLiveListen(deps(store, up.transport, f.host));
   assert.equal(a.ok, true);
-  const b = runLiveListen(deps(store, up.transport, f.host));
+  const b = await runLiveListen(deps(store, up.transport, f.host));
   assert.match(b.note, /没在听/);
   const afterCheck = up.sent.length;
   assert.ok(afterCheck >= 3, `检查一次至少三发（SSO/JWT/页签），实际 ${afterCheck}`);
 
   // 之后一分钟内的每一次触发：**零请求**
-  const c = runLiveListen(deps(store, up.transport, f.host, LATER));
+  const c = await runLiveListen(deps(store, up.transport, f.host, LATER));
   assert.match(c.note, /之后再去看/);
   assert.equal(up.sent.length, afterCheck, '冷却期里不许再打上游');
 
@@ -315,25 +315,25 @@ test('门关着 ⇒ 记一次冷却，冷却期内**一发请求都不发**', ()
   assert.equal(f.opened.length, 0, '门关着时不该开 WS');
 });
 
-test('冷却到点之后会重新检查（不是永远不看了）', () => {
+test('冷却到点之后会重新检查（不是永远不看了）', async () => {
   const store = memStore();
   store.setState(STATE_AUTH, AUTH, NOW);
   const up = fakeUpstream({ live: false });
   const f = fakeHost([]);
-  runLiveListen(deps(store, up.transport, f.host));
-  runLiveListen(deps(store, up.transport, f.host));
+  await runLiveListen(deps(store, up.transport, f.host));
+  await runLiveListen(deps(store, up.transport, f.host));
   const afterCheck = up.sent.length;
 
   // 冷却（5 分钟）之后的一次触发：应当**重新**开始检查（又出现请求）
   const laterIso = new Date(Date.parse(NOW) + IDLE_RECHECK_MS + 1000).toISOString();
-  const out = runLiveListen(deps(store, up.transport, f.host, laterIso));
+  const out = await runLiveListen(deps(store, up.transport, f.host, laterIso));
   assert.ok(up.sent.length > afterCheck, `该重新检查了：${out.note}`);
   assert.doesNotMatch(out.note, /之后再去看/);
 });
 
 // ── ② 没有聊天室就不开 WS ───────────────────────────────────────────────
 
-test('`chatRoomId` 是空/null ⇒ **不开 WS**，如实说"没有聊天室"', () => {
+test('`chatRoomId` 是空/null ⇒ **不开 WS**，如实说"没有聊天室"', async () => {
   const store = memStore();
   store.setState(STATE_AUTH, AUTH, NOW);
   const up = fakeUpstream({ live: true, chatRoomId: null });
@@ -342,7 +342,7 @@ test('`chatRoomId` 是空/null ⇒ **不开 WS**，如实说"没有聊天室"', 
   // ⚠ 推到有结论为止（链是 6 步：handshake/rooms/userToken/roomBeat/apply/open）
   let out = { ok: false, note: '' };
   for (let i = 0; i < 9; i += 1) {
-    out = runLiveListen(deps(store, up.transport, f.host));
+    out = await runLiveListen(deps(store, up.transport, f.host));
     if (loadListenState(store)?.step === 'done') break;
   }
 
@@ -351,13 +351,13 @@ test('`chatRoomId` 是空/null ⇒ **不开 WS**，如实说"没有聊天室"', 
   assert.equal(loadListenState(store)?.step, 'done');
 });
 
-test('roomBeat 是 **POST** 到 `/api/room/front/roomBeat`，房间号在 body 里', () => {
+test('roomBeat 是 **POST** 到 `/api/room/front/roomBeat`，房间号在 body 里', async () => {
   const store = memStore();
   store.setState(STATE_AUTH, AUTH, NOW);
   const up = fakeUpstream({ live: true });
   const f = fakeHost([]);
   for (let i = 0; i < 9; i += 1) {
-    runLiveListen(deps(store, up.transport, f.host));
+    await runLiveListen(deps(store, up.transport, f.host));
     if (loadListenState(store)?.step === 'listen') break;
   }
   const beat = up.sent.find((s) => s.url.includes('roomBeat'));
@@ -367,12 +367,12 @@ test('roomBeat 是 **POST** 到 `/api/room/front/roomBeat`，房间号在 body �
 
 // ── ③ `o` → PROVISION ──────────────────────────────────────────────────
 
-test('收到 SockJS 的 `o` 之后才发 PROVISION（command=3），而且**只发一次**', () => {
+test('收到 SockJS 的 `o` 之后才发 PROVISION（command=3），而且**只发一次**', async () => {
   const store = memStore();
   store.setState(STATE_AUTH, AUTH, NOW);
   const up = fakeUpstream({ live: true });
   const f = fakeHost(['o', provisionAckFrame()]);
-  advanceToListen(store, up.transport, f.host);
+  await advanceToListen(store, up.transport, f.host);
 
   const open = f.opened[0];
   assert.ok(open, '该开过 WS');
@@ -390,15 +390,15 @@ test('收到 SockJS 的 `o` 之后才发 PROVISION（command=3），而且**只�
 
 // ── ④ 弹幕文本进池 ─────────────────────────────────────────────────────
 
-test('弹幕帧 ⇒ 文本解出来、**口令进池且来源是 `danmaku`**、并且回了 ack', () => {
+test('弹幕帧 ⇒ 文本解出来、**口令进池且来源是 `danmaku`**、并且回了 ack', async () => {
   const store = memStore();
   store.setState(STATE_AUTH, AUTH, NOW);
   const up = fakeUpstream({ live: true });
   const f = fakeHost(['o', provisionAckFrame(), danmakuFrame('小红花口令：一键9图出圈')]);
-  advanceToListen(store, up.transport, f.host);
+  await advanceToListen(store, up.transport, f.host);
   // 再推一拍：弹幕在这一拍里被读到
   const seen: string[] = [];
-  const out = runLiveListen({
+  const out = await runLiveListen({
     ...deps(store, up.transport, f.host),
     onDanmaku: (t) => seen.push(t),
   });
@@ -415,13 +415,13 @@ test('弹幕帧 ⇒ 文本解出来、**口令进池且来源是 `danmaku`**、�
   assert.match(out.note, /弹幕/, out.note);
 });
 
-test('观众在问「口令是什么」⇒ **不进池**（它是提问，不是口令）', () => {
+test('观众在问「口令是什么」⇒ **不进池**（它是提问，不是口令）', async () => {
   const store = memStore();
   store.setState(STATE_AUTH, AUTH, NOW);
   const up = fakeUpstream({ live: true });
   const f = fakeHost(['o', provisionAckFrame(), danmakuFrame('口令是什么？')]);
-  advanceToListen(store, up.transport, f.host);
-  runLiveListen(deps(store, up.transport, f.host));
+  await advanceToListen(store, up.transport, f.host);
+  await runLiveListen(deps(store, up.transport, f.host));
 
   const { pool } = loadPoolFrom(store);
   assert.equal(pool.codes.length, 0, `提问不该进池：${JSON.stringify(pool.codes)}`);
@@ -429,12 +429,12 @@ test('观众在问「口令是什么」⇒ **不进池**（它是提问，不是
 
 // ── ⑤ 结束条件 ─────────────────────────────────────────────────────────
 
-test('窗口到点 ⇒ **主动** `ws_close`，并把状态收尾成 done', () => {
+test('窗口到点 ⇒ **主动** `ws_close`，并把状态收尾成 done', async () => {
   const store = memStore();
   store.setState(STATE_AUTH, AUTH, NOW);
   const up = fakeUpstream({ live: true });
   const f = fakeHost(['o', provisionAckFrame()], 'timeout');
-  advanceToListen(store, up.transport, f.host);
+  await advanceToListen(store, up.transport, f.host);
   assert.equal(loadListenState(store)?.step, 'listen');
 
   // 把窗口起点挪到很久以前 ⇒ 这一拍就该收工
@@ -445,13 +445,13 @@ test('窗口到点 ⇒ **主动** `ws_close`，并把状态收尾成 done', () =
     JSON.stringify({ ...st, windowStartMs: Date.parse(NOW) - (DEFAULT_LISTEN_SECONDS + 1) * 1000 }),
     NOW,
   );
-  const out = runLiveListen(deps(store, up.transport, f.host));
+  const out = await runLiveListen(deps(store, up.transport, f.host));
   assert.match(out.note, /窗口到点/);
   assert.deepEqual(f.closed, [f.lastHandle], '该 ws_close 掉那个句柄（而且是同一个）');
   assert.equal(loadListenState(store)?.step, 'done');
 });
 
-test('句柄不在了（面板重启过）⇒ **重新走一遍门**，不假装还在听', () => {
+test('句柄不在了（面板重启过）⇒ **重新走一遍门**，不假装还在听', async () => {
   const store = memStore();
   store.setState(STATE_AUTH, AUTH, NOW);
   const up = fakeUpstream({ live: true });
@@ -472,24 +472,24 @@ test('句柄不在了（面板重启过）⇒ **重新走一遍门**，不假装
     }),
     NOW,
   );
-  const out = runLiveListen(deps(store, up.transport, f.host));
+  const out = await runLiveListen(deps(store, up.transport, f.host));
   assert.match(out.note, /重新走一遍门|句柄/, out.note);
   assert.equal(loadListenState(store)?.step, 'handshake');
 });
 
-test('连上就断 ⇒ 只报"断了"，不把它当成"听完了"', () => {
+test('连上就断 ⇒ 只报"断了"，不把它当成"听完了"', async () => {
   const store = memStore();
   store.setState(STATE_AUTH, AUTH, NOW);
   const up = fakeUpstream({ live: true });
   // 第一读就 close（不是 `o`）
   const f = fakeHost([]);
-  const notes = advanceToListen(store, up.transport, f.host);
+  const notes = await advanceToListen(store, up.transport, f.host);
   assert.match(notes.join(' | '), /断/);
 });
 
 // ── 口子与常量 ─────────────────────────────────────────────────────────
 
-test('WS 口子：默认是真主机，配了就换（拼出来的形状照抓包 §一）', () => {
+test('WS 口子：默认是真主机，配了就换（拼出来的形状照抓包 §一）', async () => {
   const store = memStore();
   assert.equal(loadWsBase(store), BASE_VIDEO_IM_WS);
   saveWsBase(store, 'ws://127.0.0.1:19000/', NOW);
@@ -497,35 +497,35 @@ test('WS 口子：默认是真主机，配了就换（拼出来的形状照抓�
   assert.equal(liveWsUrl('ws://127.0.0.1:19000', 3, 'abcdefgh'), 'ws://127.0.0.1:19000/ws/3/abcdefgh/websocket');
 });
 
-test('`ws://` 的 mock **不填** `tls`（否则默认构建的面板会直接报错，e2e 就跑不动）', () => {
+test('`ws://` 的 mock **不填** `tls`（否则默认构建的面板会直接报错，e2e 就跑不动）', async () => {
   const store = memStore();
   store.setState(STATE_AUTH, AUTH, NOW);
   saveWsBase(store, 'ws://127.0.0.1:19000', NOW);
   const up = fakeUpstream({ live: true });
   const f = fakeHost(['o', provisionAckFrame()]);
-  advanceToListen(store, up.transport, f.host);
+  await advanceToListen(store, up.transport, f.host);
   assert.equal(f.opened[0]?.opts.tls, undefined, '明文请求没有 TLS 可谈');
 });
 
-test('sessionId 是 8 个小写字母数字（抓包里的形状），且每次都不同', () => {
+test('sessionId 是 8 个小写字母数字（抓包里的形状），且每次都不同', async () => {
   const a = sockjsSessionId();
   const b = sockjsSessionId();
   assert.match(a, /^[a-z0-9]{8}$/);
   assert.notEqual(a, b);
 });
 
-test('一拍最多读 RECV_SLICE_MS 这么久（预算 2000ms 之内）', () => {
+test('一拍最多读 RECV_SLICE_MS 这么久（预算 2000ms 之内）', async () => {
   assert.ok(RECV_SLICE_MS > 0 && RECV_SLICE_MS < 1000, '单次 ws_recv 不能贴近预算');
 });
 
-test('链的顺序照 mcloud：换票 → **取 WS 凭据** → 问聊天室 → **进房间** → 才连 WS', () => {
+test('链的顺序照 mcloud：换票 → **取 WS 凭据** → 问聊天室 → **进房间** → 才连 WS', async () => {
   // ⚠ 这条是 2026-10-14 实机踩出来的次序：漏掉 userToken / member/apply 时
   //   「连得上、心跳通、就是没有弹幕」—— 而 permille 顺序错了就是这个现象。
   const store = memStore();
   store.setState(STATE_AUTH, AUTH, NOW);
   const up = fakeUpstream({ live: true });
   const f = fakeHost(['o', provisionAckFrame()]);
-  advanceToListen(store, up.transport, f.host);
+  await advanceToListen(store, up.transport, f.host);
 
   const paths = up.sent.map((x) => x.url.replace(/^https?:\/\/[^/]+/, ''));
   const idx = (needle: string) => paths.findIndex((p) => p.includes(needle));
@@ -545,7 +545,7 @@ test('链的顺序照 mcloud：换票 → **取 WS 凭据** → 问聊天室 →
   assert.equal(f.opened.length, 1);
 });
 
-test('诊断口子：指定房间号 ⇒ **不走主播昵称那套判据**，直接听那一间', () => {
+test('诊断口子：指定房间号 ⇒ **不走主播昵称那套判据**，直接听那一间', async () => {
   // ⚠ 它存在的理由：`h`（SockJS 心跳）只在服务端静默满 25 秒后才发，正常那间房
   //   一直有人说话 ⇒ 那个分支**走不到**（F-039 就这么"没复现"过一次）。
   //   指定一间安静的房间就能把它逼出来 ⇒ 需要一个绕过"按昵称选房"的口子。
@@ -554,7 +554,7 @@ test('诊断口子：指定房间号 ⇒ **不走主播昵称那套判据**，�
   store.setState('mcloud.live.listen_room', '147849', NOW);
   const up = fakeUpstream({ live: false }); // 主播**没在播**（按昵称那套会判"门关着"）
   const f = fakeHost(['o', provisionAckFrame()]);
-  advanceToListen(store, up.transport, f.host);
+  await advanceToListen(store, up.transport, f.host);
   // 口子生效 ⇒ 不该停在"门关着"，而是走到了 listen
   assert.equal(loadListenState(store)?.step, 'listen');
   assert.ok(up.sent.some((x) => x.url.includes('roomBeat')), '该拿指定房间去问聊天室号');
@@ -562,7 +562,7 @@ test('诊断口子：指定房间号 ⇒ **不走主播昵称那套判据**，�
   assert.equal(loadListenState(store)?.roomId, 147849);
 });
 
-test('收到 SockJS 心跳 `h` ⇒ **继续听**（不当收尾理由），并且记进读数', () => {
+test('收到 SockJS 心跳 `h` ⇒ **继续听**（不当收尾理由），并且记进读数', async () => {
   // ⚠ 2026-10-14 实测：安静的房里 90 秒来 6 拍 `h`，我们一次不回，连接一直活着
   //   ⇒ 原来那版"收到 h 就收尾"是白白丢掉听的时间。
   const store = memStore();
@@ -575,10 +575,10 @@ test('收到 SockJS 心跳 `h` ⇒ **继续听**（不当收尾理由），并�
     ['o', provisionAckFrame(), 'h', danmakuFrame('小红花口令：秋收万颗子')],
     'timeout',
   );
-  const notes = advanceToListen(store, up.transport, f.host);
+  const notes = await advanceToListen(store, up.transport, f.host);
   // ⚠ `advanceToListen` 到 `listen` 就停（`h` 在它后面）⇒ 还要**再推一拍**
   //   才会读到 `h` 与那条弹幕。
-  notes.push(runLiveListen(deps(store, up.transport, f.host)).note);
+  notes.push((await runLiveListen(deps(store, up.transport, f.host))).note);
   const st = loadListenState(store);
   // ⚠ 这一拍最后会因**窗口到点**收尾（测试里的窗口起点是写死的 `NOW`，早过期了）——
   //   所以判据不是"还停在 listen"，而是"**收尾原因与 `h` 无关**"。
@@ -590,7 +590,7 @@ test('收到 SockJS 心跳 `h` ⇒ **继续听**（不当收尾理由），并�
   assert.ok((st?.danmakuFrames ?? 0) >= 1, 'h 之后的弹幕照收');
 });
 
-test('门关着那条读数要带上"上次真探"的时刻（空闲日志去重之后，那一行必须能自证真探过）', () => {
+test('门关着那条读数要带上"上次真探"的时刻（空闲日志去重之后，那一行必须能自证真探过）', async () => {
   // ⚠ 2026-10-14 实机 soak：`live-listen` 每 10 秒醒一次，空闲时读数**一模一样**，
   //   日志去重后一个 5 分钟窗口只剩一行 —— 如果那一行不带"真探时刻"，
   //   "真探过"与"只是把旧读数重复一遍"在日志里**分不开**（我当时是靠数 ①/② 才分清的）。
@@ -598,7 +598,7 @@ test('门关着那条读数要带上"上次真探"的时刻（空闲日志去重
   store.setState(STATE_AUTH, AUTH, NOW);
   const up = fakeUpstream({ live: false }); // 主播没在播 ⇒ 门关着那条分支
   const f = fakeHost(['o']);
-  const notes = advanceToListen(store, up.transport, f.host);
+  const notes = await advanceToListen(store, up.transport, f.host);
   const st = loadListenState(store);
   assert.equal(st?.step, 'done');
   assert.ok(st?.probedAt, '要记下这次真探的时刻');

@@ -16,7 +16,7 @@ import { json, readBody } from '../support.ts';
 import type { RouteDeps, RouteEntry } from '../support.ts';
 
 /** live 组。deps 是路由依赖；base 是 /plugins/mcloud/api；verify 是「拿当前会话验一次」。 */
-export function liveRoutes(deps: RouteDeps, base: string, verify: () => { ok: boolean; note: string }): RouteEntry[] {
+export function liveRoutes(deps: RouteDeps, base: string, verify: () => Promise<{ ok: boolean; note: string }>): RouteEntry[] {
   void verify;
   return [
 {
@@ -24,7 +24,7 @@ export function liveRoutes(deps: RouteDeps, base: string, verify: () => { ok: bo
       // 界面要能看见 —— 否则"抓主页"就只是日志里的一行数。
       path: `${base}/live`,
       method: 'GET',
-      handler: () =>
+      handler: async () =>
         json(200, {
           reading: readLiveReading(deps.store),
           codes: loadLiveCodes(deps.store),
@@ -78,8 +78,8 @@ export function liveRoutes(deps: RouteDeps, base: string, verify: () => { ok: bo
       // 没有它，"验请求头"得先有真口令，而口令只在直播那一小时有效。
       path: `${base}/live/draw/probe`,
       method: 'POST',
-      handler: () => {
-        const r = probeLiveRoom({
+      handler: async () => {
+        const r = await probeLiveRoom({
           store: deps.store,
           transport: deps.transport,
           nowIso: deps.now(),
@@ -94,7 +94,7 @@ export function liveRoutes(deps: RouteDeps, base: string, verify: () => { ok: bo
       // 开关：领小红花（写）。默认关。
       path: `${base}/live/claim`,
       method: 'POST',
-      handler: (req) => {
+      handler: async (req) => {
         const body = readBody(req);
         if (typeof body.enabled !== 'boolean') {
           return json(400, { error: '需要 {"enabled": true|false}' });
@@ -113,8 +113,8 @@ export function liveRoutes(deps: RouteDeps, base: string, verify: () => { ok: bo
       // 直到 `done` —— 每步一次 HTTP，每次一个上游请求。
       path: `${base}/live/draw/step`,
       method: 'POST',
-      handler: () => {
-        const out = runLiveDraw(
+      handler: async () => {
+        const out = await runLiveDraw(
           {
             store: deps.store,
             transport: deps.transport,
@@ -138,8 +138,8 @@ export function liveRoutes(deps: RouteDeps, base: string, verify: () => { ok: bo
       // 与 `live/draw/step` 同一个形状：界面上的按钮是浏览器循环调这里直到 `done`。
       path: `${base}/live/gate/step`,
       method: 'POST',
-      handler: () => {
-        const out = runLiveGate({
+      handler: async () => {
+        const out = await runLiveGate({
           store: deps.store,
           transport: deps.transport,
           nowIso: deps.now(),
@@ -162,14 +162,14 @@ export function liveRoutes(deps: RouteDeps, base: string, verify: () => { ok: bo
       //   因为它们是**同一类**东西：一个按步骤推进的只读探针。
       path: `${base}/live/listen/step`,
       method: 'POST',
-      handler: () => {
+      handler: async () => {
         const st0 = loadListenState(deps.store);
         if (deps.ws === undefined) {
           // ⚠ 宿主没有长连接能力时**明确说不**，而不是走到一半才发现
           //   （Python / Node 适配器都是"函数存在、调用时抛"）。
           return json(503, { error: '宿主没有长连接能力（ws_*）—— 这一族只有嵌入式 JS 宿主有' });
         }
-        const out = runLiveListen({
+        const out = await runLiveListen({
           store: deps.store,
           transport: deps.transport,
           host: deps.ws,
@@ -195,9 +195,9 @@ export function liveRoutes(deps: RouteDeps, base: string, verify: () => { ok: bo
       // 用户要核对“到底请求到了什么”时，不能只给字符数。
       path: `${base}/live/raw`,
       method: 'GET',
-      handler: () => {
+      handler: async () => {
         const url = loadLiveUrl(deps.store);
-        const res = callRawText(deps.transport, {
+        const res = await callRawText(deps.transport, {
           url,
           method: 'GET',
           headers: xiaohongshuProfileHeaders(),
@@ -218,7 +218,7 @@ export function liveRoutes(deps: RouteDeps, base: string, verify: () => { ok: bo
 {
       path: `${base}/live/codes`,
       method: 'POST',
-      handler: (req) => {
+      handler: async (req) => {
         const body = readBody(req);
         if (body.clear === true) {
           clearLiveCodes(deps.store, deps.now());
@@ -255,7 +255,7 @@ export function liveRoutes(deps: RouteDeps, base: string, verify: () => { ok: bo
       // 带时刻、成没成、一句话、耗时。环里永远是最近那一趟（见 mcloud/liveTrace.ts）。
       path: `${base}/live/trace`,
       method: 'GET',
-      handler: () => json(200, { at: deps.now(), entries: readTrace(deps.store) }),
+      handler: async () => json(200, { at: deps.now(), entries: readTrace(deps.store) }),
     },
   ];
 }

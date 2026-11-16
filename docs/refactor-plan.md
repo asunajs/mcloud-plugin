@@ -44,7 +44,7 @@ src/standalone/** Node CLI
 | P2 | 宿主收进端口：`panel:host` / `__handlers` / SQLite 调用**全局只剩一处** | ✅ |
 | P4 | 存储换本地 JSON（含一次性导入）；面板与 CLI 共用一份实现 | ✅ |
 | P7 | 目录式插件：四个入口 import **同一份** `mcloud/lib/`；部署按面板能力自动选形状 | ✅ |
-| P3 | HTTP/WS 改异步（`Transport` 返回 Promise）、去掉忙等、任务/入口 async | ⬜ |
+| P3 | 同步 → 异步：`Transport` / `Io.fetch` 变 Promise，`drain`/任务/入口/路由全部 await | ✅ |
 | P5 | `src/app/runTask.ts` 统一 runner + `src/present/*` + 路由拆分（3429 行 → 目录） | 🚧 路由拆分✅（`src/app/routes/`：support/readings + 8 个组，60 条路由）；runner 与 present 还没动 |
 | P6 | 直播收口成一个 invocation（门→连→听→领→关）+ trace 环 + `GET api/live/trace` | 🚧 trace 环✅（`src/mcloud/liveTrace.ts` + `GET /api/live/trace`，真机验过）；收口待做 |
 

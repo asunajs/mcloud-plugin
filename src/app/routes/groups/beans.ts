@@ -18,7 +18,7 @@ import { json, readBody } from '../support.ts';
 import type { RouteDeps, RouteEntry } from '../support.ts';
 
 /** beans 组。deps 是路由依赖；base 是 /plugins/mcloud/api；verify 是「拿当前会话验一次」。 */
-export function beansRoutes(deps: RouteDeps, base: string, verify: () => { ok: boolean; note: string }): RouteEntry[] {
+export function beansRoutes(deps: RouteDeps, base: string, verify: () => Promise<{ ok: boolean; note: string }>): RouteEntry[] {
   void verify;
   return [
 {
@@ -41,7 +41,7 @@ export function beansRoutes(deps: RouteDeps, base: string, verify: () => { ok: b
       // 按最坏一档留预算：几个账号各可能"读失败→换票→再读"若干轮。健康路径秒回，
       // 这一档只在票全烂时才顶到。
       budget_ms: 60_000,
-      handler: (req) => {
+      handler: async (req) => {
         const q = parseQuery(req.query ?? '');
         const refresh = q['refresh'] === '1';
         const raw = rawStoreOf(deps.store);
@@ -83,7 +83,7 @@ export function beansRoutes(deps: RouteDeps, base: string, verify: () => { ok: b
             cached = true;
           } else {
             try {
-              day = readDayForAccount(
+              day = await readDayForAccount(
                 { store: one, transport: deps.transport, baseUrl, nowIso },
                 nowMs,
               );
@@ -110,7 +110,7 @@ export function beansRoutes(deps: RouteDeps, base: string, verify: () => { ok: b
             balance = cache.balance!.value ?? undefined;
             balanceReason = cache.balance!.reason;
           } else {
-            const info = fetchInfoV3({ store: one, transport: deps.transport, baseUrl });
+            const info = await fetchInfoV3({ store: one, transport: deps.transport, baseUrl });
             if (info.ok && info.info.total !== undefined) {
               balance = info.info.total;
               cache.balance = { atMs: nowMs, value: balance };
@@ -156,7 +156,7 @@ export function beansRoutes(deps: RouteDeps, base: string, verify: () => { ok: b
       // 如实说"有没有更多"，一页一发 ⇒ 最坏 20 发 × 1500ms = 30s；再叠上"当场续票"
       // （到期主动一轮 + `90001` 被动最多两轮，每轮四步）⇒ 比今日那条再宽一档。
       budget_ms: 90_000,
-      handler: (req) => {
+      handler: async (req) => {
         const q = parseQuery(req.query ?? '');
         const id = q['id'] ?? '';
         const days = normalizeDays(q['days']);
@@ -168,7 +168,7 @@ export function beansRoutes(deps: RouteDeps, base: string, verify: () => { ok: b
         const baseUrl = loadBaseUrl(deps.store);
         const one = scoped(raw, id);
         try {
-          const data = readRecordsForAccount(
+          const data = await readRecordsForAccount(
             { store: one, transport: deps.transport, baseUrl, nowIso },
             nowMs,
             days,
@@ -197,7 +197,7 @@ export function beansRoutes(deps: RouteDeps, base: string, verify: () => { ok: b
       method: 'GET',
       // 翻最多 3 页 × 100 条 + 可能的当场续票（到期主动一轮 / 90001 被动两轮）。
       budget_ms: 90_000,
-      handler: (req) => {
+      handler: async (req) => {
         const q = parseQuery(req.query ?? '');
         const wanted = (q['account'] ?? '').trim();
         const refresh = q['refresh'] === '1';
@@ -255,7 +255,7 @@ export function beansRoutes(deps: RouteDeps, base: string, verify: () => { ok: b
           cached = true;
         } else {
           try {
-            list = withPrizeTokenGate(prizeDeps, () => readPendingPrizes(prizeDeps));
+            list = await withPrizeTokenGate(prizeDeps, async () => await readPendingPrizes(prizeDeps));
             savePrizeCache(one, list, nowMs, nowIso);
             deps.log(
               `领奖：${who} 读到 ${list.items.length} 件待领取（共翻到 ${list.scanned} 条记录` +
@@ -296,7 +296,7 @@ export function beansRoutes(deps: RouteDeps, base: string, verify: () => { ok: b
       method: 'POST',
       // 详情一发 + 题面一发 + 发码一发，再加"当场续票"与本地解图（JPEG 680×400）。
       budget_ms: 120_000,
-      handler: (req) => {
+      handler: async (req) => {
         const b = readBody(req);
         const id = typeof b['account'] === 'string' ? b['account'] : '';
         const oidRaw = b['oid'];
@@ -330,7 +330,7 @@ export function beansRoutes(deps: RouteDeps, base: string, verify: () => { ok: b
         const who = maskPhoneLike(found.label) ?? found.label;
         // ⚠ **写这一族不走 `withPrizeTokenGate` 的自动重跑**：票过期先换一轮票，
         //   换不成就让用户自己再点（他点了才算重试）。理由见 `ensurePrizeToken`。
-        const pre = ensurePrizeToken(prizeDeps);
+        const pre = await ensurePrizeToken(prizeDeps);
         if (!pre.ok) {
           return json(200, {
             ok: false,
@@ -338,7 +338,7 @@ export function beansRoutes(deps: RouteDeps, base: string, verify: () => { ok: b
           });
         }
         try {
-          const r = startPrizeClaim(prizeDeps, item, who);
+          const r = await startPrizeClaim(prizeDeps, item, who);
           deps.log(`领奖：${who} · ${item.name} —— ${r.note}`);
           return json(200, { ...r, at: r.at ?? Date.parse(nowIso) });
         } catch (e) {
@@ -363,7 +363,7 @@ export function beansRoutes(deps: RouteDeps, base: string, verify: () => { ok: b
       method: 'POST',
       // 一发写请求 + 可能的当场续票；不重试写这一枪（没有幂等键，重试由用户决定）。
       budget_ms: 60_000,
-      handler: (req) => {
+      handler: async (req) => {
         const b = readBody(req);
         const id = typeof b['account'] === 'string' ? b['account'] : '';
         const oidRaw = b['oid'];
@@ -404,7 +404,7 @@ export function beansRoutes(deps: RouteDeps, base: string, verify: () => { ok: b
         };
         const who = maskPhoneLike(found.label) ?? found.label;
         // 同 claim：只"写前换票"，**不自动重跑**这一枪（没有幂等键）
-        const pre = ensurePrizeToken(prizeDeps);
+        const pre = await ensurePrizeToken(prizeDeps);
         if (!pre.ok) {
           return json(200, {
             ok: false,
@@ -412,7 +412,7 @@ export function beansRoutes(deps: RouteDeps, base: string, verify: () => { ok: b
           });
         }
         try {
-          const r = confirmPrizeClaim(prizeDeps, oid, code);
+          const r = await confirmPrizeClaim(prizeDeps, oid, code);
           // ⚠ 验证码与 deviceId **不进日志**：这里只记结果那一句
           deps.log(`领奖：${who} · ${r.ok ? r.note : `没成（${r.note}）`}`);
           return json(200, r);

@@ -36,9 +36,12 @@ function httpWorkerUrl(): URL {
   return new URL('./httpWorker.mjs', import.meta.url);
 }
 
+// ⚠ P3：这里是**唯一**还留着 worker + Atomics 同步桥的地方。
+//   CLI 一个进程只跑一条命令，阻塞没有面板那种后果，所以先把返回值包成 Promise
+//   （形状对齐 io 端口），再谈拆掉 worker —— 拆的时候连同 httpWorker.ts 一起删。
 export function makeNodeFetcher(
   cfg: HttpConfig,
-): (url: string, options?: FetchOptions) => FetchResult | FetchError {
+): (url: string, options?: FetchOptions) => Promise<FetchResult | FetchError> {
   const signal = new Int32Array(new SharedArrayBuffer(4));
   const dir = mkdtempSync(join(tmpdir(), 'mcloud-http-'));
   let seq = 0;
@@ -73,7 +76,7 @@ export function makeNodeFetcher(
     }
   };
 
-  return (url, options = {}) => {
+  return async (url, options = {}) => {
     if (dead !== undefined) return { error: dead };
     seq += 1;
     const reqPath = join(dir, `req-${seq}.json`);

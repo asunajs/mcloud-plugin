@@ -411,11 +411,11 @@ export function parseRedpackEnvelope(body: string): RedpackEnvelope {
 }
 
 /** 发一枪并解信封（HTTP 层失败与业务失败都折成 `ok: false` + 人话）。 */
-export function callRedpack(
+export async function callRedpack(
   transport: Transport,
   req: BuiltRequest,
-): RedpackEnvelope & { httpError: string | undefined } {
-  const res = callRawText(transport, req);
+): Promise<RedpackEnvelope & { httpError: string | undefined }> {
+  const res = await callRawText(transport, req);
   if (!res.ok) {
     const why = res.error ?? '未知失败';
     // 非 200 时 body 里常常才是真原因（有些活动站把错误写在正文里）

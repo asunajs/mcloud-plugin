@@ -38,7 +38,7 @@ import type { Transport } from '../src/mcloud/client.ts';
 const WIN = pcClient('windows', 'AABBCCDDEEFF00112233445566778899-ENDIN');
 const BODY = { clientType: '656' };
 
-test('⚠ 登录基址是空串/空白 ⇒ 打**真主机**，不许拼出相对 URL', () => {
+test('⚠ 登录基址是空串/空白 ⇒ 打**真主机**，不许拼出相对 URL', async () => {
   // 三种"没有覆盖"的写法都要走真主机：`undefined`（从没配过）、`''`（用户清空）、
   // `'   '`（清空时留了个空格）
   for (const base of [undefined, '', '   ']) {
@@ -55,12 +55,12 @@ test('⚠ 登录基址是空串/空白 ⇒ 打**真主机**，不许拼出相对
   assert.ok(sliderPuzzleRequest(WIN, 'TID', BODY, '').url.startsWith(`${LOGIN_HOST}/user/verfycode`));
 });
 
-test('登录基址有覆盖时用它，且尾斜杠不许拼成双斜杠', () => {
+test('登录基址有覆盖时用它，且尾斜杠不许拼成双斜杠', async () => {
   const req = thirdloginRequest(WIN, 'TID', BODY, 'http://127.0.0.1:18999/');
   assert.equal(req.url, 'http://127.0.0.1:18999/user/thirdlogin');
 });
 
-test('⚠ 另外五个口子清空之后也各回各的真主机（六个一起看，别只修一个）', () => {
+test('⚠ 另外五个口子清空之后也各回各的真主机（六个一起看，别只修一个）', async () => {
   const store: Store = memStore();
 
   // 云盘业务基址：`resolveUrl` 用的是真值判断（这个坑它在 h5.ts 那轮就修过了）
@@ -99,13 +99,13 @@ function routeOf(rs: ReturnType<typeof mcloudRoutes>, path: string, method: stri
   return r;
 }
 
-function callPost(
+async function callPost(
   rs: ReturnType<typeof mcloudRoutes>,
   path: string,
   body?: unknown,
-): { status: number; json: any } {
+): Promise<{ status: number; json: any }> {
   const r = routeOf(rs, path, 'POST');
-  const res = r.handler({
+  const res = await r.handler({
     method: 'POST',
     path: r.path,
     body: body === undefined ? '' : JSON.stringify(body),
@@ -114,18 +114,18 @@ function callPost(
 }
 
 /** 出码一次，返回 store（后续轮询都打这份会话）。 */
-function startedStore(transport: Transport): Store {
+async function startedStore(transport: Transport): Promise<Store> {
   const store = memStore();
   const rs = mcloudRoutes(testDeps(store, { transport, now: NOW }));
-  const started = callPost(rs, '/login/qr/start', { pcPlatform: 'win' });
+  const started = await callPost(rs, '/login/qr/start', { pcPlatform: 'win' });
   assert.equal(started.status, 200);
   return store;
 }
 
-test('⚠ 轮询把真上游的「未找到设备的二维码信息」当**状态**，不是"没回应"', () => {
+test('⚠ 轮询把真上游的「未找到设备的二维码信息」当**状态**，不是"没回应"', async () => {
   const seen: BuiltRequest[] = [];
   // 逐字照真上游的回包（`success:false` + `code` 是**字符串**）
-  const transport: Transport = (req) => {
+  const transport: Transport = async (req) => {
     seen.push(req);
     return {
       status: 200,
@@ -133,10 +133,10 @@ test('⚠ 轮询把真上游的「未找到设备的二维码信息」当**状�
       body: '{"success":false,"code":"200059541","message":"未找到设备的二维码信息","data":null}',
     };
   };
-  const store = startedStore(transport);
+  const store = await startedStore(transport);
   const rs = mcloudRoutes(testDeps(store, { transport, now: NOW }));
 
-  const polled = callPost(rs, '/login/qr/poll');
+  const polled = await callPost(rs, '/login/qr/poll');
   assert.equal(polled.status, 200);
   assert.equal(polled.json.ok, true, '这是**正常状态**，不是失败');
   assert.equal(polled.json.stop, false, '还得继续轮');
@@ -152,43 +152,43 @@ test('⚠ 轮询把真上游的「未找到设备的二维码信息」当**状�
   );
 });
 
-test('⚠ 真的没问到（网络层失败）才说"移动云盘没回应"，并带上状态码', () => {
-  const transport: Transport = () => ({ error: '请求失败: http status: 502' });
-  const store = startedStore(transport);
+test('⚠ 真的没问到（网络层失败）才说"移动云盘没回应"，并带上状态码', async () => {
+  const transport: Transport = async () => ({ error: '请求失败: http status: 502' });
+  const store = await startedStore(transport);
   const rs = mcloudRoutes(testDeps(store, { transport, now: NOW }));
-  const polled = callPost(rs, '/login/qr/poll');
+  const polled = await callPost(rs, '/login/qr/poll');
   assert.equal(polled.status, 200);
   assert.equal(polled.json.retry, true, '网络失败不该判死会话 —— 再点一次就好');
   assert.match(polled.json.note, /移动云盘没回应（502）/, `实际：${polled.json.note}`);
 });
 
-test('⚠ 上游的 `code=200059541` 不许被当成"状态码 200"写进提示里', () => {
+test('⚠ 上游的 `code=200059541` 不许被当成"状态码 200"写进提示里', async () => {
   // 宽松地抓"头三位数字"会把这个 code 抓成 200 —— 于是界面上一句
   // 「移动云盘没回应（200）」看着像上游好好的（这一条钉的是那个正则）
-  const transport: Transport = () => ({
+  const transport: Transport = async () => ({
     status: 200,
     headers: {},
     body: '{"success":false,"code":"200059541","message":"未找到设备的二维码信息"}',
   });
-  const store = startedStore(transport);
+  const store = await startedStore(transport);
   const rs = mcloudRoutes(testDeps(store, { transport, now: NOW }));
-  const polled = callPost(rs, '/login/qr/poll');
+  const polled = await callPost(rs, '/login/qr/poll');
   assert.ok(!/（200）/.test(polled.json.note), `提示：${polled.json.note}`);
 });
 
-test('⚠ 轮询的每一次回应都带剩余毫秒（界面上那一行要一直有倒计时）', () => {
+test('⚠ 轮询的每一次回应都带剩余毫秒（界面上那一行要一直有倒计时）', async () => {
   // 轮询每 2 秒把那行字重写一次；不带 `expiresInMs` 的话倒计时在第一次轮询之后
   // 就消失了 —— 而用户判断"码还活着吗"全靠它（`qrNoteText` 拼的就是它）。
-  const transport: Transport = () => ({
+  const transport: Transport = async () => ({
     status: 200,
     headers: {},
     body: '{"success":false,"code":"200059541","message":"未找到设备的二维码信息"}',
   });
-  const store = startedStore(transport);
+  const store = await startedStore(transport);
   // 走 30 秒之后再轮：剩下的应当是 120 - 30 = 90 秒上下
   const later = new Date(Date.parse(NOW) + 30_000).toISOString();
   const rs = mcloudRoutes(testDeps(store, { transport, now: later }));
-  const polled = callPost(rs, '/login/qr/poll');
+  const polled = await callPost(rs, '/login/qr/poll');
   assert.equal(typeof polled.json.expiresInMs, 'number', '轮询回应里缺 expiresInMs');
   assert.ok(
     polled.json.expiresInMs > 85_000 && polled.json.expiresInMs <= 90_000,
@@ -203,7 +203,7 @@ test('⚠ 轮询的每一次回应都带剩余毫秒（界面上那一行要一�
 
 // ── 大响应（F-072：`raw` 是**截断到 500 字符**的日志串，不能拿去解析）──────
 
-test('⚠ 超过 500 字节的登录响应也要能解析（否则扫码永远"没回应"）', () => {
+test('⚠ 超过 500 字节的登录响应也要能解析（否则扫码永远"没回应"）', async () => {
   // 现场：扫码确认之后移动云盘回的 `userInfo` 有 1–2 KB，而 `callOnce` 的 `raw`
   // 只留前 500 字符（那是给日志用的）⇒ `JSON.parse` 报 "Unexpected end of JSON input"
   // ⇒ 界面上一句"移动云盘回了个空响应"，而登录其实已经成功、凭据就这么丢了。
@@ -214,25 +214,25 @@ test('⚠ 超过 500 字节的登录响应也要能解析（否则扫码永远"�
     pad: 'x'.repeat(2000),
   });
   assert.ok(big.length > 500, '这个夹具必须比 500 字符长，否则测不出截断');
-  const transport: Transport = () => ({ status: 200, headers: {}, body: big });
-  const store = startedStore(transport);
+  const transport: Transport = async () => ({ status: 200, headers: {}, body: big });
+  const store = await startedStore(transport);
   const rs = mcloudRoutes(testDeps(store, { transport, now: NOW }));
-  const polled = callPost(rs, '/login/qr/poll');
+  const polled = await callPost(rs, '/login/qr/poll');
   assert.match(polled.json.note, /等手机扫码/, `大响应没被解析出来：${polled.json.note}`);
   assert.notEqual(polled.json.retry, true, '这是正常态，不该报"没问成"');
 });
 
-test('⚠ 终态那一行不许再写"剩 N 秒"（过期了还说剩 119 秒是自相矛盾）', () => {
+test('⚠ 终态那一行不许再写"剩 N 秒"（过期了还说剩 119 秒是自相矛盾）', async () => {
   // 实测撞到过：出码后第一次轮询上游回 `200059542 二维码已失效`，
   // 界面那一行变成「二维码过期了（超过 120 秒）· 剩 119 秒」。
-  const transport: Transport = () => ({
+  const transport: Transport = async () => ({
     status: 200,
     headers: {},
     body: JSON.stringify({ success: false, code: '200059542', message: '二维码已失效' }),
   });
-  const store = startedStore(transport);
+  const store = await startedStore(transport);
   const rs = mcloudRoutes(testDeps(store, { transport, now: NOW }));
-  const polled = callPost(rs, '/login/qr/poll');
+  const polled = await callPost(rs, '/login/qr/poll');
   assert.equal(polled.json.stop, true, '过期是终态');
   assert.match(polled.json.note, /过期/, `提示不对：${polled.json.note}`);
   assert.equal(polled.json.expiresInMs, 0, `终态还带着剩余时间：${polled.json.expiresInMs}`);

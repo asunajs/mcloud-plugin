@@ -9,7 +9,7 @@ function dir(): string {
   return mkdtempSync(join(tmpdir(), 'mcloud-cfg-'));
 }
 
-test('配置查找顺序照 mcloud-sign：cwd/asign.json 优先', () => {
+test('配置查找顺序照 mcloud-sign：cwd/asign.json 优先', async () => {
   const d = dir();
   writeFileSync(join(d, 'asign.config.mjs'), 'export default { version: 2, caiyun: [] };');
   assert.equal(findConfigPath(d, join(d, 'bin/mcloud-sign')), join(d, 'asign.config.mjs'));
@@ -51,10 +51,10 @@ test('asign.config.mjs 可直接读，不需要改写文件', async () => {
 
 test('没有配置 / 没有 caiyun 时给出明确错误', async () => {
   const d = dir();
-  await assert.rejects(() => loadConfig(join(d, 'missing.json')), /不存在/);
+  await assert.rejects(async () => await loadConfig(join(d, 'missing.json')), /不存在/);
   const p = join(d, 'asign.json');
   writeFileSync(p, JSON.stringify({ version: 2 }));
-  await assert.rejects(() => loadConfig(p), /caiyun/);
+  await assert.rejects(async () => await loadConfig(p), /caiyun/);
 });
 
 test('「红包派对.开启」只在**明确写了**时才读成值：没写 / 形状不对都是 `undefined`', async () => {

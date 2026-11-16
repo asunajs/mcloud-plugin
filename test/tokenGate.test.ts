@@ -25,7 +25,7 @@ import type { Store } from '../src/store/types.ts';
 
 const REAL_NOW_ISO = new Date().toISOString();
 // 一条**绝不该被走到**的传输（控制流测试里都注入了 `refreshToken` 桩，真换票不发生）。
-const exploding: Transport = () => {
+const exploding: Transport = async () => {
   throw new Error('这条测试不该发上游请求');
 };
 
@@ -36,13 +36,13 @@ function seedJwt(store: Store, atIso: string): void {
 
 // ══════════════ 控制流（注入 `refreshToken` 桩，不碰真四步）══════════════
 
-test('被动：90001 ⇒ 换票 ⇒ 拿新票重读 ⇒ **返回正确结果**（不是把错误抛出去）', () => {
+test('被动：90001 ⇒ 换票 ⇒ 拿新票重读 ⇒ **返回正确结果**（不是把错误抛出去）', async () => {
   const store = memStore();
   store.ensureSchema();
   seedJwt(store, REAL_NOW_ISO);
   let readCalls = 0;
   let refreshCalls = 0;
-  const out = withTokenGate(
+  const out = await withTokenGate(
     {
       store,
       transport: exploding,
@@ -63,14 +63,14 @@ test('被动：90001 ⇒ 换票 ⇒ 拿新票重读 ⇒ **返回正确结果**�
   assert.equal(readCalls, 2);
 });
 
-test('主动：票过期 ⇒ 读之前先换一轮；票新鲜 ⇒ 一次都不换', () => {
+test('主动：票过期 ⇒ 读之前先换一轮；票新鲜 ⇒ 一次都不换', async () => {
   // 过期
   {
     const store = memStore();
     store.ensureSchema();
     seedJwt(store, '2000-01-01T00:00:00.000Z');
     let refreshCalls = 0;
-    const out = withTokenGate(
+    const out = await withTokenGate(
       {
         store,
         transport: exploding,
@@ -91,7 +91,7 @@ test('主动：票过期 ⇒ 读之前先换一轮；票新鲜 ⇒ 一次都不�
     store.ensureSchema();
     seedJwt(store, REAL_NOW_ISO);
     let refreshCalls = 0;
-    withTokenGate(
+    await withTokenGate(
       {
         store,
         transport: exploding,
@@ -107,16 +107,16 @@ test('主动：票过期 ⇒ 读之前先换一轮；票新鲜 ⇒ 一次都不�
   }
 });
 
-test('连续两次都没救回来 ⇒ 判「账号问题」，且**只重置 2 次**（不无限重试）', () => {
+test('连续两次都没救回来 ⇒ 判「账号问题」，且**只重置 2 次**（不无限重试）', async () => {
   const store = memStore();
   store.ensureSchema();
   seedJwt(store, REAL_NOW_ISO);
   let readCalls = 0;
   let refreshCalls = 0;
   // 换票"成功"了，但读数每次都还是 90001 ⇒ 说明票不是唯一问题，号本身坏了
-  assert.throws(
-    () =>
-      withTokenGate(
+  await assert.rejects(
+    async () =>
+      await withTokenGate(
         {
           store,
           transport: exploding,
@@ -137,15 +137,15 @@ test('连续两次都没救回来 ⇒ 判「账号问题」，且**只重置 2 �
   assert.equal(readCalls, MAX_RESETS + 1, '初始一次 + 每次重置各一次重读');
 });
 
-test('非 90001 的失败**不重试**（原样抛，一次换票都不发）', () => {
+test('非 90001 的失败**不重试**（原样抛，一次换票都不发）', async () => {
   const store = memStore();
   store.ensureSchema();
   seedJwt(store, REAL_NOW_ISO);
   let readCalls = 0;
   let refreshCalls = 0;
-  assert.throws(
-    () =>
-      withTokenGate(
+  await assert.rejects(
+    async () =>
+      await withTokenGate(
         {
           store,
           transport: exploding,
@@ -168,10 +168,10 @@ test('非 90001 的失败**不重试**（原样抛，一次换票都不发）', 
 
 // ══════════════════════ 真换票那一支（默认 `exchangeOnce`）══════════════════
 
-test('`exchangeOnce`：没有原生凭据 ⇒ 直接说不成（不硬打一枪）', () => {
+test('`exchangeOnce`：没有原生凭据 ⇒ 直接说不成（不硬打一枪）', async () => {
   const store = memStore();
   store.ensureSchema();
-  const r = exchangeOnce({ store, transport: exploding, nowIso: REAL_NOW_ISO }, 'sign-in');
+  const r = await exchangeOnce({ store, transport: exploding, nowIso: REAL_NOW_ISO }, 'sign-in');
   assert.equal(r.ok, false);
   assert.match(r.note, /凭据/);
 });
@@ -223,7 +223,7 @@ test('⚠ 端到端（真 `exchangeOnce`）：第一枪 90001、换完票第二�
   }) as unknown as Transport;
 
   const nowMs = Date.UTC(2026, 9, 17, 4, 0, 0); // 东八区 2026-10-17 12:00
-  const day = readDayForAccount({ store, transport, nowIso: REAL_NOW_ISO }, nowMs);
+  const day = await readDayForAccount({ store, transport, nowIso: REAL_NOW_ISO }, nowMs);
 
   assert.equal(cloudCalls, 2, '第一枪 90001、换完票第二枪读到 —— 共两枪 `cloudRecordV2`');
   // 拿到的是**正确结果**，不是错误

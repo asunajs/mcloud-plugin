@@ -133,7 +133,7 @@ await defineTask(
     summary: summaryFor(store, '日常'),
     blockers: blockersFor(store, '日常'),
   },
-  (p: TaskPayload) => {
+  async (p: TaskPayload) => {
     const nowIso = new Date().toISOString();
     const startedMs = Date.parse(nowIso);
     const today = nowIso.slice(0, 10);
@@ -172,14 +172,14 @@ await defineTask(
     // ⚠ 这里**没有**整趟硬截止：插件不再自己叠时间限制（用户口径 2026-11-16
     //   「不需要任何内部时间限制，这个没搞懂有什么作用除了制造麻烦」）。
     //   运行时长由面板的执行预算管（`budget_ms`），超了是面板的事，日志也看得见。
-    const runs = forEachTaskAccount(store, '日常', p, transport, (deps, acctId) => {
+    const runs = await forEachTaskAccount(store, '日常', p, transport, async (deps, acctId) => {
       const who = labelOf(store, acctId);
       const tag = `[${shortLabel(who)}]`;
       // 账号头在**开跑前**打：多账号时一眼看出现在轮到谁。
       logBoth(store, 'start', tag, nowIso);
       const skippedSteps: string[] = [];
       let prev = '';
-      const r = runDaily(deps, {
+      const r = await runDaily(deps, {
         onPhase: (phase) => logBoth(store, 'info', `${tag} ${phase}…`, nowIso),
         // 上传 / 访问日志 / 打卡这些是**排查细节**，走 debug；
         // info 只留用户能看懂的任务结论。

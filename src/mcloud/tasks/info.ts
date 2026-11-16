@@ -107,11 +107,11 @@ export function parseInfoV3(result: unknown): InfoV3 {
 /** 发一次 `infoV3`（GET + `?client=app`），并解析。
  *
  *  这是**唯一的取状态入口**：动作类任务都先调它，再决定要不要动手。 */
-export function fetchInfoV3(deps: {
+export async function fetchInfoV3(deps: {
   store: Store;
   transport: Transport;
   baseUrl?: string | undefined;
-}): { ok: true; info: InfoV3; tookMs: number } | { ok: false; error: string } {
+}): Promise<{ ok: true; info: InfoV3; tookMs: number } | { ok: false; error: string }> {
   const session: Session | null = loadSession(deps.store);
   if (!session) return { ok: false, error: '还没有网页会话 —— 上面「换票」那一步说了原因' };
 
@@ -125,7 +125,7 @@ export function fetchInfoV3(deps: {
     session: sessionHeaders(session),
   });
 
-  const res: CallResult = callOnce(deps.transport, req);
+  const res: CallResult = await callOnce(deps.transport, req);
   if (!res.ok) return { ok: false, error: res.error ?? '未知失败' };
   const env = res.env as SignInEnvelope;
   return { ok: true, info: parseInfoV3(env.result), tookMs: res.tookMs };

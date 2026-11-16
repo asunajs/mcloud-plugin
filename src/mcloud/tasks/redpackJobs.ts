@@ -117,14 +117,14 @@ function callOf(ctx: RedpackCtx): ReturnType<typeof makeRedpackCall> {
 }
 
 /** 发一枪。失败时**只**回信封（那句人话由调用方决定怎么说，别在这里替它加行）。 */
-function send(ctx: RedpackCtx, req: Parameters<typeof callRedpack>[1]) {
-  return callRedpack(ctx.deps.transport, req);
+async function send(ctx: RedpackCtx, req: Parameters<typeof callRedpack>[1]) {
+  return await callRedpack(ctx.deps.transport, req);
 }
 
 const suffixOf = (job: RedpackJob): string => amountSuffix({ amount: job.amount });
 
 /** 走一条任务的下一段。 */
-export function runRedpackJob(ctx: RedpackCtx): JobStep {
+export async function runRedpackJob(ctx: RedpackCtx): Promise<JobStep> {
   const job = ctx.st.job;
   if (job === undefined) return { kind: 'done' };
   switch (job.stage) {
@@ -150,7 +150,7 @@ export function runRedpackJob(ctx: RedpackCtx): JobStep {
         }
         return go(ctx, job, recheck);
       }
-      const env = send(ctx, completeTaskRequest(callOf(ctx), id, ctx.base));
+      const env = await send(ctx, completeTaskRequest(callOf(ctx), id, ctx.base));
       if (!env.ok) return fail(ctx, `任务失败: ${job.taskName} ${env.error ?? '接口没回来'}`);
       const status = readWriteStatus(env.data);
       // ⚠ 这一枪**宽松**：缺 `status` 不当失败（参照实现也是 `!isNil(status) && status!==1`）。
@@ -172,7 +172,7 @@ export function runRedpackJob(ctx: RedpackCtx): JobStep {
     }
 
     case 'browse': {
-      const env = send(ctx, browseRequest(callOf(ctx), job.taskCode, ctx.base));
+      const env = await send(ctx, browseRequest(callOf(ctx), job.taskCode, ctx.base));
       if (!env.ok) return fail(ctx, `浏览确认失败: ${job.taskName}`);
       ctx.st.board.writes += 1;
       return go(ctx, job, 'confirm');
@@ -183,12 +183,12 @@ export function runRedpackJob(ctx: RedpackCtx): JobStep {
 
     case 'rcs': {
       // 有副作用的一发（它算"进过一次云机"）；回执参照实现**不看**
-      send(ctx, rcsTokenRequest(callOf(ctx), '0', ctx.base));
+      await send(ctx, rcsTokenRequest(callOf(ctx), '0', ctx.base));
       return go(ctx, job, 'confirmUse');
     }
 
     case 'apps': {
-      const env = send(ctx, appListRequest(callOf(ctx), ctx.base));
+      const env = await send(ctx, appListRequest(callOf(ctx), ctx.base));
       const apps = env.ok ? parseApps(env.data) : [];
       if (apps.length === 0) return fail(ctx, `应用列表为空: ${job.taskName}`);
       ctx.st.job = { ...job, apps, appIndex: 0, stage: 'hw' };
@@ -196,7 +196,7 @@ export function runRedpackJob(ctx: RedpackCtx): JobStep {
     }
 
     case 'hw': {
-      const env = send(ctx, hwTokenRequest(callOf(ctx), ctx.base));
+      const env = await send(ctx, hwTokenRequest(callOf(ctx), ctx.base));
       const hwToken = env.ok ? rpStr(env.data, 'hwToken') : undefined;
       if (hwToken === undefined) return fail(ctx, `hwToken获取失败: ${job.taskName}`);
       ctx.st.job = { ...job, hwToken, stage: 'status' };
@@ -221,7 +221,7 @@ export function runRedpackJob(ctx: RedpackCtx): JobStep {
         // 编号不认识 ⇒ 这一枪没法上报（装机的动作已经发生了，只说上报没成）
         return fail(ctx, `上报装机结果没成: ${job.taskName} 活动站没给编号`);
       }
-      const env = send(
+      const env = await send(
         ctx,
         reportInstallRequest(callOf(ctx), taskId, appId, job.reportedExists === true ? 1 : undefined, ctx.base),
       );
@@ -302,10 +302,10 @@ function readOnlyConfirm(kind: RedpackJob['kind']): RedpackStage | undefined {
  *   · 使用云机（`DAILY_1`）**照样走到底**：登记那一枪已经发出去了，之后只是回查，
  *     表里还是 0 就说「需手动完成: X (需云机内实际使用)」——真机读数里那一次没有云机，
  *     打的正是这一句（不是「无云手机」）。 */
-function phones(ctx: RedpackCtx, job: RedpackJob): JobStep {
+async function phones(ctx: RedpackCtx, job: RedpackJob): Promise<JobStep> {
   const found: ReturnType<typeof parsePhones> = [];
   for (const status of ['ACTIVE', 'PENDING'] as const) {
-    const env = send(ctx, cloudPhonesRequest(callOf(ctx), status, ctx.base));
+    const env = await send(ctx, cloudPhonesRequest(callOf(ctx), status, ctx.base));
     if (env.ok) found.push(...parsePhones(env.data));
   }
   if (job.kind === 'cloudUse') {
@@ -327,12 +327,12 @@ function phones(ctx: RedpackCtx, job: RedpackJob): JobStep {
 }
 
 /** 装机前先问"这台云机上装过没有"：已经装过 ⇒ 只上报，不再装。 */
-function installStatus(ctx: RedpackCtx, job: RedpackJob): JobStep {
+async function installStatus(ctx: RedpackCtx, job: RedpackJob): Promise<JobStep> {
   // 换票那一趟被打断之后回来时票可能没了 ⇒ 先补一次华为侧的票
   if ((job.hwToken ?? '') === '' && (job.apps?.length ?? 0) > 0) return go(ctx, job, 'hw');
   const app = (job.apps ?? [])[job.appIndex ?? 0];
   if (app === undefined || (job.hwToken ?? '') === '') return notFoundApp(ctx, job);
-  const env = send(
+  const env = await send(
     ctx,
     installStatusRequest(callOf(ctx), job.hwToken ?? '', job.instanceId ?? '', app.packageName, ctx.base),
   );
@@ -343,10 +343,10 @@ function installStatus(ctx: RedpackCtx, job: RedpackJob): JobStep {
     : go(ctx, job, 'installStart');
 }
 
-function installStart(ctx: RedpackCtx, job: RedpackJob): JobStep {
+async function installStart(ctx: RedpackCtx, job: RedpackJob): Promise<JobStep> {
   const app = (job.apps ?? [])[job.appIndex ?? 0];
   if (app === undefined) return notFoundApp(ctx, job);
-  const env = send(
+  const env = await send(
     ctx,
     apkInstallRequest(callOf(ctx), job.instanceId ?? '', String(app.packageId), job.hwToken ?? '', ctx.base),
   );
@@ -360,8 +360,8 @@ function installStart(ctx: RedpackCtx, job: RedpackJob): JobStep {
 }
 
 /** 装机进度：2 成功、3 失败、其余继续等（最多 60 轮，每轮 1 秒）。 */
-function installPoll(ctx: RedpackCtx, job: RedpackJob): JobStep {
-  const env = send(ctx, installTaskStatusRequest(callOf(ctx), job.hwToken ?? '', job.installTaskId ?? '', ctx.base));
+async function installPoll(ctx: RedpackCtx, job: RedpackJob): Promise<JobStep> {
+  const env = await send(ctx, installTaskStatusRequest(callOf(ctx), job.hwToken ?? '', job.installTaskId ?? '', ctx.base));
   const progress = env.ok ? readInstallProgress(env.data) : undefined;
   if (progress === INSTALL_TASK_DONE) return go(ctx, { ...job, reportedExists: undefined }, 'report');
   if (progress === INSTALL_TASK_FAILED) {
@@ -377,8 +377,8 @@ function installPoll(ctx: RedpackCtx, job: RedpackJob): JobStep {
 }
 
 /** 题库最多重取 15 轮（参照实现那个循环是给"上游刚发题时要等一下"的）。 */
-function topicList(ctx: RedpackCtx, job: RedpackJob): JobStep {
-  const env = send(ctx, topicListRequest(callOf(ctx), ctx.base));
+async function topicList(ctx: RedpackCtx, job: RedpackJob): Promise<JobStep> {
+  const env = await send(ctx, topicListRequest(callOf(ctx), ctx.base));
   const topic = env.ok ? parseTopic(env.data) : undefined;
   if (topic === undefined) return fail(ctx, `题库为空: ${job.taskName}`);
   const letter = answerLetter(topic);
@@ -392,7 +392,7 @@ function topicList(ctx: RedpackCtx, job: RedpackJob): JobStep {
   return { kind: 'again' };
 }
 
-function topicAnswer(ctx: RedpackCtx, job: RedpackJob): JobStep {
+async function topicAnswer(ctx: RedpackCtx, job: RedpackJob): Promise<JobStep> {
   const letter = job.topicAnswer ?? '';
   if (letter === '') return unknownTopic(ctx, job, job.topicQuestion ?? '');
   const taskId = Number(job.id);
@@ -401,7 +401,7 @@ function topicAnswer(ctx: RedpackCtx, job: RedpackJob): JobStep {
     return fail(ctx, `答题失败: ${job.taskName} 活动站给的编号不是数字`);
   }
   // ⚠ 答题是**严格**判据：只有 `status === 1` 才算做成（参照实现也这样）
-  const env = send(ctx, topicAnswerRequest(callOf(ctx), taskId, topicId, letter, ctx.base));
+  const env = await send(ctx, topicAnswerRequest(callOf(ctx), taskId, topicId, letter, ctx.base));
   const status = env.ok ? readWriteStatus(env.data) : undefined;
   if (!env.ok || status !== 1) return fail(ctx, `答题失败: ${job.taskName} ${env.error ?? '活动站说没成'}`);
   markWritten(ctx.st, job.taskCode);
@@ -415,8 +415,8 @@ function topicAnswer(ctx: RedpackCtx, job: RedpackJob): JobStep {
  *  ⚠ 这是"这一条到底做成没有"的唯一判据 —— 写请求的回执只说明请求被接受了
  *  （App 任务那边踩过同一课：三枪全回 200 而状态一条没变）。
  *  回查本身失败**不判失败**：照登记过的事实说一句（参照实现 `?? task` 同一个选择）。 */
-function confirm(ctx: RedpackCtx, job: RedpackJob): JobStep {
-  const status = reRead(ctx, job);
+async function confirm(ctx: RedpackCtx, job: RedpackJob): Promise<JobStep> {
+  const status = await reRead(ctx, job);
   if (status === 1) {
     rpLine(ctx.st, `已完成: ${job.taskName}`);
     return go(ctx, { ...job, status }, 'reward');
@@ -430,8 +430,8 @@ function confirm(ctx: RedpackCtx, job: RedpackJob): JobStep {
  *  ⚠ 它**不说**「已登记」：这一条的实情是"要人在云机里真用过"，所以我们发完登记、
  *  发完"进过一次云机"那一枪之后，表里还是 0 就是**还没被用过** ——
  *  参照实现说的正是「需手动完成: X (需云机内实际使用)」，真机读数也是这一句。 */
-function confirmUse(ctx: RedpackCtx, job: RedpackJob): JobStep {
-  const status = reRead(ctx, job);
+async function confirmUse(ctx: RedpackCtx, job: RedpackJob): Promise<JobStep> {
+  const status = await reRead(ctx, job);
   if (status === 1) {
     rpLine(ctx.st, `已完成: ${job.taskName}`);
     return go(ctx, { ...job, status }, 'reward');
@@ -448,8 +448,8 @@ function confirmUse(ctx: RedpackCtx, job: RedpackJob): JobStep {
  *     活动站那边还没认 —— 这一句说的是我们做成了什么，不是"没做成"）；
  *   · 只上报过"这台云机上早装好了"而表里还是 0 ⇒ **换下一个应用**（参照实现的
  *     `continue`）；应用问完了还没成 ⇒ 「未找到可安装应用: X」。 */
-function confirmInstall(ctx: RedpackCtx, job: RedpackJob): JobStep {
-  const status = reRead(ctx, job);
+async function confirmInstall(ctx: RedpackCtx, job: RedpackJob): Promise<JobStep> {
+  const status = await reRead(ctx, job);
   if (status === 1) {
     rpLine(ctx.st, `已完成: ${job.taskName}`);
     return go(ctx, { ...job, status }, 'reward');
@@ -475,8 +475,8 @@ function appName(app: RedpackQueueApp | undefined): string {
 /** 重新读一次表，把这一条的状态更新回队列，**只回状态**（怎么说由调用方定）。
  *
  *  读不到 ⇒ 0（参照实现的 `refreshed?.userStatus === 1`：回查失败就不是"做成了"）。 */
-function reRead(ctx: RedpackCtx, job: RedpackJob): number {
-  const env = send(ctx, taskListRequest(callOf(ctx), ctx.base));
+async function reRead(ctx: RedpackCtx, job: RedpackJob): Promise<number> {
+  const env = await send(ctx, taskListRequest(callOf(ctx), ctx.base));
   if (!env.ok) return job.status ?? 0;
   const found = parseTaskList(env.data).tasks.find((t) => t.taskCode === job.taskCode);
   const status = found?.status ?? 0;
@@ -486,8 +486,8 @@ function reRead(ctx: RedpackCtx, job: RedpackJob): number {
 }
 
 /** 这一条刚拿到的奖（只读）。上游没给金额时**不打行**（参照实现也吞）。 */
-function reward(ctx: RedpackCtx, job: RedpackJob): JobStep {
-  const line = readRewardLine(ctx, job.taskCode, job.taskName);
+async function reward(ctx: RedpackCtx, job: RedpackJob): Promise<JobStep> {
+  const line = await readRewardLine(ctx, job.taskCode, job.taskName);
   if (line !== undefined) rpLine(ctx.st, line);
   return { kind: 'done' };
 }
@@ -496,12 +496,12 @@ function reward(ctx: RedpackCtx, job: RedpackJob): JobStep {
  *
  *  上游没给金额 ⇒ `undefined`（参照实现这时**不打行** —— 少打一行也是改动可见输出，
  *  所以这里跟着不打）。`defaultName` 是奖品名缺格时的兜底（参照实现传任务名）。 */
-export function readRewardLine(
+export async function readRewardLine(
   ctx: RedpackCtx,
   taskCode: string,
   defaultName: string,
-): string | undefined {
-  const env = send(ctx, toastInfoRequest(callOf(ctx), taskCode, ctx.base));
+): Promise<string | undefined> {
+  const env = await send(ctx, toastInfoRequest(callOf(ctx), taskCode, ctx.base));
   if (!env.ok) return undefined;
   const prize = readReward(env.data);
   if (prize === undefined) return undefined;
@@ -534,12 +534,12 @@ function go(ctx: RedpackCtx, job: RedpackJob, stage: RedpackJob['stage']): JobSt
 }
 
 /** 余额那一行（**头尾各一次**：照参照实现，两句一样时也照打）。 */
-export function readBalanceLine(
+export async function readBalanceLine(
   deps: TaskDeps,
   st: RedpackState,
   base: string | undefined,
-): string | undefined {
-  const env = callRedpack(deps.transport, accountInfoRequest(makeRedpackCall(st.token ?? '', depsNowMs(deps)), base));
+): Promise<string | undefined> {
+  const env = await callRedpack(deps.transport, accountInfoRequest(makeRedpackCall(st.token ?? '', depsNowMs(deps)), base));
   if (!env.ok) return undefined;
   const { can, total } = readBalance(env.data);
   return `余额: 可用${yuanRaw(can)}元，累计${yuanRaw(total)}元`;

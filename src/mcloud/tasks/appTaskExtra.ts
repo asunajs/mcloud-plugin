@@ -1097,6 +1097,6 @@ export function logBehaviorActionRequest(
 }
 
 /** 发一个请求（给状态机复用）。 */
-export function send(deps: TaskDeps, req: BuiltRequest) {
-  return callRawText(deps.transport, req);
+export async function send(deps: TaskDeps, req: BuiltRequest) {
+  return await callRawText(deps.transport, req);
 }

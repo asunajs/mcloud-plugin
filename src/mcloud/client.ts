@@ -2,14 +2,13 @@
 //
 // 三个设计决定，都不是随手定的：
 //
-// ① **transport 可注入**。插件里注入 `host.http_fetch`（同步阻塞、没有异步），
+// ① **transport 可注入且是异步的**。插件里注入 `host.fetch`（面板的 async op），
 //    Node 测试里注入桩或 mock 上游。构造逻辑与发送逻辑因此可以分开测。
 //
-// ② **一次调用只发一个请求**。面板的单次执行预算只有 2000ms（`EXEC_BUDGET_MS`），
-//    而且**打断不了正在阻塞的宿主调用** —— 一个 5 秒的请求会跑完，然后任务被判超时
-//    （上游动作已发生、任务却报失败）。所以整个插件按「可恢复步骤机」写：
-//    一次 handler 调用只推进一步，状态落 SQLite。这个约束在这里体现为
-//    `callOnce()` 而不是「一个流程函数」。
+// ② **一次调用只发一个请求**。这是形状（一个函数一枪），不是当年的"预算逼出来的"：
+//    同步时代面板一次执行只有 2000ms 且打断不了阻塞调用，所以整插件写成了可恢复步骤机。
+//    P3 之后宿主是 async、预算是秒级，`drain` 可以在**一次触发**里把一条链走完 ——
+//    但"一步一枪"仍然保留：上游限流按枪算，出问题也好定位到具体那一步。
 //
 // ③ **上游错误不抛异常，返回结构化结果**。步骤机要能区分「业务失败（可以重试）」
 //    与「环境炸了（应该停下来）」——用异常表达会让调用方到处 try/catch，
@@ -33,8 +32,11 @@ import { parseSignInEnvelope } from './envelope.ts';
 import type { SignInEnvelope } from './envelope.ts';
 import type { BuiltRequest } from './h5.ts';
 
-/** 发送一个请求。返回值与 `host.http_fetch` 一致，便于直接用宿主实现。 */
-export type Transport = (req: BuiltRequest) => HostFetchResult;
+/** 发送一个请求。**异步**（P3）：宿主那边已经没有同步 HTTP 了。
+ *
+ *  形状不变：成功给 `{status, headers, body}`，失败给 `{error}` —— 调用方到处在判
+ *  `res.error`，别趁这次改成抛异常（那会把"业务失败 vs 环境炸了"的区分毁掉）。 */
+export type Transport = (req: BuiltRequest) => Promise<HostFetchResult>;
 
 /** 把 [`BuiltRequest`] 变成宿主的 `http_fetch` 选项。**纯函数，为了能测**。
  *
@@ -104,7 +106,7 @@ export interface CallResult {
  *  之后被判超时（见 docs/findings.md F-001/预算那条），所以这个阈值是预警线，不是装饰。 */
 export const SLOW_CALL_MS = 1500;
 
-export function callOnce(transport: Transport, req: BuiltRequest): CallResult {
+export async function callOnce(transport: Transport, req: BuiltRequest): Promise<CallResult> {
   const t0 = Date.now();
   const fail = (error: string): CallResult => ({
     status: 0,
@@ -119,7 +121,7 @@ export function callOnce(transport: Transport, req: BuiltRequest): CallResult {
 
   let res: HostFetchResult;
   try {
-    res = transport(req);
+    res = await transport(req);
   } catch (e) {
     return fail(`请求失败：${e instanceof Error ? e.message : String(e)}`);
   }
@@ -219,7 +221,7 @@ export interface RawTextResult {
  *
  *  ⚠️ 这里**不做 500 字符截断**（`callOnce` 的 `raw` 截断是给日志用的）——
  *  调用方要拿全文做正则。页面大小由 `chars` 如实报出去，别在解析前就把内容丢了。 */
-export function callRawText(transport: Transport, req: BuiltRequest): RawTextResult {
+export async function callRawText(transport: Transport, req: BuiltRequest): Promise<RawTextResult> {
   const t0 = Date.now();
   const fail = (error: string): RawTextResult => ({
     ok: false,
@@ -232,7 +234,7 @@ export function callRawText(transport: Transport, req: BuiltRequest): RawTextRes
 
   let res: HostFetchResult;
   try {
-    res = transport(req);
+    res = await transport(req);
   } catch (e) {
     return fail(`请求失败：${e instanceof Error ? e.message : String(e)}`);
   }

@@ -46,7 +46,7 @@ export function revivalMessageNothingToRevive(message: string): boolean {
   return message.includes('无云朵记录');
 }
 
-export function runRevival(deps: TaskDeps): TaskOutcome {
+export async function runRevival(deps: TaskDeps): Promise<TaskOutcome> {
   const month = deps.nowIso.slice(0, 7);
   if (deps.store.getState(STATE_REVIVAL_DONE) === month) {
     return { ok: true, skipped: true, note: '这个月的复活卡已经处理过了' };
@@ -54,7 +54,7 @@ export function runRevival(deps: TaskDeps): TaskOutcome {
 
   // 「已领取」是**业务上的完成**，不是失败 —— 所以不能走 runTask 的失败路径。
   // 这里直接发请求、自己判。
-  const out = runTask(
+  const out = await runTask(
     deps,
     {
       task: 'revival',

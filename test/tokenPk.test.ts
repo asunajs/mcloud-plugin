@@ -205,10 +205,10 @@ function depsFor(transport: Transport, nowIso = NOW): TaskDeps {
   return { store, transport, nowIso, nowMs: () => Date.parse(nowIso), settleMs: 0, gapMs: [0, 0] };
 }
 
-function runAll(deps: TaskDeps): { notes: string[]; idle: boolean; ok: boolean } {
+async function runAll(deps: TaskDeps): Promise<{ notes: string[]; idle: boolean; ok: boolean }> {
   const notes: string[] = [];
   for (let i = 0; i < 60; i++) {
-    const r = tokenPkStep(deps);
+    const r = await tokenPkStep(deps);
     notes.push(r.note);
     if (r.idle === true || r.skipped === true) return { notes, idle: true, ok: r.ok };
     if (!r.ok && r.pending !== true) return { notes, idle: false, ok: false };
@@ -216,10 +216,10 @@ function runAll(deps: TaskDeps): { notes: string[]; idle: boolean; ok: boolean }
   return { notes, idle: false, ok: false };
 }
 
-test('整趟：click 在动作之前、复查后才领、RESERVE 不领、汇总句是台账那句', () => {
+test('整趟：click 在动作之前、复查后才领、RESERVE 不领、汇总句是台账那句', async () => {
   const { transport, sent } = fakeUpstream();
   const deps = depsFor(transport);
-  const r = runAll(deps);
+  const r = await runAll(deps);
   assert.equal(r.idle, true, r.notes.join(' → '));
 
   // 顺序：列表 → 备份的 click → 上传三枪 → 快照三枪 → openUrl 的 click → reserve → 复查 → 领奖 ×3 → 收尾
@@ -255,10 +255,10 @@ test('整趟：click 在动作之前、复查后才领、RESERVE 不领、汇总
   assert.ok(lines.some((l) => l.includes('领取「登录PC客户端传文件」')), lines.join(' | '));
 });
 
-test('一条失败不拖垮整趟：备份上传失败，openUrl / 预约 / 领奖照做', () => {
+test('一条失败不拖垮整趟：备份上传失败，openUrl / 预约 / 领奖照做', async () => {
   const { transport, sent } = fakeUpstream({ failBackupCreate: true });
   const deps = depsFor(transport);
-  const r = runAll(deps);
+  const r = await runAll(deps);
   assert.equal(r.idle, true, r.notes.join(' → '));
   assert.ok(sent.includes('POST /ycloud/tokenpk/task/step/reserve'), '预约照做');
   assert.ok(sent.includes('POST /ycloud/tokenpk/task/step/receivePrize'), '至少 #5 该领');
@@ -266,7 +266,7 @@ test('一条失败不拖垮整趟：备份上传失败，openUrl / 预约 / 领�
   assert.match(summary ?? '', /1项步骤失败/, summary ?? '');
 });
 
-test('开关缺省是开：新号没有那一格 ⇒ 照跑（`getState` 回 null 的那条坑）', () => {
+test('开关缺省是开：新号没有那一格 ⇒ 照跑（`getState` 回 null 的那条坑）', async () => {
   const { transport, sent } = fakeUpstream();
   const deps = depsFor(transport);
   const gate = tokenPkGate(deps);
@@ -275,7 +275,7 @@ test('开关缺省是开：新号没有那一格 ⇒ 照跑（`getState` 回 nul
   assert.equal(sent.length, 0);
 });
 
-test('关掉开关：tokenPkGate 直接 idle，一个请求都不发', () => {
+test('关掉开关：tokenPkGate 直接 idle，一个请求都不发', async () => {
   const { transport, sent } = fakeUpstream();
   const deps = depsFor(transport);
   setTokenPkEnabled(deps.store, false, NOW);
@@ -285,11 +285,11 @@ test('关掉开关：tokenPkGate 直接 idle，一个请求都不发', () => {
   assert.equal(sent.length, 0);
 });
 
-test('代抽开了：按上限一趟抽完，体是字面 null，汇总句带「代抽N次（中M次）」', () => {
+test('代抽开了：按上限一趟抽完，体是字面 null，汇总句带「代抽N次（中M次）」', async () => {
   const { transport, sent } = fakeUpstream();
   const deps = depsFor(transport);
   setTokenPkDraw(deps.store, { enabled: true, max: 2 }, NOW);
-  const r = runAll(deps);
+  const r = await runAll(deps);
   assert.equal(r.idle, true, r.notes.join(' → '));
   assert.equal(
     sent.filter((x) => x === 'GET /ycloud/tokenpk/toplist/progress/queryRemainChance').length,
@@ -305,11 +305,11 @@ test('代抽开了：按上限一趟抽完，体是字面 null，汇总句带「
   assert.ok(lines.some((l) => l.includes('代抽第 2 次：没中')), lines.join(' | '));
 });
 
-test('剩余次数是 0 ⇒ 一发 lottery 都不发（别拿上限撞服务端）', () => {
+test('剩余次数是 0 ⇒ 一发 lottery 都不发（别拿上限撞服务端）', async () => {
   const { transport, sent } = fakeUpstream({ remainChance: 0 });
   const deps = depsFor(transport);
   setTokenPkDraw(deps.store, { enabled: true, max: 3 }, NOW);
-  runAll(deps);
+  await runAll(deps);
   assert.equal(
     sent.filter((x) => x === 'POST /ycloud/tokenpk/toplist/progress/lottery').length,
     0,
@@ -319,31 +319,31 @@ test('剩余次数是 0 ⇒ 一发 lottery 都不发（别拿上限撞服务端�
   assert.doesNotMatch(summary, /代抽\d+次/, summary);
 });
 
-test('代抽上限按天算：同一天第二趟不再抽', () => {
+test('代抽上限按天算：同一天第二趟不再抽', async () => {
   const { transport, sent } = fakeUpstream();
   const deps = depsFor(transport);
   setTokenPkDraw(deps.store, { enabled: true, max: 1 }, NOW);
-  runAll(deps);
+  await runAll(deps);
   const first = sent.filter((x) => x === 'POST /ycloud/tokenpk/toplist/progress/lottery').length;
   assert.equal(first, 1);
-  runAll(deps);
+  await runAll(deps);
   const total = sent.filter((x) => x === 'POST /ycloud/tokenpk/toplist/progress/lottery').length;
   assert.equal(total, 1, '第二趟不该再抽（上限 1/天）');
 });
 
-test('月上限到了的那条不做（连 click 都不发）', () => {
+test('月上限到了的那条不做（连 click 都不发）', async () => {
   const { transport, sent, tasks } = fakeUpstream();
   const capped = tasks.find((t) => t.id === 6);
   assert.ok(capped !== undefined);
   capped.monthlyCompleted = 3;
   capped.monthlyLimit = 3;
   const deps = depsFor(transport);
-  runAll(deps);
+  await runAll(deps);
   // openUrl 那条被上限挡掉 ⇒ 只剩 backup 一发 click
   assert.equal(sent.filter((x) => x === 'POST /ycloud/tokenpk/task/step/click').length, 1, sent.join(', '));
 });
 
-test('这一族只有步数上限：插件不设内部时间限制（2026-11-16 口径）', () => {
+test('这一族只有步数上限：插件不设内部时间限制（2026-11-16 口径）', async () => {
   assert.equal(TOKENPK_BUDGET.maxSteps, 80);
   // 2026-11-02 15:55 那次"领奖领到一半被截、紧接着 0 步"正是时间闸造成的；
   // 现在整类删掉，运行时长归面板的执行预算。

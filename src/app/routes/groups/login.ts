@@ -18,14 +18,14 @@ import { adoptLoginResult, autoPassSlider, json, loadLoginBase, loginCall, login
 import type { RouteDeps, RouteEntry, SliderSendResult } from '../support.ts';
 
 /** login 组。deps 是路由依赖；base 是 /plugins/mcloud/api；verify 是「拿当前会话验一次」。 */
-export function loginRoutes(deps: RouteDeps, base: string, verify: () => { ok: boolean; note: string }): RouteEntry[] {
+export function loginRoutes(deps: RouteDeps, base: string, verify: () => Promise<{ ok: boolean; note: string }>): RouteEntry[] {
   void verify;
   return [
 {
       // 登录页的读数（一次给全）。凭据**不进这里** —— 只给掩码过的形状。
       path: `${base}/login/state`,
       method: 'GET',
-      handler: () =>
+      handler: async () =>
         json(200, {
           ...(() => {
             const r = loginReading(deps.store, Date.parse(deps.now()), (sid, did) =>
@@ -43,7 +43,7 @@ export function loginRoutes(deps: RouteDeps, base: string, verify: () => { ok: b
       // 实测 1622 个 body 文件里也没有对应的取码接口。
       path: `${base}/login/qr/start`,
       method: 'POST',
-      handler: (req) => {
+      handler: async (req) => {
         const b = readBody(req) as { pcPlatform?: unknown };
         // ⚠ 形态**在这一刻定下来**（用户出码前选的那个），冻进会话；
         //   之后改界面上的选择也不会改到这张码 —— 想换就重新出码。
@@ -74,7 +74,7 @@ export function loginRoutes(deps: RouteDeps, base: string, verify: () => { ok: b
       // 轮一次。**"还没扫"不是错误** —— 轮询期间绝大多数响应都是它。
       path: `${base}/login/qr/poll`,
       method: 'POST',
-      handler: () => {
+      handler: async () => {
         const s = loadQrSession(deps.store);
         if (s === null) return json(400, { error: '没有正在进行的扫码登录（先点「扫码登录」）' });
         const nowMs = Date.parse(deps.now());
@@ -92,7 +92,7 @@ export function loginRoutes(deps: RouteDeps, base: string, verify: () => { ok: b
           });
         }
         const c = pcClient(s.platform, s.deviceId);
-        const r = loginCall(
+        const r = await loginCall(
           deps,
           // ⚠ 用**会话里那一个** `x-yun-tid`（整趟复用），不要每轮新生成 ——
           //   参考实现的会话表存的就是 `(qr, tid, owner)`（F-071）。
@@ -181,7 +181,7 @@ export function loginRoutes(deps: RouteDeps, base: string, verify: () => { ok: b
 {
       path: `${base}/login/sms/start`,
       method: 'POST',
-      handler: (req) => {
+      handler: async (req) => {
         const b = readBody(req) as { phone?: unknown; pcPlatform?: unknown };
         const phone = typeof b.phone === 'string' ? b.phone.trim() : '';
         if (!/^1\d{10}$/.test(phone)) return json(400, { error: '手机号要 11 位、以 1 开头' });
@@ -196,19 +196,19 @@ export function loginRoutes(deps: RouteDeps, base: string, verify: () => { ok: b
       // 发码。**可能被风控拦下** ⇒ 这一侧**自己去过滑块**，人只负责等短信。
       path: `${base}/login/sms/send`,
       method: 'POST',
-      handler: () => {
+      handler: async () => {
         const s = loadSmsSession(deps.store);
         if (s === null) return json(400, { error: '没有正在进行的短信登录（先填手机号）' });
         const c = pcClient(s.platform, loadDeviceId(deps.store, deps.now()));
         const base = loadLoginBase(deps.store);
 
         // 发一次（`answer` 为空 = 不带滑块答案）
-        const attempt = (answer?: string): SliderSendResult => {
+        const attempt = async (answer?: string): Promise<SliderSendResult> => {
           const body =
             answer === undefined
               ? sendSmsCodeBody(c, s.phone, s.random)
               : sendSmsCodeBodyWithSlider(c, s.phone, s.random, answer);
-          const r = loginCall(deps, sendSmsCodeRequest(c, newTid(), body, base));
+          const r = await loginCall(deps, sendSmsCodeRequest(c, newTid(), body, base));
           // ⚠ 判据是「**有没有拿到信封**」（`r.env === null`）：非零 `code` 是
           //   **上游的回答**，要交给分类去说人话（"要过滑块" / "验证码不对"），
           //   不是网络故障。写成 `!r.ok` 的话，真上游的每一种回答都会被压成一句
@@ -222,8 +222,8 @@ export function loginRoutes(deps: RouteDeps, base: string, verify: () => { ok: b
         };
 
         // 取一道**新**题并解出坐标（缺口坐标是解出来的，不是量出来的）
-        const fetchAnswer = (): { answer: string } | { error: string } => {
-          const pr = loginCall(deps, sliderPuzzleRequest(c, newTid(), sliderPuzzleBody(s.phone), base));
+        const fetchAnswer = async (): Promise<{ answer: string } | { error: string }> => {
+          const pr = await loginCall(deps, sliderPuzzleRequest(c, newTid(), sliderPuzzleBody(s.phone), base));
           if (pr.env === null) return { error: `取滑块没成功：${pr.error}` };
           if (!isSuccessCode(pr.env.code)) {
             return { error: `取滑块被拒：${pr.env.message || `code=${pr.env.code}`}` };
@@ -239,7 +239,7 @@ export function loginRoutes(deps: RouteDeps, base: string, verify: () => { ok: b
         };
 
         let sent: { remainGetTimes: number | null } | null = null;
-        const first = attempt();
+        const first = await attempt();
         if (first.kind === 'sent') {
           sent = { remainGetTimes: first.remainGetTimes };
         } else if (first.kind === 'other') {
@@ -247,7 +247,7 @@ export function loginRoutes(deps: RouteDeps, base: string, verify: () => { ok: b
         } else {
           // 要过滑块（或旧题作废）⇒ **自动**取新题、解坐标、带答案重发
           deps.log(`短信登录：要过滑块（${first.kind === 'exhausted' ? '旧图已作废' : '首次发码被拦'}），自动过`);
-          const passed = autoPassSlider(deps, '短信登录', fetchAnswer, attempt);
+          const passed = await autoPassSlider(deps, '短信登录', fetchAnswer, attempt);
           if (!passed.ok) return json(200, { ok: false, note: passed.error });
           sent = { remainGetTimes: passed.remainGetTimes };
         }
@@ -267,11 +267,11 @@ export function loginRoutes(deps: RouteDeps, base: string, verify: () => { ok: b
       // 取滑块拼图。**缺口坐标是解出来的**，不需要图像识别。
       path: `${base}/login/sms/slider`,
       method: 'POST',
-      handler: () => {
+      handler: async () => {
         const s = loadSmsSession(deps.store);
         if (s === null) return json(400, { error: '没有正在进行的短信登录（先填手机号）' });
         const c = pcClient(s.platform, loadDeviceId(deps.store, deps.now()));
-        const r = loginCall(
+        const r = await loginCall(
           deps,
           sliderPuzzleRequest(c, newTid(), sliderPuzzleBody(s.phone), loadLoginBase(deps.store)),
         );
@@ -309,14 +309,14 @@ export function loginRoutes(deps: RouteDeps, base: string, verify: () => { ok: b
       // 提交验证码。
       path: `${base}/login/sms/submit`,
       method: 'POST',
-      handler: (req) => {
+      handler: async (req) => {
         const b = readBody(req) as { code?: unknown };
         const code = typeof b.code === 'string' ? b.code.trim() : '';
         if (!/^\d{4,8}$/.test(code)) return json(400, { error: '验证码要 4–8 位数字' });
         const s = loadSmsSession(deps.store);
         if (s === null) return json(400, { error: '没有正在进行的短信登录（先填手机号）' });
         const c = pcClient(s.platform, loadDeviceId(deps.store, deps.now()));
-        const r = loginCall(
+        const r = await loginCall(
           deps,
           thirdloginRequest(c, newTid(), smsThirdloginBody(c, s.phone, code), loadLoginBase(deps.store)),
         );
@@ -344,7 +344,7 @@ export function loginRoutes(deps: RouteDeps, base: string, verify: () => { ok: b
 {
       path: `${base}/login/app/start`,
       method: 'POST',
-      handler: (req) => {
+      handler: async (req) => {
         const b = readBody(req) as { phone?: unknown };
         const phone = typeof b.phone === 'string' ? b.phone.trim() : '';
         if (!/^1\d{10}$/.test(phone)) return json(400, { error: '手机号要 11 位（1 开头）' });
@@ -357,16 +357,16 @@ export function loginRoutes(deps: RouteDeps, base: string, verify: () => { ok: b
 {
       path: `${base}/login/app/send`,
       method: 'POST',
-      handler: () => {
+      handler: async () => {
         const a = loadAppSession(deps.store);
         if (a === null) return json(400, { error: '没有正在进行的手机端登录（先填手机号）' });
         const deviceId = loadDeviceId(deps.store, deps.now());
         const nowMs = Date.parse(deps.now());
 
         // 发一次（`answer` 为空 = 不带滑块答案）
-        const attempt = (answer?: string): SliderSendResult => {
+        const attempt = async (answer?: string): Promise<SliderSendResult> => {
           const puzzle = answer === undefined ? '' : puzzleVerfycodeEncrypt(answer);
-          const r = loginCall(
+          const r = await loginCall(
             deps,
             appSendSmsCodeRequest(deviceId, nowMs, a.phone, puzzle, loadLoginBase(deps.store)),
           );
@@ -379,8 +379,8 @@ export function loginRoutes(deps: RouteDeps, base: string, verify: () => { ok: b
         };
 
         // 取一道**新**题并解出坐标（App 那条路径与 PC 同一个 `/user/verfycode`）
-        const fetchAnswer = (): { answer: string } | { error: string } => {
-          const pr = loginCall(
+        const fetchAnswer = async (): Promise<{ answer: string } | { error: string }> => {
+          const pr = await loginCall(
             deps,
             appPost(
               APP_SLIDER_PUZZLE_PATH,
@@ -404,7 +404,7 @@ export function loginRoutes(deps: RouteDeps, base: string, verify: () => { ok: b
         };
 
         let sent: { remainGetTimes: number | null } | null = null;
-        const first = attempt();
+        const first = await attempt();
         if (first.kind === 'sent') {
           sent = { remainGetTimes: first.remainGetTimes };
         } else if (first.kind === 'other') {
@@ -413,7 +413,7 @@ export function loginRoutes(deps: RouteDeps, base: string, verify: () => { ok: b
           // ⚠ `exhausted` **不是**"账号被限流了"，而是"这一道题的尝试次数用完了"
           //   ⇒ 换一道新题。这一侧**自己去过**，不让用户拖。
           deps.log(`手机端登录：要过滑块（${first.kind === 'exhausted' ? '旧图已作废' : '首次发码被拦'}），自动过`);
-          const passed = autoPassSlider(deps, '手机端登录', fetchAnswer, attempt);
+          const passed = await autoPassSlider(deps, '手机端登录', fetchAnswer, attempt);
           if (!passed.ok) return json(200, { ok: false, sent: false, note: passed.error });
           sent = { remainGetTimes: passed.remainGetTimes };
         }
@@ -435,13 +435,13 @@ export function loginRoutes(deps: RouteDeps, base: string, verify: () => { ok: b
 {
       path: `${base}/login/app/slider`,
       method: 'POST',
-      handler: () => {
+      handler: async () => {
         const a = loadAppSession(deps.store);
         if (a === null) return json(400, { error: '没有正在进行的手机端登录（先填手机号）' });
         const deviceId = loadDeviceId(deps.store, deps.now());
         // 题面体与 PC **一样**（`{account, type: 2}`，`type` 是数字）—— 路径也同一个
         //（`/user/verfycode`）。差别只在**请求头**是 App 那套。
-        const r = loginCall(
+        const r = await loginCall(
           deps,
           appPost(
             APP_SLIDER_PUZZLE_PATH,
@@ -470,14 +470,14 @@ export function loginRoutes(deps: RouteDeps, base: string, verify: () => { ok: b
 {
       path: `${base}/login/app/submit`,
       method: 'POST',
-      handler: (req) => {
+      handler: async (req) => {
         const b = readBody(req) as { code?: unknown };
         const code = typeof b.code === 'string' ? b.code.trim() : '';
         if (!/^\d{4,8}$/.test(code)) return json(400, { error: '验证码要 4–8 位数字' });
         const a = loadAppSession(deps.store);
         if (a === null) return json(400, { error: '没有正在进行的手机端登录（先填手机号）' });
         const deviceId = loadDeviceId(deps.store, deps.now());
-        const r = loginCall(
+        const r = await loginCall(
           deps,
           appThirdloginRequest(
             deviceId,
@@ -505,7 +505,7 @@ export function loginRoutes(deps: RouteDeps, base: string, verify: () => { ok: b
       // 账密登录**一个路由就完成** —— 它没有用户交互，所以不是状态机。
       path: `${base}/login/pwd`,
       method: 'POST',
-      handler: (req) => {
+      handler: async (req) => {
         const b = readBody(req) as { phone?: unknown; password?: unknown; pcPlatform?: unknown };
         const phone = typeof b.phone === 'string' ? b.phone.trim() : '';
         const password = typeof b.password === 'string' ? b.password : '';
@@ -515,7 +515,7 @@ export function loginRoutes(deps: RouteDeps, base: string, verify: () => { ok: b
         //   在账密这一路上静默变成 Windows。形态是**请求里带的那一个**。
         const platform = parsePcPlatform(b.pcPlatform) ?? loginPlatform(deps.store);
         const c = pcClient(platform, loadDeviceId(deps.store, deps.now()));
-        const r = loginCall(
+        const r = await loginCall(
           deps,
           thirdloginRequest(c, newTid(), passwordThirdloginBody(c, phone, password), loadLoginBase(deps.store)),
         );
@@ -544,7 +544,7 @@ export function loginRoutes(deps: RouteDeps, base: string, verify: () => { ok: b
 {
       path: `${base}/login/cancel`,
       method: 'POST',
-      handler: () => {
+      handler: async () => {
         clearLogin(deps.store);
         deps.log('登录：已取消');
         return json(200, { ok: true, note: '已取消' });
@@ -557,7 +557,7 @@ export function loginRoutes(deps: RouteDeps, base: string, verify: () => { ok: b
       //   一直 200059541（而这看起来像"码过期了"）。
       path: `${base}/login/device/reset`,
       method: 'POST',
-      handler: () => {
+      handler: async () => {
         const fresh = resetDeviceId(deps.store, deps.now());
         deps.log('登录：换了设备指纹（旧会话已清）');
         return json(200, { deviceId: fresh, note: '设备指纹已换新，旧会话已清 —— 重新出码' });
@@ -568,7 +568,7 @@ export function loginRoutes(deps: RouteDeps, base: string, verify: () => { ok: b
       // H5 换票（三步）：凭据状态 + 进度 + 换到的票。**都不回显凭据本身。**
       path: `${base}/h5`,
       method: 'GET',
-      handler: () => {
+      handler: async () => {
         const jwt = loadJwt(deps.store);
         return json(200, {
           auth: authStatus(deps.store),
@@ -610,7 +610,7 @@ export function loginRoutes(deps: RouteDeps, base: string, verify: () => { ok: b
       // 界面上的凭据入口是 `/accounts` 的 `op:'add'`（那个「凭据」页签）。
       path: `${base}/h5/auth`,
       method: 'POST',
-      handler: (req) => {
+      handler: async (req) => {
         const body = readBody(req);
         if (body.clear === true) {
           clearAuth(deps.store, deps.now());
@@ -638,7 +638,7 @@ export function loginRoutes(deps: RouteDeps, base: string, verify: () => { ok: b
       // **推进一步**（一次调用一个上游请求）。界面上的按钮循环调这里直到 done。
       path: `${base}/h5/step`,
       method: 'POST',
-      handler: (req) => {
+      handler: async (req) => {
         // ⚠ 可以**指定账号**（`{id}`）：卡片上那个「连接」是给**那一条**连的，
         //   而默认那条路用的是"当前账号"。不指定时行为与以前完全一样。
         const b = readBody(req) as { id?: unknown };
@@ -656,7 +656,7 @@ export function loginRoutes(deps: RouteDeps, base: string, verify: () => { ok: b
             startExchange(one, loadAuthRaw(one), deps.now());
           }
         }
-        const r = runExchangeStep({
+        const r = await runExchangeStep({
           store: one,
           transport: deps.transport,
           nowIso: deps.now(),
@@ -672,12 +672,12 @@ export function loginRoutes(deps: RouteDeps, base: string, verify: () => { ok: b
       // `{"force":true}` 对应 mcloud CLI 的 `--force`，用来"我现在就想试一下"。
       path: `${base}/auth/refresh`,
       method: 'POST',
-      handler: (req) => {
+      handler: async (req) => {
         const b = readBody(req) as { force?: unknown; leadDays?: unknown };
         const force = b.force === true;
         const leadDays = typeof b.leadDays === 'number' ? b.leadDays : undefined;
         const cur = currentAccount(deps.store);
-        const r = runAuthRefresh(
+        const r = await runAuthRefresh(
           { store: deps.store, transport: deps.transport, nowIso: deps.now(), baseUrl: loadBaseUrl(deps.store) },
           force,
           leadDays,

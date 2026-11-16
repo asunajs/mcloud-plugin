@@ -166,7 +166,7 @@ export function receiveV3Body(cloudId: string, cloudType: number | undefined, de
   });
 }
 
-export function runReceive(deps: TaskDeps): TaskOutcome {
+export async function runReceive(deps: TaskDeps): Promise<TaskOutcome> {
   const session = loadSession(deps.store);
   if (!session) {
     return { ok: false, note: '还没有网页会话 —— 上面「换票」那一步说了原因' };
@@ -202,7 +202,7 @@ export function runReceive(deps: TaskDeps): TaskOutcome {
 
   // ① 队列空 → 去问一下清单（这一步**只读**，不领东西）
   if (queue.length === 0) {
-    const info = fetchInfoV3({ store: deps.store, transport: deps.transport, baseUrl: deps.baseUrl });
+    const info = await fetchInfoV3({ store: deps.store, transport: deps.transport, baseUrl: deps.baseUrl });
     if (!info.ok) return { ok: false, note: `查询待领清单失败：${info.error}` };
     if (info.info.receiveList.length === 0) {
       return { ok: true, skipped: true, note: '无待领取的云朵' };
@@ -232,7 +232,7 @@ export function runReceive(deps: TaskDeps): TaskOutcome {
     // 延期领取：另一口端点，GET。`acceptDate` **有才带**（真实清单里没有这个字段，
     // 所以缺省路径是"裸 GET"；写成空串会变成另一个请求）
     const acceptDate = readAcceptDate(item.raw);
-    const out = runTask(
+    const out = await runTask(
       deps,
       {
         task: 'receive',
@@ -256,7 +256,7 @@ export function runReceive(deps: TaskDeps): TaskOutcome {
     return out;
   }
 
-  const out = runTask(
+  const out = await runTask(
     deps,
     {
       task: 'receive',

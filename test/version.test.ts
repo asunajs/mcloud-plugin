@@ -5,7 +5,7 @@ import fs from 'node:fs';
 
 import { PLUGIN_VERSION } from '../src/version.ts';
 
-test('界面显示的版本 == package.json 的 version', () => {
+test('界面显示的版本 == package.json 的 version', async () => {
   const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8')) as { version?: string };
   assert.equal(
     PLUGIN_VERSION,

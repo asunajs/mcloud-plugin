@@ -84,10 +84,10 @@ const expandState = (store: Store): { step: string; [k: string]: unknown } =>
  *
  *  ⚠ 判"停"看的是**状态**，不是返回值：快照失败那一步回 ok:true（只是记下了原因），
  *  真正下结论的是链尾那一步（cleanup）。看错就会把"还没下结论"当成"已经没成"。 */
-function drainTo(deps: TaskDeps, n = 14): { note: string; ok: boolean } {
+async function drainTo(deps: TaskDeps, n = 14): Promise<{ note: string; ok: boolean }> {
   let last = { note: '', ok: true };
   for (let i = 0; i < n; i += 1) {
-    last = runExpansionStep(deps);
+    last = await runExpansionStep(deps);
     const st = expandState(deps.store);
     if (st.step === 'done' || st.step === 'blocked' || st.step === 'unknown') break;
     if (!last.ok) break;
@@ -110,14 +110,14 @@ const OK_ROUTES = (): Record<string, RouteBody> => ({
   'recyclebin/batchTrash': { code: '0000', success: true },
 });
 
-test('⚠ 严格判据：只有**读到 false** 才去传（`undefined` 不算）', () => {
+test('⚠ 严格判据：只有**读到 false** 才去传（`undefined` 不算）', async () => {
   assert.equal(shouldUpload({ curMonthBackup: false }), true);
   assert.equal(shouldUpload({ curMonthBackup: true }), false);
   assert.equal(shouldUpload({ curMonthBackup: undefined }), false, '没读到 ≠ 未开启备份');
   assert.equal(shouldUpload({}), false);
 });
 
-test('解析：字段缺就是 undefined（**不猜**）', () => {
+test('解析：字段缺就是 undefined（**不猜**）', async () => {
   const r = parseExpand({ curMonthBackup: true, curMonthTaskRecordCount: 2, nextMonthTaskRecordCount: 5 });
   assert.equal(r.curMonthBackup, true);
   assert.equal(r.curMonthTaskRecordCount, 2);
@@ -127,13 +127,13 @@ test('解析：字段缺就是 undefined（**不猜**）', () => {
   assert.equal(parseExpand(null).curMonthBackup, undefined);
 });
 
-test('起一趟**一个请求都不发**', () => {
+test('起一趟**一个请求都不发**', async () => {
   const { deps, sent } = mkDeps({});
   assert.equal(startExpansion(deps).ok, true);
   assert.equal(sent.length, 0);
 });
 
-test('⚠ 当天 done 不重跑；跨天必须重新起（不能永久 done）', () => {
+test('⚠ 当天 done 不重跑；跨天必须重新起（不能永久 done）', async () => {
   const { deps, store } = mkDeps({});
   // ⚠ 真·完成要带 `backupOn: true` —— 只有 step=done 的那种是旧版本留下的谎（见下面那条）。
   store.setState(STATE_EXPAND, JSON.stringify({ step: 'done', day: NOW.slice(0, 10), backupOn: true }), NOW);
@@ -146,23 +146,23 @@ test('⚠ 当天 done 不重跑；跨天必须重新起（不能永久 done）',
   assert.equal(expandState(store).step, 'read');
 });
 
-test('⚠ 备份已开（`true`）⇒ 不传文件、不建快照，直接清理收尾', () => {
+test('⚠ 备份已开（`true`）⇒ 不传文件、不建快照，直接清理收尾', async () => {
   const { deps, sent } = mkDeps({
     taskExpansion: { code: 0, result: { curMonthBackup: true, curMonthTaskRecordCount: 1 } },
   });
   startExpansion(deps);
-  const r1 = runExpansionStep(deps);
+  const r1 = await runExpansionStep(deps);
   assert.equal(r1.ok, true, r1.note);
   assert.doesNotMatch(r1.note, /传一个文件/);
   assert.equal(sent.length, 1);
   assert.equal(expandState(deps.store).step, 'cleanup');
-  const r2 = runExpansionStep(deps);
+  const r2 = await runExpansionStep(deps);
   assert.equal(r2.ok, true, r2.note);
   assert.equal(expandState(deps.store).step, 'done');
   assert.equal(sent.filter((x) => x.url.includes('receiveTaskExpansion')).length, 0, '不再领云朵');
 });
 
-test('⚠ 未开启备份（false）⇒ 上传三枪 + 快照三枪 + 清理；复查读到 true 才叫 done', () => {
+test('⚠ 未开启备份（false）⇒ 上传三枪 + 快照三枪 + 清理；复查读到 true 才叫 done', async () => {
   const routes = OK_ROUTES();
   // 第一次读 false（要凑）→ 第二次读 true（凑成了）。
   routes['taskExpansion'] = [
@@ -171,11 +171,11 @@ test('⚠ 未开启备份（false）⇒ 上传三枪 + 快照三枪 + 清理；�
   ];
   const { deps, sent, store } = mkDeps(routes);
   startExpansion(deps);
-  const r1 = runExpansionStep(deps); // ① 读 → 起上传
+  const r1 = await runExpansionStep(deps); // ① 读 → 起上传
   assert.match(r1.note, /未开启备份/);
   assert.ok(store.getState(STATE_UPLOAD_EXPANSION), '上传那台状态机被起了（**任务拓展自己的槽位**）');
   assert.equal(store.getState(STATE_UPLOAD), null, '不许占 App 任务那一格');
-  const last = drainTo(deps);
+  const last = await drainTo(deps);
   assert.equal(last.ok, true, last.note);
   assert.equal(expandState(store).step, 'done');
   assert.equal(sent.length, 9, '读 / 建 / 传 / 确认 / 快照建 / 快照传 / 快照确认 / 复查 / 清理 —— 九枪');
@@ -184,12 +184,12 @@ test('⚠ 未开启备份（false）⇒ 上传三枪 + 快照三枪 + 清理；�
   assert.ok(sent.some((x) => x.url.includes('recyclebin/batchTrash')), '要清理自己传的文件');
 });
 
-test('⚠ 快照被上游打回（04000003）⇒ **不是 done**，更不许说已完成', () => {
+test('⚠ 快照被上游打回（04000003）⇒ **不是 done**，更不许说已完成', async () => {
   const routes = OK_ROUTES();
   routes['backup/createSnapshot'] = { code: '04000003' };
   const { deps, store } = mkDeps(routes);
   startExpansion(deps);
-  const last = drainTo(deps);
+  const last = await drainTo(deps);
   assert.equal(last.ok, false, '没成就是没成 —— 要进运行记录的"没成"那一栏');
   assert.equal(expandState(store).step, 'blocked');
   const st = JSON.parse(store.getState(STATE_EXPAND)!) as { blockedWhy?: string };
@@ -198,7 +198,7 @@ test('⚠ 快照被上游打回（04000003）⇒ **不是 done**，更不许说�
   assert.equal(store.getState(STATE_UPLOAD_EXPANSION) !== null, true, '文件传过（自己那格）');
 });
 
-test('⚠ 撞上用户已有同名文件（exist:true）⇒ 不建快照、不清理；备份仍 false ⇒ 没成', () => {
+test('⚠ 撞上用户已有同名文件（exist:true）⇒ 不建快照、不清理；备份仍 false ⇒ 没成', async () => {
   const { deps, sent, store } = mkDeps({
     taskExpansion: { code: 0, result: { curMonthBackup: false } },
     'hcy/file/create': {
@@ -207,25 +207,25 @@ test('⚠ 撞上用户已有同名文件（exist:true）⇒ 不建快照、不�
     },
   });
   startExpansion(deps);
-  const out = drainTo(deps); // 读 → 建（exist:true）→ 等 → 复查 → 清理（跳过）→ 下结论
+  const out = await drainTo(deps); // 读 → 建（exist:true）→ 等 → 复查 → 清理（跳过）→ 下结论
   assert.equal(out.ok, false, out.note);
   assert.equal(expandState(store).step, 'blocked', '备份没开 ⇒ 不是完成');
   assert.equal(sent.filter((x) => x.url.includes('backup/createSnapshot')).length, 0, '不是我们的文件，不建快照');
   assert.equal(sent.filter((x) => x.url.includes('batchTrash')).length, 0, '不是我们的文件，绝不删');
 });
 
-test('读那一步没读到 `curMonthBackup` ⇒ 一枪不发、结论是"判不了"', () => {
+test('读那一步没读到 `curMonthBackup` ⇒ 一枪不发、结论是"判不了"', async () => {
   const { deps, store } = mkDeps({ taskExpansion: { code: 500 } });
   startExpansion(deps);
-  const r = runExpansionStep(deps);
+  const r = await runExpansionStep(deps);
   assert.equal(r.ok, true, r.note);
   assert.equal(expandState(store).step, 'cleanup');
-  const out = runExpansionStep(deps);
+  const out = await runExpansionStep(deps);
   assert.equal(out.ok, false, '没读到就不能说完成');
   assert.equal(expandState(store).step, 'unknown');
 });
 
-test('⏳ 快照确认之后先"等一会儿"再复查（上游记账不是同一瞬间）', () => {
+test('⏳ 快照确认之后先"等一会儿"再复查（上游记账不是同一瞬间）', async () => {
   let t = Date.parse(NOW);
   const routes = OK_ROUTES();
   routes['taskExpansion'] = [
@@ -240,16 +240,16 @@ test('⏳ 快照确认之后先"等一会儿"再复查（上游记账不是同�
     },
   });
   startExpansion(deps);
-  runExpansionStep(deps); // read → upload
-  for (let i = 0; i < 6; i += 1) runExpansionStep(deps); // 上传三枪 + 快照三枪
+  await runExpansionStep(deps); // read → upload
+  for (let i = 0; i < 6; i += 1) await runExpansionStep(deps); // 上传三枪 + 快照三枪
   assert.equal(expandState(store).step, 'wait', '快照成了 ⇒ 进"等一会儿"那一档');
-  const out = runExpansionStep(deps); // 真等（假时钟按 100ms 走）
+  const out = await runExpansionStep(deps); // 真等（假时钟按 100ms 走）
   assert.match(out.note, /等满/);
   assert.ok(t >= Date.parse(NOW) + 5000, '要真等够 5 秒（假时钟也照走）');
   assert.equal(expandState(store).step, 'recheck');
 });
 
-test('⚠ 任务隔离：App 任务的上传格是 done，也不许当成"任务拓展传完了"', () => {
+test('⚠ 任务隔离：App 任务的上传格是 done，也不许当成"任务拓展传完了"', async () => {
   const routes = OK_ROUTES();
   routes['taskExpansion'] = [
     { code: 0, result: { curMonthBackup: false } },
@@ -263,18 +263,18 @@ test('⚠ 任务隔离：App 任务的上传格是 done，也不许当成"任务
     NOW,
   );
   startExpansion(deps);
-  runExpansionStep(deps); // read → 起**自己的**上传
+  await runExpansionStep(deps); // read → 起**自己的**上传
   assert.ok(store.getState(STATE_UPLOAD_EXPANSION), '任务拓展有自己的槽位');
   const own = JSON.parse(store.getState(STATE_UPLOAD_EXPANSION)!) as { name: string; op?: string };
   assert.match(own.name, /^[0-9a-f]{16}\.bin$/, '备份支用随机名，不是 App 任务的 asign-*');
   assert.equal(own.op, 'backup');
-  runExpansionStep(deps); // 自己那一枪 create（真的发了）
+  await runExpansionStep(deps); // 自己那一枪 create（真的发了）
   assert.ok(sent.some((x) => x.url.includes('hcy/file/create')), '必须真的发自己的 create');
   // App 任务那一格原样没被动过。
   assert.match(String(store.getState(STATE_UPLOAD)), /F-APP/);
 });
 
-test('⚠ 账号隔离：A 的完成标记不挡 B，B 也读不到 A 的槽位', () => {
+test('⚠ 账号隔离：A 的完成标记不挡 B，B 也读不到 A 的槽位', async () => {
   const store = memStore();
   store.ensureSchema();
   store.setState(SESSION_KEY, JSON.stringify({ cookie: '', jwt: 'J', savedAt: NOW }), NOW);
@@ -300,7 +300,7 @@ test('⚠ 账号隔离：A 的完成标记不挡 B，B 也读不到 A 的槽位'
   assert.match(String(oneB.getState(STATE_UPLOAD_EXPANSION)), /b\.bin/, 'B 只看到自己的槽位');
 });
 
-test('⚠ blocked 之后：Auto 只**只读复查**（不再传文件），手动可以真的重来', () => {
+test('⚠ blocked 之后：Auto 只**只读复查**（不再传文件），手动可以真的重来', async () => {
   const day = NOW.slice(0, 10);
   // 上游这会儿还没记账 ⇒ 复查仍是 false
   const { deps, store, sent } = mkDeps({ taskExpansion: { code: 0, result: { curMonthBackup: false } } });
@@ -313,9 +313,9 @@ test('⚠ blocked 之后：Auto 只**只读复查**（不再传文件），手�
   assert.notEqual(auto.idle, true, '自动那趟不是"什么都不做"，是只读复查一次');
   assert.match(auto.note, /只复查/);
   assert.equal(expandState(store).step, 'read');
-  const out = runExpansionStep(deps); // 读一遍（一个 GET）
+  const out = await runExpansionStep(deps); // 读一遍（一个 GET）
   assert.equal(expandState(store).step, 'cleanup');
-  const end = runExpansionStep(deps); // 下结论
+  const end = await runExpansionStep(deps); // 下结论
   assert.equal(end.ok, true, '复查没翻成 true 也**不该再染一次红**');
   assert.equal(end.skipped, true, '这是"还没记账"，不是又一次失败');
   assert.match(end.note, /复查仍是「未开启」/);
@@ -328,7 +328,7 @@ test('⚠ blocked 之后：Auto 只**只读复查**（不再传文件），手�
   assert.equal(expandState(store).step, 'read', '手动那一趟可以真的重来（要真有上传）');
 });
 
-test('⚠ 只读复查翻成 true ⇒ 直接记 done（这就是"备份自己完成"那条路）', () => {
+test('⚠ 只读复查翻成 true ⇒ 直接记 done（这就是"备份自己完成"那条路）', async () => {
   const day = NOW.slice(0, 10);
   const { deps, store, sent } = mkDeps({
     taskExpansion: { code: 0, result: { curMonthBackup: true, curMonthTaskRecordCount: 6 } },
@@ -340,9 +340,9 @@ test('⚠ 只读复查翻成 true ⇒ 直接记 done（这就是"备份自己完
     NOW,
   );
   startExpansion(deps);
-  const out = runExpansionStep(deps);
+  const out = await runExpansionStep(deps);
   assert.equal(out.ok, true, out.note);
-  const end = runExpansionStep(deps);
+  const end = await runExpansionStep(deps);
   assert.equal(end.ok, true, end.note);
   assert.equal(expandState(store).step, 'done');
   assert.equal((JSON.parse(store.getState(STATE_EXPAND)!) as { backupOn?: boolean }).backupOn, true);
@@ -350,7 +350,7 @@ test('⚠ 只读复查翻成 true ⇒ 直接记 done（这就是"备份自己完
   assert.equal(store.getState('mcloud.month.backup'), JSON.stringify({ month: '2026-10', backup: true }));
 });
 
-test('⚠ 库里旧版本的 done（备份其实没开）⇒ 自动那趟只复查，手动可重来', () => {
+test('⚠ 库里旧版本的 done（备份其实没开）⇒ 自动那趟只复查，手动可重来', async () => {
   const day = NOW.slice(0, 10);
   const { deps, store, sent } = mkDeps({ taskExpansion: { code: 0, result: { curMonthBackup: false } } });
   store.setState(
@@ -369,8 +369,8 @@ test('⚠ 库里旧版本的 done（备份其实没开）⇒ 自动那趟只复�
   assert.notEqual(auto.idle, true);
   assert.match(auto.note, /只复查/);
   assert.equal(expandState(store).step, 'read', '旧那条 done 不许再把今天锁死（只读一遍）');
-  runExpansionStep(deps); // 读
-  runExpansionStep(deps); // 清理（旧版本已经清过 ⇒ 跳过）+ 下结论
+  await runExpansionStep(deps); // 读
+  await runExpansionStep(deps); // 清理（旧版本已经清过 ⇒ 跳过）+ 下结论
   assert.equal(expandState(store).step, 'blocked');
   assert.equal(sent.filter((x) => x.url.includes('batchTrash')).length, 0, '旧 fileId 不许再删一遍');
   assert.equal(sent.filter((x) => x.url.includes('hcy/file/create')).length, 0, '复查不许再传文件');
@@ -380,7 +380,7 @@ test('⚠ 库里旧版本的 done（备份其实没开）⇒ 自动那趟只复�
   assert.equal(expandState(store).step, 'read', '手动必须能重来（否则只能等到明天）');
 });
 
-test('链尾清理要跳过“今天还没走完”的上传文件', () => {
+test('链尾清理要跳过“今天还没走完”的上传文件', async () => {
   const { deps, store } = mkDeps({});
   const put = (st: Record<string, unknown>) =>
     store.setState(STATE_EXPAND, JSON.stringify({ step: 'read', day: NOW.slice(0, 10), ...st }), NOW);

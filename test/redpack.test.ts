@@ -213,10 +213,10 @@ function harness(opts: SiteOpts = {}): Harness {
 }
 
 /** 走到这一趟收尾（`drain` 干的事，这里手动做一遍，好数步数）。 */
-function runLeg(deps: TaskDeps, maxSteps = 300): { outcomes: TaskOutcome[]; lines: string[] } {
+async function runLeg(deps: TaskDeps, maxSteps = 300): Promise<{ outcomes: TaskOutcome[]; lines: string[] }> {
   const outcomes: TaskOutcome[] = [];
   for (let i = 0; i < maxSteps; i += 1) {
-    const o = redpackStep(deps);
+    const o = await redpackStep(deps);
     outcomes.push(o);
     if (!o.ok || o.idle === true || o.skipped === true) {
       return { outcomes, lines: takeRedpackLines(deps.store, deps.nowIso) };
@@ -227,7 +227,7 @@ function runLeg(deps: TaskDeps, maxSteps = 300): { outcomes: TaskOutcome[]; line
 
 const nPath = (sent: Sent[], needle: string): number => sent.filter((s) => s.path.includes(needle)).length;
 
-test('这一族没开 ⇒ 一个请求都不发；没写过开关 ⇒ 默认开（照参照实现的默认值）', () => {
+test('这一族没开 ⇒ 一个请求都不发；没写过开关 ⇒ 默认开（照参照实现的默认值）', async () => {
   const on = harness();
   assert.equal(redpackOn(on.deps), true, '缺省必须是开着 —— 自造一道默认关的闸等于偷偷停掉这一族');
   assert.equal(redpackGate(on.deps).idle, false);
@@ -242,9 +242,9 @@ test('这一族没开 ⇒ 一个请求都不发；没写过开关 ⇒ 默认开�
   assert.deepEqual(takeRedpackLines(off.store, NOW), []);
 });
 
-test('整趟逐行 = 参照实现那一次真跑成功的 15 行（逐字）', () => {
+test('整趟逐行 = 参照实现那一次真跑成功的 15 行（逐字）', async () => {
   const { deps, sent, store } = harness();
-  const { outcomes, lines } = runLeg(deps);
+  const { outcomes, lines } = await runLeg(deps);
   assert.deepEqual(
     lines,
     [
@@ -280,9 +280,9 @@ test('整趟逐行 = 参照实现那一次真跑成功的 15 行（逐字）', (
   assert.equal(sent[1]?.body.token, 'SSO-1', '换到的 SSO 票拿去换活动站的票');
 });
 
-test('票跑完就抹：状态里没有活动站票，也没有进行中的任务', () => {
+test('票跑完就抹：状态里没有活动站票，也没有进行中的任务', async () => {
   const { deps, store } = harness();
-  runLeg(deps);
+  await runLeg(deps);
   const raw = store.getState(STATE_REDPACK) ?? '';
   assert.ok(!raw.includes('RP-TOKEN-1'), `台账里不该留着票：${raw.slice(0, 80)}`);
   const st = loadRedpackState(store, redpackDay(NOW));
@@ -290,39 +290,39 @@ test('票跑完就抹：状态里没有活动站票，也没有进行中的任�
   assert.equal(st?.job, undefined);
 });
 
-test('没见过的状态码 ⇒ 不发写，只说一句（这是与参照实现**刻意**不同的一格）', () => {
+test('没见过的状态码 ⇒ 不发写，只说一句（这是与参照实现**刻意**不同的一格）', async () => {
   const { deps, sent } = harness({
     daily: [{ code: 'DAILY_9', name: '看不懂的一条', id: 51, cents: 20, status: 2 }],
     monthly: [],
     sign: null,
   });
-  const { lines } = runLeg(deps);
+  const { lines } = await runLeg(deps);
   assert.ok(lines.some((l) => l === '暂不可做: 看不懂的一条 (没见过的状态 2)'), lines.join('\n'));
   assert.equal(nPath(sent, '/userCompleteTask'), 0, '状态不认识就打写请求，是在替活动站编造完成记录');
   // 小结里这一格单独数着，不折进"已完成"
   assert.match(redpackSummary(deps.store, redpackDay(NOW)) ?? '', /状态不认识 1/);
 });
 
-test('今天没有签到那一格 ⇒ 一行都不打、那一枪也不发（别拿"缺格"当"没签过"）', () => {
+test('今天没有签到那一格 ⇒ 一行都不打、那一枪也不发（别拿"缺格"当"没签过"）', async () => {
   const { deps, sent } = harness({ sign: null, daily: [], monthly: [] });
-  const { lines } = runLeg(deps);
+  const { lines } = await runLeg(deps);
   assert.ok(!lines.some((l) => l.includes('签到')), lines.join('\n'));
   assert.equal(nPath(sent, '/userSign'), 0, '没有今天那一格还去签，是替活动站编一条记录');
   // 只有"昨天那格"也不算今天（`isToday===1` 是唯一的入口）
   const yesterday = harness({ sign: { status: 0, amount: 10, isToday: 0 }, daily: [], monthly: [] });
-  const y = runLeg(yesterday.deps);
+  const y = await runLeg(yesterday.deps);
   assert.ok(!y.lines.some((l) => l.includes('签到')), y.lines.join('\n'));
 });
 
-test('同一条任务一天只写一次：第二趟不再登记，但照样把话说完', () => {
+test('同一条任务一天只写一次：第二趟不再登记，但照样把话说完', async () => {
   const { deps, sent } = harness();
-  const first = runLeg(deps);
+  const first = await runLeg(deps);
   const writes = nPath(sent, '/userCompleteTask');
   assert.equal(writes, 3, '使用云机、消息通知、装机这三条各登记一次');
   assert.deepEqual(first.lines.filter((l) => l.startsWith('已登记')), ['已登记: 打开云手机消息通知 (未完成)']);
 
   const before = sent.length;
-  const second = runLeg(deps);
+  const second = await runLeg(deps);
   assert.equal(nPath(sent.slice(before), '/userCompleteTask'), 0, '今天写过的那几条不能再报一遍');
   // 表现不变：还是那一句「已登记」，用户看不出这是第二趟
   assert.ok(second.lines.includes('已登记: 打开云手机消息通知 (未完成)'), second.lines.join('\n'));
@@ -335,7 +335,7 @@ test('同一条任务一天只写一次：第二趟不再登记，但照样把�
   assert.ok(second.lines.includes('已完成: 每日签到 (0.10元)'), second.lines.join('\n'));
 });
 
-test('浏览那一类：等满 15 秒才发确认，等待切成小口（每口一步）', () => {
+test('浏览那一类：等满 15 秒才发确认，等待切成小口（每口一步）', async () => {
   const { deps, sent, t } = harness({
     daily: [{ code: 'MONTHLY_1', name: '看一条广告', id: 61, cents: 5, status: 0 }],
     monthly: [],
@@ -343,14 +343,14 @@ test('浏览那一类：等满 15 秒才发确认，等待切成小口（每口�
     flipOnComplete: ['MONTHLY_1'],
   });
   const start = t.ms;
-  const { lines } = runLeg(deps);
+  const { lines } = await runLeg(deps);
   const browse = sent.find((s) => s.path.includes('/userBrowse'));
   assert.notEqual(browse, undefined, '浏览确认没发出去 ⇒ 这一条永远不会被活动站认');
   assert.ok((browse?.at ?? 0) - start >= 15_000, `只等了 ${String((browse?.at ?? 0) - start)}ms，参照实现是 15 秒`);
   assert.ok(lines.includes('已完成: 看一条广告'), lines.join('\n'));
 });
 
-test('装机：先问装过没有 —— 装过只上报并换下一个；真装了就说「已安装应用: X」', () => {
+test('装机：先问装过没有 —— 装过只上报并换下一个；真装了就说「已安装应用: X」', async () => {
   const apps = [
     { id: 71, packageId: 88, packageName: 'a.first', apkName: '第一个' },
     { id: 72, packageId: 99, packageName: 'a.second', apkName: '第二个' },
@@ -365,7 +365,7 @@ test('装机：先问装过没有 —— 装过只上报并换下一个；真装
     apps,
     installed: ['a.first'],
   });
-  const { lines } = runLeg(deps);
+  const { lines } = await runLeg(deps);
   assert.equal(sent.filter((s) => s.path.includes('/userInstallApp') && s.body.existed === 1).length, 1, '装过的那条只上报');
   assert.equal(sent.filter((s) => s.path.includes('/userInstallApp') && s.body.existed === undefined).length, 1, '真装的那条上报时不带 existed');
   assert.deepEqual(
@@ -377,14 +377,14 @@ test('装机：先问装过没有 —— 装过只上报并换下一个；真装
   assert.ok(lines.includes('已安装应用: 第二个'), lines.join('\n'));
 });
 
-test('装机：云机锁屏 ⇒ 不动用户的机器；应用问完 ⇒ 「未找到可安装应用」', () => {
+test('装机：云机锁屏 ⇒ 不动用户的机器；应用问完 ⇒ 「未找到可安装应用」', async () => {
   const locked = harness({
     monthly: [{ code: 'MONTHLY_2', name: '在云手机里安装应用', id: 32, cents: 30, status: 0 }],
     daily: [],
     sign: null,
     phones: [{ instanceId: 'I1', subsProdInstances: [{ lockStatus: 'Y' }] }],
   });
-  const a = runLeg(locked.deps);
+  const a = await runLeg(locked.deps);
   assert.ok(a.lines.includes('需手动完成: 在云手机里安装应用 (云机锁屏)'), a.lines.join('\n'));
   assert.equal(nPath(locked.sent, '/apkInstall'), 0, '锁屏的机器装不进去，一发都不该发');
 
@@ -400,7 +400,7 @@ test('装机：云机锁屏 ⇒ 不动用户的机器；应用问完 ⇒ 「未�
     ],
     installStartFails: true,
   });
-  const b = runLeg(none.deps);
+  const b = await runLeg(none.deps);
   assert.ok(b.lines.includes('未找到可安装应用: 在云手机里安装应用'), b.lines.join('\n'));
   assert.equal(nPath(none.sent, '/apkInstall'), 2, '两个包各试一次就问完了');
 
@@ -412,12 +412,12 @@ test('装机：云机锁屏 ⇒ 不动用户的机器；应用问完 ⇒ 「未�
     phones: [{ instanceId: 'I1' }],
     apps: [{ id: 71, packageId: 88, packageName: '', apkName: '没包名的项' }],
   });
-  const c = runLeg(empty.deps);
+  const c = await runLeg(empty.deps);
   assert.ok(c.lines.includes('应用列表为空: 在云手机里安装应用'), c.lines.join('\n'));
   assert.equal(nPath(empty.sent, '/apkInstall'), 0);
 });
 
-test('答题：题面认识且选项里有那句才交；交成了说「已完成」并读那条奖', () => {
+test('答题：题面认识且选项里有那句才交；交成了说「已完成」并读那条奖', async () => {
   const { deps, sent } = harness({
     monthly: [{ code: 'MONTHLY_3', name: '答一道题', id: 35, cents: 10, status: 0 }],
     daily: [],
@@ -426,7 +426,7 @@ test('答题：题面认识且选项里有那句才交；交成了说「已完�
     reward: { prizeName: '云朵', prizeAmount: 50 },
     flipOnComplete: ['MONTHLY_3'],
   });
-  const { lines } = runLeg(deps);
+  const { lines } = await runLeg(deps);
   const answer = sent.find((s) => s.path.includes('/userTopicAnswer'));
   assert.deepEqual(
     { taskId: answer?.body.taskId, topicId: answer?.body.topicId, answer: answer?.body.answer },
@@ -443,15 +443,15 @@ test('答题：题面认识且选项里有那句才交；交成了说「已完�
     sign: null,
     topic: { id: 5, topicContent: '一道没见过的新题？', topicOption: '["甲","乙","丙","丁"]' },
   });
-  const r = runLeg(odd.deps, 400);
+  const r = await runLeg(odd.deps, 400);
   assert.ok(r.lines.some((l) => l.startsWith('需手动完成: 答一道题 (未知题目: 一道没见过的新题？')), r.lines.join('\n'));
   assert.equal(nPath(odd.sent, '/userTopicAnswer'), 0, '不认识题就不该把猜的字母发过去');
   assert.equal(nPath(odd.sent, '/configTopicList'), 15, '参照实现那个循环问满 15 轮');
 });
 
-test('换不到票 ⇒ 如实说登录失败、整趟收尾，后面一条都不撞', () => {
+test('换不到票 ⇒ 如实说登录失败、整趟收尾，后面一条都不撞', async () => {
   const { deps, sent } = harness({ ssoFails: true });
-  const { outcomes, lines } = runLeg(deps);
+  const { outcomes, lines } = await runLeg(deps);
   assert.equal(outcomes.length, 1, '登录那一步就收尾了');
   assert.equal(outcomes[0]?.ok, false);
   assert.ok(lines.includes('红包派对登录失败: 换 SSO 票没成（querySpecTokenV2 失败：code=9999 message=凭据不认了）'), lines.join('\n'));
@@ -460,33 +460,33 @@ test('换不到票 ⇒ 如实说登录失败、整趟收尾，后面一条都不
   // 没有原生凭据 ⇒ 连换票那一枪都不发（别拿空 Authorization 去撞上游）
   const bare = harness();
   bare.store.setState(STATE_AUTH, '', NOW);
-  const out = runLeg(bare.deps);
+  const out = await runLeg(bare.deps);
   assert.ok(out.lines.some((l) => l.startsWith('红包派对登录失败: 这个号还没有原生凭据')), out.lines.join('\n'));
   assert.equal(bare.sent.length, 0, '空凭据不该拿去撞上游');
 });
 
-test('读不到任务表 ⇒ 这一趟什么都做不了，且不谎报"今天没任务"', () => {
+test('读不到任务表 ⇒ 这一趟什么都做不了，且不谎报"今天没任务"', async () => {
   const { deps } = harness({ fail: ['/configTaskLoginList'] });
-  const { outcomes, lines } = runLeg(deps);
+  const { outcomes, lines } = await runLeg(deps);
   assert.equal(outcomes[outcomes.length - 1]?.ok, false);
   assert.match(outcomes[outcomes.length - 1]?.note ?? '', /没读到任务表/);
   assert.equal(lines.length, 0, '余额那句都不该打');
 });
 
-test('一次调用只走一段：中途停住的状态，下一趟接着走完（不重发写）', () => {
+test('一次调用只走一段：中途停住的状态，下一趟接着走完（不重发写）', async () => {
   const { deps, sent, store } = harness({ flipOnComplete: ['MONTHLY_4'] });
   // 走五步就"没预算了"（面板一次调用只有这么点时间，`drain` 之外也会被打断）
-  for (let i = 0; i < 5; i += 1) redpackStep(deps);
+  for (let i = 0; i < 5; i += 1) await redpackStep(deps);
   const mid = loadRedpackState(store, redpackDay(NOW));
   assert.notEqual(mid?.phase, 'done', '五步之内不该已经收尾');
   assert.equal(mid?.token, 'RP-TOKEN-1', '这一趟还没收尾 ⇒ 票要留着');
 
-  const rest = runLeg(deps);
+  const rest = await runLeg(deps);
   assert.ok(rest.lines.some((l) => l === '已完成: 打开云手机消息通知'), rest.lines.join('\n'));
   assert.equal(nPath(sent, '/userCompleteTask'), 3, '被打断的趟里每条也只登记一次');
 });
 
-test('这一族只有步数上限：插件不设内部时间限制（2026-11-16 口径）', () => {
+test('这一族只有步数上限：插件不设内部时间限制（2026-11-16 口径）', async () => {
   assert.deepEqual(REDPACK_BUDGET, { maxSteps: 90 });
   assert.ok(!('deadlineMs' in REDPACK_BUDGET), '时间闸已整类删除，不许再加回来');
 });

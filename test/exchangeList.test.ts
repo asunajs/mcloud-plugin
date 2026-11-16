@@ -52,7 +52,7 @@ const FIXTURE = {
   ],
 };
 
-test('解析：按真实的 group 键遍历（0/2/15 都要读到），且按数值升序', () => {
+test('解析：按真实的 group 键遍历（0/2/15 都要读到），且按数值升序', async () => {
   const { groups, prizes } = parseExchangeList(FIXTURE);
   assert.deepEqual(
     groups.map((g) => g.group),
@@ -63,7 +63,7 @@ test('解析：按真实的 group 键遍历（0/2/15 都要读到），且按数
   assert.equal(groups[2]!.prizes.length, 2);
 });
 
-test('判据：五档 + 缺字段 ⇒ 判不了（**不是**可兑）', () => {
+test('判据：五档 + 缺字段 ⇒ 判不了（**不是**可兑）', async () => {
   assert.equal(verdictOf({ limit: 0, onLine: 1 }), 'ok');
   assert.equal(verdictOf({ limit: 1 }), 'tomorrow');
   assert.equal(verdictOf({ limit: 2 }), 'exchanged');
@@ -100,7 +100,7 @@ test('判据：五档 + 缺字段 ⇒ 判不了（**不是**可兑）', () => {
   assert.equal(verdictOf({ limit: 0 }), 'ok', '缺 onLine 不等于下架');
 });
 
-test('汇总：各档计数 + 可兑清单（缺 limit 的不进可兑）', () => {
+test('汇总：各档计数 + 可兑清单（缺 limit 的不进可兑）', async () => {
   const { prizes } = parseExchangeList(FIXTURE);
   const s = summarizeList(prizes);
   assert.equal(s.total, 5);
@@ -114,15 +114,15 @@ test('汇总：各档计数 + 可兑清单（缺 limit 的不进可兑）', () =
   assert.equal(parsePrize({ prizeId: 1, prizeName: '真机形状', name: '旧形状' })!.name, '真机形状');
 });
 
-test('只读：整轮只发一个 GET exchangeList，落库可读回', () => {
+test('只读：整轮只发一个 GET exchangeList，落库可读回', async () => {
   const store = seeded();
   const sent: { url: string; method: string }[] = [];
-  const transport = ((req: any) => {
+  const transport = (async (req: any) => {
     sent.push({ url: req.url, method: req.method ?? 'GET' });
     return { status: 200, headers: {}, body: JSON.stringify({ code: 0, msg: 'success', result: FIXTURE }) };
   }) as Transport;
 
-  const out = runExchangeList({ store, transport, nowIso: NOW, lateMs: 0 });
+  const out = await runExchangeList({ store, transport, nowIso: NOW, lateMs: 0 });
   assert.equal(out.ok, true);
   assert.equal(sent.length, 1, '只该发一个请求');
   assert.equal(sent[0]!.method, 'GET');
@@ -136,20 +136,20 @@ test('只读：整轮只发一个 GET exchangeList，落库可读回', () => {
   assert.ok(store.getState(STATE_LIST)!.includes('"okCount":1'));
 });
 
-test('上游报错时如实失败，且不写读数', () => {
+test('上游报错时如实失败，且不写读数', async () => {
   const store = seeded();
-  const transport = ((_req: any) => ({
+  const transport = (async (_req: any) => ({
     status: 200,
     headers: {},
     body: JSON.stringify({ code: 40001, msg: '活动已结束' }),
   })) as Transport;
-  const out = runExchangeList({ store, transport, nowIso: NOW, lateMs: 0 });
+  const out = await runExchangeList({ store, transport, nowIso: NOW, lateMs: 0 });
   assert.equal(out.ok, false);
   assert.equal(readExchangeList(store), null, '失败了不该留一份读数');
 });
 
 
-test('⚠ 价格字段是 `pOrder`/`POrder`，**不是** `price`（真机实测，bug 防回归）', () => {
+test('⚠ 价格字段是 `pOrder`/`POrder`，**不是** `price`（真机实测，bug 防回归）', async () => {
   // 真机上同一份响应里两种拼法并存 —— 只读一个键会把一部分商品的价格判成"没给"，
   // 于是"余额够不够"那道判断对那几件**恒假**（看着像没配价格，其实是不检查就下单）
   assert.equal(parsePrize({ prizeId: 1, prizeName: 'a', pOrder: 50 })!.price, 50);
@@ -166,7 +166,7 @@ test('⚠ 价格字段是 `pOrder`/`POrder`，**不是** `price`（真机实测�
 // 要么是个编号 —— 手打的错法界面自己都写在提示里了（「月卡」命中不了「季卡」）。
 // 现在插件每天缓存一份清单，界面从里面**选**；选出来那句就是发回去那句。
 
-test('缓存内容：只留下拉用得上那几格；**没名字的跳过**（没法标、也没法发）', () => {
+test('缓存内容：只留下拉用得上那几格；**没名字的跳过**（没法标、也没法发）', async () => {
   const { prizes } = parseExchangeList(FIXTURE);
   // 塞两件缺名字的进去：一件整个没有，一件只有空白
   prizes.push(parsePrize({ prizeId: 900 })!, parsePrize({ prizeId: 901, prizeName: '   ' })!);
@@ -195,7 +195,7 @@ test('缓存内容：只留下拉用得上那几格；**没名字的跳过**（�
   assert.equal(one!.remain, 3);
 });
 
-test('缓存按天建、**过期即清**：日界不是今天 ⇒ 回 null 并把那一格写空', () => {
+test('缓存按天建、**过期即清**：日界不是今天 ⇒ 回 null 并把那一格写空', async () => {
   const store = seeded();
   const { prizes } = parseExchangeList(FIXTURE);
   savePickCache(store, prizes, NOW);
@@ -211,7 +211,7 @@ test('缓存按天建、**过期即清**：日界不是今天 ⇒ 回 null 并�
   assert.equal(readPickCache(store, nextDay), null);
 });
 
-test('坏 JSON 也一样清掉 —— 不能让界面拿到半截数据去画下拉', () => {
+test('坏 JSON 也一样清掉 —— 不能让界面拿到半截数据去画下拉', async () => {
   const store = seeded();
   store.setState(STATE_PICK, '{"date":"2026-10-13","items":', NOW);
   assert.equal(readPickCache(store, NOW), null);
@@ -221,30 +221,30 @@ test('坏 JSON 也一样清掉 —— 不能让界面拿到半截数据去画下
   assert.equal(readPickCache(store, NOW), null);
 });
 
-test('⚠ 清单读**成功**才建缓存；读**失败**不许把今天那份清掉', () => {
+test('⚠ 清单读**成功**才建缓存；读**失败**不许把今天那份清掉', async () => {
   // 上游抖一下就把下拉清空 ⇒ 用户看到的是"没有可选"，而他昨天明明选过 ——
   // 这份缓存的价值恰恰在"这一屏永远有东西可选"。
   const store = seeded();
-  const ok = ((_req: any) => ({
+  const ok = (async (_req: any) => ({
     status: 200,
     headers: {},
     body: JSON.stringify({ code: 0, msg: 'success', result: FIXTURE }),
   })) as Transport;
-  assert.equal(runExchangeList({ store, transport: ok, nowIso: NOW, lateMs: 0 }).ok, true);
+  assert.equal((await runExchangeList({ store, transport: ok, nowIso: NOW, lateMs: 0 })).ok, true);
   assert.equal(readPickCache(store, NOW)!.items.length, 5, '成功读取要顺手建缓存（不用界面另打）');
 
-  const bad = ((_req: any) => ({
+  const bad = (async (_req: any) => ({
     status: 200,
     headers: {},
     body: JSON.stringify({ code: 40001, msg: '活动已结束' }),
   })) as Transport;
-  assert.equal(runExchangeList({ store, transport: bad, nowIso: NOW, lateMs: 0 }).ok, false);
+  assert.equal((await runExchangeList({ store, transport: bad, nowIso: NOW, lateMs: 0 })).ok, false);
   assert.equal(readPickCache(store, NOW)!.items.length, 5, '同一天里读失败不该清空这份');
 });
 
 
 
-test('关注：按 id/名字去重；取消按同一判据移除；坏数据当空', () => {
+test('关注：按 id/名字去重；取消按同一判据移除；坏数据当空', async () => {
   const store = memStore();
   store.ensureSchema();
   assert.deepEqual(readSubscriptions(store), [], '没存过就是空');
@@ -261,7 +261,7 @@ test('关注：按 id/名字去重；取消按同一判据移除；坏数据当�
   assert.deepEqual(readSubscriptions(store), [], '坏数据不抛，当空');
 });
 
-test('清单缓存带上分组/池子/今日/月度额度（界面要分组和库存）', () => {
+test('清单缓存带上分组/池子/今日/月度额度（界面要分组和库存）', async () => {
   const [one] = toPickItems([
     parsePrize({
       prizeId: 7,

@@ -102,16 +102,16 @@ function listenDeps(deps: TaskDeps): ListenDeps {
  *
  *  用**第一个账号**的凭据（换票/门/WS 都要一张票，随便哪张都行）。
  */
-function collectOnce(
+async function collectOnce(
   deps: TaskDeps,
   runStartMs: number,
-): { steps: RunStep[]; detail: string[]; ok: boolean; note: string; stopped: boolean } {
+): Promise<{ steps: RunStep[]; detail: string[]; ok: boolean; note: string; stopped: boolean }> {
   const steps: RunStep[] = [];
-  const step = (name: string, fn: () => TaskOutcome): TaskOutcome => {
+  const step = async (name: string, fn: () => TaskOutcome | Promise<TaskOutcome>): Promise<TaskOutcome> => {
     // ⚠ 追踪在**这一处**记：收口令那一段每一步都走它 ⇒ 一条也不用漏
     const t0 = Date.now();
     try {
-      const r = fn();
+      const r = await fn();
       steps.push({ name, ok: r.ok, note: r.note, idle: r.idle === true });
       traceStep(deps.store, deps.nowIso, 'collect/' + name, r.note, { ok: r.ok, ms: Date.now() - t0 });
       return r;
@@ -135,7 +135,7 @@ function collectOnce(
   logBoth(store, 'start', '直播口令：开始查开播', deps.nowIso);
 
   // ⓪ 原生 token 先判一次：到期自动续；不新鲜时门和 WS 都会一起失败。
-  const auth = step('凭据续期', () => runAuthRefresh(deps));
+  const auth = await step('凭据续期', async () => await runAuthRefresh(deps));
   // 管道步骤成功时不进用户日志；这里给排查留一行 debug，证明自动判过。
   logTo('debug', `凭据续期：${auth.note}`);
 
@@ -144,7 +144,7 @@ function collectOnce(
   //   为什么放在最前面：不支持的时候，后面每一条（门、小红书、弹幕）都会
   //   以同一条 TLS 报错收场，而那条报错用户改不了、也看不懂。
   //   问一次、记住、然后**什么都不做** —— 一天两次的机会不该花在注定失败的路上。
-  const cap = hostNativeTls(deps.store, deps.nowIso, deps.transport);
+  const cap = await hostNativeTls(deps.store, deps.nowIso, deps.transport);
   if (cap.verdict === 'no') {
     // ⚠ 这里不再单独 `error()` 一次：这一段会由下面的段尾统一印成**一行** error
     //   （同一句话说三遍比说一遍糟 —— 见 F-097 的同一条口径）。
@@ -153,7 +153,7 @@ function collectOnce(
   }
 
   // ① 先验开播 —— 没开播时抓到的口令一定是无效的，所以"先验开播"是判据，不是限制。
-  const gateOut = drain(runLiveGate, deps, {
+  const gateOut = await drain(runLiveGate, deps, {
     label: '有没有开播',
     maxSteps: 3,
   });
@@ -200,7 +200,7 @@ function collectOnce(
   // 会以为根本没请求小红书（2026-11-03 现场）。
   logBoth(store, 'start', '小红书：开始看口令发布方主页', deps.nowIso);
   const xhsAt = Date.now();
-  const xhs = step('小红书主页口令', () => runLiveRoom(deps));
+  const xhs = await step('小红书主页口令', async () => await runLiveRoom(deps));
   logBoth(store, 'debug', `小红书：这一步用了 ${Math.round((Date.now() - xhsAt) / 1000)} 秒`, deps.nowIso);
 
   // ③ 听弹幕 —— 池里够 2 条有效就不听了（再听只是重复撞同一批）
@@ -234,7 +234,7 @@ function collectOnce(
     //   「听弹幕：正在听…」——用户看到的是刷屏，不是进度。只在收尾时落一条。
     let r: TaskOutcome;
     try {
-      r = runLiveListen(ld);
+      r = await runLiveListen(ld);
     } catch (e) {
       const note = `抛异常 ${e instanceof Error ? e.message : String(e)}`;
       steps.push({ name: '听弹幕', ok: false, note, idle: false });
@@ -270,7 +270,7 @@ function collectOnce(
     if (fresh !== undefined) {
       verified.add(fresh.value);
       logBoth(store, 'start', `听到口令「${fresh.value}」—— 立刻去验证（不等窗口）`, deps.nowIso);
-      const v = drain((d) => runLiveDraw(d, { codes: [fresh.value] }), deps, {
+      const v = await drain(async (d) => await runLiveDraw(d, { codes: [fresh.value] }), deps, {
         label: `验证「${fresh.value}」`,
         maxSteps: 8,
         // 一条口令的验证 = 读余额 → 领 → 回读余额，给 25 秒足够
@@ -338,16 +338,16 @@ function collectOnce(
  *
  *  ⚠ 这一支才是"按账号"的 —— 因为"哪个账号领过哪条"必须分开记（`claims`）。
  *  口令本身不按账号分：同一张口令，每个账号都能领一次。 */
-function drawOnce(
+async function drawOnce(
   deps: TaskDeps,
   runStartMs: number,
   onlyCodes: readonly string[] | null,
-): { steps: RunStep[]; detail: string[]; ok: boolean; note: string; didWork: boolean } {
+): Promise<{ steps: RunStep[]; detail: string[]; ok: boolean; note: string; didWork: boolean }> {
   // 每次领取前先判一次原生 token：到期就自动续，离到期还远则零请求。
-  const auth = runAuthRefresh(deps);
+  const auth = await runAuthRefresh(deps);
   const before = loadDrawState(deps.store);
-  const r = drain(
-    (d) => runLiveDraw(d, onlyCodes ? { codes: onlyCodes } : {}),
+  const r = await drain(
+    async (d) => await runLiveDraw(d, onlyCodes ? { codes: onlyCodes } : {}),
     deps,
     {
     label: '领小红花',
@@ -428,7 +428,7 @@ await defineTask(
     summary: summaryFor(store, '直播'),
     blockers: blockersFor(store, '直播'),
   },
-  (p: TaskPayload) => {
+  async (p: TaskPayload) => {
     const startedMs = Date.now();
     const at = new Date(startedMs).toISOString();
     // 追踪环：这一趟从空开始（环里永远是"上一趟到最近一趟"的现场，见 liveTrace.ts）
@@ -455,15 +455,15 @@ await defineTask(
     // 第一段（收口令）说“别领”时，后面的账号**一个请求都不发**：
     // 否则没开播也会每个号打一次「领小红花没开」，再给每个号印一句「都成了」。
     let stopAll = false;
-    const runs = forEachTaskAccount(store, '直播', p, transport, (deps, _acct, index) => {
+    const runs = await forEachTaskAccount(store, '直播', p, transport, async (deps, _acct, index) => {
       if (index === 0 && !manual) {
-        const one = collectOnce(deps, startedMs);
+        const one = await collectOnce(deps, startedMs);
         collected = one;
         if (one.stopped) stopAll = true;
       }
       if (stopAll) return { steps: [] as RunStep[], detail: [] as string[], ok: true, note: '没在播，跳过' };
       // 人贴了口令就**只领他贴的那一条**，别把池里的旧候选混进来。
-      return drawOnce(deps, startedMs, manual ? manualCodes : null);
+      return await drawOnce(deps, startedMs, manual ? manualCodes : null);
     });
     // 没选到账号 ⇒ 静默返回（那不是失败，是"这条任务没配账号"）
     if (runs.length === 0) return;

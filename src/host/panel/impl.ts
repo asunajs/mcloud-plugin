@@ -2,7 +2,7 @@
 //
 // 把面板的 async op 收成端口：
 //   · 日志   → info / warn / error（async，发出去就不等：日志是旁路）
-//   · Http   → http_fetch（**同步 op**，P3 换 async）
+//   · Http   → fetch（异步 op；P3 之后只剩它，http_fetch 不再用）
 //   · 存储   → sqlite_*_sync（P4 换成本地 JSON，这一条就没了）
 //   · 注册   → register_cron / register_web / sidebar / set_job_*
 //   · 配置   → self_config
@@ -69,10 +69,12 @@ export function panelLogger(level: LogLevel, msg: string): void {
 // ── I/O（同步 op；P3/P4 会缩到只剩 ws + smtp）────────────────────────
 
 export const panelIo: Io = {
-  fetch(url, opts) {
+  async fetch(url, opts) {
     try {
-      // options 整包透传：tls:'native' 会走面板的平台 TLS（只有它能谈 CBC 套件）
-      const r = host.http_fetch(url, opts ?? {});
+      // options 整包透传：tls:'native' 会走面板的平台 TLS（只有它能谈 CBC 套件）。
+      // ⚠ 用**异步** op fetch（rquickjs 的 Async），不是 http_fetch ——
+      //   后者背后是 sync_bridge（新起线程 + 新 runtime，并阻塞整个插件线程）。
+      const r = await host.fetch(url, opts ?? {});
       return { status: r?.status ?? 0, headers: r?.headers ?? {}, body: r?.body ?? '' } as FetchOutcome;
     } catch (e) {
       // 面板失败时返回 {error}（不是抛）—— 业务侧到处在判 res.error

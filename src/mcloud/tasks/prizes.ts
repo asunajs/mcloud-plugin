@@ -31,8 +31,8 @@ export function prizeQuery(market: string): string {
   );
 }
 
-export function runPrizes(deps: TaskDeps, market = 'sign_in_3'): TaskOutcome {
-  return runTask(
+export async function runPrizes(deps: TaskDeps, market = 'sign_in_3'): Promise<TaskOutcome> {
+  return await runTask(
     deps,
     {
       task: 'prizes',

@@ -66,7 +66,7 @@ function seeded(opts: { session?: boolean; codes?: string[]; enabled?: boolean }
 function fakeUpstream(over: { draw?: Record<string, unknown> } = {}) {
   const sent: BuiltRequest[] = [];
   let balance = 100;
-  const transport = ((req: BuiltRequest) => {
+  const transport = (async (req: BuiltRequest) => {
     sent.push(req);
     const u = req.url;
     if (u.includes('/user/info')) {
@@ -87,39 +87,39 @@ function fakeUpstream(over: { draw?: Record<string, unknown> } = {}) {
   return { transport, sent };
 }
 
-test('没有本地开关：有口令就直接起一轮（手动/自动都不拦）', () => {
+test('没有本地开关：有口令就直接起一轮（手动/自动都不拦）', async () => {
   const store = seeded({ codes: ['A'] });
   const { transport, sent } = fakeUpstream();
-  const out = runLiveDraw({ store, transport, nowIso: NOW });
+  const out = await runLiveDraw({ store, transport, nowIso: NOW });
   assert.equal(out.ok, true);
   assert.equal(sent.length, 1, '必须真的发请求');
   assert.ok(store.getState(STATE_DRAW) !== null, '要起一轮状态');
 });
 
-test('没有口令 ⇒ idle、不发请求（cron 每 5 分钟跑一次，不能刷噪声）', () => {
+test('没有口令 ⇒ idle、不发请求（cron 每 5 分钟跑一次，不能刷噪声）', async () => {
   const store = seeded({ enabled: true });
   const { transport, sent } = fakeUpstream();
-  const out = runLiveDraw({ store, transport, nowIso: NOW });
+  const out = await runLiveDraw({ store, transport, nowIso: NOW });
   assert.equal(out.idle, true);
   assert.equal(sent.length, 0);
 });
 
-test('没有 jwt ⇒ 如实失败，且**一个请求都不发**（这一族要凭据）', () => {
+test('没有 jwt ⇒ 如实失败，且**一个请求都不发**（这一族要凭据）', async () => {
   const store = seeded({ session: false, codes: ['A'], enabled: true });
   const { transport, sent } = fakeUpstream();
-  const out = runLiveDraw({ store, transport, nowIso: NOW });
+  const out = await runLiveDraw({ store, transport, nowIso: NOW });
   assert.equal(out.ok, false);
   assert.equal(sent.length, 0, '没凭据就别打上游');
   assert.match(out.note, /还没换到票|还没连上网页版|要先有票/);
 });
 
-test('全链推进：一次调用一个请求，顺序与形状都对', () => {
+test('全链推进：一次调用一个请求，顺序与形状都对', async () => {
   const store = seeded({ codes: ['甲', '乙'], enabled: true });
   const { transport, sent } = fakeUpstream();
 
   const notes: string[] = [];
   for (let i = 0; i < 12; i += 1) {
-    const out = runLiveDraw({ store, transport, nowIso: NOW });
+    const out = await runLiveDraw({ store, transport, nowIso: NOW });
     notes.push(out.note);
     if (loadDrawState(store)?.step === 'done') break;
   }
@@ -158,25 +158,25 @@ test('全链推进：一次调用一个请求，顺序与形状都对', () => {
   assert.ok(st.results.every((r) => r.kind === 'succeeded'));
 });
 
-test('跑完之后再触发：口令没变就 idle（不重复领）', () => {
+test('跑完之后再触发：口令没变就 idle（不重复领）', async () => {
   const store = seeded({ codes: ['甲'], enabled: true });
   const { transport, sent } = fakeUpstream();
   for (let i = 0; i < 12; i += 1) {
-    runLiveDraw({ store, transport, nowIso: NOW });
+    await runLiveDraw({ store, transport, nowIso: NOW });
     if (loadDrawState(store)?.step === 'done') break;
   }
   const before = sent.length;
-  const out = runLiveDraw({ store, transport, nowIso: NOW });
+  const out = await runLiveDraw({ store, transport, nowIso: NOW });
   assert.equal(out.idle, true);
   assert.equal(sent.length, before, '口令没变就不该再发请求');
   assert.match(out.note, /已跑完/);
 });
 
-test('口令变了 ⇒ 自动起新一轮（新一期直播发了新口令）', () => {
+test('口令变了 ⇒ 自动起新一轮（新一期直播发了新口令）', async () => {
   const store = seeded({ codes: ['甲'], enabled: true });
   const { transport, sent } = fakeUpstream();
   for (let i = 0; i < 12; i += 1) {
-    runLiveDraw({ store, transport, nowIso: NOW });
+    await runLiveDraw({ store, transport, nowIso: NOW });
     if (loadDrawState(store)?.step === 'done') break;
   }
   // 人又填了一条新口令
@@ -186,7 +186,7 @@ test('口令变了 ⇒ 自动起新一轮（新一期直播发了新口令）', 
     NOW,
   );
   const before = sent.length;
-  const out = runLiveDraw({ store, transport, nowIso: NOW });
+  const out = await runLiveDraw({ store, transport, nowIso: NOW });
   assert.equal(out.idle, undefined);
   assert.equal(sent.length, before + 1, '起新一轮 = 先读一次余额');
   assert.equal(loadDrawState(store)!.step, 'journaling');
@@ -195,11 +195,11 @@ test('口令变了 ⇒ 自动起新一轮（新一期直播发了新口令）', 
   assert.deepEqual(loadDrawState(store)!.codes, ['丙'], '领过的口令不再进下一轮');
 });
 
-test('⚠ 200118（本场已结束）记成 kouling-expired，**不是**"口令无效"', () => {
+test('⚠ 200118（本场已结束）记成 kouling-expired，**不是**"口令无效"', async () => {
   const store = seeded({ codes: ['甲'], enabled: true });
   const { transport } = fakeUpstream({ draw: { 甲: { code: 200118, msg: '口令已失效' } } });
   for (let i = 0; i < 12; i += 1) {
-    runLiveDraw({ store, transport, nowIso: NOW });
+    await runLiveDraw({ store, transport, nowIso: NOW });
     if (loadDrawState(store)?.step === 'done') break;
   }
   const st = loadDrawState(store)!;
@@ -209,30 +209,30 @@ test('⚠ 200118（本场已结束）记成 kouling-expired，**不是**"口令�
   assert.ok(!/口令无效/.test(st.results[0]!.note), '别把"直播结束了"写成"口令抄错了"');
 });
 
-test('上游失败 ⇒ 停在这一步，下一次接着试（不跳步）', () => {
+test('上游失败 ⇒ 停在这一步，下一次接着试（不跳步）', async () => {
   const store = seeded({ codes: ['甲'], enabled: true });
   let fail = true;
   const sent: BuiltRequest[] = [];
-  const transport = ((req: BuiltRequest) => {
+  const transport = (async (req: BuiltRequest) => {
     sent.push(req);
     if (fail) return { error: '请求失败: http status: 502' };
     return { status: 200, headers: {}, body: JSON.stringify({ code: 0, msg: 'ok', result: { flowerCnt: 1 } }) };
   }) as Transport;
 
-  const out = runLiveDraw({ store, transport, nowIso: NOW });
+  const out = await runLiveDraw({ store, transport, nowIso: NOW });
   assert.equal(out.ok, false);
   assert.match(out.note, /502/);
   assert.equal(loadDrawState(store)!.step, 'balance-before', '失败了不该推进');
 
   fail = false;
-  const out2 = runLiveDraw({ store, transport, nowIso: NOW });
+  const out2 = await runLiveDraw({ store, transport, nowIso: NOW });
   assert.equal(out2.ok, true);
   assert.equal(loadDrawState(store)!.step, 'journaling');
 });
 
 // ── 口令来源与开关
 
-test('口令来源：人给的在前、池里该投的在后，去重', () => {
+test('口令来源：人给的在前、池里该投的在后，去重', async () => {
   const store = seeded({ codes: ['甲'] });
   // ⚠ 2026-10-14 起，**自动抓到的口令从池里读**，不再读"最近一次抓主页的读数"：
   //   读数只是界面快照（解错也会原样进），池才记得住每一条的状态与谁领过。
@@ -243,7 +243,7 @@ test('口令来源：人给的在前、池里该投的在后，去重', () => {
   assert.deepEqual(collectCodes(store, Date.parse(NOW)), ['甲', '乙'], '人给的那份在前（那是他确认过的）');
 });
 
-test('池里判过无效的口令**不再投**（否则每轮白跑一枪 200108）', () => {
+test('池里判过无效的口令**不再投**（否则每轮白跑一枪 200108）', async () => {
   const store = seeded({ codes: ['甲'] });
   const { pool } = loadPoolFrom(store);
   note(pool, ['甲', '乙'], 'xiaohongshu', Date.parse(NOW));
@@ -253,20 +253,20 @@ test('池里判过无效的口令**不再投**（否则每轮白跑一枪 200108
   assert.deepEqual(collectCodes(store, Date.parse(NOW)), ['甲'], '乙 已判无效 ⇒ 不再进这一轮');
 });
 
-test('手动只贴一条 ⇒ 这一轮只领这一条，池里的旧候选不混进来', () => {
+test('手动只贴一条 ⇒ 这一轮只领这一条，池里的旧候选不混进来', async () => {
   const store = seeded({ codes: ['我贴的'] });
   const { pool } = loadPoolFrom(store);
   note(pool, ['池里旧的'], 'danmaku', Date.parse(NOW));
   savePoolTo(store, pool, NOW);
 
   const { transport } = fakeUpstream();
-  runLiveDraw({ store, transport, nowIso: NOW }, { codes: ['我贴的'] });
+  await runLiveDraw({ store, transport, nowIso: NOW }, { codes: ['我贴的'] });
   const st = loadDrawState(store);
   assert.deepEqual(st?.codes, ['我贴的'], '只准出现人贴的那一条');
   assert.ok(!(st?.codes ?? []).includes('池里旧的'));
 });
 
-test('这个账号领过的口令**不再投**（回 200112 不是新结果，却会把归因搅浑）', () => {
+test('这个账号领过的口令**不再投**（回 200112 不是新结果，却会把归因搅浑）', async () => {
   const store = seeded({ codes: ['甲'] });
   const { pool } = loadPoolFrom(store);
   note(pool, ['甲', '乙'], 'xiaohongshu', Date.parse(NOW));
@@ -278,13 +278,13 @@ test('这个账号领过的口令**不再投**（回 200112 不是新结果，�
   assert.deepEqual(pickFor(pool, '另一个账号'), ['甲', '乙']);
 });
 
-test('领小红花没有本地开关：有口令就发请求（手动/自动都一样）', () => {
+test('领小红花没有本地开关：有口令就发请求（手动/自动都一样）', async () => {
   const store = seeded({ codes: ['甲'] });
   assert.equal(claimEnabled(store), true, '不再有“默认关”');
   assert.equal(store.getState(STATE_CLAIM_ENABLED), null, '旧键不存在也不影响');
 
   const { transport, sent } = fakeUpstream();
-  runLiveDraw({ store, transport, nowIso: NOW });
+  await runLiveDraw({ store, transport, nowIso: NOW });
   assert.equal(sent.length, 1, '不传 force 也必须真的去领');
   setClaimEnabled(store, false, NOW);
   assert.equal(claimEnabled(store), true, '旧开关调用不会再把领取关掉');
@@ -296,17 +296,17 @@ test('领小红花没有本地开关：有口令就发请求（手动/自动都�
 // 判过无效的、领过的下一轮还会再投一次，而"够 2 条有效就停止抓取"这条口径
 // 永远不成立（池里永远没有 valid）⇒ 主页会被一直抓下去。
 
-function runToDone(store: ReturnType<typeof seeded>, transport: Transport) {
+async function runToDone(store: ReturnType<typeof seeded>, transport: Transport) {
   for (let i = 0; i < 12; i += 1) {
-    runLiveDraw({ store, transport, nowIso: NOW });
+    await runLiveDraw({ store, transport, nowIso: NOW });
     if (loadDrawState(store)?.step === 'done') break;
   }
 }
 
-test('领到 ⇒ 池里记**有效**（"够 2 条就停止抓取"唯一的数据来源）', () => {
+test('领到 ⇒ 池里记**有效**（"够 2 条就停止抓取"唯一的数据来源）', async () => {
   const store = seeded({ codes: ['甲', '乙'], enabled: true });
   const { transport } = fakeUpstream();
-  runToDone(store, transport);
+  await runToDone(store, transport);
 
   const { pool } = loadPoolFrom(store);
   assert.equal(codeState(pool, '甲'), 'valid');
@@ -315,20 +315,20 @@ test('领到 ⇒ 池里记**有效**（"够 2 条就停止抓取"唯一的数据
   assert.equal(stopScraping(pool), true, '够 2 条有效 ⇒ 抓取侧该停了');
 });
 
-test('已兑换（200112）也算**有效** —— "口令本身是对的"', () => {
+test('已兑换（200112）也算**有效** —— "口令本身是对的"', async () => {
   const store = seeded({ codes: ['甲'], enabled: true });
   const { transport } = fakeUpstream({ draw: { 甲: { code: 200112, msg: '已兑换过' } } });
-  runToDone(store, transport);
+  await runToDone(store, transport);
 
   const { pool } = loadPoolFrom(store);
   assert.equal(codeState(pool, '甲'), 'valid', '已兑换 ≠ 口令错');
   assert.equal(pool.claims[accountOf(store)]?.['甲'], 'alreadyClaimed');
 });
 
-test('200108 ⇒ 池里**无效**（下一轮不再投它）', () => {
+test('200108 ⇒ 池里**无效**（下一轮不再投它）', async () => {
   const store = seeded({ codes: ['甲'], enabled: true });
   const { transport } = fakeUpstream({ draw: { 甲: { code: 200108, msg: '口令无效' } } });
-  runToDone(store, transport);
+  await runToDone(store, transport);
 
   const { pool } = loadPoolFrom(store);
   assert.equal(codeState(pool, '甲'), 'invalid');
@@ -336,17 +336,17 @@ test('200108 ⇒ 池里**无效**（下一轮不再投它）', () => {
   assert.deepEqual(collectCodes(store, Date.parse(NOW)), [], '判过无效 ⇒ 不再进下一轮');
 });
 
-test('200118 ⇒ 池里**无效**，但原因留成"已过期"（界面上要能看出是哪一种）', () => {
+test('200118 ⇒ 池里**无效**，但原因留成"已过期"（界面上要能看出是哪一种）', async () => {
   const store = seeded({ codes: ['甲'], enabled: true });
   const { transport } = fakeUpstream({ draw: { 甲: { code: 200118, msg: '口令已失效' } } });
-  runToDone(store, transport);
+  await runToDone(store, transport);
 
   const { pool } = loadPoolFrom(store);
   assert.equal(codeState(pool, '甲'), 'invalid', '行为上不可复用 ⇒ 无效');
   assert.equal(pool.codes.find((c) => c.value === '甲')?.reason, '口令已过期');
 });
 
-test('⚠ 200118 在池里算**无效**，但在协议层**不算"口令认错了"** —— 两处刻意分开', () => {
+test('⚠ 200118 在池里算**无效**，但在协议层**不算"口令认错了"** —— 两处刻意分开', async () => {
   // 合并这两处会得到"要么不停地重听、要么拿着过期口令反复投"，所以这里把
   // **两个结论**同时钉住（任何一处被"顺手统一"都会红）。
   const out = classifyDraw(envOf(200118));
@@ -358,10 +358,10 @@ test('⚠ 200118 在池里算**无效**，但在协议层**不算"口令认错�
   assert.equal(codeState(pool, '甲'), 'invalid', '同一件事，池的答案是"不可复用"');
 });
 
-test('别的码（未分类）**不改池里的状态**，但这条口令对这个账号到此为止', () => {
+test('别的码（未分类）**不改池里的状态**，但这条口令对这个账号到此为止', async () => {
   const store = seeded({ codes: ['甲'], enabled: true });
   const { transport } = fakeUpstream({ draw: { 甲: { code: 200103, msg: '红花数不够' } } });
-  runToDone(store, transport);
+  await runToDone(store, transport);
 
   const { pool } = loadPoolFrom(store);
   const account = accountOf(store);
@@ -377,10 +377,10 @@ test('别的码（未分类）**不改池里的状态**，但这条口令对这�
   assert.deepEqual(pickFor(pool, '另一个账号'), ['甲'], '换账号就投（那是账号级的记录）');
 });
 
-test('失败的那一枪**不写回池**（没拿到信封 = 什么都没验过）', () => {
+test('失败的那一枪**不写回池**（没拿到信封 = 什么都没验过）', async () => {
   const store = seeded({ codes: ['甲'], enabled: true });
   let fail = true;
-  const transport = ((req: BuiltRequest) => {
+  const transport = (async (req: BuiltRequest) => {
     const u = req.url;
     if (u.includes('/redFlower/draw')) {
       if (fail) return { error: '请求失败: http status: 502' };
@@ -389,16 +389,16 @@ test('失败的那一枪**不写回池**（没拿到信封 = 什么都没验过�
     return { status: 200, headers: {}, body: JSON.stringify({ code: 0, msg: 'ok', result: { flowerCnt: 100 } }) };
   }) as Transport;
 
-  runToDone(store, transport);
+  await runToDone(store, transport);
   const { pool } = loadPoolFrom(store);
   assert.equal(codeState(pool, '甲'), undefined, '请求失败 ⇒ 池里连这条都不该有（它只从"验证"进池）');
 
   fail = false;
-  runToDone(store, transport);
+  await runToDone(store, transport);
   assert.equal(codeState(loadPoolFrom(store).pool, '甲'), 'valid', '下一次成功才写回');
 });
 
-test('`stepRequest` 是纯函数：不推进状态、也不发请求', () => {
+test('`stepRequest` 是纯函数：不推进状态、也不发请求', async () => {
   const st = {
     step: 'draw' as const,
     journalingSent: 0,
@@ -416,12 +416,12 @@ test('`stepRequest` 是纯函数：不推进状态、也不发请求', () => {
   assert.equal(stepRequest({ ...st, drawIndex: 9 }), null);
 });
 
-test('⚠ baseUrl 指到 mock 时，六步链**全部**打 mock（一个字节都不许外流）', () => {
+test('⚠ baseUrl 指到 mock 时，六步链**全部**打 mock（一个字节都不许外流）', async () => {
   const store = seeded({ codes: ['甲'], enabled: true });
   const { transport, sent } = fakeUpstream();
   const base = 'http://127.0.0.1:19040';
   for (let i = 0; i < 12; i += 1) {
-    runLiveDraw({ store, transport, nowIso: NOW, baseUrl: base });
+    await runLiveDraw({ store, transport, nowIso: NOW, baseUrl: base });
     if (loadDrawState(store)?.step === 'done') break;
   }
   assert.ok(sent.length > 0);
@@ -429,7 +429,7 @@ test('⚠ baseUrl 指到 mock 时，六步链**全部**打 mock（一个字节�
   assert.deepEqual(stray.map((r) => r.url), [], '有请求打到真上游了 —— 这是"测试污染真环境"');
 });
 
-test('**换账号**之后，同一批口令必须重新领 —— 判据不能只看"口令变没变"', () => {
+test('**换账号**之后，同一批口令必须重新领 —— 判据不能只看"口令变没变"', async () => {
   // ⚠ 2026-10-14 实机踩出来的：口令是**共享资源**（谁拿到都能用），余额是**每个账号
   //   自己的**。第二、第三个账号跑的时候，因为"口令没变"，那一轮被直接跳过 ⇒
   //   **一条都领不到，而界面看起来一切正常**。守卫要连账号一起比。
@@ -439,7 +439,7 @@ test('**换账号**之后，同一批口令必须重新领 —— 判据不能�
 
   // 账号 A 跑完一轮
   for (let i = 0; i < 20; i += 1) {
-    const out = runLiveDraw(deps);
+    const out = await runLiveDraw(deps);
     if (out.idle || (loadDrawState(store)?.step ?? '') === 'done') break;
   }
   const first = loadDrawState(store);
@@ -447,7 +447,7 @@ test('**换账号**之后，同一批口令必须重新领 —— 判据不能�
   assert.equal(first?.account, accountOf(store), '第一轮要把账号记下来');
 
   // 同一个账号再跑：跳过（这是原本就有的判据，要保住）
-  const again = runLiveDraw(deps);
+  const again = await runLiveDraw(deps);
   assert.equal(again.idle, true, '同一账号 + 同一批口令 ⇒ 不重复领');
   assert.match(again.note, /没变/);
 
@@ -456,7 +456,7 @@ test('**换账号**之后，同一批口令必须重新领 —— 判据不能�
   const other = 'Basic ' + Buffer.from('mobile:13900000001:tok', 'utf8').toString('base64');
   store.setState(STATE_AUTH_KEY, other, NOW);
   assert.notEqual(accountOf(store), first?.account, '换了账号之后 accountOf 必须变（否则这条测试没意义）');
-  const third = runLiveDraw(deps);
+  const third = await runLiveDraw(deps);
   assert.notEqual(third.idle, true, `换账号之后不该被跳过；实际 note=${third.note}`);
   const st2 = loadDrawState(store);
   assert.equal(st2?.account, accountOf(store), '新的一轮记的是新账号');

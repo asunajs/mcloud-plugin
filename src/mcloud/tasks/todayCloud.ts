@@ -43,11 +43,11 @@ import { readDayForAccount } from '../beansRead.ts';
 import { depsNowMs } from './base.ts';
 import type { TaskDeps, TaskOutcome } from './base.ts';
 
-export function runTodayCloud(deps: TaskDeps): TaskOutcome {
+export async function runTodayCloud(deps: TaskDeps): Promise<TaskOutcome> {
   let gained: number;
   let gainedCount: number;
   try {
-    const day = readDayForAccount(
+    const day = await readDayForAccount(
       {
         store: deps.store,
         transport: deps.transport,

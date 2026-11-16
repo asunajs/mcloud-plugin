@@ -148,18 +148,18 @@ export function readGateReading(store: Pick<Store, 'getState'>): GateReading | n
 /** 推进一步（**一次调用最多两发上游请求** —— 见文件头）。
  *
  *  ⚠ 上一轮 `done` 之后**再触发就是新的一轮**：直播是会开始的，门要反复看。 */
-export function runLiveGate(deps: TaskDeps): TaskOutcome {
+export async function runLiveGate(deps: TaskDeps): Promise<TaskOutcome> {
   const base = loadGateBase(deps.store);
   const nowMs = Date.parse(deps.nowIso);
   const prev = loadGateState(deps.store);
   const st: GateState = prev && prev.step !== 'done' ? prev : { step: 'handshake', startedAt: deps.nowIso };
 
-  if (st.step === 'handshake') return handshake(deps, st, base);
-  return roomsStep(deps, st, base, nowMs);
+  if (st.step === 'handshake') return await handshake(deps, st, base);
+  return await roomsStep(deps, st, base, nowMs);
 }
 
 /** handshake 步：① 换 SSO + ② 换直播侧 JWT（**必须同一次调用** —— SSO 只活几分钟）。 */
-function handshake(deps: TaskDeps, st: GateState, base: string | undefined): TaskOutcome {
+async function handshake(deps: TaskDeps, st: GateState, base: string | undefined): Promise<TaskOutcome> {
   const TASK = 'live-gate';
   const auth = loadAuthRaw(deps.store);
   if (auth === '') {
@@ -168,14 +168,14 @@ function handshake(deps: TaskDeps, st: GateState, base: string | undefined): Tas
     return { ok: false, note };
   }
 
-  const r1 = callRawText(deps.transport, gateSpecTokenRequest(auth, base));
+  const r1 = await callRawText(deps.transport, gateSpecTokenRequest(auth, base));
   if (!r1.ok) return stepFail(deps, TASK, `① 换 SSO token 失败：${r1.error ?? '未知失败'}`);
   const sso = parseSsoToken(r1.text);
   if (!sso.ok || sso.value === undefined) {
     return stepFail(deps, TASK, `① 换 SSO token 失败：${sso.error ?? '响应里没有 data.token'}`);
   }
 
-  const r2 = callRawText(deps.transport, cmpassLoginRequest(sso.value, base));
+  const r2 = await callRawText(deps.transport, cmpassLoginRequest(sso.value, base));
   if (!r2.ok) return stepFail(deps, TASK, `② 换直播侧 JWT 失败：${r2.error ?? '未知失败'}`);
   const env = parseCmlive(r2.text);
   if (!env.ok || env.value === undefined) {
@@ -199,12 +199,12 @@ function handshake(deps: TaskDeps, st: GateState, base: string | undefined): Tas
 }
 
 /** rooms 步：③ 两个页签各一发 → 合并 → 落池 + 落读数 → 抹掉 JWT。 */
-function roomsStep(
+async function roomsStep(
   deps: TaskDeps,
   st: GateState,
   base: string | undefined,
   nowMs: number,
-): TaskOutcome {
+): Promise<TaskOutcome> {
   const TASK = 'live-gate';
   const jwt = st.jwt;
   if (jwt === undefined || jwt === '') {
@@ -216,7 +216,7 @@ function roomsStep(
 
   const groups: LiveRoom[][] = [];
   for (const tabId of GATE_TAB_IDS) {
-    const res = callRawText(deps.transport, tabContentListRequest(tabId, jwt, base));
+    const res = await callRawText(deps.transport, tabContentListRequest(tabId, jwt, base));
     if (!res.ok) {
       return dropJwtAndFail(deps, st, `③ 页签 ${tabId} 失败：${res.error ?? '未知失败'}`);
     }

@@ -52,7 +52,7 @@ const bodyOf = (r: BuiltRequest): Record<string, unknown> => JSON.parse(r.body ?
 
 // ══════════════════════════════ 渠道表 ══════════════════════════════
 
-test('恰好 10 个渠道，名字与参考实现一致', () => {
+test('恰好 10 个渠道，名字与参考实现一致', async () => {
   assert.equal(CHANNELS.length, 10);
   assert.deepEqual(CHANNELS, [
     'pushplus',
@@ -80,7 +80,7 @@ test('恰好 10 个渠道，名字与参考实现一致', () => {
 
 // ══════════════════════════════ ① pushplus ② Server酱 ══════════════════════════════
 
-test('pushplus：`http://`（**不是 https**）+ token/title/content', () => {
+test('pushplus：`http://`（**不是 https**）+ token/title/content', async () => {
   const r = req(buildPushplus({ token: 'T' }, '标题', '正文'));
   // ⚠ 参考实现里就是 `http://www.pushplus.plus/send` —— 写成 https 不是"顺手改好"
   assert.equal(r.url, 'http://www.pushplus.plus/send');
@@ -88,7 +88,7 @@ test('pushplus：`http://`（**不是 https**）+ token/title/content', () => {
   assert.deepEqual(bodyOf(r), { token: 'T', title: '标题', content: '正文' });
 });
 
-test('⚠ Server酱：`desp` 里每个换行**翻倍**（TS 的原文）', () => {
+test('⚠ Server酱：`desp` 里每个换行**翻倍**（TS 的原文）', async () => {
   const r = req(buildServerChan({ token: 'T' }, '标题', 'a\nb\nc'));
   assert.equal(r.url, 'https://sctapi.ftqq.com/T.send');
   const b = bodyOf(r);
@@ -99,7 +99,7 @@ test('⚠ Server酱：`desp` 里每个换行**翻倍**（TS 的原文）', () =>
   assert.notEqual(b['desp'], 'a\nb\nc');
 });
 
-test('pushplus / Server酱 的 `extra` 会并进请求体（且不覆盖具名字段）', () => {
+test('pushplus / Server酱 的 `extra` 会并进请求体（且不覆盖具名字段）', async () => {
   const r = req(buildPushplus({ token: 'T', extra: { topic: 'x' } }, 't', 'b'));
   assert.equal(bodyOf(r)['topic'], 'x');
   assert.equal(bodyOf(r)['token'], 'T');
@@ -107,7 +107,7 @@ test('pushplus / Server酱 的 `extra` 会并进请求体（且不覆盖具名�
 
 // ══════════════════════════════ ③ 企业微信（两步） ══════════════════════════════
 
-test('企业微信**第一步**：corpid + corpsecret 换 access_token', () => {
+test('企业微信**第一步**：corpid + corpsecret 换 access_token', async () => {
   const r = buildWorkWeixinToken({ corpid: 'C', corpsecret: 'S' });
   assert.equal(r.url, 'https://qyapi.weixin.qq.com/cgi-bin/gettoken');
   assert.deepEqual(bodyOf(r), { corpid: 'C', corpsecret: 'S' });
@@ -116,7 +116,7 @@ test('企业微信**第一步**：corpid + corpsecret 换 access_token', () => {
   assert.deepEqual(bodyOf(bare), {});
 });
 
-test('企业微信**第二步**：动态类型键 + `touser` 默认 `@all`', () => {
+test('企业微信**第二步**：动态类型键 + `touser` 默认 `@all`', async () => {
   const r = buildWorkWeixinMessage({ agentid: 7 }, 'TOK', '标题', '正文');
   assert.equal(r.url, 'https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=TOK');
   const b = bodyOf(r);
@@ -131,7 +131,7 @@ test('企业微信**第二步**：动态类型键 + `touser` 默认 `@all`', () 
   assert.ok(!('text' in md), '换了 msgtype 就不该再写 text 键');
 });
 
-test('企业微信机器人：一个 webhook URL', () => {
+test('企业微信机器人：一个 webhook URL', async () => {
   const r = req(buildWorkWeixinBot({ url: 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=K' }, 'a', 'b'));
   assert.ok(r.url.includes('webhook/send?key=K'));
   assert.deepEqual(bodyOf(r)['text'], { content: 'a\n\nb' });
@@ -139,7 +139,7 @@ test('企业微信机器人：一个 webhook URL', () => {
 
 // ══════════════════════════════ ⑤ Telegram ══════════════════════════════
 
-test('⚠ Telegram：`chat_id` / `disable_web_page_preview` 是 **snake_case**', () => {
+test('⚠ Telegram：`chat_id` / `disable_web_page_preview` 是 **snake_case**', async () => {
   // 跟着"统一成 camelCase"改的表现是这两个字段**永远读不到** ⇒
   // "缺 chat_id"的跳过分支被误触发，而**跳过不是失败**，日志里看不出来。
   const r = req(buildTgBot({ token: 'T', chat_id: -100123, disable_web_page_preview: false }, '标题', '正文'));
@@ -152,7 +152,7 @@ test('⚠ Telegram：`chat_id` / `disable_web_page_preview` 是 **snake_case**',
   assert.equal(b['text'], '标题\n\n正文');
 });
 
-test('Telegram：缺 token 或 chat_id 就**跳过**（不是塞个 null 发上去）', () => {
+test('Telegram：缺 token 或 chat_id 就**跳过**（不是塞个 null 发上去）', async () => {
   assert.equal(buildTgBot({ token: '', chat_id: 1 }, 'a', 'b').ok, false);
   assert.equal(buildTgBot({ token: 'T', chat_id: '' }, 'a', 'b').ok, false);
   assert.equal(buildTgBot({ token: 'T', chat_id: 0 }, 'a', 'b').ok, false, 'JS 真值：0 算缺');
@@ -163,7 +163,7 @@ test('Telegram：缺 token 或 chat_id 就**跳过**（不是塞个 null 发上�
   assert.ok(!b.ok && b.skip.includes('chat_id'), b.ok ? '' : b.skip);
 });
 
-test('Telegram：`apiHost` 可换（自建反代）；`text` 永远收尾（在 extra 之后）', () => {
+test('Telegram：`apiHost` 可换（自建反代）；`text` 永远收尾（在 extra 之后）', async () => {
   const r = req(buildTgBot({ token: 'T', chat_id: 1, apiHost: 'tg.example.com' }, 'a', 'b'));
   assert.equal(r.url, 'https://tg.example.com/botT/sendMessage');
   // extra 里塞一个同名 `text` ⇒ 必须被真正的 text 覆盖（TS 的字段顺序就是这样）
@@ -171,7 +171,7 @@ test('Telegram：`apiHost` 可换（自建反代）；`text` 永远收尾（在 
   assert.equal(b['text'], 'a\n\nb');
 });
 
-test('`jsTruthy`：JS 的真值口径（空串 / 0 / null / NaN 都算假）', () => {
+test('`jsTruthy`：JS 的真值口径（空串 / 0 / null / NaN 都算假）', async () => {
   assert.equal(jsTruthy(''), false);
   assert.equal(jsTruthy(0), false);
   assert.equal(jsTruthy(null), false);
@@ -186,7 +186,7 @@ test('`jsTruthy`：JS 的真值口径（空串 / 0 / null / NaN 都算假）', (
 
 // ══════════════════════════════ ⑥ Bark ⑦ 回逍 ══════════════════════════════
 
-test('Bark：key 进路径，`level` 默认 `passive`；缺 key 跳过', () => {
+test('Bark：key 进路径，`level` 默认 `passive`；缺 key 跳过', async () => {
   const r = req(buildBark({ key: 'K' }, '标题', '正文'));
   assert.equal(r.url, 'https://api.day.app/K');
   const b = bodyOf(r);
@@ -197,7 +197,7 @@ test('Bark：key 进路径，`level` 默认 `passive`；缺 key 跳过', () => {
   assert.equal(buildBark({ key: '' }, 'a', 'b').ok, false);
 });
 
-test('回逍：`key` / `sid` 走查询串，其余走请求体', () => {
+test('回逍：`key` / `sid` 走查询串，其余走请求体', async () => {
   const r = req(buildTwoIm({ key: 'K', sid: 'S' }, '标题', '正文'));
   assert.ok(r.url.startsWith('https://api.2im.cn/push?'));
   assert.ok(r.url.includes('key=K'));
@@ -213,7 +213,7 @@ test('回逍：`key` / `sid` 走查询串，其余走请求体', () => {
 
 // ══════════════════════════════ ⑧ 钉钉 ══════════════════════════════
 
-test('⚠ 钉钉：正文前面那个**前导空格**是原文，别顺手删掉', () => {
+test('⚠ 钉钉：正文前面那个**前导空格**是原文，别顺手删掉', async () => {
   const r = req(buildDingTalk({ token: 'T' }, '标题', '正文', 1730000000000));
   const b = bodyOf(r);
   assert.deepEqual(b['text'], { content: ' 标题\n\n正文' }, '前导空格没了就对不上原文');
@@ -221,7 +221,7 @@ test('⚠ 钉钉：正文前面那个**前导空格**是原文，别顺手删掉
   assert.ok(!r.url.includes('timestamp='), '没 secret 就不加签');
 });
 
-test('⚠ 钉钉签名：`base64(HmacSHA256(secret, ts + "\\n" + secret))`（独立向量）', () => {
+test('⚠ 钉钉签名：`base64(HmacSHA256(secret, ts + "\\n" + secret))`（独立向量）', async () => {
   // 期望值由 Node 的 crypto 独立算出（不是"跑一遍看看是多少"）
   const secret = 'SEC8f0d1e2a3b4c5d6e7f8a9b0c1d2e3f4a';
   const ts = 1730000000000;
@@ -238,12 +238,12 @@ test('⚠ 钉钉签名：`base64(HmacSHA256(secret, ts + "\\n" + secret))`（独
   );
 });
 
-test('钉钉：`secret` 是空串 ⇒ 不加签（不是"加一个空签"）', () => {
+test('钉钉：`secret` 是空串 ⇒ 不加签（不是"加一个空签"）', async () => {
   const r = req(buildDingTalk({ token: 'T', secret: '' }, 'a', 'b', 1));
   assert.ok(!r.url.includes('timestamp='));
 });
 
-test('`encodeUriComponent`：空格编成 `%20` 不是 `+`（钉钉签名对不上就死在这）', () => {
+test('`encodeUriComponent`：空格编成 `%20` 不是 `+`（钉钉签名对不上就死在这）', async () => {
   assert.equal(encodeUriComponent('a b'), 'a%20b');
   assert.notEqual(encodeUriComponent('a b'), 'a+b');
   assert.equal(encodeUriComponent('a=b'), 'a%3Db');
@@ -252,7 +252,7 @@ test('`encodeUriComponent`：空格编成 `%20` 不是 `+`（钉钉签名对不�
 
 // ══════════════════════════════ ⑩ 自定义模板 ══════════════════════════════
 
-test('⚠ 自定义模板：URL 与请求体的替换规则**不一样**', () => {
+test('⚠ 自定义模板：URL 与请求体的替换规则**不一样**', async () => {
   // URL：只替换**第一次**，值转义
   const r = buildCustomPost(
     { url: 'https://x/{title}?t={title}', data: { a: '{title}' } },
@@ -266,19 +266,19 @@ test('⚠ 自定义模板：URL 与请求体的替换规则**不一样**', () =>
   assert.equal(b['a'], '标 题', '请求体不转义，且该出现的地方都换');
 });
 
-test('自定义模板：正文里的换行能活（替换后转成字面量再解析回去）', () => {
+test('自定义模板：正文里的换行能活（替换后转成字面量再解析回去）', async () => {
   const r = buildCustomPost({ url: 'https://x', data: { msg: '{text}' } }, 't', '第一行\n第二行');
   assert.ok(r.ok);
   assert.equal(bodyOf(r.request)['msg'], '第一行\n第二行', '换行被吃掉了');
 });
 
-test('自定义模板：标题里带引号会让解析失败 ⇒ 报错（TS 的 catch）', () => {
+test('自定义模板：标题里带引号会让解析失败 ⇒ 报错（TS 的 catch）', async () => {
   const r = buildCustomPost({ url: 'https://x', data: { msg: '{title}' } }, '带"引号"的标题', 'b');
   assert.equal(r.ok, false);
   assert.ok(!r.ok && 'error' in r && r.error.includes('JSON'), r.ok ? '' : JSON.stringify(r));
 });
 
-test('自定义模板：没有 URL ⇒ 跳过；`data` 优先于 `body`；method 默认 POST', () => {
+test('自定义模板：没有 URL ⇒ 跳过；`data` 优先于 `body`；method 默认 POST', async () => {
   const skip = buildCustomPost({ url: '' }, 'a', 'b');
   assert.ok(!skip.ok && 'skip' in skip);
   // `data` 只要存在就取胜（哪怕 body 也在）
@@ -299,7 +299,7 @@ function fakeDeps(failOn: string[] = []) {
     sent,
     smtps,
     deps: {
-      http: (r: BuiltRequest) => {
+      http: async (r: BuiltRequest) => {
         sent.push(r);
         const hit = failOn.find((f) => r.url.includes(f));
         if (hit !== undefined) {
@@ -321,15 +321,15 @@ function fakeDeps(failOn: string[] = []) {
   };
 }
 
-test('一个都没配 ⇒ 说清"没有配置推送渠道"（不是"发了 0 条成功"）', () => {
+test('一个都没配 ⇒ 说清"没有配置推送渠道"（不是"发了 0 条成功"）', async () => {
   const { deps, sent } = fakeDeps();
-  const r = sendPush(deps, {}, 't', 'b');
+  const r = await sendPush(deps, {}, 't', 'b');
   assert.equal(r.results.length, 0);
   assert.equal(sent.length, 0, '一个请求都不该发');
   assert.equal(r.line, '没有配置推送渠道');
 });
 
-test('10 个渠道全配上 ⇒ 全发到（企业微信是两步 ⇒ 11 个请求）', () => {
+test('10 个渠道全配上 ⇒ 全发到（企业微信是两步 ⇒ 11 个请求）', async () => {
   const { deps, sent, smtps } = fakeDeps();
   const cfg: PushConfig = {
     pushplus: { token: 'A' },
@@ -343,7 +343,7 @@ test('10 个渠道全配上 ⇒ 全发到（企业微信是两步 ⇒ 11 个请�
     email: { host: 'smtp.example.com', from: 'a@b.c', pass: 'p', to: 'd@e.f' },
     customPost: [{ url: 'https://custom.example.com/hook' }],
   };
-  const r = sendPush(deps, cfg, '标题', '正文');
+  const r = await sendPush(deps, cfg, '标题', '正文');
   assert.equal(r.sent, 10, r.line);
   assert.equal(r.failed, 0, r.line);
   assert.equal(r.skipped, 0, r.line);
@@ -358,9 +358,9 @@ test('10 个渠道全配上 ⇒ 全发到（企业微信是两步 ⇒ 11 个请�
   assert.equal(configuredChannels(cfg).length, 10);
 });
 
-test('⚠ 一个渠道失败**不影响别的**（推送是最不能"因为一个挂了就全不发"的东西）', () => {
+test('⚠ 一个渠道失败**不影响别的**（推送是最不能"因为一个挂了就全不发"的东西）', async () => {
   const { deps } = fakeDeps(['pushplus.plus']);
-  const r = sendPush(
+  const r = await sendPush(
     deps,
     { pushplus: { token: 'A' }, serverChan: { token: 'B' }, bark: { key: 'K' } },
     't',
@@ -374,10 +374,10 @@ test('⚠ 一个渠道失败**不影响别的**（推送是最不能"因为一�
   assert.ok(r.line.includes('2 个渠道发到了') && r.line.includes('1 个失败'), r.line);
 });
 
-test('⚠ 企业微信拿不到 `access_token` ⇒ 失败并说清，**不拿假 token 再打一枪**', () => {
+test('⚠ 企业微信拿不到 `access_token` ⇒ 失败并说清，**不拿假 token 再打一枪**', async () => {
   const sent: BuiltRequest[] = [];
   const deps = {
-    http: (r: BuiltRequest) => {
+    http: async (r: BuiltRequest) => {
       sent.push(r);
       // 200 但没有 access_token（上游回了 errcode）
       return { ok: true, status: 200, body: '{"errcode":40013,"errmsg":"invalid corpid"}', error: undefined };
@@ -386,55 +386,55 @@ test('⚠ 企业微信拿不到 `access_token` ⇒ 失败并说清，**不拿假
     nowMs: () => 0,
     log: () => {},
   };
-  const r = sendPush(deps, { workWeixin: { corpid: 'bad', corpsecret: 's' } }, 't', 'b');
+  const r = await sendPush(deps, { workWeixin: { corpid: 'bad', corpsecret: 's' } }, 't', 'b');
   assert.equal(r.failed, 1);
   assert.equal(sent.length, 1, '只该发那一个换 token 的请求 —— 假 token 那一枪不许发');
   assert.ok(r.results[0]!.note.includes('access_token'), r.results[0]!.note);
 });
 
-test('跳过**不是失败**（没配全不算错）', () => {
+test('跳过**不是失败**（没配全不算错）', async () => {
   const { deps } = fakeDeps();
-  const r = sendPush(deps, { tgBot: { token: 'T', chat_id: '' } }, 't', 'b');
+  const r = await sendPush(deps, { tgBot: { token: 'T', chat_id: '' } }, 't', 'b');
   assert.equal(r.skipped, 1);
   assert.equal(r.failed, 0);
   assert.equal(r.sent, 0);
   assert.ok(r.line.includes('跳过'), r.line);
 });
 
-test('邮件失败要带上服务器那句原话（`535 bad credentials` 这种）', () => {
+test('邮件失败要带上服务器那句原话（`535 bad credentials` 这种）', async () => {
   const deps = {
-    http: () => ({ ok: true, status: 200, body: '{}', error: undefined }),
+    http: async () => ({ ok: true, status: 200, body: '{}', error: undefined }),
     smtp: () => {
       throw new Error('535 bad credentials');
     },
     nowMs: () => 0,
     log: () => {},
   };
-  const r = sendPush(deps, { email: { host: 'h', from: 'f@x.y', pass: 'bad' } }, 't', 'b');
+  const r = await sendPush(deps, { email: { host: 'h', from: 'f@x.y', pass: 'bad' } }, 't', 'b');
   assert.equal(r.failed, 1);
   assert.ok(r.results[0]!.note.includes('535 bad credentials'), r.results[0]!.note);
 });
 
-test('邮件缺 host / from ⇒ 跳过，不去连一个空地址', () => {
+test('邮件缺 host / from ⇒ 跳过，不去连一个空地址', async () => {
   const { deps, smtps } = fakeDeps();
-  const r = sendPush(deps, { email: { host: '', from: '', pass: 'p' } }, 't', 'b');
+  const r = await sendPush(deps, { email: { host: '', from: '', pass: 'p' } }, 't', 'b');
   assert.equal(r.skipped, 1);
   assert.equal(smtps.length, 0);
 });
 
-test('HTTP 非 2xx 算失败（**不看响应体里的 `errcode`**）', () => {
+test('HTTP 非 2xx 算失败（**不看响应体里的 `errcode`**）', async () => {
   const deps = {
-    http: () => ({ ok: true, status: 502, body: 'bad gateway', error: undefined }),
+    http: async () => ({ ok: true, status: 502, body: 'bad gateway', error: undefined }),
     smtp: () => ({ ok: true, response: '' }),
     nowMs: () => 0,
     log: () => {},
   };
-  const r = sendPush(deps, { bark: { key: 'K' } }, 't', 'b');
+  const r = await sendPush(deps, { bark: { key: 'K' } }, 't', 'b');
   assert.equal(r.failed, 1);
   assert.ok(r.results[0]!.note.includes('502'), r.results[0]!.note);
 });
 
-test('`configuredChannels`：只看有没有这一栏，不判配得全不全', () => {
+test('`configuredChannels`：只看有没有这一栏，不判配得全不全', async () => {
   assert.deepEqual(configuredChannels({}), []);
   assert.deepEqual(configuredChannels({ pushplus: { token: '' } }), ['pushplus'], '空 token 也算"配了这一栏"');
   assert.deepEqual(configuredChannels({ customPost: [] }), [], '空模板数组不算配了');

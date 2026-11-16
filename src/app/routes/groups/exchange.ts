@@ -19,14 +19,14 @@ import { json, readBackupState, readBody, readMatrixLocal } from '../support.ts'
 import type { RouteDeps, RouteEntry } from '../support.ts';
 
 /** exchange 组。deps 是路由依赖；base 是 /plugins/mcloud/api；verify 是「拿当前会话验一次」。 */
-export function exchangeRoutes(deps: RouteDeps, base: string, verify: () => { ok: boolean; note: string }): RouteEntry[] {
+export function exchangeRoutes(deps: RouteDeps, base: string, verify: () => Promise<{ ok: boolean; note: string }>): RouteEntry[] {
   void verify;
   return [
 {
       // 兑换清单的读数（只读任务采集，界面展示）—— 含"没有余额读数"那句提醒
       path: `${base}/exchange`,
       method: 'GET',
-      handler: () => {
+      handler: async () => {
         const reading = readExchangeList(deps.store);
         return json(200, {
           reading,
@@ -44,7 +44,7 @@ export function exchangeRoutes(deps: RouteDeps, base: string, verify: () => { ok
       method: 'GET',
       // 点「刷新」会真打移动云盘（两个市场各一发）——必须自己声明预算。
       budget_ms: 60_000,
-      handler: (req) => {
+      handler: async (req) => {
         // **按账号读本地缓存**，默认当前账号；`?account=<id>` 切到别的号。
         // ⚠ 这一条**不发上游请求** —— 只读日常任务已经落下的矩阵读数。
         const q = parseQuery(req.query ?? '');
@@ -58,7 +58,7 @@ export function exchangeRoutes(deps: RouteDeps, base: string, verify: () => { ok
         const refreshErrors: string[] = [];
         if (refresh) {
           for (const _ of MATRIX_MARKETS) {
-            const out = runAppTaskMatrix({
+            const out = await runAppTaskMatrix({
               store: one,
               transport: deps.transport,
               nowIso: deps.now(),
@@ -100,7 +100,7 @@ export function exchangeRoutes(deps: RouteDeps, base: string, verify: () => { ok
       //   真下单走界面上的「立即兑换」（会二次确认）或定时那一场（时间闸 + 压整点）。
       path: `${base}/exchange/try`,
       method: 'POST',
-      handler: () => {
+      handler: async () => {
         const d = {
           store: deps.store,
           transport: deps.transport,
@@ -110,7 +110,7 @@ export function exchangeRoutes(deps: RouteDeps, base: string, verify: () => { ok
         // ⚠ 干跑前先清掉上一条链的残留状态：不清的话会**接着上次的位置**跑
         //   （比如直接停在 order 上，那就什么都不做了）
         clearOrder(d);
-        const r = runExchange(d, { dryRun: true });
+        const r = await runExchange(d, { dryRun: true });
         deps.log(`兑换试一次：${r.note}`);
         return json(200, r);
       },
@@ -124,14 +124,14 @@ export function exchangeRoutes(deps: RouteDeps, base: string, verify: () => { ok
       // 而这一条只是把清单重新拿一遍（用户点开界面不该惊动整条链）。
       path: `${base}/exchange/picks`,
       method: 'POST',
-      handler: () => {
+      handler: async () => {
         const d = {
           store: deps.store,
           transport: deps.transport,
           nowIso: deps.now(),
           baseUrl: loadBaseUrl(deps.store),
         };
-        const r = runExchangeList(d);
+        const r = await runExchangeList(d);
         deps.log(`兑换清单：${r.note}`);
         return json(200, { ...r, picks: readPickCache(d.store, d.nowIso) });
       },
@@ -141,14 +141,14 @@ export function exchangeRoutes(deps: RouteDeps, base: string, verify: () => { ok
       // 「我关注的奖品」—— 读。
       path: `${base}/exchange/subs`,
       method: 'GET',
-      handler: () => json(200, { ok: true, subs: readSubscriptions(deps.store) }),
+      handler: async () => json(200, { ok: true, subs: readSubscriptions(deps.store) }),
     },
 
 {
       // 「我关注的奖品」—— 开/关。按 id（有）或名字（没有）定位。
       path: `${base}/exchange/subs`,
       method: 'POST',
-      handler: (req) => {
+      handler: async (req) => {
         const b = readBody(req) as { id?: unknown; name?: unknown; on?: unknown };
         const name = typeof b.name === 'string' ? b.name.trim() : '';
         if (name === '') return json(400, { error: '要传奖品名字（name）' });
@@ -178,7 +178,7 @@ export function exchangeRoutes(deps: RouteDeps, base: string, verify: () => { ok
       // 定时抢兑的「计划表」—— 一条计划 = 一个账号 + 一个目标 + 一个整点。
       path: `${base}/exchange/plans`,
       method: 'POST',
-      handler: (req) => {
+      handler: async (req) => {
         const b = readBody(req) as {
           action?: unknown;
           id?: unknown;
@@ -301,7 +301,7 @@ export function exchangeRoutes(deps: RouteDeps, base: string, verify: () => { ok
       // 后面每次 `step` 走一步、发一枪。见 tasks/exchangeOrder.ts 的枪序。
       path: `${base}/exchange/order`,
       method: 'POST',
-      handler: (req) => {
+      handler: async (req) => {
         const b = readBody(req) as {
           query?: unknown;
           action?: unknown;
@@ -412,7 +412,7 @@ export function exchangeRoutes(deps: RouteDeps, base: string, verify: () => { ok
           });
         }
         if (b.action === 'step') {
-          const r = runOrderStep(d);
+          const r = await runOrderStep(d);
           const step = d.store.getState(STATE_STEP) ?? '';
           deps.log(`兑换：${r.note}`);
           return json(200, { ...r, step, done: step === 'done' });

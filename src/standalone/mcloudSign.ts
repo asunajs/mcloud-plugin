@@ -15,7 +15,7 @@ import { lineLevel } from '../mcloud/tasks/stepLog.ts';
 export { exchange, printExchangeList };
 
 export async function run(configPath?: string): Promise<void> {
-  const rt = await createRuntime({ configPath });
+  const rt = await await createRuntime({ configPath });
   const log = createCliLogger({ colorize: colorizeFrom(rt.config.common) });
   try {
     if (rt.config.accounts.length === 0) {
@@ -25,7 +25,7 @@ export async function run(configPath?: string): Promise<void> {
     }
     log.info(`配置文件: ${rt.config.path}`);
     log.info(`共 ${rt.config.accounts.length} 个账号`);
-    const results = runDailyAll(rt);
+    const results = await runDailyAll(rt);
     if (results.length === 0) {
       log.error('没有启用账号');
       process.exitCode = 1;
@@ -53,18 +53,18 @@ export async function run(configPath?: string): Promise<void> {
 export { run as 运行 };
 
 export async function autoDrawRedFlower(configPath?: string): Promise<void> {
-  const rt = await createRuntime({ configPath });
+  const rt = await await createRuntime({ configPath });
   try {
-    autoDraw(rt);
+    await autoDraw(rt);
   } finally {
     rt.close();
   }
 }
 
 export async function drawRedFlower(codes: string[], configPath?: string): Promise<void> {
-  const rt = await createRuntime({ configPath });
+  const rt = await await createRuntime({ configPath });
   try {
-    draw(rt, codes);
+    await draw(rt, codes);
   } finally {
     rt.close();
   }

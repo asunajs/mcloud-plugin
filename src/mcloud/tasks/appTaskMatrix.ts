@@ -279,7 +279,7 @@ export function summarize(items: MatrixItem[]): MatrixSummary {
 }
 
 /** 一步：读**一个** group（只读）。读完推进游标；到末尾就回到第一个。 */
-export function runAppTaskMatrix(deps: TaskDeps): TaskOutcome {
+export async function runAppTaskMatrix(deps: TaskDeps): Promise<TaskOutcome> {
   // ⚠ 凭据过期时**不要**发这一枪：`taskListV3` 对过期会话回的是
   //   `{"code":0,"msg":"success","result":[…全 WAIT…]}` —— 一份 200 的"游客清单"。
   //   照单收下就会把好读数覆盖成"一条都没做"（2026-11-01 自测现场：三个号读出
@@ -297,7 +297,7 @@ export function runAppTaskMatrix(deps: TaskDeps): TaskOutcome {
   // ⚠ 游标现在是**市场**（不是 group）：V3 一发拿整个市场，每市场一发 ⇒ 2 发跑完一轮
   const market = MATRIX_MARKETS[idx]!;
 
-  const out = runTask(
+  const out = await runTask(
     deps,
     {
       task: 'app-task-matrix',

@@ -40,7 +40,7 @@ const RAND = '0123456789abcdef';
 
 const md5 = (s: string): string => createHash('md5').update(s).digest('hex');
 
-test('签名：五项顺序由 Node 的 md5 与写死的摘要共同钉住', () => {
+test('签名：五项顺序由 Node 的 md5 与写死的摘要共同钉住', async () => {
   // ① 与**另一个实现**对拍（不是拿 `md5Hex` 自证）
   assert.equal(
     redpackSign(REQ_ID, 'TKN', NOW_MS),
@@ -54,7 +54,7 @@ test('签名：五项顺序由 Node 的 md5 与写死的摘要共同钉住', () 
   assert.equal(REDPACK_SIGN_SALT, md5('123456'));
 });
 
-test('头：十枚都在，且时间戳在签名、`timestamp` 与 `x-DeviceInfo` 三处是同一个值', () => {
+test('头：十枚都在，且时间戳在签名、`timestamp` 与 `x-DeviceInfo` 三处是同一个值', async () => {
   const call = makeRedpackCall('TKN', NOW_MS, { requestId: REQ_ID, deviceRand: RAND });
   const h = redpackHeaders(call);
   assert.equal(h.appId, REDPACK_APP_ID);
@@ -78,7 +78,7 @@ test('头：十枚都在，且时间戳在签名、`timestamp` 与 `x-DeviceInfo
   assert.equal(redpackHeaders(call, 'DEV-1').deviceid, 'DEV-1');
 });
 
-test('`makeRedpackCall` 注入 inputs 时整条请求可复现', () => {
+test('`makeRedpackCall` 注入 inputs 时整条请求可复现', async () => {
   const a = makeRedpackCall('TKN', NOW_MS, { requestId: REQ_ID, deviceRand: RAND });
   const b = makeRedpackCall('TKN', NOW_MS, { requestId: REQ_ID, deviceRand: RAND });
   assert.deepEqual(a, b);
@@ -88,7 +88,7 @@ test('`makeRedpackCall` 注入 inputs 时整条请求可复现', () => {
   assert.ok(c.requestId.includes(String(NOW_MS)), 'requestId 里要含那段毫秒，且与 timestamp 同源');
 });
 
-test('换票那一枪：头与签名按空 token 算，体里的 `version` 是 1.0', () => {
+test('换票那一枪：头与签名按空 token 算，体里的 `version` 是 1.0', async () => {
   const call = makeRedpackCall('TKN', NOW_MS, { requestId: REQ_ID, deviceRand: RAND });
   const req = tokenValidateRequest(call, 'SSO-TOKEN', 'DEV-1');
   assert.equal(req.url, `${REDPACK_BASE}/user/tokenValidate`);
@@ -106,7 +106,7 @@ test('换票那一枪：头与签名按空 token 算，体里的 `version` 是 1
   assert.equal(body.loginConfig, 'redpacketLoginConfig');
 });
 
-test('其余请求：默认体里带 `SYS_CONFIG_Y`，路径逐字照参照实现', () => {
+test('其余请求：默认体里带 `SYS_CONFIG_Y`，路径逐字照参照实现', async () => {
   const call = makeRedpackCall('TKN', NOW_MS, { requestId: REQ_ID, deviceRand: RAND });
   const list = taskListRequest(call);
   assert.equal(list.url, `${REDPACK_BASE}/redpacket/configTaskLoginList`);
@@ -118,7 +118,7 @@ test('其余请求：默认体里带 `SYS_CONFIG_Y`，路径逐字照参照实�
   assert.equal(REDPACK_SSO_SOURCE_ID, '001216');
 });
 
-test('基址口子：去尾斜杠、路径不丢', () => {
+test('基址口子：去尾斜杠、路径不丢', async () => {
   assert.equal(redpackUrl(undefined, '/redpacket/userSign'), `${REDPACK_BASE}/redpacket/userSign`);
   assert.equal(
     redpackUrl('http://127.0.0.1:8080/mock/', '/redpacket/userSign'),
@@ -128,7 +128,7 @@ test('基址口子：去尾斜杠、路径不丢', () => {
   assert.equal(redpackUrl('   ', '/x'), `${REDPACK_BASE}/x`);
 });
 
-test('信封：判成功看 `header.status`，错误文案按 data → header 依次取', () => {
+test('信封：判成功看 `header.status`，错误文案按 data → header 依次取', async () => {
   // 数字 200 与字符串 "200" 都算成功（上游给的是数字，参照实现也是 String 比）
   assert.equal(parseRedpackEnvelope('{"header":{"status":200},"data":{}}').ok, true);
   assert.equal(parseRedpackEnvelope('{"header":{"status":"200"}}').ok, true);
@@ -151,33 +151,33 @@ test('信封：判成功看 `header.status`，错误文案按 data → header �
   assert.equal(redpackError({ header: { status: 500, errMsg: 'H2' }, data: [1, 2] }), 'H2');
 });
 
-test('非 JSON 的响应不当成功，而且把原文留着', () => {
+test('非 JSON 的响应不当成功，而且把原文留着', async () => {
   const r = parseRedpackEnvelope('<html>502</html>');
   assert.equal(r.ok, false);
   assert.match(r.error ?? '', /不是 JSON/);
   assert.equal(r.raw, '<html>502</html>', '日志要能贴出原文');
 });
 
-test('`callRedpack`：HTTP 层失败与业务失败都折成 `ok:false`，正文里的原因不丢', () => {
-  const ok: Transport = () => ({ status: 200, headers: {}, body: '{"header":{"status":200},"data":{"token":"T"}}' });
-  const env = callRedpack(ok, taskListRequest(makeRedpackCall('TKN', NOW_MS)));
+test('`callRedpack`：HTTP 层失败与业务失败都折成 `ok:false`，正文里的原因不丢', async () => {
+  const ok: Transport = async () => ({ status: 200, headers: {}, body: '{"header":{"status":200},"data":{"token":"T"}}' });
+  const env = await callRedpack(ok, taskListRequest(makeRedpackCall('TKN', NOW_MS)));
   assert.equal(env.ok, true);
   assert.equal(env.httpError, undefined);
 
   // 非 200 但正文里有原因（有些活动站把错误写在正文里）
-  const bad: Transport = () => ({
+  const bad: Transport = async () => ({
     status: 500,
     headers: {},
     body: '{"header":{"status":500},"data":{"errorMsg":"票过期了"}}',
   });
-  const e2 = callRedpack(bad, taskListRequest(makeRedpackCall('TKN', NOW_MS)));
+  const e2 = await callRedpack(bad, taskListRequest(makeRedpackCall('TKN', NOW_MS)));
   assert.equal(e2.ok, false);
   assert.match(e2.error ?? '', /票过期了/);
   assert.equal(e2.httpError !== undefined, true);
 
   // 传输层直接失败（宿主回的是 `{"error": …}`，**没有** status / body）
-  const down: Transport = () => ({ error: '连不上' });
-  const e3 = callRedpack(down, taskListRequest(makeRedpackCall('TKN', NOW_MS)));
+  const down: Transport = async () => ({ error: '连不上' });
+  const e3 = await callRedpack(down, taskListRequest(makeRedpackCall('TKN', NOW_MS)));
   assert.equal(e3.ok, false);
   assert.equal(e3.error, '连不上');
 });

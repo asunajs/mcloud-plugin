@@ -28,7 +28,7 @@ import type { Transport } from '../src/mcloud/client.ts';
 const NOW = '2026-10-15T01:00:00.000Z';
 
 /** 一调用就报错的 transport：用来证明读数接口**不发上游请求**。 */
-const explodingTransport: Transport = () => {
+const explodingTransport: Transport = async () => {
   throw new Error('读数接口不该发上游请求');
 };
 
@@ -39,20 +39,20 @@ function deps(store: Store) {
   return testDeps(store, { transport: explodingTransport, now: NOW });
 }
 
-function readings(store: Store): Record<string, any> {
+async function readings(store: Store): Promise<Record<string, any>> {
   const r = mcloudRoutes(deps(store)).find(
     (x) => x.path === '/plugins/mcloud/api/readings' && x.method === 'GET',
   );
   assert.ok(r, '没有 readings 路由');
-  const res = r.handler({ method: 'GET', path: r.path });
+  const res = await r.handler({ method: 'GET', path: r.path });
   assert.equal(res.status, 200);
   return JSON.parse(res.body);
 }
 
 // ── ① 空库不能炸 ──────────────────────────────────────────────────────
 
-test('空库：七个区块都在，且不抛（刚装上的机器上会被调一次）', () => {
-  const d = readings(memStore());
+test('空库：七个区块都在，且不抛（刚装上的机器上会被调一次）', async () => {
+  const d = await readings(memStore());
   for (const k of ['account', 'daily', 'exchange', 'live', 'data', 'push', 'settings']) {
     assert.ok(k in d, `缺区块 ${k}`);
   }
@@ -64,11 +64,11 @@ test('空库：七个区块都在，且不抛（刚装上的机器上会被调�
   assert.equal(d.data.matrix.total, 2, '矩阵是轮着读的，总共两个市场');
 });
 
-test('推送区块：没配时说「还没配」，配了之后列出渠道（**不给空表也不给假数据**）', () => {
+test('推送区块：没配时说「还没配」，配了之后列出渠道（**不给空表也不给假数据**）', async () => {
   // ⓘ 这一条原来断言的是「`implemented: false` ⇒ 界面显示『还没做』」——
   //   那在阶段 ⑤ 之前是对的。⑤-1 做完之后它变成**过期断言**：
   //   推送真的能用了，还钉着"还没做"就是在阻止功能上线。
-  const d = readings(memStore());
+  const d = await readings(memStore());
   assert.equal(d.push.channels.length, 10, '10 个渠道要都列出来（不然配不了）');
   assert.deepEqual(d.push.configured, [], '没配就是空数组');
   assert.equal(d.push.implemented, undefined, '`implemented` 那个占位字段该删了');
@@ -76,27 +76,27 @@ test('推送区块：没配时说「还没配」，配了之后列出渠道（**
   for (const c of d.push.channels) assert.ok(c.hint.length > 0, `${c.id} 缺提示语`);
 });
 
-test('⚠ 它是只读的：一个上游请求都不发（transport 一调就抛）', () => {
+test('⚠ 它是只读的：一个上游请求都不发（transport 一调就抛）', async () => {
   // 上面 readings() 用的就是 explodingTransport —— 能返回就说明没发请求。
   // 这一条是「打开页面不会因为上游慢而卡住」的可执行版本。
-  const d = readings(memStore());
+  const d = await readings(memStore());
   assert.ok(d.at, '没返回读数');
 });
 
-test('配置被改过也不炸（口子全是空串 / 畸形值时）', () => {
+test('配置被改过也不炸（口子全是空串 / 畸形值时）', async () => {
   const store = memStore();
   // ⚠ 这里原来写的是 `mcloud.baseUrl` —— 那是**改名前留下的旧键**
   //   （真键是 `mcloud.base_url`），所以这一行一直是个空操作。
   store.setState('mcloud.base_url', '', NOW);
   store.setState('mcloud.live.url', 'not a url', NOW);
-  const d = readings(store);
+  const d = await readings(store);
   assert.equal(typeof d.settings.baseUrl, 'string');
   assert.equal(typeof d.settings.liveUrl, 'string');
 });
 
 // ── ② 「一次运行」读数 ────────────────────────────────────────────────
 
-test('`readDailyRun`：库里那段 JSON 坏了 ⇒ 当作"还没跑过"，不抛', () => {
+test('`readDailyRun`：库里那段 JSON 坏了 ⇒ 当作"还没跑过"，不抛', async () => {
   const store = memStore();
   // 手改过库 / 老版本写的 / 写到一半断电 —— 三种都可能留下半截 JSON
   for (const bad of ['{', 'null', '[]', '{"steps": "不是数组"}', '乱码']) {
@@ -104,10 +104,10 @@ test('`readDailyRun`：库里那段 JSON 坏了 ⇒ 当作"还没跑过"，不�
     assert.equal(readDailyRun(store), null, `坏值 ${bad} 该被当成"还没跑过"`);
   }
   // 整个读数接口也不能因为这一段坏 JSON 而 500（那会让界面全白）
-  assert.equal(readings(store).daily.last, null);
+  assert.equal((await readings(store)).daily.last, null);
 });
 
-test('`readDailyRun`：正常值原样读出来', () => {
+test('`readDailyRun`：正常值原样读出来', async () => {
   const store = memStore();
   const run = {
     at: NOW,
@@ -127,21 +127,21 @@ test('`readDailyRun`：正常值原样读出来', () => {
   assert.equal(got.steps[1]!.idle, true, '`idle` 要保住 —— 界面据此显示成灰色而不是绿勾');
 });
 
-test('`doneToday` 认的是标记里的日期，不是"有没有过运行记录"', () => {
+test('`doneToday` 认的是标记里的日期，不是"有没有过运行记录"', async () => {
   const store = memStore();
   // 跑过（有读数）但今天没成功（没标记）—— 这两种状态要分得开：
   // 界面显示「上次 08:12 失败」和「今天已完成」是两件事
   store.setState(DAILY_LAST_KEY, JSON.stringify({ at: NOW, ok: false, note: '3 步失败', steps: [] }), NOW);
-  assert.equal(readings(store).daily.doneToday, false);
+  assert.equal((await readings(store)).daily.doneToday, false);
 
   store.setState(DAILY_DONE_KEY, NOW.slice(0, 10), NOW);
-  assert.equal(readings(store).daily.doneToday, true);
+  assert.equal((await readings(store)).daily.doneToday, true);
   // 标记是**前一天**的 ⇒ 今天还没跑
   store.setState(DAILY_DONE_KEY, '2026-10-14', NOW);
-  assert.equal(readings(store).daily.doneToday, false);
+  assert.equal((await readings(store)).daily.doneToday, false);
 });
 
-test('读数里带**插件版本**（界面右上角那一格就是它）', () => {
-  const d = readings(memStore());
+test('读数里带**插件版本**（界面右上角那一格就是它）', async () => {
+  const d = await readings(memStore());
   assert.match(String(d.version), /^\d+\.\d+\.\d+$/, `实际：${String(d.version)}`);
 });

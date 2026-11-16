@@ -205,11 +205,11 @@ export function sessionHeaders(s: Session): {
  *
  *  `judge` 拿到成功响应的信封，返回 `{ok, note, snapshot}`；
  *  `snapshot` 会原样 JSON 落到 `spec.stateKey`（给界面/后续步骤读）。 */
-export function runTask(
+export async function runTask(
   deps: TaskDeps,
   spec: TaskSpec,
   judge: (env: SignInEnvelope, res: CallResult) => { ok: boolean; note: string; snapshot?: unknown },
-): TaskOutcome {
+): Promise<TaskOutcome> {
   // ① 错过太久就不做（只对不可逆动作设了这个阈值；手动触发的负数不算「晚」）
   const late = deps.lateMs ?? 0;
   if (spec.skipIfLaterThanMs !== undefined && late > spec.skipIfLaterThanMs) {
@@ -244,7 +244,7 @@ export function runTask(
   });
 
   // ④ 发（一次调用只发一个请求 —— 执行预算只有 2000ms，见 README）
-  const res = callOnce(deps.transport, req);
+  const res = await callOnce(deps.transport, req);
 
   // ⑤ 上游顺手给的 cookie 要并回去（会话续期就靠这个）
   if (res.setCookies.length > 0) {

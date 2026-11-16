@@ -258,7 +258,7 @@ function ackReceiptBytes(id: number): Uint8Array {
 
 // ══════════════════════════════ 一、实拍字面量自洽 ══════════════════════════════
 
-test('实拍字面量的长度与字段集（先证字面量本身是那段字节）', () => {
+test('实拍字面量的长度与字段集（先证字面量本身是那段字节）', async () => {
   const hb = fromHex(CAPTURE_HEARTBEAT_126);
   const ack = fromHex(CAPTURE_ACK_RECEIPT_94);
   const danmaku = fromHex(CAPTURE_DANMAKU_622);
@@ -278,7 +278,7 @@ test('实拍字面量的长度与字段集（先证字面量本身是那段字�
   assert.equal(commandOf(ack), BigInt(CMD_ACK));
 });
 
-test('deviceInfo(13) 是 **96 字节 ASCII**（不是 48 字节二进制）', () => {
+test('deviceInfo(13) 是 **96 字节 ASCII**（不是 48 字节二进制）', async () => {
   assert.equal(LIVE_DEVICE_INFO_ASCII.length, 96, '96 个 ASCII 字符');
   assert.match(LIVE_DEVICE_INFO_ASCII, /^[0-9a-f]{96}$/, '逐字是 hex 的文本形态');
   assert.equal(DEVICE_INFO_ASCII_96, LIVE_DEVICE_INFO_ASCII, '模块常量必须等于实拍值（§5.2）');
@@ -292,13 +292,13 @@ test('deviceInfo(13) 是 **96 字节 ASCII**（不是 48 字节二进制）', ()
 
 // ══════════════════════════════ 二、encodeHeartbeat ══════════════════════════════
 
-test('encodeHeartbeat 逐字节等于实拍那条 126 字节帧', () => {
+test('encodeHeartbeat 逐字节等于实拍那条 126 字节帧', async () => {
   const got = encodeHeartbeat(CAPTURE_NOW_MS, fromHex(CAPTURE_IDENT_TAIL_HEX));
   assert.equal(toHex(got), CAPTURE_HEARTBEAT_126, '整帧逐字节（含 96 B deviceInfo / 4 B 秒 / 16 B identification）');
   assert.equal(got.length, 126);
 });
 
-test('encodeHeartbeat 的字段集：8 / 11 / 13 / 14 / 15，**没有** 2 / 3 / 6 / 7 / 10', () => {
+test('encodeHeartbeat 的字段集：8 / 11 / 13 / 14 / 15，**没有** 2 / 3 / 6 / 7 / 10', async () => {
   const got = encodeHeartbeat(CAPTURE_NOW_MS, fromHex(CAPTURE_IDENT_TAIL_HEX));
   assert.deepEqual(fieldNums(got), [8, 11, 13, 14, 15], '顺序也必须是升序（protobufjs 的实际形状）');
   for (const num of [1, 2, 3, 6, 7, 10]) {
@@ -310,7 +310,7 @@ test('encodeHeartbeat 的字段集：8 / 11 / 13 / 14 / 15，**没有** 2 / 3 / 
   assert.equal(scan(got).find((f) => f.num === 11)!.wire, 0, '⚠ 实拍是 **wire 0（非 packed）**，Rust 写 wire 2');
 });
 
-test('timestamp(14) 是 **4 字节大端「秒」**（不是 8 字节毫秒）', () => {
+test('timestamp(14) 是 **4 字节大端「秒」**（不是 8 字节毫秒）', async () => {
   const tail = fromHex(CAPTURE_IDENT_TAIL_HEX);
   const f14 = fieldBytes(encodeHeartbeat(CAPTURE_NOW_MS, tail), 14);
   assert.equal(f14.length, 4, '4 字节');
@@ -325,7 +325,7 @@ test('timestamp(14) 是 **4 字节大端「秒」**（不是 8 字节毫秒）',
   );
 });
 
-test('identification(15) = ASCII `cmos_im2` + 8 字节；前缀与总长照实拍', () => {
+test('identification(15) = ASCII `cmos_im2` + 8 字节；前缀与总长照实拍', async () => {
   assert.equal(utf8(LIVE_IDENTIFICATION_PREFIX).length, 8, '前缀是 8 字节 ASCII');
   const f15 = fieldBytes(encodeHeartbeat(CAPTURE_NOW_MS, fromHex(CAPTURE_IDENT_TAIL_HEX)), 15);
   assert.equal(f15.length, 16, '⚠ 实拍是 16 B；Rust 的 `cmos_im`+16B = 23 B');
@@ -353,7 +353,7 @@ const PROVISION_INPUT = {
   phone: '19900000000',
 };
 
-test('encodeProvision 的字段集与总长（照实拍：2/3/8/9/10/11/13/14/15）', () => {
+test('encodeProvision 的字段集与总长（照实拍：2/3/8/9/10/11/13/14/15）', async () => {
   const got = encodeProvision(PROVISION_INPUT, PROVISION_NOW_MS, fromHex(CAPTURE_IDENT_TAIL_HEX));
   assert.deepEqual(fieldNums(got), [2, 3, 8, 9, 10, 11, 13, 14, 15], '升序，且**没有** 1(version) / 6(userAgent) / 7(pov)');
   assert.equal(got.length, 471, '抓包 §二：`cmd=3` 那帧是 471 B（98 字符 token / 13 字符 resource / 空 deviceUuid）');
@@ -370,7 +370,7 @@ test('encodeProvision 的字段集与总长（照实拍：2/3/8/9/10/11/13/14/15
   assert.equal(fieldBytes(got, 15).length, 16, 'identification 16 B');
 });
 
-test('encodeProvision 的前三段逐字节等于实拍（GUID / auth / payload 长度）', () => {
+test('encodeProvision 的前三段逐字节等于实拍（GUID / auth / payload 长度）', async () => {
   const got = encodeProvision(PROVISION_INPUT, PROVISION_NOW_MS, fromHex(CAPTURE_IDENT_TAIL_HEX));
   const head = toHex(got.subarray(0, 2 + 68 + 2 + 101));
   assert.equal(
@@ -385,7 +385,7 @@ test('encodeProvision 的前三段逐字节等于实拍（GUID / auth / payload 
   assert.equal(toHex(payload), CAPTURE_PROVISION_PAYLOAD_HEX_SANITIZED, 'payload 逐字节（token 已同长度替换）');
 });
 
-test('encodeProvision 的 payload：**不写 networkType(3)**、deviceUuid 空串也写 `4a 00`', () => {
+test('encodeProvision 的 payload：**不写 networkType(3)**、deviceUuid 空串也写 `4a 00`', async () => {
   const payload = fieldBytes(
     encodeProvision(PROVISION_INPUT, PROVISION_NOW_MS, fromHex(CAPTURE_IDENT_TAIL_HEX)),
     9,
@@ -414,7 +414,7 @@ test('encodeProvision 的 payload：**不写 networkType(3)**、deviceUuid 空�
   );
 });
 
-test('encodeProvision 的尾段：deviceId / encryptType / deviceInfo / 秒 / identification', () => {
+test('encodeProvision 的尾段：deviceId / encryptType / deviceInfo / 秒 / identification', async () => {
   const got = encodeProvision(PROVISION_INPUT, PROVISION_NOW_MS, fromHex(CAPTURE_IDENT_TAIL_HEX));
   // 从 `50 00`（deviceId）起算：4 个字节的两条"零值也要写" + 96 + 4 + 16 的定长段。
   const tail = toHex(got.subarray(-(4 + 2 + 96 + 2 + 4 + 2 + 16)));
@@ -437,7 +437,7 @@ test('encodeProvision 的尾段：deviceId / encryptType / deviceInfo / 秒 / id
 
 // ══════════════════════════════ 四、encodeAck ══════════════════════════════
 
-test('encodeAck 逐字节等于手算期望（payload = {1:{1:msgId}}，19 位 id 走 BigInt）', () => {
+test('encodeAck 逐字节等于手算期望（payload = {1:{1:msgId}}，19 位 id 走 BigInt）', async () => {
   const msgId = '1600232022104666041'; // 实拍 conn 632 帧 [43] 的 msgId（> 2^53）
   const got = encodeAck(msgId, CAPTURE_NOW_MS, fromHex(CAPTURE_IDENT_TAIL_HEX));
   // 期望值是手算的：`40 00` + `4a 0c` + payload(`0a 0a` + `08` + 9 字节 varint) + `58 00` + 13/14/15
@@ -456,7 +456,7 @@ test('encodeAck 逐字节等于手算期望（payload = {1:{1:msgId}}，19 位 i
   assert.equal(got.length, 140);
 });
 
-test('encodeAck 的字段集：8 / 9 / 11 / 13 / 14 / 15，command=0 也要写出来', () => {
+test('encodeAck 的字段集：8 / 9 / 11 / 13 / 14 / 15，command=0 也要写出来', async () => {
   const got = encodeAck('525194252007', CAPTURE_NOW_MS, fromHex(CAPTURE_IDENT_TAIL_HEX));
   assert.deepEqual(fieldNums(got), [8, 9, 11, 13, 14, 15], '⚠ 不含 GUID(2) —— 理由见 msync.ts 文件头第三节');
   assert.equal(toHex(got.subarray(0, 2)), '4000', '⚠ `command=0` **写出来**了（proto3 的一般规则是不写）');
@@ -468,7 +468,7 @@ test('encodeAck 的字段集：8 / 9 / 11 / 13 / 14 / 15，command=0 也要写�
   assert.equal(decodeMsync(got).msgId, '525194252007', '往返：解回来还是那个十进制串');
 });
 
-test('encodeAck 的入参是开发期契约：非十进制串当场炸', () => {
+test('encodeAck 的入参是开发期契约：非十进制串当场炸', async () => {
   assert.throws(() => encodeAck('', 0), /十进制串/);
   assert.throws(() => encodeAck('007', 0), /十进制串/, '前导零会让"写进去的 id"与"解出来的 id"不是同一个串');
   assert.throws(() => encodeAck('cmos#ngvlcs', 0), /十进制串/);
@@ -476,7 +476,7 @@ test('encodeAck 的入参是开发期契约：非十进制串当场炸', () => {
 
 // ══════════════════════════════ 五、decodeMsync ══════════════════════════════
 
-test('实拍 94 字节的 ack 回执：command=0、msgId 解得出、**没有文本**', () => {
+test('实拍 94 字节的 ack 回执：command=0、msgId 解得出、**没有文本**', async () => {
   const got = decodeMsync(fromHex(CAPTURE_ACK_RECEIPT_94));
   assert.equal(got.command, CMD_ACK);
   assert.equal(got.msgId, '525194232852', '抓包 §3.2：`9:{1:{1:0} 2:<msgId> 3:<msgId>}` ⇒ 取字段 2');
@@ -485,7 +485,7 @@ test('实拍 94 字节的 ack 回执：command=0、msgId 解得出、**没有文
   assert.equal(isMsyncFrame(fromHex(CAPTURE_ACK_RECEIPT_94)), true);
 });
 
-test('实拍 622 字节的弹幕帧：command=2、文本走 9.2.6.4.2', () => {
+test('实拍 622 字节的弹幕帧：command=2、文本走 9.2.6.4.2', async () => {
   const got = decodeMsync(fromHex(CAPTURE_DANMAKU_622));
   assert.equal(got.command, CMD_DANMAKU);
   assert.deepEqual([...got.texts], ['小红花口令：一键9图出圈'], '抓包 §3.1 逐字节核过的那条路径');
@@ -493,7 +493,7 @@ test('实拍 622 字节的弹幕帧：command=2、文本走 9.2.6.4.2', () => {
   assert.equal(got.isMsync, true);
 });
 
-test('msgId 是 19 位十进制 ⇒ 必须用 BigInt（`Number` 会悄悄改值）', () => {
+test('msgId 是 19 位十进制 ⇒ 必须用 BigInt（`Number` 会悄悄改值）', async () => {
   const got = decodeMsync(fromHex(CAPTURE_DANMAKU_622));
   assert.equal(got.msgId, '1600232022104666041');
   assert.equal(Number('1600232022104666041'), 1600232022104666000, '⚠ 走 number 会丢低 7 位 —— 这就是不能用 number 的证据');
@@ -503,7 +503,7 @@ test('msgId 是 19 位十进制 ⇒ 必须用 BigInt（`Number` 会悄悄改值�
   assert.equal(decodeMsync(ackBytes).msgId, got.msgId, '往返：19 位 id 逐字符不变');
 });
 
-test('认不出的字段被跳过（proto3 前向兼容）', () => {
+test('认不出的字段被跳过（proto3 前向兼容）', async () => {
   // 实拍那帧里就有一堆我们不读的字段（`payload.2.3` / `.4` / `.5`、`MessageBody.5` 的 ext…），
   // 解码照样拿到文本 ⇒ 这本身就是"跳过"的证据（上面那条已经覆盖）。
   // 再补一条**没有实拍**的：未知的高编号字段 + packed（wire 2）的 encryptType(11)。
@@ -523,7 +523,7 @@ test('认不出的字段被跳过（proto3 前向兼容）', () => {
   assert.equal(hasField(weird, 11, 2), true);
 });
 
-test('`payload.2` 是 repeated：文本落在**哪一条** meta 都要拿得到（Rust 只取第一条 ⇒ 会漏）', () => {
+test('`payload.2` 是 repeated：文本落在**哪一条** meta 都要拿得到（Rust 只取第一条 ⇒ 会漏）', async () => {
   const textMeta = (id: string, text: string): number[] => [
     ...lenField(1, utf8(id)),
     ...lenField(6, lenField(4, lenField(2, utf8(text)))),
@@ -560,7 +560,7 @@ test('`payload.2` 是 repeated：文本落在**哪一条** meta 都要拿得到�
   assert.deepEqual([...decodeMsync(middle).texts], ['中国移动云盘']);
 });
 
-test('一条报文里的多个 content 按 repeated 顺序；只有 type 没有 text 的片段不产出', () => {
+test('一条报文里的多个 content 按 repeated 顺序；只有 type 没有 text 的片段不产出', async () => {
   const withTwo = danmakuBytes([...lenField(1, utf8('9'))], ['小红花口令：', '一键9图出圈']);
   assert.deepEqual([...decodeMsync(withTwo).texts], ['小红花口令：', '一键9图出圈'], '顺序 = repeated 的顺序，**不拼接**（拼是调用方的事）');
   // `4:{1:0}`（只有类型）不是文本 —— 实拍 conn 632 [44] 的 MessageBody 里就有这个形状。
@@ -571,7 +571,7 @@ test('一条报文里的多个 content 按 repeated 顺序；只有 type 没有 
   assert.deepEqual([...decodeMsync(onlyType).texts], [], '没有字段 2 的 content 不产出空串');
 });
 
-test('msgId 的两种编码都认：实拍是 varint，十进制串也认（同仓夹具的形状）', () => {
+test('msgId 的两种编码都认：实拍是 varint，十进制串也认（同仓夹具的形状）', async () => {
   const asVarint = danmakuBytes([...varField(1, 7)], ['x']);
   assert.equal(decodeMsync(asVarint).msgId, '7', '⚠ 实拍形状：varint(wire 0)');
 
@@ -584,7 +584,7 @@ test('msgId 的两种编码都认：实拍是 varint，十进制串也认（同�
   assert.deepEqual([...decodeMsync(notAnId).texts], ['x'], '认不出 id 不影响文本');
 });
 
-test('`cmd=2` 但没有 payload / 没有 msgId ⇒ msgId 是 undefined（不是空串、不是 0）', () => {
+test('`cmd=2` 但没有 payload / 没有 msgId ⇒ msgId 是 undefined（不是空串、不是 0）', async () => {
   const bare = decodeMsync(new Uint8Array([...varField(8, 2)]));
   assert.equal(bare.command, CMD_DANMAKU);
   assert.equal(bare.msgId, undefined);
@@ -596,7 +596,7 @@ test('`cmd=2` 但没有 payload / 没有 msgId ⇒ msgId 是 undefined（不是�
   assert.deepEqual([...noId.texts], ['文本在但没 id']);
 });
 
-test('解不开的报文**不抛**，并且能和"这不是 MSync"分开', () => {
+test('解不开的报文**不抛**，并且能和"这不是 MSync"分开', async () => {
   // Rust 的五个坏例（`malformed_payload_reports_an_error`）+ 空字节。
   const malformed = [
     [0x80], // 截断的 varint
@@ -629,7 +629,7 @@ test('解不开的报文**不抛**，并且能和"这不是 MSync"分开', () =>
   assert.equal(decodeMsync(unknownOnly).command, 0);
 });
 
-test('command 的命名按实拍：0=ack、2=弹幕（⚠ 与 Rust 的 CMD_SYNC/CMD_NOTICE 反着）', () => {
+test('command 的命名按实拍：0=ack、2=弹幕（⚠ 与 Rust 的 CMD_SYNC/CMD_NOTICE 反着）', async () => {
   assert.equal(CMD_ACK, 0);
   assert.equal(CMD_HEARTBEAT, 1);
   assert.equal(CMD_DANMAKU, 2);
@@ -644,7 +644,7 @@ test('command 的命名按实拍：0=ack、2=弹幕（⚠ 与 Rust 的 CMD_SYNC/
 
 // ══════════════════════════════ 六、三条帧之间的互相印证 ══════════════════════════════
 
-test('出站帧能被自己的解码器读回来（往返 —— 只作补充判据）', () => {
+test('出站帧能被自己的解码器读回来（往返 —— 只作补充判据）', async () => {
   const identTail = fromHex(CAPTURE_IDENT_TAIL_HEX);
   const hb = encodeHeartbeat(CAPTURE_NOW_MS, identTail);
   assert.equal(decodeMsync(hb).command, CMD_HEARTBEAT, '心跳：无文本、无 msgId');

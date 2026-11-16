@@ -70,26 +70,26 @@ const GOLDEN_WIRE =
   '7688ad5fd68561af8860b1e1d93ad7d00150cdb6bac04a3cc792a05347c7813afd2e06ca996da5' +
   '2959d7bc92881e4584c088cf7b01dc35341927e92c11d7e66e76c1625228a8d84c0eb0';
 
-test('⚠ 黄金值：加密 + 末 10 位错位**逐字节**命中实拍密文（字母序）', () => {
+test('⚠ 黄金值：加密 + 末 10 位错位**逐字节**命中实拍密文（字母序）', async () => {
   const wire = encryptBody(SORTED_PLAINTEXT);
   assert.equal(wire.length, 384, '186 字节 → PKCS7 补 6 → 192 字节 → 384 hex');
   assert.equal(wire, SORTED_WIRE);
 });
 
-test('⚠ 黄金值：客户端原始键序那条也逐字节命中', () => {
+test('⚠ 黄金值：客户端原始键序那条也逐字节命中', async () => {
   // 两条黄金值都要对 —— 只对一条的话，"实现里少了一层/多了一层"仍可能蒙混过去
   assert.equal(encryptBody(CAPTURED_PLAINTEXT), GOLDEN_WIRE);
   assert.notEqual(GOLDEN_WIRE, SORTED_WIRE, '两条必须不同，否则键序没进加密输入');
 });
 
-test('⚠ 请求体构造器产出的就是黄金值那条明文（字母序）', () => {
+test('⚠ 请求体构造器产出的就是黄金值那条明文（字母序）', async () => {
   // 这条把"常量对不对"与"密文对不对"接上：上面两条测的是加密，
   // 这条测的是**我们真的会发出那段明文**。
   const body = smsThirdloginBodySorted('19900000000', '429344', 'hOjseB');
   assert.equal(JSON.stringify(body), SORTED_PLAINTEXT);
 });
 
-test('请求体：App 端那几个**与 PC 不同**的值', () => {
+test('请求体：App 端那几个**与 PC 不同**的值', async () => {
   const b = smsThirdloginBody('19900000000', '429344', 'hOjseB');
   assert.equal(b.cpid, APP_CPID);
   assert.equal(b.clienttype, APP_CLIENT_TYPE, '全小写 t（getSmsCode 那边是 clientType）');
@@ -101,7 +101,7 @@ test('请求体：App 端那几个**与 PC 不同**的值', () => {
   assert.equal(b.verType, '1');
 });
 
-test('发码请求体：**所有值都是字符串**，且字段名是上游拼错的 `puzzleVerfycode`', () => {
+test('发码请求体：**所有值都是字符串**，且字段名是上游拼错的 `puzzleVerfycode`', async () => {
   const b = sendSmsCodeBody('19900000001');
   assert.deepEqual(b, {
     mode: '0',
@@ -117,7 +117,7 @@ test('发码请求体：**所有值都是字符串**，且字段名是上游拼�
   assert.equal(b.puzzleVerfycode, '', '首次请求是**空串**，不是 null、也不是省略');
 });
 
-test('⚠ 错位方向：反了就是 `9103`（不是"解密失败"那种报错）', () => {
+test('⚠ 错位方向：反了就是 `9103`（不是"解密失败"那种报错）', async () => {
   assert.equal(shiftHead10ToBack(shiftTail10ToFront(SORTED_WIRE)), SORTED_WIRE, '两步要互逆');
   // 方向反了的话，密文完全不同 —— 而服务端只会说"输入参数不合法"
   assert.notEqual(shiftHead10ToBack(SORTED_WIRE), SORTED_WIRE);
@@ -126,7 +126,7 @@ test('⚠ 错位方向：反了就是 `9103`（不是"解密失败"那种报错�
   assert.equal(shiftHead10ToBack('abc'), 'abc');
 });
 
-test('解密：`decryptBody` 自己会反错位（传**线上形态**，不是先手动反一次）', () => {
+test('解密：`decryptBody` 自己会反错位（传**线上形态**，不是先手动反一次）', async () => {
   // ⚠ 第一版这里写成了 `decryptBody(shiftHead10ToBack(WIRE))` —— 反了两次。
   //   而反两次**不报错**，只是解出乱码：错位不改变字符集，所以"多反一次"
   //   得到的仍是一个看起来正常的 hex 串。这正是参考实现注释里点名的坑
@@ -135,13 +135,13 @@ test('解密：`decryptBody` 自己会反错位（传**线上形态**，不是�
   assert.equal(decryptBody(GOLDEN_WIRE), CAPTURED_PLAINTEXT);
 });
 
-test('⚠ 备用密钥解不出东西（它是排查用的判据，不是"另一个可用选项"）', () => {
+test('⚠ 备用密钥解不出东西（它是排查用的判据，不是"另一个可用选项"）', async () => {
   // 参考实现留备用密钥的理由：「用错这把会得到 9103」是排查密钥问题最快的判据。
   // 所以这里钉住"两把不通用" —— 通用的话那条判据就没了。
   assert.throws(() => decryptBody(SORTED_WIRE, APP_LOGIN_AES_KEY_ALT), /解密|填充/);
 });
 
-test('`newLoginRandom`：6 位字母数字（形状取自实拍 `hOjseB`）', () => {
+test('`newLoginRandom`：6 位字母数字（形状取自实拍 `hOjseB`）', async () => {
   for (let i = 0; i < 50; i++) {
     const r = newLoginRandom();
     assert.equal(r.length, 6);
@@ -152,7 +152,7 @@ test('`newLoginRandom`：6 位字母数字（形状取自实拍 `hOjseB`）', ()
   //   所以这里不断言"多次调用不重复"（那是在钉一个没被证实的性质）。
 });
 
-test('设备串：形状与抓包一致', () => {
+test('设备串：形状与抓包一致', async () => {
   const d = appDeviceInfo('DEV123');
   assert.ok(d.startsWith('1|192.168.3.179|2|12.6.0|APPLE|iPad8,6|DEV123|AAA000000000|'));
   assert.ok(d.includes('ipados 26.6'), '⚠ 设备串里是小写 `ipados`（UA 里是 `iOS`）');
@@ -160,7 +160,7 @@ test('设备串：形状与抓包一致', () => {
   assert.ok(appClientInfo('DEV123').endsWith('aVBhZA==|0|;'));
 });
 
-test('⚠ 请求头：**故意不发** `hcy-cool-flag`', () => {
+test('⚠ 请求头：**故意不发** `hcy-cool-flag`', async () => {
   // 带上它（任意值）服务端会把响应体换成一段 144 字节的加密串，
   // 而我们没有那把密钥 ⇒ 整条登录链断在这里。所以这不是漏了，是故意的。
   const h = appHeaders('DEV123', 1700000000000);
@@ -180,7 +180,7 @@ test('⚠ 请求头：**故意不发** `hcy-cool-flag`', () => {
 
 // ────────────────────── 请求构造 ──────────────────────
 
-test('⚠ App 的三枪：头是 App 那套，体是**密文**', () => {
+test('⚠ App 的三枪：头是 App 那套，体是**密文**', async () => {
   const send = appSendSmsCodeRequest('DEV1', 1700000000000, '13800000000');
   assert.equal(send.url, 'https://user-njs.yun.139.com/user/sms/getSmsCode');
   assert.equal(send.method, 'POST');
@@ -210,7 +210,7 @@ test('⚠ App 的三枪：头是 App 那套，体是**密文**', () => {
   assert.equal(back['clienttype'], APP_CLIENT_TYPE);
 });
 
-test('⚠ 加密在构造里完成，调用点**没有**"忘了加密"这个选项', () => {
+test('⚠ 加密在构造里完成，调用点**没有**"忘了加密"这个选项', async () => {
   // 这是参考实现的原话：「传进来的是明文，加密在这里完成 —— 这样"忘了加密"
   // 在类型层面就不可能发生」。所以 `appThirdloginRequest` 收的是**明文参数**，
   // 不收支密文（收密文的话调用点可以先忘了加密再传进来）。

@@ -26,8 +26,8 @@ export function mcloudRoutes(deps: RouteDeps): RouteEntry[] {
   const base = `/plugins/${PLUGIN}/api`;
   // 基址**每次调用时从 state 读**，而不是用注入的那份快照 ——
   // 否则「刚把基址指到 mock，导入会话却去打了真上游」：配置改了要立刻生效
-  const verify = (): { ok: boolean; note: string } =>
-    verifySession({
+  const verify = async (): Promise<{ ok: boolean; note: string }> =>
+    await verifySession({
       store: deps.store,
       transport: deps.transport,
       nowIso: deps.now(),

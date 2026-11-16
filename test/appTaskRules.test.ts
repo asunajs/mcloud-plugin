@@ -35,7 +35,7 @@ import {
   uploadShapeFor,
 } from '../src/mcloud/appTaskRules.ts';
 
-test('名字门：要**同时**有"上传"和（"图"或"照"）', () => {
+test('名字门：要**同时**有"上传"和（"图"或"照"）', async () => {
   assert.equal(beiyong1NameGate('上传图片'), true);
   assert.equal(beiyong1NameGate('上传照片'), true);
   assert.equal(beiyong1NameGate('上传一个文件'), false, '只有"上传"不够');
@@ -44,14 +44,14 @@ test('名字门：要**同时**有"上传"和（"图"或"照"）', () => {
   assert.equal(beiyong1NameGate(''), false);
 });
 
-test('按钮门：链接里要有 `uploadView`', () => {
+test('按钮门：链接里要有 `uploadView`', async () => {
   assert.equal(beiyong1ButtonGate('https://x/y?action=uploadView&a=1'), true);
   assert.equal(beiyong1ButtonGate('https://x/y'), false);
   assert.equal(beiyong1ButtonGate(undefined), false, '没有链接 ⇒ 不传（不是"传一个"）');
   assert.equal(beiyong1ButtonGate(null), false);
 });
 
-test('三档形状的**具体值**（这几个数错了就是白传或传少）', () => {
+test('三档形状的**具体值**（这几个数错了就是白传或传少）', async () => {
   assert.deepEqual(UPLOAD_ONE, {
     rounds: 1,
     stopAtProcess: 0,
@@ -74,7 +74,7 @@ test('三档形状的**具体值**（这几个数错了就是白传或传少）'
   assert.equal(UPLOAD_ONE.channel, 'android');
 });
 
-test('`upload_shape_for`：113 / 106 / 522 三档', () => {
+test('`upload_shape_for`：113 / 106 / 522 三档', async () => {
   assert.equal(uploadShapeFor({ taskId: PC_UPLOAD_TASK_ID })!.channel, 'pc', '113 ⇒ PC 渠道');
   assert.equal(uploadShapeFor({ taskId: UPLOAD_TASK_ID })!.rounds, 1);
   const gate = uploadShapeFor({ taskId: GATE_UPLOAD_TASK_ID })!;
@@ -86,7 +86,7 @@ test('`upload_shape_for`：113 / 106 / 522 三档', () => {
   assert.equal(gate.perRoundMs, 500);
 });
 
-test('⚠ `beiyong1` 的**顺序是判据的一部分**：先名字门，没中才看按钮门', () => {
+test('⚠ `beiyong1` 的**顺序是判据的一部分**：先名字门，没中才看按钮门', async () => {
   // 名字门中 ⇒ 传一个（哪怕按钮门也中）
   const byName = uploadShapeFor({ groupId: 'beiyong1', name: '上传图片', buttonAppLink: 'x?uploadView' })!;
   assert.equal(byName.rounds, 1, '名字门优先');
@@ -105,13 +105,13 @@ test('⚠ `beiyong1` 的**顺序是判据的一部分**：先名字门，没中�
   assert.equal(uploadShapeFor({ groupId: 'other', name: '上传图片' }), undefined);
 });
 
-test('判不了就不传（`undefined` 不是"传一个"）', () => {
+test('判不了就不传（`undefined` 不是"传一个"）', async () => {
   assert.equal(uploadShapeFor({}), undefined);
   assert.equal(uploadShapeFor({ taskId: 999 }), undefined);
   assert.equal(uploadShapeFor({ taskId: undefined, groupId: 'beiyong1' }), undefined);
 });
 
-test('"不做"名单 / 只点一下 / 入口页 / 分享 —— 四个集合不重叠且判得住', () => {
+test('"不做"名单 / 只点一下 / 入口页 / 分享 —— 四个集合不重叠且判得住', async () => {
   assert.equal(SKIP_TASK_LIST.length, 11);
   assert.equal(shouldSkip(117), true);
   assert.equal(shouldSkip(120), true);
@@ -144,7 +144,7 @@ test('"不做"名单 / 只点一下 / 入口页 / 分享 —— 四个集合不�
   }
 });
 
-test('“没实现”要认上传族，也要把“刻意不做”排除在外', () => {
+test('“没实现”要认上传族，也要把“刻意不做”排除在外', async () => {
   assert.equal(isUnimplemented(106), false, '106 是上传，别误报');
   assert.equal(isUnimplemented(409), false, '409 固定入口');
   assert.equal(isUnimplemented(434), false, '434 分享');
@@ -163,7 +163,7 @@ test('“没实现”要认上传族，也要把“刻意不做”排除在外',
   assert.equal(isUnimplemented(undefined), true);
 });
 
-test('月度闸门的 marketName / groupId 是钉死的', () => {
+test('月度闸门的 marketName / groupId 是钉死的', async () => {
   assert.equal(MONTH_GATE_MARKET, 'sign_in_3');
   assert.equal(MONTH_GATE_GROUP, 'month');
   assert.equal(monthGateSkips({ groupId: 'month', marketName: 'sign_in_3' }, false, 14), true);
@@ -179,7 +179,7 @@ test('月度闸门的 marketName / groupId 是钉死的', () => {
 // 所以要钉的是**分类**：哪条真发请求、哪条刻意不发、哪条还没搬。分类错了，
 // 要么白点一枪（点了不改状态 = 伪装成做了），要么永远不动。
 
-test('逐条台账：这一批**还没搬** ⇒ 一枪不发（参考实现同样未实现）', () => {
+test('逐条台账：这一批**还没搬** ⇒ 一枪不发（参考实现同样未实现）', async () => {
   const ids = [105, 118, 319, 548, 549, 550, 551, 607, 608, 617, 1003, 1055, 1079];
   for (const id of ids) {
     assert.equal(stepFor({ taskId: id }), undefined, `#${id} 不该有动作`);
@@ -188,7 +188,7 @@ test('逐条台账：这一批**还没搬** ⇒ 一枪不发（参考实现同�
   }
 });
 
-test('逐条台账：这一批**要做**（含 1075 这个 609 的别名）', () => {
+test('逐条台账：这一批**要做**（含 1075 这个 609 的别名）', async () => {
   const runnerOf = (id: number): string | undefined => {
     const st = stepFor({ taskId: id });
     return st?.kind === 'runner' ? st.runner : undefined;

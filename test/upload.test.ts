@@ -42,7 +42,7 @@ function mkDeps(routes: Record<string, unknown>) {
 const CREATED = { code: 0, data: { fileId: 'F1', uploadId: 'U1', uploadUrl: 'https://s.example/k?sig=x', rapidUpload: false } };
 const RAPID = { code: 0, data: { fileId: 'F1', rapidUpload: true } };
 
-test('起一次上传：**一个请求都不发**，摘要已经算好并落库', () => {
+test('起一次上传：**一个请求都不发**，摘要已经算好并落库', async () => {
   const { deps, sent } = mkDeps({});
   const bytes = deterministicFile('seed', 1024);
   const out = startUpload(deps, { name: 'a.txt', bytes });
@@ -56,52 +56,52 @@ test('起一次上传：**一个请求都不发**，摘要已经算好并落库'
   assert.equal(uploadDone(deps), false);
 });
 
-test('图片上传：create 与 PUT 都发 image/jpeg（2026-11-02 真跑 403 的修）', () => {
+test('图片上传：create 与 PUT 都发 image/jpeg（2026-11-02 真跑 403 的修）', async () => {
   const { deps, sent } = mkDeps({ 'file/create': CREATED, 'file/complete': { code: 0 } });
   const bytes = deterministicFile('seed', 256);
   startUpload(deps, { name: 'photo.jpg', bytes });
-  runUploadStep(deps);
+  await runUploadStep(deps);
   const create = sent[0]!;
   const body = JSON.parse(create.body ?? '{}') as { contentType?: string };
   assert.equal(body.contentType, 'image/jpeg', '预签名按 create 声明的类型签');
-  runUploadStep(deps, bytes);
+  await runUploadStep(deps, bytes);
   const put = sent[1]!;
   assert.equal(put.method, 'PUT');
   assert.equal(put.headers['Content-Type'], 'image/jpeg', 'PUT 必须一字不差');
 });
 
-test('非图片仍走抓包那两支：create `application/oct-stream` / PUT `octet-stream`', () => {
+test('非图片仍走抓包那两支：create `application/oct-stream` / PUT `octet-stream`', async () => {
   const { deps, sent } = mkDeps({ 'file/create': CREATED, 'file/complete': { code: 0 } });
   const bytes = deterministicFile('seed2', 256);
   startUpload(deps, { name: 'a.bin', bytes });
-  runUploadStep(deps);
+  await runUploadStep(deps);
   const body = JSON.parse(sent[0]!.body ?? '{}') as { contentType?: string };
   assert.equal(body.contentType, 'application/oct-stream');
-  runUploadStep(deps, bytes);
+  await runUploadStep(deps, bytes);
   assert.equal(sent[1]!.headers['Content-Type'], 'application/octet-stream');
 });
 
-test('空文件名 / 空内容 ⇒ 拒绝（不发）', () => {
+test('空文件名 / 空内容 ⇒ 拒绝（不发）', async () => {
   const { deps, sent } = mkDeps({});
   assert.equal(startUpload(deps, { name: '  ', bytes: deterministicFile('s', 8) }).ok, false);
   assert.equal(startUpload(deps, { name: 'a', bytes: new Uint8Array(0) }).ok, false);
   assert.equal(sent.length, 0);
 });
 
-test('**主线**：create → put → complete，一步一枪', () => {
+test('**主线**：create → put → complete，一步一枪', async () => {
   const { deps, sent } = mkDeps({ 'file/create': CREATED, 'file/complete': { code: 0 } });
   const bytes = deterministicFile('seed', 256);
   startUpload(deps, { name: 'a.txt', bytes });
-  const r1 = runUploadStep(deps); // ①
+  const r1 = await runUploadStep(deps); // ①
   assert.equal(r1.ok, true, r1.note);
   assert.match(r1.note, /预签名地址/);
   assert.doesNotMatch(r1.note, /s\.example/, '⚠ uploadUrl 按凭据对待，不许出现在文案里');
   assert.equal(loadUpload(deps)!.step, 'put');
-  const r2 = runUploadStep(deps, bytes); // ②
+  const r2 = await runUploadStep(deps, bytes); // ②
   assert.equal(r2.ok, true, r2.note);
   assert.equal(sent[1]!.method, 'PUT');
   assert.equal(loadUpload(deps)!.step, 'complete');
-  const r3 = runUploadStep(deps); // ③
+  const r3 = await runUploadStep(deps); // ③
   assert.equal(r3.ok, true, r3.note);
   assert.equal(uploadDone(deps), true);
   assert.equal(sent.length, 3);
@@ -109,13 +109,13 @@ test('**主线**：create → put → complete，一步一枪', () => {
   assert.ok(sent[2]!.url.includes('hcy/file/complete'));
   assert.deepEqual(ownedFileIds(deps), ['F1'], '确认完成后要进链尾兜底名单');
   // 走完之后再触发 ⇒ idle
-  assert.equal(runUploadStep(deps).idle, true);
+  assert.equal((await runUploadStep(deps)).idle, true);
 });
 
-test('⚠ 秒传命中 ⇒ **不发 PUT**，直接完成', () => {
+test('⚠ 秒传命中 ⇒ **不发 PUT**，直接完成', async () => {
   const { deps, sent } = mkDeps({ 'file/create': RAPID });
   startUpload(deps, { name: 'a.txt', bytes: deterministicFile('seed', 64) });
-  const out = runUploadStep(deps);
+  const out = await runUploadStep(deps);
   assert.equal(out.ok, true, out.note);
   assert.match(out.note, /秒传/);
   assert.equal(sent.length, 1, '只发了 create');
@@ -123,90 +123,90 @@ test('⚠ 秒传命中 ⇒ **不发 PUT**，直接完成', () => {
   assert.equal(uploadDone(deps), true);
 });
 
-test('登记只认「明确是我们造的」：exist:true（用户的文件）绝不进名单', () => {
+test('登记只认「明确是我们造的」：exist:true（用户的文件）绝不进名单', async () => {
   const rapidOurs = mkDeps({
     'file/create': { code: 0, data: { fileId: 'F1', rapidUpload: true, exist: false } },
   });
   startUpload(rapidOurs.deps, { name: 'a.txt', bytes: deterministicFile('seed', 64) });
-  runUploadStep(rapidOurs.deps);
+  await runUploadStep(rapidOurs.deps);
   assert.deepEqual(ownedFileIds(rapidOurs.deps), ['F1']);
 
   const rapidUsers = mkDeps({
     'file/create': { code: 0, data: { fileId: 'F2', rapidUpload: true, exist: true } },
   });
   startUpload(rapidUsers.deps, { name: 'b.txt', bytes: deterministicFile('seed2', 64) });
-  runUploadStep(rapidUsers.deps);
+  await runUploadStep(rapidUsers.deps);
   assert.deepEqual(ownedFileIds(rapidUsers.deps), [], '撞同名时那是用户的文件，绝不能登记');
 });
 
-test('⚠ `put` 那一步没带字节 ⇒ **不发**（空体会真传一个 0 字节文件上去）', () => {
+test('⚠ `put` 那一步没带字节 ⇒ **不发**（空体会真传一个 0 字节文件上去）', async () => {
   const { deps, sent } = mkDeps({ 'file/create': CREATED });
   startUpload(deps, { name: 'a.txt', bytes: deterministicFile('seed', 32) });
-  runUploadStep(deps); // ① → put
+  await runUploadStep(deps); // ① → put
   const before = sent.length;
-  const out = runUploadStep(deps); // ② 不给字节
+  const out = await runUploadStep(deps); // ② 不给字节
   assert.equal(out.ok, false);
   assert.match(out.note, /没带字节/);
   assert.equal(sent.length, before, '一个字节都不许发');
   assert.equal(loadUpload(deps)!.step, 'put', '停在这一步，下次带字节再来');
 });
 
-test('⚠ 预签名地址落在应带凭据的域里 ⇒ **不发**（凭据泄漏比失败严重）', () => {
+test('⚠ 预签名地址落在应带凭据的域里 ⇒ **不发**（凭据泄漏比失败严重）', async () => {
   // 造一个"create 回了自家域"的响应 —— 那不是预签名直传该有的形状
   const { deps, sent } = mkDeps({
     'file/create': { code: 0, data: { fileId: 'F', uploadId: 'U', uploadUrl: 'https://yun.139.com/k', rapidUpload: false } },
   });
   startUpload(deps, { name: 'a.txt', bytes: deterministicFile('seed', 8) });
-  runUploadStep(deps);
+  await runUploadStep(deps);
   const before = sent.length;
-  const out = runUploadStep(deps, deterministicFile('seed', 8));
+  const out = await runUploadStep(deps, deterministicFile('seed', 8));
   assert.equal(out.ok, false);
   assert.match(out.note, /不发|凭据/);
   assert.equal(sent.length, before, '不许把凭据送到那个域');
 });
 
-test('① 失败 ⇒ 停在这一步（不跳步）', () => {
+test('① 失败 ⇒ 停在这一步（不跳步）', async () => {
   const { deps } = mkDeps({ 'file/create': { code: 500 } });
   startUpload(deps, { name: 'a.txt', bytes: deterministicFile('seed', 8) });
-  const out = runUploadStep(deps);
+  const out = await runUploadStep(deps);
   assert.equal(out.ok, false);
   assert.equal(loadUpload(deps)!.step, 'create', '失败不推进游标，下次还能重试同一个');
 });
 
-test('③ 失败 ⇒ 也停在这一步', () => {
+test('③ 失败 ⇒ 也停在这一步', async () => {
   const { deps } = mkDeps({ 'file/create': CREATED, 'file/complete': { code: 9 } });
   startUpload(deps, { name: 'a.txt', bytes: deterministicFile('seed', 8) });
-  runUploadStep(deps);
-  runUploadStep(deps, deterministicFile('seed', 8));
-  const out = runUploadStep(deps);
+  await runUploadStep(deps);
+  await runUploadStep(deps, deterministicFile('seed', 8));
+  const out = await runUploadStep(deps);
   assert.equal(out.ok, false);
   assert.match(out.note, /complete/);
   assert.equal(loadUpload(deps)!.step, 'complete');
 });
 
-test('状态缺 uploadUrl（比如库被清过）⇒ 如实作废，不发', () => {
+test('状态缺 uploadUrl（比如库被清过）⇒ 如实作废，不发', async () => {
   const { deps, sent } = mkDeps({});
   startUpload(deps, { name: 'a.txt', bytes: deterministicFile('seed', 8) });
   deps.store.setState(STATE_UPLOAD, JSON.stringify({ ...loadUpload(deps), step: 'put' }), NOW);
-  const out = runUploadStep(deps, deterministicFile('seed', 8));
+  const out = await runUploadStep(deps, deterministicFile('seed', 8));
   assert.equal(out.ok, false);
   assert.match(out.note, /作废/);
   assert.equal(sent.length, 0);
 });
 
-test('`clearUpload` 清干净；没有排队时是 idle', () => {
+test('`clearUpload` 清干净；没有排队时是 idle', async () => {
   const { deps } = mkDeps({});
-  assert.equal(runUploadStep(deps).idle, true);
+  assert.equal((await runUploadStep(deps)).idle, true);
   startUpload(deps, { name: 'a', bytes: deterministicFile('s', 8) });
   clearUpload(deps);
   assert.equal(loadUpload(deps), null);
-  assert.equal(runUploadStep(deps).idle, true);
+  assert.equal((await runUploadStep(deps)).idle, true);
 });
 
-test('定位可以按路径（两支不同）', () => {
+test('定位可以按路径（两支不同）', async () => {
   const { deps, sent } = mkDeps({ 'file/create': CREATED });
   startUpload(deps, { name: 'a.txt', bytes: deterministicFile('s', 8), locateKey: 'parentPath', locateValue: '/x' });
-  runUploadStep(deps);
+  await runUploadStep(deps);
   const body = JSON.parse(sent[0]!.body!) as Record<string, unknown>;
   assert.equal(body.parentPath, '/x');
   assert.equal(body.parentFileId, undefined);

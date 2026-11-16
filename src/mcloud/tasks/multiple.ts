@@ -18,13 +18,13 @@ export const STATE_MULTIPLE = 'mcloud.multiple.last';
 /** 这个月已经翻倍过的月份（`YYYY-MM`）—— 记下之后整月不再发请求。 */
 export const STATE_MULTIPLE_DONE = 'mcloud.multiple.done';
 
-export function runMultiple(deps: TaskDeps): TaskOutcome {
+export async function runMultiple(deps: TaskDeps): Promise<TaskOutcome> {
   const month = deps.nowIso.slice(0, 7);
   if (deps.store.getState(STATE_MULTIPLE_DONE) === month) {
     return { ok: true, skipped: true, note: '这个月已经翻倍过了' };
   }
 
-  const info = fetchInfoV3({ store: deps.store, transport: deps.transport, baseUrl: deps.baseUrl });
+  const info = await fetchInfoV3({ store: deps.store, transport: deps.transport, baseUrl: deps.baseUrl });
   if (!info.ok) return { ok: false, note: `查询状态失败：${info.error}` };
 
   const { curMonthBackup, curMonthBackupSignAccept } = info.info;
@@ -36,7 +36,7 @@ export function runMultiple(deps: TaskDeps): TaskOutcome {
     return { ok: true, skipped: true, note: '这个月已经翻倍过了' };
   }
 
-  const out = runTask(
+  const out = await runTask(
     deps,
     {
       task: 'multiple',

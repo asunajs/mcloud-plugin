@@ -24,11 +24,11 @@ const DAY = {
   count: 4,
 };
 
-test('缓存时长就是用户说的 2 小时', () => {
+test('缓存时长就是用户说的 2 小时', async () => {
   assert.equal(BEANS_CACHE_TTL_MS, 2 * 60 * 60 * 1000);
 });
 
-test('余额和当日汇总一起往返；坏 JSON 当没有缓存', () => {
+test('余额和当日汇总一起往返；坏 JSON 当没有缓存', async () => {
   const store = memStore();
   const cache = { day: { atMs: 1, dayStart: 2, day: DAY }, balance: { atMs: 3, value: 456 } };
   saveBeansCache(store, cache, NOW);
@@ -37,7 +37,7 @@ test('余额和当日汇总一起往返；坏 JSON 当没有缓存', () => {
   assert.deepEqual(loadBeansCache(store), {});
 });
 
-test('缓存按账号隔离（不能拿 A 的余额显示在 B 上）', () => {
+test('缓存按账号隔离（不能拿 A 的余额显示在 B 上）', async () => {
   const raw = memStore();
   const base = rawStoreOf(raw);
   const a = scoped(base, 'a');
@@ -48,7 +48,7 @@ test('缓存按账号隔离（不能拿 A 的余额显示在 B 上）', () => {
   assert.equal(loadBeansCache(b).balance?.value, 200);
 });
 
-test('infoV3 的余额字段是 total，字符串数字也认', () => {
+test('infoV3 的余额字段是 total，字符串数字也认', async () => {
   assert.equal(parseInfoV3({ total: 321 }).total, 321);
   assert.equal(parseInfoV3({ total: '321' }).total, 321);
   assert.equal(parseInfoV3({ point: 7 }).total, 7);

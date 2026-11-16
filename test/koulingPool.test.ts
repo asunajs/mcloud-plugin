@@ -78,7 +78,7 @@ function room(over: Partial<ProbeRoom> = {}): ProbeRoom {
 
 // ══════════════════════════ 口令进出池 ══════════════════════════
 
-test('抓到的口令进池是**未知**状态，且去重', () => {
+test('抓到的口令进池是**未知**状态，且去重', async () => {
   const pool = emptyPool();
   const added = note(pool, codes(['甲', '乙', '甲', '  ']), 'xiaohongshu', T0);
   assert.equal(added, 2, '空串丢掉、重复只收一次');
@@ -86,7 +86,7 @@ test('抓到的口令进池是**未知**状态，且去重', () => {
   assert.equal(validCount(pool), 0, '未知不算有效（否则"够 2 条"会提前为真）');
 });
 
-test('⚠ 已知**无效**的口令不许再进池（弹幕里有人复读同一条死口令）', () => {
+test('⚠ 已知**无效**的口令不许再进池（弹幕里有人复读同一条死口令）', async () => {
   const pool = emptyPool();
   note(pool, codes(['甲']), 'xiaohongshu', T0);
   noteClaim(pool, ACC_A, '甲', 'invalid', T0);
@@ -95,7 +95,7 @@ test('⚠ 已知**无效**的口令不许再进池（弹幕里有人复读同一
   assert.equal(codeState(pool, '甲'), 'invalid');
 });
 
-test('领到与"已兑换"**都算有效**（口令本身是对的）', () => {
+test('领到与"已兑换"**都算有效**（口令本身是对的）', async () => {
   const pool = emptyPool();
   note(pool, codes(['甲', '乙']), 'xiaohongshu', T0);
   noteClaim(pool, ACC_A, '甲', 'claimed', T0);
@@ -105,7 +105,7 @@ test('领到与"已兑换"**都算有效**（口令本身是对的）', () => {
   assert.equal(stopScraping(pool), true, `够 ${VALID_ENOUGH} 条有效 ⇒ 全场停止抓取`);
 });
 
-test('过期算**无效**，但原因留着"已过期"（界面要能区分是哪一种）', () => {
+test('过期算**无效**，但原因留着"已过期"（界面要能区分是哪一种）', async () => {
   const pool = emptyPool();
   note(pool, codes(['甲', '乙']), 'xiaohongshu', T0);
   noteClaim(pool, ACC_A, '甲', 'invalid', T0);
@@ -118,7 +118,7 @@ test('过期算**无效**，但原因留着"已过期"（界面要能区分是�
   assert.equal(b?.reason, '口令已过期');
 });
 
-test('未分类的结论**不改状态**，但账号级的记录照记（下一轮不再投给它）', () => {
+test('未分类的结论**不改状态**，但账号级的记录照记（下一轮不再投给它）', async () => {
   const pool = emptyPool();
   note(pool, codes(['甲']), 'xiaohongshu', T0);
   noteClaim(pool, ACC_A, '甲', 'other', T0);
@@ -128,7 +128,7 @@ test('未分类的结论**不改状态**，但账号级的记录照记（下一�
   assert.deepEqual(pickFor(pool, ACC_B), ['甲'], '别的账号照样投');
 });
 
-test('⚠ "有效"只升不降：别的账号领过（已兑换）不该把它退回未知', () => {
+test('⚠ "有效"只升不降：别的账号领过（已兑换）不该把它退回未知', async () => {
   const pool = emptyPool();
   note(pool, codes(['甲']), 'xiaohongshu', T0);
   noteClaim(pool, ACC_A, '甲', 'claimed', T0);
@@ -137,7 +137,7 @@ test('⚠ "有效"只升不降：别的账号领过（已兑换）不该把它�
   assert.equal(pool.codes.find((c) => c.value === '甲')?.validAtMs, T0, '有效时刻取**第一次**验出来的那次');
 });
 
-test('手工口令**验证后进池**（用户口径：与抓到的同等待遇）', () => {
+test('手工口令**验证后进池**（用户口径：与抓到的同等待遇）', async () => {
   const pool = emptyPool();
   assert.equal(pool.codes.length, 0);
   noteClaim(pool, ACC_A, '手抄来的口令', 'claimed', T0);
@@ -146,7 +146,7 @@ test('手工口令**验证后进池**（用户口径：与抓到的同等待遇�
   assert.equal(c?.source, 'manual', '来源如实标 manual');
 });
 
-test('池有上限（防呆：弹幕里什么都可能被当成口令）', () => {
+test('池有上限（防呆：弹幕里什么都可能被当成口令）', async () => {
   const pool = emptyPool();
   const many = Array.from({ length: MAX_POOL_CODES + 20 }, (_, i) => `口令${i}`);
   note(pool, many, 'danmaku', T0);
@@ -155,7 +155,7 @@ test('池有上限（防呆：弹幕里什么都可能被当成口令）', () =>
 
 // ══════════════════════════ 周期与门 ══════════════════════════
 
-test('5 小时 TTL 到点翻篇：口令与领取记录**一起清**', () => {
+test('5 小时 TTL 到点翻篇：口令与领取记录**一起清**', async () => {
   const pool = emptyPool();
   note(pool, codes(['甲']), 'xiaohongshu', T0);
   noteClaim(pool, ACC_A, '甲', 'claimed', T0);
@@ -167,7 +167,7 @@ test('5 小时 TTL 到点翻篇：口令与领取记录**一起清**', () => {
   assert.equal(pool.cycleAtMs, T0 + CYCLE_TTL_MS + 1);
 });
 
-test('门关上 + 宽限过了才封场（抖动切不碎一场直播）', () => {
+test('门关上 + 宽限过了才封场（抖动切不碎一场直播）', async () => {
   const pool = emptyPool();
   normalize(pool, T0);
   noteGate(pool, false, T0 + 1000);
@@ -175,7 +175,7 @@ test('门关上 + 宽限过了才封场（抖动切不碎一场直播）', () =>
   assert.equal(isStale(pool, T0 + 1000 + GATE_CLOSE_GRACE_MS + 1), true);
 });
 
-test('再看见门开着 ⇒ 封场计时取消（宽限重新开始算）', () => {
+test('再看见门开着 ⇒ 封场计时取消（宽限重新开始算）', async () => {
   const pool = emptyPool();
   normalize(pool, T0);
   noteGate(pool, false, T0 + 1000);
@@ -185,7 +185,7 @@ test('再看见门开着 ⇒ 封场计时取消（宽限重新开始算）', () 
   assert.equal(isStale(pool, T0 + 2000 + GATE_CLOSE_GRACE_MS + 1), false, 'TTL 还远，门又开了 ⇒ 这一场还在');
 });
 
-test('场次的起止：门开 ⇒ 开场；散场时刻取"最后一次看到它在播"', () => {
+test('场次的起止：门开 ⇒ 开场；散场时刻取"最后一次看到它在播"', async () => {
   const pool = emptyPool();
   normalize(pool, T0); // 新池子要先定下周期起点（否则 isStale 永远是"新池子"）
   noteProbe(pool, [], true, T0);
@@ -214,7 +214,7 @@ test('场次的起止：门开 ⇒ 开场；散场时刻取"最后一次看到�
   assert.equal(pool.codes.length, 0, '口令随翻篇清掉');
 });
 
-test('场次只留最近 MAX_SESSIONS 条（不无限长）', () => {
+test('场次只留最近 MAX_SESSIONS 条（不无限长）', async () => {
   const pool = emptyPool();
   normalize(pool, T0);
   let t = T0;
@@ -230,7 +230,7 @@ test('场次只留最近 MAX_SESSIONS 条（不无限长）', () => {
 
 // ══════════════════════════ 日程与「下一场」══════════════════════════
 
-test('日程保留**门会筛掉**的房间（预告/回放）—— "日程不能跟着丢"', () => {
+test('日程保留**门会筛掉**的房间（预告/回放）—— "日程不能跟着丢"', async () => {
   const pool = emptyPool();
   const rooms = [
     room({ roomId: 1, status: 1, title: '正在播' }),
@@ -242,7 +242,7 @@ test('日程保留**门会筛掉**的房间（预告/回放）—— "日程不�
   assert.equal(pool.scheduleAtMs, T0);
 });
 
-test('「下一场」：只认目标主播 + 只认预告场 + **跳过已经过去**的场次', () => {
+test('「下一场」：只认目标主播 + 只认预告场 + **跳过已经过去**的场次', async () => {
   const rooms = [
     room({ roomId: 1, status: 0, expectStartTime: '2026-10-14 15:00:00' }), // 已经过去
     room({ roomId: 2, status: 0, expectStartTime: '2026-10-14 20:00:00', title: '晚场' }),
@@ -253,7 +253,7 @@ test('「下一场」：只认目标主播 + 只认预告场 + **跳过已经过
   assert.equal(next?.roomId, 2, '用户实测踩过：16:31 时显示 15:00 那场 ⇒ 必须跳过已过去的');
 });
 
-test('⚠ 上游列表里混着**别的主播** ⇒ 昵称不匹配就当作没有（宁可说没有，也不给错的）', () => {
+test('⚠ 上游列表里混着**别的主播** ⇒ 昵称不匹配就当作没有（宁可说没有，也不给错的）', async () => {
   const rooms = [
     room({ roomId: 1, status: 0, expectStartTime: '2026-10-14 20:00:00', anchorNickname: '福建移动' }),
     room({ roomId: 2, status: 0, expectStartTime: '2026-10-14 21:00:00', anchorNickname: '移动心选' }),
@@ -263,14 +263,14 @@ test('⚠ 上游列表里混着**别的主播** ⇒ 昵称不匹配就当作没�
   assert.equal(earliestPreviewIn(rooms, false, '2026-10-14 16:00:00')?.roomId, 1);
 });
 
-test('⚠ 昵称是**精确相等**，不是包含：`福建移动` 不算', () => {
+test('⚠ 昵称是**精确相等**，不是包含：`福建移动` 不算', async () => {
   const rooms = [room({ roomId: 1, status: 0, expectStartTime: '2026-10-14 20:00:00', anchorNickname: '福建移动' })];
   assert.equal(nextRoomAt(rooms, '2026-10-14 16:00:00'), undefined);
   const ok = [room({ roomId: 2, status: 0, expectStartTime: '2026-10-14 20:00:00' })];
   assert.equal(nextRoomAt(ok, '2026-10-14 16:00:00')?.roomId, 2);
 });
 
-test('快照里的「下一场」三个字段**同源**（要么都有，要么都没有）', () => {
+test('快照里的「下一场」三个字段**同源**（要么都有，要么都没有）', async () => {
   const pool = emptyPool();
   noteProbe(
     pool,
@@ -293,7 +293,7 @@ test('快照里的「下一场」三个字段**同源**（要么都有，要么�
 
 // ══════════════════════════ 节流 ══════════════════════════
 
-test('抓取去重：一次抓取窗口内只放行一趟（空池天然放行、跨重启也成立）', () => {
+test('抓取去重：一次抓取窗口内只放行一趟（空池天然放行、跨重启也成立）', async () => {
   const pool = emptyPool();
   assert.equal(scrapeReady(pool, T0), true, '没抓过 ⇒ 谁先到谁抓');
   noteScrape(pool, T0);
@@ -304,7 +304,7 @@ test('抓取去重：一次抓取窗口内只放行一趟（空池天然放行�
   assert.equal(scrapeReady(parsePool(serializePool(pool)).pool, T0 + 2000), false, '读盘后仍在窗口内');
 });
 
-test('小红书主页限速 30 分钟（抓太勤会被风控挡成空壳，而那与"没发"长得一样）', () => {
+test('小红书主页限速 30 分钟（抓太勤会被风控挡成空壳，而那与"没发"长得一样）', async () => {
   const pool = emptyPool();
   assert.equal(xhsReady(pool, T0), true);
   noteXhs(pool, T0);
@@ -314,7 +314,7 @@ test('小红书主页限速 30 分钟（抓太勤会被风控挡成空壳，而�
   assert.equal(xhsWaitMs(pool, T0 + XHS_MIN_INTERVAL_MS), 0);
 });
 
-test('翻篇**不重置**限速（那是防封的节流，不是这一场的数据）', () => {
+test('翻篇**不重置**限速（那是防封的节流，不是这一场的数据）', async () => {
   const pool = emptyPool();
   normalize(pool, T0);
   noteXhs(pool, T0);
@@ -336,7 +336,7 @@ test('翻篇**不重置**限速（那是防封的节流，不是这一场的数�
 
 // ══════════════════════════ 落盘 ══════════════════════════
 
-test('落盘往返：形状不变（这是**跨重启**的唯一依据）', () => {
+test('落盘往返：形状不变（这是**跨重启**的唯一依据）', async () => {
   const pool = emptyPool();
   note(pool, codes(['甲']), 'xiaohongshu', T0);
   noteClaim(pool, ACC_A, '甲', 'claimed', T0);
@@ -347,7 +347,7 @@ test('落盘往返：形状不变（这是**跨重启**的唯一依据）', () =
   assert.deepEqual(back.pool, pool);
 });
 
-test('坏文本 ⇒ 空池 + `reset`（**必须说出来**：那一场的领取记录是丢的）', () => {
+test('坏文本 ⇒ 空池 + `reset`（**必须说出来**：那一场的领取记录是丢的）', async () => {
   const bad = parsePool('{不是 json');
   assert.equal(bad.reset, true);
   assert.equal(bad.pool.codes.length, 0);
@@ -356,7 +356,7 @@ test('坏文本 ⇒ 空池 + `reset`（**必须说出来**：那一场的领取�
   assert.equal(parsePool('[1,2]').reset, true, '形状不对也算坏');
 });
 
-test('缺字段的旧文件照样读（加字段不能把老实例读崩）', () => {
+test('缺字段的旧文件照样读（加字段不能把老实例读崩）', async () => {
   const old = JSON.stringify({ cycleAtMs: T0, codes: [{ value: '甲', state: 'valid', source: 'xiaohongshu' }] });
   const { pool, reset } = parsePool(old);
   assert.equal(reset, false);
@@ -365,12 +365,12 @@ test('缺字段的旧文件照样读（加字段不能把老实例读崩）', ()
   assert.equal(pool.lastXhsAtMs, null);
 });
 
-test('认不出的状态按 **unknown** 收（保守方向：还要再验一次，而不是当成有效）', () => {
+test('认不出的状态按 **unknown** 收（保守方向：还要再验一次，而不是当成有效）', async () => {
   const weird = JSON.stringify({ codes: [{ value: '甲', state: '大概是好的' }] });
   assert.equal(codeState(parsePool(weird).pool, '甲'), 'unknown');
 });
 
-test('store 适配层：写进去能读回来', () => {
+test('store 适配层：写进去能读回来', async () => {
   const store = memStore();
   store.ensureSchema();
   const { pool } = loadPoolFrom(store);
@@ -382,7 +382,7 @@ test('store 适配层：写进去能读回来', () => {
 
 // ══════════════════════════ 账号键 ══════════════════════════
 
-test('账号键：稳定、不落手机号原文', () => {
+test('账号键：稳定、不落手机号原文', async () => {
   const a = accountKey('13800000000');
   assert.equal(a, accountKey('13800000000'), '同号同键');
   assert.notEqual(a, accountKey('13900000001'), '不同号不同键');
@@ -391,7 +391,7 @@ test('账号键：稳定、不落手机号原文', () => {
   assert.equal(accountKey(''), 'default', '拿不到手机号 ⇒ 如实退化成一个常量键');
 });
 
-test('⚠ 账号键**不跟着凭据换票变**（否则池会把同一个账号当成两个人）', () => {
+test('⚠ 账号键**不跟着凭据换票变**（否则池会把同一个账号当成两个人）', async () => {
   // 键取的是手机号（凭据里唯一稳定的那一段）的哈希，**不是**整串凭据的指纹：
   // 换票会改写 Authorization ⇒ 指纹会变 ⇒ "领过的口令"会被再投一次。
   const before = accountKey('13800000000');
@@ -401,7 +401,7 @@ test('⚠ 账号键**不跟着凭据换票变**（否则池会把同一个账号
 
 // ══════════════════════════ 时刻串 ══════════════════════════
 
-test('本地时刻串：格式对得上上游（**不断言具体值** —— 它跟机器时区走，F-019 的教训）', () => {
+test('本地时刻串：格式对得上上游（**不断言具体值** —— 它跟机器时区走，F-019 的教训）', async () => {
   assert.match(localStamp(T0), /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
   assert.equal(localStamp(T0).length, 19, '定长 ⇒ 字典序等于时间序');
 });

@@ -151,7 +151,7 @@ function itemOf(over: Partial<PrizeItem> = {}): PrizeItem {
 
 // ══════════════════════════ 列表 ══════════════════════════
 
-test('列表：只收 flag=1，oId 大写/oid 小写都认，按到期时间排', () => {
+test('列表：只收 flag=1，oId 大写/oid 小写都认，按到期时间排', async () => {
   const { one } = setup();
   const seen: BuiltRequest[] = [];
   const transport = makeTransport((_req, path) => {
@@ -167,7 +167,7 @@ test('列表：只收 flag=1，oId 大写/oid 小写都认，按到期时间排'
       ]),
     };
   }, seen);
-  const r = readPendingPrizes(depsOf(one, transport));
+  const r = await readPendingPrizes(depsOf(one, transport));
   assert.equal(r.failed, undefined);
   assert.equal(r.scanned, 5);
   assert.deepEqual(
@@ -184,25 +184,25 @@ test('列表：只收 flag=1，oId 大写/oid 小写都认，按到期时间排'
   assert.match(String(seen[0]!.headers['Referer']), /path=getPrize/);
 });
 
-test('列表：同一件奖品中两次 = 两条（按 oId 去重，不按 prizeId）', () => {
+test('列表：同一件奖品中两次 = 两条（按 oId 去重，不按 prizeId）', async () => {
   const { one } = setup();
   const transport = makeTransport(() => ({
     body: listBody([rec({ oId: 11 }), rec({ oId: 12 })]),
   }));
-  const r = readPendingPrizes(depsOf(one, transport));
+  const r = await readPendingPrizes(depsOf(one, transport));
   assert.equal(r.items.length, 2);
   assert.deepEqual(r.items.map((x) => x.oid).sort(), ['11', '12']);
 });
 
-test('列表：读失败要如实说（不拿空数组冒充"没有待领取"）', () => {
+test('列表：读失败要如实说（不拿空数组冒充"没有待领取"）', async () => {
   const { one } = setup();
   const transport = makeTransport(() => ({ status: 500, body: {} }));
-  const r = readPendingPrizes(depsOf(one, transport));
+  const r = await readPendingPrizes(depsOf(one, transport));
   assert.deepEqual(r.items, []);
   assert.ok(r.failed !== undefined && r.failed.length > 0, JSON.stringify(r));
 });
 
-test('列表：第 2 页挂了 —— 第 1 页的结果照给，并说清少读了哪一页', () => {
+test('列表：第 2 页挂了 —— 第 1 页的结果照给，并说清少读了哪一页', async () => {
   const { one } = setup();
   let page = 0;
   const transport = makeTransport((_req, path) => {
@@ -216,13 +216,13 @@ test('列表：第 2 页挂了 —— 第 1 页的结果照给，并说清少读
     }
     return { status: 500, body: {} };
   });
-  const r = readPendingPrizes(depsOf(one, transport));
+  const r = await readPendingPrizes(depsOf(one, transport));
   assert.equal(r.items.length, 1);
   assert.equal(r.scanned, 100);
   assert.match(String(r.failed), /第 2 页/);
 });
 
-test('列表：翻到上限还没到底 ⇒ hasMore（不静默截断）', () => {
+test('列表：翻到上限还没到底 ⇒ hasMore（不静默截断）', async () => {
   const { one } = setup();
   const transport = makeTransport(() => ({
     body: listBody(
@@ -231,7 +231,7 @@ test('列表：翻到上限还没到底 ⇒ hasMore（不静默截断）', () =>
       500,
     ),
   }));
-  const r = readPendingPrizes(depsOf(one, transport));
+  const r = await readPendingPrizes(depsOf(one, transport));
   assert.equal(r.scanned, 300, '最多翻 3 页');
   assert.equal(r.hasMore, true);
   assert.equal(r.totalCount, 500);
@@ -280,11 +280,11 @@ function okClaimTransport(opts: {
   }, opts.seen);
 }
 
-test('发码：详情/滑块/发短信三枪的形状与顺序；offset 是本地算的 282', () => {
+test('发码：详情/滑块/发短信三枪的形状与顺序；offset 是本地算的 282', async () => {
   const { one } = setup();
   const seen: BuiltRequest[] = [];
   const clock = { now: Date.parse(NOW) };
-  const r = startPrizeClaim(
+  const r = await startPrizeClaim(
     depsOf(one, okClaimTransport({ seen }), clock),
     itemOf(),
     '138****8000',
@@ -315,19 +315,19 @@ test('发码：详情/滑块/发短信三枪的形状与顺序；offset 是本�
   assert.equal(st.prizetype, '1035');
 });
 
-test('发码：60 秒内同一件不重发（本地闸，别让上游回 1001）', () => {
+test('发码：60 秒内同一件不重发（本地闸，别让上游回 1001）', async () => {
   const { one } = setup();
   const clock = { now: Date.parse(NOW) };
   const deps = depsOf(one, okClaimTransport({}), clock);
-  assert.equal(startPrizeClaim(deps, itemOf()).ok, true);
-  const second = startPrizeClaim(deps, itemOf());
+  assert.equal((await startPrizeClaim(deps, itemOf())).ok, true);
+  const second = await startPrizeClaim(deps, itemOf());
   assert.equal(second.ok, false);
   assert.match(second.note, /刚发过验证码/);
   clock.now += 61_000;
-  assert.equal(startPrizeClaim(deps, itemOf()).ok, true, '过了一分钟可以再发');
+  assert.equal((await startPrizeClaim(deps, itemOf())).ok, true, '过了一分钟可以再发');
 });
 
-test('发码：滑块算不出来 ⇒ 不发 sendPrizeSms（只白打了详情+题面两枪）', () => {
+test('发码：滑块算不出来 ⇒ 不发 sendPrizeSms（只白打了详情+题面两枪）', async () => {
   const { one } = setup();
   const seen: BuiltRequest[] = [];
   // 底图是一张 96×400 的透明 PNG ⇒ 匹配器算不出可用偏移
@@ -336,7 +336,7 @@ test('发码：滑块算不出来 ⇒ 不发 sendPrizeSms（只白打了详情+�
     height: 400,
     data: new Uint8Array(96 * 400 * 4),
   });
-  const r = startPrizeClaim(
+  const r = await startPrizeClaim(
     depsOf(one, okClaimTransport({ seen, slidePicture: toBase64(blank) })),
     itemOf(),
   );
@@ -346,15 +346,15 @@ test('发码：滑块算不出来 ⇒ 不发 sendPrizeSms（只白打了详情+�
   assert.equal(loadClaimState(one), null);
 });
 
-test('发码：上游回 514 时如实说"换一道题"，不落单', () => {
+test('发码：上游回 514 时如实说"换一道题"，不落单', async () => {
   const { one } = setup();
-  const r = startPrizeClaim(depsOf(one, okClaimTransport({ smsCode: 514 })), itemOf());
+  const r = await startPrizeClaim(depsOf(one, okClaimTransport({ smsCode: 514 })), itemOf());
   assert.equal(r.ok, false);
   assert.match(r.note, /滑块/);
   assert.equal(loadClaimState(one), null);
 });
 
-test('发码：详情说已兑换（exchangeCode=2031）⇒ 不领，并从列表缓存里摘掉', () => {
+test('发码：详情说已兑换（exchangeCode=2031）⇒ 不领，并从列表缓存里摘掉', async () => {
   const { one } = setup();
   savePrizeCache(
     one,
@@ -362,7 +362,7 @@ test('发码：详情说已兑换（exchangeCode=2031）⇒ 不领，并从列�
     Date.parse(NOW),
     NOW,
   );
-  const r = startPrizeClaim(
+  const r = await startPrizeClaim(
     depsOf(one, okClaimTransport({ detail: { exchangeCode: 2031 } })),
     itemOf(),
   );
@@ -371,13 +371,13 @@ test('发码：详情说已兑换（exchangeCode=2031）⇒ 不领，并从列�
   assert.deepEqual(loadPrizeCache(one)!.list.items, []);
 });
 
-test('发码：会话缺 deviceId 时也能发码（确认那一步才需要它），但确认会说清缺什么', () => {
+test('发码：会话缺 deviceId 时也能发码（确认那一步才需要它），但确认会说清缺什么', async () => {
   const { one } = setup();
   saveSession(one, { cookie: 'c=1', jwt: JWT, savedAt: NOW }, NOW);
   const deps = depsOf(one, okClaimTransport({}));
-  assert.equal(startPrizeClaim(deps, itemOf()).ok, true);
+  assert.equal((await startPrizeClaim(deps, itemOf())).ok, true);
   // 直接造一单（`startPrizeClaim` 已落），确认时应该拦下
-  const r = confirmPrizeClaim(deps, '1280973030', '123456');
+  const r = await confirmPrizeClaim(deps, '1280973030', '123456');
   assert.equal(r.ok, false);
   assert.match(r.note, /deviceId|设备指纹/);
 });
@@ -401,7 +401,7 @@ function withPendingClaim(one: Store, over: Record<string, unknown> = {}): void 
   );
 }
 
-test('确认：smsCode = MD5(验证码)，deviceId/source/isdeviceid 逐字照实拍', () => {
+test('确认：smsCode = MD5(验证码)，deviceId/source/isdeviceid 逐字照实拍', async () => {
   const { one } = setup();
   withPendingClaim(one);
   savePrizeCache(one, { items: [itemOf()], scanned: 1, hasMore: false }, Date.parse(NOW), NOW);
@@ -415,7 +415,7 @@ test('确认：smsCode = MD5(验证码)，deviceId/source/isdeviceid 逐字照�
     },
     seen,
   );
-  const r = confirmPrizeClaim(depsOf(one, transport), '1280973030', '123456');
+  const r = await confirmPrizeClaim(depsOf(one, transport), '1280973030', '123456');
   assert.equal(r.ok, true, r.note);
   assert.match(r.note, /已领取/);
   assert.equal(r.result, '订购成功');
@@ -434,7 +434,7 @@ test('确认：smsCode = MD5(验证码)，deviceId/source/isdeviceid 逐字照�
   assert.deepEqual(loadPrizeCache(one)!.list.items, [], '缓存里也要摘掉');
 });
 
-test('确认：prizetype 1028/1029 发明文验证码（那张静态分支）', () => {
+test('确认：prizetype 1028/1029 发明文验证码（那张静态分支）', async () => {
   const { one } = setup();
   withPendingClaim(one, { prizetype: '1028' });
   const seen: BuiltRequest[] = [];
@@ -442,68 +442,68 @@ test('确认：prizetype 1028/1029 发明文验证码（那张静态分支）', 
     if (path.endsWith('/acceptPrizeV2')) return { body: { code: 0, msg: 'success' } };
     return undefined;
   }, seen);
-  const r = confirmPrizeClaim(depsOf(one, transport), '1280973030', '123456');
+  const r = await confirmPrizeClaim(depsOf(one, transport), '1280973030', '123456');
   assert.equal(r.ok, true, r.note);
   assert.equal(JSON.parse(String(seen[0]!.body))['smsCode'], '123456');
 });
 
-test('确认：验证码错误 ⇒ 留在原地重输（这一单不清）', () => {
+test('确认：验证码错误 ⇒ 留在原地重输（这一单不清）', async () => {
   const { one } = setup();
   withPendingClaim(one);
   const transport = makeTransport((_req, path) => {
     if (path.endsWith('/acceptPrizeV2')) return { body: { code: -7, msg: '验证码错误' } };
     return undefined;
   });
-  const r = confirmPrizeClaim(depsOf(one, transport), '1280973030', '000000');
+  const r = await confirmPrizeClaim(depsOf(one, transport), '1280973030', '000000');
   assert.equal(r.ok, false);
   assert.match(r.note, /验证码不对/);
   assert.equal(r.code, -7);
   assert.ok(loadClaimState(one) !== null, '错码不该丢掉这一单');
 });
 
-test('确认：没发过码 / 验证码过期 / 单号对不上，都拦下', () => {
+test('确认：没发过码 / 验证码过期 / 单号对不上，都拦下', async () => {
   const { one } = setup();
   const clock = { now: Date.parse(NOW) };
   const transport = makeTransport(() => ({ body: { code: 0, msg: 'success' } }));
   const deps = depsOf(one, transport, clock);
 
-  const none = confirmPrizeClaim(deps, '1280973030', '123456');
+  const none = await confirmPrizeClaim(deps, '1280973030', '123456');
   assert.equal(none.ok, false);
   assert.match(none.note, /先点/);
 
   withPendingClaim(one, { sentAtMs: Date.parse(NOW) - CLAIM_STATE_TTL_MS - 1 });
-  const expired = confirmPrizeClaim(deps, '1280973030', '123456');
+  const expired = await confirmPrizeClaim(deps, '1280973030', '123456');
   assert.equal(expired.ok, false);
   assert.match(expired.note, /过期/);
 
   withPendingClaim(one);
-  const other = confirmPrizeClaim(deps, '999', '123456');
+  const other = await confirmPrizeClaim(deps, '999', '123456');
   assert.equal(other.ok, false);
   assert.match(other.note, /先点/);
 });
 
-test('确认：514 / 10010004 等失败码的处置', () => {
+test('确认：514 / 10010004 等失败码的处置', async () => {
   const { one } = setup();
-  const run = (code: number): ReturnType<typeof confirmPrizeClaim> => {
+  const run = async (code: number): Promise<ReturnType<typeof confirmPrizeClaim>> => {
     withPendingClaim(one);
     const transport = makeTransport((_req, path) => {
       if (path.endsWith('/acceptPrizeV2')) return { body: { code, msg: 'x' } };
       return undefined;
     });
-    return confirmPrizeClaim(depsOf(one, transport), '1280973030', '123456');
+    return await confirmPrizeClaim(depsOf(one, transport), '1280973030', '123456');
   };
-  const slider = run(514);
+  const slider = await run(514);
   assert.equal(slider.ok, false);
   assert.match(slider.note, /滑块/);
   assert.equal(loadClaimState(one), null, '514 要重新发码，这一单清掉');
 
-  const expired = run(10010004);
+  const expired = await run(10010004);
   assert.equal(expired.ok, false);
   assert.match(expired.note, /过期/);
   assert.equal(loadClaimState(one), null);
 });
 
-test('发码：没拿到回应（超时/断连）⇒ unknown + 落一单（短信可能真发了）', () => {
+test('发码：没拿到回应（超时/断连）⇒ unknown + 落一单（短信可能真发了）', async () => {
   const { one } = setup();
   const seen: BuiltRequest[] = [];
   const transport: Transport = ((req: BuiltRequest) => {
@@ -539,19 +539,19 @@ test('发码：没拿到回应（超时/断连）⇒ unknown + 落一单（短�
   }) as unknown as Transport;
 
   const clock = { now: Date.parse(NOW) };
-  const r = startPrizeClaim(depsOf(one, transport, clock), itemOf());
+  const r = await startPrizeClaim(depsOf(one, transport, clock), itemOf());
   assert.equal(r.ok, false);
   assert.equal(r.unknown, true, '这不是"确定没发"，是"不知道发没发"');
   assert.match(r.note, /可能已经发出/);
   // 落一单：真收到码还能填（confirm 不该说"先点领取"）
   assert.ok(loadClaimState(one) !== null);
   // 而且 60 秒内不许再发（别连点）
-  const again = startPrizeClaim(depsOf(one, transport, clock), itemOf());
+  const again = await startPrizeClaim(depsOf(one, transport, clock), itemOf());
   assert.equal(again.ok, false);
   assert.match(again.note, /刚发过验证码/);
 });
 
-test('确认：没拿到回应 ⇒ unknown + 清掉这一单（不许拿同一个码再撞）', () => {
+test('确认：没拿到回应 ⇒ unknown + 清掉这一单（不许拿同一个码再撞）', async () => {
   const { one } = setup();
   withPendingClaim(one);
   const transport: Transport = ((req: BuiltRequest) => {
@@ -560,14 +560,14 @@ test('确认：没拿到回应 ⇒ unknown + 清掉这一单（不许拿同一�
     }
     throw new Error('意外请求');
   }) as unknown as Transport;
-  const r = confirmPrizeClaim(depsOf(one, transport), '1280973030', '123456');
+  const r = await confirmPrizeClaim(depsOf(one, transport), '1280973030', '123456');
   assert.equal(r.ok, false);
   assert.equal(r.unknown, true);
   assert.match(r.note, /可能已经领到/);
   assert.equal(loadClaimState(one), null, '结果未知时不许保留这一单');
 });
 
-test('详情阶段撞到过期/抢光 ⇒ 从列表缓存里摘掉（别每次点都重复失败）', () => {
+test('详情阶段撞到过期/抢光 ⇒ 从列表缓存里摘掉（别每次点都重复失败）', async () => {
   const { one } = setup();
   for (const code of [10010004, 10010018, 10010013]) {
     savePrizeCache(one, { items: [itemOf()], scanned: 1, hasMore: false }, Date.parse(NOW), NOW);
@@ -576,13 +576,13 @@ test('详情阶段撞到过期/抢光 ⇒ 从列表缓存里摘掉（别每次�
         ? { body: { code, msg: 'x' } }
         : undefined,
     );
-    const r = startPrizeClaim(depsOf(one, transport), itemOf());
+    const r = await startPrizeClaim(depsOf(one, transport), itemOf());
     assert.equal(r.ok, false);
     assert.deepEqual(loadPrizeCache(one)!.list.items, [], `code=${code} 要摘掉这一件`);
   }
 });
 
-test('手机号自己再脱敏：上游哪天改成明文也不会把完整号显示出来', () => {
+test('手机号自己再脱敏：上游哪天改成明文也不会把完整号显示出来', async () => {
   assert.equal(maskPhoneLike('15912345678'), '1****5678');
   assert.equal(maskPhoneLike('159-1234-5678'), '1****5678');
   assert.equal(maskPhoneLike('+86 15912345678'), '1****5678');
@@ -591,7 +591,7 @@ test('手机号自己再脱敏：上游哪天改成明文也不会把完整号�
   assert.equal(maskPhoneLike(undefined), undefined);
 });
 
-test('码表：未实拍的那些只做查表，不要静默当成功', () => {
+test('码表：未实拍的那些只做查表，不要静默当成功', async () => {
   assert.match(prizeCodeText(0), /成功/);
   assert.match(prizeCodeText(-6), /验证码不对/);
   assert.match(prizeCodeText(1002), /上限/);
@@ -600,7 +600,7 @@ test('码表：未实拍的那些只做查表，不要静默当成功', () => {
 
 // ══════════════════════════ 路由：整条链 ══════════════════════════
 
-test('路由：列表 → 发码 → 确认 → 列表（缓存已摘掉那一件）', () => {
+test('路由：列表 → 发码 → 确认 → 列表（缓存已摘掉那一件）', async () => {
   const { store, one, acctId } = setup();
   const seen: BuiltRequest[] = [];
   const transport = makeTransport((req, path) => {
@@ -644,7 +644,7 @@ test('路由：列表 → 发码 → 确认 → 列表（缓存已摘掉那一�
     (x) => x.path === '/plugins/mcloud/api/prizes/confirm' && x.method === 'POST',
   )!;
 
-  const first = JSON.parse(listRoute.handler({ query: '' }).body) as {
+  const first = JSON.parse((await listRoute.handler({ query: '' })).body) as {
     ok: boolean;
     pending: number;
     items: { oid: string; phone?: string }[];
@@ -662,21 +662,21 @@ test('路由：列表 → 发码 → 确认 → 列表（缓存已摘掉那一�
   assert.equal(text.includes(DEVICE), false, '列表不许回显 deviceId');
 
   const claim = JSON.parse(
-    claimRoute.handler({ body: JSON.stringify({ account: acctId, oid: '1280973030' }) }).body,
+    (await claimRoute.handler({ body: JSON.stringify({ account: acctId, oid: '1280973030' }) })).body,
   ) as { ok: boolean; note: string; offset?: number };
   assert.equal(claim.ok, true, claim.note);
   assert.equal(claim.offset, 282);
 
   const confirm = JSON.parse(
-    confirmRoute.handler({
+    (await confirmRoute.handler({
       body: JSON.stringify({ account: acctId, oid: '1280973030', code: '123456' }),
-    }).body,
+    })).body,
   ) as { ok: boolean; note: string };
   assert.equal(confirm.ok, true, confirm.note);
 
   // 第二次读：命中缓存（不再打列表那一口），并且那一件已经被摘掉
   const listCallsBefore = seen.filter((x) => x.url.includes('getUserPrizeLogPageV2')).length;
-  const second = JSON.parse(listRoute.handler({ query: '' }).body) as {
+  const second = JSON.parse((await listRoute.handler({ query: '' })).body) as {
     pending: number;
     cached: boolean;
   };
@@ -689,7 +689,7 @@ test('路由：列表 → 发码 → 确认 → 列表（缓存已摘掉那一�
   );
 
   // `refresh=1` 强取
-  listRoute.handler({ query: 'refresh=1' });
+  await listRoute.handler({ query: 'refresh=1' });
   assert.equal(
     seen.filter((x) => x.url.includes('getUserPrizeLogPageV2')).length,
     listCallsBefore + 1,
@@ -699,12 +699,12 @@ test('路由：列表 → 发码 → 确认 → 列表（缓存已摘掉那一�
   assert.equal(loadPrizeCache(one) !== null, true);
 });
 
-test('路由：账号不存在 → 400；一件都没有 → noAccount', () => {
+test('路由：账号不存在 → 400；一件都没有 → noAccount', async () => {
   const store = memStore();
   store.ensureSchema();
   const routes = mcloudRoutes(testDeps(store, { now: NOW }));
   const list = routes.find((x) => x.path === '/plugins/mcloud/api/prizes' && x.method === 'GET')!;
-  const empty = JSON.parse(list.handler({ query: '' }).body) as {
+  const empty = JSON.parse((await list.handler({ query: '' })).body) as {
     noAccount?: boolean;
     account: unknown;
     items: unknown[];
@@ -717,13 +717,13 @@ test('路由：账号不存在 → 400；一件都没有 → noAccount', () => {
   const r2 = mcloudRoutes(testDeps(s2, { now: NOW })).find(
     (x) => x.path === '/plugins/mcloud/api/prizes' && x.method === 'GET',
   )!;
-  const bad = r2.handler({ query: 'account=nope' });
+  const bad = await r2.handler({ query: 'account=nope' });
   assert.equal(bad.status, 400);
   assert.match(String(JSON.parse(bad.body).error), new RegExp('nope'));
   assert.ok(acctId.length > 0);
 });
 
-test('路由：claim/confirm 缺参数 → 400；缓存里没有这一件 → 400 且不发请求', () => {
+test('路由：claim/confirm 缺参数 → 400；缓存里没有这一件 → 400 且不发请求', async () => {
   const { store, acctId } = setup();
   let calls = 0;
   const transport = ((req: BuiltRequest) => {
@@ -738,14 +738,14 @@ test('路由：claim/confirm 缺参数 → 400；缓存里没有这一件 → 40
     (x) => x.path === '/plugins/mcloud/api/prizes/confirm' && x.method === 'POST',
   )!;
 
-  const noOid = claim.handler({ body: JSON.stringify({ account: acctId }) });
+  const noOid = await claim.handler({ body: JSON.stringify({ account: acctId }) });
   assert.equal(noOid.status, 400);
-  const notInCache = claim.handler({
+  const notInCache = await claim.handler({
     body: JSON.stringify({ account: acctId, oid: '404' }),
   });
   assert.equal(notInCache.status, 400);
   assert.match(String(JSON.parse(notInCache.body).error), /列表里没有这一件/);
-  const noCode = confirm.handler({
+  const noCode = await confirm.handler({
     body: JSON.stringify({ account: acctId, oid: '404' }),
   });
   assert.equal(noCode.status, 400, '缺 code 也当参数错');
@@ -753,7 +753,7 @@ test('路由：claim/confirm 缺参数 → 400；缓存里没有这一件 → 40
 });
 
 
-test('路由：账号标签是完整手机号时，领奖响应与日志都脱敏', () => {
+test('路由：账号标签是完整手机号时，领奖响应与日志都脱敏', async () => {
   const { store, acctId } = setup('15900000000');
   const logs: string[] = [];
   const transport = makeTransport((_req, path) => {
@@ -775,7 +775,7 @@ test('路由：账号标签是完整手机号时，领奖响应与日志都脱�
   });
   const routes = mcloudRoutes(testDeps(store, { transport, now: NOW, log: (m) => logs.push(m) }));
   const list = routes.find((x) => x.path === '/plugins/mcloud/api/prizes' && x.method === 'GET')!;
-  const view = JSON.parse(list.handler({ query: '' }).body) as {
+  const view = JSON.parse((await list.handler({ query: '' })).body) as {
     account: { label: string };
     accounts: { label: string }[];
   };
@@ -786,19 +786,19 @@ test('路由：账号标签是完整手机号时，领奖响应与日志都脱�
     (x) => x.path === '/plugins/mcloud/api/prizes/claim' && x.method === 'POST',
   )!;
   const r = JSON.parse(
-    claim.handler({ body: JSON.stringify({ account: acctId, oid: '1280973030' }) }).body,
+    (await claim.handler({ body: JSON.stringify({ account: acctId, oid: '1280973030' }) })).body,
   ) as { ok: boolean };
   assert.equal(r.ok, true, 'claim 应当成功');
   assert.ok(!logs.join('\n').includes('15900000000'), `日志里不许出现完整手机号：${logs.join(' | ')}`);
 });
 
 
-test('ensurePrizeToken：没有可换票的原生凭据时不拦（手工贴的会话只有 jwttoken）', () => {
+test('ensurePrizeToken：没有可换票的原生凭据时不拦（手工贴的会话只有 jwttoken）', async () => {
   const store = memStore();
   store.ensureSchema();
   // ⚠ 故意不建账号：`loadAuthRaw` 为空 —— 但会话里有一张 jwttoken，可能还能用
   saveSession(store, { cookie: 'c=1', jwt: JWT, deviceId: DEVICE, savedAt: NOW }, NOW);
-  const r = ensurePrizeToken({
+  const r = await ensurePrizeToken({
     store,
     transport: (() => {
       throw new Error('不该发请求');

@@ -14,7 +14,7 @@ import {
 } from '../src/mcloud/tasks/appTaskExtra.ts';
 import { desEncryptBase64 } from '../src/crypto/des.ts';
 
-test('getOutLink：收集 linkID（深一层也收）', () => {
+test('getOutLink：收集 linkID（深一层也收）', async () => {
   const body = JSON.stringify({
     code: '0',
     data: { getOutLinkRes: { getOutLinkResSet: [{ linkID: 'a' }, { linkID: 'b' }] } },
@@ -24,20 +24,20 @@ test('getOutLink：收集 linkID（深一层也收）', () => {
   assert.deepEqual(parseLinkIds('not json'), []);
 });
 
-test('firstField：XML 属性式与 JSON 式两种都收', () => {
+test('firstField：XML 属性式与 JSON 式两种都收', async () => {
   assert.equal(firstField('<string name="mid">123</string>', 'mid'), '123');
   assert.equal(firstField('{"mid":"456"}', 'mid'), '456');
   assert.equal(firstField('<string name="mid"></string>', 'mid'), undefined);
   assert.equal(firstField('{}', 'mid'), undefined);
 });
 
-test('mailCode：只有 S_OK 算成', () => {
+test('mailCode：只有 S_OK 算成', async () => {
   assert.equal(mailCode('{"code":"S_OK"}').ok, true);
   assert.equal(mailCode('{"code":"E_FAIL","summary":"x"}').ok, false);
   assert.equal(mailCode('not json').ok, false);
 });
 
-test('queryUserToken：解出 account/token/userDomainId，并派生 AI 鉴权', () => {
+test('queryUserToken：解出 account/token/userDomainId，并派生 AI 鉴权', async () => {
   const account = desEncryptBase64('13800138000', '139_mail');
   const body = JSON.stringify({ var: { data: { data: { account, token: 'T', userDomainId: 'D' } } } });
   const t = parseQueryUserToken(body);
@@ -50,7 +50,7 @@ test('queryUserToken：解出 account/token/userDomainId，并派生 AI 鉴权',
   assert.equal(parseQueryUserToken('{}'), undefined);
 });
 
-test('SSE：收 flowResult.outContent，事件数为 0 视为没成', () => {
+test('SSE：收 flowResult.outContent，事件数为 0 视为没成', async () => {
   const body = 'data: {"data":{"flowResult":{"outContent":"你"}}}\n\ndata: {"data":{"outContent":"好"}}\n\n';
   const r = parseSse(body);
   assert.equal(r.events, 2);
@@ -67,13 +67,13 @@ test('SSE：收 flowResult.outContent，事件数为 0 视为没成', () => {
   assert.equal(err.message, '内容审核未通过');
 });
 
-test('parseMailSession：必须同时有 sid/rmkey', () => {
+test('parseMailSession：必须同时有 sid/rmkey', async () => {
   assert.deepEqual(parseMailSession('{"var":{"sid":"s","rmkey":"r"}}'), { sid: 's', rmkey: 'r' });
   assert.equal(parseMailSession('{"var":{"sid":"s"}}'), undefined);
   assert.equal(parseMailSession('{}'), undefined);
 });
 
-test('PE 活跃上报（1004 发邮件后的那一枪）：头/体照参考实现', () => {
+test('PE 活跃上报（1004 发邮件后的那一枪）：头/体照参考实现', async () => {
   // 现场 2026-11-01：光"发信 + 打卡"，1004 一直停在第 1 步；补上这一枪才翻 FINISH。
   // 参考实现把体 gzip 了，我们发明文 —— 实测同一个口回 S_OK（见函数注释）。
   const req = peActiveReportRequest({ sid: 'S1', rmkey: 'R1' }, 'CG1', Date.UTC(2026, 10, 1, 6, 30, 0));
@@ -88,7 +88,7 @@ test('PE 活跃上报（1004 发邮件后的那一枪）：头/体照参考实�
   assert.equal(body.body?.logDatas?.[0]?.eventTime, '2026-11-01 14:30:00', '东八区墙钟');
 });
 
-test('firstField：键是**单引号**也要认（1029 账单的 mid 就长这样）', () => {
+test('firstField：键是**单引号**也要认（1029 账单的 mid 就长这样）', async () => {
   // 实测 `mbox:searchMessages`：{'code':'S_OK','var':[{'mid':"d4864e…",…}]}
   // 只认 `"mid":"…"` 的话账单那条永远"取不到 mid"（2026-11-01 现场）。
   const body = "{'code':'S_OK','var':[{'mid':\"d4864e05ed3c2dcf00000001\",'fid':1}]}";
@@ -98,7 +98,7 @@ test('firstField：键是**单引号**也要认（1029 账单的 mid 就长这�
   assert.equal(firstField('<object><string name="mid">xyz</string></object>', 'mid'), 'xyz');
 });
 
-test('firstField：值里带撇号不能截半截、无引号值要认、XML 要 trim', () => {
+test('firstField：值里带撇号不能截半截、无引号值要认、XML 要 trim', async () => {
   assert.equal(firstField('{"subject":"it\'s mine","mid":"a"}', 'subject'), "it's mine");
   assert.equal(firstField('{\'mid\':"abc"}', 'mid'), 'abc');
   // 参考实现的第三支：值不带引号（实拍的壳混着用）
@@ -106,7 +106,7 @@ test('firstField：值里带撇号不能截半截、无引号值要认、XML 要
   assert.equal(firstField('<string name="mid"> 123 </string>', 'mid'), '123');
 });
 
-test('mailCode：值里带撇号也要认 S_OK；0000 不算成（参考实现只认 S_OK）', () => {
+test('mailCode：值里带撇号也要认 S_OK；0000 不算成（参考实现只认 S_OK）', async () => {
   assert.deepEqual(mailCode("{'code':'S_OK','summary':\"can't\"}").ok, true);
   assert.equal(mailCode('{"code":"0000"}').ok, false, '0000 不是 S_OK');
   assert.equal(mailCode("{'code':'E_FAIL','summary':'boom'}").ok, false);

@@ -60,9 +60,9 @@ function depsFor(redpack: boolean): { deps: TaskDeps; sent: string[] } {
   return { deps: { store, transport, nowIso: NOW, nowMs: () => Date.parse(NOW), settleMs: 0, gapMs: [0, 0] }, sent };
 }
 
-test('开着 ⇒ 红包那一族的逐行进 `detail`，步骤名与小结也在', () => {
+test('开着 ⇒ 红包那一族的逐行进 `detail`，步骤名与小结也在', async () => {
   const { deps, sent } = depsFor(true);
-  const r = runDaily(deps);
+  const r = await runDaily(deps);
   const step = r.steps.find((s) => s.name === '红包派对');
   assert.notEqual(step, undefined, '日常里必须有这一步（参照实现的默认入口就是每日任务）');
   assert.ok(r.detail.some((l) => l.startsWith('余额: 可用')), r.detail.join('\n'));
@@ -80,9 +80,9 @@ test('开着 ⇒ 红包那一族的逐行进 `detail`，步骤名与小结也在
   assert.ok(sent.some((p) => p.includes('/cloudphone-market/redpacket/configTaskLoginList')));
 });
 
-test('关掉 ⇒ 这一族一步都不做，也不往活动站发任何东西', () => {
+test('关掉 ⇒ 这一族一步都不做，也不往活动站发任何东西', async () => {
   const { deps, sent } = depsFor(false);
-  const r = runDaily(deps);
+  const r = await runDaily(deps);
   const step = r.steps.find((s) => s.name === '红包派对');
   assert.equal(step?.idle, true);
   assert.ok(!r.detail.some((l) => l.startsWith('余额: 可用')), r.detail.join('\n'));

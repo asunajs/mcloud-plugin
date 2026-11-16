@@ -134,7 +134,7 @@ export interface LiveCodes {
 }
 
 /** 抓一次主页并解出口令（**只读**：一个字节都不往上游写）。 */
-export function runLiveRoom(deps: TaskDeps): TaskOutcome {
+export async function runLiveRoom(deps: TaskDeps): Promise<TaskOutcome> {
   const url = loadLiveUrl(deps.store);
   const nowMs = Date.parse(deps.nowIso);
   const loaded = loadPoolFrom(deps.store);
@@ -165,7 +165,7 @@ export function runLiveRoom(deps: TaskDeps): TaskOutcome {
   noteXhs(pool, nowMs);
   savePoolTo(deps.store, pool, deps.nowIso);
 
-  const res = callRawText(deps.transport, {
+  const res = await callRawText(deps.transport, {
     url,
     method: 'GET',
     headers: xiaohongshuProfileHeaders(),

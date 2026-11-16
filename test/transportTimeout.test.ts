@@ -16,7 +16,7 @@ import {
   timeoutForUrl,
 } from '../src/mcloud/timeoutPolicy.ts';
 
-test('timeoutForUrl：只读慢端点 12s，写操作仍 1500ms', () => {
+test('timeoutForUrl：只读慢端点 12s，写操作仍 1500ms', async () => {
   const slow = [
     // ⚠ 用**真实**路径（第一版正则写死前缀，一条都没匹配上）
     'https://m.mcloud.139.com/ycloud/signin/public/cloudRecordV2?pageNumber=1&pageSize=20',

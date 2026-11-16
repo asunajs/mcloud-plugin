@@ -12,7 +12,7 @@ import type { Transport } from '../src/mcloud/client.ts';
 
 const NOW = '2026-10-20T12:00:00.000Z';
 
-test('路由：两次请求第二次命中缓存；refresh=1 强取', () => {
+test('路由：两次请求第二次命中缓存；refresh=1 强取', async () => {
   const store = memStore();
   store.ensureSchema();
   const auth = 'Basic bW9iaWxlOjE5OTAwMDAwMDAwOnRva2Vu';
@@ -44,7 +44,7 @@ test('路由：两次请求第二次命中缓存；refresh=1 强取', () => {
   const route = mcloudRoutes(testDeps(store, { transport, now: NOW })).find(
     (x) => x.path === '/plugins/mcloud/api/beans/today' && x.method === 'GET',
   )!;
-  const first = JSON.parse(route.handler({ query: '' }).body) as {
+  const first = JSON.parse((await route.handler({ query: '' })).body) as {
     accounts: { id: string; balance?: number; gained: number; cached: boolean }[];
     cached: boolean;
   };
@@ -56,12 +56,12 @@ test('路由：两次请求第二次命中缓存；refresh=1 强取', () => {
   assert.equal(cloud, 1);
   assert.equal(info, 1);
 
-  const second = JSON.parse(route.handler({ query: '' }).body) as typeof first;
+  const second = JSON.parse((await route.handler({ query: '' })).body) as typeof first;
   assert.equal(second.cached, true);
   assert.equal(cloud, 1, '第二次不能再打 cloudRecordV2');
   assert.equal(info, 1, '第二次不能再打 infoV3');
 
-  route.handler({ query: 'refresh=1' });
+  await route.handler({ query: 'refresh=1' });
   assert.equal(cloud, 2, 'refresh=1 必须强取');
   assert.equal(info, 2, 'refresh=1 必须强取余额');
 });

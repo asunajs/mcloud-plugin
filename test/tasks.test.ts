@@ -31,7 +31,7 @@ function seeded() {
   store.setState(SESSION_KEY, JSON.stringify(SESSION), NOW);
   return store;
 }
-const ok = (result: unknown): Transport => () => ({
+const ok = (result: unknown): Transport => async () => ({
   status: 200,
   headers: {},
   body: JSON.stringify({ code: 0, msg: 'success', result }),
@@ -43,7 +43,7 @@ function recorder(responses: unknown[]): { transport: Transport; sent: { url: st
   let i = 0;
   return {
     sent,
-    transport: (req) => {
+    transport: async (req) => {
       sent.push({ url: req.url, method: req.method });
       const r = responses[Math.min(i, responses.length - 1)];
       i += 1;
@@ -52,14 +52,14 @@ function recorder(responses: unknown[]): { transport: Transport; sent: { url: st
   };
 }
 
-test('prizes：query 逐字（type=1 / 第 1 页 / 每页 10，抄自调用点）', () => {
+test('prizes：query 逐字（type=1 / 第 1 页 / 每页 10，抄自调用点）', async () => {
   assert.equal(PRIZE_QUERY.status, 1);
   assert.equal(PRIZE_QUERY.pageSize, 10);
   assert.equal(prizeQuery('sign_in_3'), 'marketname=sign_in_3&type=1&pageNumber=1&pageSize=10');
 
   const store = seeded();
   const { transport, sent } = recorder([[{ id: 1, state: 'UNRECEIVED' }, { id: 2, state: 'RECEIVED' }]]);
-  const out = runPrizes({ store, transport, nowIso: NOW });
+  const out = await runPrizes({ store, transport, nowIso: NOW });
   assert.equal(out.ok, true);
   assert.equal(out.note, '待领取奖品 1 个（共 2 个）');
   assert.equal(sent[0]!.method, 'GET');
@@ -71,12 +71,12 @@ test('prizes：query 逐字（type=1 / 第 1 页 / 每页 10，抄自调用点�
   assert.equal(saved.value.length, 2);
 });
 
-test('cloud-snapshot：query 逐字；一页装满就如实说「可能还有下一页」', () => {
+test('cloud-snapshot：query 逐字；一页装满就如实说「可能还有下一页」', async () => {
   assert.equal(snapshotQuery(), 'aiDou=1&type=0&pageNumber=1&pageSize=100');
 
   const store = seeded();
   // 不满一页
-  const few = runCloudSnapshot({
+  const few = await runCloudSnapshot({
     store,
     transport: ok([{ id: 1, aiDou: 5, typeName: '签到' }]),
     nowIso: NOW,
@@ -89,14 +89,14 @@ test('cloud-snapshot：query 逐字；一页装满就如实说「可能还有下
   // 正好装满 → 必须提醒可能还有下一页（原实现的分页规则：== pageSize 就要下一页）
   const full = Array.from({ length: PAGE_SIZE }, (_, i) => ({ id: i + 1, aiDou: 1, typeName: 'x' }));
   const store2 = seeded();
-  const out = runCloudSnapshot({ store: store2, transport: ok(full), nowIso: NOW });
+  const out = await runCloudSnapshot({ store: store2, transport: ok(full), nowIso: NOW });
   assert.match(out.note, /可能还有下一页/);
   const saved = JSON.parse(store2.getState(STATE_SNAPSHOT)!);
   assert.equal(saved.value.truncated, true);
   assert.equal(saved.value.entries.length, PAGE_SIZE);
 });
 
-test('sign：有设备号才发 isdeviceid 与 deviceId（且要走到"提交"那一步 GET 出去）', () => {
+test('sign：有设备号才发 isdeviceid 与 deviceId（且要走到"提交"那一步 GET 出去）', async () => {
   // 注意：签到现在是三段式（问状态 → 提交 → 回查，见 tasks2.test.ts）。
   // 这条只盯「提交那一步的请求长什么样」，所以要真的走到提交那一步。
   const notSigned = JSON.stringify({
@@ -107,13 +107,13 @@ test('sign：有设备号才发 isdeviceid 与 deviceId（且要走到"提交"�
 
   const store = seeded(); // 会话里带 deviceId
   const sent: { url: string; headers: Record<string, string> }[] = [];
-  const transport: Transport = (req) => {
+  const transport: Transport = async (req) => {
     sent.push({ url: req.url, headers: req.headers });
     return { status: 200, headers: {}, body: notSigned };
   };
-  runSign({ store, transport, nowIso: NOW, lateMs: 0 }); // ① 问状态
+  await runSign({ store, transport, nowIso: NOW, lateMs: 0 }); // ① 问状态
   assert.match(sent[0]!.url, /infoV3/);
-  runSign({ store, transport, nowIso: NOW, lateMs: 0 }); // ② 提交
+  await runSign({ store, transport, nowIso: NOW, lateMs: 0 }); // ② 提交
   const submit = sent.find((x) => /startSignIn/.test(x.url));
   assert.ok(submit, '第二次应当去提交签到');
   assert.equal(
@@ -127,19 +127,19 @@ test('sign：有设备号才发 isdeviceid 与 deviceId（且要走到"提交"�
   store2.ensureSchema();
   store2.setState(SESSION_KEY, JSON.stringify({ cookie: 'c=1', savedAt: NOW }), NOW);
   const sent2: { url: string; headers: Record<string, string> }[] = [];
-  const t2: Transport = (req) => {
+  const t2: Transport = async (req) => {
     sent2.push({ url: req.url, headers: req.headers });
     return { status: 200, headers: {}, body: notSigned };
   };
-  runSign({ store: store2, transport: t2, nowIso: NOW, lateMs: 0 });
-  runSign({ store: store2, transport: t2, nowIso: NOW, lateMs: 0 });
+  await runSign({ store: store2, transport: t2, nowIso: NOW, lateMs: 0 });
+  await runSign({ store: store2, transport: t2, nowIso: NOW, lateMs: 0 });
   const submit2 = sent2.find((x) => /startSignIn/.test(x.url))!;
   assert.equal(submit2.url, 'https://m.mcloud.139.com/ycloud/signin/page/startSignIn?client=app');
   assert.equal(submit2.headers['isdeviceid'], undefined);
   assert.equal(submit2.headers.activityid, 'sign_in_3');
 });
 
-test('③ 底座：错过太久就跳过，但**手动触发（负数）不算晚**', () => {
+test('③ 底座：错过太久就跳过，但**手动触发（负数）不算晚**', async () => {
   const spec = {
     task: 'x',
     endpoint: 'prizeRecord' as const,
@@ -151,8 +151,8 @@ test('③ 底座：错过太久就跳过，但**手动触发（负数）不算�
   // 晚了 3 小时 → 跳过（不是失败）
   const s1 = seeded();
   let called = 0;
-  const out1 = runTask(
-    { store: s1, transport: () => { called += 1; return ok(1)({} as never); }, nowIso: NOW, lateMs: 3 * 3600_000 },
+  const out1 = await runTask(
+    { store: s1, transport: async () => { called += 1; return ok(1)({} as never); }, nowIso: NOW, lateMs: 3 * 3600_000 },
     spec,
     judge,
   );
@@ -163,25 +163,25 @@ test('③ 底座：错过太久就跳过，但**手动触发（负数）不算�
 
   // 晚了 1 小时 → 照做（在阈值内）
   const s2 = seeded();
-  const out2 = runTask({ store: s2, transport: ok({}), nowIso: NOW, lateMs: 3600_000 }, spec, judge);
+  const out2 = await runTask({ store: s2, transport: ok({}), nowIso: NOW, lateMs: 3600_000 }, spec, judge);
   assert.equal(out2.skipped, undefined);
   assert.equal(out2.ok, true);
 
   // ⚠️ 关键：手动触发时面板给的 lateMs 是**负数**（F-001）—— 不能当成"晚"
   const s3 = seeded();
-  const out3 = runTask({ store: s3, transport: ok({}), nowIso: NOW, lateMs: -290918 }, spec, judge);
+  const out3 = await runTask({ store: s3, transport: ok({}), nowIso: NOW, lateMs: -290918 }, spec, judge);
   assert.equal(out3.skipped, undefined, '手动触发必须照做');
   assert.equal(out3.ok, true);
 });
 
-test('底座：失败原因落盘，成功时清掉；没有会话不发请求', () => {
+test('底座：失败原因落盘，成功时清掉；没有会话不发请求', async () => {
   const store = seeded();
-  const fail: Transport = () => ({ status: 200, headers: {}, body: '{"code":401,"msg":"凭据无效"}' });
-  const out = runPrizes({ store, transport: fail, nowIso: NOW });
+  const fail: Transport = async () => ({ status: 200, headers: {}, body: '{"code":401,"msg":"凭据无效"}' });
+  const out = await runPrizes({ store, transport: fail, nowIso: NOW });
   assert.equal(out.ok, false);
   assert.match(store.getState('mcloud.last_error.prizes')!, /凭据无效/);
 
-  const okOut = runPrizes({ store, transport: ok([]), nowIso: NOW });
+  const okOut = await runPrizes({ store, transport: ok([]), nowIso: NOW });
   assert.equal(okOut.ok, true);
   assert.equal(store.getState('mcloud.last_error.prizes'), '', '成功后要清掉上次的失败');
 
@@ -189,9 +189,9 @@ test('底座：失败原因落盘，成功时清掉；没有会话不发请求',
   const empty = memStore();
   empty.ensureSchema();
   let n = 0;
-  const out2 = runPrizes({
+  const out2 = await runPrizes({
     store: empty,
-    transport: () => {
+    transport: async () => {
       n += 1;
       return { status: 200, headers: {}, body: '{}' };
     },

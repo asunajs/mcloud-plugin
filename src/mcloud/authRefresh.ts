@@ -282,12 +282,12 @@ export interface RefreshTarget {
 }
 
 /** 续期一次。`force` 跳过判据（对应 mcloud CLI 的 `--force`）。 */
-export function runAuthRefresh(
+export async function runAuthRefresh(
   deps: TaskDeps,
   force = false,
   leadDays = DEFAULT_LEAD_DAYS,
   target: RefreshTarget = {},
-): TaskOutcome & { raw?: string } {
+): Promise<TaskOutcome & { raw?: string }> {
   const raw = target.auth ?? loadAuthRaw(deps.store);
   if (raw === '') {
     return { ok: true, skipped: true, note: '还没有账号 —— 先加一个' };
@@ -336,7 +336,7 @@ export function runAuthRefresh(
 
   const seg = parseAuthorization(raw)!;
   const req = refreshRequest(raw, domain, seg.platform);
-  const res = callRawText(deps.transport, req);
+  const res = await callRawText(deps.transport, req);
   if (!res.ok) return { ok: false, note: `没刷成：${res.error ?? '连不上'}` };
   const parsed = parseRefresh(res.text);
   if (!parsed.ok || !parsed.result) return { ok: false, note: `没刷成：${parsed.error ?? '看不懂回来的东西'}` };

@@ -18,7 +18,7 @@ import { accountsView, json, readBody } from '../support.ts';
 import type { RouteDeps, RouteEntry } from '../support.ts';
 
 /** accounts 组。deps 是路由依赖；base 是 /plugins/mcloud/api；verify 是「拿当前会话验一次」。 */
-export function accountsRoutes(deps: RouteDeps, base: string, verify: () => { ok: boolean; note: string }): RouteEntry[] {
+export function accountsRoutes(deps: RouteDeps, base: string, verify: () => Promise<{ ok: boolean; note: string }>): RouteEntry[] {
   void verify;
   return [
 {
@@ -29,7 +29,7 @@ export function accountsRoutes(deps: RouteDeps, base: string, verify: () => { ok
       //   而界面上看起来"选好了"。
       path: `${base}/task/accounts`,
       method: 'POST',
-      handler: (req) => {
+      handler: async (req) => {
         const b = readBody(req) as {
           task?: unknown;
           mode?: unknown;
@@ -85,13 +85,13 @@ export function accountsRoutes(deps: RouteDeps, base: string, verify: () => { ok
       // ⚠ 只回**掩码**：凭据本身不许出这个口子（它已经能从别处拿，但少一个出口就少一处泄露面）。
       path: `${base}/accounts`,
       method: 'GET',
-      handler: () => json(200, { ...accountsView(deps.store) }),
+      handler: async () => json(200, { ...accountsView(deps.store) }),
     },
 
 {
       path: `${base}/accounts`,
       method: 'POST',
-      handler: (req) => {
+      handler: async (req) => {
         const body = readBody(req);
         const op = typeof body.op === 'string' ? body.op : '';
         const now = deps.now();
@@ -182,7 +182,7 @@ export function accountsRoutes(deps: RouteDeps, base: string, verify: () => { ok
           //   `currentAccount()`，而"当前是谁"是**全局**键（`mcloud.account.current`）
           //   ⇒ 刷的是当前账号、提示写的却是被点的那条，新串还落进被点那条的袋里
           //   （谁都不读）。这里把"刷哪串、写回哪条"显式传下去（F-077）。
-          const r = runAuthRefresh(
+          const r = await runAuthRefresh(
             {
               store: deps.store,
               transport: deps.transport,

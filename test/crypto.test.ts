@@ -48,7 +48,7 @@ function lcgBytes(n: number, seed = 12345): Uint8Array {
   return out;
 }
 
-test('公开测试向量（不依赖 Node 的独立信源）', () => {
+test('公开测试向量（不依赖 Node 的独立信源）', async () => {
   // RFC 1321 附录 A.5
   assert.equal(md5Hex(''), 'd41d8cd98f00b204e9800998ecf8427e');
   assert.equal(md5Hex('abc'), '900150983cd24fb0d6963f7d28e17f72');
@@ -71,7 +71,7 @@ test('公开测试向量（不依赖 Node 的独立信源）', () => {
   assert.equal(md5Hex('中文'), nodeHex('md5', enc('中文')));
 });
 
-test('补位边界：55/56/63/64/119/120/128 逐个对 Node', () => {
+test('补位边界：55/56/63/64/119/120/128 逐个对 Node', async () => {
   // 这几个长度是补位最容易错的地方（长度字段要不要多开一个块）
   for (const n of [0, 1, 2, 3, 54, 55, 56, 57, 63, 64, 65, 118, 119, 120, 127, 128, 129, 1000]) {
     const data = lcgBytes(n);
@@ -81,7 +81,7 @@ test('补位边界：55/56/63/64/119/120/128 逐个对 Node', () => {
   }
 });
 
-test('补位函数的形状：长度是 64 的倍数，尾部是长度字段', () => {
+test('补位函数的形状：长度是 64 的倍数，尾部是长度字段', async () => {
   for (const n of [0, 55, 56, 64, 65, 128]) {
     const p = padLE(lcgBytes(n));
     assert.equal(p.length % 64, 0);
@@ -93,7 +93,7 @@ test('补位函数的形状：长度是 64 的倍数，尾部是长度字段', (
   }
 });
 
-test('UTF-8 与 Node/TextEncoder 逐字节一致（含代理对与孤立代理）', () => {
+test('UTF-8 与 Node/TextEncoder 逐字节一致（含代理对与孤立代理）', async () => {
   const cases = [
     '',
     'ascii',
@@ -116,7 +116,7 @@ test('UTF-8 与 Node/TextEncoder 逐字节一致（含代理对与孤立代理�
   assert.deepEqual(Array.from(utf8(fromUtf8(b))), Array.from(utf8(new TextDecoder().decode(b))));
 });
 
-test('hex / base64 与 Node 一致', () => {
+test('hex / base64 与 Node 一致', async () => {
   for (const n of [0, 1, 2, 3, 4, 5, 31, 32, 33, 100]) {
     const b = lcgBytes(n, 999);
     assert.equal(toHex(b), Buffer.from(b).toString('hex'), `hex @${n}`);
@@ -129,7 +129,7 @@ test('hex / base64 与 Node 一致', () => {
   assert.equal(fromUtf8(fromBase64(wrapped)), 'hello, world');
 });
 
-test('HMAC 对 Node 一致：密钥长度跨过块长 64', () => {
+test('HMAC 对 Node 一致：密钥长度跨过块长 64', async () => {
   const msg = utf8('the quick brown fox jumps over the lazy dog');
   for (const keyLen of [0, 1, 16, 32, 63, 64, 65, 100, 200]) {
     const key = lcgBytes(keyLen, 7);
@@ -151,7 +151,7 @@ test('HMAC 对 Node 一致：密钥长度跨过块长 64', () => {
   }
 });
 
-test('随机字节也能对上（每次跑 64 组）', () => {
+test('随机字节也能对上（每次跑 64 组）', async () => {
   for (let i = 0; i < 64; i += 1) {
     const data = randomBytes(1 + ((i * 37) % 300));
     assert.equal(toHex(md5(data)), nodeHex('md5', data));

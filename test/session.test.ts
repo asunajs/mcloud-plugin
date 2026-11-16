@@ -30,10 +30,10 @@ import type { Transport } from '../src/mcloud/client.ts';
 const NOW = '2026-10-13T01:00:00.000Z';
 const COOKIE = 'SESSIONID=abcdef1234567890; UID=998877';
 
-const okTransport: Transport = () => ({ status: 200, headers: {}, body: '{"code":0,"msg":"success"}' });
+const okTransport: Transport = async () => ({ status: 200, headers: {}, body: '{"code":0,"msg":"success"}' });
 const logNothing = () => {};
 
-test('解析：cookie 串 / JSON / 包一层 / cookies 数组 / jwt 别名', () => {
+test('解析：cookie 串 / JSON / 包一层 / cookies 数组 / jwt 别名', async () => {
   // ① 纯 cookie 串
   const a = parseSessionInput(COOKIE, NOW);
   assert.equal(a.ok, true);
@@ -71,7 +71,7 @@ test('解析：cookie 串 / JSON / 包一层 / cookies 数组 / jwt 别名', () 
   assert.match(noCookie.ok ? '' : noCookie.reason, /cookie/);
 });
 
-test('归一化：属性段不该出现在 cookie 头里', () => {
+test('归一化：属性段不该出现在 cookie 头里', async () => {
   assert.equal(
     normalizeCookie('SESSIONID=abc; Path=/; Domain=.139.com; Expires=Wed, 21 Oct 2026 07:28:00 GMT; HttpOnly; Secure'),
     'SESSIONID=abc',
@@ -80,7 +80,7 @@ test('归一化：属性段不该出现在 cookie 头里', () => {
   assert.equal(normalizeCookie('Path=/'), '', '只剩属性就是空');
 });
 
-test('脱敏：短凭据也不能吐内容，长凭据只给前 4 位', () => {
+test('脱敏：短凭据也不能吐内容，长凭据只给前 4 位', async () => {
   assert.equal(redact(undefined), '（无）');
   assert.equal(redact(''), '（无）');
   const short = redact('abc');
@@ -91,7 +91,7 @@ test('脱敏：短凭据也不能吐内容，长凭据只给前 4 位', () => {
   assert.match(long, /共 \d+ 字符/);
 });
 
-test('安全断言：状态里没有凭据原文', () => {
+test('安全断言：状态里没有凭据原文', async () => {
   const store = memStore();
   store.ensureSchema();
   importSession(
@@ -112,13 +112,13 @@ test('安全断言：状态里没有凭据原文', () => {
   assert.equal(later.ageHours, 12);
 });
 
-test('体检：没有会话时一个请求都不发', () => {
+test('体检：没有会话时一个请求都不发', async () => {
   const store = memStore();
   store.ensureSchema();
   let called = 0;
-  const r = verifySession({
+  const r = await verifySession({
     store,
-    transport: () => {
+    transport: async () => {
       called += 1;
       return { status: 200, headers: {}, body: '{}' };
     },
@@ -129,7 +129,7 @@ test('体检：没有会话时一个请求都不发', () => {
   assert.equal(called, 0);
 });
 
-test('体检：发出去的请求形状正确，成功与失败都记录在案', () => {
+test('体检：发出去的请求形状正确，成功与失败都记录在案', async () => {
   const store = memStore();
   store.ensureSchema();
   importSession(store, { cookie: COOKIE, jwt: 'J', deviceId: 'D', savedAt: NOW }, NOW);
@@ -137,12 +137,12 @@ test('体检：发出去的请求形状正确，成功与失败都记录在案',
   // 用桩**捕获**发出去的请求：体检这条路径的验重点是「构造对不对」，
   // 真 HTTP 往返由 tasklist 那条用例覆盖（那里有 mock 上游）
   let sent: { url: string; method: string; headers: Record<string, string>; body?: string } | null = null;
-  const capture: Transport = (req) => {
+  const capture: Transport = async (req) => {
     sent = req;
     return { status: 200, headers: {}, body: '{"code":0,"msg":"ok"}' };
   };
 
-  const ok = verifySession({ store, transport: capture, nowIso: NOW });
+  const ok = await verifySession({ store, transport: capture, nowIso: NOW });
   assert.equal(ok.ok, true);
   assert.match(ok.note, /会话有效/);
 
@@ -170,9 +170,9 @@ test('体检：发出去的请求形状正确，成功与失败都记录在案',
   assert.equal(check.at, NOW);
 
   // 上游说凭据过期 → 记为失效，并把上游原话留在 note 里
-  const bad = verifySession({
+  const bad = await verifySession({
     store,
-    transport: () => ({ status: 200, headers: {}, body: '{"code":4001,"msg":"登录已过期"}' }),
+    transport: async () => ({ status: 200, headers: {}, body: '{"code":4001,"msg":"登录已过期"}' }),
     nowIso: NOW,
   });
   assert.equal(bad.ok, false);
@@ -180,30 +180,30 @@ test('体检：发出去的请求形状正确，成功与失败都记录在案',
   assert.equal(JSON.parse(store.getState('mcloud.session.last_check')!).ok, false);
 });
 
-test('路由：状态不回显凭据、导入后立刻真验、坏输入 400、能清空', () => {
+test('路由：状态不回显凭据、导入后立刻真验、坏输入 400、能清空', async () => {
   const store = memStore();
   store.ensureSchema();
   const routes = mcloudRoutes(
     testDeps(store, { transport: okTransport, now: NOW, log: logNothing }),
   );
-  const call = (method: string, path: string, body?: string) => {
+  const call = async (method: string, path: string, body?: string) => {
     const r = routes.find((x) => x.method === method && x.path === path);
     assert.ok(r, `没有这条路由：${method} ${path}`);
-    return r.handler({ method, path, body });
+    return await r.handler({ method, path, body });
   };
 
   // GET 状态：空的时候也 200，且不泄漏
-  const g0 = call('GET', '/plugins/mcloud/api/session');
+  const g0 = await call('GET', '/plugins/mcloud/api/session');
   assert.equal(g0.status, 200);
   assert.equal(JSON.parse(g0.body).present, false);
 
   // 导入：坏输入 → 400 且带上人话
-  const bad = call('POST', '/plugins/mcloud/api/session', '随便一句话');
+  const bad = await call('POST', '/plugins/mcloud/api/session', '随便一句话');
   assert.equal(bad.status, 400);
   assert.ok(JSON.parse(bad.body).error);
 
   // 导入：cookie 串 → 200 + 真验通过
-  const imp = call('POST', '/plugins/mcloud/api/session', JSON.stringify({ session: COOKIE }));
+  const imp = await call('POST', '/plugins/mcloud/api/session', JSON.stringify({ session: COOKIE }));
   assert.equal(imp.status, 200);
   const impBody = JSON.parse(imp.body);
   assert.equal(impBody.imported, true);
@@ -211,26 +211,26 @@ test('路由：状态不回显凭据、导入后立刻真验、坏输入 400、�
   assert.equal(imp.body.includes(COOKIE), false, '导入响应里不能回显 cookie');
 
   // 再取状态：这次 present=true
-  const g1 = JSON.parse(call('GET', '/plugins/mcloud/api/session').body);
+  const g1 = JSON.parse((await call('GET', '/plugins/mcloud/api/session')).body);
   assert.equal(g1.present, true);
   assert.equal(g1.lastCheckOk, true);
 
   // 主动验一次
-  const v = call('POST', '/plugins/mcloud/api/session/verify');
+  const v = await call('POST', '/plugins/mcloud/api/session/verify');
   assert.equal(JSON.parse(v.body).verified, true);
 
   // 清空
-  const c = call('POST', '/plugins/mcloud/api/session', JSON.stringify({ clear: true }));
+  const c = await call('POST', '/plugins/mcloud/api/session', JSON.stringify({ clear: true }));
   assert.equal(JSON.parse(c.body).cleared, true);
-  assert.equal(JSON.parse(call('GET', '/plugins/mcloud/api/session').body).present, false);
+  assert.equal(JSON.parse((await call('GET', '/plugins/mcloud/api/session')).body).present, false);
 
   // 基址配置：默认真上游、坏值 400、设了立刻生效（体检会打到那个地址）
-  assert.equal(JSON.parse(call('GET', '/plugins/mcloud/api/config').body).baseUrl, '(真主机)');
-  const badBase = call('POST', '/plugins/mcloud/api/config', JSON.stringify({ baseUrl: 'ftp://x' }));
+  assert.equal(JSON.parse((await call('GET', '/plugins/mcloud/api/config')).body).baseUrl, '(真主机)');
+  const badBase = await call('POST', '/plugins/mcloud/api/config', JSON.stringify({ baseUrl: 'ftp://x' }));
   assert.equal(badBase.status, 400);
-  call('POST', '/plugins/mcloud/api/config', JSON.stringify({ baseUrl: 'http://127.0.0.1:9/' }));
+  await call('POST', '/plugins/mcloud/api/config', JSON.stringify({ baseUrl: 'http://127.0.0.1:9/' }));
   assert.equal(
-    JSON.parse(call('GET', '/plugins/mcloud/api/config').body).baseUrl,
+    JSON.parse((await call('GET', '/plugins/mcloud/api/config')).body).baseUrl,
     'http://127.0.0.1:9',
     '结尾斜杠要去掉',
   );
@@ -238,7 +238,7 @@ test('路由：状态不回显凭据、导入后立刻真验、坏输入 400、�
   try {
     let url = '';
     const routes2 = mcloudRoutes(testDeps(store, {
-      transport: (req) => {
+      transport: async (req) => {
         url = req.url;
         return { status: 200, headers: {}, body: '{"code":0,"msg":"ok"}' };
       },
@@ -246,15 +246,15 @@ test('路由：状态不回显凭据、导入后立刻真验、坏输入 400、�
       log: logNothing,
     }));
     const h = routes2.find((x) => x.method === 'POST' && x.path.endsWith('/session'))!;
-    h.handler({ method: 'POST', body: JSON.stringify({ session: COOKIE }) });
+    await h.handler({ method: 'POST', body: JSON.stringify({ session: COOKIE }) });
     assert.equal(url, 'http://127.0.0.1:9/ycloud/signin/page/infoV3?client=app');
   } finally {
-    call('POST', '/plugins/mcloud/api/config', JSON.stringify({ baseUrl: '' }));
+    await call('POST', '/plugins/mcloud/api/config', JSON.stringify({ baseUrl: '' }));
   }
 
   // 任务侧状态
   store.setState(STATE_LAST_TASKLIST, JSON.stringify({ at: NOW, lateMs: 0, value: { total: 3, done: 2 } }), NOW);
-  const t = JSON.parse(call('GET', '/plugins/mcloud/api/tasks').body);
+  const t = JSON.parse((await call('GET', '/plugins/mcloud/api/tasks')).body);
   assert.equal(t.lastTaskList.value.total, 3);
   assert.deepEqual(t.lastErrorByTask, {}, '没有失败时是空对象');
 
@@ -262,13 +262,13 @@ test('路由：状态不回显凭据、导入后立刻真验、坏输入 400、�
   // 如果接口不返回这个字段（我第一版就是这样），上面那句 deepEqual({}) 会**永远通过**，
   // 等于没测。负向验证：往 state 里塞一条，必须出现在结果里。
   store.setState('mcloud.last_error.prizes', 'code=90001 未登录 @ ' + NOW, NOW);
-  const t2 = JSON.parse(call('GET', '/plugins/mcloud/api/tasks').body);
+  const t2 = JSON.parse((await call('GET', '/plugins/mcloud/api/tasks')).body);
   assert.match(t2.lastErrorByTask.prizes ?? '', /90001/);
 });
 
 // ══════════════════ 会话按账号分（F-049）══════════════════
 
-test('⚠ 多账号：会话不能串（A 的任务不能读到 B 的票）', () => {
+test('⚠ 多账号：会话不能串（A 的任务不能读到 B 的票）', async () => {
   // # 这是 F-048 的**上一层**
   //
   // F-048 修的是「票」（`mcloud.h5.jwt.<账号>.<配方>`）。但**任务读票的唯一入口**
@@ -318,7 +318,7 @@ test('⚠ 多账号：会话不能串（A 的任务不能读到 B 的票）', ()
   assert.notEqual(va, vb, '两个账号必须读到不同的会话');
 });
 
-test('单账号那套（没有账号列表）仍然用**裸键**，老数据照常读得到', () => {
+test('单账号那套（没有账号列表）仍然用**裸键**，老数据照常读得到', async () => {
   const store = memStore();
   store.ensureSchema();
   // 直接往裸键里塞一份会话 —— 模拟升级前的老数据
@@ -327,7 +327,7 @@ test('单账号那套（没有账号列表）仍然用**裸键**，老数据照�
   assert.equal(loadSession(store)?.jwt, 'OLD', '没有账号时也读得到（走 default 袋）');
 });
 
-test('⚠ 切账号**不会**把会话漏到新账号名下', () => {
+test('⚠ 切账号**不会**把会话漏到新账号名下', async () => {
   // 反方向的错：如果实现成"读不到就回落到裸键"，那么切到一个新账号时
   // 会读到**上一个账号**的会话 —— 同样是串身份，而且更隐蔽
   // （因为"有会话"看起来是正常的）。
@@ -349,7 +349,7 @@ test('⚠ 切账号**不会**把会话漏到新账号名下', () => {
 
 // ══════════════ 其它按账号的状态键（F-050）══════════════
 
-test('⚠ 多账号：「今天跑完了」的标记不能是全局的（否则第二个账号被整个跳过）', () => {
+test('⚠ 多账号：「今天跑完了」的标记不能是全局的（否则第二个账号被整个跳过）', async () => {
   // 这是 F-049 的**同一个类**，但后果更直接：
   //
   //     账号 A 跑完日常 → 落 `done_date = 今天`
@@ -378,7 +378,7 @@ test('⚠ 多账号：「今天跑完了」的标记不能是全局的（否则�
   assert.equal(store.getState(DAILY_DONE_KEY), today, 'A 的标记还在');
 });
 
-test('⚠ 多账号：「上次跑成什么样」也不能是全局的（否则界面显示别人的结果）', () => {
+test('⚠ 多账号：「上次跑成什么样」也不能是全局的（否则界面显示别人的结果）', async () => {
   const store = memStore();
   store.ensureSchema();
   const A = 'Basic bW9iaWxlOjEzODAwMDAwMDAwOnRva2VuQQ==';
@@ -400,7 +400,7 @@ test('⚠ 多账号：「上次跑成什么样」也不能是全局的（否则�
   );
 });
 
-test('配置类的键**不**按账号分（分了反而错）', () => {
+test('配置类的键**不**按账号分（分了反而错）', async () => {
   // 判据是问一句：账号 A 写进去之后，账号 B 读到它会不会做出**错的**决定？
   // 「几点抢兑」不会 —— 它是配置，跟账号无关。分了的话表现是
   // "在 A 名下设的时间，切到 B 就不生效了"。

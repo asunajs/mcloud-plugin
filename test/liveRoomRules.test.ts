@@ -38,7 +38,7 @@ function gateRoom(over: Partial<GateRoom> = {}): GateRoom {
 
 // ══════════════════════════ 判定门 ══════════════════════════
 
-test('门：`status == 1` **且** 昵称精确相等 —— 只看状态会误判', () => {
+test('门：`status == 1` **且** 昵称精确相等 —— 只看状态会误判', async () => {
   // 实拍：房间 147490「福建移动」也是 status == 1，和真正要听的那间在同一个页签里
   const g = judgeKoulingGate([
     gateRoom({ id: 147490, anchorNickname: '福建移动' }),
@@ -49,7 +49,7 @@ test('门：`status == 1` **且** 昵称精确相等 —— 只看状态会误�
   assert.equal(g.liveCount, 2, '在播的有两间（含别人的）');
 });
 
-test('⚠ 门那两种"没有"必须分得开（它们的下一步完全不同：一个等，一个别等）', () => {
+test('⚠ 门那两种"没有"必须分得开（它们的下一步完全不同：一个等，一个别等）', async () => {
   const nobody = judgeKoulingGate([gateRoom({ status: 2 }), gateRoom({ status: 0 })]);
   assert.equal(nobody.active, false);
   assert.equal(nobody.liveCount, 0);
@@ -62,13 +62,13 @@ test('⚠ 门那两种"没有"必须分得开（它们的下一步完全不同�
   assert.ok(!/谁都没开播/.test(gateLine(others)), '别把"别人在播"说成"没有直播"');
 });
 
-test('门里的房间按 id 去重（同一间房可能因分页/多频道出现两次）', () => {
+test('门里的房间按 id 去重（同一间房可能因分页/多频道出现两次）', async () => {
   const g = judgeKoulingGate([gateRoom({ id: 7 }), gateRoom({ id: 7 }), gateRoom({ id: 8 })]);
   assert.deepEqual(g.rooms.map((r) => r.id), [7, 8]);
   assert.equal(g.liveCount, 3, 'liveCount 是**筛状态之后**的房间数（去重前，mcloud 同口径）');
 });
 
-test('昵称是**精确相等**：`福建移动`/`移动心选`/`移动臻选` 都不算', () => {
+test('昵称是**精确相等**：`福建移动`/`移动心选`/`移动臻选` 都不算', async () => {
   for (const name of ['福建移动', '移动心选', '移动臻选', '中国移动云盘 ', '']) {
     const g = judgeKoulingGate([gateRoom({ anchorNickname: name })]);
     assert.equal(g.active, false, `${name} 不该算目标主播`);
@@ -77,7 +77,7 @@ test('昵称是**精确相等**：`福建移动`/`移动心选`/`移动臻选` �
 
 // ══════════════════════════ 参数判据 ══════════════════════════
 
-test('参数判据：关掉自动抓取又没给口令 ⇒ 一个来源都没有', () => {
+test('参数判据：关掉自动抓取又没给口令 ⇒ 一个来源都没有', async () => {
   assert.equal(checkParams({ codes: [], autoScrape: false }), 'noSource');
   assert.match(describeFault('noSource'), /没有给手工口令/);
   // 给了口令 ⇒ 成立（人给的那份就是来源）
@@ -88,12 +88,12 @@ test('参数判据：关掉自动抓取又没给口令 ⇒ 一个来源都没有
 
 // ══════════════════════════ 合并与分隔 ══════════════════════════
 
-test('合并：保序、去重、逐条 trim、丢空串', () => {
+test('合并：保序、去重、逐条 trim、丢空串', async () => {
   assert.deepEqual(mergeKouling([' 甲 ', '乙', '甲', '', '  ']), ['甲', '乙']);
   assert.deepEqual(mergeKouling([]), []);
 });
 
-test('⚠ 分隔符含**空白**（含全角空格）—— mcloud 漏过这一条', () => {
+test('⚠ 分隔符含**空白**（含全角空格）—— mcloud 漏过这一条', async () => {
   // 原话：「`"口令甲 口令乙"` 会被当成**一条**口令发上去 —— 服务端必然回 200108，
   // 而用户看到的是"我明明填了两条，怎么只领了一条还说口令错"」
   assert.deepEqual(splitKouling('口令甲 口令乙'), ['口令甲', '口令乙']);
@@ -106,7 +106,7 @@ test('⚠ 分隔符含**空白**（含全角空格）—— mcloud 漏过这一�
 
 // ══════════════════════════ 协议结论 → 池 ══════════════════════════
 
-test('映射表逐条：领到/已兑换 ⇒ 有效；口令错/过期 ⇒ 无效；其余 ⇒ 未分类', () => {
+test('映射表逐条：领到/已兑换 ⇒ 有效；口令错/过期 ⇒ 无效；其余 ⇒ 未分类', async () => {
   assert.equal(claimVerdictOf('succeeded'), 'claimed');
   assert.equal(claimVerdictOf('already-drawn'), 'alreadyClaimed');
   assert.equal(claimVerdictOf('invalid-kouling'), 'invalid');
@@ -117,14 +117,14 @@ test('映射表逐条：领到/已兑换 ⇒ 有效；口令错/过期 ⇒ 无�
 
 // ══════════════════════════ 投哪些口令 ══════════════════════════
 
-test('投哪些：人给的在前、池里该投的在后，去重', () => {
+test('投哪些：人给的在前、池里该投的在后，去重', async () => {
   const pool = emptyPool();
   note(pool, ['乙'], 'xiaohongshu', T0);
   assert.deepEqual(planDrawCodes(pool, 'acc', ['甲']), ['甲', '乙']);
   assert.deepEqual(planDrawCodes(pool, 'acc', ['乙']), ['乙'], '人给的与池里的重复只投一次');
 });
 
-test('投哪些：判过**无效**的不投、这个账号**领过**的不投；别的账号照样投', () => {
+test('投哪些：判过**无效**的不投、这个账号**领过**的不投；别的账号照样投', async () => {
   const pool = emptyPool();
   note(pool, ['甲', '乙', '丙'], 'xiaohongshu', T0);
   noteClaim(pool, 'acc', '甲', 'invalid', T0);
@@ -137,13 +137,13 @@ test('投哪些：判过**无效**的不投、这个账号**领过**的不投；
   assert.deepEqual(pickFor(pool, '另一个'), ['乙', '丙'], '无效的不给任何人；领过的只对那个账号不给');
 });
 
-test('投哪些：**未知**的也要投（验证的唯一途径就是拿去领）', () => {
+test('投哪些：**未知**的也要投（验证的唯一途径就是拿去领）', async () => {
   const pool = emptyPool();
   note(pool, ['甲'], 'xiaohongshu', T0);
   assert.deepEqual(planDrawCodes(pool, 'acc', []), ['甲']);
 });
 
-test('投哪些：人给的那份**也过同一道筛**（插件里它可能还没进池）', () => {
+test('投哪些：人给的那份**也过同一道筛**（插件里它可能还没进池）', async () => {
   const pool = emptyPool();
   note(pool, ['甲', '乙'], 'xiaohongshu', T0);
   noteClaim(pool, 'acc', '甲', 'invalid', T0);
@@ -154,7 +154,7 @@ test('投哪些：人给的那份**也过同一道筛**（插件里它可能还�
 
 // ══════════════════════════ 账号键 ══════════════════════════
 
-test('账号键：从原生凭据里取手机号段（token 会被换掉，手机号不会）', () => {
+test('账号键：从原生凭据里取手机号段（token 会被换掉，手机号不会）', async () => {
   const store = memStore();
   store.ensureSchema();
   assert.equal(accountOf(store), 'default', '还没贴凭据 ⇒ 退化成常量键');

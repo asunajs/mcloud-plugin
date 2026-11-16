@@ -31,7 +31,7 @@ function boot() {
   return store;
 }
 
-test('a) 文件里预算 180 ⇒ 写进 state，指纹记 180', () => {
+test('a) 文件里预算 180 ⇒ 写进 state，指纹记 180', async () => {
   const store = boot();
   const r = applyConfigOverlay(store, { daily_budget_s: 180 }, NOW);
   assert.deepEqual(r.applied, ['daily_budget_s=180']);
@@ -40,7 +40,7 @@ test('a) 文件里预算 180 ⇒ 写进 state，指纹记 180', () => {
   assert.deepEqual(JSON.parse(store.getState(STATE_APPLIED) ?? '{}'), { daily_budget_s: '180' });
 });
 
-test('b) 之后在插件界面上改成 300 ⇒ 同一份文件再加载，**不动**（不许盖回去）', () => {
+test('b) 之后在插件界面上改成 300 ⇒ 同一份文件再加载，**不动**（不许盖回去）', async () => {
   const store = boot();
   applyConfigOverlay(store, { daily_budget_s: 180 }, NOW);
   // 插件自己的界面写的是 state（routes.ts 的 /daily-budget）
@@ -51,7 +51,7 @@ test('b) 之后在插件界面上改成 300 ⇒ 同一份文件再加载，**不
   assert.equal(store.getState(BUDGET), '300', '界面上改的值被文件盖回去了');
 });
 
-test('c) 文件改成 600 ⇒ 重载后 state 跟着变成 600', () => {
+test('c) 文件改成 600 ⇒ 重载后 state 跟着变成 600', async () => {
   const store = boot();
   applyConfigOverlay(store, { daily_budget_s: 180 }, NOW);
   store.setState(BUDGET, '300', NOW);
@@ -60,7 +60,7 @@ test('c) 文件改成 600 ⇒ 重载后 state 跟着变成 600', () => {
   assert.equal(store.getState(BUDGET), '600');
 });
 
-test('同一份文件连着重载多少次都是同一个结果（幂等）', () => {
+test('同一份文件连着重载多少次都是同一个结果（幂等）', async () => {
   const store = boot();
   applyConfigOverlay(store, { daily_budget_s: 240 }, NOW);
   const r2 = applyConfigOverlay(store, { daily_budget_s: 240 }, NOW);
@@ -70,7 +70,7 @@ test('同一份文件连着重载多少次都是同一个结果（幂等）', ()
   assert.equal(store.getState(BUDGET), '240');
 });
 
-test(`预算夹在 ${MIN_BUDGET_S}–${MAX_BUDGET_S} 秒（超了不是抛错，是夹住）`, () => {
+test(`预算夹在 ${MIN_BUDGET_S}–${MAX_BUDGET_S} 秒（超了不是抛错，是夹住）`, async () => {
   const store = boot();
   applyConfigOverlay(store, { daily_budget_s: 9999 }, NOW);
   assert.equal(store.getState(BUDGET), String(MAX_BUDGET_S));
@@ -81,7 +81,7 @@ test(`预算夹在 ${MIN_BUDGET_S}–${MAX_BUDGET_S} 秒（超了不是抛错，
   assert.equal(store.getState(BUDGET), '150');
 });
 
-test('开关：true/1/on 写成 "1"，false/0/off 写成 "0"（空串的含义是"没设过"，关不掉）', () => {
+test('开关：true/1/on 写成 "1"，false/0/off 写成 "0"（空串的含义是"没设过"，关不掉）', async () => {
   const store = boot();
   applyConfigOverlay(store, { exchange_enabled: false }, NOW);
   assert.equal(store.getState(EXCH), '0');
@@ -91,7 +91,7 @@ test('开关：true/1/on 写成 "1"，false/0/off 写成 "0"（空串的含义�
   assert.equal(store.getState(EXCH), '0');
 });
 
-test('认不出来的值：跳过 + 报出来，state 不动（静默跳过等于"填了没反应"）', () => {
+test('认不出来的值：跳过 + 报出来，state 不动（静默跳过等于"填了没反应"）', async () => {
   const store = boot();
   store.setState(BUDGET, '420', NOW);
   const r = applyConfigOverlay(store, { daily_budget_s: 'abc' }, NOW);
@@ -100,7 +100,7 @@ test('认不出来的值：跳过 + 报出来，state 不动（静默跳过等�
   assert.equal(store.getState(BUDGET), '420');
 });
 
-test('没给这一格（空配置 / null）⇒ 一格都不动', () => {
+test('没给这一格（空配置 / null）⇒ 一格都不动', async () => {
   const store = boot();
   store.setState(BUDGET, '111', NOW);
   for (const cfg of [{}, null, undefined, [], 'x']) {
@@ -110,7 +110,7 @@ test('没给这一格（空配置 / null）⇒ 一格都不动', () => {
   }
 });
 
-test('指纹坏了（人手改坏这份 JSON）不抛，按"没应用过"重来', () => {
+test('指纹坏了（人手改坏这份 JSON）不抛，按"没应用过"重来', async () => {
   const store = boot();
   store.setState(STATE_APPLIED, '{坏的', NOW);
   const r = applyConfigOverlay(store, { daily_budget_s: 120 }, NOW);
@@ -118,7 +118,7 @@ test('指纹坏了（人手改坏这份 JSON）不抛，按"没应用过"重来'
   assert.equal(store.getState(BUDGET), '120');
 });
 
-test('清单里声明的字段**每一格都真的被读**（防"假字段"）', () => {
+test('清单里声明的字段**每一格都真的被读**（防"假字段"）', async () => {
   // 面板上的字段能填能存，但如果合并表里没有它，就等于填了没反应 —— 那比裸 JSON 更糟
   // （用户以为生效了）。所以：清单里的每个 name 都必须在 CONFIG_RULES 里。
   const dir = new URL('../plugins/panelllrt/', import.meta.url);

@@ -61,7 +61,7 @@ function router(table: Array<[RegExp, () => string]>): {
   const sent: string[] = [];
   return {
     sent,
-    transport: (req) => {
+    transport: async (req) => {
       sent.push(req.url);
       for (const [re, body] of table) {
         if (re.test(req.url)) return { status: 200, headers: {}, body: body() };
@@ -71,7 +71,7 @@ function router(table: Array<[RegExp, () => string]>): {
   };
 }
 
-test('parseInfoV3：形状来自夹具，认不出来时给保守值', () => {
+test('parseInfoV3：形状来自夹具，认不出来时给保守值', async () => {
   const i = parseInfoV3({
     todaySignIn: true,
     receiveList: [{ recordId: 'r1', cloudType: 2 }, { cloudType: 1 }],
@@ -97,7 +97,7 @@ test('parseInfoV3：形状来自夹具，认不出来时给保守值', () => {
   assert.equal(snake.curMonthBackup, true);
 });
 
-test('sign：三段式（问 → 提交 → 回查），判据是 infoV3 不是动作响应', () => {
+test('sign：三段式（问 → 提交 → 回查），判据是 infoV3 不是动作响应', async () => {
   let signed = false;
   const store = seeded();
   const r = router([
@@ -105,51 +105,51 @@ test('sign：三段式（问 → 提交 → 回查），判据是 infoV3 不是�
     [/startSignIn/, () => JSON.stringify({ code: 0, msg: 'success', result: { bean: 10 } })],
   ]);
   // 让 startSignIn 真正"入账"，模拟上游延迟后生效
-  const transport: Transport = (req) => {
+  const transport: Transport = async (req) => {
     const out = r.transport(req);
     if (/startSignIn/.test(req.url)) signed = true;
     return out;
   };
 
   // ① 问：还没签
-  const s1 = runSign({ store, transport, nowIso: NOW, lateMs: 0 });
+  const s1 = await runSign({ store, transport, nowIso: NOW, lateMs: 0 });
   assert.equal(s1.ok, true);
   assert.match(s1.note, /签到已提交/);
   assert.doesNotMatch(s1.note, /签到成功/, '动作响应不是判据，别急着说成功');
   assert.equal(store.getState(STATE_STAGE), 'need-verify');
 
   // ② 回查：这次已签 → 完成
-  const s2 = runSign({ store, transport, nowIso: NOW, lateMs: 0 });
+  const s2 = await runSign({ store, transport, nowIso: NOW, lateMs: 0 });
   assert.equal(s2.ok, true);
   assert.match(s2.note, /回查.*确认今日已签/);
   assert.equal(store.getState(STATE_STAGE), '', '完成了要把阶段清掉');
 
   // ③ 已经签过了 → 一个请求都不发（今天已签的标记直接挡住）
   r.sent.length = 0;
-  const s3 = runSign({ store, transport, nowIso: NOW, lateMs: 0 });
+  const s3 = await runSign({ store, transport, nowIso: NOW, lateMs: 0 });
   assert.equal(s3.ok, true);
   assert.equal(s3.idle, true);
   assert.match(s3.note, /网盘今日已签到/);
   assert.equal(r.sent.length, 0, '今天已签就不该再问一次');
 });
 
-test('sign：提交了但状态没变 → 如实报失败（不能自我安慰）', () => {
+test('sign：提交了但状态没变 → 如实报失败（不能自我安慰）', async () => {
   const store = seeded();
   const r = router([
     [/infoV3/, () => infoOk({ signed: false })],   // 一直说没签
     [/startSignIn/, () => JSON.stringify({ code: 0, msg: 'success', result: {} })],
   ]);
-  runSign({ store, transport: r.transport, nowIso: NOW, lateMs: 0 });          // 提交
-  const back = runSign({ store, transport: r.transport, nowIso: NOW, lateMs: 0 }); // 回查
+  await runSign({ store, transport: r.transport, nowIso: NOW, lateMs: 0 });          // 提交
+  const back = await runSign({ store, transport: r.transport, nowIso: NOW, lateMs: 0 }); // 回查
   assert.equal(back.ok, false);
   assert.match(back.note, /仍未签/);
 });
 
-test('multiple：门槛不成立时一个请求都不发', () => {
+test('multiple：门槛不成立时一个请求都不发', async () => {
   // 本月没有机会
   const a = seeded();
   const ra = router([[/infoV3/, () => infoOk({ backup: false, used: false })]]);
-  const oa = runMultiple({ store: a, transport: ra.transport, nowIso: NOW, lateMs: 0 });
+  const oa = await runMultiple({ store: a, transport: ra.transport, nowIso: NOW, lateMs: 0 });
   assert.equal(oa.ok, true);
   assert.equal(oa.skipped, true);
   assert.equal(ra.sent.length, 1, '只该有一次只读检查，绝不该打 multiple');
@@ -158,13 +158,13 @@ test('multiple：门槛不成立时一个请求都不发', () => {
   // 机会用过了
   const b = seeded();
   const rb = router([[/infoV3/, () => infoOk({ backup: true, used: true })]]);
-  const ob = runMultiple({ store: b, transport: rb.transport, nowIso: NOW, lateMs: 0 });
+  const ob = await runMultiple({ store: b, transport: rb.transport, nowIso: NOW, lateMs: 0 });
   assert.equal(ob.skipped, true);
   assert.equal(rb.sent.filter((u) => /page\/multiple/.test(u)).length, 0, '已用过就不该再发');
   assert.equal(b.getState(STATE_MULTIPLE_DONE), NOW.slice(0, 7), '记下这个月已翻倍');
   // 记下之后，同一月后面几趟连 infoV3 都不该再问
   const rbBefore = rb.sent.length;
-  const ob2 = runMultiple({ store: b, transport: rb.transport, nowIso: NOW, lateMs: 0 });
+  const ob2 = await runMultiple({ store: b, transport: rb.transport, nowIso: NOW, lateMs: 0 });
   assert.equal(ob2.skipped, true);
   assert.equal(rb.sent.length, rbBefore, '整月不再发请求');
 
@@ -174,13 +174,13 @@ test('multiple：门槛不成立时一个请求都不发', () => {
     [/infoV3/, () => infoOk({ backup: true, used: false })],
     [/page\/multiple/, () => JSON.stringify({ code: 0, msg: 'success', result: { multiple: 2 } })],
   ]);
-  const oc = runMultiple({ store: c, transport: rc.transport, nowIso: NOW, lateMs: 0 });
+  const oc = await runMultiple({ store: c, transport: rc.transport, nowIso: NOW, lateMs: 0 });
   assert.equal(oc.ok, true);
   assert.match(oc.note, /已领取翻倍/);
   assert.equal(rc.sent.filter((u) => /page\/multiple/.test(u)).length, 1);
 });
 
-test('revival：不可逆 —— 晚太久不发；「已领取」算完成不算失败', () => {
+test('revival：不可逆 —— 晚太久不发；「已领取」算完成不算失败', async () => {
   // 文案判定（逐字复刻原实现的两个条件）
   assert.equal(revivalMessageAlreadyClaimed('复活卡已领取'), true);
   assert.equal(revivalMessageAlreadyClaimed('已领过回馈卡'), true);
@@ -191,9 +191,9 @@ test('revival：不可逆 —— 晚太久不发；「已领取」算完成不�
   // 晚太久 → 跳过，且**一个请求都不发**（不可逆动作的安全边界）
   const late = seeded();
   let n = 0;
-  const outLate = runRevival({
+  const outLate = await runRevival({
     store: late,
-    transport: () => {
+    transport: async () => {
       n += 1;
       return { status: 200, headers: {}, body: '{}' };
     },
@@ -207,7 +207,7 @@ test('revival：不可逆 —— 晚太久不发；「已领取」算完成不�
   // 上游回「已领取复活卡」→ 算完成
   const done = seeded();
   let doneCalls = 0;
-  const doneTransport: Transport = () => {
+  const doneTransport: Transport = async () => {
     doneCalls += 1;
     return {
       status: 200,
@@ -215,7 +215,7 @@ test('revival：不可逆 —— 晚太久不发；「已领取」算完成不�
       body: JSON.stringify({ code: 4001, msg: '复活卡已领取' }),
     };
   };
-  const outDone = runRevival({ store: done, transport: doneTransport, nowIso: NOW, lateMs: 0 });
+  const outDone = await runRevival({ store: done, transport: doneTransport, nowIso: NOW, lateMs: 0 });
   assert.equal(outDone.ok, true, '「已领取」是完成，不是失败');
   // 文案换了：不写 `okWhenError` 这种代码里的名字，也不糊 `code=… msg=…`
   assert.match(outDone.note, /已经做过了/);
@@ -224,40 +224,40 @@ test('revival：不可逆 —— 晚太久不发；「已领取」算完成不�
   assert.equal(done.getState(STATE_REVIVAL_DONE), NOW.slice(0, 7), '记下这个月已领过');
 
   // 记下之后，同一月后面几趟一个请求都不发
-  const outDone2 = runRevival({ store: done, transport: doneTransport, nowIso: NOW, lateMs: 0 });
+  const outDone2 = await runRevival({ store: done, transport: doneTransport, nowIso: NOW, lateMs: 0 });
   assert.equal(outDone2.skipped, true);
   assert.equal(doneCalls, 1, '整月不再发请求');
 
   // 「上一年无云朵记录」= 没得领，不是失败；但本月记下，别再每趟问
   const noRecord = seeded();
   let noRecordCalls = 0;
-  const noRecordTransport: Transport = () => {
+  const noRecordTransport: Transport = async () => {
     noRecordCalls += 1;
     return { status: 200, headers: {}, body: JSON.stringify({ code: 500, msg: '2025年无云朵记录' }) };
   };
-  const outNoRecord = runRevival({ store: noRecord, transport: noRecordTransport, nowIso: NOW, lateMs: 0 });
+  const outNoRecord = await runRevival({ store: noRecord, transport: noRecordTransport, nowIso: NOW, lateMs: 0 });
   assert.equal(outNoRecord.ok, true, '没记录不是失败');
   assert.equal(outNoRecord.skipped, true);
   assert.match(outNoRecord.note, /没有可复活的记录/);
   assert.doesNotMatch(outNoRecord.note, /没成/);
   assert.equal(noRecord.getState('mcloud.last_error.revival'), '', '不该留下失败标记');
   assert.equal(noRecord.getState(STATE_REVIVAL_DONE), NOW.slice(0, 7), '本月记下，不再问');
-  const outNoRecord2 = runRevival({ store: noRecord, transport: noRecordTransport, nowIso: NOW, lateMs: 0 });
+  const outNoRecord2 = await runRevival({ store: noRecord, transport: noRecordTransport, nowIso: NOW, lateMs: 0 });
   assert.equal(outNoRecord2.skipped, true);
   assert.equal(noRecordCalls, 1, '当前月不再发请求');
 
   // 其它错误仍算失败
   const bad = seeded();
-  const outBad = runRevival({
+  const outBad = await runRevival({
     store: bad,
-    transport: () => ({ status: 200, headers: {}, body: JSON.stringify({ code: 500, msg: '系统繁忙' }) }),
+    transport: async () => ({ status: 200, headers: {}, body: JSON.stringify({ code: 500, msg: '系统繁忙' }) }),
     nowIso: NOW,
     lateMs: 0,
   });
   assert.equal(outBad.ok, false);
 });
 
-test('receive：清单入队 → 逐条领（一次一条，两种 cloudType 各走对端点）', () => {
+test('receive：清单入队 → 逐条领（一次一条，两种 cloudType 各走对端点）', async () => {
   // ⚠ 第一条必须是 `cloudType: 0`（当前可领）。这里原来写的是 `2`，而 `2` 是
   //   **下月可领** —— H5 对它一个请求都不发（参考实现 `mcloud` 的 `signin.rs`）。
   //   旧代码把 `2` 也送去 `receiveV3`，于是每天发一枪注定 `receive: 0` 的请求，
@@ -266,7 +266,7 @@ test('receive：清单入队 → 逐条领（一次一条，两种 cloudType 各
   const received: string[] = [];
   const expansionCalled: string[] = [];
   const store = seeded();
-  const transport: Transport = (req) => {
+  const transport: Transport = async (req) => {
     if (/infoV3/.test(req.url)) return { status: 200, headers: {}, body: infoOk({ receiveList: list }) };
     if (/receiveTaskExpansion/.test(req.url)) {
       expansionCalled.push(req.url);
@@ -288,21 +288,21 @@ test('receive：清单入队 → 逐条领（一次一条，两种 cloudType 各
   };
 
   // ① 队列空 → 只是去问清单，入队（不领）
-  const r1 = runReceive({ store, transport, nowIso: NOW, lateMs: 0 });
+  const r1 = await runReceive({ store, transport, nowIso: NOW, lateMs: 0 });
   assert.equal(r1.ok, true);
   assert.match(r1.note, /待领取 2 个/);
   assert.equal(received.length, 0, '入队这一步不该领任何东西');
   assert.equal(JSON.parse(store.getState(STATE_QUEUE)!).length, 2);
 
   // ② 领第一条
-  const r2 = runReceive({ store, transport, nowIso: NOW, lateMs: 0 });
+  const r2 = await runReceive({ store, transport, nowIso: NOW, lateMs: 0 });
   assert.equal(r2.ok, true);
   assert.equal(received.length, 1);
   assert.equal(received[0], 'r1');
   assert.match(r2.note, /领到 7 个云朵/, '数量必须是响应里的 7，不是清单里编的');
 
   // ③ 第二条是延期领取 → 走另一口端点（不是跳过）
-  const r3 = runReceive({ store, transport, nowIso: NOW, lateMs: 0 });
+  const r3 = await runReceive({ store, transport, nowIso: NOW, lateMs: 0 });
   assert.equal(r3.ok, true);
   assert.match(r3.note, /延期领取已完成/);
   assert.equal(received.length, 1, '延期那条不该走 receiveV3');
@@ -311,12 +311,12 @@ test('receive：清单入队 → 逐条领（一次一条，两种 cloudType 各
 
   // ④ 队列空 + 上游清单也空 → 收工
   list = [];
-  const r4 = runReceive({ store, transport, nowIso: NOW, lateMs: 0 });
+  const r4 = await runReceive({ store, transport, nowIso: NOW, lateMs: 0 });
   assert.equal(r4.ok, true);
   assert.match(r4.note, /无待领取的云朵/);
 });
 
-test('receive：队头的「下月可领」不许挡住后面今天可领的', () => {
+test('receive：队头的「下月可领」不许挡住后面今天可领的', async () => {
   const store = seeded();
   store.setState(
     STATE_QUEUE,
@@ -327,7 +327,7 @@ test('receive：队头的「下月可领」不许挡住后面今天可领的', (
     NOW,
   );
   const received: string[] = [];
-  const transport: Transport = (req) => {
+  const transport: Transport = async (req) => {
     if (/receiveV3/.test(req.url)) {
       const b = JSON.parse(req.body ?? '{}') as { cloudId?: string };
       received.push(b.cloudId ?? '');
@@ -339,7 +339,7 @@ test('receive：队头的「下月可领」不许挡住后面今天可领的', (
     }
     return { status: 404, headers: {}, body: '{}' };
   };
-  const out = runReceive({ store, transport, nowIso: NOW, lateMs: 0 });
+  const out = await runReceive({ store, transport, nowIso: NOW, lateMs: 0 });
   assert.equal(out.ok, true);
   assert.equal(out.skipped, undefined, '不能因为队头是下月就停掉');
   assert.deepEqual(received, ['now'], '要跨过下月那条，领到今天可领的');
@@ -347,7 +347,7 @@ test('receive：队头的「下月可领」不许挡住后面今天可领的', (
   assert.equal(JSON.parse(store.getState(STATE_QUEUE)!).length, 0);
 });
 
-test('延期领取：裸 GET（绝不发出 ?acceptDate=），且 dig 掉队列里那一条', () => {
+test('延期领取：裸 GET（绝不发出 ?acceptDate=），且 dig 掉队列里那一条', async () => {
   // `acceptDate` 有才带 —— 真实清单里没有这个字段，所以缺省路径是"裸 GET"。
   // 写成空串会发出 `?acceptDate=`，那是另一个请求（原实现专门警告过）。
   assert.equal(readAcceptDate({ cloudType: 1 }), undefined);
@@ -359,7 +359,7 @@ test('延期领取：裸 GET（绝不发出 ?acceptDate=），且 dig 掉队列�
   let list: unknown[] = [{ recordId: 'r2', cloudType: 1 }];
   const store = seeded();
   const sent: string[] = [];
-  const transport: Transport = (req) => {
+  const transport: Transport = async (req) => {
     sent.push(req.url);
     if (/infoV3/.test(req.url)) return { status: 200, headers: {}, body: infoOk({ receiveList: list }) };
     if (/receiveTaskExpansion/.test(req.url)) {
@@ -368,8 +368,8 @@ test('延期领取：裸 GET（绝不发出 ?acceptDate=），且 dig 掉队列�
     }
     return { status: 404, headers: {}, body: '{}' };
   };
-  runReceive({ store, transport, nowIso: NOW, lateMs: 0 });      // 入队
-  const out = runReceive({ store, transport, nowIso: NOW, lateMs: 0 });  // 领（延期那一口）
+  await runReceive({ store, transport, nowIso: NOW, lateMs: 0 });      // 入队
+  const out = await runReceive({ store, transport, nowIso: NOW, lateMs: 0 });  // 领（延期那一口）
   assert.equal(out.ok, true);
   assert.match(out.note, /延期领取已完成/);
   const call = sent.find((u) => /receiveTaskExpansion/.test(u))!;
@@ -382,7 +382,7 @@ test('延期领取：裸 GET（绝不发出 ?acceptDate=），且 dig 掉队列�
   assert.equal(JSON.parse(store.getState(STATE_QUEUE)!).length, 0, '队列要清掉');
 });
 
-test('receiveV3 的请求体：cloudType 缺省是**空串**而不是 0', () => {
+test('receiveV3 的请求体：cloudType 缺省是**空串**而不是 0', async () => {
   // 上游 H5 写的是 `e.cloudType ?? ""` —— 0 是合法取值（当前可领取），
   // 缺省给 0 会被当成"要的是第 0 类"
   assert.equal(
@@ -395,7 +395,7 @@ test('receiveV3 的请求体：cloudType 缺省是**空串**而不是 0', () => 
   );
 });
 
-test('⚠ 动作响应明确说「今天已签」时，别死等 infoV3（现场：App 已签、日志每趟报失败）', () => {
+test('⚠ 动作响应明确说「今天已签」时，别死等 infoV3（现场：App 已签、日志每趟报失败）', async () => {
   // 2026-10-17 现场：`startSignIn` 回 `{"todaySignIn":true,"signInPoints":3,…}`，
   // 紧接着 `infoV3` 还是 `false`，用户手机上打开 App 一看**确实签上了**。
   // 只认 infoV3 的结果是 `need-verify` 卡死、每一趟报一次失败。
@@ -409,11 +409,11 @@ test('⚠ 动作响应明确说「今天已签」时，别死等 infoV3（现场
         JSON.stringify({ code: 0, msg: 'success', result: { todaySignIn: true, signInPoints: 3, signCount: 17 } }),
     ],
   ]);
-  const transport: Transport = (req) => {
+  const transport: Transport = async (req) => {
     calls += 1;
     return base(req);
   };
-  const out = runSign({ store, transport, nowIso: NOW } as never);
+  const out = await runSign({ store, transport, nowIso: NOW } as never);
   assert.equal(out.ok, true, '响应说签上了就是成了');
   assert.match(out.note, /网盘签到成功，获得 3 云朵/);
   // 不再挂"待回查"（挂着就会下一趟再回查、再报失败）
@@ -422,7 +422,7 @@ test('⚠ 动作响应明确说「今天已签」时，别死等 infoV3（现场
 
   // 第二趟：只报「已签到」，不再发 startSignIn、也不再刷 success
   const before = calls;
-  const again = runSign({ store, transport, nowIso: NOW } as never);
+  const again = await runSign({ store, transport, nowIso: NOW } as never);
   assert.equal(again.idle, true);
   assert.match(again.note, /网盘今日已签到/);
   assert.equal(calls, before, '今天已签就不该再发请求');

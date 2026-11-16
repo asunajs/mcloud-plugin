@@ -109,32 +109,32 @@ function deps(store: ReturnType<typeof memStore>, transport: Transport) {
 }
 
 /** 把两步都推完（一次调用一步 —— 这是纪律，测试里也照做）。 */
-function runRound(store: ReturnType<typeof memStore>, transport: Transport) {
-  const a = runLiveGate(deps(store, transport));
-  const b = runLiveGate(deps(store, transport));
+async function runRound(store: ReturnType<typeof memStore>, transport: Transport) {
+  const a = await runLiveGate(deps(store, transport));
+  const b = await runLiveGate(deps(store, transport));
   return { a, b };
 }
 
 // ── handshake 步 ──────────────────────────────────────────────────────
 
-test('没有原生凭据 ⇒ 如实失败，并且**一发请求都不发**（别拿空 Authorization 去撞上游）', () => {
+test('没有原生凭据 ⇒ 如实失败，并且**一发请求都不发**（别拿空 Authorization 去撞上游）', async () => {
   const store = memStore();
   store.ensureSchema();
   const { transport, sent } = fakeUpstream();
 
-  const out = runLiveGate(deps(store, transport));
+  const out = await runLiveGate(deps(store, transport));
   assert.equal(out.ok, false);
   assert.match(out.note ?? '', /还没有原生凭据/);
   assert.equal(sent.length, 0);
 });
 
-test('handshake：两发同一次调用，顺序是 ①换 SSO → ②换 JWT，且 SSO 是**①回来的那个**', () => {
+test('handshake：两发同一次调用，顺序是 ①换 SSO → ②换 JWT，且 SSO 是**①回来的那个**', async () => {
   const store = memStore();
   store.ensureSchema();
   store.setState(STATE_AUTH, AUTH, NOW);
   const { transport, sent } = fakeUpstream();
 
-  const out = runLiveGate(deps(store, transport));
+  const out = await runLiveGate(deps(store, transport));
   assert.equal(out.ok, true);
   assert.equal(sent.length, 2, '一次调用最多两发（SSO 只活几分钟，①②不能拆）');
 
@@ -150,13 +150,13 @@ test('handshake：两发同一次调用，顺序是 ①换 SSO → ②换 JWT，
   assert.equal(st.jwt, 'LIVE-JWT-1');
 });
 
-test('handshake：① `success !== true` ⇒ 失败，**不发第二发**（别拿没换到的票去换 JWT）', () => {
+test('handshake：① `success !== true` ⇒ 失败，**不发第二发**（别拿没换到的票去换 JWT）', async () => {
   const store = memStore();
   store.ensureSchema();
   store.setState(STATE_AUTH, AUTH, NOW);
   const { transport, sent } = fakeUpstream({ ssoFails: true });
 
-  const out = runLiveGate(deps(store, transport));
+  const out = await runLiveGate(deps(store, transport));
   assert.equal(out.ok, false);
   assert.equal(sent.length, 1);
   assert.match(out.note ?? '', /① 换 SSO token 失败/);
@@ -164,13 +164,13 @@ test('handshake：① `success !== true` ⇒ 失败，**不发第二发**（别�
   assert.equal(loadGateState(store), null, '没写状态 ⇒ 下一趟从第一步重来');
 });
 
-test('handshake：② 的 rtnCode 不是 "0" ⇒ 失败并带上游原话', () => {
+test('handshake：② 的 rtnCode 不是 "0" ⇒ 失败并带上游原话', async () => {
   const store = memStore();
   store.ensureSchema();
   store.setState(STATE_AUTH, AUTH, NOW);
   const { transport } = fakeUpstream({ cmpassCode: '1001' });
 
-  const out = runLiveGate(deps(store, transport));
+  const out = await runLiveGate(deps(store, transport));
   assert.equal(out.ok, false);
   assert.match(out.note ?? '', /② 换直播侧 JWT 失败/);
   assert.match(out.note ?? '', /1001/, '要带上游原话');
@@ -179,15 +179,15 @@ test('handshake：② 的 rtnCode 不是 "0" ⇒ 失败并带上游原话', () =
 
 // ── rooms 步 ──────────────────────────────────────────────────────────
 
-test('rooms：两个页签各一发（127 先、129 后），都带 JWT，且**合并去重**', () => {
+test('rooms：两个页签各一发（127 先、129 后），都带 JWT，且**合并去重**', async () => {
   const store = memStore();
   store.ensureSchema();
   store.setState(STATE_AUTH, AUTH, NOW);
   const { transport, sent } = fakeUpstream();
 
-  runLiveGate(deps(store, transport)); // handshake
+  await runLiveGate(deps(store, transport)); // handshake
   const before = sent.length;
-  const out = runLiveGate(deps(store, transport)); // rooms
+  const out = await runLiveGate(deps(store, transport)); // rooms
 
   const tabs = sent.slice(before);
   assert.equal(tabs.length, 2, 'rooms 步两发（两个页签）');
@@ -202,12 +202,12 @@ test('rooms：两个页签各一发（127 先、129 后），都带 JWT，且**�
   assert.equal(out.ok, true);
 });
 
-test('rooms：门开着 = 有「中国移动云盘」在播；`liveCount` 把两种"没有"分开', () => {
+test('rooms：门开着 = 有「中国移动云盘」在播；`liveCount` 把两种"没有"分开', async () => {
   const store = memStore();
   store.ensureSchema();
   store.setState(STATE_AUTH, AUTH, NOW);
   const { transport } = fakeUpstream();
-  runRound(store, transport);
+  await runRound(store, transport);
 
   const reading = readGateReading(store)!;
   assert.equal(reading.active, true);
@@ -216,12 +216,12 @@ test('rooms：门开着 = 有「中国移动云盘」在播；`liveCount` 把两
   assert.match(reading.note, /正在听/);
 });
 
-test('rooms：结果落**池**（日程 + 门 + 场次），「下一场」当场可读', () => {
+test('rooms：结果落**池**（日程 + 门 + 场次），「下一场」当场可读', async () => {
   const store = memStore();
   store.ensureSchema();
   store.setState(STATE_AUTH, AUTH, NOW);
   const { transport } = fakeUpstream();
-  runRound(store, transport);
+  await runRound(store, transport);
 
   const { pool } = loadPoolFrom(store);
   assert.equal(pool.schedule.length, 4, '日程（含预告/回放）要留在池里 —— "日程不能跟着丢"');
@@ -236,12 +236,12 @@ test('rooms：结果落**池**（日程 + 门 + 场次），「下一场」当�
   assert.equal(poolSummary(pool, '2026-10-14 13:40:00', Date.parse(NOW)).nextStart, '2026-10-15 20:00:00');
 });
 
-test('rooms：**JWT 用完就抹**，而且读数里没有它（凭据不许进界面那条路）', () => {
+test('rooms：**JWT 用完就抹**，而且读数里没有它（凭据不许进界面那条路）', async () => {
   const store = memStore();
   store.ensureSchema();
   store.setState(STATE_AUTH, AUTH, NOW);
   const { transport } = fakeUpstream();
-  runRound(store, transport);
+  await runRound(store, transport);
 
   const st = loadGateState(store)!;
   assert.equal(st.step, 'done');
@@ -255,14 +255,14 @@ test('rooms：**JWT 用完就抹**，而且读数里没有它（凭据不许进�
   assert.equal((store.getState(STATE_GATE) ?? '').includes('LIVE-JWT-1'), false);
 });
 
-test('rooms：③ 失败 ⇒ **丢掉 JWT** 退回第一步（留坏票会让"票坏了"表现成"门一直关着"）', () => {
+test('rooms：③ 失败 ⇒ **丢掉 JWT** 退回第一步（留坏票会让"票坏了"表现成"门一直关着"）', async () => {
   const store = memStore();
   store.ensureSchema();
   store.setState(STATE_AUTH, AUTH, NOW);
   const { transport } = fakeUpstream({ failTab: '129' });
 
-  runLiveGate(deps(store, transport)); // handshake
-  const out = runLiveGate(deps(store, transport)); // rooms：第二个页签失败
+  await runLiveGate(deps(store, transport)); // handshake
+  const out = await runLiveGate(deps(store, transport)); // rooms：第二个页签失败
 
   assert.equal(out.ok, false);
   assert.match(out.note ?? '', /页签 129/);
@@ -275,28 +275,28 @@ test('rooms：③ 失败 ⇒ **丢掉 JWT** 退回第一步（留坏票会让"�
   assert.equal(pool.schedule.length, 0);
 });
 
-test('rooms：盘上没有 JWT（被手清过）⇒ 退回第一步，**不发请求**', () => {
+test('rooms：盘上没有 JWT（被手清过）⇒ 退回第一步，**不发请求**', async () => {
   const store = memStore();
   store.ensureSchema();
   store.setState(STATE_GATE, JSON.stringify({ step: 'rooms', startedAt: NOW }), NOW);
   const { transport, sent } = fakeUpstream();
 
-  const out = runLiveGate(deps(store, transport));
+  const out = await runLiveGate(deps(store, transport));
   assert.equal(out.idle, true);
   assert.equal(sent.length, 0);
   assert.equal(loadGateState(store)!.step, 'handshake');
 });
 
-test('一轮 done 之后再触发 = **新的一轮**（直播会开始，门要反复看）', () => {
+test('一轮 done 之后再触发 = **新的一轮**（直播会开始，门要反复看）', async () => {
   const store = memStore();
   store.ensureSchema();
   store.setState(STATE_AUTH, AUTH, NOW);
   const { transport, sent } = fakeUpstream();
 
-  runRound(store, transport);
+  await runRound(store, transport);
   assert.equal(loadGateState(store)!.step, 'done');
 
-  const again = runLiveGate(deps(store, transport)); // 新一轮的 handshake
+  const again = await runLiveGate(deps(store, transport)); // 新一轮的 handshake
   assert.equal(again.ok, true);
   // 一轮 = 两步 × 两发 = 4 发；第二轮刚推完 handshake ⇒ 4 + 2 = 6
   assert.equal(sent.length, 6);
@@ -305,7 +305,7 @@ test('一轮 done 之后再触发 = **新的一轮**（直播会开始，门要�
 
 // ── base 口子（CI 不碰外站）────────────────────────────────────────────
 
-test('base 口子：一个值同时替换**两台主机**（user-njs 与 v.cmcc-cs.cn）', () => {
+test('base 口子：一个值同时替换**两台主机**（user-njs 与 v.cmcc-cs.cn）', async () => {
   const store = memStore();
   store.ensureSchema();
   store.setState(STATE_AUTH, AUTH, NOW);
@@ -313,14 +313,14 @@ test('base 口子：一个值同时替换**两台主机**（user-njs 与 v.cmcc-
   assert.equal(loadGateBase(store), 'http://127.0.0.1:19000', '存的时候去掉尾斜杠');
 
   const { transport, sent } = fakeUpstream();
-  runRound(store, transport);
+  await runRound(store, transport);
   assert.equal(sent.length, 4);
   for (const s of sent) assert.match(s.url, /^http:\/\/127\.0\.0\.1:19000\//);
 });
 
 // ── 路由 ──────────────────────────────────────────────────────────────
 
-function callRoute(
+async function callRoute(
   d: Parameters<typeof mcloudRoutes>[0],
   method: string,
   path: string,
@@ -328,10 +328,10 @@ function callRoute(
 ) {
   const entry = mcloudRoutes(d).find((r) => `${r.method} ${r.path}` === `${method} ${path}`)!;
   const req = { method, path, body: body === undefined ? undefined : JSON.stringify(body) };
-  return entry.handler(req as never);
+  return await entry.handler(req as never);
 }
 
-test('路由 POST /api/live/gate/step：一步一发（两步推完），读数跟着回来', () => {
+test('路由 POST /api/live/gate/step：一步一发（两步推完），读数跟着回来', async () => {
   const store = memStore();
   store.ensureSchema();
   store.setState(STATE_AUTH, AUTH, NOW);
@@ -339,7 +339,7 @@ test('路由 POST /api/live/gate/step：一步一发（两步推完），读数�
   const logged: string[] = [];
   const d = testDeps(store, { transport, now: NOW, log: (m) => logged.push(m) });
 
-  const first = JSON.parse(callRoute(d, 'POST', '/plugins/mcloud/api/live/gate/step').body) as {
+  const first = JSON.parse((await callRoute(d, 'POST', '/plugins/mcloud/api/live/gate/step')).body) as {
     ok: boolean;
     done: boolean;
     step: string;
@@ -350,7 +350,7 @@ test('路由 POST /api/live/gate/step：一步一发（两步推完），读数�
   assert.equal(first.step, 'rooms');
   assert.equal(first.reading, null, '还没探完 ⇒ 读数是 null（不是半截数据）');
 
-  const second = JSON.parse(callRoute(d, 'POST', '/plugins/mcloud/api/live/gate/step').body) as {
+  const second = JSON.parse((await callRoute(d, 'POST', '/plugins/mcloud/api/live/gate/step')).body) as {
     done: boolean;
     step: string;
     reading: { active: boolean; liveCount: number };
@@ -363,43 +363,43 @@ test('路由 POST /api/live/gate/step：一步一发（两步推完），读数�
   assert.equal(second.pool.validCount, 0, '门是只读的：它不改口令的有效性');
 });
 
-test('路由 GET /api/live：带上门的读数（界面那一行）', () => {
+test('路由 GET /api/live：带上门的读数（界面那一行）', async () => {
   const store = memStore();
   store.ensureSchema();
   store.setState(STATE_AUTH, AUTH, NOW);
   const { transport } = fakeUpstream();
   const d = testDeps(store, { transport, now: NOW });
-  runRound(store, transport);
+  await runRound(store, transport);
 
-  const body = JSON.parse(callRoute(d, 'GET', '/plugins/mcloud/api/live').body) as {
+  const body = JSON.parse((await callRoute(d, 'GET', '/plugins/mcloud/api/live')).body) as {
     gate: { active: boolean; rooms: unknown[] };
   };
   assert.equal(body.gate.active, true);
   assert.equal(body.gate.rooms.length, 4);
 });
 
-test('路由 POST /api/config：`gateBase` 与 `baseUrl` **互不影响**（只改传了的那个）', () => {
+test('路由 POST /api/config：`gateBase` 与 `baseUrl` **互不影响**（只改传了的那个）', async () => {
   const store = memStore();
   store.ensureSchema();
   const d = testDeps(store, { now: NOW });
 
-  callRoute(d, 'POST', '/plugins/mcloud/api/config', { baseUrl: 'http://127.0.0.1:19000' });
-  callRoute(d, 'POST', '/plugins/mcloud/api/config', { gateBase: 'http://127.0.0.1:19001' });
+  await callRoute(d, 'POST', '/plugins/mcloud/api/config', { baseUrl: 'http://127.0.0.1:19000' });
+  await callRoute(d, 'POST', '/plugins/mcloud/api/config', { gateBase: 'http://127.0.0.1:19001' });
   assert.equal(loadGateBase(store), 'http://127.0.0.1:19001');
   assert.equal(store.getState('mcloud.base_url'), 'http://127.0.0.1:19000', 'baseUrl 不该被抹掉');
 
-  const get = JSON.parse(callRoute(d, 'GET', '/plugins/mcloud/api/config').body) as {
+  const get = JSON.parse((await callRoute(d, 'GET', '/plugins/mcloud/api/config')).body) as {
     gateBase: string;
     baseUrl: string;
   };
   assert.equal(get.gateBase, 'http://127.0.0.1:19001');
   assert.equal(get.baseUrl, 'http://127.0.0.1:19000');
 
-  const bad = callRoute(d, 'POST', '/plugins/mcloud/api/config', { gateBase: 'ftp://x' });
+  const bad = await callRoute(d, 'POST', '/plugins/mcloud/api/config', { gateBase: 'ftp://x' });
   assert.equal(bad.status, 400);
 });
 
-test('池里的口令状态**不受门影响**（门只写日程与门开没开）', () => {
+test('池里的口令状态**不受门影响**（门只写日程与门开没开）', async () => {
   const store = memStore();
   store.ensureSchema();
   store.setState(STATE_AUTH, AUTH, NOW);
@@ -411,7 +411,7 @@ test('池里的口令状态**不受门影响**（门只写日程与门开没开�
   note(seeded, ['云盘AI高效复盘'], 'xiaohongshu', Date.parse(NOW));
   store.setState(POOL_KEY, serializePool(seeded), NOW);
 
-  runRound(store, transport);
+  await runRound(store, transport);
   const { pool } = loadPoolFrom(store);
   assert.equal(codeState(pool, '云盘AI高效复盘'), 'unknown', '门不改口令状态（唯一的验证途径是拿去领）');
   assert.equal(validCount(pool), 0);

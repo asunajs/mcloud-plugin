@@ -28,11 +28,11 @@ function state(rows: Partial<DrawRow>[], extra: Partial<DrawState> = {}): DrawSt
   };
 }
 
-test('没有状态 ⇒ 一行都不说', () => {
+test('没有状态 ⇒ 一行都不说', async () => {
   assert.deepEqual(drawLogLines(null), []);
 });
 
-test('照 mcloud-sign：当前红花 / 首次参与 / 逐条 / 复活花 / 最终红花', () => {
+test('照 mcloud-sign：当前红花 / 首次参与 / 逐条 / 复活花 / 最终红花', async () => {
   const lines = drawLogLines(
     state(
       [
@@ -74,7 +74,7 @@ test('照 mcloud-sign：当前红花 / 首次参与 / 逐条 / 复活花 / 最�
   );
 });
 
-test('首次参与已参与过（200110）不打印；最终 +N 是首次 + 各条成功，不是余额差', () => {
+test('首次参与已参与过（200110）不打印；最终 +N 是首次 + 各条成功，不是余额差', async () => {
   const lines = drawLogLines(
     state(
       [
@@ -103,7 +103,7 @@ test('首次参与已参与过（200110）不打印；最终 +N 是首次 + 各�
   );
 });
 
-test('首次参与回了别的码 ⇒ 照 mcloud-sign 说「首次参与奖：原话」', () => {
+test('首次参与回了别的码 ⇒ 照 mcloud-sign 说「首次参与奖：原话」', async () => {
   const lines = drawLogLines(
     state([], {
       balanceBefore: 0,
@@ -124,7 +124,7 @@ test('首次参与回了别的码 ⇒ 照 mcloud-sign 说「首次参与奖：�
   );
 });
 
-test('没有奖品名时不硬编括号；成功那行仍和 mcloud-sign 同一句', () => {
+test('没有奖品名时不硬编括号；成功那行仍和 mcloud-sign 同一句', async () => {
   const lines = drawLogLines(
     state([{ code: 'A', kind: 'succeeded', flowerNum: 5 }], {
       balanceBefore: 0,

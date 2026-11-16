@@ -11,7 +11,7 @@ import type { Transport } from '../src/mcloud/client.ts';
 
 const NOW = '2026-10-20T12:00:00.000Z';
 const auth = (phone: string): string => `Basic ${Buffer.from(`mobile:${phone}:token`).toString('base64')}`;
-const exploding: Transport = () => {
+const exploding: Transport = async () => {
   throw new Error('读任务状态不该发上游请求');
 };
 
@@ -50,18 +50,18 @@ function seeded() {
   return { store, a, b };
 }
 
-test('/matrix?account=：切到 A 读的是 A 的缓存，切到 B 是 B 的', () => {
+test('/matrix?account=：切到 A 读的是 A 的缓存，切到 B 是 B 的', async () => {
   const { store, a, b } = seeded();
   const route = mcloudRoutes(testDeps(store, { transport: exploding, now: NOW })).find(
     (x) => x.path === '/plugins/mcloud/api/matrix' && x.method === 'GET',
   )!;
-  const one = JSON.parse(route.handler({ query: `account=${a.id}` }).body);
+  const one = JSON.parse((await route.handler({ query: `account=${a.id}` })).body);
   assert.equal(one.account, a.id);
   assert.equal(one.groups[0].reading.todoNames[0], 'A 的通知任务');
   assert.equal(one.groups[0].reading.items[0].taskId, 1021);
   assert.equal(one.groups[0].reading.items[0].currStep, 1);
 
-  const two = JSON.parse(route.handler({ query: `account=${b.id}` }).body);
+  const two = JSON.parse((await route.handler({ query: `account=${b.id}` })).body);
   assert.equal(two.account, b.id);
   // 默认必须只读本地：上面用的是"一调就抛"的 transport，没有炸就证明没发请求。
   assert.equal(two.refreshed, false);
@@ -74,23 +74,23 @@ test('/matrix?account=：切到 A 读的是 A 的缓存，切到 B 是 B 的', (
 
   // refresh=1 真去请求：这里 transport 一调就抛 ⇒ 必须把失败如实放进 refreshErrors，
   // 而不是继续假装"本地刷新成功"。
-  const forced = JSON.parse(route.handler({ query: `account=${b.id}&refresh=1` }).body);
+  const forced = JSON.parse((await route.handler({ query: `account=${b.id}&refresh=1` })).body);
   assert.equal(forced.refreshed, true);
   assert.ok(forced.refreshErrors.length > 0, 'refresh=1 必须真的尝试请求');
 });
 
-test('/readings 的矩阵默认跟着当前账号（不能再读默认袋）', () => {
+test('/readings 的矩阵默认跟着当前账号（不能再读默认袋）', async () => {
   const { store, b } = seeded();
   const route = mcloudRoutes(testDeps(store, { transport: exploding, now: NOW })).find(
     (x) => x.path === '/plugins/mcloud/api/readings' && x.method === 'GET',
   )!;
-  const d = JSON.parse(route.handler({}).body);
+  const d = JSON.parse((await route.handler({})).body);
   assert.equal(d.data.matrix.groups[0].reading.todoNames[0], 'B 的通知任务');
   assert.equal(d.data.matrix.backup.enabled, true);
   assert.equal(d.account.current, b.id);
 });
 
-test('⚠ 备份那一行：跨天的「已完成」不许摆到今天；没成要说清原因', () => {
+test('⚠ 备份那一行：跨天的「已完成」不许摆到今天；没成要说清原因', async () => {
   const { store, b } = seeded();
   const route = mcloudRoutes(testDeps(store, { transport: exploding, now: NOW })).find(
     (x) => x.path === '/plugins/mcloud/api/matrix' && x.method === 'GET',
@@ -102,7 +102,7 @@ test('⚠ 备份那一行：跨天的「已完成」不许摆到今天；没成�
     JSON.stringify({ step: 'done', day: '2026-10-19', curMonthBackup: true }),
     NOW,
   );
-  const stale = JSON.parse(route.handler({ query: `account=${b.id}` }).body).backup;
+  const stale = JSON.parse((await route.handler({ query: `account=${b.id}` })).body).backup;
   assert.equal(stale.step, '', '跨天的 step 不是今天的进度');
   assert.equal(stale.stale, true);
   assert.equal(stale.enabled, true, '月份那一格照旧给');
@@ -120,7 +120,7 @@ test('⚠ 备份那一行：跨天的「已完成」不许摆到今天；没成�
     NOW,
   );
   oneB.setState('mcloud.month.backup', JSON.stringify({ month: '2026-10', backup: false }), NOW);
-  const now = JSON.parse(route.handler({ query: `account=${b.id}` }).body).backup;
+  const now = JSON.parse((await route.handler({ query: `account=${b.id}` })).body).backup;
   assert.equal(now.step, 'blocked');
   assert.equal(now.enabled, false);
   assert.match(String(now.why), /04000003/);
@@ -138,7 +138,7 @@ test('⚠ 备份那一行：跨天的「已完成」不许摆到今天；没成�
     }),
     NOW,
   );
-  const legacy = JSON.parse(route.handler({ query: `account=${b.id}` }).body).backup;
+  const legacy = JSON.parse((await route.handler({ query: `account=${b.id}` })).body).backup;
   assert.equal(legacy.step, 'blocked', '旧状态也不许摆成"已完成"');
   assert.match(String(legacy.why), /04000003/);
 });

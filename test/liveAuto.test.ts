@@ -45,14 +45,14 @@ const NOW_MS = Date.parse(NOW);
 // ⚠ 期望值一律用**显式 +08:00** 写出来：这样连"跑测试的机器在哪个时区"都不参与。
 const at = (local: string): number => Date.parse(`${local.replace(' ', 'T')}+08:00`);
 
-test('东八区墙钟串 ↔ epoch：互为逆，且不依赖机器时区', () => {
+test('东八区墙钟串 ↔ epoch：互为逆，且不依赖机器时区', async () => {
   assert.equal(parseLocalMs('2026-10-15 11:00:00'), at('2026-10-15 11:00:00'));
   assert.equal(parseLocalMs('2026-10-15 11:00'), at('2026-10-15 11:00:00'), '缺秒按 0 算');
   assert.equal(formatLocalMs(at('2026-10-15 11:00:00')), '2026-10-15 11:00:00');
   assert.equal(formatLocalMs(at('2026-01-02 03:04:05')), '2026-01-02 03:04:05');
 });
 
-test('解不出来的输入一律 `undefined`（**不许瞎猜时刻**）', () => {
+test('解不出来的输入一律 `undefined`（**不许瞎猜时刻**）', async () => {
   assert.equal(parseLocalMs(''), undefined);
   assert.equal(parseLocalMs('2026/10/15 11:00:00'), undefined);
   assert.equal(parseLocalMs('2026-13-01 00:00:00'), undefined, '13 月');
@@ -61,7 +61,7 @@ test('解不出来的输入一律 `undefined`（**不许瞎猜时刻**）', () =
   assert.equal(parseLocalMs('2026-10-15 25:00:00'), undefined);
 });
 
-test('时刻 = **最早的「下一场」+ 1 小时**（mcloud 口径：那一小时留给主播发口令）', () => {
+test('时刻 = **最早的「下一场」+ 1 小时**（mcloud 口径：那一小时留给主播发口令）', async () => {
   assert.equal(
     earliestPlusOneHour(['2026-10-15 20:00:00', '2026-10-15 11:00:00'], NOW_MS),
     '2026-10-15 12:00:00',
@@ -77,13 +77,13 @@ test('时刻 = **最早的「下一场」+ 1 小时**（mcloud 口径：那一�
   assert.equal(earliestPlusOneHour([], NOW_MS), undefined);
 });
 
-test('等价 cron（读数用）：⚠ 没有年字段 ⇒ 它是"每年今天"', () => {
+test('等价 cron（读数用）：⚠ 没有年字段 ⇒ 它是"每年今天"', async () => {
   assert.equal(oneShotExpr('2026-10-15 11:00:00'), '0 0 11 15 10 *');
   assert.equal(oneShotExpr('2026-01-02 03:04:05'), '5 4 3 2 1 *');
   assert.equal(oneShotExpr('坏'), undefined);
 });
 
-test('到点判据：提前醒**不算**（否则又变回轮询）；过期计划不算"在窗口里"', () => {
+test('到点判据：提前醒**不算**（否则又变回轮询）；过期计划不算"在窗口里"', async () => {
   const plan: WakePlan = {
     wakeAt: '2026-10-15 11:00:00',
     wakeAtMs: at('2026-10-15 11:00:00'),
@@ -98,7 +98,7 @@ test('到点判据：提前醒**不算**（否则又变回轮询）；过期计�
   assert.equal(planInWindow(plan, plan.wakeAtMs + plan.windowMs), false, '窗口过完');
 });
 
-test('凌晨 3 点前不打扰上游：下一次检查推到 3 点', () => {
+test('凌晨 3 点前不打扰上游：下一次检查推到 3 点', async () => {
   // 东八区 01:00 ⇒ 推到当天 03:00（= 2 小时）
   const oneAm = at('2026-10-15 01:00:00');
   const ms = nextIdleCheckMs(oneAm, IDLE_RECHECK_MS);
@@ -135,10 +135,10 @@ function storeWithSchedule(opts: { expectStartTime: string; seenAtMs: number }):
 // 与 `liveGate.KOULING_ANCHOR` 同一个昵称（这里写死是为了让测试一眼看出"判据是昵称"）
 const KOULING_ANCHOR_OF_TEST = '中国移动云盘';
 
-test('池里有「下一场」⇒ 排出"那一刻 + 1 小时"；日程太旧 ⇒ 不排', () => {
+test('池里有「下一场」⇒ 排出"那一刻 + 1 小时"；日程太旧 ⇒ 不排', async () => {
   const depsOf = (store: ReturnType<typeof memStore>): Parameters<typeof refreshWakePlan>[0] => ({
     store,
-    transport: (() => ({ status: 200, headers: {}, body: '{}' })) as Transport,
+    transport: (async () => ({ status: 200, headers: {}, body: '{}' })) as Transport,
     nowIso: NOW,
   });
 
@@ -160,10 +160,10 @@ test('池里有「下一场」⇒ 排出"那一刻 + 1 小时"；日程太旧 �
   assert.equal(loadWakePlan(stale), null);
 });
 
-test('`live-auto` 一个上游请求都不发（它只算时刻）', () => {
+test('`live-auto` 一个上游请求都不发（它只算时刻）', async () => {
   const store = storeWithSchedule({ expectStartTime: '2026-10-15 11:00:00', seenAtMs: NOW_MS });
   let asked = 0;
-  const transport = (() => {
+  const transport = (async () => {
     asked += 1;
     return { status: 200, headers: {}, body: '{}' };
   }) as Transport;
@@ -173,10 +173,10 @@ test('`live-auto` 一个上游请求都不发（它只算时刻）', () => {
   assert.equal(asked, 0, '零请求是这条任务的意义（"没开播时也别去问"）');
 });
 
-test('听弹幕那条链的冷却：有计划就睡到那一刻，没计划才是 5 分钟', () => {
+test('听弹幕那条链的冷却：有计划就睡到那一刻，没计划才是 5 分钟', async () => {
   const store = storeWithSchedule({ expectStartTime: '2026-10-15 11:00:00', seenAtMs: NOW_MS });
   // ⚠ 计划要先算出来（`live-auto` 每隔 5 分钟算一次；这里直接调同一个函数）
-  refreshWakePlan({ store, transport: (() => ({ status: 200, headers: {}, body: '{}' })) as Transport, nowIso: NOW }, { windowMs: 600_000 });
+  refreshWakePlan({ store, transport: (async () => ({ status: 200, headers: {}, body: '{}' })) as Transport, nowIso: NOW }, { windowMs: 600_000 });
   assert.equal(wakeSleepMs(store, NOW_MS, 600_000), at('2026-10-15 12:00:00') - NOW_MS);
 
   // 计划已到点 ⇒ 不睡（那是"该醒"，让链重走门）
@@ -195,16 +195,16 @@ test('听弹幕那条链的冷却：有计划就睡到那一刻，没计划才�
   assert.ok(MAX_IDLE_RECHECK_MS > IDLE_RECHECK_MS, '上限要比默认大（否则"睡到那时"没意义）');
 });
 
-test('门关着时的冷却真的按计划设：睡到"下一场 + 1 小时"', () => {
+test('门关着时的冷却真的按计划设：睡到"下一场 + 1 小时"', async () => {
   // ⚠ 这条是端到端的接线判据：`live-auto` 算出来的时刻，必须**真的**进到
   //   听弹幕那条链的 `nextCheckAtMs` 里 —— 否则"到点才醒"只是句漂亮话。
   const store = storeWithSchedule({ expectStartTime: '2026-10-15 11:00:00', seenAtMs: NOW_MS });
-  refreshWakePlan({ store, transport: (() => ({ status: 200, headers: {}, body: '{}' })) as Transport, nowIso: NOW }, { windowMs: 600_000 });
+  refreshWakePlan({ store, transport: (async () => ({ status: 200, headers: {}, body: '{}' })) as Transport, nowIso: NOW }, { windowMs: 600_000 });
 
   // 门关着（上游回的房间里没有目标主播）
   const deps = {
     store,
-    transport: (() => ({
+    transport: (async () => ({
       status: 200,
       headers: {},
       body: JSON.stringify({ rtnCode: '0', rtnMsg: null, object: { dataList: [] } }),
@@ -227,7 +227,7 @@ test('门关着时的冷却真的按计划设：睡到"下一场 + 1 小时"', (
     JSON.stringify({ ...st, step: 'rooms', windowStartMs: NOW_MS, jwt: 'JWT' }),
     NOW,
   );
-  const out = runLiveListen(deps);
+  const out = await runLiveListen(deps);
   assert.match(out.note, /没在听/);
   const after = loadListenState(store);
   assert.ok(after?.nextCheckAtMs !== undefined);

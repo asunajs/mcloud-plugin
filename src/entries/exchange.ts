@@ -78,7 +78,7 @@ await defineTask(
     summary: planSummary(store),
     blockers: blockersFor(store, '兑换'),
   },
-  (p: TaskPayload) => {
+  async (p: TaskPayload) => {
     const startedMs = Date.now();
     const at = new Date(startedMs).toISOString();
     // ⚠ 面板**不发** scheduledAt（由 defineTask 合成）。解析不出来就按"现在"算 ——
@@ -122,12 +122,12 @@ await defineTask(
       }
 
       // 原生 token 到期就自动续（离到期还远时零请求）—— 兑换和签到共用同一份凭据。
-      const auth = runAuthRefresh(deps);
+      const auth = await runAuthRefresh(deps);
       if (!auth.skipped) {
         logBoth(store, auth.ok ? 'debug' : 'warn', `凭据续期：${auth.note}`, at);
       }
 
-      const r = runExchange(deps, {
+      const r = await runExchange(deps, {
         maxWaitMs: BUDGET_MS - 10_000,
         targetHour,
         target: planTarget(plan),

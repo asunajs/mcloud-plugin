@@ -15,7 +15,7 @@ import type { Transport } from '../src/mcloud/client.ts';
 import type { Store } from '../src/store/types.ts';
 
 /** 一个什么都不发的 transport（路由层的测试用不到真请求时用这个）。 */
-export const noopTransport: Transport = () => ({ status: 200, headers: {}, body: '' });
+export const noopTransport: Transport = async () => ({ status: 200, headers: {}, body: '' });
 
 /** 造一份 `RouteDeps`。只传你用得到的，其余给桩。 */
 export function testDeps(
@@ -37,7 +37,7 @@ export function testDeps(
     log,
     ...(opts.ws !== undefined ? { ws: opts.ws } : {}),
     pushDeps: opts.pushDeps ?? {
-      http: () => ({ ok: true, status: 200, body: '{}', error: undefined }),
+      http: async () => ({ ok: true, status: 200, body: '{}', error: undefined }),
       smtp: () => ({ ok: true, response: '250 ok' }),
       nowMs: () => Date.parse(now),
       log,

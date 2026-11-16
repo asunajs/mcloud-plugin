@@ -51,7 +51,7 @@ function fixedRnd(seed: number) {
   };
 }
 
-test('getTn：键排序、number ×10000、null 变 "null"、对象递归', () => {
+test('getTn：键排序、number ×10000、null 变 "null"、对象递归', async () => {
   assert.equal(getTn({ b: 1, a: 2 }), '2000010000', '键排序 + 各自 ×10000');
   assert.equal(getTn({ a: 1.5 }), '15000', '非整数先 floor 再乘');
   assert.equal(getTn({ a: null }), 'null', '⚠ 是 "null" 而不是空串');
@@ -61,7 +61,7 @@ test('getTn：键排序、number ×10000、null 变 "null"、对象递归', () =
   assert.equal(getTn({}), '');
 });
 
-test('buildSmid：yyyyMMddHHmmss + md5(uid) + 00，再拼 14 位摘要 + "0"', () => {
+test('buildSmid：yyyyMMddHHmmss + md5(uid) + 00，再拼 14 位摘要 + "0"', async () => {
   const s = buildSmid(NOW, 'uid-1');
   assert.equal(s.slice(0, 14), '20261014090000', '时间串（本地时区，照抄原实现）');
   assert.equal(s.slice(14, 46), md5Hex('uid-1'), 'md5(uid)');
@@ -72,7 +72,7 @@ test('buildSmid：yyyyMMddHHmmss + md5(uid) + 00，再拼 14 位摘要 + "0"', (
   assert.equal(s.length, 63);
 });
 
-test('encryptByDesRules：22 条加密、3 条**只改名**、其余原样', () => {
+test('encryptByDesRules：22 条加密、3 条**只改名**、其余原样', async () => {
   const out = encryptByDesRules({ appId: 'default', box: 'OLD', protocol: 4, 未知字段: 'keep' });
   assert.equal(typeof out.um, 'string', 'appId → um（加密）');
   assert.notEqual(out.um, 'default', '加密之后当然不是原文');
@@ -84,7 +84,7 @@ test('encryptByDesRules：22 条加密、3 条**只改名**、其余原样', () 
   assert.equal(Object.keys(DES_RULE).length, 25);
 });
 
-test('**整条流水线**：Node 侧 aes-128-cbc 解密 → gunzip → JSON 能读回字段', () => {
+test('**整条流水线**：Node 侧 aes-128-cbc 解密 → gunzip → JSON 能读回字段', async () => {
   const fp = newFingerprint(fixedRnd(7));
   const body = buildSmBody(fp, 'OLD-DEVICE', NOW, fixedRnd(11));
   const priId = md5Hex('some-uid').slice(0, 16);
@@ -126,7 +126,7 @@ test('**整条流水线**：Node 侧 aes-128-cbc 解密 → gunzip → JSON 能�
   assert.ok(json.qb, 'tn → qb');
 });
 
-test('**顺带验 gzip 那一层**：解开来的字节里能看见 JSON 的痕迹（说明没被压掉）', () => {
+test('**顺带验 gzip 那一层**：解开来的字节里能看见 JSON 的痕迹（说明没被压掉）', async () => {
   const fp = newFingerprint(fixedRnd(3));
   const body = buildSmBody(fp, '', NOW, fixedRnd(5));
   const priId = md5Hex('u').slice(0, 16);
@@ -142,7 +142,7 @@ test('**顺带验 gzip 那一层**：解开来的字节里能看见 JSON 的痕�
   assert.match(plain, /"um":"/, 'stored 块不压缩 ⇒ 明文痕迹还在（也说明我们没压坏）');
 });
 
-test('parseDeviceId：1100 ⇒ "B" + 值；别的码与缺字段都如实报错', () => {
+test('parseDeviceId：1100 ⇒ "B" + 值；别的码与缺字段都如实报错', async () => {
   assert.equal(parseDeviceId('{"code":1100,"detail":{"deviceId":"ABC"}}').deviceId, 'BABC');
   assert.equal(DEVICE_ID_PREFIX + 'ABC', 'BABC');
   assert.equal(SMID_OK_CODE, 1100);
@@ -153,7 +153,7 @@ test('parseDeviceId：1100 ⇒ "B" + 值；别的码与缺字段都如实报错'
   assert.equal(parseDeviceId('不是 JSON').ok, false);
 });
 
-test('上报请求的形状：URL、三枚头、body 六个键', () => {
+test('上报请求的形状：URL、三枚头、body 六个键', async () => {
   const fp = newFingerprint(fixedRnd(1));
   const req = smidUploadRequest(fp, '', NOW, fixedRnd(2));
   assert.equal(req.url, `${SMID_HOST}${SMID_PATH}`);
@@ -171,7 +171,7 @@ test('上报请求的形状：URL、三枚头、body 六个键', () => {
   assert.match(body.data as string, /^[0-9a-f]{32,}$/, 'data 是 **hex**（AES 那条路）');
 });
 
-test('稳定特征**存一次、之后复用**（每次重掷是最容易触发风控的姿态）', () => {
+test('稳定特征**存一次、之后复用**（每次重掷是最容易触发风控的姿态）', async () => {
   const store = memStore();
   store.ensureSchema();
   const a = ensureFingerprint(store, NOW_ISO, fixedRnd(1));
@@ -185,7 +185,7 @@ test('稳定特征**存一次、之后复用**（每次重掷是最容易触发�
   assert.ok(ensureFingerprint(store, NOW_ISO, fixedRnd(4)));
 });
 
-test('每次现算的那一半**确实在变**（smid / vpw / trees / 时间戳）', () => {
+test('每次现算的那一半**确实在变**（smid / vpw / trees / 时间戳）', async () => {
   const fp = newFingerprint(fixedRnd(1));
   const a = buildSmBody(fp, '', NOW, fixedRnd(1));
   const b = buildSmBody({ ...fp }, '', new Date(NOW.getTime() + 1000), fixedRnd(2));
@@ -199,7 +199,7 @@ test('每次现算的那一半**确实在变**（smid / vpw / trees / 时间戳�
   assert.equal(a.canvas, b.canvas);
 });
 
-test('`tn` 是**最后**算并写回自己的（摘要输入是"还没有 tn 的那一份"）', () => {
+test('`tn` 是**最后**算并写回自己的（摘要输入是"还没有 tn 的那一份"）', async () => {
   const fp = newFingerprint(fixedRnd(1));
   const body = buildSmBody(fp, '', NOW, fixedRnd(1));
   const tn = body.tn as string;
@@ -209,7 +209,7 @@ test('`tn` 是**最后**算并写回自己的（摘要输入是"还没有 tn 的
   assert.notEqual(tn, md5Hex(getTn(body)), '拿带 tn 的那份算会得到另一个值 —— 这是个容易犯的错');
 });
 
-test('crc 那层：`data` 的 hex 长度是 16 的倍数（AES 块对齐）', () => {
+test('crc 那层：`data` 的 hex 长度是 16 的倍数（AES 块对齐）', async () => {
   const fp = newFingerprint(fixedRnd(1));
   const req = smidUploadRequest(fp, '', NOW, fixedRnd(2));
   const data = (JSON.parse(req.body!) as { data: string }).data;
