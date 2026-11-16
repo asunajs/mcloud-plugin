@@ -631,6 +631,12 @@ POOLPY2
 # 这条链是**插件能不能用的前提**：之前只能靠人手从浏览器抄 jwttoken，
 # 而那个票 2 小时就废（过期时所有任务一起回 90001，看起来像"账号被踢了"）。
 echo "⑥ H5 换票：原生凭据 → 三步 → jwttoken"
+#
+# ⚠ **这一节还没改完（已知偏差，不是回归）**：它按"单凭据"时代写的 ——
+#   假设换票用的是 `POST /api/h5/auth` 里那一串。多账号之后 `runExchangeStep` 走的是
+#   **当前账号**的原生凭据（`loadAuthRaw`），所以 mock 回的 SSO 票、Referer 里那些
+#   值都跟脚本写死的不一样，仍然会在 referer 那几条断言上红。
+#   前半段（三条请求的顺序、签名自洽）是有效的；剩下的要按多账号口径重写一遍。
 curl -fsS -o /dev/null "${W[@]}" -X POST -H 'content-type: application/json' \
   -d '{"authorization":"Basic bW9iaWxlOjEzODAwMDAwMDAwOnRva2Vu"}' "$B/plugins/mcloud/api/h5/auth"
 for i in 1 2 3 4 5; do
@@ -662,12 +668,21 @@ assert seq == ['/user/querySpecTokenV2', '/ycloud/api/timestamp',
                '/ycloud/auth-service/auth/tyrzLogin'] or seq == [
     '/user/querySpecTokenV2', '/ycloud/api/timestamp',
     '/ycloud/auth-service/auth/tyrzLogin', '/deviceprofile/v4'], seq
-spec, ts, login, smid = h5
+spec, ts, login = h5[0], h5[1], h5[2]
+# ④ 只在"手上还没有 deviceId"时才发；这条脚本前面导会话时已经带了 ⇒ 允许缺席
+smid = h5[3] if len(h5) > 3 else None
 
 # ① 原生族：Authorization **逐字**用（多加一次 `Basic ` 会得到 `Basic Basic …`，
 #    而上游回的是「非法的token！」—— 听起来像凭据过期，会把人带去查有效期）
 assert spec['method'] == 'POST', spec['method']
-assert spec['headers'].get('authorization') == 'Basic bW9iaWxlOjEzODAwMDAwMDAwOnRva2Vu', spec['headers']
+# ⚠ 换票用的是**当前账号**的原生凭据（`runExchangeStep` 走 `loadAuthRaw`），
+#   不是上面 POST 进去的那一串 —— 多账号下"当前账号"才是这一轮该换的那个。
+#   所以这里断的是"解出来是那个账号的 pc 凭据"，不是逐字相等。
+import base64 as _b64
+_auth = spec['headers'].get('authorization', '')
+assert _auth.startswith('Basic '), spec['headers']
+_decoded = _b64.b64decode(_auth[len('Basic '):]).decode()
+assert _decoded.startswith('pc:13500135000:'), _decoded
 assert spec['headers'].get('content-type') == 'application/json;charset=UTF-8', spec['headers']
 assert spec['body'] == '{"toSourceId":"001005"}', spec['body']
 assert 'x-signature' not in spec['headers'], '这一族无签名'
@@ -708,15 +723,20 @@ assert 'bW9iaWxl' not in json.dumps(status), '凭据不该出现在响应里'
 assert status['auth']['fingerprint'] and len(status['auth']['fingerprint']) == 16, status['auth']
 assert final['done'] is True, final
 # ④ smid 风控上报（换 deviceId）—— **另一台主机、另一套码**
-assert smid['headers'].get('user-agent', '').startswith('Mozilla/5.0 (Linux; Android 14'), smid['headers']
-assert smid['headers'].get('origin') == 'https://m.mcloud.139.com', smid['headers']
-smid_body = json.loads(smid['body'])
-assert sorted(smid_body) == ['appId', 'compress', 'data', 'encode', 'ep', 'organization', 'os'], smid_body
-assert smid_body['encode'] == 5 and smid_body['compress'] == 2, smid_body
-assert smid_body['os'] == 'web' and smid_body['appId'] == 'default', smid_body
-# `data` 是 **hex**（AES 那条路），`ep` 是 base64（RSA 那条路）—— 两条路别混
-assert all(c in '0123456789abcdef' for c in smid_body['data']), 'data 该是 hex'
-assert len(smid_body['data']) % 32 == 0, 'AES-CBC+PKCS7 ⇒ 16 字节对齐'
+if smid is None:
+    # 已经有 deviceId 就不上报：这一支没发请求是对的，但**不能默默跳过**——
+    # 说一句，免得以后真丢了这一步还以为测过了。
+    print('   · smid 上报这一步没发（已有 deviceId，按设计跳过）')
+if smid is not None:
+    assert smid['headers'].get('user-agent', '').startswith('Mozilla/5.0 (Linux; Android 14'), smid['headers']
+    assert smid['headers'].get('origin') == 'https://m.mcloud.139.com', smid['headers']
+    smid_body = json.loads(smid['body'])
+    assert sorted(smid_body) == ['appId', 'compress', 'data', 'encode', 'ep', 'organization', 'os'], smid_body
+    assert smid_body['encode'] == 5 and smid_body['compress'] == 2, smid_body
+    assert smid_body['os'] == 'web' and smid_body['appId'] == 'default', smid_body
+    # `data` 是 **hex**（AES 那条路），`ep` 是 base64（RSA 那条路）—— 两条路别混
+    assert all(c in '0123456789abcdef' for c in smid_body['data']), 'data 该是 hex'
+    assert len(smid_body['data']) % 32 == 0, 'AES-CBC+PKCS7 ⇒ 16 字节对齐'
 # ⚠ 换到的 deviceId 要落进会话（领取类接口靠它；没有它回 615 而文案说"活动太火爆"）。
 # `/api/h5` 不回显凭据，所以这里断在**换票结果那句话**上，而不是断在会话原文上。
 assert 'deviceId' in (status['exchange'].get('note') or ''), status['exchange']
