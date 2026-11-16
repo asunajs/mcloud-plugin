@@ -54,9 +54,13 @@ for (const file of files) {
     problems.push(`R4 ${r}：还在 import 'host-api'（旧面板契约，已删）`);
   }
 
-  // R3：领域层（src/mcloud）不许反向依赖宿主/入口，也不许用 Node/引擎专有物
-  if (r.startsWith('src/mcloud/')) {
-    for (const forbidden of ["'../host/", "'../entries/", "'../../host/", "'../../entries/", "'panel:host'"]) {
+  // R3：领域层（src/mcloud）与编排层（src/app）不许反向依赖宿主/入口，
+  //     也不许用 Node/引擎专有物。
+  //
+  //     src/app/routes/ 是路由（P5 从 3400 行的 mcloud/routes.ts 拆出来的）：
+  //     它跟领域层一样**不知道宿主存在** —— 依赖由 `RouteDeps` 注进来。
+  if (r.startsWith('src/mcloud/') || r.startsWith('src/app/')) {
+    for (const forbidden of ["'../host/", "'../../host/", "'../../../host/", "'../entries/", "'../../entries/", "'../../../entries/", "'panel:host'"]) {
       if (src.includes(`from ${forbidden}`)) {
         problems.push(`R3 ${r}：领域层不许 import ${forbidden.replace("'", '')}`);
       }

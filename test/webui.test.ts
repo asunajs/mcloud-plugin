@@ -30,6 +30,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { routesSource } from './helpers.ts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -916,7 +917,7 @@ test('⚠ 定时抢兑由弹窗负责，页面上不再铺一块定时设置', (
 test('⚠ 运行日志重启后还在（面板的内存环重启就空，插件自己留一份）', () => {
   // 用户的原话：「你每次重启后运行日志里的旧记录就没了」。
   // 面板的 SSE 底子是内存环；插件这一侧把同样的行写进 state（SQLite），重启照旧在。
-  assert.ok(/path: `\$\{base\}\/log\/tail`/.test(srcOf('src/mcloud/routes.ts')), '缺 /log/tail');
+  assert.ok(/path: `\$\{base\}\/log\/tail`/.test(routesSource()), '缺 /log/tail');
   assert.ok(/export function appendRing\(/.test(srcOf('src/mcloud/logRing.ts')), '缺环形副本');
   assert.ok(/export const RING_MAX = 400;/.test(srcOf('src/mcloud/logRing.ts')), '要有上限');
   assert.ok(/'mcloud\.log\.ring': 'global'/.test(srcOf('src/store/keys.ts')), '环是全局的（不属于某个号）');
@@ -1143,7 +1144,7 @@ test('⚠ 门失败 ≠ 今天没直播（参考 mcloud-sign `hasActiveLiveRoom`
 
 
 test('⚠ 保存账号选择校验的是**排期任务名**，不是内部步骤名（曾经每次 400）', () => {
-  const routes = srcOf('src/mcloud/routes.ts');
+  const routes = routesSource();
   const ta = srcOf('src/mcloud/taskAccounts.ts');
   assert.ok(/export const SCHEDULED_TASKS = \['日常', '兑换', '直播'\] as const;/.test(ta), '要有这一份');
   assert.ok(/SCHEDULED_TASKS as readonly string\[\]\)\.includes\(task\)/.test(routes), '路由要用它');

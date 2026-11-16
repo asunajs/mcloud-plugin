@@ -13,13 +13,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { routesSource } from './helpers.ts';
 
 const dir = new URL('../plugins/mcloud/', import.meta.url);
 const html = readFileSync(new URL('index.html', dir), 'utf8');
 const js = readFileSync(new URL('app.js', dir), 'utf8');
 const css = readFileSync(new URL('style.css', dir), 'utf8');
 const srcOf = (rel: string) => readFileSync(new URL('../' + rel, import.meta.url), 'utf8');
-const routes = srcOf('src/mcloud/routes.ts');
+const routes = routesSource();
 
 /** 从某个标记往后截一段（够看清那个处理函数干了什么，不会串到下一条路由）。 */
 function handlerOf(marker: string): string {

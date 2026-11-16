@@ -9,6 +9,7 @@
 // ⚠ 这些字段在类型上是**必填**的（有意的）：真入口忘了注入的话，
 // 对应的功能会当场崩，而不是静默失效。测试里给的是桩。
 
+import { readFileSync, readdirSync } from 'node:fs';
 import type { RouteDeps } from '../src/mcloud/routes.ts';
 import type { Transport } from '../src/mcloud/client.ts';
 import type { Store } from '../src/store/types.ts';
@@ -42,4 +43,20 @@ export function testDeps(
       log,
     },
   };
+}
+
+/** **整份**路由源码（拼起来）。
+ *
+ *  路由从 3400 行的 `mcloud/routes.ts` 拆成了 `src/app/routes/`（每组一个文件）。
+ *  有些断言是"看源码里有没有这条路由/这行注释"——那种断言要读**全部**组文件，
+ *  只读某一个文件会在拆组之后假红（或者更糟：以为还在）。 */
+export function routesSource(): string {
+  const top = ['src/app/routes/index.ts', 'src/app/routes/support.ts', 'src/app/routes/readings.ts'];
+  const groups = readdirSync(new URL('../src/app/routes/groups/', import.meta.url))
+    .filter((n) => n.endsWith('.ts'))
+    .sort()
+    .map((n) => 'src/app/routes/groups/' + n);
+  return [...top, ...groups]
+    .map((rel) => readFileSync(new URL('../' + rel, import.meta.url), 'utf8'))
+    .join('\n');
 }

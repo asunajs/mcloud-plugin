@@ -11,17 +11,29 @@
 
 ## 2. 分层与 import 规则
 
-    src/
-      core/       协议与任务（签名、信封、H5、登录、口令池、每条任务的步骤）
-      app/        编排：一次运行 = 一个 async 函数；routes/ 按界面块
-      present/    文案 / 级别 / 去重 / tally（「人话」的唯一出处）
-      ports/      Http / Clock / Store / Ws / Log / Panel 的**接口**
+    src/                         ← **现状**（下面 §2.1 是"最终想长成的样子"）
+      mcloud/      业务：协议（签名/信封/H5）、登录、口令池、每条任务的步骤与运行记录
+      app/routes/  路由：原来 mcloud/routes.ts 那 3400 行，按界面块拆成一堆组文件
+      store/       状态语义：键的作用域（哪个键跟账号、哪个是全局）、账号袋
+      ports/       端口接口：io（fetch/sql/smtp/ws）/ log / panel / ws
       host/
-        panel/    panel:host 的唯一使用者；四个插件的注册
-        cli/      Node CLI 宿主（fetch / ws / setTimeout / fs）
-        fs/       FileStore —— 面板与 Node 都能跑的 JSON 存储
-      entries/    四个薄入口（名字 + cron + budget + 交给 app）
-      cli/        mcloud-sign 入口（参数、退出码、着色）
+        panel/    `panel:host` 的唯一使用者；四个插件的注册、路由分派、任务合成
+        fs/       FileStore —— 面板与 Node CLI 共用的 JSON 存储
+      entries/     四个薄入口（名字 + cron + budget，其余交给 mcloud/app）
+      standalone/  Node CLI（mcloud-sign 与那几个子命令）
+      types/       `panel:host` 的 `declare module`
+
+### 2.1 最终形态（还没搬完，别照着找文件）
+
+    src/
+      core/        现在的 src/mcloud/（协议 + 业务）
+      app/         现在的 src/app/routes/ 之外再加：runTask.ts（统一 runner）
+      present/     文案 / 级别 / 去重 / tally —— 现在散在 mcloud/ 各处的"人话"
+      host/cli/    现在叫 src/standalone/
+
+> 为什么现在不一次搬完：`mcloud/` 里 140 多个文件互相 import，改目录名一次就是几千行
+> diff，而 P3（同步 → 异步）本来就要把这些文件再动一遍。**先做 P3，再搬目录** ——
+> 否则同一批文件要改两次，中间还要重新验证。
 
 | # | 规则 | 谁在守 |
 |---|---|---|
@@ -90,7 +102,7 @@
 | P2 | 端口化 + `defineTask`，全局收口 | 进行中 |
 | P3 | HTTP 全 async；CLI 同步重写 | — |
 | P4 | 存储换本地 JSON（含旧数据一次性导入） | ✅ |
-| P5 | 编排层 / 呈现层 / 路由拆分 | — |
+| P5 | 编排层 / 呈现层 / 路由拆分 | 🚧 路由已拆完（`src/app/routes/` 9 个文件）；`runTask`/`present` 未动 |
 | P6 | 直播收口 + trace | — |
 | P7 | 目录式插件（共用核心）+ 界面分块 | ✅ 产物可用（见下） |
 
