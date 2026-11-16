@@ -29,6 +29,42 @@ H=(-H "X-Panel-Token:$TOKEN")
 W=("${H[@]}" -H "x-panel:1")   # 写接口要 x-panel: 1（面板 CSRF，插件路由同样适用 —— 见 F-007）
 B="http://127.0.0.1:$PANEL_PORT"
 
+# 面板的「手动跑一次」是**异步**的（POST 只回 `{ok, run_id}`，任务在后台跑）。
+# 旧面板那个接口是同步的，所以老脚本"发完就当跑完了"—— 在这里会读到**上一趟**的读数，
+# 表现为"日常那一步没了 / 算力大作战没痕迹"。所以每次触发之后要真的等它收尾。
+task_runs() { # $1=plugin $2=任务名
+  curl -fsS "${H[@]}" "$B/api/state" -o "$TMP/state-runs.json" 2>/dev/null || true
+  python3 - "$TMP/state-runs.json" "$1" "$2" <<'PY' || echo 0
+import json, sys
+s = json.load(open(sys.argv[1]))
+rows = [t for t in (s.get('tasks') or s.get('jobs') or []) if t.get('plugin') == sys.argv[2] and t.get('name') == sys.argv[3]]
+print(rows[0].get('runs', 0) if rows else 0)
+PY
+}
+
+wait_task_done() { # $1=plugin $2=任务名 $3=触发前的 runs
+  for _ in $(seq 1 240); do
+    curl -fsS "${H[@]}" "$B/api/state" -o "$TMP/state-wait.json" 2>/dev/null || true
+    if python3 - "$TMP/state-wait.json" "$1" "$2" "$3" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))
+rows = [t for t in (s.get('tasks') or s.get('jobs') or []) if t.get('plugin') == sys.argv[2] and t.get('name') == sys.argv[3]]
+if not rows:
+    sys.exit(1)
+t = rows[0]
+# 还没有新的一趟 / 这一趟还在跑 ⇒ 继续等
+sys.exit(0 if t.get('runs', 0) > int(sys.argv[4]) and not t.get('in_flight') else 1)
+PY
+    then
+      return 0
+    fi
+    sleep 0.5
+  done
+  echo "❌ 等任务收尾超时：$1 / $2" >&2
+  return 1
+}
+
+
 cleanup() {
   if [ "${E2E_KEEP:-1}" = "0" ]; then
     kill "${PANEL_PID:-0}" "${MOCK_PID:-0}" 2>/dev/null || true
@@ -89,7 +125,12 @@ except Exception:
 #   任务已经按家族拆到三个插件里，而且合成了一条任务一个函数。
 jobs = {(j.get('plugin'), j.get('name')) for j in (s.get('tasks') or s.get('jobs') or [])}
 want = {('mcloud-daily', '日常'), ('mcloud-exchange', '兑换'), ('mcloud-live', '直播')}
-sys.exit(0 if want <= jobs else 1)
+# ⚠ 光等**任务**不够：路由在 `mcloud` 那个服务插件里，它还没装好时
+#   `/plugins/mcloud/api/readings` 会先返回一次空（冷启动/按需加载的竞态）。
+#   面板是按需加载的（第 216 轮），所以这里要等四个插件**都在**。
+names = {p.get('name') for p in s.get('plugins') or []}
+want_plugins = {'mcloud', 'mcloud-daily', 'mcloud-exchange', 'mcloud-live'}
+sys.exit(0 if want <= jobs and want_plugins <= names else 1)
 PY
   sleep 0.5
 done
@@ -138,7 +179,9 @@ echo "④ 跑三条任务（新模型：一条任务 = 一个函数从头跑到�
 #   全部走一遍 —— 少走任何一段，下面的 mock 侧字节断言就会红。
 
 # —— 日常：整条链一次跑完 ——
+RUNS0=$(task_runs mcloud-daily 日常)
 curl -fsS "${W[@]}" -X POST "$B/api/tasks/mcloud-daily/%E6%97%A5%E5%B8%B8/run" -o "$TMP/daily.json"
+wait_task_done mcloud-daily 日常 "$RUNS0"
 printf '   日常 ✓\n'
 
 # —— 算力大作战（`National_TokenPK`）：日常第 ④.6 步 ——
@@ -229,7 +272,9 @@ PY
 curl -fsS "${W[@]}" -X POST \
   -d "{\"liveUrl\":\"http://127.0.0.1:$MOCK_PORT/xhs/profile\"}" \
   "$B/plugins/mcloud/api/config" >/dev/null
+RUNS0=$(task_runs mcloud-live 直播)
 curl -fsS "${W[@]}" -X POST "$B/api/tasks/mcloud-live/%E7%9B%B4%E6%92%AD/run" -o "$TMP/live-run.json"
+wait_task_done mcloud-live 直播 "$RUNS0"
 printf '   直播 ✓\n'
 python3 - "$TMP/live-run.json" <<'PY'
 import json, sys
@@ -244,7 +289,9 @@ sleep 0.3
 # 比"接口返回了 idle"有力得多（返回 idle 也可能只是文案对了）。
 # ⚠ 这里再跑一次「直播」任务 —— 口令笔记那一段（原来独立的 `live-room`）
 #   现在在它里面。判据不变：**mock 侧不该有新请求**。
+RUNS0=$(task_runs mcloud-live 直播)
 curl -fsS -o /dev/null "${W[@]}" -X POST "$B/api/tasks/mcloud-live/%E7%9B%B4%E6%92%AD/run"
+wait_task_done mcloud-live 直播 "$RUNS0"
 curl -fsS "${H[@]}" "$B/plugins/mcloud/api/live" -o "$TMP/live-pool.json"
 curl -fsS "http://127.0.0.1:$MOCK_PORT/_debug/requests" -o "$TMP/mock.json"
 python3 - "$TMP/live-pool.json" "$TMP/mock.json" <<'PY'
@@ -264,14 +311,17 @@ if len(hits) == 0:
     assert codes_now == [], f'没抓主页就不该有口令：{codes_now}'
     print('   ✅ 口令池：这一趟没开播，按设计「不听，也不看小红书」—— 一枪都没抓')
     raise SystemExit(0)
-assert pool.get('validCount') == 0, pool
-assert pool.get('stopScraping') is False, pool
 assert pool.get('xhsWaitMs', 0) > 0, f'该报"还要等多久"：{pool}'
 codes = {c['value']: c for c in pool.get('codes') or []}
-# ⚠ 抓到了 ≠ 验过了：进池的状态必须是 **unknown**（唯一的验证途径是拿去领）
-assert codes.get('云盘AI高效复盘', {}).get('state') == 'unknown', codes
-assert codes['云盘AI高效复盘']['source'] == 'xiaohongshu', codes
-print('   ✅ 口令池：抓到进池（未知）、30 分钟窗口内再抓一个请求都没发')
+# ⚠ 「抓到了 ≠ 验过了」在**一条任务从头跑到尾**这个模型下只能这样断言：
+#   同一趟里既收口令又领取（docs/live-spec.md 的 ①收 → ②领），所以进池的状态
+#   可能是 unknown（还没领到）也可能是 valid（这一趟就领到了）/ invalid（被拒）。
+#   老断言写死 `state == 'unknown'` 与 `validCount == 0`，那是**一次一步**时代的读法。
+c = codes.get('云盘AI高效复盘')
+assert c is not None, codes
+assert c.get('source') == 'xiaohongshu', codes
+assert c.get('state') in ('unknown', 'valid', 'invalid'), codes
+print('   ✅ 口令池：抓到进池（' + str(c.get('state')) + '）、30 分钟窗口内只抓了一次')
 PY
 
 curl -fsS "${H[@]}" "$B/plugins/mcloud/api/tasks" -o "$TMP/plugin.json"
@@ -350,7 +400,8 @@ rte = [r for r in reqs if 'receiveTaskExpansion' in r['path']]
 assert rte, '没调用 receiveTaskExpansion'
 assert rte[-1]['path'] == '/ycloud/signin/page/receiveTaskExpansion', (
     '延期领取应当是裸 GET：' + rte[-1]['path'])
-assert mockst['backupCanReceive'] is False, '备份好礼没领到'
+# ⚠ 「备份好礼」这条任务已经删了（上面第 382 行那组反向断言），mock 里也不再记
+#   `backupCanReceive` —— 老断言读它会 KeyError。要看的"备份相关状态"只剩下面这个。
 
 
 # 签到是三段式：先 infoV3（说没签）→ startSignIn → 再 infoV3（说签了）

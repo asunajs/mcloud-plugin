@@ -20,6 +20,8 @@ DIST="$ROOT/dist/panel-llrt"
 # 四个插件 + 一份界面（mcloud 是服务插件，其余三个各跑一类任务，共用同一份 webui）
 PLUGINS=(mcloud mcloud-daily mcloud-exchange mcloud-live)
 WEBUI_FILES=(index.html style.css app.js boot.js)
+# 目录式产物：<name>/index.js + <name>/lib/**（mcloud 里是唯一一份核心）
+DIRS=(mcloud mcloud-daily mcloud-exchange mcloud-live)
 # 清单（<name>.panel.json）：面板靠它出配置表单、核对 min_panel
 MANIFESTS=(mcloud.panel.json mcloud-daily.panel.json mcloud-exchange.panel.json mcloud-live.panel.json)
 RESTART=0
@@ -32,7 +34,25 @@ for arg in "$@"; do
 done
 
 cd "$ROOT"
-node scripts/build-panelllrt.mjs
+
+# 产物形状：面板支持「目录式插件」（`plugins/<name>/index.js` + 相对 import）时
+# 出**共用核心**的目录形态（四个插件 import 同一份 lib/，只有一份核心）；
+# 不支持时退回单文件（四个包各自内联，行为一致，只是体积大）。
+#
+# 判据用面板二进制里的那句错误串：多文件插件是 2026-11-16 才进面板的
+# （commit 9af5403），而 `panel version` 那会儿还没变号，光看版本分不出来。
+PANEL_BIN_FILE="${PANEL_BIN_FILE:-$(dirname "$DEST")/panel}"
+MULTIFILE=0
+if [ -f "$PANEL_BIN_FILE" ] && grep -aq 'import 的文件不存在' "$PANEL_BIN_FILE"; then
+  MULTIFILE=1
+fi
+if [ "${MCLOUD_PKG:-auto}" = "single" ] || { [ "${MCLOUD_PKG:-auto}" = "auto" ] && [ "$MULTIFILE" = 0 ]; }; then
+  echo "→ 产物形状：单文件（面板「$PANEL_BIN_FILE」没有多文件插件能力）"
+  node scripts/build.mjs
+else
+  echo "→ 产物形状：目录式 + 共用核心"
+  node scripts/build-dir.mjs
+fi
 
 # 状态键门禁：`store/keys.ts` 的 KEY_SCOPE 漏登记会让**运行期**抛
 # `UnregisteredKeyError`（2026-11-15 08:00 现场：三个账号的「分享领奖」全挂在这上面，
@@ -70,18 +90,28 @@ fi
 #   往里面塞备份目录会让文件列表多出莫名其妙的东西。
 BK="$(dirname "$DEST")/backups/mcloud-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$BK"
-for n in "${PLUGINS[@]}"; do [ -f "$DEST/$n.js" ] && cp "$DEST/$n.js" "$BK/"; done
+for n in "${PLUGINS[@]}"; do [ -f "$DEST/$n.js" ] && cp "$DEST/$n.js" "$BK/"; [ -d "$DEST/$n" ] && cp -R "$DEST/$n" "$BK/"; done
 [ -d "$DEST/mcloud.webui" ] && cp -R "$DEST/mcloud.webui" "$BK/"
 for f in "${MANIFESTS[@]}"; do [ -f "$DEST/$f" ] && cp "$DEST/$f" "$BK/"; done
 echo "→ 旧的一套装在 $BK"
 
 echo "→ 装到 $DEST"
-for n in "${PLUGINS[@]}"; do cp "$DIST/$n.js" "$DEST/$n.js"; done
+# 先清掉**另一种形状**的旧产物，免得更新的插件发现"两个都在"（面板先看 <name>.js）
+for n in "${PLUGINS[@]}"; do rm -rf "${DEST:?}/$n.js" "${DEST:?}/$n"; done
+if [ -d "$DIST/mcloud" ]; then
+  for n in "${DIRS[@]}"; do cp -R "$DIST/$n" "$DEST/$n"; done
+else
+  for n in "${PLUGINS[@]}"; do cp "$DIST/$n.js" "$DEST/$n.js"; done
+fi
 rm -rf "${DEST:?}/mcloud.webui"
 cp -R "$DIST/mcloud.webui" "$DEST/mcloud.webui"
 for f in "${MANIFESTS[@]}"; do cp "$DIST/$f" "$DEST/$f"; done
 
-for n in "${PLUGINS[@]}"; do cmp "$DIST/$n.js" "$DEST/$n.js"; done
+if [ -d "$DIST/mcloud" ]; then
+  for n in "${DIRS[@]}" mcloud.webui; do diff -r "$DIST/$n" "$DEST/$n"; done
+else
+  for n in "${PLUGINS[@]}"; do cmp "$DIST/$n.js" "$DEST/$n.js"; done
+fi
 for f in "${MANIFESTS[@]}"; do cmp "$DIST/$f" "$DEST/$f"; done
 for f in "${WEBUI_FILES[@]}"; do cmp "$DIST/mcloud.webui/$f" "$DEST/mcloud.webui/$f"; done
 echo "✅ $(( ${#PLUGINS[@]} + ${#WEBUI_FILES[@]} )) 个文件逐个 cmp 一致"

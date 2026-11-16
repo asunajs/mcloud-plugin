@@ -129,7 +129,9 @@ export const FIXTURES = {
   // infoV3 由状态机生成，见下面 case 分支
   infoV3: { code: 0, msg: 'success', result: {} },
   startSignIn: { code: 0, msg: 'success', result: { bean: 10 } },
-  receiveV3: { code: 0, msg: 'success', result: { bean: 10 } },
+  // ⚠ `result.receive` 必须有：领取数**只认响应**（F-114 —— 抄清单上的数字就是编的）。
+  //   缺这一格，代码会如实报"不能确认领到了什么"并把这一步判失败。
+  receiveV3: { code: 0, msg: 'success', result: { receive: 1, total: 111, bean: 10 } },
   multiple: { code: 0, msg: 'success', result: { multiple: 2 } },
   receiveRevivalReward: { code: 0, msg: 'success', result: { bean: 5 } },
   // `cloudRecordV2` 的 result 是**对象**、里面才是 `records` 数组（照参考实现
@@ -359,7 +361,11 @@ export async function startMock(options = {}) {
   // 默认起点：今天还没签、有 2 条待领（其中 1 条是延期领取）、有翻倍机会、备份好礼可领。
   const st = {
     todaySigned: false,
-    receiveList: [{ recordId: 'r1', cloudType: 2 }, { recordId: 'r2', cloudType: 1 }],
+    // ⚠ cloudType 的三种口径（F-114，照参考实现）：
+    //   0 = 现在可领（receiveV3）· 1 = 已到期延期（receiveTaskExpansion，裸 GET）
+    //   2 = 下月可领（**一个请求都不发**，H5 只弹一句）
+    //   这里要覆盖"领完清空"，所以 r1 必须是 0 —— 放 2 的话按设计永远领不掉。
+    receiveList: [{ recordId: 'r1', cloudType: 0 }, { recordId: 'r2', cloudType: 1 }],
     curMonthBackup: true,
     curMonthBackupSignAccept: false,
     // 小红花：余额刻意做成**会变**的（插件的"进账"是 ⑥ − ①，夹具不变那条断言就等于没测）
@@ -1018,13 +1024,14 @@ export async function startMock(options = {}) {
             /* 体不是 JSON 就算了 */
           }
           st.receiveList = st.receiveList.filter((x) => x.recordId !== rid);
-          return json(res, 200, { code: 0, msg: 'success', result: { bean: 5, cloudId: rid } });
+          // `receive` 是"这一枪真的领到几个"：领取数只认响应（F-114），缺了它就判失败
+          return json(res, 200, { code: 0, msg: 'success', result: { receive: 1, total: 111, bean: 5, cloudId: rid } });
         }
         if (url.pathname === '/ycloud/signin/page/receiveTaskExpansion') {
           // 延期领取：真实客户端发的是**裸 GET**（没有 acceptDate）——
           // 这一口把 cloudType=1 的条目消化掉
           st.receiveList = st.receiveList.filter((x) => x.cloudType !== 1);
-          return json(res, 200, { code: 0, msg: 'success', result: { bean: 3 } });
+          return json(res, 200, { code: 0, msg: 'success', result: { receive: 1, total: 111, bean: 3 } });
         }
         if (url.pathname === '/ycloud/signin/page/multiple') {
           st.curMonthBackupSignAccept = true; // 每月只用一次

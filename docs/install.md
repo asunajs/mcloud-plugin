@@ -64,7 +64,9 @@ npm ci && npm run build        # 产出 dist/panel-llrt/（四份 .js + 四份�
 #   ~/panel-3030/plugins/mcloud.webui/
 ```
 
-也可以直接 `npm run deploy:panel`（构建 + 样式门禁 + 整份拷贝 + 逐个 cmp）。
+也可以直接 `npm run deploy:panel`（构建 + 样式门禁 + 整份拷贝 + 逐个 cmp）——
+它会看目标面板**支不支持目录式插件**（`plugins/<name>/index.js` + 相对 import）来决定产出
+单文件还是"共用核心"的目录形态；要强制一种就设 `MCLOUD_PKG=single|dir`。
 面板扫描的是**构建产物**，所以改完源码要重新 build 再拷；只拷 `src/` 跑不起来。
 
 ## 四、升级

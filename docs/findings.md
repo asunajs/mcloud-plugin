@@ -7486,3 +7486,49 @@ plugins/a.js   → import { x } from './b.js';
 在隔离实例里真的挂起了 1.5 秒，面板等它跑完），所以 `host.fetch` 的 async 路线技术上通；
 但那是把整条调用链（transport → 状态机 → drain → 1225 条测试）全改签名的大工程，
 不能顺手做。
+
+## F-139 「兑换」在新面板上**一次都没跑过**（`scheduledAt` 是空串）
+
+**怎么发现的**：P2 把入口从旧契约适配层搬到 `defineTask` 时对照面板真实事件
+（`scheduler.rs` 的 `json!({task, plugin, manual, run_id, params, early, lead_ms})`），
+发现**没有 `scheduledAt` / `lateMs` / `runs`**。而旧适配层给了 `scheduledAt: ''`。
+
+**证据**：`src/entries/exchange.ts` 里
+`const targetMs = Date.parse(p.scheduledAt); if (!Number.isFinite(targetMs)) return;`
+—— `Date.parse('')` 是 `NaN` ⇒ **每一拍都静默 return**。任务在面板上是绿的、
+在运行记录里是"没事发生"，所以没人怀疑它。
+
+**修法**：`defineTask` 统一合成 payload（`scheduledAt` = 现在 + 提前量；手动触发 = 现在），
+并把「解析不出来就按现在算」写进兑换入口。顺带在 `ports/panel.ts` 里写清
+"面板不发哪几格"，别再让下一个人以为有。
+
+**为什么以前没暴露**：旧面板真的发 `scheduledAt`（它有一套完整的 payload），
+适配层只是把缺的字段补成了空串 —— 而空串和"没到点"在判据上长得一样。
+
+## F-140 面板的「手动跑一次」是**异步**的，E2E 按同步写会读到空读数
+
+**怎么发现的**：P7 之后第一次把 `e2e-mock.sh` 指向 panel-llrt，
+「日常 ✓」之后立刻读 `/plugins/mcloud/api/readings`，拿到的是
+`{"daily": {"last": null}}`（那一趟还在跑），断言在 `readings.get('daily')...` 上炸。
+
+**根因**：新面板的 `POST /api/tasks/<plugin>/<task>/run` 只回 `{ok, run_id}`
+（旧面板那个接口是**同步**的，跑完才返回）。脚本"发完就当跑完了"的假设失效。
+
+**修法**：`scripts/e2e-mock.sh` 加 `task_runs` + `wait_task_done`：先记下触发前的
+`runs` 计数，触发后轮询 `/api/state`，等「runs 变大且 in_flight=false」再继续。
+
+## F-141 「共用一份核心」的实测结论：只能走**目录式插件**
+
+F-138 试过"两个单文件插件互相 import"——失败（`eval_script` 解析不到）。
+面板 2026-11-16 加了多文件插件（`plugins/<name>/index.js` + 相对 import），
+隔离实例实测（临时插件 + 新构建的二进制）：
+
+| 形态 | 结果 |
+|---|---|
+| `plugins/probe/index.js` → `import './lib/a.js'` | ✅ 加载成功 |
+| `plugins/probe3/index.js` → `import '../probe/lib/c.js'`（**跨目录**） | ✅ 加载成功 |
+| `plugins/probe2.js`（单文件）→ `import './probe/lib/b.js'` | ❌ 解析失败 |
+
+⇒ 四个插件共用一份核心**必须**是目录式。产地见 `scripts/build-dir.mjs`；
+`npm run deploy:panel` 会按目标面板的能力自动选形状（单文件 / 目录式）。
+

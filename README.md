@@ -239,6 +239,7 @@ QuickJS 沙箱里没有 Node（没有 `fs` / `net` / `crypto` / npm 包），
 
 ```bash
 npm run build                # 产物 → dist/panel-llrt/（4 个 .js + 4 个清单 + mcloud.webui/）
+npm run build:dir            # 同上，但出**目录式**插件（四个入口 import 同一份 mcloud/lib/）
 npm run pack:panel04         # → dist/mcloud-plugin-<version>-panel04.zip（+ .sha256、SHA256SUMS）
 ```
 
