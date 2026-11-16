@@ -45,7 +45,7 @@ src/standalone/** Node CLI
 | P4 | 存储换本地 JSON（含一次性导入）；面板与 CLI 共用一份实现 | ✅ |
 | P7 | 目录式插件：四个入口 import **同一份** `mcloud/lib/`；部署按面板能力自动选形状 | ✅ |
 | P3 | 同步 → 异步：`Transport` / `Io.fetch` 变 Promise，`drain`/任务/入口/路由全部 await | ✅ |
-| P5 | `src/app/runTask.ts` 统一 runner + `src/present/*` + 路由拆分 + 任务编排搬出 entries | 🚧 路由✅（`app/routes/`）、直播✅（`app/live/`）、日常✅（`app/daily/`）；兑换 / runTask / present 未动 |
+| P5 | `src/app/runTask.ts` 统一 runner + `src/present/*` + 路由拆分 + 任务编排搬出 entries | 🚧 路由✅、三条任务编排✅（`app/{daily,exchange,live}`，入口 90/100/82 行）；runTask / present 未动 |
 | P6 | 直播收口成一个 invocation（门→连→听→领→关）+ trace 环 + `GET api/live/trace` | ✅ trace 环 + `GET /api/live/trace`；收口完成（`src/app/live/`：collect / draw / run，入口只剩注册） |
 
 ### P3 为什么还没做

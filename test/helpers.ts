@@ -73,6 +73,7 @@ export function liveSource(): string {
 export function taskSource(rel: string): string {
   if (rel === 'src/entries/live.ts') return liveSource();
   if (rel === 'src/entries/daily.ts') return dailySource();
+  if (rel === 'src/entries/exchange.ts') return exchangeSource();
   return readFileSync(new URL('../' + rel, import.meta.url), 'utf8');
 }
 
@@ -88,4 +89,9 @@ export function sourceOf(entryRel: string, dirRel: string): string {
   return [entryRel, ...parts.map((n) => dirRel + n)]
     .map((rel) => readFileSync(new URL('../' + rel, import.meta.url), 'utf8'))
     .join('\n');
+}
+
+/** **整份**兑换源码（入口 + app/exchange/*）。 */
+export function exchangeSource(): string {
+  return sourceOf('src/entries/exchange.ts', 'src/app/exchange/');
 }

@@ -13,7 +13,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { routesSource } from './helpers.ts';
+import { exchangeSource, routesSource } from './helpers.ts';
 
 const dir = new URL('../plugins/mcloud/', import.meta.url);
 const html = readFileSync(new URL('index.html', dir), 'utf8');
@@ -135,7 +135,7 @@ test('兑换页对齐原页面：关注 / 分组 / 二次确认 / 本地判定 /
   assert.ok(/api\('\/exchange\/plans'/.test(js), '定时保存走计划表，不起单');
   assert.ok(/action: 'save'/.test(js), '计划保存动作是 save');
   // 多计划：入口按目标整点分发，每条计划只跑自己的账号。
-  const entry = srcOf('src/entries/exchange.ts');
+  const entry = exchangeSource();
   const run = srcOf('src/mcloud/tasks/exchangeRun.ts');
   assert.ok(/duePlans\(loadPlans\(store\)/.test(entry), '入口要按计划分发');
   assert.ok(/depsForAccount\(store, plan\.accountId/.test(entry), '每条计划一个账号的 deps');
