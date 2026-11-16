@@ -14,6 +14,7 @@
     src/                         ← **现状**（下面 §2.1 是"最终想长成的样子"）
       mcloud/      业务：协议（签名/信封/H5）、登录、口令池、每条任务的步骤与运行记录
       app/routes/  路由：原来 mcloud/routes.ts 那 3400 行，按界面块拆成一堆组文件
+      app/live/    直播那条任务的一次运行：collect（收口令）/ draw（按账号领）/ run（编排+日志）
       store/       状态语义：键的作用域（哪个键跟账号、哪个是全局）、账号袋
       ports/       端口接口：io（fetch/sql/smtp/ws）/ log / panel / ws
       host/
@@ -103,7 +104,7 @@
 | P3 | HTTP 全 async（`Transport` / `Io.fetch` 是 Promise）；CLI 的 worker 同步桥还在（见 p3-async-plan） | ✅ |
 | P4 | 存储换本地 JSON（含旧数据一次性导入） | ✅ |
 | P5 | 编排层 / 呈现层 / 路由拆分 | 🚧 路由已拆完（`src/app/routes/` 9 个文件）；`runTask`/`present` 未动 |
-| P6 | 直播收口 + trace | — |
+| P6 | 直播收口成一个 invocation + trace | ✅ 入口 82 行只做注册；编排在 `src/app/live/{collect,draw,run}.ts`；`GET /live/trace` 真机验过 |
 | P7 | 目录式插件（共用核心）+ 界面分块 | ✅ 产物可用（见下） |
 
 ### P7 的两种产物形状

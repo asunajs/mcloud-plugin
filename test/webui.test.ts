@@ -30,7 +30,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { routesSource } from './helpers.ts';
+import { liveSource, routesSource, taskSource } from './helpers.ts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -809,7 +809,7 @@ test('⚠ 日志一行一步，形状照参考实现（成功 / 跳过 / 失败 
   assert.ok(/export function trimNote\(name: string, note: string\): string/.test(stepLog), '要剥掉重复的"步骤名："');
   assert.ok(/服务端说：\$\{msg\}/.test(stepLog), '`code=500 msg=…` 要说人话');
   assert.ok(/from '\.\.\/mcloud\/tasks\/stepLog\.ts'/.test(daily), '日常要用共享的那两个');
-  assert.ok(/from '\.\.\/mcloud\/tasks\/stepLog\.ts'/.test(srcOf('src/entries/live.ts')), '直播也要用同一套');
+  assert.ok(/from '\.\.\/(?:\.\.\/)?mcloud\/tasks\/stepLog\.ts'/.test(liveSource()), '直播也要用同一套');
   assert.ok(/const line = userLine\(one\);/.test(daily), '格式由 `userLine` 决定：`签到：网盘签到成功` / `复活卡：没成 —— 原因`');
   // 段头 / 段尾：照 mcloud-sign，用 start/success/fail 着色，不再画 `------【】------`
   // 段头/段尾都走 `logBoth`（面板日志流 + 重启后还在的环，见 F-085）
@@ -924,7 +924,7 @@ test('⚠ 运行日志重启后还在（面板的内存环重启就空，插件�
   assert.ok(/export function logBoth\(/.test(srcOf('src/mcloud/log.ts')), '两个去处要收在一处');
   // 三块任务页都走 logBoth
   for (const f of ['src/entries/daily.ts', 'src/entries/exchange.ts', 'src/entries/live.ts']) {
-    assert.ok(/logBoth\(store,/.test(srcOf(f)), `${f} 还没走 logBoth`);
+    assert.ok(/logBoth\(store,/.test(taskSource(f)), `${f} 还没走 logBoth`);
   }
   // 界面：**先连实时流，再异步补历史**。`/log/tail` 是插件路由，任务在跑时
   // 会排队到任务结束；等它回来才 connect 就是"日志要等任务跑完才出现"。
@@ -1004,11 +1004,11 @@ test('直播页能设听弹幕时长（照 mcloud Rust 的 5–1800 秒）', asy
   assert.ok(/id="live-listen-seconds"[^>]*min="5"[^>]*max="1800"/.test(html), '范围要写清 5–1800');
   assert.ok(/api\('\/config'/.test(js), '保存走已有的 /config 任务级接口');
   assert.ok(/live-listen-save/.test(js), '要有保存按钮');
-  assert.ok(/听弹幕中/.test(srcOf('src/entries/live.ts')), '长连接期间要打进度，不能 70 秒零日志');
+  assert.ok(/听弹幕中/.test(liveSource()), '长连接期间要打进度，不能 70 秒零日志');
 });
 
 test('直播日志不刷屏：听弹幕每拍不落一条，零口令不报成功', async () => {
-  const live = srcOf('src/entries/live.ts');
+  const live = liveSource();
   assert.ok(!/while \(Date\.now\(\) < listenDeadline\)[\s\S]{0,300}step\('听弹幕'/.test(live), '循环里不能每拍 push 一条步骤');
   assert.ok(/listenPushed/.test(live), '听完只落一条结论');
   assert.ok(/没捡到能用的口令/.test(live), '零口令要如实说');
@@ -1043,7 +1043,7 @@ test('⚠ 直播页的时间说人话（`2026-10-20 14:30:00` → `10-20 14:30`�
 
 test('⚠ 直播那两句内部说法（门开着/门关着）不许出现在给用户看的句子里', async () => {
   for (const f of ['src/mcloud/tasks/liveRoomRules.ts', 'src/mcloud/liveGate.ts', 'src/mcloud/tasks/liveListen.ts']) {
-    const src = srcOf(f);
+    const src = taskSource(f);
     assert.ok(!/门关着：|门开着：/.test(src), `${f} 里还有"门"这种说法`);
   }
   assert.ok(/正在听：\$\{KOULING_ANCHOR\} 开播了/.test(srcOf('src/mcloud/tasks/liveRoomRules.ts')), '开播要说"正在听"');
@@ -1057,22 +1057,22 @@ test('⚠ 老记录里的旧说法就地翻掉（冷却十几小时，不能等�
 });
 
 test('⚠ 直播：口令只收**一次**（一个账号听到，所有账号都能用）', async () => {
-  const live = srcOf('src/entries/live.ts');
+  const live = liveSource();
   // 用户口径 2026-10-17：「一个听到其他人就能用了」
   assert.ok(/function collectOnce\(/.test(live), '收口令要独立成一支');
   assert.ok(/function drawOnce\(/.test(live), '领取才是按账号的那一支');
-  assert.ok(/if \(index === 0 && !manual\) \{[\s\S]{0,160}?collectOnce\(deps, startedMs\)/.test(live),
+  assert.ok(/if \(index === 0 && !manual\) \{[\s\S]{0,160}?collectOnce\(ctx, deps, startedMs\)/.test(live),
     '只有第一个账号去收，且人贴了口令就不收');
-  assert.ok(/return (?:await )?drawOnce\(deps, startedMs, manual \? manualCodes : null\);/.test(live), '每个账号都领（手动只领贴的那条）');
+  assert.ok(/return (?:await )?drawOnce\(ctx, deps, startedMs, manual \? manualCodes : null\);/.test(live), '每个账号都领（手动只领贴的那条）');
   // 听窗口不能再按账号摊预算
   assert.ok(!/runLive\(deps, startedMs\)/.test(live), '不再有"每账号跑一遍"');
-  assert.ok(/const listenDeadline =[\s\S]{0,200}BUDGET_MS - 20_000/.test(live), '截止按整趟算');
+  assert.ok(/const listenDeadline =[\s\S]{0,200}(?:ctx\.budgetMs|BUDGET_MS) - 20_000/.test(live), '截止按整趟算');
   // 收口令那一段的日志不挂在某个账号名下
   assert.ok(/logBoth\(store, 'start', '口令', at\)/.test(live), '收口令要单独一段');
 });
 
 test('⚠ 直播收口令读**第一个账号的袋**，不能读模块级 store', async () => {
-  const live = srcOf('src/entries/live.ts');
+  const live = liveSource();
   const start = live.indexOf('function collectOnce(');
   const end = live.indexOf('function drawOnce(');
   assert.ok(start >= 0 && end > start, '两段要能切开');
@@ -1087,7 +1087,7 @@ test('⚠ 直播收口令读**第一个账号的袋**，不能读模块级 store
 
 test('⚠ 每行日志都带账号短名前缀（昵称原样，手机号 3+4）', async () => {
   for (const f of ['src/entries/daily.ts', 'src/entries/live.ts', 'src/entries/exchange.ts']) {
-    const s = srcOf(f);
+    const s = taskSource(f);
     assert.ok(/const tag = `\[\$\{shortLabel\(who\)\}\]`;/.test(s), `${f} 缺短名前缀`);
     assert.ok(/`\$\{tag\} \$\{shown\}`/.test(s), `${f} 的步骤行没带前缀`);
     assert.ok(/`\$\{tag\} \$\{tail\}`/.test(s), `${f} 的段尾没带前缀`);
@@ -1101,7 +1101,7 @@ test('⚠ 每行日志都带账号短名前缀（昵称原样，手机号 3+4）
 });
 
 test('⚠ 直播没开始就整趟跳过：不逐账号输出「领小红花没开 / 都成了」', async () => {
-  const live = srcOf('src/entries/live.ts');
+  const live = liveSource();
   // 第一段说“没在播”时，后面的账号连 drawOnce 都不进
   assert.ok(/if \(one\.stopped\) stopAll = true;/.test(live), '要记住“整趟停”');
   assert.ok(
@@ -1121,7 +1121,7 @@ test('⚠ 直播没开始就整趟跳过：不逐账号输出「领小红花没�
 });
 
 test('⚠ 先验开播再决定要不要听（参考 mcloud `live_room.rs:1603`）', async () => {
-  const live = srcOf('src/entries/live.ts');
+  const live = liveSource();
   assert.ok(/if \(gate === null \|\| gate\.active !== true\) \{/.test(live), '没开播要早退');
   assert.ok(/今天没有直播（谁都没在播）/.test(live), '一间都没播');
   assert.ok(/间在播，但没有一间是「\$\{KOULING_ANCHOR\}」的/.test(live), '别人在播');
@@ -1135,7 +1135,7 @@ test('⚠ 先验开播再决定要不要听（参考 mcloud `live_room.rs:1603`�
 });
 
 test('⚠ 门失败 ≠ 今天没直播（参考 mcloud-sign `hasActiveLiveRoom`：警告一句、继续试）', async () => {
-  const live = srcOf('src/entries/live.ts');
+  const live = liveSource();
   assert.ok(/if \(!gateOut\.ok\) \{/.test(live), '门失败要单独一条路');
   assert.ok(/（继续试一次）/.test(live), '一天两次机会，偶发失败别丢掉整场');
   assert.ok(live.indexOf('if (!gateOut.ok) {') < live.indexOf('if (gate === null || gate.active !== true)'),
@@ -1158,7 +1158,7 @@ test('⚠ 保存账号选择校验的是**排期任务名**，不是内部步骤
   for (const [f, name] of pairs) {
     // 注册走 defineTask（P2 起）：名字是对象里的第一个键
     assert.ok(
-      new RegExp(`defineTask\\(\\s*\\{\\s*name: '${name}'`).test(srcOf(f)),
+      new RegExp(`defineTask\\(\\s*\\{\\s*name: '${name}'`).test(taskSource(f)),
       `${f} 注册的名字要是 ${name}`,
     );
   }
@@ -1248,7 +1248,7 @@ test('⚠ 颜色一律走面板 token（写死的深色在浅色主题下会翻�
 });
 
 test('⚠ 面板缺直播支持时：当成**构建缺陷**报出来，并且别再去试', async () => {
-  const live = srcOf('src/entries/live.ts');
+  const live = liveSource();
   const cap = srcOf('src/mcloud/hostCap.ts');
   // 判据要在最前面（门之前）—— 否则每条路都以同一条 TLS 报错收场
   const capAt = live.indexOf("cap.verdict === 'no'");
@@ -1415,7 +1415,7 @@ test('⚠ 跨账号的同一句解释只说一遍（领小红花那个括号）'
   const d = srcOf('src/entries/daily.ts');
   assert.ok(/const onceHints = new Set<string>\(\)/.test(d), 'daily 一趟一个 set');
   assert.ok(/onceHint\(line, onceHints\)/.test(d), 'daily 记日志时过一遍');
-  const l = srcOf('src/entries/live.ts');
+  const l = liveSource();
   assert.ok(/onceHint\(line, onceHints\)/.test(l), '直播那条链也一样');
 });
 
