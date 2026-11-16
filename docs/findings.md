@@ -7449,3 +7449,40 @@ round2  POST page/doTaskPost + GET task/click?key=task2&id=619  ⇒ currstep 3 /
 `drain` 无时间闸、上一轮结果不许当本轮。
 
 未覆盖的请求**抛错**而不是回一个 `{}` —— 否则漏 mock 的请求会静默成功、测试从此测不到东西。
+
+## F-138 「抽一份共用核心」被面板的加载方式挡住（2026-11-16 实测）
+
+想给四个插件抽一份 `mcloud-core.js` 共用（现在四个包各自内联，合计 1333 KB）。
+
+**实验（隔离实例，两个文件）**：
+
+```
+plugins/b.js   → export const x = 1;
+plugins/a.js   → import { x } from './b.js';
+```
+
+结果：
+
+```
+插件 b 已加载
+插件 a 加载失败: Error resolving module './b.js' from 'eval_script'
+```
+
+⇒ 面板把插件源码按 **脚本** `eval_with_options(...)` 求值（模块名就是 `eval_script`），
+不是按模块加载。`engine.rs` 里的 `FileResolver`/`PackageResolver` 只对
+**脚本任务**（`load_script`）生效，插件这条路没有"以插件文件为基准"的解析。
+
+**要真正共用，只有两条路**：
+
+1. **面板侧改插件加载**：用 `Module::declare(name, source)` 以插件文件路径为基准
+   + `FileResolver` 指到插件目录，让 `import './mcloud-core.js'` 能解析。
+   属于面板核心改动，影响所有插件，要单独验（本文件这条实验就是它的验收样例）。
+2. **后台的四个插件合成一个**：面板本身支持一个插件注册多个 handler / 多条 cron
+   （`register_handler` + `register_cron` 各调多次），合成后**天然只有一份运行时**，
+   任务仍是各自独立的行（名字/表达式/预算各自一套）。
+   代价：插件级的失败隔离变成"一起加载、一起挂"，`on-demand` 也变成整包唤醒。
+
+⚠ 顺带实测：**async handler 是可用的**（`register_handler('t', async () => { await host.sleep(1500); … })`
+在隔离实例里真的挂起了 1.5 秒，面板等它跑完），所以 `host.fetch` 的 async 路线技术上通；
+但那是把整条调用链（transport → 状态机 → drain → 1225 条测试）全改签名的大工程，
+不能顺手做。
