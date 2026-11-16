@@ -11,6 +11,7 @@
 
 import panelHost from 'panel:host';
 import type { Io, FetchOutcome, SmtpOptions, WsFrame } from '../../ports/io.ts';
+import { isNotLoadedYet } from '../../ports/panel.ts';
 import type { PanelEvent, PanelHost, RouterRequest, TaskDef, TaskHandler } from '../../ports/panel.ts';
 import type { LogLevel } from '../../ports/log.ts';
 
@@ -148,13 +149,23 @@ function dispatchRoute(evt: unknown): unknown {
   };
 }
 
+/** 打 `set_job_*` 的失败。**对方插件还没加载**这类降成 debug（见 isNotLoadedYet）。 */
+function jobFail(op: string, e: unknown): void {
+  const t = text(e);
+  if (isNotLoadedYet(t)) {
+    emit('debug', '[job] ' + op + ' 跳过：对方插件还没加载（' + t.slice(0, 80) + '）');
+    return;
+  }
+  emit('warn', '[job] ' + op + ' 失败: ' + t);
+}
+
 function jobCall(op: string, ...args: unknown[]): void {
   try {
     void Promise.resolve(host[op](...args)).catch((e: unknown) => {
-      emit('warn', '[job] ' + op + ' 失败: ' + text(e));
+      jobFail(op, e);
     });
   } catch (e) {
-    emit('warn', '[job] ' + op + ' 失败: ' + text(e));
+    jobFail(op, e);
   }
 }
 
@@ -170,19 +181,16 @@ export function handlersTable(): Record<string, (e: PanelEvent) => unknown> {
 }
 
 export const panel: PanelHost = {
-  registerTask(def: TaskDef, handler: TaskHandler) {
+  async registerTask(def: TaskDef, handler: TaskHandler): Promise<void> {
     handlersTable()[def.name] = handler as (e: PanelEvent) => unknown;
     const opts: Record<string, unknown> = {};
     if (def.params !== undefined) opts.params = def.params;
     if (typeof def.lead_ms === 'number') opts.lead_ms = def.lead_ms;
     try {
-      void Promise.resolve(
-        host.register_cron(def.name, def.cron, def.budget_ms, Object.keys(opts).length > 0 ? opts : undefined),
-      ).catch((e: unknown) => {
-        emit('error', '注册任务 ' + def.name + '（' + def.cron + '）失败: ' + text(e));
-      });
+      await host.register_cron(def.name, def.cron, def.budget_ms, Object.keys(opts).length > 0 ? opts : undefined);
     } catch (e) {
-      emit('error', '注册任务 ' + def.name + ' 失败: ' + text(e));
+      // 注册失败不抛给调用方：单个任务坏了不该让整个插件装不上（面板日志里有痕迹）
+      emit('error', '注册任务 ' + def.name + '（' + def.cron + '）失败: ' + text(e));
     }
   },
 

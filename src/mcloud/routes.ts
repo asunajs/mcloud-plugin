@@ -226,10 +226,8 @@ import {
 } from './exchangePlans.ts';
 import {
   blockersFor,
-  setTaskBlockers,
   setTaskPaused,
-  setTaskSchedule,
-  setTaskSummary,
+  syncExchangeJob,
   syncTaskReadiness,
 } from './taskReadiness.ts';
 import {
@@ -994,20 +992,6 @@ function adoptLoginResult(
   // 兑换也不再显示“还没有选账号”）。
   syncTaskReadiness(deps.store);
   return { ok: true, note: `${note} · ${up.account.label}`, account: { id: up.account.id, label: up.account.label } };
-}
-
-/** 把计划表的变化同步给面板那一条「兑换」任务：
- *  cron = 所有启用计划整点的并集；暂停/未就绪/摘要都跟着计划走。 */
-function syncExchangeJob(store: Store): void {
-  const plans = loadPlans(store);
-  const on = plans.filter((p) => p.enabled);
-  const expr = unionCron(on);
-  const lead = maxLeadMs(on);
-  setTaskSchedule('兑换', expr, lead);
-  setTaskPaused('兑换', on.length === 0);
-  // 未就绪原因由 `blockersFor` 统一算（没计划 / 全暂停 / 账号不可用）。
-  setTaskBlockers('兑换', blockersFor(store, '兑换'));
-  setTaskSummary('兑换', planSummary(store));
 }
 
 /** 路由表。四个入口遍历它去调用真的 `register_route`。 */

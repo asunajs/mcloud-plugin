@@ -46,8 +46,12 @@ export function payloadOf(def: TaskDef, evt: PanelEvent, nowMs: number): TaskPay
   };
 }
 
-/** 注册一条任务。handler 可以是 async（面板会等它跑完）。 */
-export function defineTask(def: TaskDef, handler: TaskHandler): void {
+/** 注册一条任务。handler 可以是 async（面板会等它跑完）。
+ *
+ *  **返回 Promise**：`await` 之后这条任务才真的进了面板的任务表。入口在加载期
+ *  `await defineTask(...)` 再给这条任务写摘要/阻塞原因 —— 不 await 的话，
+ *  `setJobSummary` 会先到，面板回"没有这个任务"（启动期那 6 条 warn 就是这么来的）。 */
+export function defineTask(def: TaskDef, handler: TaskHandler): Promise<void> {
   const wrapped = (evt: PanelEvent): unknown => handler(payloadOf(def, evt ?? {}, Date.now()));
   // 重名注册 = 两个模块抢同一个名字，必须当场看得见（否则后注册的静默覆盖前者）
   if (handlersTable()[def.name] !== undefined) {
@@ -55,5 +59,5 @@ export function defineTask(def: TaskDef, handler: TaskHandler): void {
   }
   // ⚠ 交回引擎的必须是 handler 的**返回值本身**（可能是 Promise）：
   //   吞掉它 = 面板以为这一拍已经跑完，预算 / 排队 / 日志全按「秒回」算。
-  panel.registerTask(def, wrapped as unknown as TaskHandler);
+  return panel.registerTask(def, wrapped as unknown as TaskHandler);
 }

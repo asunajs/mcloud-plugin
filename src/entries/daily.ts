@@ -52,7 +52,7 @@
 import { logTo } from '../ports/log.ts';
 import { defineTask } from '../host/panel/index.ts';
 import { runDaily } from '../mcloud/dailyRun.ts';
-import { blockersFor, setTaskBlockers, setTaskSummary, summaryFor } from '../mcloud/taskReadiness.ts';
+import { blockersFor, setTaskBlockers, setTaskSummary, summaryFor, syncOwnTask } from '../mcloud/taskReadiness.ts';
 import { runAuthRefresh } from '../mcloud/authRefresh.ts';
 import { appendRun } from '../mcloud/runLog.ts';
 import {
@@ -120,7 +120,7 @@ const LAST_KEY = DAILY_LAST_KEY;
 
 // ── 注册 ──
 
-defineTask(
+await defineTask(
   {
     name: '日常',
     // 白天两跳：低配盒子不常在线时，上线之后的那一跳就是兜底
@@ -327,5 +327,10 @@ defineTask(
     );
   },
 );
+
+// 注册完再写一次自己那张卡片：`defineTask` 的 opts.summary/blockers **面板不认**
+// （register_cron 只收 params/lead_ms），卡片上的字只能靠 set_job_* 写；
+// 而这是自己的任务，刚注册完，一定写得进。
+syncOwnTask(store, '日常');
 
 logTo('debug', `mcloud-daily：任务「日常」（预算 ${BUDGET_MS / 1000}s，共享粗粒度 lane）`);

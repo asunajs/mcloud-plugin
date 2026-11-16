@@ -23,10 +23,11 @@
 //   · 面板/CLI 在组合根装一次
 //   · 业务代码里没有"某个全局对象可能有也可能没有"这种赌运气的地方
 
-import { panelAccess } from '../ports/panel.ts';
+import { logTo } from '../ports/log.ts';
+import { isNotLoadedYet, panelAccess } from '../ports/panel.ts';
 import { loadAccounts } from './accounts.ts';
 import { legacyTaskAccountsKey, resolveTaskAccounts, saveTaskAccounts, taskAccountsKey } from './taskAccounts.ts';
-import { loadPlans, planSummary } from './exchangePlans.ts';
+import { loadPlans, maxLeadMs, planSummary, unionCron } from './exchangePlans.ts';
 
 type Store = { getState(k: string): string | null | undefined };
 
@@ -36,8 +37,14 @@ function call(name: 'setJobSummary' | 'setJobBlockers' | 'setJobSchedule' | 'set
   try {
     const fn = p[name] as unknown as (...a: unknown[]) => void;
     fn.apply(p, args);
-  } catch {
-    // 任务还没注册（加载顺序）/ 面板拒绝：都不是插件该崩的理由。
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (isNotLoadedYet(msg)) {
+      logTo('debug', `[job] ${name} 跳过：对方插件还没加载（${msg.slice(0, 80)}）`);
+      return;
+    }
+    // 其它失败（权限/参数/面板内部错）**要留痕**：静默吞掉的话，界面上就是"卡片不动"。
+    logTo('warn', `[job] ${name} 失败: ${msg}`);
   }
 }
 
@@ -154,4 +161,29 @@ export function syncTaskReadiness(store: Store, tasks: string[] = ['日常', '�
     call('setJobBlockers', key, blockersFor(store, task));
     call('setJobSummary', key, summaryFor(store, task));
   }
+}
+
+/** 只同步**自己名下**那一条（在任务插件自己的进程里调）。
+ *
+ *  为什么要单独有这么个入口：面板的 `set_job_*` 跨插件写**要求对方插件已经加载**
+ *  （`job_target` 解析完还要在任务表里找得到）。而 `mcloud`（服务插件）改账号、
+ *  改计划的时候，另外三个插件很可能正处"按需加载、还没装"的状态 —— 那时候
+ *  `syncTaskReadiness` 对它们是写不进去的（面板回"没有这个任务"）。
+ *  所以"自己那一条"必须由**自己**在加载时补一次：那一刻任务刚注册，一定写得进。 */
+export function syncOwnTask(store: Store, task: string): void {
+  call('setJobBlockers', TASK_KEYS[task] ?? task, blockersFor(store, task));
+  call('setJobSummary', TASK_KEYS[task] ?? task, summaryFor(store, task));
+}
+
+/** 把「兑换」计划表的变化同步给面板那一条任务：cron = 启用计划整点的并集。
+ *
+ *  ⚠ 判据全在 store 里（计划表），所以**谁调都算得一样** —— 界面插件改完计划调一次，
+ *  兑换插件自己在加载时也调一次（防止前者遇到"对方还没加载"而写不进去）。 */
+export function syncExchangeJob(store: Store): void {
+  const plans = loadPlans(store as never);
+  const on = plans.filter((p) => p.enabled);
+  setTaskSchedule('兑换', unionCron(on), maxLeadMs(on));
+  setTaskPaused('兑换', on.length === 0);
+  setTaskBlockers('兑换', blockersFor(store, '兑换'));
+  setTaskSummary('兑换', planSummary(store as never));
 }
