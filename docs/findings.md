@@ -7532,3 +7532,32 @@ F-138 试过"两个单文件插件互相 import"——失败（`eval_script` 解
 ⇒ 四个插件共用一份核心**必须**是目录式。产地见 `scripts/build-dir.mjs`；
 `npm run deploy:panel` 会按目标面板的能力自动选形状（单文件 / 目录式）。
 
+
+## F-142 目录式产物的两个"打包期"坑（都表现为「面板起来了、插件是灰的」）
+
+换到目录式（共用核心）之后，`zip`/`cmp` 全绿，但面板日志里是：
+
+```
+插件 mcloud 加载失败: Error resolving module 'fflate' from '…/mcloud/lib/crypto/png.js'
+插件 mcloud 加载失败: Error resolving module '../mcloud/accounts.ts' from '…/mcloud/lib/store/types.js'
+```
+
+两个原因，都是 `bundle:false` 那套做法带出来的：
+
+1. **npm 包不会被面板解析**。面板只认相对/绝对路径与内置模块（`node:*`、`panel:host`），
+   裸包名一律 `Error resolving module`。所以目录式产物必须把第三方包**打进去**。
+   做法：`bundle:true` + 一个 onResolve 插件把**相对 import 全部标成 external**
+   —— 自己人保持文件边界（四个插件共用得上、栈里是真实文件名），npm 包就地内联。
+2. **`.ts` 说明符会漏网**。只用在类型位置的 import 会被 esbuild 自动瘦身，
+   留在产物里的形状是 `import "../x.ts";`（**副作用形式，没有 from**），
+   而"把 .ts 改成 .js"的改写只覆盖了 `from '…'` 与 `import('…')` ⇒ 漏掉这一种。
+   现在三种形式都改写，构建后校验"产物里不许再有 `.ts` 说明符"。
+
+顺带修掉一个**静默失败**：`sqlite_query_sync` 回的是 `{rows, truncated}`，
+不是裸数组。旧代码按数组读 ⇒ 老数据一条没搬、而且因为"看着像没有旧数据"一声不响。
+现在认三种形状（数组 / `{rows}` / `{error}`），认不出来就 warn 出来。
+
+**教训**：部署脚本不能只做 `cmp`。`deploy-panel.sh --restart` 现在会读
+`/readyz` 的 `failed_plugins`，非 0 就把最近 error/warn 日志打出来并退出 1 ——
+这两个坑都是它当场抓住的。
+
