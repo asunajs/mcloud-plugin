@@ -41,42 +41,27 @@
 //   的 `MAX_DECLARED_BUDGET_MS`），5 分钟留足了余量。
 
 
-import { defineTask } from '../host/panel/index.ts';
-import { blockersFor, setTaskSummary, summaryFor, syncOwnTask } from '../mcloud/taskReadiness.ts';
-import { LONG_REQUEST_TIMEOUT_MS, makeHost, makeStore, makeTransport, syncConfigToState } from './shared.ts';
+// 三条任务的开场是同一套（建 store → 并配置 → 算预算 → 注册 → 写卡片），见 ./register.ts。
+import { registerTask } from './register.ts';
+import { makeHost } from './shared.ts';
 import type { TaskPayload } from './shared.ts';
 import { runLive } from '../app/live/run.ts';
-
-// 共享粗粒度 lane：听窗口是连续几十秒的占用，但不需要毫秒级；
-// 和日常排队即可。只有 exchange 和路由插件需要独占（见 shared.ts 文件头）。
-
-const store = await makeStore('mcloud-live');
-const transport = makeTransport(LONG_REQUEST_TIMEOUT_MS);
-const host = makeHost();
-
-// 面板「插件配置」里那几格先并进 state（判据见 mcloud/configOverlay.ts 文件头）。
-await syncConfigToState(store);
 
 /** 听窗口预算。一天只来两次（10:30 / 15:30），所以每次听久一点：
  *  5 分钟。面板对预算的上限是 10 分钟（`MAX_DECLARED_BUDGET_MS`）。 */
 const BUDGET_MS = 600_000;
 
-// 这一条只是**注册**：名字 + cron + 预算 + 交给 app/live。
-// 编排（收口令 → 每账号领 → 落运行记录 → 写卡片）在 src/app/live/run.ts。
-await defineTask(
-  {
-    name: '直播',
-    // 用户口径（2026-10-17）：「太频繁了，每天上午 10:30 / 下午 15:30 两次」。
-    // 没在播时第一次调用就早退（零请求）。
-    cron: '30 10,15 * * *',
-    budget_ms: BUDGET_MS,
-    // 直播也是环境型任务：面板任务列表里显示；没账号时“未就绪”。
-    surface: 'panel',
-    summary: summaryFor(store, '直播'),
-    blockers: blockersFor(store, '直播'),
-  },
-  (p: TaskPayload) => runLive({ store, transport, host, budgetMs: BUDGET_MS }, p),
-);
+// 直播还要长连接（ws_*）：那一族只有这里用，所以由入口自己造一份给编排层。
+const host = makeHost();
 
-// 同 daily：卡片上的字面板不认 opts，只能注册完自己写一遍
-syncOwnTask(store, '直播');
+await registerTask({
+  plugin: 'mcloud-live',
+  name: '直播',
+  // 用户口径（2026-10-17）：「太频繁了，每天上午 10:30 / 下午 15:30 两次」。
+  // 没在播时第一次调用就早退（零请求）。
+  cron: '30 10,15 * * *',
+  budgetMs: () => BUDGET_MS,
+  // 直播也是环境型任务：面板任务列表里显示；没账号时"未就绪"。
+  surface: 'panel',
+  run: (ctx, p: TaskPayload) => runLive({ ...ctx, host }, p),
+});
