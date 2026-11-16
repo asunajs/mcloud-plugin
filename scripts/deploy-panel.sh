@@ -9,8 +9,9 @@
 #   PANEL_PLUGINS_DIR=/path/to/plugins npm run deploy:panel
 #   npm run deploy:panel -- --restart                     # 装完顺手重启 launchd 服务
 #
-# 只做四件事：构建 → 样式门禁 → 整份拷贝（逐个 cmp）→ 告诉你怎么让它生效。
-# 不碰面板的数据目录，也不碰账号配置（账号在面板库的 state 表里）。
+# 只做四件事：构建 → 样式门禁 → 整份拷贝（逐个对）→ 告诉你怎么让它生效。
+# 不碰面板的数据目录，也不碰账号配置（账号在 <data>/plugin-data/mcloud/ 的本地 JSON 里，
+# 插件首次启动会从面板库的 state 表**搬一次**，之后不再读写它）。
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

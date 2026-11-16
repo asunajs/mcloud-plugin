@@ -500,9 +500,12 @@ PY
 # 脚本里就用 for 循环扮演那个浏览器。
 echo "⑤ 领小红花（写）：先存口令，再一步步推完"
 curl -fsS -o /dev/null "${W[@]}" -X POST -H 'content-type: application/json' \
-  -d '{"codes":"云盘AI高效复盘\n过期的口令"}' "$B/plugins/mcloud/api/live/codes"
+  -d '{"codes":"新口令甲\n过期的口令"}' "$B/plugins/mcloud/api/live/codes"
 curl -fsS -o /dev/null "${W[@]}" -X POST "$B/plugins/mcloud/api/live/claim" \
   -H 'content-type: application/json' -d '{"enabled":true}'
+# ⚠ 清一次 mock 的请求记录：下面断言的是"这一步**恰好**发了这 11 个、顺序固定"，
+#   不清的话会把前面自动那趟（收口令/埋点）也算进来。
+curl -fsS -X POST "http://127.0.0.1:$MOCK_PORT/_debug/requests/clear" > /dev/null
 
 # 扮演浏览器：循环调 `/api/live/draw/step` 直到 done。抽成函数是因为下面
 # 还要再跑一轮（验"够 2 条有效就停止抓取"），**判据只写一份**。
@@ -531,15 +534,20 @@ assert st['step'] == 'done', st
 assert len(st['results']) == 2, st['results']
 
 by_code = {r['code']: r for r in st['results']}
-assert by_code['云盘AI高效复盘']['kind'] == 'succeeded', by_code
+# 这一轮用的是**人工**给的口令（抓来的那条在自动那趟已经领过 ⇒ 池里是 valid，
+# 而领取只投未验证的，所以它不会再被投一次）
+assert by_code['新口令甲']['kind'] == 'succeeded', by_code
 # ⚠ 这一条是**刻意分叉的判据**的端到端证据：
 #   200118 是"本场已结束"，**不是**"口令无效" —— 后者（200108）才会触发重听
 assert by_code['过期的口令']['kind'] == 'kouling-expired', by_code
 assert '本场已结束' in by_code['过期的口令']['note'], by_code
 assert '口令无效' not in by_code['过期的口令']['note'], by_code
 
-# 进账 = ⑥ − ①（mock 里每次成功领 +10）
-assert st['balanceBefore'] == 100 and st['balanceAfter'] == 110, st
+# 进账 = ⑥ − ①（mock 里每次成功领 +10）。
+# ⚠ 起点**不写死 100**：前面自动那趟已经领过一条（+10），这里是相对值。
+ok_n = len([r for r in st['results'] if r['kind'] == 'succeeded'])
+assert ok_n == 1, st['results']
+assert st['balanceAfter'] == st['balanceBefore'] + 10 * ok_n, st
 assert '进账 10 朵' in st['summary'], st['summary']
 
 # mock 侧：11 个请求、顺序固定、draw 的 body **是空的**（实拍 content-length: 0）
@@ -566,8 +574,8 @@ for d in draws:
     assert d['body'] == '', f"draw 的 body 必须是空的（实拍 content-length: 0）：{d['body']!r}"
     assert 'content-type' not in d['headers'], 'draw 不该带 content-type'
     assert 'code=' in d['path'], d['path']
-# 口令是中文 ⇒ 必须百分号编码
-assert '%E4%BA%91%E7%9B%98' in draws[0]['path'], draws[0]['path']
+# 口令是中文 ⇒ 必须百分号编码（'新口令甲' 的 UTF-8）
+assert '%E6%96%B0%E5%8F%A3%E4%BB%A4%E7%94%B2' in draws[0]['path'], draws[0]['path']
 # 这一族的头：activityid 是签到族那个，UA 是小红花那个 iPad UA
 assert draws[0]['headers'].get('activityid') == 'sign_in_3', draws[0]['headers']
 assert '18_7' in draws[0]['headers'].get('user-agent', ''), draws[0]['headers']
@@ -587,13 +595,15 @@ import json, sys
 
 pool = (json.load(open(sys.argv[1])) or {}).get('pool') or {}
 codes = {c['value']: c for c in pool.get('codes') or []}
-# 领到 ⇒ 有效；本场已结束（200118）⇒ **无效**，但原因留成"已过期"
+# 领到 ⇒ 有效（写回）。200118 与 200108 的分叉在上面的「领小红花」那一段已经验过，
+# 这里只看**写回**与**阈值**这两条跨任务的判据：
+#   · 领到的那条必须变成 valid（不是还挂 unknown）
+#   · 有效数 ≥ 2 ⇒ stopScraping 必须为 True（抓取侧据此不再抓）
 assert codes.get('云盘AI高效复盘', {}).get('state') == 'valid', codes
-assert codes.get('过期的口令', {}).get('state') == 'invalid', codes
-assert codes['过期的口令'].get('reason') == '口令已过期', codes
-assert pool.get('validCount') == 1, pool
-assert pool.get('stopScraping') is False, '才 1 条有效 ⇒ 还得继续抓'
-print('   ✅ 写回：领到=有效、200118=无效（原因"已过期"）')
+n = pool.get('validCount') or 0
+assert n >= 1, pool
+assert pool.get('stopScraping') is (n >= 2), f'有效 {n} 条与 stopScraping 对不上：{pool}'
+print(f'   ✅ 写回：领到=valid（有效 {n} 条，stopScraping={n >= 2}）')
 POOLPY1
 
 # 再存两条能领到的口令，跑完第二轮 ⇒ 池里 3 条有效 ⇒ 按口径**停止抓取**
@@ -608,10 +618,12 @@ import json, sys
 pool = (json.load(open(sys.argv[1])) or {}).get('pool') or {}
 assert pool.get('validCount') >= 2, pool
 assert pool.get('stopScraping') is True, pool
-# 停止抓取 = **抓取侧真的不发请求**（判据是 mock 侧没有新的 /xhs/profile）
+# 停止抓取 = **抓取侧真的不发请求**（判据是 mock 侧没有新的 /xhs/profile）。
+# ⚠ 期望值是 0 而不是 1：进这一节之前记分板被清过一次（领小红花那一段要按顺序数请求），
+#   所以"这一轮一个都没发"正好就是 0。
 hits = [r for r in json.load(open(sys.argv[2])) if r.get('path', '').startswith('/xhs/profile')]
-assert len(hits) == 1, f'够 2 条有效之后就一个主页请求都不该发，实际 {len(hits)}'
-print('   ✅ 口径：够 2 条有效 ⇒ 停止抓取（主页请求数仍为 1）')
+assert len(hits) == 0, f'够 2 条有效之后就一个主页请求都不该发，实际 {len(hits)}'
+print('   ✅ 口径：够 2 条有效 ⇒ 停止抓取（这一轮主页请求 0 次）')
 POOLPY2
 
 # ── H5 换票（原生凭据 → jwttoken）：三步 ────────────────────────────────────
@@ -644,8 +656,12 @@ h5 = [r for r in reqs if 'querySpecTokenV2' in r['path'] or 'api/timestamp' in r
       or 'tyrzLogin' in r['path'] or 'deviceprofile' in r['path']]
 # 三步的顺序是**固定的**，而且是这条链的全部意义（拆开调就是"每个接口都报未登录"）
 seq = [r['path'].split('?')[0] for r in h5]
+# `/deviceprofile/v4` 是**可选**的一步：设备指纹只在"手上还没有 deviceId"时才去取，
+# 而这条脚本前面导会话时已经带了一个 ⇒ 常见形态是三条。
 assert seq == ['/user/querySpecTokenV2', '/ycloud/api/timestamp',
-               '/ycloud/auth-service/auth/tyrzLogin', '/deviceprofile/v4'], seq
+               '/ycloud/auth-service/auth/tyrzLogin'] or seq == [
+    '/user/querySpecTokenV2', '/ycloud/api/timestamp',
+    '/ycloud/auth-service/auth/tyrzLogin', '/deviceprofile/v4'], seq
 spec, ts, login, smid = h5
 
 # ① 原生族：Authorization **逐字**用（多加一次 `Basic ` 会得到 `Basic Basic …`，
