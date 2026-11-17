@@ -26,7 +26,7 @@
 // 页面版本号：和 style.css 里的 --style-ver 一起人工递增。
 // 「样式自检」（boot.js 的 ?diag=1）会读它 —— 用来区分「CSS 是新的、JS 还是旧的」这种
 // 半新半旧状态（第 155 轮：样式表是 v155，但 DOM 里根本没有 .ex-group-row 这种行）。
-document.documentElement.dataset.appVer = '164';
+document.documentElement.dataset.appVer = '165';
 
 /** 插件自己的接口。 */
 const API = '/plugins/mcloud/api';
@@ -795,7 +795,7 @@ function renderDaily(d) {
     bits.push('点「现在跑一次」看看它怎么走');
   }
   setText('daily-sub', bits.join(' · '));
-  renderAcctChips('daily-accounts', 'daily-account-detail', d.recent);
+  renderAcctChips('daily-accounts', 'daily-account-detail', d.recent, 'daily-accounts-when');
 }
 
 /** 上一次**每个号**的结果，一行 chips；点一个展开那个号的每一步。
@@ -805,15 +805,25 @@ function renderDaily(d) {
  *  ⚠ 名字用记录里的 `who`；只有旧记录没那一格时才去 `note` 的「名字：」里取。
  *  ⚠ 每一步的明细**点开才拉**（`/runs?id=`）—— 一次 16 步 × 3 个号全塞进读数
  *   就是几百 KB 的首屏。 */
-function renderAcctChips(boxId, detailId, recent) {
+function renderAcctChips(boxId, detailId, recent, whenId) {
   const box = $(boxId);
   if (!box) return;
   const detail = $(detailId);
+  const whenBox = whenId ? $(whenId) : null;
   box.textContent = '';
   if (detail) detail.innerHTML = '';
   const list = recent || [];
-  if (list.length === 0) return;
+  if (list.length === 0) {
+    if (whenBox) whenBox.textContent = '';
+    return;
+  }
   const runAt = list[0].at;
+  // ⚠ 先说清「这是**什么时候**的」—— 同一趟的几个号共用这一个时间（chips 按 at 归组）。
+  //   用户原话：「说上一轮，也没人知道上一轮是什么时候」。
+  if (whenBox) {
+    const ms = typeof runAt === 'number' ? runAt : Date.parse(String(runAt));
+    whenBox.textContent = Number.isFinite(ms) ? `上一轮（${stamp(ms)}）` : '';
+  }
   const sameRun = list.filter((x) => x.at === runAt);
   // ⚠ 三个账号说**同一句话**的时候，三枚一模一样的 chip 只是噪声 ——
   //   而且会让人以为"每个号各出了一件事"。合成一枚：「3 个账号」+ 那句话。
@@ -1521,7 +1531,7 @@ function renderScheduleCard(e) {
 function renderExchange(e) {
   setText('ex-hero', '兑换');
   renderScheduleCard(e);
-  renderAcctChips('exchange-accounts', 'exchange-account-detail', e.recent);
+  renderAcctChips('exchange-accounts', 'exchange-account-detail', e.recent, 'exchange-accounts-when');
   // 定时弹窗回填当前值（**它们不是秘密**，可以回填）
   const leadEl = $('ex-plan-lead');
   if (leadEl && document.activeElement !== leadEl && $('ex-plan-dialog').hidden) {
