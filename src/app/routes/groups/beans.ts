@@ -18,6 +18,21 @@ import { json, readBody } from '../support.ts';
 import type { RouteDeps, RouteEntry } from '../support.ts';
 
 /** beans 组。deps 是路由依赖；base 是 /plugins/mcloud/api；verify 是「拿当前会话验一次」。 */
+/** 面板/上游的错误常被包成一整串 `{"message":"…"}` —— 显示前拆开，别把 JSON 原样糊到界面上。 */
+function plainError(e: unknown): string {
+  const s = e instanceof Error ? e.message : String(e);
+  try {
+    const v = JSON.parse(s) as unknown;
+    if (v !== null && typeof v === 'object') {
+      const m = (v as { message?: unknown }).message;
+      if (typeof m === 'string' && m !== '') return m;
+    }
+  } catch {
+    /* 不是 JSON，原样返回 */
+  }
+  return s;
+}
+
 export function beansRoutes(deps: RouteDeps, base: string, verify: () => Promise<{ ok: boolean; note: string }>): RouteEntry[] {
   void verify;
   return [
@@ -270,7 +285,7 @@ export function beansRoutes(deps: RouteDeps, base: string, verify: () => Promise
               list = last.list;
               stale = true;
               staleAtMs = last.atMs;
-              staleReason = read.failed;
+              staleReason = plainError(read.failed);
               deps.log(
                 `领奖：${who} 这次没读到（${read.failed}），先用 ${new Date(last.atMs).toISOString()} 那份清单` +
                   `（${last.list.items.length} 件）`,
@@ -285,7 +300,7 @@ export function beansRoutes(deps: RouteDeps, base: string, verify: () => Promise
             }
           } catch (e) {
             // 读失败**不写缓存**（网络抖一下不该被冻住 60 秒），但原因要如实带回界面
-            const why = e instanceof Error ? e.message : String(e);
+            const why = plainError(e);
             if (last === null) {
               list = { items: [], scanned: 0, hasMore: false, failed: why };
             } else {
