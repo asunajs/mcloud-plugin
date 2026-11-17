@@ -97,7 +97,7 @@ export async function runLive(ctx: LiveCtx, p: TaskPayload): Promise<void> {
       });
       setTaskBlockers('直播', blockersFor(store, '直播'));
       setTaskSummary('直播', summaryFor(store, '直播'));
-      traceStep(store, at, 'done', `不领：${reason}`, { ok: false });
+      traceStep(store, new Date().toISOString(), 'done', `不领：${reason}`, { ok: false });
       return;
     }
 
@@ -118,7 +118,7 @@ export async function runLive(ctx: LiveCtx, p: TaskPayload): Promise<void> {
         }
         const cBad = c.steps.filter((x) => !x.ok).length;
         logBoth(store, !c.ok || cBad > 0 ? 'warn' : 'success', `口令：${c.note}`, at);
-      traceStep(store, at, 'collect/codes', c.note, { ok: c.ok && cBad === 0 });
+      traceStep(store, new Date().toISOString(), 'collect/codes', c.note, { ok: c.ok && cBad === 0 });
       }
     }
 
@@ -186,8 +186,10 @@ export async function runLive(ctx: LiveCtx, p: TaskPayload): Promise<void> {
             ? `${bad} 项跳过（没有网页会话）`
             : `${hard} 项没成${bad > hard ? `、${bad - hard} 项跳过` : ''}`;
       logBoth(store, hard > 0 ? 'warn' : 'debug', `${tag} ${tail}`, at);
-      // 追踪环：一个账号一条（谁、成没成、一句话）
-      traceStep(store, at, 'account', `${who}：${tail}`, { ok: r.ok && hard === 0 });
+      // 追踪环：一个账号一条（谁、成没成、一句话）。
+      // ⚠ 时刻用**真实的现在**：`at` 是 run 冻结值，一整趟所有行同一个时刻，
+      //   环就失去"带时刻"的意义（F-137 第 3 条同一条口径，F-145 收尾）。
+      traceStep(store, new Date().toISOString(), 'account', `${who}：${tail}`, { ok: r.ok && hard === 0 });
     }
 
     // ⚠ 只算**真发了请求**的账号：什么都没做（口令没变/没有口令）不算"好了"。

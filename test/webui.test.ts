@@ -768,6 +768,47 @@ test('⚠ 第二行那句"它自己什么时候跑"来自**面板的任务表**�
   assert.ok(!/Promise\.all\(\[[^\]]*api\('\/readings'\)/.test(js), '不许再并行拉（会自己撞自己）');
 });
 
+test('⚠ loadJobs 认**新面板**的字段名（tasks/cron/next_at/enabled），scheduleText 拿真形状喂得出人话', async () => {
+  // F-145（与 F-144 同族）：以前读 `j.jobs` + `job.schedule`/`next_run`/`paused` ——
+  // 面板给的是 `tasks` + `cron`/`next_at`（毫秒数）/`enabled`，两头的字段名对不上，
+  // JOBS 永远是空 ⇒ 排期那句永远不显示，而且测试只钉了"函数存在"，bug 畅通无阻。
+  // 教训照 F-144 的：凡是「插件猜面板字段」的地方，**静态正则不算测试**，
+  // 要拿面板真回的那一坨喂进真函数。
+  const jsJobs = srcOf('plugins/mcloud/app.js');
+  assert.ok(/Array\.isArray\(j\.tasks\)/.test(jsJobs), 'loadJobs 要认 `j.tasks`（新面板的任务表名）');
+  assert.ok(/job\.cron \?\? job\.schedule/.test(jsJobs), 'scheduleText 要认 `cron`（新面板的表达式字段）');
+  assert.ok(/msOf\(job\.next_at \?\? job\.next_run\)/.test(jsJobs), '下次时刻要认 `next_at`（毫秒数）并用 msOf 解');
+
+  // 真函数：把 scheduleText（连同它用的 msOf/when）抠出来，喂两种形状。
+  const grab = (name: string) => {
+    const i = jsJobs.indexOf('function ' + name + '(');
+    assert.ok(i > 0, 'app.js 里找不到 ' + name + '()');
+    const j = jsJobs.indexOf('\n}\n', i);
+    assert.ok(j > i, name + '() 没找到结尾');
+    return jsJobs.slice(i, j + 3);
+  };
+  const fn = new Function(
+    grab('msOf') + grab('when') + grab('scheduleText') + '\nreturn { scheduleText };',
+  )() as { scheduleText: (job: unknown) => string };
+  // 新面板形状：cron + next_at（epoch 毫秒）。`0 8,20 * * *` 要说成一天两次。
+  const now = new Date();
+  const later = new Date(now.getTime() + 60 * 60 * 1000);
+  const panel = fn.scheduleText({
+    plugin: 'mcloud-daily',
+    name: '日常',
+    cron: '0 8,20 * * *',
+    next_at: later.getTime(),
+    enabled: true,
+  });
+  assert.match(panel, /每天 08:00、20:00 各跑一次/);
+  assert.match(panel, /下次 /);
+  // 旧形状（schedule/next_run 字符串）也照认 —— 双形状兜底，别再两头都断。
+  const legacy = fn.scheduleText({ schedule: '*/30 * * * * *', next_run: '' });
+  assert.ok(legacy.length > 0);
+  // 什么都没有 ⇒ 老实说，不许编。
+  assert.equal(fn.scheduleText({ cron: ' Expression not parsed ', next_at: 0 }), '按面板里设的时间跑');
+});
+
 test('⚠ 界面上**没有**「连接」这种按钮（参考实现里换票是任务自己做的事）', async () => {
   // 用户看到红字「未登录：state 里没有会话」时，我第一版在账号卡上加了个「连接」——
   // 用户的原话：「这个连接是什么鬼，看看 mcloud」。参考实现里没有这一步：
@@ -849,7 +890,12 @@ test('⚠ 「跑一次」要**等它真跑完**再说结果（面板那个接口
   // 三个入口都用它：日常 / 直播 / 贴口令
   assert.ok(/\$\('daily-run'\)\.addEventListener\('click', \(e\) => runTaskAndWait\('daily'/.test(js), '日常要等');
   assert.ok(/\$\('live-run'\)\.addEventListener\('click', \(e\) => runTaskAndWait\('live'/.test(js), '直播要等');
-  assert.ok(/await waitRun\('mcloud-live', '直播', t0, null\)/.test(js), '贴口令那条也要等');
+  // 贴口令那条要等，而且要拿住 `run_id`（兜底那条路拿浏览器的钟比面板的时刻，
+  // 钟差 >2s 就永远匹配不上 —— findings F-145）。
+  assert.ok(
+    /await waitRun\('mcloud-live', '直播', t0, null, queued && queued\.run_id\)/.test(js),
+    '贴口令那条也要等（按 run_id 取记录）',
+  );
   // 超时**不许**假装成功
   assert.ok(/if \(one === null\) \{\n\s+toast\('还没跑完/.test(js), '超时要老实说没跑完');
 });
@@ -912,7 +958,14 @@ test('⚠ 跑的时候有「停止」，且触发请求不能挡住按钮状态'
     assert.ok(js.includes(`$('${id}').addEventListener`), `${id} 没挂处理器`);
   }
   assert.ok(/async function stopRunning\(/.test(js), '缺 stopRunning');
-  assert.ok(/\/stop`/.test(js), '要调面板的 stop 路由');
+  // ⚠ 面板的打断口子是**插件级**的 `/api/plugins/{name}/stop` —— 任务级路由没有
+  //   `/stop`（调了就是 404，任务根本停不下来，findings F-145）。
+  //   这条以前钉的是任务级 `/stop`，正好把 bug 锁住了 —— F-144 的教训再犯一次。
+  assert.ok(
+    /\/api\/plugins\/\$\{encodeURIComponent\(pair\[0\]\)\}\/stop`/.test(js),
+    '停止要调面板的**插件级** stop 路由',
+  );
+  assert.ok(!/\/api\/tasks\/[^`]*\/stop/.test(js), '不许再调任务级 /stop（面板没有这条路由）');
   const start = js.indexOf('async function runTaskAndWait(');
   const body = js.slice(start, js.indexOf('async function stopRunning(', start));
   assert.ok(/run\?async=1/.test(body), '触发要走进队模式，不能等任务跑完');
@@ -1126,7 +1179,12 @@ test('⚠ 直播：口令只收**一次**（一个账号听到，所有账号都
   assert.ok(/return (?:await )?drawOnce\(ctx, deps, startedMs, manual \? manualCodes : null\);/.test(live), '每个账号都领（手动只领贴的那条）');
   // 听窗口不能再按账号摊预算
   assert.ok(!/runLive\(deps, startedMs\)/.test(live), '不再有"每账号跑一遍"');
-  assert.ok(/const listenDeadline =[\s\S]{0,200}(?:ctx\.budgetMs|BUDGET_MS) - 20_000/.test(live), '截止按整趟算');
+  // 截止按**整趟**算，但要给后面的**领取**留出按账号数预留的余量（F-145：
+  // 固定 20 秒是单账号时代的数，多账号时领取被面板腰斩）。
+  assert.ok(
+    /const drawReserveMs =[\s\S]{0,200}ctx\.budgetMs - drawReserveMs/.test(live),
+    '截止按整趟算（扣除按账号数预留的领取余量）',
+  );
   // 收口令那一段的日志不挂在某个账号名下
   assert.ok(/logBoth\(store, 'start', '口令', at\)/.test(live), '收口令要单独一段');
   // ⚠ 直播要顺手刷新「自动定时」（下一场 + 1 小时）。丢了调用点不会报错，

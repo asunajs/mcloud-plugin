@@ -52,7 +52,7 @@
 //    典型表现是"登录一次之后，另一个账号名下也看不到这台机器"。
 //    只有**明确能说出"这是某个账号的状态"**的键才登记成 `account`。
 
-import type { ReadableState, WritableState } from './keys-types.ts';
+import type { ReadableState, UpdatableState, WritableState } from './keys-types.ts';
 
 export type { ReadableState, WritableState };
 
@@ -185,7 +185,11 @@ export const KEY_SCOPE: Readonly<Record<string, KeyScope>> = {
   'mcloud.live.gate_base': 'account',
   'mcloud.live.reading': 'account',
   'mcloud.live.draw': 'account',
-  'mcloud.live.codes': 'account',
+  // ⚠ 手贴口令是**共享资源**（一次贴，全部账号各领一次；route/run/readings 三处
+  //   各自解析"用谁的袋"，按账号存就永远对不齐 —— route 写第一个 auto 号的袋、
+  //   run 却从"当前账号"的袋读，当前 ≠ 第一个号时手动手模式静默失效、口令清不掉，
+  //   还会凭空触发一次领过期口令的"手动"趟（F-145）。global 才有唯一一份。）
+  'mcloud.live.codes': 'global',
   'mcloud.live.listen': 'account',
   'mcloud.live.listen_room': 'account',
   'mcloud.live.listen_seconds': 'account',
@@ -332,13 +336,9 @@ export function acctBagKey(acctId: string): string {
   return `${ACCT_PREFIX}${acctId}`;
 }
 
-/** 读一个账号的整个袋。
- *
- *  ⚠ 坏 JSON 当**空袋**（不是抛）：袋里可能被手改过，而"抛"会让整个插件
- *  在加载时炸掉 —— 代价远大于"这个账号的状态丢了"（任务会重跑一遍）。 */
-export function readBag(store: ReadableState, acctId: string): Record<string, string> {
-  const raw = store.getState(acctBagKey(acctId));
-  if (raw === undefined || raw === null || raw === '') return {};
+/** 把一段袋的 JSON 文本解析成袋（坏/空 ⇒ 空袋，与 {@link readBag} 同一条口径）。 */
+function parseBag(raw: string | null): Record<string, string> {
+  if (raw === null || raw === undefined || raw === '') return {};
   try {
     const v: unknown = JSON.parse(raw);
     if (typeof v !== 'object' || v === null || Array.isArray(v)) return {};
@@ -350,6 +350,14 @@ export function readBag(store: ReadableState, acctId: string): Record<string, st
   } catch {
     return {};
   }
+}
+
+/** 读一个账号的整个袋。
+ *
+ *  ⚠ 坏 JSON 当**空袋**（不是抛）：袋里可能被手改过，而"抛"会让整个插件
+ *  在加载时炸掉 —— 代价远大于"这个账号的状态丢了"（任务会重跑一遍）。 */
+export function readBag(store: ReadableState, acctId: string): Record<string, string> {
+  return parseBag(store.getState(acctBagKey(acctId)) ?? null);
 }
 
 function writeBag(store: WritableState, acctId: string, bag: Record<string, string>, nowIso: string): void {
@@ -411,7 +419,13 @@ export function routeGet(store: ReadableState, key: string, acctId?: string): st
  *  ⚠ `'account'` 那支是**读-改-写整个袋**：袋里躺着这个账号**所有任务**的键
  *  （`deviceId` / `session` / `daily.done_date` …），只写一个字段会**把别人抹掉**。
  *  参考实现 `save_share_done_day` 同样是读-改-写，注释里点明了这个坑：
- *  「这张表里还躺着 `device_id` / `pc_platform` / `cur_month_backup` 这些别的任务的键」。 */
+ *  「这张表里还躺着 `device_id` / `pc_platform` / `cur_month_backup` 这些别的任务的键」。
+ *
+ *  ⚠⚠ 宿主实现有 `update` 时（fileStore / memStore 都有），整段读改写在**宿主的
+ *  同一把锁里**完成 —— "读在外面、写进锁里"的那条旧路，在四个插件 + CLI 共用
+ *  一份存储时是**丢更新**：daily 写袋与路由刷会话同时发生，后写的整袋覆盖会把
+ *  先写的字段无声抹掉（兑换的 `ordered_hour` 被回退 = 重复下单形状的风险，
+ *  findings F-145）。没有 `update` 的实现（测试替身）退回旧路 —— 单进程里等价。 */
 export function routeSet(
   store: WritableState,
   key: string,
@@ -435,16 +449,78 @@ export function routeSet(
     store.setState(key, value, nowIso);
     return;
   }
-  const acct = acctIdOf(store, acctId);
+  writeBagField(store, acctIdOf(store, acctId), key, value, nowIso);
+}
+
+/** 往一个账号的袋里写**一个字段**。有锁内读改写就走它，没有就退回旧路。 */
+function writeBagField(
+  store: WritableState,
+  acct: string,
+  key: string,
+  value: string,
+  nowIso: string,
+): void {
+  const base = store as UpdatableState;
+  if (typeof base.update === 'function') {
+    // ⚠ 空串**照存**，不删字段（语义见 routeSet 那段说明 —— `''` 与 `null` 在
+    //   调用点的判据不同，"顺便更干净"会改行为）。
+    base.update(acctBagKey(acct), (raw) => {
+      const bag = parseBag(raw);
+      bag[key] = value;
+      return JSON.stringify(bag);
+    }, nowIso);
+    return;
+  }
   const bag = readBag(store, acct);
-  // ⚠ 空串**照存**，不删字段。
-  //
-  //   "写空串 = 删字段"看着更干净，但它**改了行为**：老的扁平键写 `''` 之后
-  //   读回来是 `''`，删字段之后读回来是 `null` —— 而两者的判断在调用点截然不同
-  //   （`x === ''` 与 `x === null` 不通用）。迁移的第一要求是**行为不变**，
-  //   不是"顺便更干净"。袋里多几个空串字段的代价可以忽略。
   bag[key] = value;
   writeBag(store, acct, bag, nowIso);
+}
+
+/** 锁内读改写一个状态键。作用域语义同 {@link routeGet}。
+ *
+ *  · `'global'` ⇒ 宿主直接对这个键做锁内读改写
+ *  · `'account'` ⇒ 对**袋**做锁内读改写，`fn` 只看得到本键当前的字段值
+ *    （返回 `null` = 删掉这个字段）
+ *  · 宿主没有 `update` ⇒ 抛（调用方应退回 setState 那条路，**不许**在外面
+ *    自己读一遍再写 —— 那等于把 race 又请回来）。
+ *
+ *  谁在用：`runLog.appendRun`（运行记录数组）、`exchangePlans` 的每号计数 ——
+ *  凡是"在现有值上改一点"的写入都该走这条，而不是读出来整份覆写。 */
+export function routeUpdate(
+  store: WritableState,
+  key: string,
+  fn: (prev: string | null) => string | null,
+  acctId?: string,
+): void {
+  if (key.startsWith(ACCT_PREFIX) || !key.startsWith(PLUGIN_NS)) {
+    // 物理键 / 宿主键：直接对整个值做读改写（fn 收到的是整段文本）
+    updatable(store).update(key, fn);
+    return;
+  }
+  const scope = scopeOf(key);
+  if (scope === undefined) throw new UnregisteredKeyError(key);
+  if (scope === 'global') {
+    updatable(store).update(key, fn);
+    return;
+  }
+  const acct = acctIdOf(store, acctId);
+  updatable(store).update(acctBagKey(acct), (raw) => {
+    const bag = parseBag(raw);
+    const next = fn(bag[key] ?? null);
+    if (next === null) delete bag[key];
+    else bag[key] = next;
+    return JSON.stringify(bag);
+  });
+}
+
+function updatable(store: WritableState): UpdatableState {
+  if (typeof (store as UpdatableState).update !== 'function') {
+    throw new Error(
+      '这个 store 实现没有 update（锁内读改写）。在现有值上改一点的写入不许走' +
+        '"外面读一遍再 setState 整份写回" —— 跨进程会丢更新（findings F-145）。',
+    );
+  }
+  return store as UpdatableState;
 }
 
 /** 把一个账号的**旧扁平键**搬进它的袋（一次性迁移，幂等）。

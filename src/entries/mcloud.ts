@@ -45,10 +45,11 @@ if (migrateLegacyExchange(store, bootIso)) {
 syncTaskReadiness(store);
 
 // transport 的 `timeoutMs` 是**每一发请求**的超时（1500ms），与路由的**执行预算**
-// 是两件事：预算是"这一条 handler 从头跑到尾能占多久"，面板默认 2 秒。
-// 大多数路由（点一下读一格）用默认档就够；像「今日AI豆」那样逐账号 × 翻页的
-// 只读链，2 秒撑不到读完 —— 它在 `routes.ts` 里自己声明 `budget_ms`，
-// 下面注册时透给 `register_route`。
+// 是两件事：预算是"这一条 handler 从头跑到尾能占多久"。
+// ⚠ panel-llrt 对**整个插件的 web 调用**统一给 30 秒（`web.rs` 的
+//   `WEBUI_BUDGET_MS`），没有按路由声明的口子 —— `RouteEntry.budget_ms` 在
+//   插件这一侧收下来没处递（留着等面板加 API，R5），所以慢只读路由靠的是
+//   这个 30 秒 + 自己把单发请求的超时收短。
 // 慢只读端点放宽到 12 秒；**写操作仍是 1500ms**（`SLOW_READ_PATTERNS` 只列只读 GET）。
 const transport = makeTransport((url) => timeoutForUrl(url).ms);
 const host = makeHost();

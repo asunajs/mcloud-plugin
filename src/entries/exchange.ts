@@ -47,7 +47,10 @@ await registerTask({
   cron: () => bootCron,
   budgetMs: () => BUDGET_MS,
   // 提前量取所有计划里最大的那个；具体某条计划提前少一点也没关系，
-  // `runExchange` 的时间闸会在窗口前等，不会提前发单。
+  // 面板每个槽只在「整点 − lead」发**一拍**（没有整点那一拍），所以链内必须
+  // 自己等到窗口 —— `runExchange` 把同一把尺（`maxWaitMs`）交给链内的自旋，
+  // 外层放行、链内等窗，两处一致才不会出现"外层说进去等、链内说等不了"
+  // 停在 warm-1 一整版本的停摆（findings F-145）。
   leadMs: () => bootLeadMs,
   // 兑换是**插件页面管理的功能实例**：配置全在云盘页；面板任务列表只负责叫醒与记录。
   surface: 'plugin',

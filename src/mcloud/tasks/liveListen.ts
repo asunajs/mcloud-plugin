@@ -294,6 +294,28 @@ export function listenerIdle(st: ListenState, nowMs: number): string | undefined
   return undefined;
 }
 
+/** 把上一轮留下的冷却**清掉**。收口令那一趟在**门刚说"在播"**之后调它。
+ *
+ *  # 为什么要清
+ *
+ *  冷却的本意是"门说没在播就别反复探门"——它是**与门结论绑着**的。上一趟的
+ *  冷却可能还挂着（比如 `wakeSleepMs` 一睡到下一场），而这一趟的门已经**真探过**、
+ *  说在播：两个结论矛盾时该信新的。不清的话，收口令循环第一拍就被冷却
+ *  `idle` 收手 ⇒ 一场在播的直播被一个过期的"没在播"跳过（findings F-145）。
+ *
+ *  清了也不会有副作用：万一门是误报，roomBeat 自己会发现没有聊天室、
+ *  重新把冷却种回去 —— 自愈。
+ *
+ *  @returns 有没有真的清掉一格（给日志用）。 */
+export function clearListenCooldown(store: Store, nowIso: string): boolean {
+  const st = loadListenState(store);
+  if (st === null || st.nextCheckAtMs === undefined) return false;
+  const next: ListenState = { ...st };
+  delete next.nextCheckAtMs;
+  store.setState(STATE_LISTEN, JSON.stringify(next), nowIso);
+  return true;
+}
+
 // ── 当前这条连接上的那个"听"对象 ────────────────────────────────────────────
 //
 // ⚠⚠ **它必须在两次调用之间活着**，不能每拍新建一个：状态机里那些字段
@@ -379,7 +401,13 @@ export async function runLiveListen(deps: ListenDeps): Promise<TaskOutcome> {
   //    （这个坑我在写第一版时真的踩了：见测试「门关着 ⇒ 冷却期内一发请求都不发」。）
   if (prev !== null && prev.step === 'done') {
     const idle = listenerIdle(prev, nowMs);
-    if (idle !== undefined) return { ok: true, note: idle };
+    if (idle !== undefined) {
+      // ⚠ 冷却要带 **`idle: true`**：收口令的循环（collect/CLI）靠 `r.idle` 收手，
+      //   只回 `ok:true` 的话循环会一直转到窗口结束 —— 一发请求没有，
+      //   却把整趟预算烧光，后面的领取全被挤掉（F-137 的病灶在换了个宿主后复发，
+      //   findings F-145）。这个冷却本来是给旧的独立 `@every 10s` cron 设计的。
+      return { ok: true, idle: true, note: idle };
+    }
   }
 
   // ② 只有这三种情况才算"新的一轮"：没状态 / 上一轮已收尾 / 窗口过时。

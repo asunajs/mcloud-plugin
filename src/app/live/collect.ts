@@ -10,11 +10,13 @@ import { capNote, hostNativeTls } from '../../mcloud/hostCap.ts';
 import { KOULING_ANCHOR, loadPoolFrom, stopScraping, validCount } from '../../mcloud/koulingPool.ts';
 import { maskCode, traceStep } from '../../mcloud/liveTrace.ts';
 import { logBoth } from '../../mcloud/log.ts';
+import { resolveTaskAccounts } from '../../mcloud/taskAccounts.ts';
 import type { RunStep } from '../../mcloud/runLog.ts';
+import { rawStoreOf } from '../../store/scoped.ts';
 import type { TaskDeps, TaskOutcome } from '../../mcloud/tasks/base.ts';
-import { runLiveDraw } from '../../mcloud/tasks/liveDraw.ts';
+import { loadDrawState, runLiveDraw } from '../../mcloud/tasks/liveDraw.ts';
 import { readGateReading, runLiveGate } from '../../mcloud/tasks/liveGateTask.ts';
-import { loadListenSeconds, runLiveListen } from '../../mcloud/tasks/liveListen.ts';
+import { clearListenCooldown, loadListenSeconds, runLiveListen } from '../../mcloud/tasks/liveListen.ts';
 import type { ListenDeps } from '../../mcloud/tasks/liveListen.ts';
 import { runLiveRoom } from '../../mcloud/tasks/liveRoom.ts';
 import { userLine } from '../../mcloud/tasks/stepLog.ts';
@@ -51,17 +53,20 @@ export async function collectOnce(
   const host = ctx.host;
   const steps: RunStep[] = [];
   const step = async (name: string, fn: () => TaskOutcome | Promise<TaskOutcome>): Promise<TaskOutcome> => {
-    // ⚠ 追踪在**这一处**记：收口令那一段每一步都走它 ⇒ 一条也不用漏
+    // ⚠ 追踪在**这一处**记：收口令那一段每一步都走它 ⇒ 一条也不用漏。
+    // ⚠ 时刻用**真实的现在**（F-137 第 3 条同一条口径）：`deps.nowIso` 是一次 run
+    //   里冻结的同一个值，环里每一行都长一个时刻就失去"带时刻"的意义了。
     const t0 = Date.now();
+    const traceAt = () => new Date().toISOString();
     try {
       const r = await fn();
       steps.push({ name, ok: r.ok, note: r.note, idle: r.idle === true });
-      traceStep(deps.store, deps.nowIso, 'collect/' + name, r.note, { ok: r.ok, ms: Date.now() - t0 });
+      traceStep(deps.store, traceAt(), 'collect/' + name, r.note, { ok: r.ok, ms: Date.now() - t0 });
       return r;
     } catch (e) {
       const note = `抛异常 ${e instanceof Error ? e.message : String(e)}`;
       steps.push({ name, ok: false, note, idle: false });
-      traceStep(deps.store, deps.nowIso, 'collect/' + name, note, { ok: false, ms: Date.now() - t0 });
+      traceStep(deps.store, traceAt(), 'collect/' + name, note, { ok: false, ms: Date.now() - t0 });
       return { ok: false, note };
     }
   };
@@ -136,6 +141,14 @@ export async function collectOnce(
       `开播了，先看小红书，再听弹幕（窗口 ${loadListenSeconds(deps.store)} 秒）`,
       deps.nowIso,
     );
+    // ⚠ 门刚说"在播" ⇒ 把上一轮留下的冷却清掉。冷却的本意是"没在播就别反复探门"，
+    //   它是**与门的结论绑着**的；上一趟的冷却可能还挂着（能一睡到下一场），
+    //   矛盾时信**新的**门。不清的话，下面的听弹幕循环第一拍就被过期冷却
+    //   `idle` 收手 —— 一场在播的直播被一个过期的"没在播"跳过（F-145）。
+    //   清错了也没事：roomBeat 会自己发现没聊天室、把冷却重新种回去（自愈）。
+    if (clearListenCooldown(deps.store, deps.nowIso)) {
+      logTo('debug', '上一轮的「没在听」冷却与本次门的结论矛盾 —— 已清，照常听');
+    }
   }
 
   // ② 小红书（公开 GET，封控要求 ≥30 分钟一次）
@@ -167,11 +180,16 @@ export async function collectOnce(
   /** 这一趟已经拿去验过的口令（同一个口令不重复验：重复领只会回 200112）。 */
   const verified = new Set<string>();
   const ld = listenDeps(ctx, deps);
-  // 听满用户设的窗口（默认 600 秒），但给后面的领取留 20 秒。
-  // ⚠ 原来还有一道 `frames > 60`（约 100 秒）的硬上限，会把 600 秒设置
-  //   悄悄截成 100 秒 —— 主播过一会儿才发口令时，就永远等不到。
+  // 听满用户设的窗口，但给后面的**领取**留足余量。
+  // ⚠ 领取按账号**串行**（每号一条 9+N 步的链，步间还有随机间隔 ≈ 15~25 秒）——
+  //   以前固定留 20 秒是"单账号"时代的数：3 个号时第二个还没领完，
+  //   面板就把整个 handler 掐了，后面账号的运行记录都来不及写（F-145）。
+  //   现在按账号数预留（25 秒/号 + 10 秒底），预算太小就少听 —— 听是锦上添花，
+  //   领是这趟的目的。
+  const drawReserveMs =
+    10_000 + resolveTaskAccounts(rawStoreOf(ctx.store), '直播', 'auto').length * 25_000;
   const listenDeadline =
-    runStartMs + Math.min(loadListenSeconds(deps.store) * 1000, ctx.budgetMs - 20_000);
+    runStartMs + Math.min(loadListenSeconds(deps.store) * 1000, Math.max(0, ctx.budgetMs - drawReserveMs));
   while (Date.now() < listenDeadline) {
     // ⚠ 这里**不能**用 `step()`：它每拍都往 `steps` 里塞一条，30 拍就是 30 行
     //   「听弹幕：正在听…」——用户看到的是刷屏，不是进度。只在收尾时落一条。
@@ -215,8 +233,15 @@ export async function collectOnce(
       logBoth(store, 'start', `听到口令「${fresh.value}」—— 立刻去验证（不等窗口）`, deps.nowIso);
       const v = await drain(async (d) => await runLiveDraw(d, { codes: [fresh.value] }), deps, {
         label: `验证「${fresh.value}」`,
-        maxSteps: 8,
-        // 一条口令的验证 = 读余额 → 领 → 回读余额，给 25 秒足够
+        // 一条口令的验证 = 读余额 → 领 → 回读余额（9+1 步，带随机间隔）。
+        // ⚠ 以前 maxSteps: 8：第 8 步刚好发完那一枪就被掐 ⇒ 轮次停在半路，
+        //   下一趟拿旧基准算差值，进账数字是废的（F-145）。给足步数，并按
+        //   F-137 立的规矩带上 `more()`：走满步数还有 ⇒ 如实 ok:false。
+        maxSteps: 14,
+        more: () => {
+          const s = loadDrawState(deps.store);
+          return s !== null && s.step !== 'done';
+        },
         gap: true,
       });
       const nowPet = loadPoolFrom(deps.store).pool;
@@ -231,7 +256,7 @@ export async function collectOnce(
       // 环是"上一趟走到哪"的快照，没必要再存一份明文。
       traceStep(
         deps.store,
-        deps.nowIso,
+        new Date().toISOString(),
         'collect/verify',
         maskCode(fresh.value) +
           ' → ' +

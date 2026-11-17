@@ -28,7 +28,16 @@ export async function drawOnce(
     deps,
     {
     label: '领小红花',
-    maxSteps: 12,
+    // 链长 = 9 + 口令数（读余额基准 1 + 埋点 5 + 进房 1 + 每条口令一枪 + 回活花 1
+    // + 复查余额差 1）。手贴最多 10 条 ⇒ 最多 19 步，给 24 留足余量。
+    // ⚠ 必须带 `more()`（F-137 立的规矩）：走满步数而轮次没走完 ⇒ 如实 `ok:false`，
+    //   不冒充成功。没有它的话，口令一多就在半路被掐却报"都成了"；停在哪一步
+    //   还决定下一趟拿什么当基准 —— 算出来的"进账"是废的（findings F-145）。
+    maxSteps: 24,
+    more: () => {
+      const s = loadDrawState(deps.store);
+      return s !== null && s.step !== 'done';
+    },
     // 一次抽奖 = 一步，连着抽就是连发 ⇒ 步与步之间随机隔 0.5–2 秒（`deps.gapMs`）
     gap: true,
   });

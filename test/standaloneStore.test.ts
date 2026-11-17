@@ -88,3 +88,34 @@ test('旧数据一次性导入：state 表 + mcloud_runs → 文件（袋按号�
   const live = openFileStore({ dir, plugin: 'mcloud-live', nowIso: ISO });
   assert.equal(live.lateStats('直播').n, 1);
 });
+
+test('FileStore：update（锁内读改写）只动一个字段，袋里别的字段不丢', async () => {
+  // routeSet/appendRun/bumpPlanRuns 的"在现有值上改一点"都必须走这一条 ——
+  // setState 只把"写"关进锁，"读"在外面 ⇒ 跨进程丢更新（findings F-145）。
+  const dir = mkdtempSync(join(tmpdir(), 'mcloud-store-'));
+  const a = openFileStore({ dir, plugin: 'mcloud', nowIso: ISO });
+  a.setState(bag('x'), JSON.stringify({ 'mcloud.session': 'S', 'mcloud.daily.done_date': 'D' }), ISO);
+  a.setState('mcloud.accounts', '[]', ISO);
+
+  a.update!(bag('x'), (prev) => {
+    const bagJson = JSON.parse(prev!) as Record<string, string>;
+    bagJson['mcloud.live.gate'] = 'G';
+    return JSON.stringify(bagJson);
+  });
+  const onDisk = JSON.parse(readFileSync(join(dir, 'state', 'x.json'), 'utf8')) as Record<string, string>;
+  assert.equal(onDisk['mcloud.session'], 'S', 'session 不许被抹掉');
+  assert.equal(onDisk['mcloud.daily.done_date'], 'D', 'done_date 不许被抹掉');
+  assert.equal(onDisk['mcloud.live.gate'], 'G', '新字段要进来');
+
+  a.update!('mcloud.accounts', (prev) => {
+    const list = prev === null ? [] : (JSON.parse(prev) as string[]);
+    return JSON.stringify([...list, 'acc1']);
+  });
+  const shared = JSON.parse(readFileSync(join(dir, 'shared.json'), 'utf8')) as Record<string, string>;
+  assert.deepEqual(JSON.parse(shared['mcloud.accounts']!), ['acc1']);
+
+  // 返回 null = 删（袋清空 ⇒ 读回来 null，与 setState('') 的语义一致）
+  a.update!(bag('x'), () => null);
+  const b = openFileStore({ dir, plugin: 'mcloud-live', nowIso: ISO });
+  assert.equal(b.getState(bag('x')), null);
+});

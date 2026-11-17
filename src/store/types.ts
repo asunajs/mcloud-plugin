@@ -35,6 +35,22 @@ export interface Store {
   ensureSchema(): void;
   getState(key: string): string | null;
   setState(key: string, value: string, nowIso: string): void;
+  /** **锁内读改写**（可选 —— 测试替身可以不实现）。
+   *
+   *  `fn` 拿到当前值（没有 ⇒ `null`），返回新值；返回 `null` = 删掉这个键。
+   *  整个"读→算→写"在宿主的同一把锁里完成 —— 这是跨进程安全的读改写。
+   *
+   *  # 为什么必须有它
+   *
+   *  `setState` 只把"写"关进锁，"读"在外面。调用方自己"读出来 → 改一点 →
+   *  整份写回去"的那几处（账号袋、运行记录数组、计划计数）在四个插件 + CLI
+   *  共用一份存储时是**丢更新**：两边同时读、后写的整份覆盖会把先写的字段
+   *  无声抹掉。凡是要"在现有值上改一点"的写入都必须走这一条
+   *  （`store/keys.ts::routeUpdate` 是唯一的路由层入口）。
+   *
+   *  ⚠ 调用方**不许**缓存 `fn` 的结果、也不许在 `fn` 外面先读一遍 ——
+   *  那等于把 race 又请回来了。 */
+  update?(key: string, fn: (prev: string | null) => string | null, nowIso?: string): void;
   recordRun(r: RunRecord): number;
   lateStats(task: string, lastN?: number): RunStat;
   recentRuns(limit?: number): Record<string, SqlParam>[];
@@ -99,6 +115,3 @@ export function loadSession(store: Store): Session | null {
 export function saveSession(store: Store, s: Session, nowIso: string): void {
   store.setState(SESSION_KEY, JSON.stringify({ ...s, savedAt: nowIso }), nowIso);
 }
-
-
-import { currentAccount } from '../mcloud/accounts.ts';

@@ -60,6 +60,15 @@ export class JsonFile<T> {
     const tmp = `${this.path}.tmp`;
     const text = JSON.stringify(data);
     writeFileSync(tmp, text);
+    try {
+      // ⚠ chmod 要在 **rename 之前**对 tmp 做：rename 之后那几百毫秒窗口里
+      //   文件里已经是凭据（会话 cookie / jwttoken），而 0644 的 tmp 谁都能读；
+      //   要是进程崩在 write 与 chmod 之间，tmp 会**永久**以 0644 留在目录里
+      //   （findings F-145）。
+      chmodSync(tmp, 0o600);
+    } catch {
+      /* 某些文件系统不支持 chmod：不该因此写不进去 */
+    }
     renameSync(tmp, this.path);
     try {
       // 状态文件里有凭据（会话 cookie / jwttoken）⇒ 只给本用户读

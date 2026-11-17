@@ -29,6 +29,8 @@ import {
   snapshotOrder,
   startOrder,
 } from '../src/mcloud/tasks/exchangeOrder.ts';
+import { runExchange } from '../src/mcloud/tasks/exchangeRun.ts';
+import { STATE_JWT } from '../src/mcloud/sessionExchange.ts';
 import { SESSION_KEY } from '../src/store/types.ts';
 import { memStore } from '../src/store/memory.ts';
 import type { BuiltRequest } from '../src/mcloud/h5.ts';
@@ -492,4 +494,63 @@ test('步骤文案齐全（面板要靠它显示走到哪了）', async () => {
   for (const k of ['list', 'balance', 'warm-1', 'warm-2', 'slide', 'order', 'verify', 'done'] as const) {
     assert.ok(STEP_TEXT[k], `缺 ${k}`);
   }
+});
+
+test('⚠ waitBudgetMs 给足 ⇒ warm-1 **自旋到窗口**（不再停靠）—— 定时趟就靠这一格', async () => {
+  // 定时那一趟是「整点并集 cron + lead_ms 提前醒」，面板每个槽只发一拍：
+  // 在整点前 60~300 秒触发，缺口最小也有 40 秒 —— 恒大于缺省 30 秒。
+  // 以前链内恒用 30 秒判 ⇒ 每次定时触发都停在 warm-1「交给下一次触发」，
+  // 而下一次触发是下一个计划整点 ⇒ 定时兑换一单都发不出去（findings F-145）。
+  const store = mkStore();
+  const { transport } = upstream({
+    exchangeList: LIST_HIT,
+    infoV3: { code: 0, result: { total: 5000 } },
+    journaling: { code: 0 },
+  });
+  startOrder(deps(store, transport), '钻石会员季卡');
+  await runOrderStep(deps(store, transport));
+  await runOrderStep(deps(store, transport));
+  assert.equal(currentStep(store), 'warm-1');
+
+  // 时钟拨到本小时的第 5 分钟 ⇒ 离 59:40 的缺口 ~54 分钟（哪个时区都一样），
+  // 超过缺省 30 秒；但定时趟把整趟预算（这里用 1 小时代替）传进来 ⇒ 自旋等到窗口。
+  let now = Date.parse(NOW) + 5 * 60_000;
+  let spins = 0;
+  const d = {
+    store,
+    transport,
+    nowIso: NOW,
+    nowMs: () => now,
+    spin: () => {
+      spins += 1;
+      now += 500;
+    },
+    waitBudgetMs: 60 * 60_000,
+  } as unknown as TaskDeps;
+  const out = await runOrderStep(d);
+  assert.ok(spins > 1000, `该自旋等到窗口再开枪，实际自旋 ${spins} 次：${out.note}`);
+  assert.notEqual(out.idle, true, `不许停靠：${out.note}`);
+  assert.equal(currentStep(store), 'warm-2', `预热那一枪要发出去：${out.note}`);
+});
+
+test('⚠ 停靠（没账号可发）必须把 `idle` 传到顶层 —— 吞掉它 maxRuns 会被空转消耗', async () => {
+  // runExchange 收尾的 finish() 若把 drain 的 idle 丢了，编排层会把"一个请求都没发"
+  // 的趟当成"动手了"：bumpPlanRuns 消耗次数、运行记录里躺着假绿（findings F-145）。
+  const store = mkStore(false);
+  // 一张新鲜的网页票：ensureToken 零请求通过，链直接走到"没有账号"。
+  store.setState(
+    STATE_JWT,
+    JSON.stringify({ at: new Date().toISOString(), jwt: 'J', referer: 'r', fingerprint: 'f' }),
+    NOW,
+  );
+  const { transport } = upstream({});
+  // ⚠ `targetHour: null` + 大 `maxWaitMs`：真时钟离窗口多半远，外层时间闸要放行
+  //   才能走到"没有账号"那一支（闸自己的停靠另有一条 idle 出口，不用这里钉）。
+  const r = await runExchange(deps(store, transport) as Parameters<typeof runExchange>[0], {
+    target: '季卡',
+    targetHour: null,
+    maxWaitMs: 60 * 60_000,
+  });
+  assert.equal(r.idle, true, `没账号的趟要如实 idle，实际：${r.note}`);
+  assert.match(r.note, /没有账号/);
 });
