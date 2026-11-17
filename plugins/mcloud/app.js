@@ -2382,6 +2382,19 @@ function paintPrizeLine() {
     setText('prize-line', `读不到 —— ${r.failed}（点「刷新」再试）`);
     return;
   }
+  // 这一次没读到、退回了上一次的清单：把「这是几点的」和「为什么没读到」都说清，
+  // 别让上面那行「读到 <刚才>」骗人（2026-11-17 现场：链路抖一下就整页读不到）。
+  if (r.stale === true) {
+    const at =
+      typeof r.cachedAtMs === 'number' ? when(new Date(r.cachedAtMs).toISOString()) : '上一次';
+    setText(
+      'prize-line',
+      `读到的是 ${at} 的清单（${(r.items || []).length} 件）· 刚才没读到 —— ${
+        r.staleReason || r.failed || '原因不明'
+      }（点「刷新」再试）`,
+    );
+    return;
+  }
   const bits = [];
   if (typeof r.nowMs === 'number') bits.push(`读到 ${when(new Date(r.nowMs).toISOString())}`);
   if (typeof r.pending === 'number') bits.push(`待领取 ${r.pending} 件`);
