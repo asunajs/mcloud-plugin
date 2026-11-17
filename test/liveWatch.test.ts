@@ -16,7 +16,8 @@ test('听弹幕：每拍都判"够了没有 / 有没有新口令"，够了立刻
   assert.match(d, /if \(stopScraping\(tickPet\)\) \{/, '够 2 条有效就停');
   // ⚠ 听到新的口令是**去验证**，不是收工：万一口令是废的，收工就白听了
   assert.match(d, /firstSeenMs >= runStartMs && !verified\.has\(c\.value\)/, '新的没验过的才验');
-  assert.match(d, /runLiveDraw\(d, \{ codes: \[fresh\.value\] \}\)/, '当场拿这一条去领（领就是验证）');
+  // 2026-11-17：和小红书那条走**同一个函数**（verifyCode），口径是「听到的与主页给的一样对待」
+  assert.match(d, /verifyCode\(deps, liveAccounts, fresh\.value\)/, '当场拿这一条去领（领就是验证）');
   // 窗口是"这一句到 continue 之间"，中间可以夹别的（追踪环就插在那里）——
   // 判据只有一条：**不许 break**。窗口给到 900 字是因为中间现在多了一段 traceStep。
   assert.ok(
@@ -59,4 +60,17 @@ test('池子：2 条有效 = 够了（VALID_ENOUGH 是抓取停止的唯一判�
   const d = src('src/mcloud/koulingPool.ts');
   assert.match(d, /VALID_ENOUGH = 2/);
   assert.match(d, /validCount\(pool\) >= VALID_ENOUGH/, 'stopScraping 按 validCount 判');
+});
+
+test('小红书拿到口令就**先验**（不许攒着等窗口结束）', async () => {
+  const d = liveSource();
+  const iVerify = d.indexOf('先验 ${toVerify.length} 条口令');
+  const iEnough = d.indexOf('const enough = stopScraping(poolNow)');
+  const iLoop = d.indexOf('while (Date.now() < listenDeadline)');
+  assert.ok(iVerify > 0, '小红书之后要有一段「先验」');
+  assert.ok(iEnough > 0 && iLoop > 0, '后面还要有「够不够」和听弹幕循环');
+  assert.ok(iVerify < iEnough, '验要在「够不够」之前 —— 否则小红书给的两条永远不算数');
+  assert.ok(iVerify < iLoop, '验要在听弹幕之前 —— 否则还要空听满窗口');
+  assert.match(d, /verifyCode\(deps, liveAccounts, one\.value\)/, '逐条验');
+  assert.match(d, /labelOf\(store, v\.by\)/, '日志要说清是谁验的（记录操作者账号）');
 });

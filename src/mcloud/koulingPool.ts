@@ -131,6 +131,26 @@ export const MAX_POOL_CODES = 200;
  *  绝不拿别人的场次顶（用户看到过"10-02 那场不是目标直播间"）。 */
 export const KOULING_ANCHOR = '中国移动云盘';
 
+/** 直播的**时间窗**（用户 2026-11-17 口径）。
+ *
+ *  原话：「直播日期不一定知道，但时间是 9 点半到 12 点或者 2 点半到 5 点。所以可以按时间清理」。
+ *  日期不可知 ⇒ 只按**本地时刻**切：同一个日期 + 同一个窗 = 同一场。
+ *
+ *  ⚠ 这是池子的**第一清理判据**（比 5 小时 TTL 更贴业务）：上午场的口令不许留到下午场，
+ *  否则下午那趟会拿着上午的两条「有效」直接判定「够了，不用听」，新口令全错过
+ *  （2026-11-17 复核发现的 F1）。 */
+export const LIVE_WINDOWS: readonly { from: number; to: number }[] = [
+  { from: 9 * 60 + 30, to: 12 * 60 }, // 09:30–12:00
+  { from: 14 * 60 + 30, to: 17 * 60 }, // 14:30–17:00
+];
+
+/** 窗口两端各留多少余量（毫秒）。
+ *
+ *  ⚠ 必须有：一趟从 11:59 开始的跑动，听弹幕会走到 12:09、领取再往后 ——
+ *  窗口一关就清池等于「听到了却一条都领不到」。两头都留：12:15 前仍算上午场、
+ *  14:15 后就算下午场。 */
+export const WINDOW_GRACE_MS = 15 * 60 * 1000;
+
 /** 池在面板 state 表里的键。 */
 export const POOL_KEY = 'mcloud.kouling.pool';
 
@@ -186,6 +206,11 @@ export interface PoolCode {
   firstSeenMs: number;
   /** 判定为有效的时刻（ms）。 */
   validAtMs?: number;
+  /** **谁验的**（账号 id）。
+   *
+   *  用户口径 2026-11-17：「应该记录操作者账号」—— 一条口令被谁拿去领过（= 验过），
+   *  出了问题要能追到人；也是「已使用也算有效」那条结论的出处。 */
+  validatedBy?: string;
 }
 
 /** 一次探测里看到的一间直播房 —— **预告 / 在播 / 回放都留**。
@@ -229,6 +254,11 @@ export interface LiveSession {
 export interface KoulingPool {
   /** 本周期开始的时刻（`0` = 还没有任何周期）。 */
   cycleAtMs: number;
+  /** 这一池口令属于**哪一场**（见 [`sessionKeyOf`]）。
+   *
+   *  ⚠ 场次一变就把口令与领取记录清空 —— 这是「口令池不许长期保留」的落地。
+   *  空串 = 老数据（还没写过），第一次 `normalize` 会补上。 */
+  sessionKey: string;
   codes: PoolCode[];
   /** 账号 → 口令 → 领取结论。
    *
@@ -257,6 +287,7 @@ export interface KoulingPool {
 export function emptyPool(): KoulingPool {
   return {
     cycleAtMs: 0,
+    sessionKey: '',
     codes: [],
     claims: {},
     lastLiveAtMs: null,
@@ -281,10 +312,28 @@ export function emptyPool(): KoulingPool {
  *  抓取间隔（`lastScrapeAtMs`）同理 —— 它管的是"谁去抓"，与场次无关。 */
 export function startCycle(pool: KoulingPool, nowMs: number): void {
   pool.cycleAtMs = nowMs;
+  pool.sessionKey = sessionKeyOf(nowMs);
   pool.codes = [];
   pool.claims = {};
   pool.lastLiveAtMs = null;
   pool.gateClosedAtMs = null;
+}
+
+/** 这一刻属于哪一场：`2026-11-17#0`（上午）/ `2026-11-17#1`（下午）/ `2026-11-17#off`。
+ *
+ *  ⚠ 键里带日期：`off` 段会跨零点，不带日期就分不出昨天和今天。
+ *  ⚠ `off` 不是「不清理」，而是**另一个场次**：从窗口走到 off 也要清（那就是散场）。 */
+export function sessionKeyOf(nowMs: number): string {
+  const d = new Date(nowMs);
+  const p = (n: number): string => String(n).padStart(2, '0');
+  const day = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  const mins = d.getHours() * 60 + d.getMinutes();
+  const grace = WINDOW_GRACE_MS / 60_000;
+  for (let i = 0; i < LIVE_WINDOWS.length; i += 1) {
+    const w = LIVE_WINDOWS[i]!;
+    if (mins >= w.from - grace && mins <= w.to + grace) return `${day}#${i}`;
+  }
+  return `${day}#off`;
 }
 
 /** 周期是不是该翻篇了。 */
@@ -312,11 +361,25 @@ export function closeOpenSession(pool: KoulingPool): void {
  *  调用方手上才有"翻篇是因为 TTL 还是因为判定门关了"这个上下文，
  *  它来说这句话才有信息量。 */
 export function normalize(pool: KoulingPool, nowMs: number): void {
+  // ① **场次变了就清**（用户口径 2026-11-17：「口令池不允许长期保留，否则会污染池子」）。
+  //    上午场的口令留到下午场，下午那趟就会拿着它判「够 2 条了，不用听」——
+  //    新口令全错过。这是比 5 小时 TTL 更贴业务的判据。
+  const key = sessionKeyOf(nowMs);
+  if (pool.sessionKey !== key) {
+    if (pool.sessionKey !== '') {
+      closeOpenSession(pool);
+      pool.codes = [];
+      pool.claims = {};
+    }
+    pool.sessionKey = key;
+  }
+  // ② 兜底判据照旧（5 小时 TTL / 门关宽限）：它们管的是「同一场里也太久了」。
   if (isStale(pool, nowMs)) {
     closeOpenSession(pool);
     startCycle(pool, nowMs);
   }
   if (pool.cycleAtMs === 0) pool.cycleAtMs = nowMs;
+  pool.sessionKey = key;
 }
 
 // ══════════════════════════ 探测与门 ══════════════════════════
@@ -455,6 +518,8 @@ export function noteClaim(
     if (!downgrade) slot.state = state;
     slot.reason = reason;
     if (state === 'valid' && slot.validAtMs === undefined) slot.validAtMs = nowMs;
+    // 「谁验的」：只在**有结论**时覆盖（`other` 早就在上面 return 了）。
+    slot.validatedBy = account;
     return;
   }
   // 池里没有它的两种情况：① 手工粘贴的口令（用户口径：**验证后也进共享**）；
@@ -466,6 +531,7 @@ export function noteClaim(
     source: 'manual',
     reason,
     firstSeenMs: nowMs,
+    validatedBy: account,
     ...(state === 'valid' ? { validAtMs: nowMs } : {}),
   });
 }
@@ -605,6 +671,7 @@ export function parsePool(raw: string | null | undefined): PoolLoad {
   const o = v as Record<string, unknown>;
   const pool = emptyPool();
   pool.cycleAtMs = num(o['cycleAtMs']) ?? 0;
+  pool.sessionKey = typeof o['sessionKey'] === 'string' ? o['sessionKey'] : '';
   pool.codes = codeList(o['codes']);
   pool.claims = claimsOf(o['claims']);
   pool.lastLiveAtMs = num(o['lastLiveAtMs']) ?? null;
@@ -676,6 +743,8 @@ function codeList(v: unknown): PoolCode[] {
     if (reason !== '') code.reason = reason;
     const validAt = num(o['validAtMs']);
     if (validAt !== undefined) code.validAtMs = validAt;
+    const by = str(o['validatedBy']);
+    if (by !== '') code.validatedBy = by;
     out.push(code);
   }
   return out;

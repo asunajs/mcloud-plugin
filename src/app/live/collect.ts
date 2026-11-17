@@ -7,18 +7,18 @@
 import { drain } from '../../drain.ts';
 import { runAuthRefresh } from '../../mcloud/authRefresh.ts';
 import { capNote, hostNativeTls } from '../../mcloud/hostCap.ts';
-import { KOULING_ANCHOR, loadPoolFrom, stopScraping, validCount } from '../../mcloud/koulingPool.ts';
+import { KOULING_ANCHOR, loadFreshPool, loadPoolFrom, stopScraping, validCount } from '../../mcloud/koulingPool.ts';
 import { maskCode, traceStep } from '../../mcloud/liveTrace.ts';
 import { logBoth } from '../../mcloud/log.ts';
-import { resolveTaskAccounts } from '../../mcloud/taskAccounts.ts';
+import { labelOf, resolveTaskAccounts } from '../../mcloud/taskAccounts.ts';
 import type { RunStep } from '../../mcloud/runLog.ts';
 import { rawStoreOf } from '../../store/scoped.ts';
 import type { TaskDeps, TaskOutcome } from '../../mcloud/tasks/base.ts';
-import { loadDrawState, runLiveDraw } from '../../mcloud/tasks/liveDraw.ts';
 import { readGateReading, runLiveGate } from '../../mcloud/tasks/liveGateTask.ts';
 import { clearListenCooldown, loadListenSeconds, runLiveListen } from '../../mcloud/tasks/liveListen.ts';
 import type { ListenDeps } from '../../mcloud/tasks/liveListen.ts';
 import { runLiveRoom } from '../../mcloud/tasks/liveRoom.ts';
+import { verifyCode } from '../../mcloud/tasks/liveVerify.ts';
 import { userLine } from '../../mcloud/tasks/stepLog.ts';
 import { logTo } from '../../ports/log.ts';
 import type { LiveCtx } from './ctx.ts';
@@ -159,8 +159,34 @@ export async function collectOnce(
   const xhs = await step('小红书主页口令', async () => await runLiveRoom(deps));
   logBoth(store, 'debug', `小红书：这一步用了 ${Math.round((Date.now() - xhsAt) / 1000)} 秒`, deps.nowIso);
 
+  // ②' **拿到就验**（用户口径第 3 条「获取到口令就用账号验证是否可用」）。
+  //
+  //    为什么不能攒着等窗口结束：小红书往往一次就给两条，攒着不验就要**空听满窗口**
+  //    （最坏 600 秒）才动，而「够 2 条就不听」这条判据也就永远不成立（2026-11-17 复核的 F2）。
+  //    为什么「领」就是「验」：一条口令的唯一判据就是拿去领一次 —— 上游回 `claimed` 或
+  //    `alreadyClaimed` 都算有效（用户口径「已使用也算有效」）。
+  const liveAccounts = resolveTaskAccounts(rawStoreOf(ctx.store), '直播', 'auto');
+  const afterXhs = loadFreshPool(deps.store, Date.parse(deps.nowIso)).pool;
+  const toVerify = afterXhs.codes.filter((c) => c.state === 'unknown' && c.firstSeenMs >= runStartMs);
+  if (toVerify.length > 0) {
+    logBoth(store, 'start', `先验 ${toVerify.length} 条口令（领就是验，不等窗口）`, deps.nowIso);
+    for (const one of toVerify) {
+      const v = await verifyCode(deps, liveAccounts, one.value);
+      // 「谁验的」要写出来：用户口径 2026-11-17「应该记录操作者账号」
+      const by = v.by === '' ? '' : `（${labelOf(store, v.by)} 验的）`;
+      const say = v.state === 'valid' ? '有效' : v.state === 'invalid' ? '无效' : '没结论';
+      logBoth(
+        store,
+        v.state === 'invalid' ? 'warn' : v.state === 'valid' ? 'success' : 'info',
+        `验「${one.value}」：${say}${by} —— ${v.note}`,
+        deps.nowIso,
+      );
+      steps.push({ name: `验口令「${one.value}」`, ok: v.state !== 'invalid', note: `${say}${by}`, idle: false });
+    }
+  }
+
   // ③ 听弹幕 —— 池里够 2 条有效就不听了（再听只是重复撞同一批）
-  const poolNow = loadPoolFrom(deps.store).pool;
+  const poolNow = loadFreshPool(deps.store, Date.parse(deps.nowIso)).pool;
   const enough = stopScraping(poolNow);
   if (enough) {
     steps.push({
@@ -231,25 +257,14 @@ export async function collectOnce(
     if (fresh !== undefined) {
       verified.add(fresh.value);
       logBoth(store, 'start', `听到口令「${fresh.value}」—— 立刻去验证（不等窗口）`, deps.nowIso);
-      const v = await drain(async (d) => await runLiveDraw(d, { codes: [fresh.value] }), deps, {
-        label: `验证「${fresh.value}」`,
-        // 一条口令的验证 = 读余额 → 领 → 回读余额（9+1 步，带随机间隔）。
-        // ⚠ 以前 maxSteps: 8：第 8 步刚好发完那一枪就被掐 ⇒ 轮次停在半路，
-        //   下一趟拿旧基准算差值，进账数字是废的（F-145）。给足步数，并按
-        //   F-137 立的规矩带上 `more()`：走满步数还有 ⇒ 如实 ok:false。
-        maxSteps: 14,
-        more: () => {
-          const s = loadDrawState(deps.store);
-          return s !== null && s.step !== 'done';
-        },
-        gap: true,
-      });
-      const nowPet = loadPoolFrom(deps.store).pool;
-      const thisOne = nowPet.codes.find((c) => c.value === fresh.value);
+      // 和小红书那条同一个函数（口径：听到的与主页给的**一样对待**）。
+      const v = await verifyCode(deps, liveAccounts, fresh.value);
+      const by = v.by === '' ? '' : `（${labelOf(store, v.by)} 验的）`;
+      const say = v.state === 'valid' ? '有效' : v.state === 'invalid' ? '无效' : '没结论';
       logBoth(
         store,
-        v.ok ? 'info' : 'warn',
-        `验证「${fresh.value}」：${thisOne?.state === 'valid' ? '有效' : thisOne?.state === 'invalid' ? '无效' : '没结论'} —— ${v.note}`,
+        v.state === 'invalid' ? 'warn' : v.state === 'valid' ? 'success' : 'info',
+        `验证「${fresh.value}」：${say}${by} —— ${v.note}`,
         deps.nowIso,
       );
       // 追踪环里记**脱敏**的：口令原文会留在池里（那是业务数据），
@@ -258,10 +273,8 @@ export async function collectOnce(
         deps.store,
         new Date().toISOString(),
         'collect/verify',
-        maskCode(fresh.value) +
-          ' → ' +
-          (thisOne?.state === 'valid' ? '有效' : thisOne?.state === 'invalid' ? '无效' : '没结论'),
-        { ok: thisOne?.state === 'valid' },
+        maskCode(fresh.value) + ' → ' + say + by,
+        { ok: v.state === 'valid' },
       );
       // ⚠ 这里**不 break**：继续听，直到"够 2 条有效"或听满窗口。
       continue;
