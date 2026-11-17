@@ -37,8 +37,9 @@
 // 比"每 10 秒看一眼"稳：两帧之间漏掉的东西只能靠宿主的无界队列补，
 // 补不补得上取决于队列有多深。门关着时第一次调用就 `idle` 停下 —— 零请求。
 //
-// ⚠ 面板对 `budget_ms` 的上限是 10 分钟（`rust-plugin-panel/src/hostapi.rs`
-//   的 `MAX_DECLARED_BUDGET_MS`），5 分钟留足了余量。
+// ⚠ 面板对 `budget_ms` 的上限：panel-llrt 是 90 分钟且**越界夹住**（`scheduler.rs`
+//   的 `MAX_BUDGET_MS`），旧面板才是 10 分钟硬顶。600 秒是这里**自己**选的：
+//   一天两次、每次听满窗口已经够了，不冲上限。
 
 
 // 三条任务的开场是同一套（建 store → 并配置 → 算预算 → 注册 → 写卡片），见 ./register.ts。
@@ -48,7 +49,7 @@ import type { TaskPayload } from './shared.ts';
 import { runLive } from '../app/live/run.ts';
 
 /** 听窗口预算。一天只来两次（10:30 / 15:30），所以每次听久一点：
- *  5 分钟。面板对预算的上限是 10 分钟（`MAX_DECLARED_BUDGET_MS`）。 */
+ *  5 分钟。上限的口径见上面那段（panel-llrt：90 分钟夹住；600s 是自己选的）。 */
 const BUDGET_MS = 600_000;
 
 // 直播还要长连接（ws_*）：那一族只有这里用，所以由入口自己造一份给编排层。

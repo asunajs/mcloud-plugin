@@ -259,7 +259,10 @@ async function roomsStep(
   st.note = note;
   deps.store.setState(STATE_GATE, JSON.stringify(st), deps.nowIso);
   clearError(deps.store, TASK, deps.nowIso);
-  return { ok: true, note: `${note}（页签 ${GATE_TAB_IDS.join('/')}，共 ${rooms.length} 间房）` };
+  // ⚠ 这一轮**到这就完了**（rooms 已经判完"在不在播"），带 `idle: true` 让 drain
+  //   收手。不带的话，collect 那个 drain 会再走第三步：done → 新一轮 → **重新握手**
+  //   两发 SSO/JWT —— 白打，还把刚抹掉的凭据又留进袋里（F-145）。
+  return { ok: true, idle: true, note: `${note}（页签 ${GATE_TAB_IDS.join('/')}，共 ${rooms.length} 间房）` };
 }
 
 /** ③ 失败：**把 JWT 丢掉**再如实报错。

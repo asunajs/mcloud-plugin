@@ -61,18 +61,18 @@ import {
   type TaskKey,
 } from '../mcloud/pushConfig.ts';
 
-/** 插件用的 transport：宿主 API 的**同步**请求（沙箱里唯一的选择）。
+/** 插件用的 transport：宿主 API 的 **async** 请求（P3 之后只剩它，http_fetch 不再用）。
  *
- *  ⚠️ 超时刻意取得比面板的**默认**执行预算（`EXEC_BUDGET_MS=2000`）短。
+ *  ⚠️ 超时取得比"一次上游往返"宽、比任务预算窄。
  *
- *  原因是预算的行为不是「到点掐断」：QuickJS 的 interrupt handler 只在 JS 字节码
+ *  预算的行为不是「到点掐断」：QuickJS 的 interrupt handler 只在 JS 字节码
  *  边界被检查，所以一个阻塞中的请求会**跑完**，然后任务在那之后才被判超时 ——
  *  结果是「上游动作已经发生、任务却报失败」（同族的坑见 docs/findings.md F-001）。
  *  把超时设在预算里面，就是让它**在预算之前**干净地失败。
  *
- *  ⚠ 这个理由在**声明了长预算**的任务上不成立：那些任务（日常/兑换/直播）
- *  自己的预算就是几十秒，一次上游调用慢一点是正常的。所以它们要传
- *  `REQUEST_TIMEOUT_MS` 之外的值 —— 见 `makeTransport(timeoutMs)`。 */
+ *  ⚠ **声明了长预算**的任务（日常/兑换/直播）自己就是几十秒的预算，一次上游
+ *  调用慢一点是正常的。所以它们要传 `REQUEST_TIMEOUT_MS` 之外的值 ——
+ *  见 `makeTransport(timeoutMs)`（长预算任务用 20 秒）。 */
 export { DEFAULT_REQUEST_TIMEOUT_MS, SLOW_READ_PATTERNS, SLOW_READ_TIMEOUT_MS } from '../mcloud/timeoutPolicy.ts';
 import { DEFAULT_REQUEST_TIMEOUT_MS as __DEFAULT_TIMEOUT } from '../mcloud/timeoutPolicy.ts';
 
@@ -301,6 +301,24 @@ export function makePushDeps(transport: Transport): PushDeps {
  *  @param hadFailure 这次有没有失败的一步（`minLevel: 'error'` 的规则只在 true 时发）
  */
 export async function notify(
+  store: Store,
+  transport: Transport,
+  taskKey: TaskKey,
+  title: string,
+  text: string,
+  hadFailure: boolean,
+): Promise<PushResult | null> {
+  // ⚠ 推送**自己**的失败不该往上传：任务已经干完活了，一条推送把整趟判炸
+  //   （或成为未处理的 Promise rejection）就是本末倒置。结果/失败都落日志。
+  try {
+    return await notifyInner(store, transport, taskKey, title, text, hadFailure);
+  } catch (e) {
+    logTo('warn', `推送失败（不影响本次运行结果）：${e instanceof Error ? e.message : String(e)}`);
+    return null;
+  }
+}
+
+async function notifyInner(
   store: Store,
   transport: Transport,
   taskKey: TaskKey,

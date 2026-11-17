@@ -26,7 +26,7 @@
 // 页面版本号：和 style.css 里的 --style-ver 一起人工递增。
 // 「样式自检」（boot.js 的 ?diag=1）会读它 —— 用来区分「CSS 是新的、JS 还是旧的」这种
 // 半新半旧状态（第 155 轮：样式表是 v155，但 DOM 里根本没有 .ex-group-row 这种行）。
-document.documentElement.dataset.appVer = '159';
+document.documentElement.dataset.appVer = '160';
 
 /** 插件自己的接口。 */
 const API = '/plugins/mcloud/api';
@@ -231,12 +231,16 @@ async function runTaskAndWait(key, btn) {
 }
 
 /// 停止当前任务：面板侧会打断 QuickJS；已经卡在宿主调用里的部分只能等它返回。
+///
+/// ⚠ 面板的打断口子是**插件级**的 `POST /api/plugins/{name}/stop` ——
+///   任务级路由只有 run/pause/resume/reset/schedule/restore，**没有 `/stop`**
+///   （调它就是 404，任务根本停不下来 —— findings F-145，与 F-144 同族）。
 async function stopRunning(key, btn) {
   const pair = TASK[key];
   btn.disabled = true;
   btn.textContent = '停止中…';
   try {
-    await call(`/api/tasks/${encodeURIComponent(pair[0])}/${encodeURIComponent(pair[1])}/stop`, {
+    await call(`/api/plugins/${encodeURIComponent(pair[0])}/stop`, {
       method: 'POST',
       write: true,
     });
@@ -663,7 +667,7 @@ function renderAccount(a, login) {
 //
 // 界面上那句「它自己什么时候跑」必须是**真的**：原来写死成「白天每 30 分钟跑一次」，
 // 而排期早改成 `0 8,20 * * *`（一天两次）—— 用户看到的就是一句错话。
-// 真值在面板的 `GET /api/state` 里（`jobs[].schedule` / `next_run` / `paused`）。
+// 真值在面板的 `GET /api/state` 里（`tasks[].cron` / `next_at` / `enabled`，F-145）。
 //
 // ⚠ 这是**面板**的接口（同源、同一套 cookie），不是插件的 —— 插件的路由不该
 //   替面板转述排期（那样两份数据迟早不一致）。
@@ -679,8 +683,11 @@ function jobOf(plugin, name) {
  *  只认我们真用到的这几种形状；**认不出就说"按面板里设的时间跑"** ——
  *  把一串星号糊到用户脸上比说不知道更糟，而编一句"每天几点"出来更糟。 */
 function scheduleText(job) {
-  const expr = String(job.schedule || '').trim();
-  const next = job.next_run ? when(String(job.next_run).replace(' ', 'T')) : '';
+  // ⚠ 字段名认**新面板**的：表达式叫 `cron`，下次时刻叫 `next_at`（**毫秒数**）。
+  //   以前认的 `schedule`/`next_run` 面板根本不发 ⇒ 这句永远空着（F-145，与 F-144 同族）。
+  const expr = String(job.cron ?? job.schedule ?? '').trim();
+  const nextMs = msOf(job.next_at ?? job.next_run);
+  const next = nextMs ? when(new Date(nextMs).toISOString()) : '';
   const tail = next === '' ? '' : `，下次 ${next}`;
   const at = (h, m) => `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
   let m = /^(\d{1,2})\s+(\d{1,2}(?:,\d{1,2})*)\s+\*\s+\*\s+\*$/.exec(expr);
@@ -696,13 +703,18 @@ function scheduleText(job) {
   return `按面板里设的时间跑${tail}`;
 }
 
-/** 拉一次面板的任务表（失败就安静：那只是第二行文案，不该弹错误）。 */
+/** 拉一次面板的任务表（失败就安静：那只是第二行文案，不该弹错误）。
+ *
+ *  ⚠ 新面板把任务表叫 **`tasks`**（字段 `cron` / `next_at` / `enabled`）——
+ *   以前读的 `jobs` 不存在 ⇒ JOBS 永远空、排期那行永远不显示（F-145）。
+ *   `jobs` 那支留给可能认它的旧形状，认不出就当空（这里失败不该弹错）。 */
 async function loadJobs() {
   try {
     const r = await fetch('/api/state', { headers: { 'x-panel': '1' } });
     if (!r.ok) return;
     const j = await r.json();
-    JOBS = Array.isArray(j.jobs) ? j.jobs.filter((x) => x.deleted !== true) : [];
+    const list = Array.isArray(j.tasks) ? j.tasks : Array.isArray(j.jobs) ? j.jobs : [];
+    JOBS = list.filter((x) => x && x.deleted !== true);
   } catch {
     JOBS = [];
   }
@@ -735,7 +747,8 @@ function renderDaily(d) {
   const job = jobOf('mcloud-daily', '日常');
   if (job) {
     bits.push(scheduleText(job));
-    if (job.paused) bits.push('现在**暂停着**（去面板的任务页恢复）');
+    // 新面板的"暂停"叫 `enabled === false`（旧字段 `paused` 面板不发，F-145）。
+    if (job.paused || job.enabled === false) bits.push('现在**暂停着**（去面板的任务页恢复）');
   }
   if (run) {
     const cnt = [];
@@ -2898,7 +2911,9 @@ async function load() {
 
 // ══════════ 运行日志（终端样式，SSE） ══════════
 //
-// 数据源是**面板自己的日志流**：`GET /api/logs/stream?channel=plugin&plugin=<名字>`。
+// 数据源是**面板自己的日志流**：`GET /api/logs/stream`。新面板推的是**无名帧**
+// （走 `onmessage`），**不做任何服务端过滤** —— 所有插件的行都推，插件名/级别
+// 要自己按 `d.plugin` 与前缀认（见 `paintPanel`）；断线重连带 `?since=<lastId>`。
 // 插件里每一句 `log(...)` 都在那儿，带时间、级别、插件名。
 //
 // ⚠ 为什么不用插件自己那套"运行记录"画终端：那是**一次一条**的摘要
@@ -2906,8 +2921,7 @@ async function load() {
 //   而"看着它跑"需要的是**行**。
 // ⚠ 只在**这一块显示时**才连（`showBlock` 里开关）：三块各连一条流没必要，
 //   而且浏览器对同域 SSE 的并发连接有上限（HTTP/1.1 是 6 条）。
-// ⚠ 级别切换要**重连**：过滤发生在服务端（1MB 缓冲里有几 MB 文本，
-//   全量推给前端再丢是白烧带宽 —— 面板的注释原话）。
+// ⚠ 级别切换是**本地过滤**（重连已无用 —— 服务端不筛，反正全量都在推）。
 const TERMS = {
   daily: {
     plugin: 'mcloud-daily',
@@ -3417,13 +3431,12 @@ $('acct-add').addEventListener('click', () => {
   // 关弹窗时轮询停了（不留偷偷打接口的定时器）⇒ 重开时如果那张码还活着，接着轮
   syncQrPoll(last && last.login ? last.login.qr : null);
 });
-$('add-close').addEventListener('click', () => {
-  stopQrPoll();
-  $('add-dialog').hidden = true;
-});
+$('add-close').addEventListener('click', () => closeAddDialog());
 // 点遮罩关闭（点盒子里面不关）
+// ⚠ 走**同一个**收尾：只 `hidden = true` 的话，重发倒计时会在后台继续跑
+//   （closeAddDialog 的注释说的那条纪律），验证码框也留着旧会话的码（F-145）。
 $('add-dialog').addEventListener('click', (ev) => {
-  if (ev.target === $('add-dialog')) $('add-dialog').hidden = true;
+  if (ev.target === $('add-dialog')) closeAddDialog();
 });
 $('add-tabs').addEventListener('click', (ev) => {
   const b = ev.target.closest('.tab');
@@ -3795,8 +3808,14 @@ async function qrPollOnce() {
       resetQrPoll(r.pollMs);
     }
   } catch (err) {
-    stopQrPoll();
-    toast(err.message || '轮询失败', true);
+    // ⚠ 抛错（网络抖 / 面板忙 502「排队没轮到」）≠ 码死了：走 `r.retry` **同一条**
+    //   恢复路 —— 第一次立刻重问，连着失败才退避。直接 stop 的话，一次 502 就把
+    //   轮询杀掉：码还挂在屏上、倒计时还走着，手机扫了也没人去问服务端（F-145）。
+    //   真正该停的只有"弹窗关了"，上面那个守卫管着它。
+    qrFailStreak += 1;
+    if (qrFailStreak === 1) retryQrNow();
+    else backoffQrPoll();
+    if (qrFailStreak <= 2) toast(err.message || '轮询失败，正在重试…', true);
   }
 }
 
@@ -4135,9 +4154,17 @@ $('live-claim').addEventListener('click', (e) =>
       if (!raw) throw new Error('先把口令贴进来');
       await api('/live/codes', { method: 'POST', write: true, body: { codes: raw } });
       const t0 = Date.now();
-      await runTask('live');
+      // ⚠ 拿住 `run_id`：兜底那条路是拿**浏览器的钟**去比面板记的毫秒时刻，
+      //   两边钟差 > 2 秒就永远匹配不上（F-144 同族）。`runTask` 回的
+      //   `{ok, run_id}` 直接按 id 取那一条，不存在"挑错/挑不到"。
+      const queued = await runTask('live');
       toast('口令收下了 —— 它正在领');
-      await waitRun('mcloud-live', '直播', t0, null);
+      const one = await waitRun('mcloud-live', '直播', t0, null, queued && queued.run_id);
+      if (one === null) {
+        // 超时 ≠ 领完了：任务多半还在跑。口令是**一次性**的、任务自己会清，
+        // 这里不清也不报"领完了" —— 报了就是假话。
+        throw new Error('还在跑 —— 日志里能看到它走到哪了；口令会由这一趟自己收走');
+      }
       // 跑完再清**保存的**口令；输入框留着，用户能看到自己贴了什么。
       // 保存的旧口令不清会让下一次自动运行误判成“手动领取”。
       await api('/live/codes', { method: 'POST', write: true, body: { clear: true } });

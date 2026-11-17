@@ -15,3 +15,12 @@ export interface ReadableState {
 export interface WritableState extends ReadableState {
   setState(key: string, value: string, nowIso: string): void;
 }
+
+/** 锁内读改写要的**最小**能力（可选 —— 测试替身可以不实现）。
+ *
+ *  实现方（fileStore）保证"读 → fn → 写"整段在同一把锁里；没有它的实现时，
+ *  调用方退回"读出来改一点整份写回去"的旧路 —— 那条路在单进程里是对的，
+ *  跨进程会丢更新（见 `store/types.ts::update` 的说明）。 */
+export interface UpdatableState extends WritableState {
+  update(key: string, fn: (prev: string | null) => string | null, nowIso?: string): void;
+}

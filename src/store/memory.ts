@@ -28,6 +28,15 @@ export function memStore(): Store {
       state.set(key, value);
     },
 
+    // 与 fileStore 同语义：锁内读改写在内存版就是"直接改"（单进程，天然原子）。
+    // ⚠ 有了它，测试与生产走**同一条** routeUpdate 路径 —— 不然"测试里读改写
+    //   是原子的、真机上不是"这种差异永远测不出来。
+    update: (key, fn) => {
+      const next = fn(state.get(key) ?? null);
+      if (next === null) state.delete(key);
+      else state.set(key, next);
+    },
+
     recordRun: (r) => {
       seq += 1;
       runs.push({ ...r, id: seq });

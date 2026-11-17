@@ -15,7 +15,8 @@
 import { loadAccounts } from './accounts.ts';
 import { resolveTaskAccounts } from './taskAccounts.ts';
 import { cronMatchesAt, nextCronTargetMs, parseCron } from './scheduleCron.ts';
-import type { ReadableState, WritableState } from '../store/keys-types.ts';
+import { routeUpdate } from '../store/keys.ts';
+import type { ReadableState, UpdatableState, WritableState } from '../store/keys-types.ts';
 
 export const STATE_PLANS = 'mcloud.exchange.plans';
 export const STATE_PLAN_RUNS = 'mcloud.exchange.plan.runs';
@@ -148,8 +149,11 @@ export function planSummary(store: ReadableState, nowMs: number = Date.now()): s
 
 /** 每号已跑次数：`{planId: n}`。计划是“一条一个账号”，所以不需要再按账号分。 */
 export function loadPlanRuns(store: ReadableState): Record<string, number> {
-  const raw = (store.getState(STATE_PLAN_RUNS) ?? '').trim();
-  if (raw === '') return {};
+  return parsePlanRuns((store.getState(STATE_PLAN_RUNS) ?? '').trim());
+}
+
+function parsePlanRuns(raw: string | null | undefined): Record<string, number> {
+  if (raw === undefined || raw === null || raw === '') return {};
   try {
     const v = JSON.parse(raw) as unknown;
     return v !== null && typeof v === 'object' ? (v as Record<string, number>) : {};
@@ -163,12 +167,31 @@ export function planRuns(store: ReadableState, planId: string): number {
 }
 
 export function bumpPlanRuns(store: WritableState, planId: string, nowIso: string): void {
+  // ⚠ **锁内读改写**：这一格是全局键，编排层每发一单就 +1。读出来改一点再整份
+  //   写回的话，两条计划同场收尾时会互相覆盖计数（maxRuns 白白多放行几次 ——
+  //   兑换不可逆，多放行就是多发一枪，findings F-145）。
+  if (typeof (store as UpdatableState).update === 'function') {
+    routeUpdate(store, STATE_PLAN_RUNS, (raw) => {
+      const all = parsePlanRuns(raw);
+      all[planId] = (all[planId] ?? 0) + 1;
+      return JSON.stringify(all);
+    });
+    return;
+  }
   const all = loadPlanRuns(store);
   all[planId] = (all[planId] ?? 0) + 1;
   store.setState(STATE_PLAN_RUNS, JSON.stringify(all), nowIso);
 }
 
 export function resetPlanRuns(store: WritableState, planId: string, nowIso: string): void {
+  if (typeof (store as UpdatableState).update === 'function') {
+    routeUpdate(store, STATE_PLAN_RUNS, (raw) => {
+      const all = parsePlanRuns(raw);
+      delete all[planId];
+      return JSON.stringify(all);
+    });
+    return;
+  }
   const all = loadPlanRuns(store);
   delete all[planId];
   store.setState(STATE_PLAN_RUNS, JSON.stringify(all), nowIso);

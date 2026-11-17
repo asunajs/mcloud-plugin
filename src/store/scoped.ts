@@ -22,7 +22,7 @@
 // 只有在真机上才出现。
 
 import type { Store } from './types.ts';
-import { routeGet, routeSet } from './keys.ts';
+import { routeGet, routeSet, routeUpdate } from './keys.ts';
 
 /** 已包过的标记。**防双重包装** —— 见下面那段说明。 */
 const WRAPPED = Symbol.for('__mcloud_scoped_store__');
@@ -78,6 +78,13 @@ export function scoped(base: Store, acctId?: string): Store {
     ...base,
     getState: (key) => routeGet(base, key, acctId),
     setState: (key, value, nowIso) => routeSet(base, key, value, nowIso, acctId),
+    // ⚠ **不许透传** base.update：那会把按账号的键直接写成全局共享键 ——
+    //   正是 scoped() 要根除的"绕过账号路由"。与 routeGet/routeSet 同一张登记表：
+    //   global 直通、account 落到对应账号的袋（锁内读改写，见 routeUpdate）。
+    //   base 没有 update（测试替身）时就不声明这一格 —— 调用方会拿到清晰的报错。
+    ...(typeof base.update === 'function'
+      ? { update: (key: string, fn: (prev: string | null) => string | null, nowIso?: string) => routeUpdate(base, key, fn, acctId) }
+      : {}),
   };
   Object.defineProperty(wrapped, WRAPPED, { value: true, enumerable: false });
   if (acctId !== undefined && acctId !== '') {

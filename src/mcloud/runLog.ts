@@ -22,6 +22,7 @@
 
 
 import type { Store } from '../store/types.ts';
+import { routeUpdate } from '../store/keys.ts';
 
 /** 运行记录落在这一格（一个 JSON 数组）。 */
 export const RUN_LOG_KEY = 'mcloud.run.log';
@@ -107,9 +108,8 @@ function cleanStep(s: RunStep): RunStep {
   };
 }
 
-/** 读全部记录。坏数据 ⇒ 空数组（**不让界面 500**）。 */
-export function readRuns(store: Pick<Store, 'getState'>): RunRecord[] {
-  const raw = store.getState(RUN_LOG_KEY);
+/** 把一段 JSON 文本解析成记录列表（坏数据 ⇒ 空数组，**不让界面 500**）。 */
+function parseRunsJson(raw: string | null | undefined): RunRecord[] {
   if (raw === undefined || raw === null || raw === '') return [];
   try {
     const v = JSON.parse(raw) as unknown;
@@ -121,6 +121,11 @@ export function readRuns(store: Pick<Store, 'getState'>): RunRecord[] {
   } catch {
     return [];
   }
+}
+
+/** 读全部记录。坏数据 ⇒ 空数组（**不让界面 500**）。 */
+export function readRuns(store: Pick<Store, 'getState'>): RunRecord[] {
+  return parseRunsJson(store.getState(RUN_LOG_KEY));
 }
 
 /** 某个任务的记录，**新的在前**。 */
@@ -138,10 +143,37 @@ export function readRun(
   return readRuns(store).find((r) => r.id === id) ?? null;
 }
 
+/** 把一条新记录并进列表：同 id 去重、每任务裁到 `RUNS_PER_TASK`、整体按时刻倒序。 */
+function mergeRuns(all: RunRecord[], next: RunRecord): RunRecord[] {
+  // 同一个 id 已经在了（同一毫秒里跑了两次）⇒ 覆盖，不追加两条一样的
+  const kept = all.filter((r) => r.id !== next.id);
+  kept.push(next);
+
+  // 每个任务各留 `RUNS_PER_TASK` 条（新的留下）
+  const byTask = new Map<RunTask, RunRecord[]>();
+  for (const r of kept) {
+    const list = byTask.get(r.task) ?? [];
+    list.push(r);
+    byTask.set(r.task, list);
+  }
+  const trimmed: RunRecord[] = [];
+  for (const list of byTask.values()) {
+    list.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
+    trimmed.push(...list.slice(0, RUNS_PER_TASK));
+  }
+  // 整体按时刻倒序存 —— 界面直接遍历就是"新的在前"
+  trimmed.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
+  return trimmed;
+}
+
 /** 追加一条记录，并把超出的旧记录丢掉。
  *
  *  @returns 这条记录的 id（调用方要用它做日志关联）
- */
+ *
+ *  ⚠ **走锁内读改写**（`routeUpdate`）：这一格是**全局**键，四个插件都往里追加。
+   "读出来 → 改 → 整份写回"的旧路在 daily 与 exchange 同时收尾时会互相覆盖
+   —— 先写完的那条运行记录无声消失（findings F-145）。宿主没有 `update`
+   （测试替身）才退回 setState 整份写回 —— 单进程里等价。 */
 export function appendRun(
   store: Store,
   rec: {
@@ -160,7 +192,6 @@ export function appendRun(
   const tail = rec.acct === undefined || rec.acct === '' ? '' : `-${rec.acct}`;
   const id = `${rec.task}-${Date.parse(rec.at) || 0}${tail}`;
 
-  const all = readRuns(store);
   const next: RunRecord = {
     id,
     task: rec.task,
@@ -174,26 +205,11 @@ export function appendRun(
     truncated: rec.steps.length > MAX_STEPS,
   };
 
-  // 同一个 id 已经在了（同一毫秒里跑了两次）⇒ 覆盖，不追加两条一样的
-  const kept = all.filter((r) => r.id !== id);
-  kept.push(next);
-
-  // 每个任务各留 `RUNS_PER_TASK` 条（新的留下）
-  const byTask = new Map<RunTask, RunRecord[]>();
-  for (const r of kept) {
-    const list = byTask.get(r.task) ?? [];
-    list.push(r);
-    byTask.set(r.task, list);
+  if (typeof (store as { update?: unknown }).update === 'function') {
+    routeUpdate(store, RUN_LOG_KEY, (raw) => JSON.stringify(mergeRuns(parseRunsJson(raw), next)));
+    return id;
   }
-  const trimmed: RunRecord[] = [];
-  for (const list of byTask.values()) {
-    list.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
-    trimmed.push(...list.slice(0, RUNS_PER_TASK));
-  }
-  // 整体按时刻倒序存 —— 界面直接遍历就是"新的在前"
-  trimmed.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
-
-  store.setState(RUN_LOG_KEY, JSON.stringify(trimmed), rec.at);
+  store.setState(RUN_LOG_KEY, JSON.stringify(mergeRuns(readRuns(store), next)), rec.at);
   return id;
 }
 

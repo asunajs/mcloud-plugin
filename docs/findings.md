@@ -7644,3 +7644,169 @@ mcloud  [job] set_job_blockers 失败: {"message":"没有这个任务: mcloud-li
 `id/plugin/task/started_at/ended_at/status/error`）、`api_run_one`（`{run, logs}`）、
 `RUNS_WHERE`（只按 `plugin`/`q`/游标筛 —— 没有 `task`）。`docs/api.md` 第 39 行起写了
 「认不出的键直接 400」，但**没列响应字段** —— 所以改字段名时那边不会提醒你。
+
+---
+
+## F-145 全仓 review（新面板口径）：两条 P0，其中一条是**定时兑换从上线就没发过单**（2026-11-17）
+
+### 背景
+
+用户要求做一轮全仓 review，口径三条：① 专找「旧面板写法坏新面板」的残留（旧面板已废弃，
+`不需要老面板兼容` 是 F-134 定下的）；② 不含上游协议用法，只看**本地运行时设计**——
+间隔时间、信息存储取用、多账户共用直播口令这些「涉及上游但由本地决定」的东西；
+③ review 之后酌情修，拿不准的记成待办并写明理由。四路并行深读（WebUI / host+存储 /
+直播口令族 / 日常+兑换），关键结论全部对照 `panel-llrt/src/{web,scheduler,hostapi}.rs`
+复核过，不是只对着本文档推断。
+
+### P0-A 定时兑换**一单都没发出去过**——两层对同一件事用了两把尺
+
+链条逐环核实：
+
+1. 面板每个 cron 槽**只发一拍**：`trigger_at = next_fire − lead_ms`
+   （`panel-llrt/src/scheduler.rs:169`）。`0 10,20 * * *` + lead 120s ⇒ 09:58 发，
+   **10:00 整点没有第二拍**。
+2. 入口注册整点并集 cron，`maxLeadMs` 下限 60s ⇒ 每次定时触发到窗口（59:40）的缺口
+   = lead − 20s ∈ **[40s, 280s]**。
+3. 外层时间闸用 `opts.maxWaitMs = BUDGET_MS − 10s = 470s` 判（`app/exchange/run.ts`），
+   缺口全部放行——注释写的意图就是「在窗口前等」。
+4. 但链内 `warm-1` 用**自己的** `MAX_SPIN_MS = 30s` 判同一个等待 ⇒ 缺口最小 40s > 30s，
+   **每次定时触发必停靠**「交给下一次触发」。而下一次触发是下一个计划整点——照样停靠。
+   这个 30 秒是给**已删除的 `@every 5s/10s` 心跳**设计的（注释还在讲那个节拍）：
+   旧模型里「下一次触发」10 秒后就到，新模型里是下一个整点。`warm-2`、`order` 同理。
+5. 更糟的是停靠被记成「动手了」：`drain` 如实传回 `idle: true`，但 `runExchange` 收尾的
+   `finish(r.ok, note)` 把它**丢了** ⇒ 编排层 `r.idle` 为 undefined ⇒ `bumpPlanRuns`
+   空转消耗 `maxRuns`，还写一条 `ok:true` 的假绿运行记录。
+
+**修法**（三处，一起改才闭环）：
+
+- `TaskDeps` 加 `waitBudgetMs`（缺省仍 30s）；`runExchange` 把外层放行用的同一把尺
+  （`opts.maxWaitMs`）传进两个 drain；`warm-1` 与 `order` 的等待判据改用它。
+- `finish(...)` 第三参传 `r.idle === true`。
+- 新测试：waitBudget 给足 ⇒ warm-1 自旋到窗口发预热枪；停靠如实 `idle`
+  （`test/exchangeOrder.test.ts`）。
+
+**教训**：把「等待交给调度器」当设计时，必须跟着**调度模型**走。调度从「秒级心跳」换成
+「一小时一拍 + 提前醒」的那天，链内所有「交给下一次触发」的判据全部失效——而且它不报错，
+只是安静地什么都不做，运行记录还是绿的。两层共用一把尺（一个参数），这类分叉在结构上
+就不可能发生。
+
+### P0-B 界面「停止」按钮调的接口**不存在**
+
+`app.js` POST `/api/tasks/{p}/{t}/stop`——panel-llrt 的任务路由只有
+run/pause/resume/reset/schedule/restore（`web.rs:583-591`），没有 `/stop`；
+每次点击 404，任务根本停不下来。面板的打断是**插件级**的
+`POST /api/plugins/{name}/stop`（`web.rs:577`）。`test/webui.test.ts:915` 钉的还是
+错 URL——F-144「静态测试锁住 bug」的直接复发。两处都改了，并加了反向断言。
+
+同批修掉的「猜面板字段」族：
+
+- `loadJobs()` 读 `j.jobs` + `schedule`/`next_run`/`paused`——面板给 `tasks` +
+  `cron`/`next_at`(epoch 毫秒)/`enabled` ⇒ JOBS 永远空，排期那句永远不显示。
+  修了并按 F-144 的教训补**真函数**测试（scheduleText 抠出来喂两种形状）。
+- 「贴进去领取」丢了 `run_id`，兜底那条路拿浏览器的钟比面板的毫秒时刻（钟差 >2s
+  就永远匹配不上），且超时返回 null 没检查就清口令报「领完了」。已改走 run_id，
+  超时如实说还在跑、不动口令。
+
+### 直播族（F-137 的病灶在新宿主复发）
+
+- **听弹幕冷却不带 `idle`**：`runLiveListen` 冷却期返回 `{ok:true}` 而收口令循环只在
+  `!r.ok || r.idle` 时收手 ⇒ 零请求空转到窗口结束，整趟预算烧光，后面的领取全被挤掉。
+  冷却现在带 `idle: true`（CLI 的循环同一条判据，一起治好）。
+- **过期的冷却压过新鲜的门**：上一轮「没在播」的冷却能睡到下一场，而这一趟的门已经
+  真探过、说在播——两个结论矛盾时必须信新的。collect 在门报「在播」后调新加的
+  `clearListenCooldown`；清错了也自愈（roomBeat 会重新种回冷却）。
+- **领取 drain 没有 `more()`**：链长 9+口令数，`maxSteps` 到点却报 `ok:true`
+  （「都成了」），停在哪一步还决定下一趟拿什么当基准——进账数字是废的。
+  `drawOnce`（24 步）与 collect 的验证 drain（14 步）都补了 `more()`。
+- **领取阶段固定留 20 秒**是单账号时代的数：3 个号时第二个还没领完面板就把 handler
+  掐了。改成按账号数预留（25s/号 + 10s 底）。
+- 顺带：门的 `roomsStep` 成功现在带 `idle`（以前 collect 的 drain 会再走一步
+  重新握手两发 SSO/JWT，白打）；trace 环的时间戳不再用 run 冻结值（F-137 第 3 条的漏网）。
+- **手贴口令的键改 `global`**：`mcloud.live.codes` 原来按账号存，而 route（写）/
+  run（读+清）/readings（显示）三处各自解析"用谁的袋"——当前账号 ≠ 第一个 auto 号时
+  手动手模式静默失效、口令清不掉，还会凭空触发一次领过期口令的"手动"趟。
+  口令本来就是共享资源（`mcloud.kouling.pool` 已是 global），键改 global 之后
+  三处怎么解析袋都对得齐，这类错位在结构上不可能再发生。
+
+### 存储：锁内读改写（update 原语）
+
+`setState` 只把"写"关进锁，"读"在外面。所有「读出来 → 改一点 → 整份写回」的调用点——
+`routeSet` 的账号袋、`appendRun` 的运行记录数组、`bumpPlanRuns` 的每号计数——在
+**四个插件 + CLI 共用一份目录**（各自一条线程）时都是丢更新：daily 写 `done_date` 与
+路由刷会话同时发生，后写的整袋覆盖把先写的字段无声抹掉；兑换的 `ordered_hour` 被回退
+= **重复下单形状的风险**。
+
+**修法**：`Store` 加可选 `update(key, fn)`（可选是故意的——测试替身不用全改），fileStore
+在 `withLock` 里完成"读 → fn → 写"，memStore 同语义；`scoped()` 挂上 `routeUpdate`
+（global 直通 / account 落袋），**不许透传** base.update（否则按账号的键会被写成全局键，
+正是 scoped 要根除的事）。三个调用点全部改走它；宿主没有 update 时 routeSet 退回旧路、
+routeUpdate 直接抛（不许在外面临界区外自己读一遍）。加了三层测试：memStore 的袋字段
+保全、fileStore 的真文件读改写、以及 runLog/计划计数的行为回归（原 1243 条全绿）。
+
+**教训**：锁保护的是"写"，不是"读改写"。凡是「在现有值上改一点」的写入，读和写必须
+在同一把锁里——少一边就等于没锁。
+
+### 同批小修（P2，都验过）
+
+- `jsonFile.write` 的 tmp 在 rename **之前** chmod 0600（原来崩在窗口里就永久 0644，
+  里面是凭据）。
+- 旧库导入的 `{error}` 形状从静默改 warn（F-142 的教训差一个形状；要不要"不写 meta
+  留待重试"见下面待办 ⑥）。
+- 推送：全仓库原来只有 daily 调 `ctx.notify` ——绑了「兑换」规则的用户一次都收不到。
+  兑换编排收尾后按计划逐条 push；`notify` 自己包了 try/catch（推送失败不影响运行结果），
+  daily 的调用补了 `await`。
+- `register_cron` 失败从"吞掉记 error"改为**重抛**：三种失败（cron 写错 / lead 超限 /
+  调度器已退出）都意味着任务永远不会跑也不会重试，抛出去 = /readyz 的 failed_plugins
+  看得见（F-142 的教训）。`mcloud` 插件没有 cron 任务，不受影响。
+- 过期注释批量清理：`worker_hint('exclusive')` / `@every 5s/10s` 心跳 / 「面板预算上限
+  10 分钟超限抛异常」（panel-llrt 是 90 分钟且夹住）/ `/css/theme.css`、
+  `panel-theme-v2`、`?channel=plugin` 服务端过滤——全是旧面板时代的说法，照着改代码
+  就会再写出 F-145 同类 bug。`duePlans` 空转从静默 return 改为一行 debug 日志。
+- `types.ts` 删掉一个把业务层拖进"纯接口"文件的未用 import。
+
+### 待办（拿不准的，逐条写明为什么没动）
+
+1. **跨插件并发闸（直播 step 路由 / CLI）**——`mcloud` 路由插件与 `mcloud-live`
+   任务插件跑**同一套状态机、同一个袋、同一个池**，面板只按插件串行，跨插件不串行。
+   直播运行中点「听一拍」会开第二条 WS、并发写同一袋（丢更新、句柄互踩）。
+   没动的原因：正确的闸要定义"任务在跑时 UI 动作怎么办"（拒绝？排队？提示？）——
+   这是产品决策，不该由 review 顺手定；而且 P1-J 的 update 原语已经把其中
+   **丢更新**这一半的伤害收掉了，剩下的句柄互踩需要真机复现确认频率。
+2. **`duePlans` 改按小时匹配**——现在按 cron 精确匹配（分钟必须 0），迟到了 ≥60s
+   的那一拍（机器休眠醒来补跑）会匹配不中而整趟空转。只加了日志没改语义：
+   按小时匹配会让"面板手动跑一次"落在整点之外时也进入计划分发，虽然后面还有时间闸
+   兜底，但这改变了两条现有行为的交界，需要用户口径确认「手动跑一次到底该不该按计划走」。
+3. **`recordRun` 的合成占位字段（runs=0 / lateMs=0）与 `lateStats`**——现在读数里的
+   p50/p99 恒为 0，是结构性说谎。没删的原因：要先决定读数改展示什么（去掉？还是
+   换成面板 runs 表的真数据？），以及 `groups/meta.ts` 的消费面。
+4. **per-route 路由预算**——panel-llrt 对整个插件的 web 调用统一 30s
+   （`WEBUI_BUDGET_MS`），没有按路由声明的口子；`RouteEntry.budget_ms` 在插件侧没处递
+   （注释已改口）。属于**面板缺能力**，按 R5 找面板加 API，不在插件里造桥。
+   `/exchange/try` 与 `/exchange/order` 实测量级（几次上游往返 + JPEG 解码）
+   在 30s 内，先不动。
+5. **`koulingPool` 的时区口径**——「下一场」用机器本地时区串比较，`liveAuto` 却硬 +8 区。
+   非东八区的机器上显示会错。没动的原因：用户的机器在东八区，改了没有真机可验；
+   统一口径要决定「日程显示跟随机器时区还是永远北京时间」，这也是产品口径。
+6. **旧库导入失败的"不写 meta 留待重试"**——`{error}` 可能是"没这张表"（真没旧数据）
+   也可能是真失败。要区分得先知道面板回的确切错误串（或加一个专判"表不存在"的探测），
+   属于要对着真面板验证的事。
+7. **锁的陈旧接管 TOCTOU / JsonFile 缓存按 mtime 失效 / 无 fsync**——三个都确认了机制，
+   都没动：接管改原子 rename 需要专门的并发测试（改动在全部写入的关键路径上）；
+   mtime 粒度取决于 LLRT 的 stat 实现，需要真机取证；fsync 要先确认 LLRT 有没有这个
+   op（R6）。共同点：都是低概率 × 高确认成本，留到有真机证据再动。
+8. **`recordRun` 消费方 `groups/meta.ts` 的 `recentRuns` 恒空**——运行记录按写者分文件
+   后，`mcloud`（服务插件）名下的 runs 文件永远空。UI 真正的历史走 `mcloud.run.log`，
+   所以只是死数据不是坏数据；修法（读 `runs/*.json` 汇总）等确认那条路由还有没有
+   展示价值再动。
+9. **面板的「日志一帧一条全量重写 shared.json」**——听弹幕期间每帧一行日志就是一次
+   整文件重写（全局锁）。机制确认了，没动的原因：换 `ring.json`/`runlog.json` 独立文件
+   是一次存储布局变更，四个插件 + CLI + 旧数据导入都要跟着动，值得单独立项做，
+   不该塞进一次 review 批次。
+
+### 怎么验的
+
+`npm test` 1247/1247（+4 条新测试：waitBudget 自旋、停靠 idle 传播、routeUpdate 字段
+保全、fileStore update 落盘形状）；`npm run typecheck`（src / test / standalone 三个
+tsconfig）全过；`npm run check-layers` 通过。P0-A 的完整链路有面板源码逐环背书
+（`trigger_at` 只发一拍），待真机整点那一场做最终确认——观察点与 ⑤-5 清单相同：
+**只发了一枪吗**。

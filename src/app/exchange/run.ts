@@ -32,12 +32,22 @@ export async function runExchangeTask(ctx: ExchangeCtx, p: TaskPayload): Promise
 
     // 这一拍的目标整点，哪些计划该跑（cron 的日/月/周匹配也在这里判）。
     const plans = duePlans(loadPlans(store), targetMs);
-    if (plans.length === 0) return;
+    if (plans.length === 0) {
+      // ⚠ 一行不留的话，「这一趟为什么什么都没发生」就无从回答：迟到/补跑的那一拍
+      //   scheduledAt 会飘过整点，cron 按**分钟**匹配不中 ⇒ 全部计划都不 due；
+      //   手动「跑一次」落在整点之外也是这一支。如实说，别静默。
+      //   （要不要改成按小时匹配 = 语义改动，见 findings F-145 的待办。）
+      logBoth(store, 'debug', `兑换：这一趟没有到点的计划（按 scheduledAt=${p.scheduledAt} 匹配）`, at);
+      return;
+    }
     const targetHour = new Date(targetMs).getHours();
     const thisHour = hourKey(targetMs);
     const accounts = loadAccounts(store);
     let acted = 0;
     let skipped = 0;
+    // 推送正文按计划一条一行地攒（见循环里的 `tail`）。
+    const pushLines: string[] = [];
+    let pushFailed = 0;
 
     for (const plan of plans) {
       const acct = accounts.find((a) => a.id === plan.accountId);
@@ -147,6 +157,9 @@ export async function runExchangeTask(ctx: ExchangeCtx, p: TaskPayload): Promise
             ? `${plan.prizeName}：${bad} 项跳过（没有网页会话）`
             : `${plan.prizeName}：${hard} 项没成${bad > hard ? `、${bad - hard} 项跳过` : ''}`;
       logBoth(store, hard > 0 ? 'warn' : 'debug', `${tag} ${tail}`, at);
+      // 推送正文：这条计划的结果一行（成败都算" acted"，都该让绑了规则的用户看到）。
+      pushLines.push(`${who} · ${tail}`);
+      if (hard > 0) pushFailed += 1;
     }
 
     if (acted === 0) {
@@ -158,6 +171,20 @@ export async function runExchangeTask(ctx: ExchangeCtx, p: TaskPayload): Promise
           ' 条计划都还没到该抢的时候（或这一场已经试过了）' +
           (skipped > 0 ? '，其中 ' + skipped + ' 条被跳过' : ''),
         at,
+      );
+    }
+    // ── 推送：挂在**一次运行结束**上（与日常同一条口径）。
+    // ⚠ 全仓库此前只有日常调它 —— 绑了「兑换」规则的用户一次都收不到（F-145）。
+    //   一条都没动手的趟不发（纯"还没到点"的趟不值得推）。
+    if (pushLines.length > 0) {
+      await ctx.notify(
+        'exchange',
+        `兑换：${pushFailed > 0 ? '有失败' : '跑完了'}`,
+        [
+          ...pushLines,
+          ...(skipped > 0 ? ['', `${skipped} 条计划这趟被跳过（未到点 / 已发过 / 次数用完）`] : []),
+        ].join('\n'),
+        pushFailed > 0,
       );
     }
 }

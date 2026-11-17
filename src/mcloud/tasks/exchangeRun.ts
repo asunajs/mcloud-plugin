@@ -269,9 +269,10 @@ export async function runExchange(
 
   // ⓪ **时间闸：任何请求之前** ────────────────────────────────────
   //
-  // ⚠ 顺序是**性能**也是**礼貌**：任务挂的是 `@every 10s`，而原来清单请求
-  //   排在时间判断**之前** ⇒ 一天 8,640 次白打（不在窗口里的时候也一样）。
-  //   现在不在窗口里就**零请求**秒返回。
+  // ⚠ 顺序是**性能**也是**礼貌**：任务挂的是「整点并集 cron + lead_ms 提前醒」，
+  //   面板每个槽只发一拍。原来清单请求排在时间判断**之前**的时候，一天
+  //   8,640 次（`@every 10s` 时代）白打；现在不在窗口里也**零请求**秒回 ——
+  //   「下一次触发」是下一个计划整点，等不起就不该打请求。
   //
   // ⚠ 而且这条闸必须在 `runExchangeList` **之前**：那是唯一能"什么都没干
   //   却打了上游"的地方。
@@ -297,6 +298,12 @@ export async function runExchange(
       true,
     );
   }
+
+  // 链内的自旋预算 = 外层放行用的**同一把尺**：定时那一趟入口传了整趟预算
+  // （`BUDGET_MS − 10s`），链内就等得到窗口/整点；交互调用没传 ⇒ 仍是 30 秒缺省
+  // （`MAX_SPIN_MS`）。两处必须一致，否则会出现"外层说'进去等'、链内说'等不了'"——
+  // 那正是定时兑换停摆一整个版本的根因（findings F-145）。
+  const waitBudgetMs = opts.maxWaitMs ?? MAX_SPIN_MS;
 
   // ① 清单（只读）：顺带让用户在「数据」页看得到价格与余量
   //    ⚠ 票过期时先无感换票 —— 不换的话清单会读回来但 `limit` 整片缺失，
@@ -338,8 +345,9 @@ export async function runExchange(
   // 两条证据：
   //
   // ① **这个架构给不了插件内并行**：面板的 worker 分配单位是**插件**
-  //    （`engine.rs` 的 `route_map().get(plugin)`），而 `mcloud-exchange`
-  //    又声明了 `worker_hint('exclusive')`（整个插件一条专属线程）。
+  //    （`engine.rs` 的 `route_map().get(plugin)`）—— 同一个插件名下的任务
+  //    必然串行（panel-llrt 上没有 `worker_hint('exclusive')` 这个声明了，
+  //    那是旧面板的机制；"整个插件一条专属线程"在这里是结构使然）。
   //    所以它名下的 N 条任务**必然串行**。"一个账号一条任务"拿不到并行，
   //    只会让面板的任务列表多出 N 行。
   // ② **参考实现自己也没做**：`mcloud-engine/src/pipeline.rs` 的
@@ -378,7 +386,7 @@ export async function runExchange(
       }
       clearOrder(deps);
       startOrder(deps, plan);
-      const a = await drain(runOrderStep, deps, {
+      const a = await drain(runOrderStep, { ...deps, waitBudgetMs }, {
         label: '兑换',
         maxSteps: 8,
         // 停在 `order` 之前 —— 下单那一枪留给阶段 B（那时才压整点）
@@ -407,7 +415,7 @@ export async function runExchange(
       selectAccount(deps.store, acc.id, deps.nowIso);
       restoreOrder(deps.store, snap, deps.nowIso);
     }
-    const one = await drain(runOrderStep, deps, {
+    const one = await drain(runOrderStep, { ...deps, waitBudgetMs }, {
       label: '兑换',
       maxSteps: 10,
       // ⚠ 干跑：停在 `order` **之前** —— 一枪都不发
@@ -449,5 +457,9 @@ export async function runExchange(
     else add(line.slice(0, i), true, line.slice(i + 1));
   }
 
-  return finish(r.ok, `${r.note}（用时 ${((Date.now() - started) / 1000).toFixed(1)}s）`);
+  // ⚠ `idle` 必须传到顶层：停靠（还没到窗口 / 没账号）的那一趟**一个请求都没发**，
+  //   入口靠 `r.idle` 决定"要不要计数 / 写运行日志"。吞掉它的话，停靠的定时触发
+  //   会被当成"动手了"—— `maxRuns` 被空转消耗，运行记录里还躺着一条假绿
+  //   （findings F-145）。
+  return finish(r.ok, `${r.note}（用时 ${((Date.now() - started) / 1000).toFixed(1)}s）`, r.idle === true);
 }

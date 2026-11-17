@@ -200,8 +200,10 @@ export async function runDailyTask(ctx: DailyCtx, p: TaskPayload): Promise<void>
     // ── 推送：挂在**一次运行结束**上（不是每条日志推一次）──
     // 正文 = 这次的结果 + **失败的那几步**。带上失败的那几步是必须的：
     // 否则用户收到「有失败」还得回界面翻是哪一步。
+    // ⚠ **await**：handler 的预算是分钟级的，一条推送（≤20s）该算在这次运行里；
+    //   不等的话，它成了"没人认领的 Promise"—— 失败连日志都落不到这次运行名下。
     const bad = r.detail.filter((l) => l.includes('失败'));
-    ctx.notify(
+    await ctx.notify(
       'daily',
       `日常：${r.ok ? '跑完了' : '有失败'}`,
       [

@@ -47,9 +47,10 @@ export const STATE_APPLIED = 'mcloud.cfg.applied';
 /** 日常预算的上下限（秒）。
  *
  *  下限 60：一趟日常再怎么快也不该低于这个数（多账号 + 任务间间隔）。
- *  上限 600：面板对单任务预算的硬上限（`MAX_DECLARED_BUDGET_MS` = 10 分钟），
- *  超过**不是夹一下，是抛异常、插件整个加载失败**（2026-11-03 09:58 现场）。
- *  这里先夹住，永远不往宿主递一个超限的数。 */
+ *  上限 600 是**插件自己**选的一档（多账号日常跑不满），不是面板的硬顶 ——
+ *  panel-llrt 对 `budget_ms` 的上限是 90 分钟且**越界夹住**（`scheduler.rs` 的
+ *  `MAX_BUDGET_MS`）。旧面板（rust-plugin-panel）才是 10 分钟硬顶、超限抛异常
+ *  整个插件加载失败 —— 那段历史见 2026-11-03 现场，别再照它配这一格。 */
 export const MIN_BUDGET_S = 60;
 export const MAX_BUDGET_S = 600;
 

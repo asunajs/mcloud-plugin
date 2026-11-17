@@ -242,21 +242,22 @@ function spinUntil(targetMs: number, deps: TaskDeps): number {
  *  它存在的意义是兜底，不是常态。 */
 export const MAX_WAIT_MS = 61 * 60_000;
 
-/** 超过这么久就不自旋，**交给下一次触发**。
+/** 超过这么久就不自旋，**交给下一次触发**——这是**缺省**等待预算。
  *
  *  # 这一条是设计，不只是护栏
  *
- *  粗粒度等待是**调度器**的活（任务挂 `@every 5s`），细粒度才是自旋的活 ——
- *  自旋是为了把最后一枪压到 10ms，不是为了坐等 59 分钟。
+ *  粗粒度等待是**调度器**的活，细粒度才是自旋的活 —— 自旋是为了把最后一枪
+ *  压到 10ms，不是为了坐等几十分钟。缺省 30 秒管的是**交互调用**（路由/干跑）：
+ *  窗口是 20 秒宽（59:40 → 整点），加上预热与取题，最多也就二十几秒。
  *
- *  30 秒覆盖了整条链需要的全部等待：窗口是 20 秒宽（59:40 → 整点），
- *  加上预热与取题，最多也就二十几秒。
+ *  ⚠ 定时那一趟**不走这个数**：任务挂的是「整点并集 cron + lead_ms 提前醒」，
+ *  面板每个槽只发一拍（`next_fire − lead`，整点没有第二拍），入口把整趟预算
+ *  （`BUDGET_MS − 10s`）经 `deps.waitBudgetMs` 传进来，链内自旋到窗口/到整点。
+ *  2026-11-17 之前链内恒用 30 秒判 ⇒ 定时触发的缺口（lead − 20s，最小 40s）
+ *  永远超限 ⇒ 每次都停在 `warm-1`「交给下一次触发」—— 而下一次触发是下一个
+ *  计划整点，照样停 ⇒ 定时兑换一单都发不出去（findings F-145）。
  *
- *  ⚠ 没有它的话，`@every 5s` 的任务在 59:00 被触发时会**自旋 40 分钟**：
- *  占住一条线程、面板上看是"卡住了"，而且中间那 8 次触发全排在后面
- *  （然后它们都会看到"已经过了窗口"而各发一枪 —— 见 `hourKey` 那道闸）。
- *
- *  ⚠ 顺带它也让测试**不会挂**：在任意时刻跑的测试离窗口多半超过 30 秒，
+ *  ⚠ 它也让测试**不会挂**：在任意时刻跑的测试离窗口多半超过 30 秒，
  *  于是链立刻返回而不是自旋到下一个整点。（第一版没有这条，
  *  `npm test` 直接挂住 —— 因为 `Date.now()` 是真时钟。） */
 export const MAX_SPIN_MS = 30_000;
@@ -428,11 +429,14 @@ export async function runOrderStep(deps: TaskDeps): Promise<TaskOutcome> {
       const w = planWindowWait(depsNowMs(deps));
       if (w.needed) {
         // 还远 ⇒ **不自旋**，交给下一次触发（粗粒度等待是调度器的活）
-        if (w.ms > MAX_SPIN_MS) {
+        // ⚠ 预算是**调用方给的**（`deps.waitBudgetMs`）：定时那一趟（一小时一拍 +
+        //   提前醒，整点没有第二拍）入口已把整趟预算传进来 ⇒ 链内自旋到窗口；
+        //   交互调用（路由/干跑）不给预算 ⇒ 仍用 30 秒，不占着调用线程干等。
+        if (w.ms > (deps.waitBudgetMs ?? MAX_SPIN_MS)) {
           return {
             ok: true,
             idle: true,
-            note: `${label}：还没到窗口（还差 ${Math.round(w.ms / 1000)}s）—— 交给下一次触发，本次零请求`,
+            note: `${label}：还没到窗口（还差 ${Math.round(w.ms / 1000)}s）—— 本次零请求，交给下一次触发`,
           };
         }
         const waited = spinUntil(w.untilMs, deps);
@@ -522,9 +526,11 @@ export async function runOrderStep(deps: TaskDeps): Promise<TaskOutcome> {
     // 让请求**正好在整点抵达云端**。它不是"抢跑"。
     const f = planFireWait(depsNowMs(deps), exchangeLeadMs(deps.store));
     if (f.needed) {
-      // 到这一步还远 ⇒ 状态不对（前面的预热/取题该在窗口内完成）。
-      // **不自旋到下一个整点**：那会白占一条线程，而且这一单的计划已经过期了。
-      if (f.ms > MAX_SPIN_MS) {
+      // 到这一步还远 ⇒ 状态不对（前面的预热/取题该在窗口内完成），或者上一趟
+      // 停在 `order`、这次触发来得太早。**不自旋过远**：占一条线程干等没意义。
+      // ⚠ 预算同样是**调用方给的**（定时那一趟给整趟预算）—— 恢复到 `order` 的
+      //   定时趟要能自旋到「整点 − 提前量」把那一枪发出去。
+      if (f.ms > (deps.waitBudgetMs ?? MAX_SPIN_MS)) {
         return done(
           `${label}：离整点还有 ${Math.round(f.ms / 1000)}s —— 这一单的计划过期了（预热与取题该在窗口内做完），不发`,
           false,

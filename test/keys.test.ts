@@ -37,6 +37,7 @@ import {
   migrateFlatKeys,
   readBag,
   routeGet,
+  routeUpdate,
   scopeOf,
 } from '../src/store/keys.ts';
 import { rawStoreOf, scoped } from '../src/store/scoped.ts';
@@ -284,4 +285,33 @@ test('⚠ 不许包两次（包两次会让 `mcloud.acct.*` 也去查登记表�
 test('袋的物理键形状固定（换实现时老数据要能读）', async () => {
   assert.equal(acctBagKey('abc'), `${ACCT_PREFIX}abc`);
   assert.equal(ACCT_PREFIX, 'mcloud.acct.');
+});
+
+test('⚠ 锁内读改写：update 只动一个字段，袋里**别的字段不丢**（丢更新 = 假绿/重复下单的根）', async () => {
+  // 四个插件 + CLI 共用一份存储时，"读出来 → 改一点 → 整份写回"会让后写的
+  // 整袋覆盖把先写的字段无声抹掉（daily 写 done_date 与路由刷会话同时发生；
+  // 兑换的 ordered_hour 被回退 = 重复下单形状的风险，findings F-145）。
+  // 所以"在现有值上改一点"必须走 `routeUpdate`（宿主在同一把锁里读改写）。
+  const store = memStore();
+  store.ensureSchema();
+  store.setState('mcloud.session', JSON.stringify({ cookie: 'c=1', jwt: 'j', savedAt: NOW }), NOW);
+  store.setState('mcloud.live.gate', 'G', NOW);
+
+  routeUpdate(store, 'mcloud.live.gate', () => 'G2');
+  assert.equal(store.getState('mcloud.live.gate'), 'G2');
+  assert.equal(
+    store.getState('mcloud.session'),
+    JSON.stringify({ cookie: 'c=1', jwt: 'j', savedAt: NOW }),
+    '同一个袋里的 session 不许被抹掉',
+  );
+
+  // 返回 null = 删掉这个字段（读回来是 null，不是空串）
+  routeUpdate(store, 'mcloud.live.gate', () => null);
+  assert.equal(store.getState('mcloud.live.gate'), null);
+  assert.ok(store.getState('mcloud.session') !== null, '删一个字段不许把整袋清掉');
+
+  // 全局键同样走锁内读改写（runLog / 计划计数就是这一类）
+  store.setState('mcloud.run.log', '[{"id":"a"}]', NOW);
+  routeUpdate(store, 'mcloud.run.log', (prev) => JSON.stringify([...JSON.parse(prev!), { id: 'b' }]));
+  assert.deepEqual(JSON.parse(store.getState('mcloud.run.log')!), [{ id: 'a' }, { id: 'b' }]);
 });

@@ -2,17 +2,17 @@
   云盘插件的样式表。**颜色与组件都走主面板那一套**，这里只放这个插件特有的布局。
 
   这个页面跑在 iframe 里（是另一个 document），但这件事**不影响引样式表**：
-  index.html 的 <head> 按 reset → theme → components → 本文件的顺序引了 `/css/*`
-  （面板那三份），所以面板的 token 与组件类在这里直接可用 ——
+  index.html 的 <head> 引了面板的 `/app.css`（新面板只发这一份，旧面板那三份
+  `/css/*` 已经没了），所以面板的 token 与组件类在这里直接可用 ——
   `.btn` / `.badge` / `.field` / `.input` / `.empty` / `.table-wrap` / `.dialog*`
   之类**不在这里重画**，重画的后果是同一个组件有两份定义、改一处漏一处。
 
   # 主题是怎么跟随的（以及为什么这里**不许**写 prefers-color-scheme）
 
-  面板把主题存在 localStorage 的 `panel-theme-v2` 里，`boot.js` 读它、并给 <html>
+  面板把主题存在 localStorage 的 `panel-llrt-theme` 里，`boot.js` 读它、并给 <html>
   挂 `data-theme`（iframe 与面板同源，所以读得到；别人的文档改了 localStorage
   这边还会收到 `storage` 事件，所以在面板上切主题这一页立刻跟着变）。
-  面板的 theme.css 正是按 `:root[data-theme='light']` 取浅色那一套的 —— 两个条件
+  面板的样式正是按 `:root[data-theme='light']` 取浅色那一套的 —— 两个条件
   对齐了，配色自动一致。
 
   ⚠ 在这里再补一条 prefers-color-scheme 的媒体查询会**盖掉用户的选择**：
@@ -29,7 +29,7 @@
      菜单栏横向滚动、表格可横滚、输入框撑满。不设固定宽度。
 */
 
-/* 颜色一律走主面板的 token（/css/theme.css）—— 这里只把本文件用的短名字
+/* 颜色一律走主面板的 token（/app.css）—— 这里只把本文件用的短名字
    接到那些 token 上。⚠ 不要重定义 --bg / --accent / --radius：
    它们是主面板的名字，重定义会把面板的值盖掉（本文件在面板的 CSS 之后加载）。 */
 :root {
@@ -59,15 +59,15 @@
   --font-mono: var(--mono);
   /* 样式表版本号：页面上的「样式自检」读它，用来判断浏览器用的是哪一份 style.css。
      改了本文件就把它加一（一个数字，别指望它自动同步）。 */
-  --style-ver: 157;
+  --style-ver: 158;
 }
 
-/* 为什么还留着这几个短名字：界面上还有 6 个区块这轮不重写
-   （日常 / 兑换 / 直播 / 数据 / 推送 / 设置），它们内部仍写着 `var(--fg)` 这一套 ——
-   接上主面板的 token 之后，那 6 块一个字不改就跟着面板换配色。 */
+/* 为什么还留着这几个短名字：界面上其余的区块（日常 / 兑换 / 直播 / 数据）
+   内部仍写着 `var(--fg)` 这一套 —— 接上主面板的 token 之后，那些块一个字不改
+   就跟着面板换配色。（推送/设置两块已删，别照旧注释去找。） */
 
-/* 底色 / 字色 / 字体族由 theme.css 的 body 规则给，`box-sizing` 与各处默认外边距
-   由 reset.css 给（都在 <head> 里引过了，这里不重复一遍）。
+/* 底色 / 字色 / 字体族由面板 /app.css 的 body 规则给，`box-sizing` 与各处默认外边距
+   也在那份里 —— 这里不重复一遍。
    只补面板没定的那点：1.6 的行高 —— 这一页多是「一行一条」的清单，1.55 偏挤。 */
 body {
   line-height: 1.6;

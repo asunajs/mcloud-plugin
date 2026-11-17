@@ -134,6 +134,41 @@ export function openFileStore(o: FileStoreOptions): Store {
       });
     },
 
+    // ⚠ **锁内读改写**：`fn` 拿到当前值（没有 ⇒ null），返回新值（null = 删）。
+    //   `setState` 只把"写"关进锁，"读"在外面 —— 调用方自己读再改再写的那段
+    //   （routeSet 的账号袋、runLog 的追加、计划计数）在四个插件 + CLI 共用一份
+    //   目录时就是**丢更新**：mcloud-daily 写袋与 mcloud 路由刷会话同时发生，
+    //   后写的整袋覆盖会把先写的字段无声抹掉（兑换的 ordered_hour 被回退 =
+    //   重复下单形状的风险，findings F-145）。整段 RMW 必须在一把锁里。
+    update: (key, fn) => {
+      ensure();
+      withLock(dir, () => {
+        if (key.startsWith(ACCT_PREFIX)) {
+          const f = bagFor(key.slice(ACCT_PREFIX.length));
+          const cur = f.read();
+          const prev = Object.keys(cur).length === 0 ? null : JSON.stringify(cur);
+          const next = fn(prev);
+          if (next === null) {
+            f.write({});
+            return;
+          }
+          let bag: Record<string, string>;
+          try {
+            bag = JSON.parse(next) as Record<string, string>;
+          } catch {
+            bag = {};
+          }
+          f.write(bag);
+          return;
+        }
+        const all = sharedFile.read();
+        const next = fn(all[key] ?? null);
+        if (next === null) delete all[key];
+        else all[key] = next;
+        sharedFile.write(all);
+      });
+    },
+
     recordRun: (r) => {
       ensure();
       return withLock(dir, () => {

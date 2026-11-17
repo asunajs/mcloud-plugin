@@ -191,8 +191,14 @@ export const panel: PanelHost = {
     try {
       await host.register_cron(def.name, def.cron, def.budget_ms, Object.keys(opts).length > 0 ? opts : undefined);
     } catch (e) {
-      // 注册失败不抛给调用方：单个任务坏了不该让整个插件装不上（面板日志里有痕迹）
+      // ⚠ **要抛**：register_cron 的失败只有三种 —— cron 写错（开发者的错）、
+      //   lead_ms 超限（同）、调度器已退出（面板正在关）。哪种都意味着这条任务
+      //   **永远不会跑也不会重试**，而吞掉的话插件看起来装好了、卡片也写了，
+      //   只有日志里一条 error（F-143 之前的启动期 6 条 warn 就是这种混在里面）。
+      //   抛出去 = 插件加载失败 = /readyz 的 failed_plugins 里看得见
+      //   （F-142 的教训：静默失败要让它显形，deploy 脚本抓的就是这个）。
       emit('error', '注册任务 ' + def.name + '（' + def.cron + '）失败: ' + text(e));
+      throw e;
     }
   },
 

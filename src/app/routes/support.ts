@@ -50,13 +50,13 @@ export interface RouteEntry {
    *  （`engine.rs::call_json`：`(async () => { const v = await __dispatch(...) })()` + `rt.idle()`），
    *  所以上游一慢，这里 await 是"让出线程"，不是"多一层壳"。 */
   handler: (req: RouteRequest) => RouteResponse | Promise<RouteResponse>;
-  /** 这条路由的执行预算（毫秒）。不给就用面板的全局值（2000ms）。
+  /** 这条路由的执行预算（毫秒）。
    *
-   *  ⚠ 面板的看门狗到点会把 handler **强制打断**并回一个 500（"路由处理超过预算 …
-   *    被强制中断"）。默认那一档只够一两次上游往返；像「今日AI豆」那样
-   *    **逐账号 × 翻页**的只读链，一发 `cloudRecordV2` 的超时就有 1500ms，
-   *    两个账号各读两页就顶到 2 秒了 —— 所以它必须自己声明预算。
-   *    见 `entries/mcloud.ts` 把这一格透给 `register_route`。 */
+   *  ⚠ panel-llrt 对**整个插件的 web 调用**统一给 30 秒（`web.rs::WEBUI_BUDGET_MS`），
+   *    **没有**按路由声明的口子 —— 这一格在插件侧收下来没处递（`register_web`
+   *    只收一个函数）。留着它：一是文档（说明这条路由预期多贵），
+   *    二是等面板加 per-route 预算的 API 时直接接上（R5：缺能力找面板加，
+   *    不在插件里造同步桥）。看门狗到点**强制打断**并回 500。 */
   budget_ms?: number;
 }
 

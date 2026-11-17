@@ -19,8 +19,15 @@ function rowsOf(v: unknown): Record<string, unknown>[] | null {
   if (v !== null && typeof v === 'object' && Array.isArray((v as { rows?: unknown }).rows)) {
     return (v as { rows: Record<string, unknown>[] }).rows;
   }
-  // 宿主失败时是 `{error}`（不是抛）；表不存在也是这一档
-  if (v !== null && typeof v === 'object' && 'error' in v) return null;
+  // 宿主失败时是 `{error}`（不是抛）。⚠ 表不存在也是这一档，但**库被锁 / IO 错**
+  // 也是这一档 —— 静默当"没有旧数据"的话，失败会被 meta.json **永久化**（再也不
+  // 会重试）。至少把原话报出来，别"搬了 0 条、一声不响"（F-142 的教训差一个形状）。
+  // 待办（F-145）：只有认得出"no such table"这类才算真没旧数据；其余不该写 meta，
+  // 留到下次启动重试。要认那种形状得先知道面板回的确切错误串。
+  if (v !== null && typeof v === 'object' && 'error' in v) {
+    logTo('warn', '旧状态导入：面板数据库返回错误（按"没有旧数据"继续）：' + JSON.stringify((v as { error: unknown }).error).slice(0, 200));
+    return null;
+  }
   // 其它形状：**别静默** —— 报出来，否则下次还是"搬了 0 条，谁也不知道"
   logTo('warn', '旧状态导入：面板返回的形状不认识（既不是 rows 也不是 error）：' + JSON.stringify(v).slice(0, 200));
   return null;
