@@ -5,7 +5,7 @@
 import { drain } from '../drain.ts';
 import { hostNativeTls, capNote } from '../mcloud/hostCap.ts';
 import { KOULING_ANCHOR } from '../mcloud/koulingPool.ts';
-import { loadPoolFrom, stopScraping, validCount } from '../mcloud/koulingPool.ts';
+import { loadFreshPool, loadPoolFrom, stopScraping, validCount } from '../mcloud/koulingPool.ts';
 import {
   needExchange,
   loadExchange,
@@ -18,6 +18,7 @@ import { labelOf } from '../mcloud/taskAccounts.ts';
 import { runAuthRefresh } from '../mcloud/authRefresh.ts';
 import { runLiveGate, readGateReading } from '../mcloud/tasks/liveGateTask.ts';
 import { runLiveRoom, STATE_CODES } from '../mcloud/tasks/liveRoom.ts';
+import { verifyCode } from '../mcloud/tasks/liveVerify.ts';
 import { runLiveListen, type ListenDeps } from '../mcloud/tasks/liveListen.ts';
 import { loadDrawState, runLiveDraw, STATE_DRAW, type DrawState } from '../mcloud/tasks/liveDraw.ts';
 import { drawLogLines } from './liveLog.ts';
@@ -65,6 +66,8 @@ async function collectOnce(
   deps: ListenDeps,
   runStartMs: number,
   listenMs: number,
+  /** 验口令时**依次试**的账号（第一个给不出结论就换下一个，见 liveVerify）。 */
+  accountIds: readonly string[],
 ): Promise<{ steps: RunStep[]; detail: string[]; ok: boolean; note: string; stopped: boolean }> {
   const steps: RunStep[] = [];
   const step = async (name: string, fn: () => TaskOutcome | Promise<TaskOutcome>): Promise<TaskOutcome> => {
@@ -121,7 +124,16 @@ async function collectOnce(
   }
 
   await step('小红书主页口令', async () => await runLiveRoom(deps));
-  const poolNow = loadPoolFrom(deps.store).pool;
+  // **拿到就验**（口径第 3 条）：小红书给的口令立刻拿去领一次，不等窗口。
+  const afterXhs = loadFreshPool(deps.store, Date.parse(deps.nowIso)).pool;
+  const toVerify = afterXhs.codes.filter((c) => c.state === 'unknown' && c.firstSeenMs >= runStartMs);
+  for (const one of toVerify) {
+    const v = await verifyCode(deps, accountIds, one.value);
+    const say = v.state === 'valid' ? '有效' : v.state === 'invalid' ? '无效' : '没结论';
+    const by = v.by === '' ? '' : `（${labelOf(deps.store, v.by)} 验的）`;
+    steps.push({ name: `验口令「${one.value}」`, ok: v.state !== 'invalid', note: `${say}${by}`, idle: false });
+  }
+  const poolNow = loadFreshPool(deps.store, Date.parse(deps.nowIso)).pool;
   if (stopScraping(poolNow)) {
     steps.push({
       name: '听弹幕',
@@ -208,7 +220,7 @@ export async function autoDrawRedFlower(rt: Runtime): Promise<void> {
   const auth = await runAuthRefresh(collectDeps);
   if (!auth.ok) log.warn(`凭据续期：${auth.note}`);
   if (!await ensureSignInSession(collectDeps, first.label, log)) return;
-  const collected = await collectOnce(collectDeps, Date.now(), LISTEN_BUDGET_MS);
+  const collected = await collectOnce(collectDeps, Date.now(), LISTEN_BUDGET_MS, all.map((a) => a.id));
   for (const line of collected.detail) log[lineLevel(line)](line);
   if (collected.stopped) return;
 

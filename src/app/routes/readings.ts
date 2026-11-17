@@ -139,6 +139,8 @@ export function buildReadings(deps: RouteDeps): Record<string, unknown> {
         const labels = new Map(
           loadAccounts(deps.store).map((a) => [accountKey(parseAuthorization(a.auth)?.phone ?? ''), a.label]),
         );
+        // 「谁验的」在池里按账号 id 记（validatedBy），界面上要换成标签
+        const byId = new Map(loadAccounts(deps.store).map((a) => [a.id, a.label]));
         // 口令是共享的，但“领过”是**按账号**记的；这里把账号标签一并给界面，
         // 否则三个号时只写“这个账号”根本不知道是哪个（2026-11-03 现场）。
         const claimedBy = (code: string): string[] =>
@@ -156,6 +158,8 @@ export function buildReadings(deps: RouteDeps): Record<string, unknown> {
           reason?: string;
           claimedBy?: string[];
           atMs?: number;
+          /** 谁验的（账号标签）：用户口径「应该记录操作者账号」。 */
+          by?: string;
         }> = [];
         for (const c of human) {
           const code = c.trim();
@@ -181,6 +185,11 @@ export function buildReadings(deps: RouteDeps): Record<string, unknown> {
             reason: by.length > 0 ? '已验证有效' : c.reason,
             claimedBy: by,
             atMs: c.validAtMs ?? c.firstSeenMs,
+            // `validatedBy` 记的是**账号键**（`accountOf` = phone 的 hash），与 `labels` 同一套键；
+            // 再兜一层 id（万一哪天改成记 id）
+            ...(c.validatedBy === undefined
+              ? {}
+              : { by: labels.get(c.validatedBy) ?? byId.get(c.validatedBy) ?? c.validatedBy }),
           });
         }
         return out;
@@ -208,7 +217,10 @@ export function buildReadings(deps: RouteDeps): Record<string, unknown> {
       // ⚠ 「本场已结束」与「口令无效」分栏的理由见 liveDraw.drawReport 的注释 ——
       //   分错的后果是用户去重抄一条本来就对的口令。
       draw: (() => {
-        const st = loadDrawState(deps.store);
+        // ⚠ 必须读**第一个任务账号**的袋（liveOne）：`mcloud.live.draw` 是按账号的键，
+        //   而任务是写在那里。用 `deps.store`（当前查看的号）会在「看的号和跑的号不是同一个」时
+        //   显示别人的那一轮，或者干脆「还没领过」—— 2026-11-17 复核的 F3。
+        const st = loadDrawState(liveOne);
         const r = drawReport(st);
         return {
           enabled: claimEnabled(deps.store),

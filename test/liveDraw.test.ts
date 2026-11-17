@@ -461,3 +461,19 @@ test('**换账号**之后，同一批口令必须重新领 —— 判据不能�
   const st2 = loadDrawState(store);
   assert.equal(st2?.account, accountOf(store), '新的一轮记的是新账号');
 });
+
+test('fresh:true 绕开「这号领过这批 ⇒ 不发请求」（验口令靠它）', async () => {
+  const store = seeded({ codes: ['甲'] });
+  const { transport, sent } = fakeUpstream();
+  for (let i = 0; i < 12; i += 1) {
+    await runLiveDraw({ store, transport, nowIso: NOW });
+    if (loadDrawState(store)?.step === 'done') break;
+  }
+  const before = sent.length;
+  const idle = await runLiveDraw({ store, transport, nowIso: NOW }, { codes: ['甲'] });
+  assert.equal(idle.idle, true, '同一批口令再来一次就是 idle');
+  assert.equal(sent.length, before, '不该再发请求');
+  const fresh = await runLiveDraw({ store, transport, nowIso: NOW }, { codes: ['甲'], fresh: true });
+  assert.equal(sent.length, before + 1, 'fresh 必须真的打一枪 —— 否则口令永远停在「未知」');
+  assert.notEqual(fresh.idle, true);
+});

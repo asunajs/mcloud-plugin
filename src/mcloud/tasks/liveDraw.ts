@@ -247,7 +247,7 @@ export function stepRequest(
 /** 推进一步。**一次调用最多发一个请求。** */
 export async function runLiveDraw(
   deps: TaskDeps,
-  opts: { force?: boolean; codes?: readonly string[] } = {},
+  opts: { force?: boolean; codes?: readonly string[]; fresh?: boolean } = {},
 ): Promise<TaskOutcome> {
   const TASK = 'live-room';
 
@@ -288,7 +288,11 @@ export async function runLiveDraw(
         ? { ok: true, idle: true, note: `这一轮已跑完（${s?.summary ?? ''}）；口令没变，不重复领（${why}）` }
         : { ok: true, idle: true, note: `没有口令可领（${why}）—— 先抓主页或把口令填进输入框` };
     }
-    if (s?.step === 'done' && sameList(done, codes) && s.account === account) {
+    // `opts.fresh` = 「这一次就是要重打一枪」：验口令时用（见 tasks/liveVerify.ts）。
+    // 那条捷径的判据是「这号已经领过这批、别重复发」，而**验的语义正好相反** ——
+    // 我们要的就是那一枪的结论（已领过也算有效）。不绕开的话，同一场里第二次
+    // 遇到同一条口令会直接返回 idle，池里那条永远停在「未知」（2026-11-17 现场）。
+    if (opts.fresh !== true && s?.step === 'done' && sameList(done, codes) && s.account === account) {
       // 口令一模一样且都是这个号领过的 ⇒ 不发请求（重复领只会换回 200112）。
       // 但话要说全：哪一轮、当时什么结果 —— 免得被读成"这一次领成这样"。
       return {
