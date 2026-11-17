@@ -976,13 +976,17 @@ test('⚠ 每个号一个 chip，点开看那一次的每一步（日常 / 兑�
   // 用户要的是"哪个号成了"一眼看到 —— 而不是去翻日志或那一长串步骤表。
   // ⚠ 直播那块**故意没有**：它的 chip 和口令池那行说的是同一件事，而且 chip 上没有时间，
   //   用户原话「作用不明显，反而会误导，因为连时间都没有」—— 见下面那条负向用例。
-  for (const [box, detail] of [
-    ['daily-accounts', 'daily-account-detail'],
-    ['exchange-accounts', 'exchange-account-detail'],
+  for (const [box, detail, when] of [
+    ['daily-accounts', 'daily-account-detail', 'daily-accounts-when'],
+    ['exchange-accounts', 'exchange-account-detail', 'exchange-accounts-when'],
   ]) {
     assert.ok(html.includes(`id="${box}"`), `缺 #${box}`);
     assert.ok(html.includes(`id="${detail}"`), `缺 #${detail}`);
+    // ⚠ 每块都要能回答「这是**什么时候**的」（用户原话：说上一轮，也没人知道上一轮是什么时候）
+    assert.ok(html.includes(`id="${when}"`), `缺 #${when}（上一轮的时间）`);
   }
+  assert.ok(/上一轮（\$\{stamp\(ms\)\}）/.test(js), 'chips 上面那行要写清是上一轮什么时候');
+  assert.ok(/if \(whenBox\) whenBox\.textContent = '';/.test(js), '没有上一轮时不许留一行空标签');
   // 同一次触发的几条按 `at` 归组（id 里带账号，各不相同）
   assert.ok(/const runAt = list\[0\]\.at;/.test(js), '按触发时刻归组');
   assert.ok(/list\.filter\(\(x\) => x\.at === runAt\)/.test(js), '只画这一次的');
