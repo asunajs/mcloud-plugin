@@ -26,7 +26,7 @@
 // 页面版本号：和 style.css 里的 --style-ver 一起人工递增。
 // 「样式自检」（boot.js 的 ?diag=1）会读它 —— 用来区分「CSS 是新的、JS 还是旧的」这种
 // 半新半旧状态（第 155 轮：样式表是 v155，但 DOM 里根本没有 .ex-group-row 这种行）。
-document.documentElement.dataset.appVer = '160';
+document.documentElement.dataset.appVer = '161';
 
 /** 插件自己的接口。 */
 const API = '/plugins/mcloud/api';
@@ -1680,14 +1680,12 @@ function renderLive(l) {
   if (secsBox && document.activeElement !== secsBox) {
     secsBox.value = Number.isFinite(secs) && secs > 0 ? String(secs) : '';
   }
-  // ⚠ 「领小红花没开」是**全局开关**的状态，不是某个账号跑出来的结果。
-  //   口令池那一行已经把它说全了（还带"这里的开关只是允许插件去领"），
-  //   再在账号 chip 上重复一次就是同一句话说两遍 —— 而且会让人以为每个号各出了一件事。
-  //   一个控件只留一处说法。
-  const liveRecent = (l.recent || []).filter(
-    (x) => !/领小红花没开/.test(String(x.note || '')),
-  );
-  renderAcctChips('live-accounts', 'live-account-detail', liveRecent);
+  // ⚠ 这里原来画「每个号一枚 chip」的上一轮结论（2026-11-17 用户要求去掉）。
+  //   理由：①它和下面口令池那行说的是同一件事，重复；
+  //        ②chip 上没有时间 —— 「本次没领」「进账 5 朵」到底是刚才还是昨天，读者分不出，
+  //          反而误导。上一轮到底领到没有，口令池那行（`live-pool-line`）说全了，
+  //          每一步在日志里。
+  //   别再加回来：真要给，就带上时间，并且先说清是哪一轮。
 
   // 领小红花的结论（四栏 + 进账）。这是「直播」这一块第二重要的读数 ——
   // 它回答「上一轮到底领到没有、没领到是为什么」。

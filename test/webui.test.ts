@@ -972,12 +972,13 @@ test('⚠ 跑的时候有「停止」，且触发请求不能挡住按钮状态'
   assert.ok(/stopBtn\.hidden = false;/.test(body), '跑起来要显示停止按钮');
 });
 
-test('⚠ 每个号一个 chip，点开看那一次的每一步（三块任务页都有）', async () => {
+test('⚠ 每个号一个 chip，点开看那一次的每一步（日常 / 兑换两块有；直播那块 2026-11-17 去掉了）', async () => {
   // 用户要的是"哪个号成了"一眼看到 —— 而不是去翻日志或那一长串步骤表。
+  // ⚠ 直播那块**故意没有**：它的 chip 和口令池那行说的是同一件事，而且 chip 上没有时间，
+  //   用户原话「作用不明显，反而会误导，因为连时间都没有」—— 见下面那条负向用例。
   for (const [box, detail] of [
     ['daily-accounts', 'daily-account-detail'],
     ['exchange-accounts', 'exchange-account-detail'],
-    ['live-accounts', 'live-account-detail'],
   ]) {
     assert.ok(html.includes(`id="${box}"`), `缺 #${box}`);
     assert.ok(html.includes(`id="${detail}"`), `缺 #${detail}`);
@@ -1345,13 +1346,15 @@ test('⚠ 三个号同一句话时合成一枚 chip（三枚一模一样的是�
   assert.ok(/const sameRun = list\.filter\(\(x\) => x\.at === runAt\);/.test(js), '只比同一趟');
 });
 
-test('⚠ 「领小红花没开」是全局开关，不许画成账号 chip（同一句话只说一遍）', async () => {
+test('⚠ 直播那块不再画账号 chip（2026-11-17 用户要求去掉：重复且没有时间）', async () => {
   const js = srcOf('plugins/mcloud/app.js');
-  assert.ok(
-    /const liveRecent = \(l\.recent \|\| \[\]\)\.filter\(\s*\(x\) => !\/领小红花没开\/\.test/.test(js),
-    '要把它从账号 chip 里滤掉',
-  );
-  assert.ok(/renderAcctChips\('live-accounts', 'live-account-detail', liveRecent\)/.test(js), '传滤过的');
+  const html = srcOf('plugins/mcloud/index.html');
+  // 负向钉住：谁想加回来，先看 app.js 里那段注释（要加就带时间、并说清是哪一轮）。
+  assert.ok(!/renderAcctChips\('live-accounts'/.test(js), '直播不许再画账号 chip');
+  assert.ok(!html.includes('id="live-accounts"'), '直播的 chip 容器要删干净');
+  assert.ok(!html.includes('id="live-account-detail"'), '直播的明细容器要删干净');
+  // 上一轮到底领到没有，由口令池那行说（别整块信息一起消失）
+  assert.ok(/setText\('live-pool-line'/.test(js), '口令池那行要留着');
 });
 
 test('⚠ 颜色一律走面板 token（写死的深色在浅色主题下会翻车）', async () => {
