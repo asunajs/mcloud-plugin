@@ -247,28 +247,57 @@ export function beansRoutes(deps: RouteDeps, base: string, verify: () => Promise
           baseUrl: loadBaseUrl(deps.store),
           nowMs: () => Date.parse(deps.now()),
         };
-        const cache = refresh ? null : loadPrizeCache(one);
+        const last = loadPrizeCache(one);
+        // 新鲜度：`refresh=1` 一律重读；否则 TTL 内直接用缓存。
+        const fresh = last !== null && !refresh && nowMs - last.atMs < PRIZE_CACHE_TTL_MS;
         let list: PrizeListResult;
         let cached = false;
-        if (cache !== null && nowMs - cache.atMs < PRIZE_CACHE_TTL_MS) {
-          list = cache.list;
+        // 读失败但手上有旧清单时**退回旧清单**（2026-11-17 现场：链路抖一下，
+        // 明明 10 分钟前刚读过 18 件，整页却变成「读不到」）。
+        // 宁可说「这是 15:32 的清单，刚才没读到（原因）」，也别把有数据的页面清空。
+        let stale = false;
+        let staleAtMs = 0;
+        let staleReason: string | undefined;
+        if (fresh) {
+          list = last.list;
           cached = true;
         } else {
           try {
-            list = await withPrizeTokenGate(prizeDeps, async () => await readPendingPrizes(prizeDeps));
-            savePrizeCache(one, list, nowMs, nowIso);
-            deps.log(
-              `领奖：${who} 读到 ${list.items.length} 件待领取（共翻到 ${list.scanned} 条记录` +
-                `${list.failed === undefined ? '' : `；${list.failed}`}）`,
-            );
+            const read = await withPrizeTokenGate(prizeDeps, async () => await readPendingPrizes(prizeDeps));
+            // ⚠ 网络失败**不会抛**：`readPendingPrizes` 把它收成 `failed`（这样后几页挂了
+            //   还能给出前几页）。所以「一条都没读到」要在这里判，和抛异常一样退回旧清单。
+            if (read.failed !== undefined && read.items.length === 0 && last !== null) {
+              list = last.list;
+              stale = true;
+              staleAtMs = last.atMs;
+              staleReason = read.failed;
+              deps.log(
+                `领奖：${who} 这次没读到（${read.failed}），先用 ${new Date(last.atMs).toISOString()} 那份清单` +
+                  `（${last.list.items.length} 件）`,
+              );
+            } else {
+              list = read;
+              savePrizeCache(one, list, nowMs, nowIso);
+              deps.log(
+                `领奖：${who} 读到 ${list.items.length} 件待领取（共翻到 ${list.scanned} 条记录` +
+                  `${list.failed === undefined ? '' : `；${list.failed}`}）`,
+              );
+            }
           } catch (e) {
-            // 读失败不写缓存（网络抖一下不该被冻 60 秒），但把原因如实带回界面
-            list = {
-              items: [],
-              scanned: 0,
-              hasMore: false,
-              failed: e instanceof Error ? e.message : String(e),
-            };
+            // 读失败**不写缓存**（网络抖一下不该被冻住 60 秒），但原因要如实带回界面
+            const why = e instanceof Error ? e.message : String(e);
+            if (last === null) {
+              list = { items: [], scanned: 0, hasMore: false, failed: why };
+            } else {
+              list = last.list;
+              stale = true;
+              staleAtMs = last.atMs;
+              staleReason = why;
+              deps.log(
+                `领奖：${who} 这次没读到（${why}），先用 ${new Date(last.atMs).toISOString()} 那份清单` +
+                  `（${last.list.items.length} 件）`,
+              );
+            }
           }
         }
         return json(200, {
@@ -283,6 +312,7 @@ export function beansRoutes(deps: RouteDeps, base: string, verify: () => Promise
           ...(list.totalCount !== undefined ? { totalCount: list.totalCount } : {}),
           items: list.items,
           ...(list.failed !== undefined ? { failed: list.failed } : {}),
+          ...(stale ? { stale: true, cachedAtMs: staleAtMs, staleReason } : {}),
         });
       },
     },
