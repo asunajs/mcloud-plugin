@@ -21,6 +21,10 @@ test('timeoutForUrl：只读慢端点 12s，写操作仍 1500ms', async () => {
     // ⚠ 用**真实**路径（第一版正则写死前缀，一条都没匹配上）
     'https://m.mcloud.139.com/ycloud/signin/public/cloudRecordV2?pageNumber=1&pageSize=20',
     'https://m.mcloud.139.com/ycloud/signin/page/infoV3?client=app',
+    // 2026-11-17 现场：领奖页「读不到 —— 请求超时（1500ms）」。
+    // 这两条是**只读**（清单/详情），路由预算 90s，放 12 秒不违反"写操作留 1500ms"。
+    'https://m.mcloud.139.com/ycloud/prizeApi/checkPrize/getUserPrizeLogPageV2?pageNumber=1&pageSize=100',
+    'https://m.mcloud.139.com/ycloud/prizeApi/checkPrize/receivePrizeDetailsV2?oid=123',
   ];
   for (const u of slow) {
     assert.deepEqual(timeoutForUrl(u), { ms: SLOW_READ_TIMEOUT_MS, why: 'slow-read' }, u);
@@ -29,6 +33,9 @@ test('timeoutForUrl：只读慢端点 12s，写操作仍 1500ms', async () => {
     'https://m.mcloud.139.com/ycloud/signin/task/click?key=task&id=434',
     'https://m.mcloud.139.com/ycloud/signin/page/doTaskPost',
     'https://m.mcloud.139.com/ycloud/signin/task/click?key=task2&id=619',
+    // 领奖那两步是**写**（真的会领走东西）—— 不许跟着放宽
+    'https://m.mcloud.139.com/ycloud/prize/api/acceptPrizeV2',
+    'https://m.mcloud.139.com/ycloud/prize/api/sendPrizeSms',
   ];
   for (const u of write) {
     assert.deepEqual(timeoutForUrl(u), { ms: DEFAULT_REQUEST_TIMEOUT_MS, why: 'default' }, u);
