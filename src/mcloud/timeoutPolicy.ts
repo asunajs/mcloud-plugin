@@ -22,6 +22,13 @@ export const SLOW_READ_PATTERNS: readonly RegExp[] = [
   //   就一条都没匹配上，2026-11-15 自测现场：小号余额仍报「请求超时（1500ms）」）
   /\/cloudRecordV2(\?|$)/, // AI豆流水（逐页查账，慢）
   /\/signin\/page\/infoV3(\?|$)/, // 云朵/AI豆总览（余额就在 result.total）
+  // 待领取清单（领奖页那一屏）。2026-11-17 15:45 现场：读不到 ——
+  // 「请求超时（1500ms）：已探测 m.mcloud.139.com:443 连得上（1368ms）」。
+  // 那是**建连**就把 1500ms 吃光了：本机实测该主机 RTT 0.8~1.5 秒，
+  // 冷连接（TCP+TLS）要 4.5~6 秒。而请求超时一旦触发，池里那条连接就被丢掉，
+  // 下一发又得重新握手 —— 于是"超时"会自己续下去，一直读到 0 件。
+  /\/prizeApi\/checkPrize\/getUserPrizeLogPageV2(\?|$)/, // 待领取清单（逐页翻）
+  /\/prizeApi\/checkPrize\/receivePrizeDetailsV2(\?|$)/, // 奖品详情（领之前读）
 ];
 
 /** 慢只读端点给多久。比上游 99 分位宽，比那几条路由的预算（60s）窄得多。 */
