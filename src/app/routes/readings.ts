@@ -146,18 +146,27 @@ export function buildReadings(deps: RouteDeps): Record<string, unknown> {
             .filter(([, mine]) => mine[code] === 'claimed' || mine[code] === 'alreadyClaimed')
             .map(([id]) => labels.get(id) ?? id);
         const seen = new Set<string>();
+        // 人贴的那一份是什么时候贴的（`LiveCodes.at`）；池子里的按「判有效 / 第一次见到」。
+        // 界面上每条口令都要能说出时间 —— 没有时间的「已验证有效」读者没法判断新旧。
+        const humanAt = Date.parse(loadLiveCodes(liveOne)?.at ?? '');
         const out: Array<{
           code: string;
           state?: string;
           source?: string;
           reason?: string;
           claimedBy?: string[];
+          atMs?: number;
         }> = [];
         for (const c of human) {
           const code = c.trim();
           if (code === '' || seen.has(code)) continue;
           seen.add(code);
-          out.push({ code, source: '手动', claimedBy: claimedBy(code) });
+          out.push({
+            code,
+            source: '手动',
+            claimedBy: claimedBy(code),
+            ...(Number.isFinite(humanAt) ? { atMs: humanAt } : {}),
+          });
         }
         for (const c of poolCodes) {
           if (seen.has(c.value)) continue;
@@ -171,6 +180,7 @@ export function buildReadings(deps: RouteDeps): Record<string, unknown> {
             // 含糊话，统一成“已验证有效 + 已领过：<账号名>”。
             reason: by.length > 0 ? '已验证有效' : c.reason,
             claimedBy: by,
+            atMs: c.validAtMs ?? c.firstSeenMs,
           });
         }
         return out;
@@ -204,6 +214,9 @@ export function buildReadings(deps: RouteDeps): Record<string, unknown> {
           enabled: claimEnabled(deps.store),
           step: st?.step ?? '',
           report: r,
+          // ⚠ 上一轮是**什么时候**的（2026-11-17 用户原话：「说上一轮，也没人知道上一轮
+          //   是什么时候」）。界面那句「1 条口令领到 1 条」没有时间就等于没回答。
+          at: st === null ? null : (st.finishedAt ?? st.startedAt),
           // 这个开关只是"允许插件去领"；功能本身要服务端那边开（用户口径 2026-10-17）
           line:
             r === null

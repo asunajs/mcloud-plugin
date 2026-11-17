@@ -26,7 +26,7 @@
 // 页面版本号：和 style.css 里的 --style-ver 一起人工递增。
 // 「样式自检」（boot.js 的 ?diag=1）会读它 —— 用来区分「CSS 是新的、JS 还是旧的」这种
 // 半新半旧状态（第 155 轮：样式表是 v155，但 DOM 里根本没有 .ex-group-row 这种行）。
-document.documentElement.dataset.appVer = '161';
+document.documentElement.dataset.appVer = '164';
 
 /** 插件自己的接口。 */
 const API = '/plugins/mcloud/api';
@@ -337,7 +337,41 @@ function when(iso) {
   return `${d.getMonth() + 1}-${d.getDate()} ${hm}`;
 }
 
+/** 具体到分钟的日期时间：`2026-11-17 18:11`。
+ *
+ *  ⚠ 和 `when()` 分工：`when()` 给「今天/昨天」这种顺口的说法，适合刚发生的提示；
+ *  凡是要回答「这是**什么时候**」的地方（上一轮、口令是什么时候进来的）必须用它 ——
+ *  用户原话：「说上一轮，也没人知道上一轮是什么时候」。 */
+function stamp(ms) {
+  const d = new Date(ms);
+  if (!Number.isFinite(d.getTime())) return '';
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
 /** 建一个元素。`el('div', 'row')` —— 比到处 `createElement` + `className` 短得多。 */
+/** 把日志的三种来路统一成**本地**的 `2026-11-17 18:11:30.625`。
+ *
+ *  ① 旧面板 SSE：`2026-10-17 10:50:42.498` —— 已经是本地时间，原样留；
+ *  ② 面板日志流 / 本地环：**epoch 毫秒**，或者带 T/Z 的 ISO（UTC）—— 都要转成本地；
+ *  ③ 老历史：只有 `10:50:42.498` —— 补不出日期，只能原样（新代码不再产生这种）。
+ *
+ *  ⚠ 为什么一律带日期：只写时分秒的话，翻到几百行以前就不知道是哪天的了。
+ *  用户原话：「说上一轮，也没人知道上一轮是什么时候」。 */
+function logStamp(raw) {
+  const s = String(raw ?? '');
+  const p = (n, w = 2) => String(n).padStart(w, '0');
+  const full = (d) =>
+    `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ` +
+    `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`;
+  if (/^\d{13}$/.test(s)) return full(new Date(Number(s)));
+  if (/^\d{4}-\d{2}-\d{2}T/.test(s)) {
+    const d = new Date(s);
+    return Number.isNaN(d.getTime()) ? s : full(d);
+  }
+  return s;
+}
+
 function el(tag, cls) {
   const e = document.createElement(tag);
   if (cls) e.className = cls;
@@ -1693,6 +1727,8 @@ function renderLive(l) {
   const rep = draw.report;
   // 口令池那行先说"手里有几条"（条数是这一块的属性，不是上面那行的）
   const poolHead = valid > 0 ? `手里有 ${valid} 条能用的口令` : '还没有能用的口令';
+  // ⚠ 「上一轮」必须带时间（2026-11-17 用户原话：「说上一轮，也没人知道上一轮是什么时候」）。
+  const roundAt = draw.at ? `上一轮（${stamp(Date.parse(draw.at))}）` : '';
   if (rep) {
     const bits2 = [];
     if (rep.expired.length > 0) bits2.push(`${rep.expired.length} 条本场已结束（不是口令抄错）`);
@@ -1701,9 +1737,9 @@ function renderLive(l) {
     if (rep.other.length + rep.unparsable.length > 0) {
       bits2.push(`${rep.other.length + rep.unparsable.length} 条回了没见过的结果`);
     }
-    setText('live-pool-line', `${poolHead} · ${rep.line}${bits2.length > 0 ? ' · ' + bits2.join(' · ') : ''}`);
+    setText('live-pool-line', `${poolHead} · ${roundAt}${rep.line}${bits2.length > 0 ? ' · ' + bits2.join(' · ') : ''}`);
   } else {
-    setText('live-pool-line', `${poolHead} · ${draw.line || pool.line || pool.note || ''}`);
+    setText('live-pool-line', `${poolHead} · ${roundAt}${draw.line || pool.line || pool.note || ''}`);
   }
   paintList(
     'live-codes',
@@ -1712,9 +1748,12 @@ function renderLive(l) {
         Array.isArray(c.claimedBy) && c.claimedBy.length > 0
           ? ` · 已领过：${c.claimedBy.join('、')}`
           : '';
+      // 每条都要能说出时间：贴进来的 / 判有效的 / 第一次见到的
+      const at =
+        typeof c.atMs === 'number' && c.atMs > 0 ? ` · ${stamp(c.atMs)}` : '';
       return [
         c.code,
-        `${c.source || ''}${c.state ? ` · ${c.state}` : ''}${c.reason ? ` · ${c.reason}` : ''}${claimed}`,
+        `${c.source || ''}${at}${c.state ? ` · ${c.state}` : ''}${c.reason ? ` · ${c.reason}` : ''}${claimed}`,
         c.kind ? `<span class="badge">${esc(c.kind)}</span>` : '',
       ];
     }),
@@ -3013,14 +3052,7 @@ function makeTerm(plugin, el) {
     //   ① 旧面板 SSE：`2026-10-17 10:50:42.498`
     //   ② 我们铺的历史（/log/tail）：已经切好的 `10:50:42.498`
     //   ③ **新面板**：`ts` 是 **epoch 毫秒数**（如 1794578027097）—— 直接 slice 会显示成一串数字
-    const raw = String(tsRaw ?? '');
-    let stamp = raw;
-    if (/^\d{4}-\d{2}-\d{2}/.test(raw)) {
-      stamp = raw.slice(11);
-    } else if (/^\d{13}$/.test(raw)) {
-      const d = new Date(Number(raw));
-      stamp = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}.${String(d.getMilliseconds()).padStart(3, '0')}`;
-    }
+    const stamp = logStamp(tsRaw);
     ts.textContent = stamp + ' ';
     const lvEl = document.createElement('span');
     lvEl.className = `term-lv term-lv-${lv}`;
@@ -3139,10 +3171,8 @@ function makeTerm(plugin, el) {
         // ⚠ 环里存的是 ISO（UTC）；面板日志流给的是**本地**时间。
         //   直接 slice 会让历史显示成凌晨 —— 两边必须同一种时间。
         const d = new Date(one.t);
-        const pad = (n, w) => String(n).padStart(w, '0');
-        const ts = Number.isNaN(d.getTime())
-          ? ''
-          : `${pad(d.getHours(), 2)}:${pad(d.getMinutes(), 2)}:${pad(d.getSeconds(), 2)}.${pad(d.getMilliseconds(), 3)}`;
+        // 环里存的是 ISO（UTC）—— 交给 logStamp 转成本地 + 带日期（别再切掉日期）
+        const ts = Number.isNaN(d.getTime()) ? '' : one.t;
         paint({ data: JSON.stringify({ ts, level: one.l, msg: one.m }) });
         painted += 1;
       }

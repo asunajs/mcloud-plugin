@@ -1686,8 +1686,8 @@ test('日志：新面板的帧走默认 message 事件，按插件过滤、从�
   // 只有 info/warn/error 三档；debug/start/ok/fail 是文本前缀
   assert.ok(js.includes('(debug|start|ok|fail|fatal|success)'), '要从前缀还原级别');
   // `ts` 在新面板是 epoch 毫秒（一长串数字），必须格式化，不能直接 slice
-  assert.ok(/\/\^\\d\{13\}\$\/\.test\(raw\)/.test(js), '13 位时间戳要按毫秒格式化');
-  assert.ok(/String\(d\.getHours\(\)\)/.test(js), '要真的格式化成 HH:mm:ss.SSS');
+  assert.ok(/\/\^\\d\{13\}\$\/\.test\(s\)/.test(js), '13 位时间戳要按毫秒格式化');
+  assert.ok(/getHours\(\)/.test(js), '要真的格式化成日期 + 时间');
   // 断线重连要带游标（EventSource 自动重连不带 since，会丢一段）
   assert.ok(/q\.set\('since', String\(lastId\)\)/.test(js), '重连要带 since');
   assert.ok(/typeof d\.id === 'number' && d\.id > lastId/.test(js), '要记 lastId');
