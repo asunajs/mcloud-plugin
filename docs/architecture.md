@@ -71,6 +71,11 @@
 
 - **面板**：`<data>/plugin-data/mcloud/`（`host.plugin_data_dir()` 的约定）；
   另三个插件用 `join(dirname(自己的 data_dir), 'mcloud')` 指过去。
+- **对外契约（别的插件会读）**：`shared.json` 里的 `mcloud.accounts`（全局键，
+  JSON 数组，元素含 `id` / `label` / `auth` / `disabled`；`auth` 是
+  `Basic base64(<pc|mobile>:<手机号>:<token>)`）。咪咕音乐插件（mgmusic 0.6.0 起）
+  按这条约定**只读**它，用云盘维护的那份凭据换咪咕登录态 —— 所以键名、位置、字段
+  都是跨仓契约，由 `test/accountsContract.test.ts` 钉住，别随手改名。
 - **CLI**：`MCLOUD_DATA_DIR` 或 `~/.mcloud`。指到面板那个目录 = 两边共用账号与凭据。
 - **写**：tmp + `renameSync`（原子）；跨进程互斥用 `mkdirSync(lock)` + 陈旧锁超时。
 - **为什么不是 SQLite**：面板的 `sqlite_*_sync` 每次调用**新起一个线程 + 一个新 runtime**
