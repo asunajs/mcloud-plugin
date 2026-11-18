@@ -50,6 +50,23 @@ function localStamp(ms) {
   );
 }
 
+/** 直播间闲聊弹幕池（自动流用）—— 形状照真实直播间：大量无关闲聊、偶尔问口令、
+ * 偶尔才是真口令。这几条都经过插件 extractKouling 验证：闲聊/提问解不出口令，
+ * 所以自动流不会污染口令池。 */
+export const DANMAKU_CHAT = [
+  '主播好厉害', '已下单', '来晚了', '哈哈哈', '签到啦', '这活动几点结束',
+  '中国移动云盘福利场', '刚进来', '我领到了', '楼上说什么', '流量够用吗',
+  '一号口令领完了吗', '围观', '这个福利不错', '昨天那场错过了',
+];
+/** 提问类弹幕（插件会滤掉，不会当口令）*/
+export const DANMAKU_QUESTION = ['口令是什么？', '小红花口令是哪个', '这个怎么用呀', '下一场几点'];
+/** 口令类弹幕（自动流里低概率出现；格式覆盖插件认的几种）*/
+export const DANMAKU_KOULING = [
+  '小红花口令：秋游影集轻松做',
+  '复制口令1：云盘AI高效复盘 无随机',
+  '口令是相伴到永远',
+  '小红花口令：一键9图出圈',
+];
 /** 会发口令的那个主播（与插件 `koulingPool.KOULING_ANCHOR` 同一个值 —— 两处都得是它）。 */
 const KOULING_ANCHOR_MOCK = '中国移动云盘';
 
@@ -79,6 +96,8 @@ const json = (res, status, obj) => {
   res.writeHead(status, { 'content-type': 'application/json;charset=UTF-8' });
   res.end(body);
 };
+
+function tryParseJson(text) { try { return JSON.parse(text); } catch { return undefined; } }
 
 /** 默认夹具：形状照抄 mcloud 文档里记的实拍。 */
 export const FIXTURES = {
@@ -371,6 +390,10 @@ export async function startMock(options = {}) {
     // 小红花：余额刻意做成**会变**的（插件的"进账"是 ⑥ − ①，夹具不变那条断言就等于没测）
     flowerCnt: 100,
     firstParticipated: false,
+    // ── 直播侧可控夹具（/_debug/live/* 改）──────────────────────────────
+    liveChatRoomId: '1500000000000000000000000000001',
+    /** 领取幂等记账：key = "<jwttoken>|<口令>" —— 口令共享，账按账号记。 */
+    liveDrawClaims: {},
     // ── 领奖（`National_Getprize`）──
     // `flag`：1 = 待领取、2 = 已领取（实拍三笔逐笔翻转）、10 = 含义未解（不进列表）。
     // ⚠ 字段名照**旧口**实拍：`oId`（大写 I）、`marketname` / `marketid`、`servNumber` 掩码。
@@ -474,6 +497,7 @@ export async function startMock(options = {}) {
   // behavior: 'normal' | 'biz-fail' | 'http-500' | 'not-json' | 'timeout'
   let behavior = options.behavior ?? 'normal';
   const delayMs = options.delayMs ?? 0;
+  let liveBehavior = 'normal'; // 直播族专用失败注入，与签到族 behavior 隔离
 
   const server = createServer((req, res) => {
     const chunks = [];
@@ -504,6 +528,8 @@ export async function startMock(options = {}) {
           provisioned: wsConn !== null && wsConn.provisioned,
           acked: wsConn === null ? 0 : wsConn.acked,
           danmakuSent: wsConn === null ? 0 : wsConn.danmakuSent,
+          autoDanmaku,
+          history: wsConn === null ? [] : wsConn.history,
           upgradeHeaders: wsUpgradeHeaders,
           frames: wsFrames.map((f) => ({ command: f.command, hex: f.hex })),
         });
@@ -520,12 +546,57 @@ export async function startMock(options = {}) {
         return json(res, ok ? 200 : 409, { pushed: ok, text });
       }
       if (url.pathname === '/_debug/behavior') {
-        if (req.method === 'POST') {
-          behavior = body || 'normal';
-          return json(res, 200, { behavior });
-        }
+        if (req.method === 'POST') { behavior = body || 'normal'; return json(res, 200, { behavior }); }
         return json(res, 200, { behavior });
       }
+      // ── 直播族专用管理口（e2e 注入失败/边界，测完复位，不碰签到族）──────────
+      if (url.pathname === '/_debug/live/behavior') {
+        if (req.method === 'POST') {
+          const parsed = tryParseJson(body);
+          liveBehavior = typeof parsed?.behavior === 'string' ? parsed.behavior : (body || 'normal');
+          return json(res, 200, { behavior: liveBehavior });
+        }
+        return json(res, 200, { behavior: liveBehavior });
+      }
+      if (url.pathname === '/_debug/live/state' && req.method === 'POST') {
+        const patch = tryParseJson(body) ?? {};
+        for (const [k, v] of Object.entries(patch)) st[k] = v;
+        return json(res, 200, { liveChatRoomId: st.liveChatRoomId, liveDrawClaims: st.liveDrawClaims });
+      }
+      if (url.pathname === '/_debug/ws/heartbeat' && req.method === 'POST') {
+        const ok = wsConn !== null; if (ok) wsSendText(wsConn.socket, 'h');
+        return json(res, ok ? 200 : 409, { pushed: ok, frame: 'h' });
+      }
+      if (url.pathname === '/_debug/ws/close' && req.method === 'POST') {
+        const ok = wsConn !== null; if (ok) wsSendText(wsConn.socket, '[""]');
+        return json(res, ok ? 200 : 409, { pushed: ok, frame: 'close' });
+      }
+      if (url.pathname === '/_debug/ws/auto') {
+        // 自动弹幕流开关：e2e 关掉它保证断言确定；手工联调默认开（更像真直播间）。
+        if (req.method === 'POST') {
+          const p = tryParseJson(body) ?? {};
+          if (typeof p.enabled === 'boolean') autoDanmaku = p.enabled;
+          if (autoDanmaku) startAuto(); else stopAuto();
+        }
+        return json(res, 200, { autoDanmaku });
+      }
+
+      // ── 失败分支前置拦截（直播口在 finish() 之前就 return，原本注入不到）──────
+      const liveUpstream = url.pathname.startsWith('/api/') || url.pathname === '/xhs/profile' ||
+        url.pathname.startsWith('/ycloud/liveRoomFeedback/') || url.pathname === '/ycloud/visitlog/journaling' ||
+        url.pathname === '/v3/room/member/apply' || url.pathname === '/user/querySpecTokenV2';
+      if (liveUpstream) {
+        const b = liveBehavior === 'normal' ? behavior : liveBehavior;
+        if (b === 'http-500') return json(res, 500, { code: -1, msg: 'boom' });
+        if (b === 'not-json') { res.writeHead(200, { 'content-type': 'text/html' }); return res.end('<html>502 Bad Gateway</html>'); }
+        if (b === 'biz-fail') {
+          if (url.pathname.startsWith('/api/')) return json(res, 200, { rtnCode: '5001', rtnMsg: 'mock 业务失败', object: null });
+          if (url.pathname === '/v3/room/member/apply') return json(res, 200, { code: 5001, msg: 'mock 业务失败', data: null, timestamp: Date.now() });
+          return json(res, 200, { code: 5001, msg: 'mock 业务失败', result: null });
+        }
+        if (b === 'timeout') return;
+      }
+
 
       // ── 口令主页（直播那条链的**第三方**源）────────────────────────────────
       //
@@ -616,8 +687,8 @@ export async function startMock(options = {}) {
             title: room.title,
             channelId: room.channelId,
             expectStartTime: room.expectStartTime,
-            // 31 位数字串（抓包 §5.2 那个形状）
-            chatRoomId: '15000000000000000000000000000 1'.replace(' ', ''),
+            // 31 位数字串；e2e 可设 st.liveChatRoomId=null 验「没聊天室⇒不开 WS」
+            chatRoomId: st.liveChatRoomId,
             anchor: { nickname: room.anchor.nickname },
           },
         });
@@ -650,15 +721,19 @@ export async function startMock(options = {}) {
       }
       if (url.pathname === '/ycloud/liveRoomFeedback/redFlower/draw') {
         const code = url.searchParams.get('code') ?? '';
-        // 口令里带「过期」⇒ 回 `200118`（本场已结束）。这是**刻意**留的一支：
-        // 它和 `200108`（口令无效）在插件里走**不同的**分支，必须能被端到端验到。
+        // 口令文本即分支选择器：过期→200118、无效→200108、领过→200112、其余成功+10。
         if (code.includes('过期')) return json(res, 200, { code: 200118, msg: '口令已失效' });
+        if (code.includes('无效')) return json(res, 200, { code: 200108, msg: '口令无效' });
+        // 幂等按账号：口令共享，jwt 才是账号标识（200112 的语义）。
+        const jwt = String(req.headers.jwttoken ?? '');
+        const claimKey = jwt + '|' + code;
+        if (code.includes('领过') || (st.liveDrawClaims[claimKey] ?? 0) > 0) {
+          return json(res, 200, { code: 200112, msg: '已经领过' });
+        }
+        st.liveDrawClaims[claimKey] = (st.liveDrawClaims[claimKey] ?? 0) + 1;
         st.flowerCnt += 10;
-        return json(res, 200, {
-          code: 0,
-          msg: 'success',
-          result: { prizeId: 1, flowerNum: 10, prizeName: '小红花', prizeType: 1 },
-        });
+        return json(res, 200, { code: 0, msg: 'success',
+          result: { prizeId: 1, flowerNum: 10, prizeName: '小红花', prizeType: 1 } });
       }
       if (url.pathname === '/ycloud/liveRoomFeedback/redFlower/queryRevivalFlowers') {
         return json(res, 200, { code: 0, msg: 'success', result: 3 });
@@ -674,12 +749,13 @@ export async function startMock(options = {}) {
       // 三个信封形状**各不相同** —— 插件那边有三套解析器，这里就要有三套形状，
       // 否则"解析器能认"这件事根本没被测到。
       if (url.pathname === '/user/querySpecTokenV2') {
-        return json(res, 200, {
-          success: true,
-          code: '0000',
-          message: 'ok',
-          data: { token: 'SSO-MOCK' },
-        });
+        // 多账号：从 Basic 凭据解出手机号，让 SSO 带账号标识。
+        let phone = '';
+        try { const a = String(req.headers.authorization ?? '');
+          const raw = a.startsWith('Basic ') ? Buffer.from(a.slice(6), 'base64').toString('utf8') : a;
+          phone = raw.split(':')[1] ?? ''; } catch { /* ignore */ }
+        const token = phone ? 'SSO-MOCK-' + phone : 'SSO-MOCK';
+        return json(res, 200, { success: true, code: '0000', message: 'ok', data: { token } });
       }
       if (url.pathname === '/ycloud/api/timestamp') {
         return json(res, 200, { code: 0, msg: 'success', result: 1700000000000 });
@@ -690,11 +766,12 @@ export async function startMock(options = {}) {
         return json(res, 200, { code: 1100, detail: { deviceId: 'MOCKDEV' } });
       }
       if (url.pathname === '/ycloud/auth-service/auth/tyrzLogin') {
-        return json(res, 200, {
-          code: 0,
-          msg: 'success',
-          result: { token: 'JWT-MOCK-0123456789', mobile: '13800000000' },
-        });
+        // SSO 带手机号 ⇒ 每账号不同 jwt。
+        let phone = '';
+        try { phone = String(JSON.parse(body)?.token ?? '').replace(/^SSO-MOCK-?/, ''); } catch { /* ignore */ }
+        const token = phone && phone !== 'MOCK' ? 'JWT-MOCK-' + phone : 'JWT-MOCK-0123456789';
+        const masked = phone && phone.length >= 7 ? phone.slice(0,3) + '****' + phone.slice(-4) : '138****0000';
+        return json(res, 200, { code: 0, msg: 'success', result: { token, mobile: masked } });
       }
 
       // ── 领奖（云朵中心 → 待领取，`National_Getprize`）──────────────────────
@@ -1076,7 +1153,8 @@ export async function startMock(options = {}) {
         'Connection: Upgrade\r\n' +
         `Sec-WebSocket-Accept: ${accept}\r\n\r\n`,
     );
-    wsConn = { socket, buf: Buffer.alloc(0), provisioned: false, danmakuSent: 0, acked: 0 };
+    wsConn = { socket, buf: Buffer.alloc(0), provisioned: false, danmakuSent: 0, acked: 0,
+      history: [] /* 自动流发过的文本，给 /_debug/ws 查 */ };
     wsUpgradeHeaders = { ...req.headers, path: req.url };
 
     // SockJS：连上先发 `o`（**抓包 §二 的第 0 帧就是它**）
@@ -1100,6 +1178,7 @@ export async function startMock(options = {}) {
         if (msync === null) continue;
         if (msync.command === 3) {
           wsConn.provisioned = true;
+          startAuto(); // 进房后开始自动弹幕流（像真直播间一样慢慢来）
           // PROVISION 的响应：`a["<b64>"]`（抓包 §二 的第 2 帧）
           wsSendText(socket, sockjsData(msyncBytes({ command: 3, msgId: null, text: null })));
         } else if (msync.command === 0) {
@@ -1107,12 +1186,8 @@ export async function startMock(options = {}) {
         }
       }
     });
-    socket.on('error', () => {
-      wsConn = null;
-    });
-    socket.on('close', () => {
-      wsConn = null;
-    });
+    socket.on('error', () => { stopAuto(); wsConn = null; });
+    socket.on('close', () => { stopAuto(); wsConn = null; });
   });
 
   /** 推一条弹幕（`command=2`，文本在 MSync.9.2.6.4.2）。e2e 用它验"文本能解出来"。 */
@@ -1128,8 +1203,30 @@ export async function startMock(options = {}) {
     const msgId = '1' + String(Date.now()) + '06041';
     wsSendText(wsConn.socket, sockjsData(msyncBytes({ command: 2, msgId, text })));
     wsConn.danmakuSent += 1;
+    wsConn.history.push(text);
     return true;
   }
+
+  // ── 自动随机弹幕流 ────────────────────────────────────────────────
+  // 真实直播间：大量闲聊、偶尔提问、偶尔才夹一条口令。默认开，e2e 可关。
+  // 默认开（像真直播间）；e2e 用 MOCK_AUTO_DANMAKU=0 从源头关掉，避免竞态。
+  let autoDanmaku = options.autoDanmaku !== false && String(process.env['MOCK_AUTO_DANMAKU'] ?? '') !== '0';
+  let autoTimer = null;
+  const pickText = () => {
+    const r = Math.random();
+    if (r < 0.08) return DANMAKU_KOULING[Math.floor(Math.random() * DANMAKU_KOULING.length)];
+    if (r < 0.20) return DANMAKU_QUESTION[Math.floor(Math.random() * DANMAKU_QUESTION.length)];
+    return DANMAKU_CHAT[Math.floor(Math.random() * DANMAKU_CHAT.length)];
+  };
+  function scheduleAuto() {
+    const delay = 1500 + Math.floor(Math.random() * 2500); // 1.5~4 秒
+    autoTimer = setTimeout(() => {
+      if (autoDanmaku && wsConn !== null && wsConn.provisioned) pushDanmaku(pickText());
+      scheduleAuto();
+    }, delay);
+  }
+  function stopAuto() { if (autoTimer) { clearTimeout(autoTimer); autoTimer = null; } }
+  function startAuto() { stopAuto(); if (autoDanmaku) scheduleAuto(); }
   let wsUpgradeHeaders = {};
 
   await new Promise((resolve) => server.listen(options.port ?? 0, '127.0.0.1', resolve));
@@ -1149,6 +1246,8 @@ export async function startMock(options = {}) {
     reset() {
       requests.length = 0;
       wsFrames.length = 0;
+      liveBehavior = 'normal';
+      stopAuto();
     },
     /** 弹幕那条链：收到的客户端帧、升级请求头、以及主动推一条弹幕的口子。 */
     ws: {
@@ -1168,12 +1267,20 @@ export async function startMock(options = {}) {
         return wsConn === null ? 0 : wsConn.acked;
       },
       pushDanmaku,
+      get history() { return wsConn === null ? [] : wsConn.history; },
+      heartbeat() { if (wsConn === null) return false; wsSendText(wsConn.socket, 'h'); return true; },
+      closeFrame() { if (wsConn === null) return false; wsSendText(wsConn.socket, '[""]'); return true; },
+      get auto() { return autoDanmaku; },
+      setAuto(on) { autoDanmaku = !!on; if (autoDanmaku) startAuto(); else stopAuto(); },
     },
     setBehavior(b, ms = 0) {
       behavior = b;
       if (ms) options.delayMs = ms;
     },
+    setLiveBehavior(b) { liveBehavior = b; },
+    get state() { return st; },
     async close() {
+      stopAuto();
       await new Promise((resolve) => server.close(resolve));
     },
   };
