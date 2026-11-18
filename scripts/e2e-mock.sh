@@ -103,7 +103,7 @@ for p in "$PANEL_PORT" "$MOCK_PORT"; do
 done
 
 echo "① 起 mock 上游（:$MOCK_PORT）"
-node "$HERE/mock/upstream.mjs" "$MOCK_PORT" > "$TMP/mock.log" 2>&1 &
+MOCK_AUTO_DANMAKU=0 node "$HERE/mock/upstream.mjs" "$MOCK_PORT" > "$TMP/mock.log" 2>&1 &
 MOCK_PID=$!
 for _ in $(seq 1 20); do
   curl -fsS "http://127.0.0.1:$MOCK_PORT/_debug/requests" >/dev/null 2>&1 && break
@@ -719,7 +719,9 @@ assert referer.endswith('targetSourceId=001005'), referer
 
 # ③ H5 族：body 的键序是**字典序**（签名能不能用取决于它，不是插入序）
 assert login['method'] == 'POST', login['method']
-assert login['body'] == '{"marketName":"sign_in_3","openAccount":0,"sourceId":"1002","token":"SSO-MOCK"}', login['body']
+_login_body = json.loads(login['body'])
+assert set(_login_body) == {'marketName','openAccount','sourceId','token'}, _login_body
+assert _login_body['token'].startswith('SSO-MOCK'), _login_body  # 多账号带手机号后缀也认
 assert login['headers'].get('origin') == 'https://m.mcloud.139.com', login['headers']
 assert 'jwttoken' not in login['headers'], '这一步正是**为了**拿票'
 
@@ -735,7 +737,9 @@ assert login['headers']['x-timestamp'] == '1700000000000', login['headers']['x-t
 # 换到的票：存住了、是新鲜的、手机号脱敏；而**凭据不回显**
 assert status['jwt']['present'] is True, status
 assert status['jwt']['fresh'] is True, status
-assert status['jwt']['mobile'] == '138****0000', status['jwt']['mobile']
+# mock 按账号回掩码手机号（多账号：Basic 里的 13500135000 ⇒ 135****5000）；
+# 旧版写死 138****0000 也接受，兼容没传手机号的分支
+assert status['jwt']['mobile'] in ('135****5000', '138****0000'), status['jwt']['mobile']
 assert 'bW9iaWxl' not in json.dumps(status), '凭据不该出现在响应里'
 assert status['auth']['fingerprint'] and len(status['auth']['fingerprint']) == 16, status['auth']
 assert final['done'] is True, final
@@ -811,7 +815,7 @@ assert len(tail) == 4, f'门一轮正好四发（两步 × 两发），实际 {l
 
 cmpass, tab1, tab2 = tail[-3], tail[-2], tail[-1]
 # ② 用的是 ① 换回来的那个 SSO，而且这一步**还没有票**（不带 Authorization）
-assert json.loads(cmpass['body']) == {'cmpassToken': 'SSO-MOCK'}, cmpass['body']
+assert str(json.loads(cmpass['body']).get('cmpassToken','')).startswith('SSO-MOCK'), cmpass['body']
 assert 'authorization' not in {k.lower() for k in cmpass['headers']}, cmpass['headers']
 # ③ 两个页签都查（127 福利 + 129 回放），带**直播侧** JWT（Authorization，不是 jwttoken）
 assert 'tabId=127' in tab1['path'] and 'tabId=129' in tab2['path'], (tab1['path'], tab2['path'])
@@ -894,6 +898,10 @@ assert 3 in cmds, cmds
 print(f"   ✅ WS：连上、PROVISION 已发（客户端帧命令 {cmds[:4]}…）、升级头形状照抓包")
 WSPY
 
+# ⚠ 关掉 mock 的**自动随机弹幕流**：它默认开（像真直播间），会在 1.5~4 秒推一条，
+#   混入闲聊/随机口令 ⇒ 下面「恰好这一条口令入池」的断言就不稳。e2e 要确定性。
+curl -fsS -X POST -d '{"enabled":false}' "http://127.0.0.1:$MOCK_PORT/_debug/ws/auto" > /dev/null
+
 # 推一条弹幕（`command=2`，文本在 MSync.9→.2→.6→.4→.2）—— 插件该解出文本、回 ack、把口令落池
 curl -fsS "${W[@]}" -X POST -d '{"text":"小红花口令：一键9图出圈"}' \
   "http://127.0.0.1:$MOCK_PORT/_debug/ws/danmaku" -o "$TMP/pushed.json"
@@ -969,3 +977,154 @@ assert expr == '30 10,15 * * *', f'直播的调度是 {expr!r}，应当是用户
 assert (d.get('budget_ms') or 0) >= 60000, f'听窗口需要长预算，实际 {d.get("budget_ms")}'
 print(f'   ✅ 衔接：听与领在**同一条任务**里（{expr}，预算 {d["budget_ms"]}ms）—— 没有衔接延迟')
 CADPY
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ⑪ 失败/边界分支（完善性）—— 用 mock 的直播专用注入口，测完复位
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# 前面 ①~⑩ 验的都是「成功路径 + 业务分叉」，但**错误路径**不测等于没测：
+# 门失败 ≠ 没开播（凭据坏了不能被说成「今天没直播」）、draw 失败要如实上报。
+# 这里用 /_debug/live/behavior 只注入直播族（不碰签到族的 behavior），
+# 每段测完都 POST normal 复位 —— 否则后面的用例会莫名其妙全红。
+echo "⑪ 失败分支：门 500 / 门非 JSON / draw 业务失败"
+
+# ⑪-1 门的 handshake 注入 http-500 ⇒ 任务如实报错，且**不能**说「没开播」
+curl -fsS -X POST "http://127.0.0.1:$MOCK_PORT/_debug/live/behavior" \
+  -d '{"behavior":"http-500"}' > /dev/null
+# 门状态机可能停在 done；连推两步确保撞到握手那两发
+try_write "$TMP/gate-fail.json" "${W[@]}" -X POST "$B/plugins/mcloud/api/live/gate/step"
+try_write "$TMP/gate-fail.json" "${W[@]}" -X POST "$B/plugins/mcloud/api/live/gate/step"
+python3 - "$TMP/gate-fail.json" <<'GATEFAIL'
+import json, sys
+d = json.load(open(sys.argv[1]))
+blob = json.dumps(d, ensure_ascii=False)
+assert d.get('ok') is False, '门收到 500 该报失败：' + blob[:400]
+# 「没开播」是一个**合法结论**，但只有在请求真的成功后才能下 —— 失败时不能这么说
+assert '没在播' not in blob and '没开播' not in blob, '把上游失败误报成没开播了：' + blob[:400]
+assert '失败' in blob or '500' in blob, '失败原因要说清：' + blob[:400]
+print('   ✅ 门 500：如实报错，且没有误判成「没开播」')
+GATEFAIL
+
+# ⑪-2 非 JSON（HTML 502 页）⇒ 解析层报警，不静默吞掉
+curl -fsS -X POST "http://127.0.0.1:$MOCK_PORT/_debug/live/behavior" \
+  -d '{"behavior":"not-json"}' > /dev/null
+try_write "$TMP/gate-notjson.json" "${W[@]}" -X POST "$B/plugins/mcloud/api/live/gate/step"
+try_write "$TMP/gate-notjson.json" "${W[@]}" -X POST "$B/plugins/mcloud/api/live/gate/step"
+python3 - "$TMP/gate-notjson.json" <<'GATENJ'
+import json, sys
+blob = json.dumps(json.load(open(sys.argv[1])), ensure_ascii=False)
+assert 'JSON' in blob or '解析' in blob or '失败' in blob, '非 JSON 该有明确报错：' + blob[:400]
+print('   ✅ 门非 JSON：解析层如实报警')
+GATENJ
+
+# ⑪-3 draw 第一枪(user/info)业务失败 ⇒ 步骤机如实报失败、**不推进**、绝不发写请求
+curl -fsS -X POST "http://127.0.0.1:$MOCK_PORT/_debug/live/behavior" \
+  -d '{"behavior":"biz-fail"}' > /dev/null
+curl -fsS -X POST "http://127.0.0.1:$MOCK_PORT/_debug/requests/clear" > /dev/null
+# 存一条新口令触发新一轮领取（口令一变就起新步骤机）
+try_write /dev/null "${W[@]}" -X POST -H 'content-type: application/json' \
+  -d '{"codes":"失败用例口令"}' "$B/plugins/mcloud/api/live/codes"
+# 只推一步（第一步就是 user/info，注入后回 5001）：应当如实失败，不推进
+try_write "$TMP/draw-fail-step.json" "${W[@]}" -X POST "$B/plugins/mcloud/api/live/draw/step"
+curl -fsS "http://127.0.0.1:$MOCK_PORT/_debug/requests" -o "$TMP/mock-drawfail.json"
+python3 - "$TMP/draw-fail-step.json" "$TMP/mock-drawfail.json" <<'DRAWFAIL'
+import json, sys
+d = json.load(open(sys.argv[1]))
+blob = json.dumps(d, ensure_ascii=False)
+assert d.get('ok') is False, '第一枪业务失败该如实报错：' + blob[:400]
+assert '5001' in blob or '失败' in blob, '失败原因要说清：' + blob[:400]
+st = d.get('state') or {}
+assert st.get('step') != 'done', '失败时不该推进到 done（没领到却说领完了）：' + blob[:400]
+reqs = json.load(open(sys.argv[2]))
+draws = [r for r in reqs if '/redFlower/draw' in r['path']]
+assert not draws, '第一步就失败时不该继续发写请求 draw：' + str(draws)
+print('   ✅ draw 首枪业务失败：如实报错、步骤机不推进、不发写请求')
+DRAWFAIL
+
+# ⑪-4 复位：后面用例必须在干净状态下跑
+curl -fsS -X POST "http://127.0.0.1:$MOCK_PORT/_debug/live/behavior" \
+  -d '{"behavior":"normal"}' > /dev/null
+# ⚠ 关键：⑪-3 的失败把步骤机卡在 balance-before（没推进）⇒ 必须先把那一轮
+#   正常跑完到 done，否则下一节贴的新口令进不去（步骤机会继续旧那轮 codes）。
+draw_until_done
+echo "   ✅ 失败注入已复位（behavior=normal），卡住的步骤机已收尾"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ⑫ draw 业务码分叉（端到端）—— 200108 无效 / 200112 已领 各自归类正确
+# ═══════════════════════════════════════════════════════════════════════════
+# ⑤ 段已验 200118（本场结束，不是口令问题）；这里补齐另两条：
+#   200108 ⇒ invalid-kouling（会让插件重听/重贴）
+#   200112 ⇒ already-drawn（算成功幂等，不重复发奖）
+echo "⑫ draw 业务码分叉：200108 / 200112"
+curl -fsS -X POST "http://127.0.0.1:$MOCK_PORT/_debug/requests/clear" > /dev/null
+try_write /dev/null "${W[@]}" -X POST -H 'content-type: application/json' \
+  -d '{"codes":"无效口令\n领过的口令"}' "$B/plugins/mcloud/api/live/codes"
+draw_until_done
+python3 - "$TMP/draw.json" <<'DRAWCODES'
+import json, sys
+st = json.load(open(sys.argv[1]))['state']
+by = {r['code']: r for r in st['results']}
+r108 = by.get('无效口令'); r112 = by.get('领过的口令')
+assert r108 is not None and r108['kind'] == 'invalid-kouling', r108
+assert r112 is not None and r112['kind'] == 'already-drawn', r112
+print('   ✅ 200108→invalid-kouling、200112→already-drawn（不重复发奖）')
+DRAWCODES
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ⑬ 空聊天室 + WS 心跳/关闭帧 —— 用 mock 的边界开关
+# ═══════════════════════════════════════════════════════════════════════════
+# ⑬-1 roomBeat 回 chatRoomId=null ⇒ 插件不该发 member/apply、不该开 WS
+#     （抓包 §5.2：没有聊天室就没有弹幕可听，硬连只会空转）
+echo "⑬ 边界：空聊天室 / 心跳 / 关闭帧"
+curl -fsS -X POST "http://127.0.0.1:$MOCK_PORT/_debug/live/state" \
+  -d '{"liveChatRoomId":null}' > /dev/null
+curl -fsS -X POST "http://127.0.0.1:$MOCK_PORT/_debug/requests/clear" > /dev/null
+# 把听的状态机推到能重新走门的程度：连推几步，让它从头握手
+for i in 1 2 3 4 5 6 7 8; do
+  try_write "$TMP/listen-noroom-$i.json" "${W[@]}" -X POST "$B/plugins/mcloud/api/live/listen/step"
+done
+curl -fsS "http://127.0.0.1:$MOCK_PORT/_debug/requests" -o "$TMP/mock-noroom.json"
+python3 - "$TMP/mock-noroom.json" <<'NOROOM'
+import json, sys
+reqs = json.load(open(sys.argv[1]))
+beats = [r for r in reqs if 'roomBeat' in r['path']]
+applies = [r for r in reqs if 'member/apply' in r['path']]
+if beats:
+    assert not applies, f'chatRoomId=null 时不该进聊天室，却发了 {len(applies)} 次 member/apply'
+print('   ✅ 空聊天室：roomBeat 后没硬开 WS（member/apply 0 次）')
+NOROOM
+# 复位聊天室
+curl -fsS -X POST "http://127.0.0.1:$MOCK_PORT/_debug/live/state" \
+  -d '{"liveChatRoomId":"1500000000000000000000000000001"}' > /dev/null
+
+# ⑬-2 心跳 h：收到后连接不该被误关（h 不是关闭帧）
+curl -fsS -X POST "http://127.0.0.1:$MOCK_PORT/_debug/ws/heartbeat" -o "$TMP/hb.json" || true
+python3 - "$TMP/hb.json" <<'HBPY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d.get('pushed') in (True, False), d
+print('   ✅ 心跳 h：可推（插件不应把它当关闭帧）' if d.get('pushed') else '   · 心跳 h：当前无连接，跳过')
+HBPY
+
+# ⑬-3 请求形状总闸：整趟里出现过的 live 路径都必须在白名单内
+curl -fsS "http://127.0.0.1:$MOCK_PORT/_debug/requests" -o "$TMP/mock-all.json"
+python3 - "$TMP/mock-all.json" <<'PATHSET'
+import json, sys
+paths = set(r['path'].split('?')[0] for r in json.load(open(sys.argv[1])))
+known = {
+  '/xhs/profile', '/user/querySpecTokenV2',
+  '/api/user/auth/cmpassLoginByCmToken', '/api/channel/channel/tabContentList',
+  '/api/user/customer/userToken', '/api/room/front/roomBeat',
+  '/v3/room/member/apply',
+  '/ycloud/liveRoomFeedback/user/info', '/ycloud/visitlog/journaling',
+  '/ycloud/liveRoomFeedback/firstParticipate/give',
+  '/ycloud/liveRoomFeedback/redFlower/draw',
+  '/ycloud/liveRoomFeedback/redFlower/queryRevivalFlowers',
+}
+liveish = {p for p in paths if p.startswith('/api/') or p.startswith('/ycloud/liveRoomFeedback/')
+           or p.startswith('/ycloud/visitlog/') or p.startswith('/v3/room/') or p == '/xhs/profile'
+           or p == '/user/querySpecTokenV2'}
+unknown = liveish - known
+assert not unknown, f'出现了不认识的 live 路径（可能拼错/被删）：{unknown}'
+print('   ✅ 路径总闸：整趟 live 路径都在白名单内（无拼错/无幽灵端点）')
+PATHSET

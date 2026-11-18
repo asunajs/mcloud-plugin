@@ -104,6 +104,25 @@ npm ci && npm run all
 
 它和你跑的是**同一份脚本**，CI 里跑的也是这一份。
 
+### 手工把「直播」插件指到 mock
+
+直播链有**四个独立基址**（三套信封 + 第三方页 + WS），都指向同一个 mock 即可：
+
+```bash
+node mock/upstream.mjs 18080   # 起 mock
+# POST /plugins/mcloud/api/config：
+#   {"baseUrl":"http://127.0.0.1:18080",   # 小红花 /ycloud
+#    "gateBase":"http://127.0.0.1:18080",  # 直播门 /cmlive + 换票
+#    "imBase":"http://127.0.0.1:18080",    # IM member/apply
+#    "wsBase":"ws://127.0.0.1:18080",      # 弹幕（注意 ws://）
+#    "liveUrl":"http://127.0.0.1:18080/xhs/profile"}
+```
+
+弹幕默认带**自动随机流**：连上 WS 后每 1.5~4 秒推一条（八成闲聊、偶尔提问、偶尔口令），
+比「一连上就发口令」更像真直播间；`/_debug/ws/auto` 可开关（e2e 从启动时关以保证确定性）。
+失败/边界分支可用 `/_debug/live/behavior`、`/_debug/live/state`、`/_debug/ws/{heartbeat,close}` 注入，
+详见 `mock/fixtures/README.md`；`test/mock-live-contract.test.ts` 直接对着这些口做契约断言。
+
 ## 装到你自己的面板上
 
 ```bash
