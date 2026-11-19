@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { importLegacyConfig, argvValue, runConfigImport } from '../src/standalone/configImport.ts';
 import { loadConfig } from '../src/standalone/config.ts';
+import { SCHEMA_VERSION } from '../src/store/userConfigKeys.ts';
 
 const AUTH = 'Basic ' + Buffer.from('pc:13800138000:' + 'x'.repeat(201)).toString('base64');
 
@@ -45,7 +46,7 @@ test('导入：账号进 shared.json，CLI 旋钮进 config.json', async () => {
     follow_redirects: true,
   });
   assert.equal((doc['cli'] as Record<string, Record<string, unknown>>)['ws']!['timeout_ms'], 18_000);
-  assert.equal(doc['schema_version'], 1);
+  assert.equal(doc['schema_version'], SCHEMA_VERSION);
   // 账号在 state 里（契约位置不变）
   const shared = JSON.parse(readFileSync(join(storeDir, 'shared.json'), 'utf8')) as Record<string, string>;
   const accounts = JSON.parse(shared['mcloud.accounts']!) as { id: string }[];

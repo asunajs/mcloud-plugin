@@ -39,7 +39,9 @@ export interface ConfigBinding {
   seed?: unknown;
 }
 
-export const SCHEMA_VERSION = 1;
+/** 配置文件的版本。**只在「加了新的绑定 / 改了编码」时才 +1** ——
+ *  升级时会跑一次「只补空缺」的合并（已有值一律不动），见 `configMigrate.ts`。 */
+export const SCHEMA_VERSION = 2;
 /** 配置文件的根键：版本号。**它存在 = 已迁移过**（幂等判据）。 */
 export const SCHEMA_KEY = 'schema_version';
 
@@ -52,6 +54,16 @@ export const CONFIG_BINDINGS: readonly ConfigBinding[] = [
   { key: 'mcloud.exchange.target_hour', path: 'exchange.target_hour', kind: 'text' },
   { key: 'mcloud.exchange.lead_sec', path: 'exchange.lead_sec', kind: 'number', min: 0, max: 600 },
   { key: 'mcloud.exchange.order.lead_ms', path: 'exchange.lead_ms', kind: 'number', min: 0, max: 600_000 },
+  // 老单计划模型（界面主路径已改成 `exchange.plans`，但那条兼容写入口还活着：
+  // 兑换页的 `action: 'plan'` 仍会写这几格，readings 也还在读它显示）。
+  // ⇒ 它们**是配置**，所以进配置文件；而 `gen` / `runs` / `runs_gen` 是运行期计数，留在 state。
+  { key: 'mcloud.exchange.schedule.plan', path: 'exchange.schedule.plan', kind: 'text' },
+  { key: 'mcloud.exchange.schedule.plan_name', path: 'exchange.schedule.plan_name', kind: 'text' },
+  { key: 'mcloud.exchange.schedule.cron', path: 'exchange.schedule.cron', kind: 'text' },
+  { key: 'mcloud.exchange.schedule.until', path: 'exchange.schedule.until', kind: 'text' },
+  { key: 'mcloud.exchange.schedule.once_date', path: 'exchange.schedule.once_date', kind: 'text' },
+  { key: 'mcloud.exchange.schedule.mode', path: 'exchange.schedule.mode', kind: 'text' },
+  { key: 'mcloud.exchange.schedule.max_runs', path: 'exchange.schedule.max_runs', kind: 'number', min: 0, max: 999 },
   // ── 直播 ──────────────────────────────────────────────────────
   { key: 'mcloud.live.listen_seconds.task', path: 'live.listen_seconds', kind: 'number', min: 5, max: 1800, seed: 600 },
   { key: 'mcloud.live.claim_enabled', path: 'live.claim_enabled', kind: 'bool' },

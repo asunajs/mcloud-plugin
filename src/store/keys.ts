@@ -246,14 +246,7 @@ export const KEY_SCOPE: Readonly<Record<string, KeyScope>> = {
   /** 几点抢兑 —— 是**配置**，跟账号无关。 */
   // 「定时抢兑」的目标：与手动目标分开，避免改一个把另一个带跑。
   // 全局 —— 定时任务按「任务账号」逐个跑，但只认这一件目标。
-  'mcloud.exchange.schedule.plan': 'global',
-  'mcloud.exchange.schedule.mode': 'global',
-  'mcloud.exchange.schedule.cron': 'global',
-  'mcloud.exchange.schedule.until': 'global',
-  'mcloud.exchange.schedule.once_date': 'global',
-  'mcloud.exchange.schedule.max_runs': 'global',
   'mcloud.exchange.schedule.gen': 'global',
-  'mcloud.exchange.schedule.plan_name': 'global',
   // 多计划：计划表 + 每条计划已跑次数。
   'mcloud.exchange.plan.runs': 'global',
   'mcloud.exchange.plans.migrated': 'global',

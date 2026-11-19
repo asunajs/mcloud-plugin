@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openFileStore } from '../src/host/fs/fileStore.ts';
 import { migrateUserConfig } from '../src/host/fs/configMigrate.ts';
+import { SCHEMA_VERSION } from '../src/store/userConfigKeys.ts';
 
 const NOW = '2026-11-19T02:00:00.000Z';
 const AUTH = 'Basic ' + Buffer.from('pc:13800138000:' + 'x'.repeat(201)).toString('base64');
@@ -47,7 +48,7 @@ test('迁移：四份旧配置 + 旧 state 键合成一份', async () => {
   const out = migrateUserConfig(raw, NOW);
   assert.equal(out.migrated, true);
   const doc = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8')) as Record<string, unknown>;
-  assert.equal(doc['schema_version'], 1);
+  assert.equal(doc['schema_version'], SCHEMA_VERSION);
   assert.equal(doc['daily_budget_s'], 480, '旧 config.json 的值要搬过来');
   assert.equal(doc['exchange_enabled'], false, 'bool 要真的是布尔（不是字符串 0）');
   assert.equal((doc['live'] as Record<string, unknown>)['listen_seconds'], 90, '旧 state 键覆盖默认值');
@@ -106,7 +107,31 @@ test('迁移：全新目录 ⇒ 写默认值 + schema_version', async () => {
   raw.ensureSchema();
   assert.equal(migrateUserConfig(raw, NOW).migrated, true);
   const doc = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8')) as Record<string, unknown>;
-  assert.equal(doc['schema_version'], 1);
+  assert.equal(doc['schema_version'], SCHEMA_VERSION);
   assert.equal(doc['daily_budget_s'], 600, '种子值');
   assert.equal(doc['exchange_enabled'], true);
+});
+
+test('升版（schema_version 变大）：只补空缺，不覆盖用户改过的值', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mcloud-migrate-up-'));
+  const raw = openFileStore({ dir, plugin: 'mcloud', nowIso: NOW });
+  raw.ensureSchema();
+  // 模拟「旧版本写过一份」：用户把预算改成 180，版本号是老的那一个
+  writeFileSync(
+    join(dir, 'config.json'),
+    JSON.stringify({ schema_version: 1, daily_budget_s: 180, exchange_enabled: false }),
+  );
+  // 旧 state 里还有一格（这一版才加进绑定的那种）
+  writeFileSync(
+    join(dir, 'shared.json'),
+    JSON.stringify({ 'mcloud.exchange.schedule.plan': '12345' }),
+  );
+  const out = migrateUserConfig(raw, NOW);
+  assert.equal(out.migrated, true, '版本号小 ⇒ 要跑一次');
+  const doc = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8')) as Record<string, unknown>;
+  assert.equal(doc['daily_budget_s'], 180, '用户改过的值不许被种子冲掉');
+  assert.equal(doc['exchange_enabled'], false);
+  assert.equal(doc['schema_version'], SCHEMA_VERSION);
+  const ex = doc['exchange'] as Record<string, Record<string, unknown>>;
+  assert.equal((ex['schedule'] as Record<string, unknown>)['plan'], '12345', '新加入的绑定要从旧 state 补上');
 });
