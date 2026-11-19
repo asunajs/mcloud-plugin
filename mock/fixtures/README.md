@@ -74,9 +74,9 @@ python3 -c "from PIL import Image; import base64,io; \
 im=Image.open(io.BytesIO(base64.b64decode(open('mock/fixtures/prize-picture.jpg.b64').read()))).convert('RGBA'); \
 open('/tmp/prize-bg.rgba','wb').write(im.tobytes())"
 node -e "
-import('/Users/catlair/mobile/workspace/mcloud-plugin/src/mcloud/slide.ts').then(async (m) => {
+import('<本仓库>/src/mcloud/slide.ts').then(async (m) => {
   const fs = await import('node:fs');
-  const { decodeImage } = await import('/Users/catlair/mobile/workspace/mcloud-plugin/src/crypto/png.ts');
+  const { decodeImage } = await import('<本仓库>/src/crypto/png.ts');
   const bg = { data: new Uint8ClampedArray(fs.readFileSync('/tmp/prize-bg.rgba')), width: 680, height: 400 };
   const pz = decodeImage(fs.readFileSync('/tmp/prize-puzzle.png'));
   console.log(m.matchSlide(bg, pz, 680, 400, pz.width, pz.height));
