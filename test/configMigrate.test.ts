@@ -138,3 +138,23 @@ test('升版（schema_version 变大）：只补空缺，不覆盖用户改过�
   const ex = (doc['exchange'] ?? {}) as Record<string, unknown>;
   assert.equal('schedule' in ex, false, '退役的键不许留在配置文件里');
 });
+
+test('升级默认迁移：同一目录再打开（新进程视角）⇒ 不重迁、读到同一份值', async () => {
+  const dir = legacyDir();
+  const first = openFileStore({ dir, plugin: 'mcloud', nowIso: NOW });
+  assert.equal(migrateUserConfig(first, NOW).migrated, true);
+  // 「面板重启 / 另一个插件首启」= 同一目录再 open 一次，**不需要任何人点东西**
+  const second = openFileStore({ dir, plugin: 'mcloud-daily', nowIso: NOW });
+  const out = migrateUserConfig(second, NOW);
+  assert.equal(out.migrated, false, '第二次必须空转');
+  const doc = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8')) as Record<string, unknown>;
+  assert.equal(doc['daily_budget_s'], 480);
+  assert.equal(second.userConfig?.read('daily_budget_s'), 480, '新实例直接读到文件里的值');
+});
+
+test('迁移锁用完就删（不残留 .lock-migrate）', async () => {
+  const dir = legacyDir();
+  const raw = openFileStore({ dir, plugin: 'mcloud', nowIso: NOW });
+  migrateUserConfig(raw, NOW);
+  assert.throws(() => statSync(join(dir, '.lock-migrate')), '锁目录必须清掉');
+});

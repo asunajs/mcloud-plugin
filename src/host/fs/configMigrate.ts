@@ -33,6 +33,7 @@
 
 import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { withLock } from './jsonFile.ts';
 import type { Store } from '../../store/types.ts';
 import {
   CONFIG_BINDINGS,
@@ -140,11 +141,34 @@ export function migrateUserConfig(store: Store, nowIso: string): MigrateResult {
   }
   const path = port.path;
   const storeDir = dirname(path);
+  const done = (): MigrateResult => ({ migrated: false, adopted: [], sources: [], backupDir: '', path });
+  if (isCurrent(port)) return done();
+  // ⚠ **升级后第一次启动，四个插件可能同时跑到这里**（面板按插件并行加载）。
+  //   迁移是「读全量来源 → 整份写回 → 删旧键」，两个进程交错会互相覆盖。
+  //   用一把**独立的**迁移锁串起来：不能复用存储目录那把 `.lock` ——
+  //   `withLock` 不可重入，而迁移过程中要调 `store.setState`（它自己也要那把锁），
+  //   嵌套会自锁到超时。
+  return withLock(storeDir, () => {
+    // 双重检查：等锁的时候别人可能已经迁完了
+    if (isCurrent(port)) return done();
+    return migrateLocked(store, port, nowIso);
+  }, { lockName: '.lock-migrate', waitMs: 15_000 });
+}
+
+/** 已经是最新版（幂等判据）。 */
+function isCurrent(port: { snapshot(): Record<string, unknown> }): boolean {
+  const version = Number(port.snapshot()[SCHEMA_KEY] ?? 0);
+  return Number.isFinite(version) && version >= SCHEMA_VERSION;
+}
+
+function migrateLocked(
+  store: Store,
+  port: NonNullable<Store['userConfig']>,
+  nowIso: string,
+): MigrateResult {
+  const path = port.path;
+  const storeDir = dirname(path);
   const current = port.snapshot();
-  const version = Number(current[SCHEMA_KEY] ?? 0);
-  if (Number.isFinite(version) && version >= SCHEMA_VERSION) {
-    return { migrated: false, adopted: [], sources: [], backupDir: '', path };
-  }
 
   // ⚠ **已有值一律不动**：`schema_version` 升版（加了新绑定）时会再跑一次，
   //   从零重建就等于把用户改过的值冲回默认值。所以下面三步都是「只补空缺」。
