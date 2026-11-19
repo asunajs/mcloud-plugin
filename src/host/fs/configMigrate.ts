@@ -144,12 +144,13 @@ export function migrateUserConfig(store: Store, nowIso: string): MigrateResult {
     return { migrated: false, adopted: [], sources: [], backupDir: '', path };
   }
 
-  // ① 默认值
-  const doc: ConfigDoc = {};
-  for (const b of CONFIG_BINDINGS) {
-    if (b.seed === undefined) continue;
-    setPath(doc, b.path, b.seed);
-  }
+  // ⚠ **已有值一律不动**：`schema_version` 升版（加了新绑定）时会再跑一次，
+  //   从零重建就等于把用户改过的值冲回默认值。所以下面三步都是「只补空缺」。
+  const doc: ConfigDoc = JSON.parse(JSON.stringify(current)) as ConfigDoc;
+  delete doc[SCHEMA_KEY];
+  const empty = (path: string): boolean => getPath(doc, path) === undefined;
+
+  // 默认值**最后**才补（见文件头：真实来源优先于种子）。
 
   // ② 四份旧 config.json（在 `<store>` 的兄弟目录里）
   const sources: string[] = [];
@@ -160,6 +161,7 @@ export function migrateUserConfig(store: Store, nowIso: string): MigrateResult {
     if (old === null) continue;
     sources.push(p);
     for (const b of CONFIG_BINDINGS) {
+      if (!empty(b.path)) continue; // 已有值优先（见上面那段 ⚠）
       // 旧的表单字段名 = 绑定的 path（`daily_budget_s` / `exchange_enabled`）
       const v = getPath(old, b.path);
       const text = encodeValue(b, typeof v === 'string' ? v : v === undefined || v === null ? null : String(v));
@@ -180,9 +182,17 @@ export function migrateUserConfig(store: Store, nowIso: string): MigrateResult {
       if (old === null || old === '') continue;
       const val = encodeValue(b, old);
       if (val === undefined) continue;
-      setPath(doc, bindingPath(b, isAcct ? acct : undefined), val);
+      const at = bindingPath(b, isAcct ? acct : undefined);
+      if (!empty(at)) continue; // 文件里已经有值了 ⇒ 不拿旧 state 盖它
+      setPath(doc, at, val);
       adopted.push(isAcct ? b.key + '@' + acct : b.key);
     }
+  }
+
+  // ④ 种子：只补前面三步都没给的空缺（全新安装就走这一支）
+  for (const b of CONFIG_BINDINGS) {
+    if (b.seed === undefined || !empty(b.path)) continue;
+    setPath(doc, b.path, b.seed);
   }
 
   doc[SCHEMA_KEY] = SCHEMA_VERSION;
