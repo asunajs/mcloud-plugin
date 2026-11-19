@@ -15,12 +15,13 @@ import { runLiveAuto } from '../../mcloud/tasks/liveAutoTask.ts';
 import { collectCodes } from '../../mcloud/tasks/liveDraw.ts';
 import { loadListenSeconds } from '../../mcloud/tasks/liveListen.ts';
 import { clearLiveCodes, loadLiveCodes } from '../../mcloud/tasks/liveRoom.ts';
-import { lineLevel, lineText, onceHint, stepTally } from '../../mcloud/tasks/stepLog.ts';
+import { idleReason, lineLevel, lineText, onceHint, stepTally } from '../../mcloud/tasks/stepLog.ts';
 import type { TaskPayload } from '../../ports/panel.ts';
 import type { LiveCtx } from './ctx.ts';
 import { collectOnce } from './collect.ts';
 import { drawOnce } from './draw.ts';
 import { mergeVerifiedClaims } from './mergeVerified.ts';
+import { liveTally } from './tally.ts';
 
 export async function runLive(ctx: LiveCtx, p: TaskPayload): Promise<void> {
   const store = ctx.store;
@@ -102,7 +103,15 @@ export async function runLive(ctx: LiveCtx, p: TaskPayload): Promise<void> {
       if (capOnly) {
         logBoth(store, 'error', c.detail[0] ?? c.note, at);
       } else {
-        logBoth(store, 'info', `这一趟不领 —— ${reason}；跳过 ${runs.length} 个账号`, at);
+        // 没在播 ⇒ 正常（info）；没捡到口令 / 口令全无效 ⇒ 是**错误**（warn）。
+        // 用户口径 2026-11-19：「没有口令、口令错误才是错误」。
+        const why = idleReason(reason);
+        logBoth(
+          store,
+          why === 'none' || why === 'invalid' ? 'warn' : 'info',
+          `这一趟不领 —— ${reason}；跳过 ${runs.length} 个账号`,
+          at,
+        );
       }
       store.recordRun({
         task: p.name,
@@ -205,10 +214,14 @@ export async function runLive(ctx: LiveCtx, p: TaskPayload): Promise<void> {
       }
       const { bad, hard } = stepTally(r.steps);
       const allIdle = r.steps.length > 0 && r.steps.every((s) => s.idle === true);
+      // ⚠ 说「跳过」时要给**真正的原因**：`steps[0]` 是「凭据续期」，它的 idle 只说明
+      //   「不用续票」，跟这一趟为什么没领毫无关系 —— 用户看到「跳过：不用续期」
+      //   只会更糊涂。取**最后一个** idle 的那一步（对直播就是「领小红花」）。
+      const lastIdle = [...r.steps].reverse().find((s) => s.idle === true);
       const tail =
         bad === 0
           ? allIdle
-            ? `跳过：${r.steps[0]?.note ?? '这一步没做'}`
+            ? `跳过：${lastIdle?.note ?? r.steps[0]?.note ?? '这一步没做'}`
             : '都成了'
           : hard === 0
             ? `${bad} 项跳过（没有网页会话）`
@@ -220,30 +233,16 @@ export async function runLive(ctx: LiveCtx, p: TaskPayload): Promise<void> {
       traceStep(store, new Date().toISOString(), 'account', `${who}：${tail}`, { ok: r.ok && hard === 0 });
     }
 
-    // ⚠ 只算**真发了请求**的账号：什么都没做（口令没变/没有口令）不算"好了"。
-    //   2026-11-16 现场就是三个号一步没做、日志写「3/3 个账号好了」。
-    const okCount = runs.filter((x) => x.result.ok && (x.result as { didWork?: boolean }).didWork !== false).length;
-    const idleAll =
-      runs.length > 0 &&
-      runs.every(
-        (x) => x.result.ok && x.result.steps.length > 0 && x.result.steps.every((s) => s.idle === true),
-      );
-    logBoth(
-      store,
-      okCount === runs.length && !idleAll ? 'success' : 'warn',
-      idleAll
-        ? `直播：${runs.length} 个账号都没领 —— ${runs[0]?.result.note ?? ''}`
-        : `直播完成：${okCount}/${runs.length} 个账号好了`,
-      at,
-    );
-
-    traceStep(
-      store,
-      at,
-      'done',
-      idleAll ? `${runs.length} 个账号都没领` : `${okCount}/${runs.length} 个账号好了`,
-      { ok: okCount === runs.length, ms: Date.now() - startedMs },
-    );
+    // ⚠ 收尾按**账号**算，并按「没领到」的原因分档（用户口径 2026-11-19）：
+    //   「已经领取过不是错误；没有口令、口令错误才是错误」。
+    //   · 真领到了 ⇒ 好；
+    //   · 已经领过（这一轮已跑完 / 口令没变）⇒ 也算好（正常收尾，别黄灯）；
+    //   · 没有口令 / 口令无效 / 真没做成 ⇒ 没成（warn）。
+    //   ⚠ 别退回「一步没做也算 3/3 好了」：2026-11-16 现场就是三个号一步没做、
+    //     日志写「3/3 个账号好了」—— 那种原因落在 `other`，仍然不算好（见 tally.ts）。
+    const tally = liveTally(runs.map((x) => x.result as { ok: boolean; note: string; didWork?: boolean }));
+    logBoth(store, tally.level, tally.text, at);
+    traceStep(store, at, 'done', tally.text, { ok: tally.level !== 'warn', ms: Date.now() - startedMs });
 
     // 账号可能在运行期间被删/停用：卡片摘要和未就绪状态跟着重算。
     setTaskBlockers('直播', blockersFor(store, '直播'));
