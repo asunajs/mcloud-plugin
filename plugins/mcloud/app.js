@@ -754,17 +754,35 @@ async function loadJobs() {
   }
 }
 
+/** 今天跑过**几趟** —— 按「一次运行」算，**不是**按账号。
+ *
+ *  ⚠ 一次触发会给**每个账号各写一条**运行记录（几条共用一个 `at`，见后端
+ *    `runLog.ts::RunRecord.id` 与 `daily/run.ts` 的 `nowIso`）。所以「条数 ≠ 趟数」：
+ *    3 个账号跑 1 趟 = 3 条记录。按 `at` 去重才是趟数。
+ *
+ *  ⚠ 2026-11-19 现场：三个账号跑了一趟，卡片写「今天跑过 3 趟」，
+ *    而排期是「每天 08:00、20:00 各跑一次」—— 一眼就自相矛盾。
+ *    这就是把条数当趟数算出来的。
+ */
+function runsToday(recent, todayKey) {
+  const seen = new Set();
+  for (const x of recent || []) {
+    const t = new Date(String((x && x.at) || ''));
+    if (Number.isNaN(t.getTime())) continue;
+    if (t.toLocaleDateString('sv') !== todayKey) continue;
+    seen.add(String(x.at));
+  }
+  return seen.size;
+}
+
 function renderDaily(d) {
   const run = d.last;
   // ⚠ 这里**不能**写「今天已完成」—— 那读起来像"今天不会再跑了"。
   //   一天两趟都是**照跑**的：第二趟是兜底（插件没法证明所有小任务都到了预期，
   //   见 `src/entries/daily.ts` 里那段）。所以这里说"跑过几趟"。
-  const localDay = (iso) => {
-    const t = new Date(String(iso || ''));
-    return Number.isNaN(t.getTime()) ? '' : t.toLocaleDateString('sv');
-  };
   const todayKey = new Date().toLocaleDateString('sv');
-  const todayRuns = (d.recent || []).filter((x) => localDay(x.at) === todayKey).length;
+  // ⚠ 按 `at` 去重算「趟」，不是数条数：一次触发每个账号各一条记录（见 runsToday）。
+  const todayRuns = runsToday(d.recent, todayKey);
   if (!run) {
     setText('daily-hero', '还没跑过');
   } else if (!run.ok) {

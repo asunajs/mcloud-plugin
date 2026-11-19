@@ -33,6 +33,22 @@ import type { LiveCtx } from './ctx.ts';
  *  用**第一个账号**的凭据（换票/门/WS 都要一张票，随便哪张都行）。
  */
 
+/** 把一次验证的领取记进这一趟的账。
+ *
+ *  只记**真领到**的（`valid` 且有账号）：无效口令本来就没进账，`unknown` 连
+ *  谁验的都没有 —— 记进去会让收尾把没发生的事算成发生。 */
+function noteClaimed(
+  claimed: Map<string, { codes: string[]; gained: number }>,
+  v: { state: string; by: string; gained?: number },
+  code: string,
+): void {
+  if (v.state !== 'valid' || v.by === '') return;
+  const acc = claimed.get(v.by) ?? { codes: [], gained: 0 };
+  acc.codes.push(code);
+  acc.gained += v.gained ?? 0;
+  claimed.set(v.by, acc);
+}
+
 /** 听弹幕要的 deps：在 TaskDeps 上加**全局**的长连接与弹幕回调。 */
 function listenDeps(ctx: LiveCtx, deps: TaskDeps): ListenDeps {
   return {
@@ -48,7 +64,18 @@ export async function collectOnce(
   ctx: LiveCtx,
   deps: TaskDeps,
   runStartMs: number,
-): Promise<{ steps: RunStep[]; detail: string[]; ok: boolean; note: string; stopped: boolean }> {
+  /** 用哪一份账号选择去验（要与 `forEachTaskAccount` 同一档，否则「谁验的」
+   *  和收尾的账号 id 对不上，验证时的进账就并不进那个号的账里）。 */
+  mode: 'auto' | 'manual' = 'auto',
+): Promise<{
+  steps: RunStep[];
+  detail: string[];
+  ok: boolean;
+  note: string;
+  stopped: boolean;
+  /** 验证阶段**真的领到了**的账号 → 这一趟的条数与进账（给收尾用）。 */
+  verified: Map<string, { codes: string[]; gained: number }>;
+}> {
   const store = ctx.store;
   const host = ctx.host;
   const steps: RunStep[] = [];
@@ -70,12 +97,20 @@ export async function collectOnce(
       return { ok: false, note };
     }
   };
+  /** 验证阶段**真的领到了**的账号 → 这一趟的条数与进账。
+   *
+   *  ⚠ 验证就是领取（领就是验）。所以后面「领取」那一段说「没发请求」时，
+   *    不代表这个号这一趟没做事 —— 收尾要把这里的账算进去。
+   *    2026-11-19 现场：小号验证时领了 2 次共 10 朵，收尾只报最后一次的 5 朵、
+   *    还算成「2/3 个账号好了」。 */
+  const claimed = new Map<string, { codes: string[]; gained: number }>();
   const done = (ok: boolean, note: string, stopped = false) => ({
     steps,
     detail: steps.map((s) => userLine(s)).filter((x): x is string => x !== null),
     ok,
     note,
     stopped,
+    verified: claimed,
     // 听口令那一支不发领取请求 ⇒ 这里明确"没做事"，收尾统计不算"好了"
     didWork: false,
   });
@@ -165,13 +200,14 @@ export async function collectOnce(
   //    （最坏 600 秒）才动，而「够 2 条就不听」这条判据也就永远不成立（2026-11-17 复核的 F2）。
   //    为什么「领」就是「验」：一条口令的唯一判据就是拿去领一次 —— 上游回 `claimed` 或
   //    `alreadyClaimed` 都算有效（用户口径「已使用也算有效」）。
-  const liveAccounts = resolveTaskAccounts(rawStoreOf(ctx.store), '直播', 'auto');
+  const liveAccounts = resolveTaskAccounts(rawStoreOf(ctx.store), '直播', mode);
   const afterXhs = loadFreshPool(deps.store, Date.parse(deps.nowIso)).pool;
   const toVerify = afterXhs.codes.filter((c) => c.state === 'unknown' && c.firstSeenMs >= runStartMs);
   if (toVerify.length > 0) {
     logBoth(store, 'start', `先验 ${toVerify.length} 条口令（领就是验，不等窗口）`, deps.nowIso);
     for (const one of toVerify) {
       const v = await verifyCode(deps, liveAccounts, one.value);
+      noteClaimed(claimed, v, one.value);
       // 「谁验的」要写出来：用户口径 2026-11-17「应该记录操作者账号」
       const by = v.by === '' ? '' : `（${labelOf(store, v.by)} 验的）`;
       const say = v.state === 'valid' ? '有效' : v.state === 'invalid' ? '无效' : '没结论';
@@ -259,6 +295,7 @@ export async function collectOnce(
       logBoth(store, 'start', `听到口令「${fresh.value}」—— 立刻去验证（不等窗口）`, deps.nowIso);
       // 和小红书那条同一个函数（口径：听到的与主页给的**一样对待**）。
       const v = await verifyCode(deps, liveAccounts, fresh.value);
+      noteClaimed(claimed, v, fresh.value);
       const by = v.by === '' ? '' : `（${labelOf(store, v.by)} 验的）`;
       const say = v.state === 'valid' ? '有效' : v.state === 'invalid' ? '无效' : '没结论';
       logBoth(

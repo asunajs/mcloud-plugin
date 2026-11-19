@@ -20,6 +20,7 @@ import type { TaskPayload } from '../../ports/panel.ts';
 import type { LiveCtx } from './ctx.ts';
 import { collectOnce } from './collect.ts';
 import { drawOnce } from './draw.ts';
+import { mergeVerifiedClaims } from './mergeVerified.ts';
 
 export async function runLive(ctx: LiveCtx, p: TaskPayload): Promise<void> {
   const store = ctx.store;
@@ -45,8 +46,16 @@ export async function runLive(ctx: LiveCtx, p: TaskPayload): Promise<void> {
     const manualCodes = (loadLiveCodes(store)?.codes ?? []).map((c) => c.trim()).filter(Boolean);
     const manual = manualCodes.length > 0;
     if (manual) clearLiveCodes(store, at);
-    let collected: { steps: RunStep[]; detail: string[]; ok: boolean; note: string; stopped: boolean } | null =
-      null;
+    let collected:
+      | {
+          steps: RunStep[];
+          detail: string[];
+          ok: boolean;
+          note: string;
+          stopped: boolean;
+          verified: Map<string, { codes: string[]; gained: number }>;
+        }
+      | null = null;
     // 第一段（收口令）说“别领”时，后面的账号**一个请求都不发**：
     // 否则没开播也会每个号打一次「领小红花没开」，再给每个号印一句「都成了」。
     let stopAll = false;
@@ -61,7 +70,9 @@ export async function runLive(ctx: LiveCtx, p: TaskPayload): Promise<void> {
         logTo('debug', `自动定时：${auto.note}`);
       }
       if (index === 0 && !manual) {
-        const one = await collectOnce(ctx, deps, startedMs);
+        // 与 `forEachTaskAccount` 同一档（它按 `manual` / `lateMs<0` 判），
+        // 否则验口令用的账号和收尾的账号 id 对不上（见 collectOnce 的参数说明）。
+        const one = await collectOnce(ctx, deps, startedMs, p.manual === true || p.lateMs < 0 ? 'manual' : 'auto');
         collected = one;
         if (one.stopped) stopAll = true;
       }
@@ -73,7 +84,14 @@ export async function runLive(ctx: LiveCtx, p: TaskPayload): Promise<void> {
     if (runs.length === 0) return;
 
     // 收口令那一段：**一次**，标成「口令」而不是某个账号 —— 它不属于任何账号
-    const c = collected as null | { steps: RunStep[]; detail: string[]; ok: boolean; note: string; stopped: boolean };
+    const c = collected as null | {
+      steps: RunStep[];
+      detail: string[];
+      ok: boolean;
+      note: string;
+      stopped: boolean;
+      verified: Map<string, { codes: string[]; gained: number }>;
+    };
     const capOnly =
       c !== null && c.steps.length === 1 && !c.ok && c.steps[0]?.name === '这个面板能不能直播';
 
@@ -125,8 +143,18 @@ export async function runLive(ctx: LiveCtx, p: TaskPayload): Promise<void> {
     // ── ② 每个账号：拿共享池里的口令去领 ─────────────────────────────
     logBoth(store, 'start', `直播 · ${runs.length} 个账号`, at);
     for (const one of runs) {
-      const r = one.result;
+      const r = one.result as {
+        steps: RunStep[];
+        detail: string[];
+        ok: boolean;
+        note: string;
+        didWork?: boolean;
+      };
       const who = labelOf(store, one.acctId);
+      // ⚠ 验证阶段已经领过的号：这一趟**确实做了事**（领就是验）。
+      //   不改的话，日志写「本次没发请求」并只带**最后一次**的进账，收尾还算成
+      //   「2/3 个账号好了」—— 2026-11-19 现场：小号实际领了两次共 10 朵。
+      mergeVerifiedClaims(r, c?.verified.get(one.acctId));
       const note = runs.length > 1 ? `${who}：${r.note}` : r.note;
 
       appendRun(store, {
