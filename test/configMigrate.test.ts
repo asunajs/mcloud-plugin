@@ -132,6 +132,9 @@ test('升版（schema_version 变大）：只补空缺，不覆盖用户改过�
   assert.equal(doc['daily_budget_s'], 180, '用户改过的值不许被种子冲掉');
   assert.equal(doc['exchange_enabled'], false);
   assert.equal(doc['schema_version'], SCHEMA_VERSION);
-  const ex = doc['exchange'] as Record<string, Record<string, unknown>>;
-  assert.equal((ex['schedule'] as Record<string, unknown>)['plan'], '12345', '新加入的绑定要从旧 state 补上');
+  // `schedule.plan` 是**退役的绑定**（老单计划兼容面）：不进文件，值要留在 state
+  const shared = JSON.parse(readFileSync(join(dir, 'shared.json'), 'utf8')) as Record<string, string>;
+  assert.equal(shared['mcloud.exchange.schedule.plan'], '12345', '退役的键要留在 state');
+  const ex = (doc['exchange'] ?? {}) as Record<string, unknown>;
+  assert.equal('schedule' in ex, false, '退役的键不许留在配置文件里');
 });

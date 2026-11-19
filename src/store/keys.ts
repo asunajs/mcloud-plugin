@@ -248,6 +248,19 @@ export const KEY_SCOPE: Readonly<Record<string, KeyScope>> = {
   // 全局 —— 定时任务按「任务账号」逐个跑，但只认这一件目标。
   'mcloud.exchange.schedule.gen': 'global',
   // 多计划：计划表 + 每条计划已跑次数。
+  // ⚠ 老单计划模型的兼容面：**不是**用户手设的配置（界面主路径是 `exchange.plans`，
+  //   这几格只有老的 `action:'plan'` 入口会写）⇒ 按「配置 = 用户手设 / 可手设」的判据
+  //   留在 state，不进 config.json。见 `userConfigKeys.RETIRED_BINDINGS`。
+  'mcloud.exchange.schedule.plan': 'global',
+  'mcloud.exchange.schedule.plan_name': 'global',
+  'mcloud.exchange.schedule.cron': 'global',
+  'mcloud.exchange.schedule.until': 'global',
+  'mcloud.exchange.schedule.once_date': 'global',
+  'mcloud.exchange.schedule.mode': 'global',
+  'mcloud.exchange.schedule.max_runs': 'global',
+  'mcloud.exchange.lead_sec': 'global',
+  /** 死开关（没有任何写入口）：留着只为旧数据能读，不在配置里。 */
+  'mcloud.live.claim_enabled': 'global',
   'mcloud.exchange.plan.runs': 'global',
   'mcloud.exchange.plans.migrated': 'global',
   /** 提前量 —— "网络慢的人该调大"，是**这台机器**的调参，与账号无关。 */

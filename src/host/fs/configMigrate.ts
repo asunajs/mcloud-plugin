@@ -36,9 +36,11 @@ import { dirname, join } from 'node:path';
 import type { Store } from '../../store/types.ts';
 import {
   CONFIG_BINDINGS,
+  RETIRED_BINDINGS,
   SCHEMA_KEY,
   SCHEMA_VERSION,
   bindingPath,
+  decodeValue,
   encodeValue,
   getPath,
   isPlainObject,
@@ -193,6 +195,18 @@ export function migrateUserConfig(store: Store, nowIso: string): MigrateResult {
   for (const b of CONFIG_BINDINGS) {
     if (b.seed === undefined || !empty(b.path)) continue;
     setPath(doc, b.path, b.seed);
+  }
+
+  // ⑤ **退役的绑定搬回 state**（见 `userConfigKeys.RETIRED_BINDINGS`）：
+  //    曾经进过文件、但按「配置 = 用户手设 / 可手设」不该在里面的那几格。
+  //    先写回 state（值不丢），再从文件里删掉 —— 这一步之后文件里不该再出现它们。
+  for (const b of RETIRED_BINDINGS) {
+    const raw = getPath(doc, b.path);
+    if (raw !== undefined) {
+      const text = decodeValue(b, raw);
+      if (text !== null && text !== '') store.setState(b.key, text, nowIso);
+      setPath(doc, b.path, undefined);
+    }
   }
 
   doc[SCHEMA_KEY] = SCHEMA_VERSION;
