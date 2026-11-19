@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { lineLevel, stepTally, userLine } from '../src/mcloud/tasks/stepLog.ts';
+import { idleReason, lineLevel, stepTally, userLine } from '../src/mcloud/tasks/stepLog.ts';
 
 test('lineLevel：做了事 + 明确拿到奖励才 success', async () => {
   assert.equal(lineLevel('签到：领到 3 云朵'), 'success');
@@ -65,4 +65,34 @@ test('lineLevel：没成是 fail，要用户动手是 warn', async () => {
   assert.equal(lineLevel('App 任务：没成 —— 请前往移动云盘手动完成'), 'fail');
   assert.equal(lineLevel('请前往移动云盘手动完成：447'), 'warn');
   assert.equal(lineLevel('签到：没成 —— 还没有网页会话'), 'debug');
+});
+// 用户口径 2026-11-19：「已经领取过不是错误；没有口令、口令错误才是错误」。
+test('idleReason：已经领过 ≠ 错误；没有口令 / 口令无效 才是', async () => {
+  assert.equal(
+    idleReason('这一轮已跑完（1 条口令领到 1 条 · 进账 10 朵）；口令没变，不重复领（池里 1 条）'),
+    'already',
+    '已经领过是正常收尾',
+  );
+  assert.equal(idleReason('口令没变（2 条都是这个号领过的），本次没再发请求'), 'already');
+  assert.equal(
+    idleReason('没有口令可领（池里 0 条 / 这个号能领 0 条）—— 先抓主页或把口令填进输入框'),
+    'none',
+    '没有口令是错误',
+  );
+  assert.equal(idleReason('没捡到能用的口令（听了 30 拍）'), 'none');
+  assert.equal(idleReason('口令无效（200108）'), 'invalid', '口令错误是错误');
+  assert.equal(idleReason('没在播 —— 不听，也不看小红书'), 'other', '没开播不是错误');
+  // 顺序：坏口令可能同时带着「没领到」的说法，不能被后一条吃掉
+  assert.equal(idleReason('没有口令可领，而且口令无效'), 'invalid');
+});
+
+test('lineLevel：「本次没发请求」按原因上色（已领过灰、没口令/坏口令黄）', async () => {
+  // ⚠ 这行里带着上一轮的「领到 1 条 · 进账 10 朵」—— 不许因此涂成绿色（「上次成功关你屁事啊」）。
+  assert.equal(
+    lineLevel('领小红花：本次没发请求 —— 这一轮已跑完（1 条口令领到 1 条 · 进账 10 朵）'),
+    'debug',
+    '已经领过是正常收尾',
+  );
+  assert.equal(lineLevel('领小红花：本次没发请求 —— 没有口令可领（池里 0 条）'), 'warn', '没有口令要黄');
+  assert.equal(lineLevel('领小红花：本次没发请求 —— 口令无效'), 'warn', '口令无效要黄');
 });

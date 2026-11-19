@@ -127,6 +127,27 @@ export function userLine(step: {
  */
 export type LineLevel = 'debug' | 'info' | 'success' | 'warn' | 'error' | 'fail' | 'fatal';
 
+/** 「这一趟没领到东西」的原因 —— 决定日志是普通信息还是**警告**。
+ *
+ *  用户口径 2026-11-19：「**已经领取过不是错误；没有口令、口令错误才是错误**」。
+ *
+ *  ⚠ 以前不分：只要没领到就一律黄灯。于是「这个号今天已经领过了」也报警 ——
+ *    而那是**正常收尾**：口令是共享的，一个号领过之后，下一趟当然没得领。
+ *    一天里大部分趟次都长这样，黄灯就变成了噪声。
+ */
+export type IdleReason = 'already' | 'none' | 'invalid' | 'other';
+
+export function idleReason(note: string): IdleReason {
+  const t = String(note ?? '');
+  // 先判「坏口令」：它可能同时带着「没领到」的说法，别被后面那条吃掉。
+  if (/口令无效|无效口令|200108/.test(t)) return 'invalid';
+  // 「没有口令」是**错误**：该抓没抓到、或者池子空着。
+  if (/没有口令|没捡到|没有能用的|池里 0 条/.test(t)) return 'none';
+  // 「已经领过」是**正常收尾**，不是错误。
+  if (/已跑完|口令没变|都是这个号领过的|不重复领|已领过/.test(t)) return 'already';
+  return 'other';
+}
+
 export function lineLevel(line: string): LineLevel {
   // 级联失败：根因（换票 / 凭据续期）已经单独一行 fail
   if (
@@ -136,6 +157,15 @@ export function lineLevel(line: string): LineLevel {
     return 'debug';
   }
   if (line.includes('没成')) return 'fail';
+  // ⚠ 「本次没发请求」= 这一趟一步没发。原因不同，颜色不同：
+  //   · 已经领过 ⇒ 正常收尾（灰）；
+  //   · 没有口令 / 口令无效 ⇒ 是**错误**（黄）。
+  //   也不能因为后面引用了上一轮的「领到 N 朵」就涂成绿色 ——
+  //   用户原话：「上次成功关你屁事啊」。
+  if (line.includes('本次没发请求')) {
+    const why = idleReason(line);
+    return why === 'none' || why === 'invalid' ? 'warn' : 'debug';
+  }
   // 需要用户动手的，黄一下（不是错误，但不该被当成"成了"）
   if (/需手动|手动完成|需前往|需要你|手动打开|这一步我们做不了/.test(line)) return 'warn';
 
