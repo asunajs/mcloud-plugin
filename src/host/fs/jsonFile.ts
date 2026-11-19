@@ -93,10 +93,16 @@ export class JsonFile<T> {
  *
  * 为什么不用文件锁：LLRT 没有 openSync(…, 'wx')，也就没有 O_EXCL。
  * 为什么要有超时：面板崩了/被 kill 之后锁目录会留下 —— 不设超时就是永久锁死。 */
-export function withLock<T>(dir: string, fn: () => T, opts: { staleMs?: number; waitMs?: number } = {}): T {
+export function withLock<T>(
+  dir: string,
+  fn: () => T,
+  opts: { staleMs?: number; waitMs?: number; lockName?: string } = {},
+): T {
   const staleMs = opts.staleMs ?? 30_000;
   const deadline = Date.now() + (opts.waitMs ?? 2_000);
-  const lock = `${dir}/.lock`;
+  // `lockName` 让**不同用途**各用一把锁：迁移要串起「读全量来源 → 整份写回 → 删旧键」，
+  // 而它中途还会调 `store.setState`（那把 `.lock`）—— 用同一把会自锁。
+  const lock = `${dir}/${opts.lockName ?? '.lock'}`;
   mkdirSync(dir, { recursive: true });
   for (;;) {
     try {
