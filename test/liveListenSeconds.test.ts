@@ -19,7 +19,9 @@ test('听弹幕时长：默认值、账号旧设置、任务级覆盖', async ()
   a.setState(STATE_LISTEN_SECONDS, '120', NOW);
   assert.equal(loadListenSeconds(a), 120, '没设任务级时用账号设置');
 
-  saveTaskListenSeconds(rawStoreOf(s), 90, NOW);
+  // ⚠ 任务级时长现在是**配置键**（旧代码这里传的是裸 store —— 那样会绕开路由，
+  //   写到 shared.json 里去，而读的时候从 config.json 读 ⇒ 永远读不到）。
+  saveTaskListenSeconds(s, 90, NOW);
   assert.equal(loadListenSeconds(a), 90, '直播页的任务级设置优先');
 });
 

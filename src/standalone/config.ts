@@ -8,6 +8,7 @@ import { join, resolve } from 'node:path';
 import { DEFAULT_DRAW_MAX } from '../mcloud/tokenPkState.ts';
 import { pathToFileURL } from 'node:url';
 import { normalizeAuth, phoneOf } from '../mcloud/accounts.ts';
+import { SCHEMA_KEY, getPath, isPlainObject } from '../store/userConfigKeys.ts';
 
 export interface HttpConfig {
   timeoutMs: number;
@@ -47,6 +48,14 @@ export interface StandaloneConfig {
   /** 实际使用的配置文件绝对路径 */
   path: string;
   dir: string;
+  /** 这份是**统一配置文件**（`config.json`，带 `schema_version`）而不是旧的 `asign.json`。
+   *
+   *  统一模式下：设置从这份文件读（`daily_budget_s` / `live.*` / `push.*` / `cli.*`…），
+   *  账号从**同一目录的 `shared.json`** 读（账号是运行期状态，不在配置里），
+   *  目录默认就是这份文件所在目录。
+   *  ⚠ 旧 `asign.json` 的 `caiyun[]` + `standalone.*` 仍按老语义工作 —— 用
+   *  `mcloud-sign config:import` 可以一次性搬进统一配置文件（见 `configImport.ts`）。 */
+  unified: boolean;
   accounts: AccountSeed[];
   stateFile: string;
   http: HttpConfig;
@@ -191,6 +200,26 @@ function accountSeeds(raw: Record<string, unknown>): AccountSeed[] {
   return out;
 }
 
+/** 这份 JSON 是统一配置文件吗（`schema_version` 在、而且不是旧的 asign.json 形状）。 */
+function isUnifiedDoc(raw: Record<string, unknown>): boolean {
+  if (raw[SCHEMA_KEY] === undefined) return false;
+  // 旧 asign.json 一定带 caiyun/accounts；两个都有时按旧格式走（用户的账号更值钱）
+  return raw['caiyun'] === undefined && raw['accounts'] === undefined;
+}
+
+/** 统一配置里的数字格（`cli.http.timeout_ms`）：数字或数字串都认。 */
+function cliNum(o: unknown, key: string, d: number): number {
+  const v = isPlainObject(o) ? o[key] : undefined;
+  const n = typeof v === 'number' ? v : Number(String(v ?? '').trim());
+  return Number.isFinite(n) && n > 0 ? n : d;
+}
+
+/** 统一配置里的开关格（`cli.http.insecure`）。 */
+function cliBool(o: unknown, key: string, d: boolean): boolean {
+  const v = isPlainObject(o) ? o[key] : undefined;
+  return typeof v === 'boolean' ? v : d;
+}
+
 function numberOr(v: unknown, d: number): number {
   return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : d;
 }
@@ -208,15 +237,31 @@ export async function loadConfig(path?: string): Promise<StandaloneConfig> {
   const abs = resolve(found);
   const dir = resolve(abs, '..');
   const raw = await await readConfigFile(abs);
-  let accounts = accountSeeds(raw);
-  accounts = mergeLegacyAuth(accounts, dir);
+  const unified = isUnifiedDoc(raw);
+  // 统一配置里**没有账号**（账号是运行期状态，在 shared.json）。硬要 accountSeeds 会抛
+  // 「配置里没有 caiyun 数组」—— 那条错误对统一配置文件是**错的**。
+  let accounts = unified ? [] : accountSeeds(raw);
+  if (!unified) accounts = mergeLegacyAuth(accounts, dir);
 
-  const standalone = raw.standalone === undefined ? {} : asObject(raw.standalone, 'standalone');
-  const http = standalone.http === undefined ? {} : asObject(standalone.http, 'standalone.http');
-  const ws = standalone.ws === undefined ? {} : asObject(standalone.ws, 'standalone.ws');
-  const stateRaw = typeof standalone.stateFile === 'string' && standalone.stateFile !== ''
-    ? standalone.stateFile
-    : '.mcloud/state.json';
+  // 统一模式的宿主旋钮在 `cli.*` 段（`config:import` 会把旧 `standalone.*` 搬到那里）。
+  const cliHttp = unified ? (isPlainObject(raw['cli']) ? (raw['cli'] as Record<string, unknown>)['http'] : undefined) : undefined;
+  const cliWs = unified ? (isPlainObject(raw['cli']) ? (raw['cli'] as Record<string, unknown>)['ws'] : undefined) : undefined;
+  const httpSrc = unified ? (isPlainObject(cliHttp) ? cliHttp : {}) : (() => {
+    const st = raw.standalone === undefined ? {} : asObject(raw.standalone, 'standalone');
+    return st.http === undefined ? {} : asObject(st.http, 'standalone.http');
+  })();
+  const wsSrc = unified ? (isPlainObject(cliWs) ? cliWs : {}) : (() => {
+    const st = raw.standalone === undefined ? {} : asObject(raw.standalone, 'standalone');
+    return st.ws === undefined ? {} : asObject(st.ws, 'standalone.ws');
+  })();
+
+  const http = httpSrc;
+  const ws = wsSrc;
+  const stateRaw = (() => {
+    if (unified) return 'config.json'; // 统一模式：目录 = config.json 所在目录（见 runtime.ts）
+    const st = raw.standalone === undefined ? {} : asObject(raw.standalone, 'standalone');
+    return typeof st.stateFile === 'string' && st.stateFile !== '' ? st.stateFile : '.mcloud/state.json';
+  })();
 
   // `MCLOUD_DATA_DIR` 压倒一切：指到面板那个 `plugin-data/mcloud` 就是**同一份**
   // 账号与凭据（面板与 CLI 共用一套本地 JSON 存储，见 host/fs/fileStore.ts 文件头）。
@@ -226,18 +271,37 @@ export async function loadConfig(path?: string): Promise<StandaloneConfig> {
   return {
     path: abs,
     dir,
+    unified,
     accounts,
-    stateFile: envDir === '' ? resolve(dir, stateRaw) : resolve(envDir, 'state.json'),
-    http: {
-      timeoutMs: numberOr(http.timeoutMs, 20_000),
-      insecure: boolOr(http.insecure, false),
-      followRedirects: boolOr(http.followRedirects, false),
-      proxy: typeof http.proxy === 'string' && http.proxy !== '' ? http.proxy : undefined,
-    },
-    ws: {
-      insecure: boolOr(ws.insecure, false),
-      timeoutMs: numberOr(ws.timeoutMs, 15_000),
-    },
+    // 统一模式：状态目录就是配置所在目录（`shared.json` 与它并排）—— 除非 MCLOUD_DATA_DIR 覆盖
+    stateFile: envDir !== ''
+      ? resolve(envDir, 'state.json')
+      : unified ? join(dir, 'state.json') : resolve(dir, stateRaw),
+    // 统一模式下旋钮在 `cli.http.*` / `cli.ws.*`（**下划线键名**，与绑定表的 path 一致）；
+    // 旧 asign.json 那条路仍是 `standalone.http.timeoutMs`（驼峰）—— 两边各按各的读。
+    http: unified
+      ? {
+          timeoutMs: cliNum(http, 'timeout_ms', 20_000),
+          insecure: cliBool(http, 'insecure', false),
+          followRedirects: cliBool(http, 'follow_redirects', false),
+          proxy: typeof (isPlainObject(http) ? http['proxy'] : undefined) === 'string'
+            && String(http['proxy']) !== '' ? String(http['proxy']) : undefined,
+        }
+      : {
+          timeoutMs: numberOr(http.timeoutMs, 20_000),
+          insecure: boolOr(http.insecure, false),
+          followRedirects: boolOr(http.followRedirects, false),
+          proxy: typeof http.proxy === 'string' && http.proxy !== '' ? http.proxy : undefined,
+        },
+    ws: unified
+      ? {
+          insecure: cliBool(ws, 'insecure', false),
+          timeoutMs: cliNum(ws, 'timeout_ms', 15_000),
+        }
+      : {
+          insecure: boolOr(ws.insecure, false),
+          timeoutMs: numberOr(ws.timeoutMs, 15_000),
+        },
     common: raw.common === undefined ? {} : asObject(raw.common, 'common'),
     commonRedpackEnabled:
       raw.common === undefined ? undefined : switchOn(asObject(raw.common, 'common')['红包派对']),

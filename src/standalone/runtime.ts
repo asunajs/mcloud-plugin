@@ -16,6 +16,7 @@ import type { ListenDeps } from '../mcloud/tasks/liveListen.ts';
 import { dirname } from 'node:path';
 import { loadConfig, type StandaloneConfig } from './config.ts';
 import { openFileStore } from '../host/fs/fileStore.ts';
+import { migrateUserConfig } from '../host/fs/configMigrate.ts';
 import { importLegacyStateFile } from '../host/fs/importLegacy.ts';
 import { makeNodeFetcher } from './httpBridge.ts';
 import { debug, installFetcher, installWs } from './hostApi.ts';
@@ -34,7 +35,11 @@ export interface Runtime {
   close(): void;
 }
 
-function seedAccounts(raw: Store, config: StandaloneConfig): void {
+/** 把配置里的账号种进 store（面板/CLI 同一套 id 与平台规则）。
+ *
+ *  ⚠ `config.accounts` 为空时**不要调**它：它会把账号表整份替换成空 —— 统一配置模式下
+ *  账号本来就不在配置里（在 `shared.json`），那种情况跳过是唯一正确的做法。 */
+export function seedAccounts(raw: Store, config: StandaloneConfig): void {
   const nowIso = new Date().toISOString();
   const existing = loadAccounts(raw);
   const next: Account[] = [];
@@ -105,7 +110,10 @@ export async function createRuntime(opts: { configPath?: string; stateFile?: str
   const config = await await loadConfig(opts.configPath);
   const stateFile = opts.stateFile ?? config.stateFile;
   // 与面板**同一份实现、同一个目录布局**：CLI 指到面板那个目录就是同一份账号与凭据
-  const storeDir = dirname(stateFile);
+  //
+  // 统一配置模式（`--config …/config.json`）下目录**就是配置文件所在目录** ——
+  // 那份 config.json 和 shared.json 是同一套存储的两个文件，分开指没有意义。
+  const storeDir = config.unified ? dirname(config.path) : dirname(stateFile);
   const rawStore = openFileStore({
     dir: storeDir,
     plugin: 'cli',
@@ -113,7 +121,13 @@ export async function createRuntime(opts: { configPath?: string; stateFile?: str
     legacy: () => importLegacyStateFile(storeDir, stateFile),
   });
   rawStore.ensureSchema();
-  seedAccounts(rawStore, config);
+  if (config.unified) {
+    // 统一配置模式：配置里**没有**账号（账号是运行期状态，见 docs/architecture.md §3）。
+    // 这里只做一次用户配置迁移，账号完全交给这份目录里的 `shared.json`。
+    migrateUserConfig(rawStore, new Date().toISOString());
+  } else if (config.accounts.length > 0) {
+    seedAccounts(rawStore, config);
+  }
 
   const fetcher = makeNodeFetcher(config.http);
   installFetcher(fetcher);

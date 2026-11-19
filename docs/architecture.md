@@ -55,11 +55,12 @@
 ## 3. 存储：本地 JSON（含凭据）
 
     <store>/
+      config.json                 ★**唯一用户配置文件**（见 §3.1）
       meta.json                   schema 版本 / 插件版本 / 创建时间（存在 = 已初始化过）
-      config.json                 设置（面板「插件配置」表单写的就是它；CLI 自己一份）
-      shared.json                 全局键：账号表、配置镜像、口令池、环形日志…
+      shared.json                 运行时状态：账号表、口令池、环形日志、session…
       state/<acct>.json           账号袋（一个号一个文件，里面的键名与实现无关）
       runs/<plugin>.json          运行记录（写者唯一：四个插件各写各的）
+      backup/                     迁移前的一次性快照（config-migration-* / config-import-*）
 
 - **账号袋为什么不按插件拆文件**：拆了要先有一张"每个键归谁"的 owner 表，
   收益只是少几次短锁 —— 先把"别再每次一个线程"做掉，这件事留到真需要时。
@@ -81,6 +82,46 @@
 - **为什么不是 SQLite**：面板的 `sqlite_*_sync` 每次调用**新起一个线程 + 一个新 runtime**
   （`sync_bridge::run`），而业务侧有 305 处读写；换成文件之后一次运行只有"装载 + 落盘"两次 I/O。
   附带好处：CLI 与面板共用同一份数据，不用再维护两套。
+
+### 3.1 唯一配置文件：`config.json`
+
+**用户能改的东西只有一份**：`<data>/plugin-data/mcloud/config.json`。面板「插件 → 配置」、
+插件自己的设置页、CLI（`--config` 指它）读写的都是这一份。
+
+```json
+{
+  "schema_version": 1,
+  "daily_budget_s": 600,
+  "exchange_enabled": true,
+  "exchange": { "plans": [] },
+  "live": { "listen_seconds": 600 },
+  "push": { "config": {}, "rules": [], "bindings": {} },
+  "cli": { "http": { "timeout_ms": 20000 } },
+  "accounts": { "13800138000": { "listen_seconds": 300, "listen_room": 147606 } }
+}
+```
+
+* **哪些键归它**：`src/store/userConfigKeys.ts` 的 `CONFIG_BINDINGS` —— 一张表说了算。
+  那些键**不在** `KEY_SCOPE` 里出现，`scopeOf()` 先查绑定表并返回 `'config'`。
+* **调用点不用改**：`scoped()` 的 `getState/setState` 照旧，物理位置由路由层决定。
+  裸 store 上写配置键**直接抛错**（`assertNotConfigKey`）—— 免得又造出第二个家。
+* **不必重载插件**：`JsonFile` 按 `mtime+size` 失效缓存 ⇒ 面板保存之后，插件**下一次读**
+  就是新值（以前要等面板重载那个插件）。
+* **面板清单**只有 `mcloud` 声明 `config.fields`（两格：日常预算 / 定时抢兑）；
+  `mcloud-daily` / `mcloud-exchange` / `mcloud-live` **不再有配置表单** —— 同一格设置
+  不会再有四个入口。面板机制要求文件存在的话也无所谓：那三份 `config.json` 从此没人读。
+* **迁移**：第一次加载把旧来源合进来，然后**删掉**旧 state 键（`shared.json` / 账号袋），
+  旧的四份 `plugin-data/<插件>/config.json` 原样留着但不再读。幂等判据 = `schema_version`。
+  合并前把旧文件原文与被搬走的键备份到 `backup/config-migration-<时间>/`。
+* **旧 CLI 配置**：`asign.json` / `asign.config.js|mjs` 可以一次性搬进来 ——
+  `mcloud-sign config:import --config asign.json --data-dir <…> [--dry-run]`
+  （或导出的 `importLegacyConfig()`）。账号进 `shared.json` 的 `mcloud.accounts`，
+  `standalone.http|ws` 进 `cli.*`。之后 `--config` 直接指 `<store>/config.json` 即可。
+* **文件权限**：0600（里面有推送口令 / 代理地址这类东西）；坏 JSON 不拦加载 ——
+  `JsonFile` 会把它改名成 `config.json.corrupt-<ts>` 后按空继续。
+
+**边界（一句话）**：**用户能改的 → config.json；程序自己写的 → shared.json / 账号袋。**
+账号凭据、session、进度、口令池、追踪环、运行记录、日志都属于后者，一个字节没动。
 
 ## 4. 产物
 

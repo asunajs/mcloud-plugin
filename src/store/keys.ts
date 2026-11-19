@@ -53,6 +53,14 @@
 //    只有**明确能说出"这是某个账号的状态"**的键才登记成 `account`。
 
 import type { ReadableState, UpdatableState, WritableState } from './keys-types.ts';
+import type { UserConfigPort } from './types.ts';
+import {
+  CONFIG_BINDING_BY_KEY,
+  bindingPath,
+  decodeValue,
+  encodeValue,
+  isAccountBinding,
+} from './userConfigKeys.ts';
 
 export type { ReadableState, WritableState };
 
@@ -61,7 +69,15 @@ export type KeyScope =
   /** **账号运行期状态**：跟着账号走，换账号就该换一份。 */
   | 'account'
   /** **实例级配置 / 跨账号共享**：与"现在是谁"无关。 */
-  | 'global';
+  | 'global'
+  /** **用户设置**：物理落在**唯一配置文件** `<store>/config.json`（不在 state 里）。
+   *
+   *  哪些键归这里由 `userConfigKeys.CONFIG_BINDINGS` 一张表说了算 —— 那些键
+   *  **不在这张 KEY_SCOPE 表里出现**（`scopeOf` 先查绑定表），免得同一格设置有两个家。
+   *
+   *  ⚠ 调用点照旧 getState/setState，只是物理位置从 shared.json 换成了 config.json，
+   *  而面板表单 / 插件界面 / CLI 读写的都是那一份。 */
+  | 'config';
 
 /** 没有账号时的袋名。
  *
@@ -102,7 +118,6 @@ export const KEY_SCOPE: Readonly<Record<string, KeyScope>> = {
   'mcloud.h5.exchange': 'account',
   'mcloud.h5.jwt': 'account',
   // 单次预算（秒）：**全局** —— 它是"这一趟跑多久"的策略，不是某个号的读数。
-  'mcloud.daily.budget_s': 'global',
   'mcloud.daily.done_date': 'account',
   'mcloud.daily.last_run': 'account',
   // ⚠ 登录这一族是**本机**的，不是某个账号的。
@@ -133,7 +148,6 @@ export const KEY_SCOPE: Readonly<Record<string, KeyScope>> = {
   'mcloud.log.ring': 'global',
   // 直播这条链的追踪环：一趟一条，**全局**（跨账号，看的是"这一趟走到哪"）
   'mcloud.live.trace': 'global',
-  'mcloud.login.base': 'global',
   'mcloud.login.userDomainId': 'global',
   'mcloud.sign.stage': 'account',
   'mcloud.sign.last': 'account',
@@ -182,7 +196,6 @@ export const KEY_SCOPE: Readonly<Record<string, KeyScope>> = {
   'mcloud.exchange.order.last_wait': 'account',
   'mcloud.live.gate': 'account',
   'mcloud.live.gate.reading': 'account',
-  'mcloud.live.gate_base': 'account',
   'mcloud.live.reading': 'account',
   'mcloud.live.draw': 'account',
   // ⚠ 手贴口令是**共享资源**（一次贴，全部账号各领一次；route/run/readings 三处
@@ -191,16 +204,9 @@ export const KEY_SCOPE: Readonly<Record<string, KeyScope>> = {
   //   还会凭空触发一次领过期口令的"手动"趟（F-145）。global 才有唯一一份。）
   'mcloud.live.codes': 'global',
   'mcloud.live.listen': 'account',
-  'mcloud.live.listen_room': 'account',
-  'mcloud.live.listen_seconds': 'account',
   // 直播页上那个「听弹幕时长」是**任务级**的（所有账号用同一段），
   // 与账号级诊断口子分开；账号级仍可作为没设任务级时的回落。
-  'mcloud.live.listen_seconds.task': 'global',
-  'mcloud.live.url': 'account',
   'mcloud.live.wake_plan': 'account',
-  'mcloud.live.ws_base': 'account',
-  'mcloud.live.ws_heartbeat_reply': 'account',
-  'mcloud.live.im_base': 'account',
   'mcloud.smid.deviceId': 'account',
   'mcloud.smid.fingerprint': 'account',
   'mcloud.auth.refresh.last': 'account',
@@ -233,15 +239,11 @@ export const KEY_SCOPE: Readonly<Record<string, KeyScope>> = {
   /** "当前选中哪个账号"。⚠ 它是**选择**，不是某个账号的状态。 */
   'mcloud.account.current': 'global',
   /** 上游域名。 */
-  'mcloud.base_url': 'global',
   /** 面板「插件配置」（`plugin-data/<插件>/config.json`）上次**应用进去**的值。
    *  它就是"这份文件动过没有"的指纹 —— 与 state 现值相同 ⇒ 文件没动 ⇒ 用户在界面上
    *  改过的现值不许被盖回去。全局：说的是文件，不是某个账号。见 `mcloud/configOverlay.ts`。 */
-  'mcloud.cfg.applied': 'global',
   /** 登录方式偏好（扫码 / 短信 / 账密）。 */
-  'mcloud.login.pref': 'global',
   /** 几点抢兑 —— 是**配置**，跟账号无关。 */
-  'mcloud.exchange.target_hour': 'global',
   // 「定时抢兑」的目标：与手动目标分开，避免改一个把另一个带跑。
   // 全局 —— 定时任务按「任务账号」逐个跑，但只认这一件目标。
   'mcloud.exchange.schedule.plan': 'global',
@@ -253,19 +255,11 @@ export const KEY_SCOPE: Readonly<Record<string, KeyScope>> = {
   'mcloud.exchange.schedule.gen': 'global',
   'mcloud.exchange.schedule.plan_name': 'global',
   // 多计划：计划表 + 每条计划已跑次数。
-  'mcloud.exchange.plans': 'global',
   'mcloud.exchange.plan.runs': 'global',
   'mcloud.exchange.plans.migrated': 'global',
-  'mcloud.exchange.schedule.enabled': 'global',
-  'mcloud.exchange.lead_sec': 'global',
   /** 提前量 —— "网络慢的人该调大"，是**这台机器**的调参，与账号无关。 */
-  'mcloud.exchange.order.lead_ms': 'global',
   /** 领小红花的开关。 */
-  'mcloud.live.claim_enabled': 'global',
   /** 推送配置（渠道 / 规则 / 事件绑到哪个渠道）。 */
-  'mcloud.push.config': 'global',
-  'mcloud.push.rules': 'global',
-  'mcloud.push.bindings': 'global',
   /** ⚠ 共享口令池 —— 参考实现明写"实例级：跨 mcloud 用户、跨重启"。 */
   'mcloud.kouling.pool': 'global',
   /** 运行日志（每条记录里自己带账号）。 */
@@ -303,6 +297,9 @@ export const KEY_PREFIX_SCOPE: readonly (readonly [string, KeyScope])[] = [
 
 /** 查一个**完整**键名的作用域。没登记 ⇒ `undefined`（调用方必须报错，不许当全局）。 */
 export function scopeOf(key: string): KeyScope | undefined {
+  // ⚠ **先查配置绑定表**：用户设置物理上不在 state 里（见 `userConfigKeys.ts`）。
+  //   那些键**不在**下面这张 KEY_SCOPE 表里出现 —— 同一格设置只许有一个家。
+  if (CONFIG_BINDING_BY_KEY.has(key)) return 'config';
   const exact = KEY_SCOPE[key];
   if (exact !== undefined) return exact;
   // 最长前缀优先
@@ -409,9 +406,40 @@ export function routeGet(store: ReadableState, key: string, acctId?: string): st
   if (!key.startsWith(PLUGIN_NS)) return store.getState(key) ?? null;
   const scope = scopeOf(key);
   if (scope === undefined) throw new UnregisteredKeyError(key);
+  if (scope === 'config') return readConfigKey(store, key, acctId);
   if (scope === 'global') return store.getState(key) ?? null;
   const bag = readBag(store, acctIdOf(store, acctId));
   return bag[key] ?? null;
+}
+
+// ══════════════════════════ 'config' 作用域：唯一配置文件
+//
+// 调用点看到的仍是 state 键与字符串值（所以业务代码一行不用改）；
+// 物理位置是 `<store>/config.json`，由 `store.userConfig` 这个端口提供。
+// 编码规则在 `userConfigKeys.ts`（text / number / bool / json）。
+
+function configPort(store: object, key: string): UserConfigPort {
+  const port = (store as { userConfig?: UserConfigPort }).userConfig;
+  if (port === undefined) {
+    // ⚠ 不静默回落到 state —— 那正是「同一格设置两个家」的复发路径。
+    throw new Error(`键 ${key} 属于用户配置（config.json），但这个 store 没有 userConfig 端口`);
+  }
+  return port;
+}
+
+function readConfigKey(store: ReadableState, key: string, acctId?: string): string | null {
+  const b = CONFIG_BINDING_BY_KEY.get(key);
+  if (b === undefined) return null;
+  const acct = isAccountBinding(b) ? acctIdOf(store, acctId) : undefined;
+  return decodeValue(b, configPort(store, key).read(bindingPath(b, acct)));
+}
+
+/** 写一格配置。`value === ''`（state 的空串 = 「没设过」）⇒ 把这一格从文件里删掉。 */
+function writeConfigKey(store: WritableState, key: string, value: string, acctId?: string): void {
+  const b = CONFIG_BINDING_BY_KEY.get(key);
+  if (b === undefined) return;
+  const acct = isAccountBinding(b) ? acctIdOf(store, acctId) : undefined;
+  configPort(store, key).write(bindingPath(b, acct), encodeValue(b, value));
 }
 
 /** 写一个状态键。作用域语义同 {@link routeGet}。
@@ -445,6 +473,10 @@ export function routeSet(
   }
   const scope = scopeOf(key);
   if (scope === undefined) throw new UnregisteredKeyError(key);
+  if (scope === 'config') {
+    writeConfigKey(store, key, value, acctId);
+    return;
+  }
   if (scope === 'global') {
     store.setState(key, value, nowIso);
     return;

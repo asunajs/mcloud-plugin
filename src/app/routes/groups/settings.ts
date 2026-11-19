@@ -120,7 +120,8 @@ export function settingsRoutes(deps: RouteDeps, base: string, verify: () => Prom
         return json(200, {
           ok: true,
           budgetSeconds: n,
-          note: `已设为 ${n} 秒 —— **下次加载插件时生效**（面板会按需卸载/重载；也可以手动重载）`,
+          // 配置统一之后这一格在 `config.json` 里，**下一次运行就读到**（不再等重载）。
+          note: `已设为 ${n} 秒 —— 下一趟就用新值（存在唯一配置文件里，不用重载插件）`,
         });
       },
     },

@@ -40,13 +40,13 @@ test('FileStore：两个写者（两个插件）同时写不互相覆盖', async
   const live = openFileStore({ dir, plugin: 'mcloud-live', nowIso: ISO });
   daily.setState(bag('x'), JSON.stringify({ 'mcloud.daily.done_date': '2026-10-20' }), ISO);
   live.setState(bag('y'), JSON.stringify({ 'mcloud.log.ring': '[]' }), ISO);
-  daily.setState('mcloud.daily.budget_s', '600', ISO);
+  // ⚠ 这里**不能**拿 `mcloud.daily.budget_s` 来试：它 2026-11-19 起属于唯一配置文件
+  //   （`config.json`），裸 store 上写它会直接抛 —— 那是刻意的（见 userConfigKeys）。
   live.setState('mcloud.log.ring', '[]', ISO);
 
   assert.ok(daily.getState(bag('x'))?.includes('done_date'));
   assert.ok(live.getState(bag('y'))?.includes('ring'));
   const shared = JSON.parse(readFileSync(join(dir, 'shared.json'), 'utf8')) as Record<string, string>;
-  assert.equal(shared['mcloud.daily.budget_s'], '600');
   assert.equal(shared['mcloud.log.ring'], '[]');
 });
 

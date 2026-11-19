@@ -25,6 +25,8 @@ import { mkdirSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { RunRecord, RunStat, SqlParam, Store } from '../../store/types.ts';
 import { JsonFile, withLock } from './jsonFile.ts';
+import { assertNotConfigKey, getPath, isPlainObject, setPath, type ConfigDoc } from '../../store/userConfigKeys.ts';
+import type { UserConfigPort } from '../../store/types.ts';
 
 /** 账号袋的物理键前缀（与 store/keys.ts 的 ACCT_PREFIX 一致）。 */
 const ACCT_PREFIX = 'mcloud.acct.';
@@ -71,6 +73,38 @@ export function openFileStore(o: FileStoreOptions): Store {
     plugin: '',
     createdAt: '',
   }));
+  // **唯一用户配置文件**：`<store>/config.json`。
+  //
+  // `JsonFile` 已经把这四件事做好了：mtime+size 失效缓存（⇒ 面板保存之后**下一次读**
+  // 就是新值，不用重载插件）、tmp+rename 原子写、0600、坏文件改名为 `.corrupt-<ts>`
+  // 后按空继续（不把任务拦下来）。这里只补「整份读改写必须在目录锁里」。
+  const configFile = new JsonFile<ConfigDoc>(join(dir, 'config.json'), () => ({}));
+  const userConfig: UserConfigPort = {
+    path: join(dir, 'config.json'),
+    read: (path) => {
+      const doc = configFile.read();
+      return isPlainObject(doc) ? getPath(doc, path) : undefined;
+    },
+    write: (path, value) => {
+      // ⚠ 锁内**重新读一遍**：四个插件 + CLI 共用这份文件，拿旧快照整份写回会把
+      //   别人刚写的段抹掉（和账号袋丢更新是同一类事故）。
+      withLock(dir, () => {
+        const doc = configFile.read();
+        const base: ConfigDoc = isPlainObject(doc) ? doc : {};
+        setPath(base, path, value);
+        configFile.write(base);
+      });
+    },
+    replace: (next) => {
+      withLock(dir, () => {
+        configFile.write(isPlainObject(next) ? next : {});
+      });
+    },
+    snapshot: () => {
+      const doc = configFile.read();
+      return isPlainObject(doc) ? doc : {};
+    },
+  };
 
   const bagFor = (acctId: string): JsonFile<Record<string, string>> => {
     const name = safeName(acctId);
@@ -101,6 +135,7 @@ export function openFileStore(o: FileStoreOptions): Store {
 
   return {
     ensureSchema: ensure,
+    userConfig,
 
     getState: (key) => {
       ensure();
@@ -116,6 +151,9 @@ export function openFileStore(o: FileStoreOptions): Store {
     setState: (key, value, nowIso) => {
       ensure();
       void nowIso; // 时间戳不再落盘（面板/CLI 各自按真实时刻记日志；这里只存值）
+      // ⚠ 用户设置不在 state 里（见 `store/userConfigKeys.ts`）：只能经 `scoped()` 路由
+      //   落到 config.json。裸写 = 又造一个家 ⇒ 直接报错，别让它静默发生。
+      assertNotConfigKey(key);
       withLock(dir, () => {
         if (key.startsWith(ACCT_PREFIX)) {
           const f = bagFor(key.slice(ACCT_PREFIX.length));

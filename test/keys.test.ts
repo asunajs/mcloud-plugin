@@ -152,7 +152,7 @@ test('⚠ 没有账号时也走袋（**不许**有"没有作用域"的路径）'
   assert.ok((rawStoreOf(store).getState(acctBagKey(DEFAULT_ACCT)) ?? '').includes('单账号'));
 });
 
-test('配置类走扁平键（分账号反而错）', async () => {
+test('配置类不跟账号走，而且**不在 state 里**（落唯一配置文件）', async () => {
   const store = memStore();
   store.ensureSchema();
   upsertAccount(store, A, NOW, 'A');
@@ -160,8 +160,20 @@ test('配置类走扁平键（分账号反而错）', async () => {
   store.setState('mcloud.exchange.target_hour', '10', NOW);
   selectAccount(store, '', NOW);
   assert.equal(store.getState('mcloud.exchange.target_hour'), '10', '切账号后配置仍然生效');
-  // 它确实落在扁平键上
-  assert.equal(rawStoreOf(store).getState('mcloud.exchange.target_hour'), '10');
+  // 2026-11-19「配置统一」：它**不在** shared.json 里，只在唯一配置文件里。
+  const raw = rawStoreOf(store);
+  assert.equal(raw.getState('mcloud.exchange.target_hour'), null, 'state 里不许有同名字段');
+  const doc = raw.userConfig?.snapshot() ?? {};
+  assert.equal((doc['exchange'] as Record<string, unknown>)['target_hour'], '10');
+});
+
+test('⚠ 裸 store 上写配置键要报错（否则又造出第二个家）', async () => {
+  const store = memStore();
+  store.ensureSchema();
+  assert.throws(
+    () => rawStoreOf(store).setState('mcloud.daily.budget_s', '300', NOW),
+    /属于 config.json/,
+  );
 });
 
 test('⚠ 删账号要能**一键清干净**（扁平键散落时根本清不掉）', async () => {
@@ -212,13 +224,14 @@ test('⚠ 迁移：老扁平键要搬进袋（`ordered_hour` 丢了会**重复�
   const raw = rawStoreOf(store);
   raw.setState('mcloud.session', '{"jwt":"老会话"}', NOW);
   raw.setState('mcloud.exchange.order.ordered_hour', '2026-10-15T08', NOW);
-  raw.setState('mcloud.exchange.target_hour', '10', NOW); // 配置，不该被搬
+  // ⚠ 以前这里还塞了一条 `mcloud.exchange.target_hour` 来证明「配置不该被搬」。
+  //   2026-11-19 起配置键**不在 KEY_SCOPE 里**（它们属于 config.json），
+  //   `migrateFlatKeys` 连看都看不到它们 —— 这层保证由 userConfig 的测试覆盖。
 
   const r = migrateFlatKeys(raw, NOW);
   assert.deepEqual(r.moved.sort(), ['mcloud.exchange.order.ordered_hour', 'mcloud.session']);
   assert.equal(store.getState('mcloud.session'), '{"jwt":"老会话"}');
   assert.equal(store.getState('mcloud.exchange.order.ordered_hour'), '2026-10-15T08');
-  assert.equal(raw.getState('mcloud.exchange.target_hour'), '10', '配置原地不动');
   assert.equal(raw.getState('mcloud.session'), '', '扁平键要清掉');
 
   // 幂等：再搬一次什么都不动

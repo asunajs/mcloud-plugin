@@ -7,7 +7,8 @@
 // 所以两边都按同一份接口文档实现，并由同一批测试断言同样的行为。
 
 import { scoped } from './scoped.ts';
-import type { RunRecord, RunStat, SqlParam, Store } from './types.ts';
+import type { RunRecord, RunStat, SqlParam, Store, UserConfigPort } from './types.ts';
+import { assertNotConfigKey, getPath, setPath, type ConfigDoc } from './userConfigKeys.ts';
 
 interface Row extends RunRecord {
   id: number;
@@ -19,12 +20,29 @@ export function memStore(): Store {
   const runs: Row[] = [];
   let seq = 0;
 
+  // 唯一用户配置文件（内存版）：与生产**同一套路由**，只是落在对象里而不是磁盘。
+  const configDoc: ConfigDoc = {};
+  const userConfig: UserConfigPort = {
+    path: '',
+    read: (path) => getPath(configDoc, path),
+    write: (path, value) => setPath(configDoc, path, value),
+    replace: (doc) => {
+      for (const k of Object.keys(configDoc)) delete configDoc[k];
+      Object.assign(configDoc, doc);
+    },
+    snapshot: () => JSON.parse(JSON.stringify(configDoc)) as ConfigDoc,
+  };
+
   return scoped({
     ensureSchema: () => {},
+    userConfig,
 
     getState: (key) => state.get(key) ?? null,
 
     setState: (key, value) => {
+      // ⚠ 用户设置**不属于 state**（见 `userConfigKeys.ts`）：它要走 `scoped()` 的
+      //   路由才能落到配置文件。裸 store 上写这些键 = 又造出第二个家 ⇒ 直接报错。
+      assertNotConfigKey(key);
       state.set(key, value);
     },
 

@@ -18,13 +18,7 @@ import { logTo } from '../ports/log.ts';
 import { panel } from '../host/panel/index.ts';
 import { mcloudRoutes } from '../mcloud/routes.ts';
 import type { RouteEntry } from '../mcloud/routes.ts';
-import {
-  makeHost,
-  makePushDeps,
-  makeStore,
-  makeTransport,
-  syncConfigToState,
-} from './shared.ts';
+import { makeHost, makePushDeps, makeStore, makeTransport } from './shared.ts';
 import { timeoutForUrl } from '../mcloud/timeoutPolicy.ts';
 import { selftest } from '../selftest.ts';
 import { migrateLegacyExchange, syncTaskReadiness } from '../mcloud/taskReadiness.ts';
@@ -33,9 +27,8 @@ import { migrateLegacyExchange, syncTaskReadiness } from '../mcloud/taskReadines
 // （旧面板的 `worker_hint('exclusive')` 在这里没有对应物）。
 
 const store = await makeStore('mcloud');
-// 面板「插件配置」里那两格先并进 state —— **在迁移之前**：配置里显式给的
-// `exchange_enabled` 优先级高于"老库推测"（迁移只看那一格是不是空）。
-await syncConfigToState(store);
+// 用户配置已在 `makeStore` 里统一到 `<store>/config.json`（`ensureUnifiedConfig`），
+// 所以这里读到的 `exchange_enabled` 就是面板上那个值 —— 不需要再"并进 state"。
 // 老库一次性迁移：上一版兑换默认“全部账号”，定时默认启用。
 // 先迁移再同步，否则第一条注册算出来的 blockers 会停在“还没有选账号”。
 const bootIso = new Date().toISOString();
