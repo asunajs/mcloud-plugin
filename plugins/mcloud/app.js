@@ -1447,12 +1447,17 @@ async function exBuyNow(p, btn) {
   const price = p.price === undefined ? '' : `价格 ${p.price} 豆；`;
   const stock = exStockText(p);
   const blocked = p.verdict === 'ok' ? '' : `当前状态：${exSay(p.verdict)}；`;
+  // 确认走面板的弹窗（PanelUI.confirm，/ui.js 提供），不用浏览器原生 confirm：
+  // 原生框是另一个窗口、和面板长得完全不一样，iframe 里还可能被拦。
   if (
     exConfirmFirst() &&
-    !confirm(
-      `立即兑换「${p.name}」？\n\n${blocked}${price}${stock ? stock + '；' : ''}\n` +
+    !(await PanelUI.confirm({
+      title: '确认兑换',
+      text:
+        `立即兑换「${p.name}」？\n\n${blocked}${price}${stock ? stock + '；' : ''}\n` +
         '这是真下单，会扣 AI 豆；同组名额会被占掉。',
-    )
+      okLabel: '兑换',
+    }))
   ) {
     return;
   }
@@ -4084,7 +4089,13 @@ $('acct-list').addEventListener('click', async (ev) => {
       const id = ren.dataset.accRename;
       const cur = (last && last.account && last.account.accounts) || [];
       const a = cur.find((x) => x.id === id) || {};
-      const label = prompt('这个账号叫什么？留空就回落成手机号。', a.label || '');
+      const label = await PanelUI.prompt({
+        title: '给账号起个名字',
+        label: '名字',
+        text: '留空就回落成手机号。',
+        value: a.label || '',
+        okLabel: '保存',
+      });
       if (label === null) return;
       const r = await post({ op: 'edit', id, label });
       toast(r.note || '已改名');
@@ -4097,7 +4108,12 @@ $('acct-list').addEventListener('click', async (ev) => {
       toast(r.note || (on ? '已停用' : '已启用'));
     } else {
       const id = del.dataset.accDel;
-      if (!confirm('移除这个账号？\n⚠ 它名下的票、进度与"这一小时已下单"都会一起清掉。')) return;
+      const okDel = await PanelUI.confirm({
+        text: '移除这个账号？\n⚠ 它名下的票、进度与"这一小时已下单"都会一起清掉。',
+        okLabel: '移除',
+        danger: true,
+      });
+      if (!okDel) return;
       const r = await post({ op: 'remove', id });
       toast(r.note || '已移除');
     }
@@ -4309,7 +4325,7 @@ for (const b of document.querySelectorAll('[data-step-for]')) {
 
 // 定时抢兑：计划列表（添加 / 编辑 / 暂停 / 删除）。
 $('ex-sched-add').addEventListener('click', () => openPlanDialog(null));
-$('ex-sched-list').addEventListener('click', (ev) => {
+$('ex-sched-list').addEventListener('click', async (ev) => {
   const btn = ev.target.closest('button[data-plan-toggle],button[data-plan-edit],button[data-plan-del]');
   if (!btn) return;
   const plans = (last && last.exchange && last.exchange.plans) || [];
@@ -4321,7 +4337,8 @@ $('ex-sched-list').addEventListener('click', (ev) => {
     return;
   }
   if (btn.dataset.planDel !== undefined) {
-    if (!confirm(`删除计划「${plan.prizeName}」？`)) return;
+    const okPlan = await PanelUI.confirm({ text: `删除计划「${plan.prizeName}」？`, okLabel: '删除', danger: true });
+    if (!okPlan) return;
     return act(
       btn,
       async () => {
