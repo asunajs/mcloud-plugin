@@ -825,6 +825,47 @@ test('⚠ 任务自己**开一轮**换票（`runExchangeStep` 只接着走，不
   assert.ok(/const st = loadExchange\(deps\.store, page\);/.test(daily), '先看那一轮的状态（按账号）');
   assert.ok(/startExchange\(deps\.store, loadAuthRaw\(deps\.store\)/.test(daily), '开新一轮也要按账号');
   assert.ok(/if \(needExchange\(deps\.store, Date\.now\(\), page\)\)/.test(daily), '判据也按账号');
+test('⚠ 「今天跑过几趟」按**趟**算，不是按账号条数（2026-11-19 现场）', () => {
+  // 现场：三个账号跑了一趟，卡片写「今天跑过 3 趟」，而排期是
+  // 「每天 08:00、20:00 各跑一次」—— 一眼就自相矛盾。
+  // 根因：一次触发给**每个账号各写一条**运行记录（几条共用一个 `at`），
+  // 而界面数的是**条数**。按 `at` 去重才是趟数。
+  const grab = (name: string) => {
+    const i = js.indexOf('function ' + name + '(');
+    assert.ok(i > 0, 'app.js 里找不到 ' + name + '()');
+    const j = js.indexOf('\n}\n', i);
+    assert.ok(j > i, name + '() 没找到结尾');
+    return js.slice(i, j + 3);
+  };
+  const fn = new Function(grab('runsToday') + '\nreturn { runsToday };')() as {
+    runsToday: (recent: unknown, todayKey: string) => number;
+  };
+
+  const now = new Date();
+  const todayKey = now.toLocaleDateString('sv');
+  const at = (h: number, dayOffset = 0) =>
+    new Date(now.getFullYear(), now.getMonth(), now.getDate() + dayOffset, h, 0, 0).toISOString();
+  const eight = at(8);
+  const twenty = at(20);
+  const yest = at(20, -1);
+
+  // ① 3 个账号、1 趟 ⇒ **1 趟**（这正是现场那条 3 趟的错）
+  assert.equal(fn.runsToday([{ at: eight }, { at: eight }, { at: eight }], todayKey), 1);
+  // ② 一天两趟 × 3 个账号 ⇒ 2 趟
+  assert.equal(
+    fn.runsToday(
+      [{ at: twenty }, { at: twenty }, { at: twenty }, { at: eight }, { at: eight }, { at: eight }],
+      todayKey,
+    ),
+    2,
+  );
+  // ③ 昨天那趟不算进今天
+  assert.equal(fn.runsToday([{ at: eight }, { at: yest }], todayKey), 1);
+  // ④ 空 / 坏数据不许抛
+  assert.equal(fn.runsToday([], todayKey), 0);
+  assert.equal(fn.runsToday(null, todayKey), 0);
+  assert.equal(fn.runsToday([{ at: '不是时间' }], todayKey), 0);
+});
   assert.ok(!/needExchange\(store, Date\.now\(\)/.test(daily), '不许再用模块级 store');
   assert.ok(/if \(st === null \|\| st\.step === 'done'\) \{/.test(daily), 'null 与 done 都要开新的');
   assert.ok(/startExchange\(deps\.store, loadAuthRaw\(deps\.store\), deps\.nowIso, page\)/.test(daily), '开一轮要用**这个账号**的凭据');
@@ -1179,7 +1220,9 @@ test('⚠ 直播：口令只收**一次**（一个账号听到，所有账号都
   // 用户口径 2026-10-17：「一个听到其他人就能用了」
   assert.ok(/function collectOnce\(/.test(live), '收口令要独立成一支');
   assert.ok(/function drawOnce\(/.test(live), '领取才是按账号的那一支');
-  assert.ok(/if \(index === 0 && !manual\) \{[\s\S]{0,160}?collectOnce\(ctx, deps, startedMs\)/.test(live),
+  // 第 4 个参数是账号档位（auto/manual），要和 `forEachTaskAccount` 同一档，
+  // 否则验口令用的号和收尾的账号 id 对不上（见 `collectOnce` 的参数说明）。
+  assert.ok(/if \(index === 0 && !manual\) \{[\s\S]{0,240}?collectOnce\(ctx, deps, startedMs(?:, [^)]+)?\)/.test(live),
     '只有第一个账号去收，且人贴了口令就不收');
   assert.ok(/return (?:await )?drawOnce\(ctx, deps, startedMs, manual \? manualCodes : null\);/.test(live), '每个账号都领（手动只领贴的那条）');
   // 听窗口不能再按账号摊预算

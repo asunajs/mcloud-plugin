@@ -22,6 +22,14 @@ export interface VerifyOutcome {
   /** 谁验出来的（账号 id，落进池里的 `validatedBy`）。空串 = 没结论。 */
   by: string;
   note: string;
+  /** 这一次验证**真领到**的朵数（`balanceAfter - balanceBefore`）。
+   *
+   *  `0` = 领过（200112）或没领到；`undefined` = 这一轮没走完，算不出差值。
+   *
+   *  ⚠ 必须交出去：验证就是领取（领就是验），收尾那一句「这一趟领到几朵」
+   *    要把它算进去。2026-11-19 现场：小号验证时领了 2 次共 10 朵，
+   *    收尾只报最后一次的 5 朵，还算成「2/3 个账号好了」。 */
+  gained?: number;
 }
 
 /** 验一条口令。`accounts` 是**依次试**的顺序（一般是任务里勾的那几个号）。
@@ -62,7 +70,14 @@ export async function verifyCode(
     last = r.note;
     const { pool } = loadFreshPool(deps.store, Date.parse(deps.nowIso));
     const state = pool.codes.find((c) => c.value === code)?.state ?? 'unknown';
-    if (state === 'valid' || state === 'invalid') return { code, state, by: id, note: r.note };
+    // 这一轮真领到几朵：余额差是唯一可信的数（`flowerNum` 只是奖品面额，
+    // 而且 200110/200112 那几支根本没有）。没走完就不给数，别拿半路的值充数。
+    const st = loadDrawState(deps.store);
+    const gained =
+      st !== null && st.step === 'done' && st.balanceBefore !== undefined && st.balanceAfter !== undefined
+        ? st.balanceAfter - st.balanceBefore
+        : undefined;
+    if (state === 'valid' || state === 'invalid') return { code, state, by: id, note: r.note, gained };
   }
   return { code, state: 'unknown', by: '', note: last };
 }

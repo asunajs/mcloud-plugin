@@ -80,7 +80,9 @@ export function buildReadings(deps: RouteDeps): Record<string, unknown> {
       last: readDailyRun(deps.store),
       // 最近几次的**摘要**（只有一行一句）。步骤要按需再取 ——
       // 20 条 × 40 步全塞进来，首屏就是几百 KB 的 JSON。
-      recent: recentRuns(deps.store, 'daily'),
+      // ⚠ 上限给到 20：一次触发**每个账号各一条**记录（共用 `at`），默认 5 条
+      //   在多账号时会把更早那一趟截掉 ⇒ 界面按 `at` 去重算「趟」就会少算。
+      recent: recentRuns(deps.store, 'daily', 20),
     },
     exchange: {
       recent: recentRuns(deps.store, 'exchange'),
