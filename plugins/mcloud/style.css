@@ -484,23 +484,14 @@ textarea:focus {
 }
 
 /* ── 添加账号弹窗 ──
-   面板的 `.dialog` 会铺满可用宽度（那是给表格/长内容准备的），套到登录这种
-   一列表单上就把输入框拉到上千像素。认证弹窗收在一列（Bootstrap 标准弹窗
-   500px、`modal-sm` 300px，登录取中间）：桌面 400px、窄屏留边距。
-   用 `#add-dialog` 提特异性，只盖这一处，不动面板的共享组件。 */
-#add-dialog .dialog {
-  width: min(400px, 92vw);
-}
+   ⚠ 第 197 轮删掉了这里的 `#add-dialog .dialog { width: min(400px, 92vw) }`。
+   当初的理由写的是「面板的 `.dialog` 会铺满可用宽度」—— 那条早就不成立了：
+   面板现在是 `min(520px, calc(100vw - 32px))`，四个插件的登录弹窗统一 520。
+   这里再写 400，结果是「同一个面板里，mcloud 的弹窗比别的窄一圈」，而且
+   面板一调整宽度，这一处就变成特例。弹窗宽度归面板 /app.css 定。 */
 
-/* 定时抢兑弹窗：一列表单，桌面 520px；太宽会把 stepper 和说明拉散。
-   手机上字段多，必须让 body 自己滚，否则「保存定时」会被切在屏幕外。 */
-#ex-plan-dialog .dialog {
-  width: min(520px, 92vw);
-  max-height: calc(100vh - 32px);
-  display: flex;
-  flex-direction: column;
-}
-
+/* 定时抢兑弹窗：宽度/最大高度/纵向排布都是面板 `.dialog` 的默认值（520px），
+   这里只补一条 —— 手机上字段多，必须让 body 自己滚，否则「保存定时」会被切在屏幕外。 */
 #ex-plan-dialog .dialog-body {
   min-height: 0;
   overflow-y: auto;
