@@ -15,7 +15,10 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="$(cd "$HERE/.." && pwd)"
+# ⚠ `pwd -P`（物理路径）而不是 `pwd`：项目现在住在 `workspace/panel-plugins/<plugin>/`，
+#   但 `workspace/<plugin>` 留了一个软链给还没切换的会话。用逻辑路径算出来的 ROOT
+#   会是 `workspace/<plugin>`，再 `../..` 就飞到 `~/mobile`，样式门禁直接找不到脚本。
+ROOT="$(cd "$HERE/.." && pwd -P)"
 DEST="${PANEL_PLUGINS_DIR:-$HOME/panel-3030/plugins}"
 DIST="$ROOT/dist/panel-llrt"
 # 四个插件 + 一份界面（mcloud 是服务插件，其余三个各跑一类任务，共用同一份 webui）
