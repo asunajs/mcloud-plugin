@@ -30,9 +30,43 @@ export interface RunStat {
   excluded: number;
 }
 
+/** **唯一用户配置文件**的端口（`<store>/config.json`）。
+ *
+ *  # 为什么是端口而不是直接 `node:fs`
+ *
+ *  · 业务层不许碰 fs（R3）；而设置项是**业务要读的东西** ⇒ 走这条缝；
+ *  · 测试要能在 Node 里跑（`memStore` 给一个内存实现），
+ *    而且**测试与生产必须走同一条路由**（见 `scoped.ts` 文件头）。
+ *
+ *  # 语义
+ *
+ *  · `path` 用**点路径**：`daily_budget_s` / `live.listen_seconds` /
+ *    `accounts.<账号id>.listen_seconds`。
+ *  · `read` 永远不抛：文件坏了、没有、类型不对 ⇒ `null`（调用方用默认值）。
+ *    坏文件的事实记在 `broken` 上，由调用方**报一次**，不是每读一次炸一次。
+ *  · `write` 是**整份读改写 + 原子落盘**（同一把目录锁），写完 0600。
+ *  · 读到的一定是**磁盘上的当前值**（实现要按 mtime/size 失效缓存）——
+ *    这样「面板保存 → 下一次任务读到新值」不依赖重载插件。 */
+export interface UserConfigPort {
+  /** 配置文件路径（诊断/CLI/日志用）。内存实现给空串。 */
+  readonly path: string;
+  read(path: string): unknown;
+  /** `undefined` = 删掉这一格。 */
+  write(path: string, value: unknown): void;
+  /** 整份替换（迁移/导入用：一次写完，不要逐格写）。 */
+  replace(doc: Record<string, unknown>): void;
+  /** 当前整份的只读快照（可能含未在绑定表里的段，如 `schema_version`）。 */
+  snapshot(): Record<string, unknown>;
+}
+
 export interface Store {
   /** 建表（幂等）。每次插件加载都会调一次。 */
   ensureSchema(): void;
+  /** 唯一用户配置文件的端口（见 {@link UserConfigPort}）。
+   *
+   *  ⚠ 缺了它，`'config'` 作用域的键**读一次就抛**（`keys.ts`）—— 不许静默回落成 state：
+   *  那正是「同一格设置有两个家」的复发路径。 */
+  userConfig?: UserConfigPort;
   getState(key: string): string | null;
   setState(key: string, value: string, nowIso: string): void;
   /** **锁内读改写**（可选 —— 测试替身可以不实现）。

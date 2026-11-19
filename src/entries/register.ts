@@ -16,7 +16,7 @@ import type { Transport } from '../mcloud/client.ts';
 import type { TaskKey } from '../mcloud/pushConfig.ts';
 import { SCHEDULED_TASKS } from '../mcloud/taskAccounts.ts';
 import { blockersFor, summaryFor, syncOwnTask } from '../mcloud/taskReadiness.ts';
-import { LONG_REQUEST_TIMEOUT_MS, makeStore, makeTransport, notify, syncConfigToState } from './shared.ts';
+import { LONG_REQUEST_TIMEOUT_MS, makeStore, makeTransport, notify } from './shared.ts';
 import type { TaskPayload } from './shared.ts';
 
 /** 任务显示名（面板里那一行字）：只认这三条。 */
@@ -40,7 +40,7 @@ export interface TaskRegistration {
   name: TaskName;
   /** 时钟。写死一个串，或按 store 算（兑换的 cron 是「所有启用计划的整点并集」）。 */
   cron: string | ((store: Store) => string);
-  /** 预算（毫秒）。做成函数是为了能在 `syncConfigToState` 之后按面板上的配置算。 */
+  /** 预算（毫秒）。做成函数是为了能按配置算（配置在 `makeStore` 里已经统一好）。 */
   budgetMs: number | ((store: Store) => number);
   /** 提前量（毫秒）。兑换按计划表算，其它两条不需要。 */
   leadMs?: number | ((store: Store) => number);
@@ -63,7 +63,7 @@ export async function registerTask(spec: TaskRegistration): Promise<TaskRunCtx> 
   const store = await makeStore(spec.plugin);
   const transport = makeTransport(LONG_REQUEST_TIMEOUT_MS);
   // ⚠ 必须在算预算**之前**：面板「插件配置」里那几格就是在这一步并进 state 的。
-  await syncConfigToState(store);
+  // 用户配置在 `makeStore` 里已经统一好了（`ensureUnifiedConfig`），这里不用再做一次。
   spec.prepare?.(store);
   const budgetMs = resolve(spec.budgetMs, store);
   const leadMs = spec.leadMs === undefined ? undefined : resolve(spec.leadMs, store);

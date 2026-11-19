@@ -14,6 +14,7 @@
 //   （要给界面看的一律走 `maskAuth`）。
 
 import { STATE_ACCOUNTS, STATE_CURRENT_ACCOUNT, clearBag } from '../store/keys.ts';
+import { CONFIG_BINDINGS, bindingPath, isAccountBinding } from '../store/userConfigKeys.ts';
 
 import { PC_AUTH_PREFIX, hardenAuthorization, parseAuth, type PcPlatform } from './auth.ts';
 import { fromBase64, fromUtf8 } from '../crypto/bytes.ts';
@@ -277,6 +278,13 @@ export function removeAccount(store: Store, id: string, nowIso: string): Account
   //   于是**新账号会继承旧账号的状态**（票、进度、`ordered_hour`…）。
   //   那比"留着垃圾"严重得多。
   clearBag(store, id, nowIso);
+  // ⚠ 还有一处**不在袋里**：2026-11-19 起，按账号的用户设置（听弹幕时长 / 房间号 /
+  //   几个 base）落在唯一配置文件的 `accounts.<id>.*`。不清就是同一类孤儿 ——
+  //   而且下次同号重加会**继承旧设置**（表现是「我没设过这个时长，它自己变成 120」）。
+  for (const b of CONFIG_BINDINGS) {
+    if (!isAccountBinding(b)) continue;
+    store.userConfig?.write(bindingPath(b, id), undefined);
+  }
   return list;
 }
 

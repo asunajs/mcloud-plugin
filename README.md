@@ -191,6 +191,30 @@ mcloud-plugin/
   docs/                    见下
 ```
 
+## 配置只有一个文件
+
+用户能改的东西全在 `<data>/plugin-data/mcloud/config.json`（带 `schema_version`）：
+面板「插件 → 配置」、插件自己的设置页、CLI 的 `--config` 读写的都是它。
+
+- 面板清单里**只有 `mcloud` 声明配置表单**（日常预算 / 定时抢兑两格）；
+  `mcloud-daily` / `mcloud-exchange` / `mcloud-live` 不再有独立表单 —— 同一格设置不会再有四个入口。
+- 保存后**不用重载插件**：下一次读就是新值（按 `mtime+size` 失效缓存）。
+- 账号凭据、session、进度、运行记录、日志**仍然在** `shared.json` / `state/<账号>.json` /
+  `runs/`；`shared.json` 里的 `mcloud.accounts` 是咪咕插件读的跨仓契约，位置与字段不变。
+- 旧的 `asign.json` / `asign.config.js|mjs` 可以一次性搬进统一文件：
+
+```bash
+mcloud-sign config:import --config asign.json --data-dir <面板的 plugin-data/mcloud> --dry-run
+mcloud-sign config:import --config asign.json --data-dir <…>          # 真搬
+```
+
+  账号进 `mcloud.accounts`，`standalone.http|ws` 进 `cli.*`；旧文件原样留着（只读）。
+  之后 `--config <…>/config.json` 就能直接跑，读到的是同一组设置。
+- 第一次加载会自动迁移旧的 state 键与四份旧 `config.json`，写 `schema_version` 作幂等判据，
+  迁移前把旧文件与旧键备份到 `<store>/backup/config-migration-<时间>/`。
+
+边界一句话：**用户能改的 → `config.json`；程序自己写的 → `shared.json` / 账号袋。**
+
 ## 文档
 
 | 文件 | 里面是什么 |

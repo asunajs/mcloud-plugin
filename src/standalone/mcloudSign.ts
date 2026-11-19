@@ -70,6 +70,27 @@ export async function drawRedFlower(codes: string[], configPath?: string): Promi
   }
 }
 
+/** `config:import` —— 把旧 `asign.json` 搬进统一配置文件（见 `configImport.ts`）。
+ *
+ *  ⚠ 它是**子命令**，所以要在 `run()` 之前分派：`run()` 的第一件事是建 runtime，
+ *    而迁移恰恰要在「旧格式 → 新格式」之间做，不能先按旧格式建 runtime。 */
+export async function configImport(argv: string[]): Promise<void> {
+  const { runConfigImport } = await import('./configImport.ts');
+  const log = createCliLogger();
+  try {
+    const r = await runConfigImport(argv);
+    log.info(`${r.dryRun ? '[dry-run] ' : ''}迁移源: ${r.from}`);
+    log.info(`统一配置文件: ${r.written}`);
+    log.info(`账号表: ${r.accounts} 个${r.dryRun ? '（会写入）' : ''}`);
+    log.info(`搬进配置的旋钮: ${r.settings.length > 0 ? r.settings.join('，') : '（无）'}`);
+    if (r.backupDir !== '') log.info(`备份: ${r.backupDir}`);
+    if (r.dryRun) log.info('这是 dry-run：什么都没写。去掉 --dry-run 再跑一次。');
+  } catch (e) {
+    log.error(e instanceof Error ? e.message : String(e));
+    process.exitCode = 2;
+  }
+}
+
 function configFromArgv(argv: string[]): string | undefined {
   const i = argv.indexOf('--config');
   if (i >= 0 && argv[i + 1] !== undefined) return argv[i + 1];
@@ -79,8 +100,14 @@ function configFromArgv(argv: string[]): string | undefined {
 
 const isMain = process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
+  const argv = process.argv.slice(2);
   try {
-    await run(configFromArgv(process.argv.slice(2)));
+    // 子命令先分派（只有一条）：`config:import`
+    if (argv[0] === 'config:import') {
+      await configImport(argv.slice(1));
+    } else {
+      await run(configFromArgv(argv));
+    }
   } catch (e) {
     // 配置都还没读出来时没有 `common.colorize`；用默认（TTY 判断）。
     createCliLogger().error(e instanceof Error ? e.message : String(e));

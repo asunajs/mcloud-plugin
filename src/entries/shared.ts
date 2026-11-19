@@ -41,7 +41,7 @@ import { importFromPanelSqlite } from '../host/panel/legacy.ts';
 import { rawStoreOf, scoped } from '../store/scoped.ts';
 import { resolveTaskAccounts, type TaskAccountMode } from '../mcloud/taskAccounts.ts';
 import { migrateFlatKeys } from '../store/keys.ts';
-import { applyConfigOverlay, type OverlayResult } from '../mcloud/configOverlay.ts';
+import { migrateUserConfig, type MigrateResult } from '../host/fs/configMigrate.ts';
 import { loadBaseUrl } from '../mcloud/session.ts';
 import { loadAuthRaw } from '../mcloud/sessionExchange.ts';
 import { authorizeRequest } from '../mcloud/cloudUpload.ts';
@@ -118,6 +118,11 @@ export async function makeStore(plugin: string): Promise<Store> {
   // 老扁平键 → 账号袋（一次性、幂等）。⚠ 传**裸 store**：
   //   `migrateFlatKeys` 读写的是扁平键，传路由后的那个会把袋键当普通键读。
   const { moved } = migrateFlatKeys(store, new Date().toISOString());
+  // **唯一用户配置文件**：第一次加载时把旧来源（四份 config.json + 旧 state 键）合进
+  // `<store>/config.json`；之后每次空转。⚠ 必须在 `scoped()` 之前跑 —— 它要直接
+  // 读旧键、删旧键，而包过的那层已经把配置键指到新文件了。
+  // 也必须在各个入口读配置**之前**（注册期算预算就依赖这一点）。
+  ensureUnifiedConfig(store);
   const s = scoped(store);
   if (moved.length > 0) {
     logTo('info', `状态迁移：${moved.length} 个键搬进账号袋（${moved.join(', ')}）`);
@@ -125,32 +130,35 @@ export async function makeStore(plugin: string): Promise<Store> {
   return s;
 }
 
-/** 把面板「插件配置」页（`plugin-data/<插件>/config.json`）里那几格合并进 state。
+/** 保证「唯一配置文件」存在并已迁移（幂等）。加载期**先跑它、再用配置**。
  *
- *  加载期**先跑它、再读**这些格（日常的预算 `BUDGET_MS` 就是加载期算的 —— 顺序反了，
- *  面板上改的预算要等下一次重载才生效，而用户点"保存"时看到的是"已生效"）。
+ *  # 它替代了 `syncConfigToState`（面板配置 → state 的三方合并）
  *
- *  合并判据、以及"为什么不能用'缺失才播种'"写在 `mcloud/configOverlay.ts` 的文件头。
- *  这里只负责**读**：`self_config` 失败/为空 ⇒ 返回空结果、一格都不动（不抛）。 */
-export async function syncConfigToState(store: Store): Promise<OverlayResult> {
-  let raw: unknown = null;
+ *  收成一份文件之后，同一格设置不再有两个家，也就不需要「文件值 vs state 值谁覆盖谁」。
+ *  这里只做一件事：**第一次**把旧来源（四份 `plugin-data/<插件>/config.json` + 旧 state 键）
+ *  合进 `<store>/config.json`，之后每次加载都是空转。
+ *
+ *  ⚠ 迁移只在**裸 store** 上做：要直接读旧键、直接删旧键。
+ *  ⚠ 迁移失败不拦加载：抛出去会让四个插件全起不来，而配置读不到时用默认值仍然可用
+ *    （坏 JSON 的情况下 `JsonFile` 已经把坏文件改名留证）。 */
+export function ensureUnifiedConfig(raw: Store): MigrateResult {
   try {
-    raw = await panel.selfConfig();
+    const out = migrateUserConfig(raw, new Date().toISOString());
+    if (out.migrated) {
+      logTo(
+        'info',
+        `用户配置已统一到 ${out.path}（搬了 ${out.adopted.length} 格`
+          + (out.sources.length > 0 ? `，合并了 ${out.sources.length} 份旧配置页文件` : '')
+          + (out.backupDir !== '' ? `，备份在 ${out.backupDir}` : '')
+          + '）',
+      );
+    }
+    return out;
   } catch (e) {
-    logTo('warn', '读插件配置失败（按"没配过"继续）：' + (e instanceof Error ? e.message : String(e)));
-    return { applied: [], kept: [], ignored: [] };
+    logTo('warn', '用户配置迁移失败（按默认值继续）：' + (e instanceof Error ? e.message : String(e)));
+    return { migrated: false, adopted: [], sources: [], backupDir: '', path: '' };
   }
-  const out = applyConfigOverlay(store, raw, new Date().toISOString());
-  if (out.applied.length > 0) {
-    logTo('info', `插件配置已写进面板状态：${out.applied.join('，')}（改了要重载对应任务插件才用上）`);
-  }
-  if (out.ignored.length > 0) {
-    // 认不出来的值要报出来 —— 静默跳过等于"填了没反应"
-    logTo('warn', `插件配置里有认不出来的值，已跳过：${out.ignored.join('，')}`);
-  }
-  return out;
 }
-
 /** 长连接那一族（`ws_*`）。
  *
  *  ⚠ 这一族**只有嵌入式 JS 宿主有**；Node 适配器与 Python 侧都是「函数存在、
