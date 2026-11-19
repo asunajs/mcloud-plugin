@@ -75,7 +75,15 @@ node --test test/keys.test.ts >/tmp/mcloud-keys-gate.log 2>&1 || {
 
 # 样式门禁：面板仓的 check-plugin-style.mjs 按 <cwd>/plugins 扫，所以把产物在临时目录里
 # 摆成插件目录再跑它 —— "插件归插件项目"之后这道闸门也没丢。
-PANEL_REPO="${PANEL_REPO:-$ROOT/../panel-llrt}"
+# ⚠ 面板仓与这个项目的**相对深度**：项目在 `workspace/panel-plugins/<plugin>/`，
+#   面板在 `workspace/panel-llrt/` ⇒ 要退两级（迁入 panel-plugins 之前是一级）。
+#   用固定相对路径会随目录调整而失效，所以给一个环境变量口子 + 两条候选路径。
+if [ -z "${PANEL_REPO:-}" ]; then
+  for cand in "$ROOT/../../panel-llrt" "$ROOT/../panel-llrt"; do
+    if [ -d "$cand" ]; then PANEL_REPO="$cand"; break; fi
+  done
+  PANEL_REPO="${PANEL_REPO:-$ROOT/../../panel-llrt}"
+fi
 GATE="$PANEL_REPO/scripts/check-plugin-style.mjs"
 if [ -f "$GATE" ]; then
   TMP="$(mktemp -d)"

@@ -16,7 +16,7 @@ cargo build --release          # 约 25 秒
 
 # 起面板（令牌自定，下面用 t）
 BIND_ADDR=127.0.0.1:8080 \
-PLUGINS_DIR=/Users/catlair/mobile/workspace/mcloud-plugin/plugins \
+PLUGINS_DIR=<本仓库>/dist/panel-llrt \
 DB_PATH=./data/mc.sqlite \
 PANEL_TOKEN=t \
 ./target/release/plugin-panel

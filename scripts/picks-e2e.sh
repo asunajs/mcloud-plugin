@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # 对着 mock 上游验一遍「选奖品」那条缓存（**绝不碰真账号**）。
 set -uo pipefail
-HERE=/Users/catlair/mobile/workspace/mcloud-plugin
-BIN=/Users/catlair/mobile/workspace/rust-plugin-panel/target/release/plugin-panel
+# ⚠ 别写死绝对路径：这个项目会跟着 panel-plugins/ 挪（2026-11-19 迁过一次）。
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BIN="${PANEL_BIN:-$(dirname "$HERE")/../panel-llrt/target/release/panel}"
 PORT=18983
 MOCK=$((PORT+100))
 TOKEN=e2e-mock-token

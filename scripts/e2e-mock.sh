@@ -15,7 +15,17 @@
 
 set -euo pipefail
 
-PANEL_BIN="${1:?用法: scripts/e2e-mock.sh <面板可执行文件> [端口]}"
+# ⚠ 面板可执行文件**缺省自动找**：项目在 `workspace/panel-plugins/<plugin>/`，
+#   面板在 `workspace/panel-llrt/` ⇒ 相对是 `../../panel-llrt`（迁入前是一级）。
+#   显式传参或 PANEL_BIN 仍然优先。
+PANEL_BIN="${1:-${PANEL_BIN:-}}"
+if [ -z "$PANEL_BIN" ]; then
+  HERE0="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  for cand in "$HERE0/../../panel-llrt/target/release/panel" "$HERE0/../panel-llrt/target/release/panel"; do
+    if [ -x "$cand" ]; then PANEL_BIN="$cand"; break; fi
+  done
+fi
+if [ -z "$PANEL_BIN" ]; then echo "用法: scripts/e2e-mock.sh <面板可执行文件> [端口]" >&2; exit 2; fi
 PANEL_PORT="${2:-18899}"
 MOCK_PORT="$((PANEL_PORT + 100))"
 TOKEN="e2e-mock-token"

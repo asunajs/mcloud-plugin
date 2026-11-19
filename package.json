@@ -26,7 +26,7 @@
     "all": "npm run gen && npm run typecheck && npm run build && npm test && npm run check-build && npm run check-layers",
     "check-layers": "node scripts/check-layers.mjs",
     "gen": "node scripts/gen-constants.mjs",
-    "e2e": "./scripts/e2e-mock.sh \"${PANEL_BIN:-../panel-llrt/target/release/panel}\"",
+    "e2e": "./scripts/e2e-mock.sh \"${PANEL_BIN:-../../panel-llrt/target/release/panel}\"",
     "shots": "node scripts/shots.mjs",
     "pack": "node scripts/pack.mjs",
     "pack:panel04": "node scripts/pack.mjs",
