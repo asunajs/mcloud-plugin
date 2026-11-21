@@ -4,8 +4,8 @@ name: Release
 #
 # ⚠ 2026-11-14 改成「只手动触发」：
 #   · 这条仓现在只面向 0.4（见 README「面板契约（0.4）」R5），产物是
-#     `dist/panel-llrt/mcloud-plugin-<version>-panel04.zip`（`npm run pack:panel04`）；
-#   · 发布动作由维护者从**干净 worktree + tag** 跑（`git worktree add` → `pack:panel04`），
+#     `dist/panel-llrt/mcloud-plugin-<version>-panel<NN>.zip`（`npm run pack`）；
+#   · 发布动作由维护者从**干净 worktree + tag** 跑（`git worktree add` → `pack`），
 #     这样 zip 的 sha256 与发布出去的一致 —— 之前在工作树里直接打，包里混进了别人未提交的
 #     改动，sha256 对不上只能重做；
 #   · 所以**不再**在 push tag 时自动建 release：那会和手动上传的资产同名覆盖，
@@ -52,7 +52,7 @@ jobs:
         run: npm run check-build
 
       # tag 与 package.json 的版本必须对得上，否则 zip 名字会骗人
-      # （`mcloud-plugin-0.4.0-panel04.zip` 里装的是别的版本的代码）。
+      # （`mcloud-plugin-0.4.0-panel<NN>.zip` 里装的是别的版本的代码）。
       - name: tag 与 package.json 版本一致
         run: |
           set -euo pipefail
@@ -70,7 +70,7 @@ jobs:
         run: |
           set -euo pipefail
           npm run build:panelllrt
-          npm run pack:panel04
+          npm run pack
 
       - name: 挂到 Release
         env:
@@ -78,7 +78,7 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${{ inputs.tag }}"
-          ZIP=$(ls dist/*-panel04.zip)
+          ZIP=$(ls dist/*-panel<NN>.zip)
           SUM="$ZIP.sha256"
           # 已经存在就先补传（发布要幂等：同一个 tag 重跑一次得到同一个结果）
           if gh release view "$TAG" >/dev/null 2>&1; then

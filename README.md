@@ -281,13 +281,13 @@ QuickJS 沙箱里没有 Node（没有 `fs` / `net` / `crypto` / npm 包），
 
 ## 发布（面板 0.4 的 zip）
 
-资产名 `mcloud-plugin-<version>-panel04.zip`（当前 **0.4.0**），挂在
+资产名 `mcloud-plugin-<version>-panel<NN>.zip`（NN 由清单 `min_panel` 推，当前 0.7.0 → `panel07`），挂在
 <https://github.com/asunajs/mcloud-plugin/releases>；同目录还有 `.sha256`。
 
 ```bash
 npm run build                # 产物 → dist/panel-llrt/（4 个 .js + 4 个清单 + mcloud.webui/）
 npm run build:dir            # 同上，但出**目录式**插件（四个入口 import 同一份 mcloud/lib/）
-npm run pack:panel04         # → dist/mcloud-plugin-<version>-panel04.zip（+ .sha256、SHA256SUMS）
+npm run pack                 # → dist/mcloud-plugin-<version>-panel<NN>.zip（+ .sha256、SHA256SUMS）
 ```
 
 **必须从干净 worktree/tag 打**：`scripts/zip.mjs` 固定了 DOS 时间戳（1980-01-01），
@@ -296,7 +296,7 @@ npm run pack:panel04         # → dist/mcloud-plugin-<version>-panel04.zip（+ 
 
 ```bash
 git worktree add /tmp/rel-v0.4.0 v0.4.0
-cd /tmp/rel-v0.4.0 && npm ci && npm run build && npm run pack:panel04
+cd /tmp/rel-vX.Y.Z && npm ci && npm run build && npm run pack
 ```
 
 面板 → 插件卡片 → **配置** 里有表单（不再是裸 JSON），四份清单各自声明自己真读的格子：

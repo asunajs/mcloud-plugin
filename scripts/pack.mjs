@@ -7,7 +7,8 @@
 // 为什么必须平铺：0.4 的加载器只扫 `plugins/*.js`，清单读 `plugins/<name>.panel.json`，
 // 界面读 `plugins/<name>.webui/`。塞进 `js/` 子目录就等于「装了但面板看不见」。
 //
-// 产物：dist/mcloud-plugin-<version>-panel04.zip（+ .sha256、SHA256SUMS）
+// 产物：dist/mcloud-plugin-<version>-panel<NN>.zip（+ .sha256、SHA256SUMS）
+//   NN 由清单 min_panel 推导（0.7.0 → panel07），别写死
 // 这是发布给商店的资产；本地装实例还是走 `npm run deploy:panel`（不经过 zip）。
 
 import { createHash } from 'node:crypto';
@@ -32,7 +33,12 @@ function die(msg) {
 
 const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
 const version = pkg.version;
-const zipName = `mcloud-plugin-${version}-panel04.zip`;
+// 系列号从主清单推（与 panel-store / mgmusic / yangshipin 同一口径）
+const mainManifest = JSON.parse(readFileSync(join(ROOT, 'mcloud.panel.json'), 'utf8'));
+const SERIES = String(mainManifest.min_panel || '').split('.').slice(0, 2).join('.');
+if (!SERIES) die('主清单缺 min_panel');
+const PANEL_TAG = 'panel' + SERIES.split('.')[1].padStart(2, '0');
+const zipName = `mcloud-plugin-${version}-${PANEL_TAG}.zip`;
 const outDir = join(ROOT, 'dist');
 const zipPath = join(outDir, zipName);
 
