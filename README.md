@@ -185,7 +185,9 @@ mcloud-plugin/
       tasks/               每条任务的协议逻辑
     entries/               四个插件入口（mcloud / daily / exchange / live）
   dist/panel-llrt/*.js     构建产物（单文件，提交进仓库，CI 检查是否最新）
-  plugins/mcloud/          WebUI 静态文件（原生 ESM + CSS，零依赖）
+  webui/                   WebUI 源码（原生 ESM + CSS，零依赖）→ 构建成 <产物>/mcloud.webui/
+  mcloud.panel.json        主清单（版本/配置表单）；另外三份在 plugins/ 下平铺：
+  plugins/mcloud-*.panel.json   daily / exchange / live 的清单
   mock/upstream.mjs        mock 上游（CI 全程只打它）
   scripts/                 构建、e2e、状态断言、截图
   docs/                    见下

@@ -21,7 +21,7 @@ if (existsSync(cli)) {
     console.error('❌ mcloud-sign.mjs 缺 shebang');
     bad++;
   }
-  for (const marker of ['plugins/mcloud', 'register_nav({']) {
+  for (const marker of ['webui', 'register_nav({']) {
     if (text.includes(marker)) {
       console.error(`❌ 独立产物里不该有 ${marker}`);
       bad++;

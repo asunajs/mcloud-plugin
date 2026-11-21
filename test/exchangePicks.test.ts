@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { exchangeSource, routesSource } from './helpers.ts';
 
-const dir = new URL('../plugins/mcloud/', import.meta.url);
+const dir = new URL('../webui/', import.meta.url);
 const html = readFileSync(new URL('index.html', dir), 'utf8');
 const js = readFileSync(new URL('app.js', dir), 'utf8');
 const css = readFileSync(new URL('style.css', dir), 'utf8');

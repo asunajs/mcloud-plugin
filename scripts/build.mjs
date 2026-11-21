@@ -25,7 +25,7 @@
 //   3. **不 minify** —— 面板的「插件源码」页面会把产物显示给用户看（还能编辑）。
 
 import { build } from 'esbuild';
-import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -86,19 +86,29 @@ export async function bundleAll() {
   return out;
 }
 
-/** 界面：plugins/mcloud/ → <产物目录>/mcloud.webui/ */
+/** 界面：webui/ → <产物目录>/mcloud.webui/ */
 function copyWebui() {
-  const uiSrc = join(ROOT, 'plugins/mcloud');
+  const uiSrc = join(ROOT, 'webui');
   const uiDst = join(OUTDIR, 'mcloud.webui');
   rmSync(uiDst, { recursive: true, force: true });
   cpSync(uiSrc, uiDst, { recursive: true });
   console.log(`  ✅ ${uiDst}/（界面）`);
 }
 
-/** 清单：面板读 plugins/<name>.panel.json 出配置表单、核对 min_panel。 */
+/**
+ * 清单：面板读 plugins/<name>.panel.json 出配置表单、核对 min_panel。
+ *
+ * 源码位置（第 251 轮统一）：主清单在**仓库根** `mcloud.panel.json`；
+ * 另外三份（daily / exchange / live）平铺在 `plugins/` 下。
+ */
+function manifestSource(name) {
+  const atRoot = join(ROOT, `${name}.panel.json`);
+  return existsSync(atRoot) ? atRoot : join(ROOT, 'plugins', `${name}.panel.json`);
+}
+
 function copyManifests() {
   for (const name of Object.keys(ENTRIES)) {
-    const src = join(ROOT, 'plugins', 'panelllrt', `${name}.panel.json`);
+    const src = manifestSource(name);
     const dst = join(OUTDIR, `${name}.panel.json`);
     cpSync(src, dst);
     console.log(`  ✅ ${dst}`);
