@@ -67,7 +67,7 @@ test('上一轮的口令结论带「那一轮是什么时候」', async () => {
 });
 
 test('界面：上一轮那句带时间、日志时间带日期', async () => {
-  const js = srcOf('plugins/mcloud/app.js');
+  const js = srcOf('webui/app.js');
   // 口令池那行：`上一轮（<具体日期时间>）<结论>`
   assert.ok(/const roundAt = draw\.at \? `上一轮（\$\{stamp\(Date\.parse\(draw\.at\)\)\}）` : '';/.test(js), '上一轮要带具体日期');
   assert.ok(/`\$\{poolHead\} · \$\{roundAt\}\$\{rep\.line\}/.test(js), '口令池那行要用上它');

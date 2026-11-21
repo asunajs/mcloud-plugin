@@ -75,7 +75,7 @@ test('⚠ 源码里（非注释）不许再出现内部黑话', async () => {
 // ── 界面那一侧 ─────────────────────────────────────────────────────────
 //
 // ⚠ 上面那条扫的是 `src/`（后端）。界面是**手写**的静态文件
-//   （`plugins/mcloud/index.html` / `app.js`），不在打包链上，所以一句黑话
+//   （`webui/index.html` / `app.js`），不在打包链上，所以一句黑话
 //   能直接印到按钮上 —— 用户看到的就是「自动运行：全部账号（旧版设置）」。
 //
 //   那句话的本意是"这一版还没单独设过、读的是旧键"，属于**实现状态**。
@@ -87,13 +87,13 @@ const UI_BANNED = ['旧版'];
 
 test('⚠ 插件界面里（非注释）也不许出现「旧版」这种仓库里的词', async () => {
   const html = fs
-    .readFileSync('plugins/mcloud/index.html', 'utf8')
+    .readFileSync('webui/index.html', 'utf8')
     .replace(/<!--[\s\S]*?-->/g, '');
-  const js = stripComments(fs.readFileSync('plugins/mcloud/app.js', 'utf8'));
+  const js = stripComments(fs.readFileSync('webui/app.js', 'utf8'));
   const hits: string[] = [];
   for (const [name, text] of [
-    ['plugins/mcloud/index.html', html],
-    ['plugins/mcloud/app.js', js],
+    ['webui/index.html', html],
+    ['webui/app.js', js],
   ] as const) {
     text.split('\n').forEach((line, i) => {
       for (const w of UI_BANNED) {
@@ -105,8 +105,8 @@ test('⚠ 插件界面里（非注释）也不许出现「旧版」这种仓库�
 });
 
 test('「这份是沿用的」要说在展开面板里，不在按钮标签上', async () => {
-  const html = fs.readFileSync('plugins/mcloud/index.html', 'utf8');
-  const js = fs.readFileSync('plugins/mcloud/app.js', 'utf8');
+  const html = fs.readFileSync('webui/index.html', 'utf8');
+  const js = fs.readFileSync('webui/app.js', 'utf8');
   // 两份自动选择器（日常 / 直播）各有一条说明
   for (const id of ['daily-acct-legacy', 'live-acct-legacy']) {
     assert.ok(html.includes(`id="${id}"`), `缺 ${id} 那条说明`);

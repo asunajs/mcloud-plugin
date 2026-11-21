@@ -17,7 +17,7 @@
 //   没这个能力时用 `npm run build`（单文件），功能一致。
 
 import { build } from 'esbuild';
-import { cpSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ENTRIES, forbidden } from './build.mjs';
@@ -141,9 +141,14 @@ for (const name of Object.keys(ENTRIES)) {
 // 界面 + 清单（与单文件产物同一份源）
 const uiDst = join(OUTDIR, 'mcloud.webui');
 rmSync(uiDst, { recursive: true, force: true });
-cpSync(join(ROOT, 'plugins/mcloud'), uiDst, { recursive: true });
+cpSync(join(ROOT, 'webui'), uiDst, { recursive: true });
+// 清单：主清单在仓库根，另外三份平铺在 plugins/（第 251 轮统一后的布局）
+const manifestSource = (name) => {
+  const atRoot = join(ROOT, `${name}.panel.json`);
+  return existsSync(atRoot) ? atRoot : join(ROOT, 'plugins', `${name}.panel.json`);
+};
 for (const name of Object.keys(ENTRIES)) {
-  cpSync(join(ROOT, 'plugins', 'panelllrt', `${name}.panel.json`), join(OUTDIR, `${name}.panel.json`));
+  cpSync(manifestSource(name), join(OUTDIR, `${name}.panel.json`));
 }
 console.log('  ✅ mcloud.webui/ + 4 份清单');
 console.log('✅ 目录式产物完成（四个插件 import 同一份 lib/）');

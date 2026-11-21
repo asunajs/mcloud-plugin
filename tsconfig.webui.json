@@ -1,7 +1,7 @@
 {
   "extends": "./tsconfig.webui.base.json",
   "include": [
-    "plugins/mcloud/*.js",
+    "webui/**/*.js",
     "types/panel-ui.d.ts"
   ]
 }

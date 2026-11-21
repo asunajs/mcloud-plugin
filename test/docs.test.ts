@@ -138,7 +138,7 @@ test('⚠ UI 里不许有**字面 Markdown 标记**（HTML 不渲染它，会原
   // 实测抓到的：`<p class="hint">「提前多少毫秒发」是**你到云端的传输耗时**。</p>`
   // —— 页面上真的显示出了那四个星号。HTML 不是 Markdown，`**` 就是两个字符。
   // ⚠ 截图之前看不出来（静态测试不会"看"页面）—— 这类缺陷只有渲染才暴露。
-  const html = readFileSync(new URL('../plugins/mcloud/index.html', import.meta.url), 'utf8');
+  const html = readFileSync(new URL('../webui/index.html', import.meta.url), 'utf8');
   // ⚠ HTML 注释里的 `**` 是**给维护者看的**文档，不算（它不会被渲染）
   const visible = html.replace(/<!--[\s\S]*?-->/g, '');
   const hits = visible.match(/\*\*[^*\n]{1,60}\*\*/g) ?? [];
@@ -149,8 +149,8 @@ test('⚠ 界面里不许出现用词规则禁掉的那些词', async () => {
   // `docs/ui-wording.md` 写了规则，但规则写成文档就只是"一张纸" ——
   // 这一版的新界面就是**规则写完才做的**，于是当场踩了四处（`上游` ×4）。
   // 所以把它变成测试：改了界面忘了改用词，这里红。
-  const ui = readFileSync(resolve(root, 'plugins/mcloud/index.html'), 'utf8');
-  const js = readFileSync(resolve(root, 'plugins/mcloud/app.js'), 'utf8');
+  const ui = readFileSync(resolve(root, 'webui/index.html'), 'utf8');
+  const js = readFileSync(resolve(root, 'webui/app.js'), 'utf8');
   // 去掉注释：HTML 顶部那段注释是**解释旧版毛病**的，里面会提到那些被删掉的词
   const visible = ui.replace(/<!--[\s\S]*?-->/g, '');
   const jsCode = js.replace(/^\s*\/\/.*$/gm, '');
@@ -175,7 +175,7 @@ test('⚠ 界面里不许出现用词规则禁掉的那些词', async () => {
 });
 
 test('用词规则里要求的替代说法，界面上真的有', async () => {
-  const ui = readFileSync(resolve(root, 'plugins/mcloud/index.html'), 'utf8');
+  const ui = readFileSync(resolve(root, 'webui/index.html'), 'utf8');
   // 「上游」要写成「移动云盘」
   assert.ok(ui.includes('移动云盘'), '界面上没出现「移动云盘」—— 那「上游」该叫什么？');
   // 三个动作按钮要说人话
@@ -234,7 +234,7 @@ test('⚠ 长 token 的容器必须能断行（不然会把整块撑破、下面
   //
   // 而 `.finger` 这个类当时**根本没有样式**（写了类名没写规则）——
   // 静态测试钉"id 对得上"是钉不住这种事的，只有真看一眼才发现。
-  const css = readFileSync(resolve(root, 'plugins/mcloud/style.css'), 'utf8');
+  const css = readFileSync(resolve(root, 'webui/style.css'), 'utf8');
   const rule = /\.finger\s*\{([^}]*)\}/.exec(css);
   assert.ok(rule, '`style.css` 里没有 `.finger` 规则 —— 长指纹会把容器撑破');
   assert.ok(
@@ -245,7 +245,7 @@ test('⚠ 长 token 的容器必须能断行（不然会把整块撑破、下面
   // 而且界面上**只有一个**「换一台设备」——参考实现就只有一个。
   // 曾经挂过第二个「我的码一直扫不出来」（同一个动作、按症状命名），
   // 用户圈出来之后删了。
-  const ui = readFileSync(resolve(root, 'plugins/mcloud/index.html'), 'utf8');
+  const ui = readFileSync(resolve(root, 'webui/index.html'), 'utf8');
   assert.equal(
     (ui.match(/id="device-reset"/g) ?? []).length,
     1,

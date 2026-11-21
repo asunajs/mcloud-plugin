@@ -22,9 +22,9 @@ test('界面显示的版本 == package.json 的 version', async () => {
 test('四份面板清单的 version 也 == package.json', async () => {
   const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8')) as { version?: string };
   for (const name of NAMES) {
-    const m = JSON.parse(fs.readFileSync(`plugins/panelllrt/${name}.panel.json`, 'utf8')) as {
-      version?: string;
-    };
+    // 主清单在仓库根，另外三份平铺在 plugins/（第 251 轮统一后的布局）
+    const at = fs.existsSync(`${name}.panel.json`) ? `${name}.panel.json` : `plugins/${name}.panel.json`;
+    const m = JSON.parse(fs.readFileSync(at, 'utf8')) as { version?: string };
     assert.equal(m.version, pkg.version, `${name}.panel.json 里是 ${String(m.version)}，package.json 是 ${String(pkg.version)}`);
   }
 });

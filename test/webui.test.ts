@@ -1,4 +1,4 @@
-// 插件界面（`plugins/mcloud/index.html` + `app.js` + `style.css`）的**静态**一致性。
+// 插件界面（`webui/index.html` + `app.js` + `style.css`）的**静态**一致性。
 //
 // # 守的是哪几类错
 //
@@ -34,7 +34,7 @@ import { dailySource, exchangeSource, liveSource, routesSource, taskSource } fro
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-const dir = new URL('../plugins/mcloud/', import.meta.url);
+const dir = new URL('../webui/', import.meta.url);
 const html = readFileSync(new URL('index.html', dir), 'utf8');
 const js = readFileSync(new URL('app.js', dir), 'utf8');
 const css = readFileSync(new URL('style.css', dir), 'utf8');
@@ -103,7 +103,7 @@ test('⚠ 每个按钮都**真的挂上了**处理器（不只是被 `$()` 取�
 });
 
 test('数据页「刷新」强取，自动进页走缓存', async () => {
-  const js = srcOf('plugins/mcloud/app.js');
+  const js = srcOf('webui/app.js');
   assert.ok(/async function fetchBeans\(force = false\)/.test(js), 'fetchBeans 要能区分强刷');
   assert.ok(/refresh=1/.test(js), '刷新要带 refresh=1');
   assert.ok(/当前 \$\{esc\(bal\)\} 豆/.test(js), '每行要显示当前余额');
@@ -776,7 +776,7 @@ test('⚠ loadJobs 认**新面板**的字段名（tasks/cron/next_at/enabled）�
   // JOBS 永远是空 ⇒ 排期那句永远不显示，而且测试只钉了"函数存在"，bug 畅通无阻。
   // 教训照 F-144 的：凡是「插件猜面板字段」的地方，**静态正则不算测试**，
   // 要拿面板真回的那一坨喂进真函数。
-  const jsJobs = srcOf('plugins/mcloud/app.js');
+  const jsJobs = srcOf('webui/app.js');
   assert.ok(/Array\.isArray\(j\.tasks\)/.test(jsJobs), 'loadJobs 要认 `j.tasks`（新面板的任务表名）');
   assert.ok(/job\.cron \?\? job\.schedule/.test(jsJobs), 'scheduleText 要认 `cron`（新面板的表达式字段）');
   assert.ok(/msOf\(job\.next_at \?\? job\.next_run\)/.test(jsJobs), '下次时刻要认 `next_at`（毫秒数）并用 msOf 解');
@@ -994,8 +994,8 @@ test('⚠ 面板的运行记录两种形状都要认（2026-11-16「跑完了不
 });
 
 test('⚠ 跑的时候有「停止」，且触发请求不能挡住按钮状态', async () => {
-  const js = srcOf('plugins/mcloud/app.js');
-  const html = srcOf('plugins/mcloud/index.html');
+  const js = srcOf('webui/app.js');
+  const html = srcOf('webui/index.html');
   for (const id of ['daily-stop', 'live-stop']) {
     assert.ok(html.includes(`id="${id}"`), `缺 ${id}`);
     assert.ok(js.includes(`$('${id}').addEventListener`), `${id} 没挂处理器`);
@@ -1160,7 +1160,7 @@ test('⚠ 直播页第一行说"在听什么"，不是"池子里有几条口令"
 });
 
 test('直播页能设听弹幕时长（照 mcloud Rust 的 5–1800 秒）', async () => {
-  const html = srcOf('plugins/mcloud/index.html');
+  const html = srcOf('webui/index.html');
   assert.ok(html.includes('id="live-listen-seconds"'), '要有输入框');
   assert.ok(/id="live-listen-seconds"[^>]*min="5"[^>]*max="1800"/.test(html), '范围要写清 5–1800');
   assert.ok(/api\('\/config'/.test(js), '保存走已有的 /config 任务级接口');
@@ -1364,7 +1364,7 @@ test('⚠ 级别下拉每次进页面都回「全部」（浏览器会恢复上�
   assert.ok(/el\.level\.value = 'info';/.test(js), '回「全部」');
   assert.ok(/addEventListener\('pageshow', resetTermLevels\)/.test(js), 'pageshow 之后再复位一次（恢复发生在它之前）');
   // 别用 autocomplete="off"（项目里有用例禁它，MDN 也不建议）
-  assert.ok(!/autocomplete="off"/.test(srcOf('plugins/mcloud/index.html')), 'HTML 里不许出现');
+  assert.ok(!/autocomplete="off"/.test(srcOf('webui/index.html')), 'HTML 里不许出现');
 });
 
 test('⚠ 自检要探「宿主有没有 native TLS」——直播那条链全靠它', async () => {
@@ -1393,7 +1393,7 @@ test('⚠ 票的事内部处理：界面不提"手机端凭据几点过期"（�
 
 
 test('⚠ 三个号同一句话时合成一枚 chip（三枚一模一样的是噪声）', async () => {
-  const js = srcOf('plugins/mcloud/app.js');
+  const js = srcOf('webui/app.js');
   assert.ok(/new Set\(sameRun\.map\(restOf\)\)\.size === 1/.test(js), '要判"是不是同一句话"');
   assert.ok(/name\.textContent = `\$\{sameRun\.length\} 个账号`/.test(js), '合成后要说清是几个号');
   // 只有**一次运行**里的记录才比（跨轮的旧记录不能混进来）
@@ -1401,8 +1401,8 @@ test('⚠ 三个号同一句话时合成一枚 chip（三枚一模一样的是�
 });
 
 test('⚠ 直播那块不再画账号 chip（2026-11-17 用户要求去掉：重复且没有时间）', async () => {
-  const js = srcOf('plugins/mcloud/app.js');
-  const html = srcOf('plugins/mcloud/index.html');
+  const js = srcOf('webui/app.js');
+  const html = srcOf('webui/index.html');
   // 负向钉住：谁想加回来，先看 app.js 里那段注释（要加就带时间、并说清是哪一轮）。
   assert.ok(!/renderAcctChips\('live-accounts'/.test(js), '直播不许再画账号 chip');
   assert.ok(!html.includes('id="live-accounts"'), '直播的 chip 容器要删干净');
@@ -1412,7 +1412,7 @@ test('⚠ 直播那块不再画账号 chip（2026-11-17 用户要求去掉：重
 });
 
 test('⚠ 颜色一律走面板 token（写死的深色在浅色主题下会翻车）', async () => {
-  const css = srcOf('plugins/mcloud/style.css');
+  const css = srcOf('webui/style.css');
   // 面板 theme.css 里**没有** --bg-2 / --fg-dim 这两个名字
   assert.ok(!/var\(--bg-2/.test(css), '--bg-2 不是面板的 token');
   assert.ok(!/var\(--fg-dim/.test(css), '--fg-dim 不是面板的 token');
@@ -1456,8 +1456,8 @@ test('⚠ 面板缺直播支持时：当成**构建缺陷**报出来，并且别
 });
 
 test('⚠ 「数据」页第一格是主动请求的：开这一页自己取，只有"要新的"才点刷新', async () => {
-  const js = srcOf('plugins/mcloud/app.js');
-  const html = srcOf('plugins/mcloud/index.html');
+  const js = srcOf('webui/app.js');
+  const html = srcOf('webui/index.html');
   // 切到「数据」就自动取一次
   assert.ok(/if \(name === 'data'\) autoFetchBeansOnce\(\);/.test(js), '开这一页要自己取');
   // 只取一次（切回来不重打 —— 那是按账号一枪的请求）
@@ -1474,8 +1474,8 @@ test('⚠ 「数据」页第一格是主动请求的：开这一页自己取，�
 });
 
 test('WebUI 里不再有「推送」这一块（配置/试发/规则全删）', async () => {
-  const html = srcOf('plugins/mcloud/index.html');
-  const js = srcOf('plugins/mcloud/app.js');
+  const html = srcOf('webui/index.html');
+  const js = srcOf('webui/app.js');
   assert.ok(!html.includes('data-block="push"'), '菜单里不该还有推送');
   assert.ok(!html.includes('id="block-push"'), '不该还有推送区块');
   assert.ok(!/id="push-/.test(html), '不该还有 push-* 输入/按钮');
@@ -1485,7 +1485,7 @@ test('WebUI 里不再有「推送」这一块（配置/试发/规则全删）', 
 });
 
 test('⚠ 日志终端先连 SSE，再异步补历史（否则任务跑完才看到日志）', async () => {
-  const js = srcOf('plugins/mcloud/app.js');
+  const js = srcOf('webui/app.js');
   const start = js.indexOf('function open() {', js.indexOf('function makeTerm('));
   const end = js.indexOf('function connect(q) {', start);
   assert.ok(start >= 0 && end > start, '要能切开 open()');
@@ -1510,7 +1510,7 @@ test('⚠ 日常**不设"今天跑过就跳过"**：一天两趟都跑，第二�
 
 
 test('⚠ App 任务：已完成默认折叠、点开是按组展开的', async () => {
-  const js = srcOf('plugins/mcloud/app.js');
+  const js = srcOf('webui/app.js');
   // 折叠行：带组标记与条数
   assert.ok(/data-more="1" data-g="\$\{esc\(g\.group\)\}" data-n="\$\{restItems\.length\}"/.test(js), '折叠行要带组和条数');
   // 按组展开（两个市场共用一个 <ul>，按父节点找会连另一组一起收）
@@ -1524,8 +1524,8 @@ test('⚠ App 任务：已完成默认折叠、点开是按组展开的', async 
 });
 
 test('任务状态可切账号；每条带 taskId 和未完成时的步进', async () => {
-  const html = srcOf('plugins/mcloud/index.html');
-  const js = srcOf('plugins/mcloud/app.js');
+  const html = srcOf('webui/index.html');
+  const js = srcOf('webui/app.js');
   assert.ok(/id="matrix-account"/.test(html), '任务状态卡要有账号下拉');
   assert.ok(/id="matrix-refresh"/.test(html), '任务状态卡要有刷新按钮');
   assert.ok(/\/matrix\?account=/.test(js), '切账号读 /matrix?account=');
@@ -1544,8 +1544,8 @@ test('任务状态可切账号；每条带 taskId 和未完成时的步进', asy
 });
 
 test('⚠「本次运行」按钮上的账号要真的更新（manual 那两个 id 不是按 key 拼的）', async () => {
-  const js = srcOf('plugins/mcloud/app.js');
-  const html = srcOf('plugins/mcloud/index.html');
+  const js = srcOf('webui/app.js');
+  const html = srcOf('webui/index.html');
   // 现场 2026-11-01 截图：按钮写「本次运行：跟随自动」，展开面板里只有「测试」打勾。
   // 根因：`setText(`${cfg.key}-acct-label`, …)` 拼出来是 `daily-manual-acct-label`，
   // 而 HTML 里的元素叫 `daily-manual-label` ⇒ `setText` 找不到就静默不写，
@@ -1558,7 +1558,7 @@ test('⚠「本次运行」按钮上的账号要真的更新（manual 那两个 
 });
 
 test('⚠ 备份那一行不许自相矛盾：没成要写「没成」并带上原因', async () => {
-  const js = srcOf('plugins/mcloud/app.js');
+  const js = srcOf('webui/app.js');
   // 现场 2026-11-01：「本月备份：未开启（任务拓展：已完成）」—— 两句互相打脸。
   // 现在 done 只在复查读到备份已开启时成立；没成/判不了各有自己的词。
   assert.ok(/blocked: '没成'/.test(js), 'blocked 那档要显示「没成」');
@@ -1568,7 +1568,7 @@ test('⚠ 备份那一行不许自相矛盾：没成要写「没成」并带上�
 });
 
 test('⚠ App 任务徽章**照抄上游那句**，不许一刀切印成「待做」（mcloud 的同一个错：`694e35f`）', async () => {
-  const js = srcOf('plugins/mcloud/app.js');
+  const js = srcOf('webui/app.js');
   // 一刀切那个词不许回来（用户原话：「这个待做容易误导，请与原接口文案一致」）
   assert.ok(!/'待做'/.test(js), '界面上还有写死的「待做」标签');
   assert.ok(!/待做 \$\{/.test(js), '计数那行还在写「待做 N」');
@@ -1671,7 +1671,7 @@ test('CI 的 state 断言脚本：正例过、反例必须红（别让 CI 断言
 });
 
 test('每个任务都有独立的自动/本次账号选择器，手动不回写自动', async () => {
-  const html = srcOf('plugins/mcloud/index.html');
+  const html = srcOf('webui/index.html');
   for (const id of ['daily-acct-btn', 'daily-manual-btn', 'live-acct-btn', 'live-manual-btn']) {
     assert.ok(html.includes(`id="${id}"`), `缺少 ${id}`);
   }
@@ -1708,21 +1708,21 @@ test('⚠ 领奖块与弹窗里不许出现滑块图 / 偏移量 / 像素输入�
 });
 
 test('顶栏要印插件版本（跑的是哪一版）', async () => {
-  const html = srcOf('plugins/mcloud/index.html');
-  const js = srcOf('plugins/mcloud/app.js');
+  const html = srcOf('webui/index.html');
+  const js = srcOf('webui/app.js');
   assert.match(html, /id="plugin-ver"/, '顶栏要有版本位');
   assert.match(js, /setText\('plugin-ver',\s*r\.version/, '要拿 /readings 的 version 去填');
   assert.equal(/v0\.\d+\.\d+/.test(html), false, '界面里不许写死版本号');
 });
 
 test('版本那一格：空时整格消失，颜色走本文件的 token', async () => {
-  const css = srcOf('plugins/mcloud/style.css');
+  const css = srcOf('webui/style.css');
   assert.match(css, /#plugin-ver:empty\s*\{[^}]*display:\s*none/, '没有版本时不许留空药丸');
   assert.equal(/var\(--muted/.test(css), false, '本文件没有 --muted，别自造一个恒等于硬编码的变量');
 });
 
 test('account picker 的 legacy 说明也写死 id（拼出来在 manual 上不存在）', async () => {
-  const js = srcOf('plugins/mcloud/app.js');
+  const js = srcOf('webui/app.js');
   assert.equal(/\$\x60\$\{cfg\.key\}-acct-/.test(js), false, '别再拼 `${cfg.key}-acct-*` 的 id');
   assert.match(js, /legacy: 'daily-acct-legacy'/, 'daily 那条要有 legacy');
   assert.match(js, /legacy: 'live-acct-legacy'/, 'live 那条要有 legacy');
@@ -1731,7 +1731,7 @@ test('account picker 的 legacy 说明也写死 id（拼出来在 manual 上不�
 // ── ⑧ 日志流：新面板（panel-llrt）的帧形状 ─────────────────────────────
 
 test('日志：新面板的帧走默认 message 事件，按插件过滤、从前缀还原级别、时间戳吃 epoch 毫秒', async () => {
-  const js = srcOf('plugins/mcloud/app.js');
+  const js = srcOf('webui/app.js');
   // 新面板没有事件名（裸 `data:` 帧）——只挂 `addEventListener('log')` 会一帧都收不到
   assert.ok(/es\.onmessage = paintPanel;/.test(js), '必须挂默认 message 事件');
   assert.ok(/function paintPanel\(ev\)/.test(js), '要有新面板那一路的解析');
