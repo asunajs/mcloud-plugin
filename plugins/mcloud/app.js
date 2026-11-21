@@ -312,11 +312,7 @@ async function act(btn, fn, okMsg) {
 // ──────────────────────────────────────────────────────────── 小工具
 
 function esc(s) {
-  return String(s === undefined || s === null ? '' : s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+  return PanelUI.esc(s);
 }
 
 /** 把 ISO 时刻说成人话。读数是给用户看的，「2026-10-15T00:12:03.000Z」不是人话。 */
@@ -479,9 +475,9 @@ function renderLogin(l) {
  *
  *  ⚠ 只用在**说明文字**里（"验证码已发到 138****0000"）：输入框本身就是号码的
  *  显示位置，而它会一直留在屏幕上。 */
+// 掩码/转义交给面板（第 246 轮收口）：口径只留一份，四个插件不再各写各的。
 function maskPhone(p) {
-  const s = String(p || '');
-  return /^\d{11}$/.test(s) ? `${s.slice(0, 3)}****${s.slice(7)}` : s;
+  return PanelUI.mask(p, 3, 4);
 }
 
 /** 主按钮（「登录」）的可用性：**只按"还差几个字符"**，不问服务端。
