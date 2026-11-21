@@ -73,7 +73,7 @@ export type Account = {
   addedAt: string;
 };
 
-/** 只给界面看的一眼认得出的形状：`1****2716 · 302 字符`。 */
+/** 只给界面看的一眼认得出的形状：`1****8000 · 302 字符`。 */
 export function maskAuth(raw: string): string {
   const phone = phoneOf(raw);
   const len = raw.length;

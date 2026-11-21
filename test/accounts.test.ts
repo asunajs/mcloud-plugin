@@ -56,7 +56,7 @@ test('id 用手机号（人能对上）；认不出手机号就用短哈希', as
 
 test('界面看到的只有**掩码**：不许把凭据本身递出去', async () => {
   const m = maskAuth(A1);
-  assert.match(m, /^1\*{4}2716 · \d+ 字符$/);
+  assert.match(m, /^1\*{4}8000 · \d+ 字符$/);
   assert.ok(!m.includes('xxxx'), `掩码里不许出现凭据片段：${m}`);
   assert.ok(!m.includes('13700137001'), '手机号也不整条给');
 });

@@ -292,7 +292,7 @@ test('发码：详情/滑块/发短信三枪的形状与顺序；offset 是本�
   assert.equal(r.ok, true, r.note);
   assert.equal(r.offset, 282);
   assert.equal(r.prizetype, '1035');
-  assert.match(r.note, /验证码已发到 159\*{4}7542/);
+  assert.match(r.note, /验证码已发到 138\*{4}8000/);
 
   assert.equal(seen.length, 3);
   assert.match(
