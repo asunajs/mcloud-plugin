@@ -80,7 +80,7 @@
       for (const sh of sheets) {
         let n = -1;
         try { n = sh.cssRules.length; } catch (e) { n = -2; }
-        out.push('  · ' + (sh.href || (sh.ownerNode && sh.ownerNode.id) || '内联') + '（规则 ' + n + '）');
+        out.push('  · ' + (sh.href || (/** @type {any} */ (sh).ownerNode && /** @type {any} */ (sh).ownerNode.id) || '内联') + '（规则 ' + n + '）');
       }
 
       // 所有提到 ex-group 的规则 + 它们给的背景色（谁在画那条灰底，看这里）
@@ -89,10 +89,10 @@
         let rules = null;
         try { rules = sh.cssRules; } catch (e) { continue; }
         for (const r of rules) {
-          const sel = r.selectorText || (r.cssRules ? '(嵌套)' : '');
+          const sel = /** @type {CSSStyleRule} */ (r).selectorText || (/** @type {any} */ (r).cssRules ? '(嵌套)' : '');
           if (!sel || sel.indexOf('ex-group') < 0) continue;
           hits.push('  · ' + short(sh.href) + ' :: ' + sel + ' → bg=' +
-            (r.style && r.style.background ? r.style.background : (r.style && r.style.backgroundColor) || '-'));
+            (/** @type {CSSStyleRule} */ (r).style && /** @type {CSSStyleRule} */ (r).style.background ? /** @type {CSSStyleRule} */ (r).style.background : (/** @type {CSSStyleRule} */ (r).style && /** @type {CSSStyleRule} */ (r).style.backgroundColor) || '-'));
         }
       }
       out.push('ex-group 规则 ' + hits.length + ' 条：');
