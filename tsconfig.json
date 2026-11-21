@@ -23,8 +23,11 @@
     // setTimeout 直接判红。写成门禁比写成 tsconfig 更明确，也能给准确的报错。
     "types": ["node"],
 
-    // `panel:host` 由面板引擎注入，不是 npm 包；类型在 src/types/panel-host.d.ts
-    // （`declare module`，不需要 paths —— 业务层也**不准**直接 import 它，见 R1）
+    // `panel:host` 由面板引擎注入，不是 npm 包。类型用共享契约 types/panel-host.d.ts
+    // （真源 panel-llrt/tools/plugin-shared/，sync-types 同步）。
+    // ⚠ 业务层**不准**直接 import 它（R1：只有 src/host/panel/impl.ts 一处碰宿主）。
+    "baseUrl": ".",
+    "paths": { "panel:host": ["./types/panel-host.d.ts"] },
   },
   "include": ["src/**/*.ts"],
   "exclude": ["src/standalone/**"]
