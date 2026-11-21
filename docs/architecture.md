@@ -97,7 +97,7 @@
   "live": { "listen_seconds": 600 },
   "push": { "config": {}, "rules": [], "bindings": {} },
   "cli": { "http": { "timeout_ms": 20000 } },
-  "accounts": { "13800138000": { "listen_seconds": 300, "listen_room": 147606 } }
+  "accounts": { "138****8000": { "listen_seconds": 300, "listen_room": 147606 } }
 }
 ```
 
