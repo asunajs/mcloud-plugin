@@ -11,7 +11,7 @@
 ## 0 · 起面板
 
 ```bash
-cd /Users/catlair/mobile/workspace/rust-plugin-panel
+cd ~/mobile/workspace/rust-plugin-panel
 cargo build --release          # 约 25 秒
 
 # 起面板（令牌自定，下面用 t）

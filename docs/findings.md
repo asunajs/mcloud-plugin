@@ -69,7 +69,7 @@ let late_ms = (now - scheduled).num_milliseconds();
 **证据**：
 
 ```
-[18:42:40] [kernel] [warn] 插件目录 /Users/catlair/mobile/workspace/mcloud-plugin/plugins 里没有找到任何 .js / .py 插件
+[18:42:40] [kernel] [warn] 插件目录 ~/mobile/workspace/mcloud-plugin/plugins 里没有找到任何 .js / .py 插件
 [18:42:40] [mcloud] [info] mcloud 插件已加载（M0：自检 + 调度健康；上游任务在 M1/M2）
 ```
 

@@ -1,6 +1,6 @@
 # App 任务：Rust mcloud 与本插件对照
 
-**只参考 Rust 版 mcloud**（`/Users/catlair/mobile/workspace/mcloud`）。`mcloud-sign` 是旧 TS，很多已过期，不作为依据。
+**只参考 Rust 版 mcloud**（`~/mobile/workspace/mcloud`）。`mcloud-sign` 是旧 TS，很多已过期，不作为依据。
 
 - `crates/mcloud-tasks/src/app_task.rs` —— 判形状、上传、分享、入口、月门
 - `crates/mcloud-tasks/src/app_task/runners.rs` —— 107 / 472 / 473 / 1004 / 1014 / 1020 / 1028 / 585 / 1029 / 609
