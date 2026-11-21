@@ -38,7 +38,21 @@ const TASK = {
   live: ['mcloud-live', '直播'],
 };
 
-const $ = (id) => document.getElementById(id);
+/**
+ * 事件目标：checkJs 下 `ev.target` 是 EventTarget。
+ * 这里刻意宽松（any）——事件目标可能是任意元素或子节点，逐个 cast 只会制造噪音；
+ * 真正要守的契约是 `$()` 返回的 PanelEl。
+ * @type {(ev: Event) => any}
+ */
+const evEl = (ev) => ev.target;
+
+/** 当前元素同样宽松：同一个 handler 可能挂在任意元素上。
+ *  @type {(ev: Event) => any} */
+const evCur = (ev) => ev.currentTarget;
+
+/** 取元素。@type {(id: string) => PanelEl} —— 面板控件把 value/label/disabled/busy 挂在自身上
+ *  （契约见 types/panel-ui.d.ts，真源是 panel-llrt/web/ui.d.ts）。 */
+const $ = (id) => /** @type {PanelEl} */ (document.getElementById(id));
 
 /** 最近一次读数。 */
 let last = null;
@@ -46,7 +60,12 @@ let last = null;
 // ──────────────────────────────────────────────────────────── 基础
 
 /** 调一个接口。`write` 时带 `x-panel: 1`（面板的写保护）。 */
+/**
+ * @param {string} url
+ * @param {{ method?: string, body?: unknown, write?: boolean }} [opts]
+ */
 async function call(url, { method = 'GET', body, write = false } = {}) {
+  /** @type {Record<string, string>} */
   const headers = {};
   if (write) headers['x-panel'] = '1';
   if (body !== undefined) headers['content-type'] = 'application/json';
@@ -73,7 +92,7 @@ async function call(url, { method = 'GET', body, write = false } = {}) {
     // 而有些接口要用别的字段驱动界面（比如 `/accounts` 的 `needPcPlatform`
     // 决定"要不要把 win/mac 那个选择露出来"）。丢掉它就只能靠字符串比对，
     // 而字符串比对会在改文案时静默失效。
-    if (data && typeof data === 'object') err.data = data;
+    if (data && typeof data === 'object') /** @type {any} */ (err).data = data;
     throw err;
   }
   return data;
@@ -272,8 +291,8 @@ function toast(msg, bad) {
   // 同一种"出事了"的提示在全站应该长一样。
   el.className = 'toast' + (bad ? ' bad' : '');
   el.hidden = false;
-  clearTimeout(toast._t);
-  toast._t = setTimeout(
+  clearTimeout(/** @type {any} */ (toast)._t);
+  /** @type {any} */ (toast)._t = setTimeout(
     () => {
       el.hidden = true;
     },
@@ -368,8 +387,9 @@ function logStamp(raw) {
   return s;
 }
 
+/** @param {string} tag @param {string} [cls] @returns {PanelEl} */
 function el(tag, cls) {
-  const e = document.createElement(tag);
+  const e = /** @type {PanelEl} */ (document.createElement(tag));
   if (cls) e.className = cls;
   return e;
 }
@@ -1458,7 +1478,7 @@ async function exBuyNow(p, btn) {
     return;
   }
   exBusy = true;
-  for (const b of document.querySelectorAll('#ex-tbl [data-buy-idx], #ex-subs [data-buy-name]')) {
+  for (const b of /** @type {NodeListOf<PanelEl>} */ (document.querySelectorAll('#ex-tbl [data-buy-idx], #ex-subs [data-buy-name]'))) {
     b.disabled = true;
     b.textContent = '兑换中…';
   }
@@ -2064,7 +2084,7 @@ function renderData(d, account) {
 }
 
 $('matrix-account').addEventListener('change', (ev) => {
-  const id = ev.currentTarget.value;
+  const id = evCur(ev).value;
   if (!id) return;
   matrixAccountId = id;
   void loadMatrix(id).catch((e) => toast(`读不到任务状态：${e.message || String(e)}`, true));
@@ -2073,7 +2093,7 @@ $('matrix-account').addEventListener('change', (ev) => {
 $('matrix-refresh').addEventListener('click', (ev) => {
   const id = matrixAccountId || $('matrix-account').value;
   if (!id) return;
-  const btn = ev.currentTarget;
+  const btn = evCur(ev);
   btn.disabled = true;
   void loadMatrix(id, true)
     .then((r) => {
@@ -2202,7 +2222,7 @@ function autoFetchBeansOnce() {
 async function openBeansDetail(id, days) {
   beansDialogId = id;
   $('beans-dialog').hidden = false;
-  for (const b of $('beans-windows').querySelectorAll('[data-days]')) {
+  for (const b of /** @type {NodeListOf<PanelEl>} */ ($('beans-windows').querySelectorAll('[data-days]'))) {
     b.classList.toggle('is-on', Number(b.dataset.days) === days);
   }
   const known =
@@ -2258,7 +2278,7 @@ $('beans-dialog').addEventListener('click', (ev) => {
   if (ev.target === $('beans-dialog')) $('beans-dialog').hidden = true;
 });
 $('beans-windows').addEventListener('click', (ev) => {
-  const b = ev.target.closest('[data-days]');
+  const b = evEl(ev).closest('[data-days]');
   if (b === null) return;
   void openBeansDetail(beansDialogId, Number(b.dataset.days));
 });
@@ -2266,7 +2286,7 @@ $('beans-windows').addEventListener('click', (ev) => {
 // App 任务的「其余 N 条」那一行：点开/收起同一组里被折叠的行。
 // ⚠ 委派（这一格每次 load 都重画）。
 $('matrix-list').addEventListener('click', (ev) => {
-  const more = ev.target.closest('[data-more]');
+  const more = evEl(ev).closest('[data-more]');
   if (!more) return;
   const open = more.dataset.open === '1';
   more.dataset.open = open ? '0' : '1';
@@ -2274,7 +2294,7 @@ $('matrix-list').addEventListener('click', (ev) => {
   // ⚠ 按**组**找，不是按父节点：两个市场共用一个 `<ul>`，
   //   用 `parentElement` 一收就把另一组的行也收掉了（点「签到」的展开，「邮箱」跟着动）。
   const g = more.dataset.g || '';
-  for (const li of $('matrix-list').querySelectorAll('[data-folded]')) {
+  for (const li of /** @type {NodeListOf<PanelEl>} */ ($('matrix-list').querySelectorAll('[data-folded]'))) {
     if ((li.dataset.g || '') !== g) continue;
     li.hidden = open;
   }
@@ -2290,7 +2310,7 @@ $('matrix-list').addEventListener('click', (ev) => {
 
 // 「查看明细」按钮在 `#beans-list` 里，是每次点「取一次」重新画的 —— 所以用委派。
 $('beans-list').addEventListener('click', (ev) => {
-  const det = ev.target.closest('[data-beans-detail]');
+  const det = evEl(ev).closest('[data-beans-detail]');
   if (det === null) return;
   void openBeansDetail(det.dataset.beansDetail, 1);
 });
@@ -2330,7 +2350,7 @@ let prizeResendTimer = null;
 function prizeLabelOf(id) {
   const sel = $('prize-account');
   if (sel) {
-    for (const opt of Array.from(sel.options)) {
+    for (const opt of Array.from(/** @type {any} */ (sel).options)) {
       if (opt.value === id) return opt.textContent || id;
     }
   }
@@ -2835,7 +2855,7 @@ async function openPrizeDialog(item) {
 
 // 「领取」按钮是每次重画列表时新生成的 —— 所以用委派。
 $('prize-list').addEventListener('click', (ev) => {
-  const b = ev.target.closest('[data-prize-oid]');
+  const b = evEl(ev).closest('[data-prize-oid]');
   if (b === null || b.disabled) return;
   const oid = b.dataset.prizeOid;
   const item =
@@ -2850,7 +2870,7 @@ $('prize-refresh').addEventListener('click', (ev) => {
 // 切账号：弹窗里那一条属于旧号，先关掉（顺带清掉倒计时），再用 `?account=` 取这个号。
 $('prize-account').addEventListener('change', (ev) => {
   closePrizeDialog();
-  prizesAccountId = ev.currentTarget.value;
+  prizesAccountId = evCur(ev).value;
   paintPrizeSwitching();
   void loadPrizes(false);
 });
@@ -3369,7 +3389,7 @@ function syncTerms(blockName) {
 }
 
 function showBlock(name) {
-  for (const b of document.querySelectorAll('.seg-item[data-block]')) {
+  for (const b of /** @type {NodeListOf<PanelEl>} */ (document.querySelectorAll('.seg-item[data-block]'))) {
     const on = b.dataset.block === name;
     // 面板的分段控件用 `aria-pressed` 表达选中态（不是自定义的 `is-on` 类）
     b.setAttribute('aria-pressed', on ? 'true' : 'false');
@@ -3391,7 +3411,7 @@ function showBlock(name) {
 }
 
 $('menu').addEventListener('click', (ev) => {
-  const btn = ev.target.closest('.seg-item[data-block]');
+  const btn = evEl(ev).closest('.seg-item[data-block]');
   if (!btn) return;
   showBlock(btn.dataset.block);
 });
@@ -3460,11 +3480,12 @@ async function setAddPc(v) {
 
 function showAddTab(name) {
   addTabNow = name;
-  for (const b of $('add-tabs').querySelectorAll('.tab')) {
+  for (const b of /** @type {NodeListOf<PanelEl>} */ ($('add-tabs').querySelectorAll('.tab'))) {
     b.classList.toggle('is-on', b.dataset.tab === name);
   }
   for (const pane of $('add-dialog').querySelectorAll('[data-pane]')) {
-    pane.hidden = pane.dataset.pane !== name;
+    const paneEl = /** @type {PanelEl} */ (pane);
+    paneEl.hidden = paneEl.dataset.pane !== name;
   }
   // ⚠ 「手机端」这一路走的是 App 自己的身份，**没有** Windows / macOS 之分 ——
   //   所以形态那一块在这个页签下收起来，而不是摆着让人问"手机端哪来的这两个按钮"。
@@ -3509,7 +3530,7 @@ $('add-dialog').addEventListener('click', (ev) => {
   if (ev.target === $('add-dialog')) closeAddDialog();
 });
 $('add-tabs').addEventListener('click', (ev) => {
-  const b = ev.target.closest('.tab');
+  const b = evEl(ev).closest('.tab');
   if (!b) return;
   // 换页签要把上一路"进行中"的会话清掉（否则两边同时进行，界面不知道显示哪个）
   stopQrPoll();
@@ -3669,10 +3690,10 @@ function pickerFollow(cfg, checked) {
 }
 
 function pickerPick(cfg, ev) {
-  const box = ev.target.closest('[data-pick]');
+  const box = evEl(ev).closest('[data-pick]');
   if (!box) return;
   const panel = $(cfg.panel);
-  const ids = [...panel.querySelectorAll('input[data-pick]')]
+  const ids = [.../** @type {NodeListOf<PanelEl>} */ (panel.querySelectorAll('input[data-pick]'))]
     .filter((b) => b.checked && !b.disabled)
     .map((b) => b.dataset.pick);
   // 手动动一格 = 取消「全部」；manual 还要取消「跟随自动」。
@@ -3687,30 +3708,30 @@ function pickerClear(cfg) {
 
 // ── 绑定：每个任务两份，字面 id（静态检查能看出有没有绑）──
 $('daily-acct-btn').addEventListener('click', (ev) => pickerToggle(PICKERS[0], ev));
-$('daily-acct-all').addEventListener('change', (ev) => pickerToggleAll(PICKERS[0], ev.currentTarget.checked));
+$('daily-acct-all').addEventListener('change', (ev) => pickerToggleAll(PICKERS[0], evCur(ev).checked));
 $('daily-acct-list').addEventListener('change', (ev) => pickerPick(PICKERS[0], ev));
 
 $('daily-acct-clear').addEventListener('click', () => pickerClear(PICKERS[0]));
 $('daily-manual-btn').addEventListener('click', (ev) => pickerToggle(PICKERS[1], ev));
-$('daily-manual-follow').addEventListener('change', (ev) => pickerFollow(PICKERS[1], ev.currentTarget.checked));
-$('daily-manual-all').addEventListener('change', (ev) => pickerToggleAll(PICKERS[1], ev.currentTarget.checked));
+$('daily-manual-follow').addEventListener('change', (ev) => pickerFollow(PICKERS[1], evCur(ev).checked));
+$('daily-manual-all').addEventListener('change', (ev) => pickerToggleAll(PICKERS[1], evCur(ev).checked));
 $('daily-manual-list').addEventListener('change', (ev) => pickerPick(PICKERS[1], ev));
 
 $('daily-manual-clear').addEventListener('click', () => pickerClear(PICKERS[1]));
 $('live-acct-btn').addEventListener('click', (ev) => pickerToggle(PICKERS[2], ev));
-$('live-acct-all').addEventListener('change', (ev) => pickerToggleAll(PICKERS[2], ev.currentTarget.checked));
+$('live-acct-all').addEventListener('change', (ev) => pickerToggleAll(PICKERS[2], evCur(ev).checked));
 $('live-acct-list').addEventListener('change', (ev) => pickerPick(PICKERS[2], ev));
 
 $('live-acct-clear').addEventListener('click', () => pickerClear(PICKERS[2]));
 $('live-manual-btn').addEventListener('click', (ev) => pickerToggle(PICKERS[3], ev));
-$('live-manual-follow').addEventListener('change', (ev) => pickerFollow(PICKERS[3], ev.currentTarget.checked));
-$('live-manual-all').addEventListener('change', (ev) => pickerToggleAll(PICKERS[3], ev.currentTarget.checked));
+$('live-manual-follow').addEventListener('change', (ev) => pickerFollow(PICKERS[3], evCur(ev).checked));
+$('live-manual-all').addEventListener('change', (ev) => pickerToggleAll(PICKERS[3], evCur(ev).checked));
 $('live-manual-list').addEventListener('change', (ev) => pickerPick(PICKERS[3], ev));
 
 $('live-manual-clear').addEventListener('click', () => pickerClear(PICKERS[3]));
 
 document.addEventListener('click', (ev) => {
-  if (ev.target.closest('.picker')) return;
+  if (evEl(ev).closest('.picker')) return;
   for (const o of PICKERS) $(o.panel).hidden = true;
 });
 
@@ -4067,7 +4088,7 @@ $('device-reset').addEventListener('click', resetDevice);
 
 // 账号列表里的切换 / 删除（按钮是画出来的，用事件代理）
 $('acct-list').addEventListener('click', async (ev) => {
-  const pick = (name) => ev.target.closest(`[data-acc-${name}]`);
+  const pick = (name) => evEl(ev).closest(`[data-acc-${name}]`);
   const ref = pick('refresh');
   const ren = pick('rename');
   const cfg = pick('settings');
@@ -4127,7 +4148,7 @@ $('daily-stop').addEventListener('click', (e) => stopRunning('daily', e.currentT
 // 兑换
 // 当前账号（手动兑换用）。切号会改全局「当前账号」—— 原页面也是这个语义。
 $('ex-account').addEventListener('change', async (ev) => {
-  const id = ev.target.value;
+  const id = evEl(ev).value;
   if (!id) return;
   try {
     const r = await api('/accounts', { method: 'POST', write: true, body: { op: 'select', id } });
@@ -4140,10 +4161,10 @@ $('ex-account').addEventListener('change', async (ev) => {
 
 // 二次确认偏好（localStorage：这台浏览器的事，不是账号属性）。
 $('ex-confirm-first').addEventListener('change', (ev) => {
-  exSetConfirmFirst(ev.target.checked);
+  exSetConfirmFirst(evEl(ev).checked);
   setText(
     'ex-intro',
-    (ev.target.checked
+    (evEl(ev).checked
       ? '挑一件兑换。下单会真的扣 AI 豆，所以点下去要再确认一次；抢不到的可以先「定时」等那一场。'
       : '挑一件兑换。下单会真的扣 AI 豆 —— 你已经关掉二次确认，点「立即兑换」就直接扣。') +
       (exLocalJudge() ? '' : ' 本地判定已关：抢光/未开始/已兑过也会真发单。'),
@@ -4151,13 +4172,13 @@ $('ex-confirm-first').addEventListener('change', (ev) => {
 });
 
 $('ex-local-judge').addEventListener('change', (ev) => {
-  exSetLocalJudge(ev.target.checked);
+  exSetLocalJudge(evEl(ev).checked);
   setText(
     'ex-intro',
     (exConfirmFirst()
       ? '挑一件兑换。下单会真的扣 AI 豆，所以点下去要再确认一次；抢不到的可以先「定时」等那一场。'
       : '挑一件兑换。下单会真的扣 AI 豆 —— 你已经关掉二次确认，点「立即兑换」就直接扣。') +
-      (ev.target.checked ? '' : ' 本地判定已关：抢光/未开始/已兑过也会真发单。'),
+      (evEl(ev).checked ? '' : ' 本地判定已关：抢光/未开始/已兑过也会真发单。'),
   );
   repaintExchange();
 });
@@ -4179,12 +4200,12 @@ $('ex-session-refresh').addEventListener('click', (e) =>
 
 /** 表格/关注区里的动作。`data-*-idx` 指 `exPicks` 的下标（清单里的一件）。 */
 async function exchangeRowAction(ev) {
-  const star = ev.target.closest('[data-sub-idx]');
-  const planBtn = ev.target.closest('[data-plan-idx]');
-  const buyBtn = ev.target.closest('[data-buy-idx]');
-  const unsub = ev.target.closest('[data-unsub-name]');
-  const planName = ev.target.closest('[data-plan-name]');
-  const buyName = ev.target.closest('[data-buy-name]');
+  const star = evEl(ev).closest('[data-sub-idx]');
+  const planBtn = evEl(ev).closest('[data-plan-idx]');
+  const buyBtn = evEl(ev).closest('[data-buy-idx]');
+  const unsub = evEl(ev).closest('[data-unsub-name]');
+  const planName = evEl(ev).closest('[data-plan-name]');
+  const buyName = evEl(ev).closest('[data-buy-name]');
   if (!star && !planBtn && !buyBtn && !unsub && !planName && !buyName) return;
   try {
     if (star) {
@@ -4212,7 +4233,7 @@ async function exchangeRowAction(ev) {
 }
 
 $('ex-tbl').addEventListener('click', (ev) => {
-  const toggle = ev.target.closest('[data-group-toggle]');
+  const toggle = evEl(ev).closest('[data-group-toggle]');
   if (toggle) {
     ev.preventDefault();
     exToggleGroup(toggle.dataset.groupToggle);
@@ -4260,7 +4281,7 @@ $('live-stop').addEventListener('click', (e) => stopRunning('live', e.currentTar
 
 $('live-listen-seconds').addEventListener('change', async (e) => {
   // 清空就恢复默认，不需要再点保存 —— 否则用户删了 30，跑起来还是 30。
-  if (e.currentTarget.value.trim() !== '') return;
+  if (evCur(e).value.trim() !== '') return;
   try {
     await api('/config', { method: 'POST', write: true, body: { listenSeconds: 600 } });
     toast('听弹幕时长已恢复默认 600 秒');
@@ -4322,7 +4343,7 @@ for (const b of document.querySelectorAll('[data-step-for]')) {
 // 定时抢兑：计划列表（添加 / 编辑 / 暂停 / 删除）。
 $('ex-sched-add').addEventListener('click', () => openPlanDialog(null));
 $('ex-sched-list').addEventListener('click', async (ev) => {
-  const btn = ev.target.closest('button[data-plan-toggle],button[data-plan-edit],button[data-plan-del]');
+  const btn = evEl(ev).closest('button[data-plan-toggle],button[data-plan-edit],button[data-plan-del]');
   if (!btn) return;
   const plans = (last && last.exchange && last.exchange.plans) || [];
   const id = btn.dataset.planToggle || btn.dataset.planEdit || btn.dataset.planDel;

@@ -1335,7 +1335,12 @@ test('⚠ 保存账号选择校验的是**排期任务名**，不是内部步骤
 
 test('⚠ 账号选择：取消一格 = 剩下那些（不能反成"只留这一格"）', async () => {
   // `all:true` 时每一格都是勾着的；按"勾了它"去推会得到 ids:['移动'] —— 正好反了
-  assert.ok(/const ids = \[\.\.\.panel\.querySelectorAll\('input\[data-pick\]'\)\]/.test(js), '要以 DOM 为准');
+  // 允许中间夹一个类型 cast（checkJs 需要 NodeListOf<PanelEl>）—— 判据是「从 DOM 读」，
+  // 不是「这一行必须一字不差」（第 247 轮加 checkJs 时踩过）。
+  assert.ok(
+    /const ids = \[\.\.\.(?:\/\*\* @type \{[^}]*\} \*\/ \()?panel\.querySelectorAll\('input\[data-pick\]'\)\)?\]/.test(js),
+    '要以 DOM 为准',
+  );
   assert.ok(!/const has = \(cur\.picked \|\| \[\]\)\.includes\(id\);/.test(js), '别再自己推');
 });
 
