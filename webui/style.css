@@ -817,7 +817,10 @@ textarea:focus {
   z-index: 20;
   top: calc(100% + var(--sp-1));
   left: 0;
-  width: 280px;
+  /* 定宽 280 在手机上会被视口裁掉：picker 挂在**靠右**的字段上时，
+     left:0 + 280px 直接顶出屏幕（第 262 轮移动端审计）。min() 让它跟着视口收，
+     桌面还是 280。 */
+  width: min(280px, calc(100vw - 24px));
   max-height: 320px;
   overflow-y: auto;
   padding: var(--sp-1);
