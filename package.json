@@ -35,7 +35,7 @@
     "install:panel-binary": "bash scripts/install-panel-binary.sh",
     "check:types": "node scripts/sync-types.mjs --check",
     "typecheck:webui": "tsc -p tsconfig.webui.json --noEmit",
-    "check": "npm run check:types && npm run typecheck && npm test"
+    "check": "node scripts/check-phone-leak.mjs && npm run check:types && npm run typecheck && npm test"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
