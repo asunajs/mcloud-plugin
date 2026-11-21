@@ -34,7 +34,8 @@
     "deploy:panel": "bash scripts/deploy-panel.sh",
     "install:panel-binary": "bash scripts/install-panel-binary.sh",
     "check:types": "node scripts/sync-types.mjs --check",
-    "typecheck:webui": "tsc -p tsconfig.webui.json --noEmit"
+    "typecheck:webui": "tsc -p tsconfig.webui.json --noEmit",
+    "check": "npm run check:types && npm run typecheck && npm test"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
