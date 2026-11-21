@@ -230,9 +230,11 @@ test('动作接口都是**写**（带 `x-panel: 1`），否则会被面板挡成
   // 「写接口要求请求头 x-panel: 1」—— 不是静默失败，但用户看不懂。
   const posts = [...js.matchAll(/method: 'POST'/g)].length;
   assert.ok(posts >= 6, `写动作太少了（${posts} 个）—— 是不是有按钮没接上？`);
+  // 头本身由面板的 PanelUI.api 补（`write: true` → `x-panel: 1`，第 249 轮收口）。
+  // 本仓要保证的是：`call()` 把 write 原样透传过去 —— 丢了它，写动作就变 403。
   assert.ok(
-    /if \(write\) headers\['x-panel'\] = '1'/.test(js),
-    '`call()` 里要在 write 时补 `x-panel: 1`',
+    /PanelUI\.api\(url, \{ method, body, write/.test(js),
+    '`call()` 要把 write 透传给 PanelUI.api（它负责补 `x-panel: 1`）',
   );
 });
 

@@ -59,41 +59,36 @@ let last = null;
 
 // ──────────────────────────────────────────────────────────── 基础
 
-/** 调一个接口。`write` 时带 `x-panel: 1`（面板的写保护）。 */
 /**
+ * 调一个接口。传输层用面板的 `PanelUI.api`（超时 / JSON / 后端 error+ref 都在面板一处），
+ * 这里只补本仓的两条老约定：
+ *   ① **整个响应体挂在 error 上**（`.data`）—— 有些接口要用别的字段驱动界面
+ *      （比如 `/accounts` 的 `needPcPlatform` 决定"要不要把 win/mac 那个选择露出来"），
+ *      只抛 message 就会逼调用方去比字符串，改文案时静默失效；
+ *   ② 2xx 但 `data.error` 也算失败（老接口的写法）。
+ *
  * @param {string} url
- * @param {{ method?: string, body?: unknown, write?: boolean }} [opts]
+ * @param {{ method?: string, body?: unknown, write?: boolean, timeoutMs?: number }} [opts]
  */
-async function call(url, { method = 'GET', body, write = false } = {}) {
-  /** @type {Record<string, string>} */
-  const headers = {};
-  if (write) headers['x-panel'] = '1';
-  if (body !== undefined) headers['content-type'] = 'application/json';
-  const res = await fetch(url, {
-    method,
-    headers,
-    credentials: 'same-origin',
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  const text = await res.text();
+async function call(url, { method = 'GET', body, write = false, timeoutMs } = {}) {
+  /** @type {any} */
   let data = null;
   try {
-    data = text ? JSON.parse(text) : null;
-  } catch {
-    // 不是 JSON ⇒ 面板或反代在中间挡了一道（403/502 那种会回纯文本）。
-    // 这时候把原文带上，否则用户只看到「失败」两个字。
-    throw new Error(`${res.status} ${text.slice(0, 200)}`);
+    data = await PanelUI.api(url, { method, body, write, timeoutMs });
+  } catch (e) {
+    if (e && e.name === 'PanelApiError') {
+      /** @type {any} */
+      const err = new Error(e.message);
+      err.data = e.data; // ② 整包留给调用方
+      throw err;
+    }
+    throw e;
   }
-  if (!res.ok || (data && data.error)) {
-    const err = new Error((data && data.error) || `${res.status} ${text.slice(0, 200)}`);
-    // ⚠ 把**整个响应体**挂到错误上。
-    //
-    // 只抛 `message` 的话，调用方拿不到后端除 `error` 之外说的话 ——
-    // 而有些接口要用别的字段驱动界面（比如 `/accounts` 的 `needPcPlatform`
-    // 决定"要不要把 win/mac 那个选择露出来"）。丢掉它就只能靠字符串比对，
-    // 而字符串比对会在改文案时静默失效。
-    if (data && typeof data === 'object') /** @type {any} */ (err).data = data;
-    throw err;
+  if (data && typeof data === 'object' && data.error) {
+    /** @type {any} */
+    const err2 = new Error(data.error);
+    err2.data = data;
+    throw err2;
   }
   return data;
 }
