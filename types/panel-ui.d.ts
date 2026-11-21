@@ -68,6 +68,25 @@ declare const PanelUI: {
   hint(el: Element | string | null, text: unknown, kind?: PanelHintKind): void;
   /** 忙碌态：`on=true` 禁用并换文案，`on=false` 还原原文案。 */
   busy(btn: Element | null, on: boolean, label?: string): void;
+
+  /**
+   * 调自己后端的统一入口。语义定死：2xx → 解析后的 JSON；非 2xx → 抛 `PanelUI.ApiError`
+   * （message 取后端 `{error}`，附 `status` / `data`）。body 传对象，别传字符串（会 415）。
+   */
+  api<T = any>(
+    path: string,
+    opts?: {
+      method?: string;
+      body?: unknown;
+      /** 写操作要带 `x-panel: 1` —— 传 true 即可 */
+      write?: boolean;
+      headers?: Record<string, string>;
+      timeoutMs?: number;
+    },
+  ): Promise<T>;
+
+  /** `api()` 的失败形状。 */
+  ApiError: new (message: string, status?: number, data?: unknown) => Error & { status: number; data: unknown };
 };
 
 interface Window {
