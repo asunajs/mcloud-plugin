@@ -57,7 +57,16 @@ import {
 import type { ProbeRoom } from '../src/mcloud/koulingPool.ts';
 import { memStore } from '../src/store/memory.ts';
 
-const T0 = 1_790_000_000_000;
+/**
+ * 基准时刻：**必须落在直播窗口内**（本机 2026-09-21 10:00）。
+ *
+ * ⚠ 用 `new Date(y, m, d, h)` 按**本地时区**构造，不要写死 epoch 常量：
+ * `sessionKeyOf()` 用的是 `getHours()`（本地时间），窗口是 09:30–12:00 / 14:30–17:00。
+ * 以前写死 `1_790_000_000_000`，在 UTC 跑（GitHub Actions）落在 14:13 ——
+ * 刚好在第二个窗口的余量边界外，`T0 + 120s` 就跨进窗口、`sessionKey` 一变就封场，
+ * 「宽限期内不散场」那条断言当场红（2026-11-21 CI 连红四次，就是它）。
+ */
+const T0 = new Date(2026, 8, 21, 10, 0, 0).getTime();
 const ACC_A = 'acc-a';
 const ACC_B = 'acc-b';
 
