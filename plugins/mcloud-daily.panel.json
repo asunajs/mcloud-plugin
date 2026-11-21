@@ -1,6 +1,6 @@
 {
   "title": "移动云盘 · 每日",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "order": 11,
   "description": "每日签到与日常任务",
   "min_panel": "0.7.0",
