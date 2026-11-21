@@ -5,7 +5,7 @@
 // 而**手抄错一条的表现是"某个字段解出来是乱码"** —— 上游只会回一句参数错误，
 // 看不出是哪一条。能原样搬就原样搬。
 //
-// 权威源：`/Users/catlair/mobile/workspace/mcloud-sign/packages/shared/src/smid/index.ts`
+// 权威源：`~/mobile/workspace/mcloud-sign/packages/shared/src/smid/index.ts`
 // （第 6-162 行），与 Rust 侧的 `mcloud/crates/mcloud-upstream/src/smid.rs:415-593` 同源。
 //
 // ⚠ `key` 是**加密密钥**，逐字照抄，别"顺手换个更像密码的"：

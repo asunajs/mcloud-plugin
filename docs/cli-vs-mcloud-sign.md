@@ -2,7 +2,7 @@
 
 日期：2026-10-23
 范围：**无参数默认入口**（每日任务），不含直播导出。
-基准：参考实现 `/Users/catlair/mobile/workspace/mcloud-sign`（2.1.0，`packages/cli/src/index.ts`）。
+基准：参考实现 `~/mobile/workspace/mcloud-sign`（2.1.0，`packages/cli/src/index.ts`）。
 本仓：commit `883b139` + 当前未提交改动。
 
 ## 先定判据：对齐的是**用户看得见的东西**

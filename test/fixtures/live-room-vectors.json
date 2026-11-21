@@ -1,5 +1,5 @@
 {
-  "$source": "/Users/catlair/mobile/workspace/mcloud/test/golden/live-room-vectors.json",
+  "$source": "~/mobile/workspace/mcloud/test/golden/live-room-vectors.json",
   "$sha256": "42ff40b6038e74049b622c3e29203a3d8ad29f3b72481fa940ec8cf8c80507f0",
   "$copiedAt": "2026-10-13",
   "$note": "从 mcloud 仓库的黄金向量里**只取这两个小节**（弹幕 36 条 / 小红书 5 条），逐字拷贝、不做任何加工。期望值出自原项目 TS 源码真跑（见上游 $source 字段），不是手写的 —— 所以任何一条不一致都当 bug 处理：改实现，不改期望值。",
