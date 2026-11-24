@@ -1425,6 +1425,19 @@ test('⚠ 颜色一律走面板 token（写死的深色在浅色主题下会翻�
   }
 });
 
+test('明细清单在弹窗里必须自己滚（用户报「详情不能滑动」）', async () => {
+  const css = srcOf('webui/style.css');
+  const m = /#beans-detail\s*\{[^}]*\}/.exec(css);
+  assert.ok(m, '`style.css` 里没有 `#beans-detail` 规则 —— 明细清单会退回「被压扁 + 裁掉」');
+  const rule = m[0];
+  // 真因：`.list` 自己写着 `overflow: hidden`（为了圆角切边），**非 visible 的 overflow
+  // 会让 flex item 的自动最小尺寸变成 0** ⇒ 它在纵向 flex 的 `.dialog-body` 里被压到
+  // 剩余高度，超出部分直接裁掉（实测 12 笔：内容 714px 压成 352px，只看得见 6 行，
+  // 滚动条和滚轮都无处可滚）。所以这两条不是"可选的优化"，删了就复发。
+  assert.match(rule, /overflow-y:\s*auto/, '清单要自己滚');
+  assert.match(rule, /min-height:\s*0/, '清单要允许在 flex 里收缩（缩了才有得滚）');
+});
+
 test('⚠ 面板缺直播支持时：当成**构建缺陷**报出来，并且别再去试', async () => {
   const live = liveSource();
   const cap = srcOf('src/mcloud/hostCap.ts');

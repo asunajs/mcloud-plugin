@@ -59,7 +59,7 @@
   --font-mono: var(--mono);
   /* 样式表版本号：页面上的「样式自检」读它，用来判断浏览器用的是哪一份 style.css。
      改了本文件就把它加一（一个数字，别指望它自动同步）。 */
-  --style-ver: 159;
+  --style-ver: 160;
 }
 
 /* 为什么还留着这几个短名字：界面上其余的区块（日常 / 兑换 / 直播 / 数据）
@@ -532,6 +532,22 @@ textarea:focus {
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   overflow: hidden;
+}
+
+/* 弹窗里的清单要**自己滚**（用户报「明细不能滑动」）。
+   ⚠ 真因不是「弹窗没给滚动」，是这条 `.list { overflow: hidden }`（它为了圆角切边）：
+   **非 visible 的 overflow 会把 flex item 的自动最小尺寸变成 0** ⇒ `.dialog-body`
+   （纵向 flex）里这一项被压到剩余高度，多出来的行被它自己裁掉。实测 12 笔流水
+   内容 714px 被压成 352px：看得见 6 行、剩下 6 行既没画出来也没滚动条，
+   `.dialog-body` 的 scrollHeight 更是等于 clientHeight（滚轮也无处可滚）。
+   修法：`min-height: 0` 让它能缩 + `overflow-y: auto` 让它在自己身上滚 ——
+   窗口档位和「共 N 笔」那行留在原地，翻清单时不用回头看选的是哪一档。
+   容器矮/高都不靠这条兜底（`flex` 不放大）：内容少时它仍是自然高度，不会留白。 */
+#beans-detail {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .item {
