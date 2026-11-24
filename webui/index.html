@@ -16,7 +16,7 @@
     <!-- 面板 0.4.0 只有一份 /app.css：token（含 [data-theme=dark]）+ 组件（.btn/.card/.field/.pill…）
          都在里面。旧面板的 /css/reset|theme|components.css 已经不存在了（第 139 轮）。 -->
     <link rel="stylesheet" href="/app.css" />
-    <link rel="stylesheet" href="style.css?v=20261124-0800" />
+    <link rel="stylesheet" href="style.css?v=20261124-0850" />
 
     <!-- 主题跟随 + embed 标记，必须赶在第一帧之前（见 boot.js 的文件头） -->
     <script src="boot.js?v=20261116-2230"></script>
@@ -336,10 +336,14 @@
           </div>
           <div class="dialog-body">
 
+          <!-- 五个页签。⚠ 后两个的名字按**这条短信是替谁登的**取（2026-11-24 用户提的）：
+               「电脑短信」= 走 PC 客户端那套身份（码还是发到手机上，但拿到的是 pc 凭据）；
+               「手机短信」= 走 App 自己的身份（`mobile:` 凭据，没有 Windows / macOS 之分）。
+               原来叫「短信」「手机端」—— 两条都发短信，用户看不出差别。 -->
           <div class="tabs" id="add-tabs">
             <button class="tab is-on" data-tab="qr">扫码</button>
-            <button class="tab" data-tab="sms">短信</button>
-            <button class="tab" data-tab="app">手机端</button>
+            <button class="tab" data-tab="sms">电脑短信</button>
+            <button class="tab" data-tab="app">手机短信</button>
             <button class="tab" data-tab="pwd">账密</button>
             <button class="tab" data-tab="auth">凭据</button>
           </div>
@@ -347,8 +351,8 @@
           <!-- 客户端形态：**在最上面，对"PC 端那几条路"生效**（复刻参考实现的位置）。
                ⚠ 这是**唯一**的形态入口 —— 设置页原来那个「登录时冒充的客户端」
                  下拉框删掉了：同一件事两个控件、两个数据源，用户改了一个以为生效了。
-               ⚠ **「手机端」那一个页签下它整块收起来**：那一路走的是 App 自己的身份，
-                 根本没有 Windows / macOS 之分。摆在上面只会让人问"手机端哪来的
+               ⚠ **「手机短信」那一个页签下它整块收起来**：那一路走的是 App 自己的身份，
+                 根本没有 Windows / macOS 之分。摆在上面只会让人问"手机短信哪来的
                  这两个按钮"（用户就是这么问的）—— 形态选择留在那儿不是信息，是噪音。
                ⚠ 下面这句是**给写代码的人看的**：形态在这一刻冻进登录会话
                  （`QrSession.platform`），码里的版本号与后面轮询的请求头都出自它。
@@ -385,7 +389,7 @@
                一屏，手机号那一格右端嵌着「获取验证码」，下面验证码，再下面整宽主按钮。
                第一版我做成了"两步"（下一步 → 登录），用户把参考发过来 ⇒ 改成与它一致：
                **一屏**，别让用户先点一次「下一步」才看到验证码那格。
-               ⚠ 两条路（短信 / 手机端）**同构**：同一套 DOM 结构、同一套类名，
+               ⚠ 两条路（电脑短信 / 手机短信）**同构**：同一套 DOM 结构、同一套类名，
                  只有 id 前缀不同 —— 它们本来就是同一条流程的两套身份。
                ⚠ 手机号那一格现在是面板的共享控件 <p-sms-code>（第 182 轮，ui.js）：
                  数字门禁 / 行内按钮 / 重发倒计时都在控件里，这页只接 `send` 事件。 -->
@@ -409,7 +413,7 @@
             </div>
           </div>
 
-          <!-- ── 手机端（App 链路） ──
+          <!-- ── 手机短信（App 链路） ──
                走 App 自己的头与体（`appLogin.ts`）：发码 → 可能要滑块 → `thirdlogin`
                （**AES 加密体**）→ 拿到 `mobile:` 前缀的凭据。
                ⚠ 这条路**不存在 Windows / macOS 之分** —— 所以「客户端形态」那一块
@@ -814,6 +818,6 @@
     </main>
 
     <div class="toast" id="toast" hidden></div>
-    <script src="app.js?v=20261117-2135"></script>
+    <script src="app.js?v=20261124-0850"></script>
   </body>
 </html>

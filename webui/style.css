@@ -59,7 +59,7 @@
   --font-mono: var(--mono);
   /* 样式表版本号：页面上的「样式自检」读它，用来判断浏览器用的是哪一份 style.css。
      改了本文件就把它加一（一个数字，别指望它自动同步）。 */
-  --style-ver: 160;
+  --style-ver: 161;
 }
 
 /* 为什么还留着这几个短名字：界面上其余的区块（日常 / 兑换 / 直播 / 数据）
@@ -371,6 +371,36 @@ textarea:focus {
   border-bottom-color: var(--accent);
   color: var(--accent);
   font-weight: 600;
+}
+
+/* 窄屏：五个页签（扫码 / 电脑短信 / 手机短信 / 账密 / 凭据）一行装不下。
+   ⚠ 不许**换行**：`.tabs` 下沿那条线会跟着第一行走，于是「凭据」孤零零掉到第二行、
+   像另一个控件（390px 实测过）。照面板自己的窄屏做法（`.modal-card .tabs`）——
+   不换行 + 横向滚，滚动条藏起来靠滑。左边距同时收窄，多数手机上一行就放下了。 */
+@media (max-width: 720px) {
+  .tabs {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+  }
+
+  .tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .tab {
+    flex: 0 0 auto;
+    padding-inline: var(--sp-2);
+  }
+}
+
+/* 320 那一档（iPhone SE 级别的宽度）：8px 内边距也差 34px 放不下，再收一档 ——
+   宁可字贴边一点，也不要让「凭据」只露半个字。 */
+@media (max-width: 350px) {
+  .tab {
+    padding-inline: var(--sp-1);
+  }
 }
 
 /* 页签里的一个面板（登录的五条路各一块）。底色用面板的「第二层」面色，

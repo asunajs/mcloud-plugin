@@ -26,7 +26,7 @@
 // 页面版本号：和 style.css 里的 --style-ver 一起人工递增。
 // 「样式自检」（boot.js 的 ?diag=1）会读它 —— 用来区分「CSS 是新的、JS 还是旧的」这种
 // 半新半旧状态（第 155 轮：样式表是 v155，但 DOM 里根本没有 .ex-group-row 这种行）。
-document.documentElement.dataset.appVer = '166';
+document.documentElement.dataset.appVer = '167';
 
 /** 插件自己的接口。 */
 const API = '/plugins/mcloud/api';
@@ -474,7 +474,7 @@ function renderLogin(l) {
     paintCodePane('sms', null);
   }
 
-  // 手机端那一格（形状与 `sms` 一样，见 `loginReading` 里那段说明）
+  // 手机短信那一格（形状与 `sms` 一样，见 `loginReading` 里那段说明）
   const app = l.app;
   if (app) {
     if ($('add-dialog').hidden === false) showAddTab('app');
@@ -3421,8 +3421,9 @@ $('refresh').addEventListener('click', (e) => act(e.currentTarget, load, '已刷
 //
 // 参考实现：五个页签 + **客户端形态在最上面**。
 // 这里那个"选中的形态"是**弹窗级**状态：扫码/短信/账密/凭据四种方式都按它来。
-// ⚠ **「手机端」页签下那一块整块收起来** —— 那一路走 App 自己的身份，没有
+// ⚠ **「手机短信」页签下那一块整块收起来** —— 那一路走 App 自己的身份，没有
 //   Windows / macOS 之分。用户的问法很直白：「手机端哪来的 macOS 和 Windows」。
+//   （页签现在叫「手机短信」，这里保留用户原话。）
 let addTabNow = 'qr';
 /** 弹窗里选的形态。⚠ 只对 PC 端有意义 —— 手机端（App）不存在 win/mac 之分。
  *
@@ -3482,7 +3483,7 @@ function showAddTab(name) {
     const paneEl = /** @type {PanelEl} */ (pane);
     paneEl.hidden = paneEl.dataset.pane !== name;
   }
-  // ⚠ 「手机端」这一路走的是 App 自己的身份，**没有** Windows / macOS 之分 ——
+  // ⚠ 「手机短信」这一路走的是 App 自己的身份，**没有** Windows / macOS 之分 ——
   //   所以形态那一块在这个页签下收起来，而不是摆着让人问"手机端哪来的这两个按钮"。
   //   （用户就是这么问的。）其余四个页签照旧在顶部，它是弹窗级的。
   $('add-form').hidden = name === 'app';
@@ -3490,8 +3491,8 @@ function showAddTab(name) {
 
 /** 登录成功之后**收尾**：把「添加账号」弹窗关掉（用户的原话：「登录成功弹窗不自动关闭」）。
  *
- *  ⚠ 四条进账号的路（扫码 / 短信 / 手机端 / 贴凭据）都必须走这一个。原来只有扫码
- *  与贴凭据顺手关了，短信与手机端登进去之后弹窗**还杵在那儿** —— 用户只能自己点「关闭」，
+ *  ⚠ 四条进账号的路（扫码 / 电脑短信 / 手机短信 / 贴凭据）都必须走这一个。原来只有扫码
+ *  与贴凭据顺手关了，电脑短信与手机短信登进去之后弹窗**还杵在那儿** —— 用户只能自己点「关闭」，
  *  而那一刻他已经在等别的东西了。
  *
  *  ⚠ 关之前把定时器与轮询停掉：弹窗看不见了，后台还在问接口是最难查的一类问题。
