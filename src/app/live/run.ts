@@ -109,7 +109,7 @@ export async function runLive(ctx: LiveCtx, p: TaskPayload): Promise<void> {
         logBoth(
           store,
           why === 'none' || why === 'invalid' ? 'warn' : 'info',
-          `这一趟不领 —— ${reason}；跳过 ${runs.length} 个账号`,
+          `本次不领 —— ${reason}；跳过 ${runs.length} 个账号`,
           at,
         );
       }

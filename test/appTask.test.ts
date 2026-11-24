@@ -490,7 +490,7 @@ test('⚠ 收尾**不许发空 `fileIds`**', async () => {
   );
   const out = await runAppTaskStep(d2);
   assert.equal(out.ok, true, out.note);
-  assert.match(out.note, /不发空数组/);
+  assert.match(out.note, /不发这次空请求/);
   assert.equal(s2.filter((r) => r.url.includes('batchTrash')).length, 0, '⚠ 一枪都不发');
   void sent;
   void pendingItems;

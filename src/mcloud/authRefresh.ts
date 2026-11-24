@@ -176,7 +176,7 @@ export function parseRefresh(body: string): { ok: boolean; result?: RefreshResul
     //   ⇒ 不写接口名、不写 `code=`。已知的那几个码翻成人话，剩下的原样带消息。
     const c = String(code ?? '');
     if (c === '05050009') return { ok: false, error: '这个号已经失效了 —— 重新登录一次' };
-    return { ok: false, error: msg === '' ? '服务端拒绝了这一枪' : msg };
+    return { ok: false, error: msg === '' ? '服务端没接受这次请求' : msg };
   }
   const data = v.data;
   if (!data || typeof data !== 'object') return { ok: false, error: '没拿到新的登录信息' };

@@ -96,14 +96,14 @@ test('备份开关没开时，549 那行补一句', async () => {
   assert.deepEqual(appTaskStatusLines(store, { backupOn: true }), ['备份文件领好礼：本月已完成，下月再来']);
 });
 
-test('434：今天这一趟已经分享过 ⇒ 明说"每天只算一次"（不然看着像没动）', async () => {
+test('434：今天已经分享过 ⇒ 明说"每天只算一次"（不然看着像没动）', async () => {
   const store = memStore();
   store.ensureSchema();
   store.setState(matrixKey('sign_in_3'), JSON.stringify({ group: 'sign_in_3', at: NOW, done: 0, todo: 1, skip: 0, todoNames: [], items: [real434()] }), NOW);
   // 今天动过 434
   store.setState('mcloud.apptask.state', JSON.stringify({ day: NOW.slice(0, 10), clicked: [434] }), NOW);
   assert.deepEqual(appTaskStatusLines(store, { nowIso: NOW }), [
-    '分享文件领好礼：已完成 1/7（今天这一趟已记过，每天只算一次）',
+    '分享文件领好礼：已完成 1/7（今天已记过，每天只算一次）',
   ]);
   // 昨天的记录不算
   store.setState('mcloud.apptask.state', JSON.stringify({ day: '2026-10-31', clicked: [434] }), NOW);

@@ -217,7 +217,7 @@ test('走满 `maxSteps` 且 `more()` 仍说还有 ⇒ **不算成功**（不许�
   assert.equal(r.steps, 3);
   assert.equal(r.ok, false, '没走完就是没走完');
   assert.match(r.note, /还没完/);
-  assert.match(r.note, /下一趟接着走/);
+  assert.match(r.note, /点「现在跑一次」可以接着走/);
 });
 
 test('走满 `maxSteps` 但 `more()` 说没有了 ⇒ 正常收尾', async () => {

@@ -91,14 +91,14 @@ export async function runOwnedCleanup(
   if (!res.ok) {
     return {
       ok: false,
-      note: `清理 ${ids.length} 个文件没成 —— ${res.error ?? '请求失败'}（下一趟再试）`,
+      note: `清理 ${ids.length} 个文件没成 —— ${res.error ?? '请求失败'}（过一会儿点「现在跑一次」再试）`,
     };
   }
   const parsed = parseTrashResult(res.text);
   if (!parsed.ok) {
     return {
       ok: false,
-      note: `清理 ${ids.length} 个文件被拒 —— ${parsed.why}（下一趟再试）`,
+      note: `清理 ${ids.length} 个文件被拒 —— ${parsed.why}（过一会儿点「现在跑一次」再试）`,
     };
   }
   // 只从名单里移除**这次确认删掉的**；还在用的那些留着。

@@ -256,7 +256,7 @@ export async function runExchange(
     steps: RunStep[];
   } => {
     if (opts.dryRun) {
-      add('干跑', true, '只看了能不能兑，**一枪都没发**（真下单走「立即兑换」或定时那一场）', true);
+      add('干跑', true, '只看了能不能兑，**一个请求都没发**（真下单走「立即兑换」或定时那一场）', true);
     }
     return {
       ok,
@@ -431,7 +431,7 @@ export async function runExchange(
       add(
         `下单 ${maskAuth(loadAuthRaw(deps.store) ?? '')}`,
         one.ok,
-        `${one.note} · 离第一枪 ${Date.now() - fireStart}ms`,
+        `${one.note} · 离第一个请求 ${Date.now() - fireStart}ms`,
       );
     }
     if (!multi) {
@@ -445,7 +445,7 @@ export async function runExchange(
       '整点这一批',
       offsets.length > 0,
       offsets.length > 0
-        ? `串行发出，各账号离第一枪：${offsets.join('、')}`
+        ? `串行发出，各账号离第一个请求：${offsets.join('、')}`
         : '没有账号可发',
     );
   }

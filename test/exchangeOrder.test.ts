@@ -213,7 +213,7 @@ test('**主线**：一步一枪，顺序与枪序一致', async () => {
 
 // ───────────────────────── ② 滑块：这一类**不发** ─────────────────────────
 
-test('⚠ 滑块解不出来 ⇒ **不发 exchangeV3**（那一枪发出去是无效的）', async () => {
+test('⚠ 滑块解不出来 ⇒ **不发 exchangeV3**（发出去也是无效的）', async () => {
   const store = mkStore();
   const { transport, sent } = upstream({
     exchangeList: LIST_HIT,
@@ -225,8 +225,8 @@ test('⚠ 滑块解不出来 ⇒ **不发 exchangeV3**（那一枪发出去是�
   for (let i = 0; i < 4; i += 1) await runOrderStep(deps(store, transport)); // 清单/基准/预热×2
   const out = await runOrderStep(deps(store, transport)); // 取题 → 解不出
   assert.equal(out.ok, false, out.note);
-  assert.match(out.note, /不发下单那一枪/);
-  assert.match(out.note, /不可能成功|白耗/, '理由要说"这一枪不可能成功"，不是"省豆"');
+  assert.match(out.note, /不下单/);
+  assert.match(out.note, /不可能成功|白耗/, '理由要说"这次不可能成功"，不是"省豆"');
   assert.equal(sent.filter((r) => r.url.includes(EXCHANGE_V3)).length, 0, '一个字都不许发');
   assert.equal(sent.length, 5, '清单/基准/预热×2/取题 —— 就到取题为止');
 });

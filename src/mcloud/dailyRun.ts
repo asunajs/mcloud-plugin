@@ -26,7 +26,7 @@ import { TOKENPK_BUDGET, tokenPkGate, tokenPkStep, tokenPkSummary } from './task
 import { takeTokenPkLines } from './tokenPkState.ts';
 import { runReceive } from './tasks/receive.ts';
 import { runRevival } from './tasks/revival.ts';
-import { STATE_STAGE as SIGN_STAGE, runSign } from './tasks/sign.ts';
+import { runSign } from './tasks/sign.ts';
 import { activeExpansionFileId, readBackupOn, runExpansionStep, startExpansion } from './tasks/taskExpansion.ts';
 import { loadQueue } from './tasks/receive.ts';
 import { runAuthRefresh } from './authRefresh.ts';
@@ -194,17 +194,8 @@ export async function runDaily(
   // 判据从状态键读，不从返回值猜：`runSign` 提交完和回查完都是 ok。
   // ⚠ 同样按账号（多账号下读模块级 store 会读到别的号那一格）
   opts.onPhase?.('签到');
-  const signPending = () => (deps.store.getState(SIGN_STAGE) ?? '') === 'need-verify';
-  push(
-    await (async () => {
-      const r = await drain(runSign, deps, {
-        label: '签到',
-        maxSteps: 4,
-        more: signPending,
-      });
-      return { name: '签到', ok: r.ok, note: r.note, idle: r.idle };
-    })(),
-  );
+  // 签到自己在一趟里走完 读→提交→回查，不能 drain（两趟是独立尝试，不接着上一趟走）。
+  push(await once('签到', runSign, deps));
   // 这两条是单发动作（各自只有一个状态键，没有多段）
   for (const [name, fn] of [
     ['签到翻倍', runMultiple],

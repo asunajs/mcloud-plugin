@@ -37,7 +37,7 @@ export async function runExchangeTask(ctx: ExchangeCtx, p: TaskPayload): Promise
       //   scheduledAt 会飘过整点，cron 按**分钟**匹配不中 ⇒ 全部计划都不 due；
       //   手动「跑一次」落在整点之外也是这一支。如实说，别静默。
       //   （要不要改成按小时匹配 = 语义改动，见 findings F-145 的待办。）
-      logBoth(store, 'debug', `兑换：这一趟没有到点的计划（按 scheduledAt=${p.scheduledAt} 匹配）`, at);
+      logBoth(store, 'debug', `兑换：本次没有到点的计划（按 scheduledAt=${p.scheduledAt} 匹配）`, at);
       return;
     }
     const targetHour = new Date(targetMs).getHours();
@@ -53,7 +53,7 @@ export async function runExchangeTask(ctx: ExchangeCtx, p: TaskPayload): Promise
       const acct = accounts.find((a) => a.id === plan.accountId);
       if (!acct || acct.disabled === true) {
         skipped += 1;
-        logBoth(store, 'debug', '计划「' + plan.prizeName + '」：账号已删除或停用，这一趟跳过', at);
+        logBoth(store, 'debug', '计划「' + plan.prizeName + '」：账号已删除或停用，本次跳过', at);
         continue;
       }
       const untilGate = scheduleUntilAllowed(store, targetMs, plan.until);
@@ -98,7 +98,7 @@ export async function runExchangeTask(ctx: ExchangeCtx, p: TaskPayload): Promise
           firedAt: p.firedAt,
           lateMs: p.lateMs,
           ok: true,
-          note: r ? r.note : '这一趟没动手',
+          note: r ? r.note : '本次没动手',
         });
         continue;
       }
@@ -166,7 +166,7 @@ export async function runExchangeTask(ctx: ExchangeCtx, p: TaskPayload): Promise
       logBoth(
         store,
         'debug',
-        '这一趟没动手 —— ' +
+        '本次没动手 —— ' +
           plans.length +
           ' 条计划都还没到该抢的时候（或这一场已经试过了）' +
           (skipped > 0 ? '，其中 ' + skipped + ' 条被跳过' : ''),

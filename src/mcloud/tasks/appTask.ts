@@ -234,7 +234,7 @@ const PHASE_TEXT: Record<TaskPhase, string> = {
   pdfConvert: 'PDF 转换',
   billViewAction: '我的账单（8 发）',
   settle: '等服务端确认',
-  done: '这一趟走完了',
+  done: '这次走完了',
 };
 
 /** 打卡那一枪。⚠ GET + 查询参数 `key=task&id=<id>`（实拍逐字）。 */
@@ -846,16 +846,16 @@ export async function runAppTaskStep(deps: TaskDeps): Promise<TaskOutcome> {
     const deadSet = new Set(dead);
     const failedWhy = (st.failed ?? []).filter((f) => stillTodo(f.id) && !deadSet.has(f.id));
     return dead.length === 0 && failedWhy.length === 0
-      ? { ok: true, idle: true, note: '这一趟做完了（服务端已确认）' }
+      ? { ok: true, idle: true, note: '这次做完了（服务端已确认）' }
       : {
           ok: false,
           idle: true,
           pending: true,
-          note: `这一趟没有全确认：${dead.length} 条本机动过、服务端仍是待办（#${dead.join('、')}）${
+          note: `这次没有全确认：${dead.length} 条本机动过、服务端仍是待办（#${dead.join('、')}）${
             failedWhy.length === 0
               ? ''
               : `；${failedWhy.length} 条没做成（${failedWhy.map((f) => `#${f.id} ${f.why}`).join('；')}）`
-          } —— 下一趟继续重试（不设上限）`,
+          } —— 点「现在跑一次」可以继续重试（不设上限）`,
         };
   }
 
@@ -893,7 +893,7 @@ export async function runAppTaskStep(deps: TaskDeps): Promise<TaskOutcome> {
     if (failed.length > 0) {
       bits.push(`${failed.length} 条没做成（${failed.map((f) => `#${f.id} ${f.why}`).join('；')}）`);
     }
-    const warn = bits.length === 0 ? '' : `；⚠ ${bits.join('；')} —— 只有矩阵回 FINISH 才算成功，下一趟会重试`;
+    const warn = bits.length === 0 ? '' : `；⚠ ${bits.join('；')} —— 只有矩阵回 FINISH 才算成功，点「现在跑一次」会重试`;
     return {
       ok: bits.length === 0,
       idle: true,
@@ -1672,7 +1672,7 @@ export async function runAppTaskStep(deps: TaskDeps): Promise<TaskOutcome> {
   if (!st.fileId) {
     // ⚠ **不许发空 fileIds** ⇒ 换下一条
     const out = advance(deps, st);
-    return { ok: true, note: `这条没有要收尾的文件 —— 不发空数组那一枪。${out.note}` };
+    return { ok: true, note: `这条没有要收尾的文件 —— 不发这次空请求。${out.note}` };
   }
   if (st.fileOwned === false) {
     // 撞上用户已有文件：只做动作，绝不删。

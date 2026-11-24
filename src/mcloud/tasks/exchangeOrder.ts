@@ -333,8 +333,8 @@ export function pickPrize(prizes: readonly ExchangePrize[], query: string): Exch
 export const STEP_TEXT: Record<Step, string> = {
   list: '① 读清单',
   balance: '② 读基准余额（成交复查要拿它算差值）',
-  'warm-1': '③ 预热第一枪',
-  'warm-2': '③ 预热第二枪',
+  'warm-1': '③ 预热第 1 次',
+  'warm-2': '③ 预热第 2 次',
   slide: '④ 取滑块题面并本地解',
   order: '⑤ 下单',
   verify: '⑥ 复查余额差',
@@ -461,7 +461,7 @@ export async function runOrderStep(deps: TaskDeps): Promise<TaskOutcome> {
     const warn = res.ok ? '' : `（埋点失败但不挡路：${res.error ?? '未知'}）`;
     if (step === 'warm-1') {
       saveState(deps, { ...st, step: 'warm-2' });
-      return { ok: true, note: `${label}：${keyword}${warn} —— 下一步第二枪（中间那 500ms 由面板的下一次触发承担）` };
+      return { ok: true, note: `${label}：${keyword}${warn} —— 下一步第 2 次（中间那 500ms 由面板的下一次触发承担）` };
     }
     saveState(deps, { ...st, step: 'slide' });
     return { ok: true, note: `${label}：${keyword}${warn} —— 下一步取滑块题面` };
@@ -503,15 +503,15 @@ export async function runOrderStep(deps: TaskDeps): Promise<TaskOutcome> {
       solution = calcPuzzleOffset(puzzle, picture);
     } catch (e) {
       return done(
-        `${label}：图解码失败（${e instanceof Error ? e.message : String(e)}）⇒ 不发下单那一枪` +
-          '（offset 错了那一枪不可能成功，只会白耗一次题面）',
+        `${label}：图解码失败（${e instanceof Error ? e.message : String(e)}）⇒ 不下单` +
+          '（偏移量错了这次不可能成功，只会白耗一次题面）',
         false,
       );
     }
     if (!usable(solution)) {
       return done(
         `${label}：算不出可用的 offset（解出 ${solution.offsetX}，置信度 ${solution.confidence.toFixed(2)}）` +
-          '⇒ 不发下单那一枪 —— 这一枪发出去是无效的，不是"少一次机会"而是"多一次白打"',
+          '⇒ 不下单 —— 这次发出去是无效的，不是"少一次机会"而是"多一次白打"',
         false,
       );
     }
@@ -575,7 +575,7 @@ export async function runOrderStep(deps: TaskDeps): Promise<TaskOutcome> {
       // （参考实现里 `SLIDER_ROUNDS = 2` 就是这个意思）。
       // 所以这一支**不**动 `STATE_ORDERED_HOUR`：那一枪没被受理。
       saveState(deps, { ...st, step: 'slide', round, offset: undefined });
-      return { ok: true, note: `${label}：514（滑块算错）⇒ 重取一题再来一枪（第 ${round}/${SLIDER_ROUNDS} 轮），**没有重复下单**` };
+      return { ok: true, note: `${label}：514（滑块算错）⇒ 重取一题再试一次（第 ${round}/${SLIDER_ROUNDS} 轮），**没有重复下单**` };
     }
     // ⚠ 不管成没成，**这一小时记下"发过了"** —— 见 `STATE_ORDERED_HOUR`
     deps.store.setState(STATE_ORDERED_HOUR, hourKey(depsNowMs(deps)), deps.nowIso);

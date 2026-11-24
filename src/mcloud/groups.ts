@@ -97,7 +97,7 @@ export interface TaskMeta {
 /** 服务端证据状态。这一列区分的是「能照实写」与「只能照旧项目的口径猜」。
  *
  *  `captured` —— 有实拍：路径/方法/字段名都逐字见过
- *  `partial`  —— 只实拍到"成功那一枪"，失败形态还没样本
+ *  `partial`  —— 只实拍到"成功那一次"，失败形态还没样本
  *  `none`     —— 零样本：方法、非 0 例文全空
  *  `no-ticket` —— **连那张票怎么换都没抓到**，页面的特有取法无从得知
  *  `ran-elsewhere` —— 我们**零抓包**，但**参照实现在真账号上跑成功过、逐行产出留了档**
@@ -194,7 +194,7 @@ export const TASK_META: TaskMeta[] = [
   { name: 'session-refresh', title: '会话续期（H5 换票）', group: 'plugin', kind: 'Action', risk: 'none', missed: 'catch-up', deps: [], batch: false, hidden: false, implemented: true, evidence: 'captured', note: '原生凭据 → 三步换 jwttoken，约 2 小时自动续；票新鲜时**一个请求都不发**' },
 
   // ── 签到族（8 条，全实现）──
-  { name: 'sign', title: '每日签到', group: 'signin', kind: 'Action', risk: 'ledger', missed: 'catch-up', deps: ['jwt'], batch: true, hidden: false, implemented: true, evidence: 'captured', note: '三段式：问状态 → 提交 → 回查（判据是回查）' },
+  { name: 'sign', title: '每日签到', group: 'signin', kind: 'Action', risk: 'ledger', missed: 'catch-up', deps: ['jwt'], batch: true, hidden: false, implemented: true, evidence: 'captured', note: '一趟走完：看今天签没签 → 提交 → 再确认一次' },
   { name: 'receive', title: '领取AI豆', group: 'signin', kind: 'Action', risk: 'ledger', missed: 'catch-up', deps: ['jwt'], batch: true, hidden: false, implemented: true, evidence: 'captured', note: '逐条独立；延期领取走另一口端点' },
   { name: 'multiple', title: '签到翻倍', group: 'signin', kind: 'Action', risk: 'ledger', missed: 'catch-up', deps: ['jwt'], batch: true, hidden: false, implemented: true, evidence: 'captured', note: '每月一次机会 —— 门槛由插件自己判，条件不成立时一个字节都不发' },
   { name: 'revival', title: '用复活卡/回馈卡', group: 'signin', kind: 'Action', risk: 'irreversible', missed: 'skip', deps: ['jwt'], batch: false, hidden: false, implemented: true, evidence: 'captured', note: '**不可逆** —— 晚超过 2 小时就不做' },
@@ -256,15 +256,15 @@ export const TASK_META: TaskMeta[] = [
   // ── 要用网盘（未实现；原因见各条的 note，**不是**"它会写网盘"）──
   // ⚠ 未实现 —— 而理由**不是**"它会写网盘"（那是它的内容，不是风险）。
   //    真理由：App 原生族（上传 / 分享 / 固定入口）的报文形状还没抓全。
-    // ✅ 2026-10-14 实现（判据层纯函数 + 动作层一枪一步）。
+    // ✅ 2026-10-14 实现（判据层纯函数 + 动作层一次一步）。
   //    ⚠ 与 `app-task-matrix` **不是同一个 code**：只读那半填读数，这半消费读数去行动。
   //    ⚠ 传上去的文件**必须收尾**（移回收站）—— 不收，用户网盘里就会慢慢堆垃圾。
   //    ⚠ `task/click` **不可回滚** ⇒ 同一轮不重发；`batchTrash` **不许发空 fileIds**。
-  { name: 'app-task', title: 'App 任务（做任务）', group: 'activity', kind: 'Action', risk: 'write-cloud', missed: 'skip', deps: ['jwt'], batch: false, hidden: false, implemented: true, evidence: 'partial', note: '一枪一步：传文件（需要时）→ `task/click`（不可回滚，同一轮不重发）→ 收尾移回收站。判据是纯函数（106/113/522 与 beiyong1 两道门）；矩阵得先跑过' },
+  { name: 'app-task', title: 'App 任务（做任务）', group: 'activity', kind: 'Action', risk: 'write-cloud', missed: 'skip', deps: ['jwt'], batch: false, hidden: false, implemented: true, evidence: 'partial', note: '一次一步：传文件（需要时）→ `task/click`（不可回滚，同一轮不重发）→ 收尾移回收站。判据是纯函数（106/113/522 与 beiyong1 两道门）；矩阵得先跑过' },
   //   ① `acceptDate` 键必须在（值可空）：真机裸 GET 回 404，见 F-021。
   //   ② 云朵与「云盘专属 AI豆」是**同一个东西的两个名字**（1:1 改名），别当两笔账。
-  //   ③ 现在按 mcloud：随机文件 + refuse_duplicate_content + 快照三枪 + 只删自己造的。
-  { name: 'task-expansion', title: '任务拓展', group: 'cloud-write', kind: 'Action', risk: 'write-cloud', missed: 'skip', deps: ['jwt'], batch: false, hidden: false, implemented: true, evidence: 'partial', note: '读状态 → 随机文件上传（refuse_duplicate_content）→ 快照三枪 → **只清理自己造的**文件（撞同名/判不了不删）；不领云朵' },
+  //   ③ 现在按 mcloud：随机文件 + refuse_duplicate_content + 快照连发三次 + 只删自己造的。
+  { name: 'task-expansion', title: '任务拓展', group: 'cloud-write', kind: 'Action', risk: 'write-cloud', missed: 'skip', deps: ['jwt'], batch: false, hidden: false, implemented: true, evidence: 'partial', note: '读状态 → 随机文件上传（refuse_duplicate_content）→ 快照连发三次 → **只清理自己造的**文件（撞同名/判不了不删）；不领云朵' },
     // ❌ 2026-10-14 真机探过：**整族 404/405**，且**不是**签名或 marketName 的问题
   //    （带签名/不带签名、两个 marketName 各试一遍，读数一字不差；与 mcloud 2026-09-25
   //    的读数逐条一致）。405 说明网关**认得** `/market/rabactive/ai/image/` 这个 location
@@ -279,13 +279,13 @@ export const TASK_META: TaskMeta[] = [
   //
   // 口径（用户定的）：**优先发出去** —— 清单判据说不能兑、余额看着不够，都**照样发**
   // （那两处是本地估算，服务端仍可能放行；失败不扣豆）。
-  // ⚠ 但**滑块**不属这一类：offset 算错那一枪**不可能成功**（回 514、不成交也不扣豆），
+  // ⚠ 但**滑块**不属这一类：偏移量算错那次**不可能成功**（回 514、不成交也不扣豆），
   //    所以算不出就不发 —— 那不是"少一次机会"，是"多一次白打"。
-  { name: 'exchange', title: '兑换奖品', group: 'risky', kind: 'Action', risk: 'spend', missed: 'skip', deps: ['jwt', 'slider'], batch: false, hidden: false, implemented: true, evidence: 'captured', note: '枪序：清单 → 余额 → 预热×2 → 取滑块本地解 → 下单 → 查余额差。**成交判据是余额差**（服务端没有幂等，那句话不算数）；滑块算不出就不发' },
+  { name: 'exchange', title: '兑换奖品', group: 'risky', kind: 'Action', risk: 'spend', missed: 'skip', deps: ['jwt', 'slider'], batch: false, hidden: false, implemented: true, evidence: 'captured', note: '顺序：清单 → 余额 → 预热×2 → 取滑块本地解 → 下单 → 查余额差。**成交判据是余额差**（服务端没有幂等，那句话不算数）；滑块算不出就不发' },
   // ⚠️ 2026-10-14 更正一处**我口头说过的错话**：我曾讲这条"会换掉现有授权"——
   //    那句话**没有出处**。`auth_refresh.rs` 的叙述是「**续期**」：刷新返回一个自带
   //    30 天有效期的新 token，并被编进后续请求的 `Authorization`；而**旧凭据会不会被
-  //    这一枪作废，没有任何一处说过**（我把它当成了"替换"）。
+  //    这次请求作废，没有任何一处说过**（我把它当成了"替换"）。
   //    另外它在本插件里是 `implemented: false` —— **根本没实装**，
   //    所以"我不替你动"这个说法本身就站不住（当时没有可动的东西）。
   //    ⚠ `risk` 暂时维持 `irreversible`（风险档保守取值的默认），

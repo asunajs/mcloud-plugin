@@ -146,7 +146,7 @@ export function appTaskStatusLines(
     // 434：`a/b` 的分子**每天最多 +1**，今天这趟已经动过 ⇒ 明说"今天记过了"，
     // 免得用户对着不动的那一格以为失败（2026-11-02 现场）。
     if (spec.id === SHARE_TASK_ID && (touched ?? []).includes(SHARE_TASK_ID)) {
-      line += '（今天这一趟已记过，每天只算一次）';
+      line += '（今天已记过，每天只算一次）';
     }
     out.push(spec.id === 549 && opts.backupOn === false ? `${line}（备份开关没开，开了才会有）` : line);
   }

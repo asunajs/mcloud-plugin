@@ -41,7 +41,7 @@ test('两个领到 + 一个已经领过 ⇒ 仍然 3/3 好了（不是 2/3 的�
 test('三个都已经领过 ⇒ 普通信息，不是警告', () => {
   const t = liveTally([already, already, already]);
   assert.equal(t.level, 'info');
-  assert.equal(t.text, '直播：3 个账号都领过了，这一趟不用领');
+  assert.equal(t.text, '直播：3 个账号都领过了，本次不用领');
 });
 
 test('没有口令 ⇒ 警告（用户口径：这才是错误）', () => {

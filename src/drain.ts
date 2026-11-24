@@ -61,7 +61,7 @@ import { waitGap, type TaskDeps, type TaskOutcome } from './mcloud/tasks/base.ts
  *
  *  状态机可能因为上游一直给新待办而**永不**停。走满 `maxSteps` 时：
  *  · 调用方给了 `more()` 且它仍说"还有" ⇒ `ok: false`（**没走完就是没走完**，
- *    不冒充成功；下一趟接着走）
+ *    不冒充成功；点「现在跑一次」可以接着走）
  *  · 否则（没有 `more` 判据）⇒ `ok: true`，用最后一步自己的原话收尾
  */
 export async function drain(
@@ -141,7 +141,7 @@ export async function drain(
       idle: false,
       steps,
       note:
-        `${opts.label}：走满 ${opts.maxSteps} 步还没完 —— 下一趟接着走` +
+        `${opts.label}：走满 ${opts.maxSteps} 步还没完 —— 点「现在跑一次」可以接着走` +
         `${lastNote ? `（最后一步：${brief(lastNote, opts.label)}）` : ''}`,
       notes,
     };

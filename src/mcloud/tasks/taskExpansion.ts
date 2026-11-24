@@ -264,7 +264,7 @@ export function startExpansion(deps: TaskDeps): TaskOutcome {
     //   库里那些"已完成"并没有证明备份开了。拿 `backupOn` 复核；
     //   老状态没有这一格就看 `curMonthBackup`。
     const goal = cur.backupOn ?? cur.curMonthBackup;
-    if (cur.step === 'done' && goal === true) return { ok: true, idle: true, note: '今天这一趟已经走完' };
+    if (cur.step === 'done' && goal === true) return { ok: true, idle: true, note: '今天已经走完' };
     if (cur.step === 'done' || cur.step === 'blocked' || cur.step === 'unknown') {
       const why =
         cur.blockedWhy ??
@@ -282,9 +282,9 @@ export function startExpansion(deps: TaskDeps): TaskOutcome {
       const cleaned = cur.step === 'done' ? true : cur.cleanupDone;
       // `attempted: true` —— 这一趟**只读**：今天已经试过了，别在读那一步又起一次上传。
       save(deps, { ...cur, step: 'read', retryMode: 'recheck', cleanupDone: cleaned, attempted: true });
-      return { ok: true, note: '上一趟没成，这一趟只复查（不再传文件）' };
+      return { ok: true, note: '上次没成，这次只复查（不再传文件）' };
     }
-    return { ok: true, note: '今天这一趟还在走，接着推' };
+    return { ok: true, note: '今天还在走，接着推' };
   }
   save(deps, { step: 'read', day });
   return { ok: true, note: '已排队：读状态 → （需要时）传文件+快照触发备份 → 清理' };
@@ -378,7 +378,7 @@ export function readBackupOn(store: { getState(k: string): string | null | undef
 export async function runExpansionStep(deps: TaskDeps): Promise<TaskOutcome> {
   let st = load(deps) ?? { step: 'read' as ExpandStep };
 
-  if (st.step === 'done') return { ok: true, idle: true, note: '这一趟已经走完' };
+  if (st.step === 'done') return { ok: true, idle: true, note: '已经走完' };
   const label = STEP_TEXT[st.step];
 
   // 到了两档终局（不是这一趟该做的事）：把原因原样交回去。
@@ -508,15 +508,15 @@ export async function runExpansionStep(deps: TaskDeps): Promise<TaskOutcome> {
           : // ⚠ 结算这句**先说结论**：它会原样进用户日志（userLine 只剥掉步骤名前缀），
             //   "③ 清理自己传的文件：…" 那种开头会让人以为失败的是清理。
             soft
-            ? `复查仍是「未开启」（${v.why}）—— 下一趟再读`
-            : `备份仍未开启（${v.why}）—— 上传已发，下一趟再读`,
+            ? `复查仍是「未开启」（${v.why}）—— 过一会儿点「现在跑一次」再看`
+            : `备份仍未开启（${v.why}）—— 上传已发，过一会儿点「现在跑一次」再看`,
       );
     }
     const res = await callRawText(deps.transport, trashRequest([fileId]));
     // ⚠ 清失败**不推进游标**：文件还在网盘里，下一趟要接着清（链尾那一枪也还留着它）。
-    if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? '未知失败'}（文件先留着，下一趟再清）` };
+    if (!res.ok) return { ok: false, note: `${label}失败：${res.error ?? '未知失败'}（文件先留着，过一会儿点「现在跑一次」再清）` };
     const parsed = parseTrashResult(res.text);
-    if (!parsed.ok) return { ok: false, note: `${label}被拒：${parsed.why}（文件先留着，下一趟再清）` };
+    if (!parsed.ok) return { ok: false, note: `${label}被拒：${parsed.why}（文件先留着，过一会儿点「现在跑一次」再清）` };
     // 确认删掉了才从兜底名单里注销；否则留给链尾那一枪重试。
     unregisterOwnedFile(deps, fileId);
     // 记下"这枚已经清过"：只读复查那趟再走到 cleanup 时不能拿同一个 id 再删一次
@@ -525,8 +525,8 @@ export async function runExpansionStep(deps: TaskDeps): Promise<TaskOutcome> {
     if (v.step === 'done') return finish(`${label}：已移进回收站`);
     return finish(
       soft
-        ? `复查仍是「未开启」（${v.why}）—— 下一趟再读`
-        : `备份仍未开启（${v.why}）—— 上传已发，下一趟再读`,
+        ? `复查仍是「未开启」（${v.why}）—— 过一会儿点「现在跑一次」再看`
+        : `备份仍未开启（${v.why}）—— 上传已发，过一会儿点「现在跑一次」再看`,
     );
   }
 
@@ -562,7 +562,7 @@ export async function runExpansionStep(deps: TaskDeps): Promise<TaskOutcome> {
     save(deps, next);
     const tail =
       read.nextMonthTaskRecordCount === undefined ? '' : `；下月可领 ${read.nextMonthTaskRecordCount} 个`;
-    const only = st.attempted === true ? '（这一趟只复查，不再传文件）' : '';
+    const only = st.attempted === true ? '（这次只复查，不再传文件）' : '';
     return {
       ok: true,
       note: `${label}：备份=${read.curMonthBackup === undefined ? '没读到' : String(read.curMonthBackup)}，可领次数=${read.curMonthTaskRecordCount ?? '没读到'}${tail}${only} —— 下一步清理`,

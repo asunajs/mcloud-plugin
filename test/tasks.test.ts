@@ -97,8 +97,8 @@ test('cloud-snapshot：query 逐字；一页装满就如实说「可能还有下
 });
 
 test('sign：有设备号才发 isdeviceid 与 deviceId（且要走到"提交"那一步 GET 出去）', async () => {
-  // 注意：签到现在是三段式（问状态 → 提交 → 回查，见 tasks2.test.ts）。
-  // 这条只盯「提交那一步的请求长什么样」，所以要真的走到提交那一步。
+  // 注意：签到是 问状态 → 提交 → 回查（见 tasks2.test.ts），而且一趟里就走完。
+  // 这条只盯「提交那一步的请求长什么样」；`settleMs: 0` 是为了别真等 5 秒。
   const notSigned = JSON.stringify({
     code: 0,
     msg: 'success',
@@ -111,9 +111,8 @@ test('sign：有设备号才发 isdeviceid 与 deviceId（且要走到"提交"�
     sent.push({ url: req.url, headers: req.headers });
     return { status: 200, headers: {}, body: notSigned };
   };
-  await runSign({ store, transport, nowIso: NOW, lateMs: 0 }); // ① 问状态
+  await runSign({ store, transport, nowIso: NOW, lateMs: 0, settleMs: 0 }); // ① 问状态 → ② 提交 → ③ 回查
   assert.match(sent[0]!.url, /infoV3/);
-  await runSign({ store, transport, nowIso: NOW, lateMs: 0 }); // ② 提交
   const submit = sent.find((x) => /startSignIn/.test(x.url));
   assert.ok(submit, '第二次应当去提交签到');
   assert.equal(
@@ -131,8 +130,8 @@ test('sign：有设备号才发 isdeviceid 与 deviceId（且要走到"提交"�
     sent2.push({ url: req.url, headers: req.headers });
     return { status: 200, headers: {}, body: notSigned };
   };
-  await runSign({ store: store2, transport: t2, nowIso: NOW, lateMs: 0 });
-  await runSign({ store: store2, transport: t2, nowIso: NOW, lateMs: 0 });
+  await runSign({ store: store2, transport: t2, nowIso: NOW, lateMs: 0, settleMs: 0 });
+  await runSign({ store: store2, transport: t2, nowIso: NOW, lateMs: 0, settleMs: 0 });
   const submit2 = sent2.find((x) => /startSignIn/.test(x.url))!;
   assert.equal(submit2.url, 'https://m.mcloud.139.com/ycloud/signin/page/startSignIn?client=app');
   assert.equal(submit2.headers['isdeviceid'], undefined);

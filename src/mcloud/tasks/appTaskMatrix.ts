@@ -288,7 +288,7 @@ export async function runAppTaskMatrix(deps: TaskDeps): Promise<TaskOutcome> {
   if (exp !== null && exp.expired) {
     return {
       ok: false,
-      note: `凭据已过期（${exp.atIso.slice(0, 16).replace('T', ' ')}）—— 先「刷新/重新导入」再读任务清单，这一趟不发请求（免得把好读数盖成全零）`,
+      note: `凭据已过期（${exp.atIso.slice(0, 16).replace('T', ' ')}）—— 先「刷新/重新导入」再读任务清单，这次不发请求（免得把好读数盖成全零）`,
     };
   }
   const raw = deps.store.getState(STATE_GROUP_INDEX);

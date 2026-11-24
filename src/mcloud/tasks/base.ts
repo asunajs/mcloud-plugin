@@ -47,6 +47,15 @@ export function hostBase(deps: { baseUrl?: string | undefined }, fallback: strin
   return b === '' ? fallback : b.replace(/\/+$/, '');
 }
 
+/** 本地日历日（`YYYY-MM-DD`）。别用 `nowIso.slice(0, 10)`：那是 UTC 日，
+ *  日界落在北京 08:00，跟日常 08:00 / 20:00 两趟撞在一起。 */
+export function localDay(nowIso: string): string {
+  const d = new Date(nowIso);
+  if (Number.isNaN(d.getTime())) return nowIso.slice(0, 10);
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
 export interface TaskDeps {
   store: Store;
   transport: Transport;

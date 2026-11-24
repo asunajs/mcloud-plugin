@@ -1281,7 +1281,7 @@ test('⚠ 直播没开始就整趟跳过：不逐账号输出「领小红花没�
   );
   assert.ok(/if \(c !== null && c\.stopped\)/.test(live), '日志侧也要早退');
   assert.ok(
-    /这一趟不领 —— \$\{reason\}；跳过 \$\{runs\.length\} 个账号/.test(live),
+    /本次不领 —— \$\{reason\}；跳过 \$\{runs\.length\} 个账号/.test(live),
     '只留一行“跳过 N 个账号”',
   );
   // 早退必须在“每个账号一段”之前，否则还是每个号都印

@@ -37,7 +37,7 @@ export function beansRoutes(deps: RouteDeps, base: string, verify: () => Promise
   void verify;
   return [
 {
-      // 「今日AI豆」—— **只读**，一枪 `cloudRecordV2` 翻到底再按**东八区自然日**汇总。
+      // 「今日AI豆」—— **只读**，一次 `cloudRecordV2` 翻到底再按**东八区自然日**汇总。
       //
       // 照参考实现（`mcloud-tasks/src/beans.rs` + 路由 `GET /api/beans/today`）：
       //   · **按账号一列**，**没有 `total` / `net` 这种跨账号字段** ——
@@ -335,7 +335,7 @@ export function beansRoutes(deps: RouteDeps, base: string, verify: () => Promise
 {
       // 第一段：读详情 → 取滑块题面（本地解偏移）→ 发验证码短信。
       //
-      // ⚠ 这一枪**会真的发一条短信**（到账号绑定的手机）。所以只有用户点了
+      // ⚠ 这次请求**会真的发一条短信**（到账号绑定的手机）。所以只有用户点了
       //   「领取」才会走到这里；同一件 60 秒内不重发（本地闸，别让上游回 1001）。
       path: `${base}/prizes/claim`,
       method: 'POST',
@@ -389,7 +389,7 @@ export function beansRoutes(deps: RouteDeps, base: string, verify: () => Promise
         } catch (e) {
           const note =
             e instanceof LoginExpiredError
-              ? '登录信息过期了 —— 去「账号」页重新登录一次再试（这一枪没有发出去）'
+              ? '登录信息过期了 —— 去「账号」页重新登录一次再试（这次没有发出去）'
               : e instanceof Error
                 ? e.message
                 : String(e);
@@ -406,7 +406,7 @@ export function beansRoutes(deps: RouteDeps, base: string, verify: () => Promise
       //   —— 否则拿旧单/别人的单去撞，只会换回一个看不懂的错误码。
       path: `${base}/prizes/confirm`,
       method: 'POST',
-      // 一发写请求 + 可能的当场续票；不重试写这一枪（没有幂等键，重试由用户决定）。
+      // 一次写请求 + 可能的当场续票；不重试这次写请求（没有幂等键，重试由用户决定）。
       budget_ms: 60_000,
       handler: async (req) => {
         const b = readBody(req);
@@ -448,7 +448,7 @@ export function beansRoutes(deps: RouteDeps, base: string, verify: () => Promise
           nowMs: () => Date.parse(deps.now()),
         };
         const who = maskPhoneLike(found.label) ?? found.label;
-        // 同 claim：只"写前换票"，**不自动重跑**这一枪（没有幂等键）
+        // 同 claim：只"写前换票"，**不自动重跑**这次请求（没有幂等键）
         const pre = await ensurePrizeToken(prizeDeps);
         if (!pre.ok) {
           return json(200, {
@@ -464,7 +464,7 @@ export function beansRoutes(deps: RouteDeps, base: string, verify: () => Promise
         } catch (e) {
           const note =
             e instanceof LoginExpiredError
-              ? '登录信息过期了 —— 去「账号」页重新登录一次再试（这一枪没有发出去）'
+              ? '登录信息过期了 —— 去「账号」页重新登录一次再试（这次没有发出去）'
               : e instanceof Error
                 ? e.message
                 : String(e);

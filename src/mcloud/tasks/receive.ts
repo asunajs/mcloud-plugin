@@ -144,7 +144,7 @@ export function explainReceiveFail(
     if (m) code = Number(m[1]);
   }
   if (code === 615) {
-    return '领取失败：这一枪**没带 `deviceId`**（服务端文案说"活动太火爆啦"，但它不是在限流）。' +
+    return '领取失败：这次**没带 `deviceId`**（服务端文案说"活动太火爆啦"，但它不是在限流）。' +
       '领取类接口要一份 **H5 的 deviceId**，那份得靠 smid 指纹链换回来 —— 本插件还没实现那条链；' +
       '在会话 JSON 里手工带上 `deviceId`（`B` + 88 字符 base64）即可用。';
   }

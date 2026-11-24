@@ -57,11 +57,11 @@ export function liveTally(results: readonly AcctResult[]): Tally {
     bad++;
     badNotes.push(r.note);
   }
-  if (n === 0) return { level: 'info', text: '直播：这一趟没有账号', worked, already, bad };
+  if (n === 0) return { level: 'info', text: '直播：本次没有账号', worked, already, bad };
   // 全都正常收尾（领到 / 已领过）
   if (bad === 0) {
     if (worked === 0) {
-      return { level: 'info', text: `直播：${n} 个账号都领过了，这一趟不用领`, worked, already, bad };
+      return { level: 'info', text: `直播：${n} 个账号都领过了，本次不用领`, worked, already, bad };
     }
     const suffix = already > 0 ? `（${already} 个已经领过）` : '';
     return { level: 'success', text: `直播完成：${n}/${n} 个账号好了${suffix}`, worked, already, bad };

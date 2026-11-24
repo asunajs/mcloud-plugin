@@ -211,7 +211,7 @@ async function roomsStep(
     // 凭据丢了（被手清过 / 盘上被抹过）⇒ 退回第一步，别拿空 JWT 去撞上游
     st.step = 'handshake';
     deps.store.setState(STATE_GATE, JSON.stringify(st), deps.nowIso);
-    return { ok: true, idle: true, note: '这一轮没有 JWT ⇒ 退回第一步（下一趟重新握手）' };
+    return { ok: true, idle: true, note: '这一轮没有 JWT ⇒ 退回第一步（点「现在跑一次」会重新握手）' };
   }
 
   const groups: LiveRoom[][] = [];
@@ -275,7 +275,7 @@ function dropJwtAndFail(deps: TaskDeps, st: GateState, note: string): TaskOutcom
   st.step = 'handshake';
   delete st.jwt;
   deps.store.setState(STATE_GATE, JSON.stringify(st), deps.nowIso);
-  return stepFail(deps, 'live-gate', `${note}（已丢弃 JWT，下一趟重新握手）`);
+  return stepFail(deps, 'live-gate', `${note}（已丢弃 JWT，点「现在跑一次」会重新握手）`);
 }
 
 function stepFail(deps: TaskDeps, task: string, note: string): TaskOutcome {

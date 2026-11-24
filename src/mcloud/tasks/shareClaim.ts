@@ -31,7 +31,7 @@
 // · 幂等：`limitType=MONTH`，一个月只有这一档；按账号记 `YYYY-MM`，
 //   领过就整月不再发第二发（`task/click` **不可回滚**）。
 // · 成败：只有 `code===0` 且 `result.num>0` 才算到账；`code!=0` 或缺 `num`
-//   一律如实说「服务端没认」，**不记幂等**（下一趟重试）、**不伪造成功**。
+//   一律如实说「服务端没认」，**不记幂等**（过一会儿点「现在跑一次」再试）、**不伪造成功**。
 
 import { callRawText } from '../client.ts';
 import { parseSignInEnvelope, resultObject } from '../envelope.ts';
@@ -77,7 +77,7 @@ export async function runShareClaim(deps: TaskDeps): Promise<TaskOutcome> {
   //    这里不另起一份构造。
   const res = await callRawText(deps.transport, clickRequest(deps, SHARE_TASK_ID));
   if (!res.ok) {
-    return { ok: false, note: `领20豆 没发出去：${res.error ?? '未知失败'}（下一趟重试）` };
+    return { ok: false, note: `领20豆 没发出去：${res.error ?? '未知失败'}（过一会儿点「现在跑一次」再试）` };
   }
 
   // ④ 判成败：只认信封里的 `code` 与 `result.num`。
@@ -95,7 +95,7 @@ export async function runShareClaim(deps: TaskDeps): Promise<TaskOutcome> {
     // ⚠ 不记幂等：服务端没认，下一趟还要能再试；也不把「发出去了」说成成功。
     return {
       ok: false,
-      note: `领20豆 发了，但服务端没认：code=${env.code} ${env.message || ''} result.num=${String(beans ?? '没给')}（下一趟重试）`,
+      note: `领20豆 发了，但服务端没认：code=${env.code} ${env.message || ''} result.num=${String(beans ?? '没给')}（过一会儿点「现在跑一次」再试）`,
     };
   }
 
@@ -119,7 +119,7 @@ export async function runShareClaim(deps: TaskDeps): Promise<TaskOutcome> {
       note:
         `领20豆 发了（HTTP ${res.status}，回包 code=0 num=${beans}），但服务端任务表还没变「已领取」` +
         `（现在是 ${after === undefined ? '读不到 434 这一行' : `${after.state ?? '?'} / ${after.buttonOutText ?? '?'}`}）` +
-        '，下一趟重试',
+        '，过一会儿点「现在跑一次」再试',
     };
   }
 

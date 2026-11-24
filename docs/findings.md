@@ -7908,3 +7908,28 @@ const todayRuns = (d.recent || []).filter((x) => localDay(x.at) === todayKey).le
 + `test/stepLog.test.ts` 的 `idleReason` / `lineLevel` 两组；`npm test` 1290/1290；
 `npm run all` 与 `scripts/e2e-mock.sh` 全过。
 
+
+## F-148 签到的假绿：一趟没走完就报"好了"（2026-11-24）
+
+现场：08:00 三个号都只写「网盘签到已提交，下一次确认」，08:01 报 `3/3 个账号好了`；
+状态里 `sign.done` 停在 11-23，App 里也确实没签上。
+
+真因：`sign.ts` 提交后落「待回查」的守卫写的是 `getState(STAGE) !== ''`，而成功之后
+这个键就是**空串** ⇒ 条件恒假 ⇒ 回查是死代码、`dailyRun` 的 `more` 一起哑 ⇒ 提交返回
+`ok` 就整趟绿。单测用的是新 store（键不存在，`undefined !== ''` 成立），所以没抓到。
+
+修法（三条口径）：
+
+1. **一趟就是一次完整尝试**：读 → 提交 → settle 5s → 回查；没确认就在本趟再提交一次
+   （`SIGN_MAX_SUBMITS = 3`），仍没确认就报 `pending`。每次执行都是独立的一次完整尝试 —— **不假设还有下一次**（用户可能一天只让它跑一次），
+   所以 `dailyRun` 里签到从 drain 改成 `once`，一次执行内自己把话说完。
+2. **优先成功**：只有"日历当天格 `s:true`"才跳过；顶层 `todaySignIn` 残留 `true`、
+   或日历缺今天那一格，一律去提交（签到幂等）。
+3. **本地状态验有效期**：`localDay()` 按本地日（UTC 日界落在北京 08:00，跟白天那几趟撞车）；
+   `sign.done` 只认 `{day, at, by:'cal'}`，旧形状/隔天一律当过期重读；`sign.stage`
+   降级成纯诊断，不参与判断。
+
+`parseInfoV3(result, todayDom)` 认 `cal` 当天格（`currentMonth` 必须一起认，跨月 `d` 会重复）。
+
+验证：`test/tasks2.test.ts` 5 条（提交后必须回查、旧记录不挡这次、缓存有效期四连、
+顶层与日历打架仍提交、跨月同名日号）；`npm test` 1312/1312，`npm run all` 全过。

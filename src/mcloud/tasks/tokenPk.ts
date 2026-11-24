@@ -145,7 +145,7 @@ export async function tokenPkStep(deps: TaskDeps): Promise<TaskOutcome> {
       if (s === undefined) {
         return {
           ok: false,
-          note: '还没有可用的 H5 票（日常第①步换票没成）—— 这一族这一趟没做',
+          note: '还没有可用的 H5 票（日常第①步换票没成）—— 这一族这次没做',
         };
       }
       const res = await callRawText(deps.transport, listRequest(s, deps.baseUrl));
@@ -189,7 +189,7 @@ export async function tokenPkStep(deps: TaskDeps): Promise<TaskOutcome> {
         save(deps, st);
       }
       if (s === undefined) {
-        return { ok: false, note: 'H5 票没了 —— 这一族这一趟没做完' };
+        return { ok: false, note: 'H5 票没了 —— 这一族这次没做完' };
       }
       const out = await stepAction(deps, s, st.attempt);
       if (!out.finished) {

@@ -224,7 +224,7 @@ export async function runUploadStep(
       return { ok: false, note: `${label}：这次调用没带字节，且状态里没有可重建的字节（缺 bytes/seed）⇒ 不发` };
     }
     if (!st.uploadUrl || !st.uploadId) {
-      return { ok: false, note: `${label}：状态里没有 uploadUrl/uploadId ⇒ 这一趟作废（重起一次上传）` };
+      return { ok: false, note: `${label}：状态里没有 uploadUrl/uploadId ⇒ 这次作废（重起一次上传）` };
     }
     if (body.length === 0) {
       // ⚠ 空体**不发**：那会把一个 0 字节文件传上去（不是"失败"，是"传错了东西"）
