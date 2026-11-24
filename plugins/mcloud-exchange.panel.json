@@ -3,7 +3,7 @@
   "version": "0.7.2",
   "order": 12,
   "description": "积分兑换",
-  "min_panel": "0.8.2",
+  "min_panel": "0.8.3",
   "capabilities": [
     "http",
     "sqlite",
