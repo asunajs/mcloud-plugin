@@ -9,7 +9,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { SIGN_MAX_SUBMITS, STATE_SIGN_DONE, STATE_STAGE, runSign } from '../src/mcloud/tasks/sign.ts';
+import { runSign } from '../src/mcloud/tasks/sign.ts';
 import { STATE_QUEUE, readAcceptDate, receiveV3Body, runReceive } from '../src/mcloud/tasks/receive.ts';
 import { STATE_MULTIPLE_DONE, runMultiple } from '../src/mcloud/tasks/multiple.ts';
 import {
@@ -19,7 +19,6 @@ import {
   runRevival,
 } from '../src/mcloud/tasks/revival.ts';
 import { parseInfoV3 } from '../src/mcloud/tasks/info.ts';
-import { localDay } from '../src/mcloud/tasks/base.ts';
 import { SESSION_KEY } from '../src/store/types.ts';
 import { memStore } from '../src/store/memory.ts';
 import type { Transport } from '../src/mcloud/client.ts';
@@ -34,14 +33,13 @@ function seeded() {
   return store;
 }
 
-/** 今天的**本地**日号（`NOW` 是 UTC 串，按本地时区取日号 —— 与 `localDay` 同口径） */
-const TODAY_DOM = new Date(NOW).getDate();
-
 interface InfoOpts {
   /** 顶层 `todaySignIn` */
   signed?: boolean;
-  /** 日历当天格（**真凭据**）。缺省跟 `signed` 一致；给 `'missing'` = 日历里没有今天那一格 */
+  /** 日历今天那格签没签；`'missing'` = 日历里没有今天那一格 */
   calSigned?: boolean | 'missing';
+  /** 今天那格的云朵数（`n`） */
+  clouds?: number;
   receiveList?: unknown[];
   backup?: boolean;
   used?: boolean;
@@ -50,11 +48,12 @@ function infoOk(o: InfoOpts = {}): string {
   const top = o.signed ?? false;
   const calToday = o.calSigned === 'missing' ? undefined : (o.calSigned ?? top);
   const cal: unknown[] = [];
-  if (calToday !== undefined) cal.push({ d: TODAY_DOM, s: calToday, n: 3, p: 0, t: true, currentMonth: 1 });
-  // 干扰项一：**下个月的同一天**（`currentMonth:0`）而且说"签了" —— 只按 `d` 认就会认错
-  cal.push({ d: TODAY_DOM, s: true, n: 3, p: 0, t: false, currentMonth: 0 });
-  // 干扰项二：本月别的日子
-  cal.push({ d: 19, s: false, n: 0, p: 0, t: false, currentMonth: 1 });
+  // 今天那一格：上游用 `currentMonth` 标本月、`t` 标今天
+  if (calToday !== undefined) cal.push({ d: 13, s: calToday, n: o.clouds ?? 3, p: 0, t: true, currentMonth: 1 });
+  // 干扰一：别的月里的"今天"（`currentMonth:0` + `t:true`）—— 不认 currentMonth 就会认错
+  cal.push({ d: 13, s: true, n: 3, p: 0, t: true, currentMonth: 0 });
+  // 干扰二：本月别的日子（`t:false`）
+  cal.push({ d: 14, s: false, n: 0, p: 0, t: false, currentMonth: 1 });
   return JSON.stringify({
     code: 0,
     msg: 'success',
@@ -112,171 +111,86 @@ test('parseInfoV3：形状来自夹具，认不出来时给保守值', async () 
   assert.equal(snake.curMonthBackup, true);
 });
 
-test('sign：一趟走完 ①读 ②提交 ③回查（判据是**日历当天格**）', async () => {
-  let signed = false;
+test('sign：每次执行都提交，判据是日历「今天」那一格（currentMonth + t）', async () => {
   const store = seeded();
   const r = router([
-    [/infoV3/, () => infoOk({ signed, calSigned: signed })],
     [/startSignIn/, () => JSON.stringify({ code: 0, msg: 'success', result: { todaySignIn: false } })],
-  ]);
-  // 让 startSignIn 真正"入账"（响应里**不给**判据），模拟上游延迟后生效
-  const transport: Transport = async (req) => {
-    const out = r.transport(req);
-    if (/startSignIn/.test(req.url)) signed = true;
-    return out;
-  };
-
-  // 一趟里就走完：读（没签）→ 提交 → 回查（日历说签了）
-  const s1 = await runSign({ store, transport, nowIso: NOW, lateMs: 0, settleMs: 0 });
-  assert.equal(s1.ok, true);
-  assert.match(s1.note, /签到成功/);
-  assert.equal(store.getState(STATE_STAGE) ?? '', '', '确认之后不该留待回查');
-  assert.match(store.getState(STATE_SIGN_DONE) ?? '', /"by":"cal"/, '只认日历确认过的记录');
-
-  // 第二趟：今天已签（日历确认过）⇒ 一个请求都不发
-  r.sent.length = 0;
-  const s2 = await runSign({ store, transport, nowIso: NOW, lateMs: 0, settleMs: 0 });
-  assert.equal(s2.idle, true);
-  assert.match(s2.note, /网盘今日已签到/);
-  assert.equal(r.sent.length, 0, '今天已签就不该再问一次');
-});
-
-test('sign：一次执行里提交多次都没确认 ⇒ 报 pending；下次执行是全新的，不被旧记录挡住', async () => {
-  const store = seeded();
-  const r = router([
-    [/infoV3/, () => infoOk({ signed: false })], // 一直说没签
-    [/startSignIn/, () => JSON.stringify({ code: 0, msg: 'success', result: {} })],
-  ]);
-  const s1 = await runSign({ store, transport: r.transport, nowIso: NOW, lateMs: 0, settleMs: 0 });
-  assert.equal(s1.ok, true, '动作做过了，不是失败');
-  assert.equal(s1.pending, true, '要标「服务端还没认」');
-  assert.match(s1.note, /再试/);
-  assert.equal(
-    r.sent.filter((u) => /startSignIn/.test(u)).length,
-    SIGN_MAX_SUBMITS,
-    `同一趟里最多提交 ${SIGN_MAX_SUBMITS} 次`,
-  );
-  assert.match(store.getState(STATE_STAGE) ?? '', /"last":"pending"/, '诊断记录：提交了几次');
-
-  // 第二趟（不管是定时的还是手动）：从头再来一次，不被上一趟的记录挡住
-  r.sent.length = 0;
-  const s2 = await runSign({ store, transport: r.transport, nowIso: NOW, lateMs: 0, settleMs: 0 });
-  assert.equal(s2.pending, true);
-  assert.ok(r.sent.some((u) => /infoV3/.test(u)), '要重新读状态，不接着上一趟的进度走');
-  assert.equal(
-    r.sent.filter((u) => /startSignIn/.test(u)).length,
-    SIGN_MAX_SUBMITS,
-    '旧记录不该限制这次的提交次数',
-  );
-});
-
-test('⚠ 回归 2026-11-24：提交之后必须回查，不许"发出去就算成功"', async () => {
-  const store = seeded();
-  const seen: string[] = [];
-  const r = router([
-    [/infoV3/, () => infoOk({ signed: false })],
-    [/startSignIn/, () => JSON.stringify({ code: 0, msg: 'success', result: {} })],
-  ]);
-  const transport: Transport = async (req) => {
-    seen.push(req.url);
-    return r.transport(req);
-  };
-  const out = await runSign({ store, transport, nowIso: NOW, lateMs: 0, settleMs: 0 });
-  const reads = seen.filter((u) => /infoV3/.test(u)).length;
-  const writes = seen.filter((u) => /startSignIn/.test(u)).length;
-  assert.equal(writes, SIGN_MAX_SUBMITS, `提交了 ${SIGN_MAX_SUBMITS} 次`);
-  assert.equal(reads, writes + 1, '每提交一次都要再确认一次（读状态那一次另算）');
-  assert.equal(out.pending, true, '没确认就不许报"好了"');
-  assert.equal(store.getState(STATE_SIGN_DONE) ?? '', '', '没确认不写"今天已签"');
-});
-
-test('本地"今天已签"是缓存：旧形状 / 隔天 / 非日历确认的，一律不当数', async () => {
-  const localToday = localDay(NOW);
-  const cases: Array<[string, string, boolean]> = [
-    ['旧形状（裸日期串）', localToday, false],
-    ['隔天的记录', JSON.stringify({ day: '2000-01-01', at: '2000-01-01T03:00:00.000Z', by: 'cal' }), false],
-    ['今天、但不是日历确认的', JSON.stringify({ day: localToday, at: NOW, by: 'response' }), false],
-    ['今天 + 日历确认', JSON.stringify({ day: localToday, at: NOW, by: 'cal' }), true],
-  ];
-  for (const [label, raw, shouldIdle] of cases) {
-    const store = seeded();
-    store.setState(STATE_SIGN_DONE, raw, NOW);
-    const r = router([
-      [/infoV3/, () => infoOk({ signed: false })],
-      [/startSignIn/, () => JSON.stringify({ code: 0, msg: 'success', result: {} })],
-    ]);
-    const out = await runSign({ store, transport: r.transport, nowIso: NOW, lateMs: 0, settleMs: 0 });
-    assert.equal(out.idle === true, shouldIdle, `${label}：idle 应当是 ${shouldIdle}`);
-    assert.equal(r.sent.length > 0, !shouldIdle, `${label}：不该跳过的时候要真去问/提交`);
-  }
-});
-
-test('⚠ 确认那一步没回话 ⇒ 不许说成功、也不许报云朵（只报「等服务端确认」）', async () => {
-  const store = seeded();
-  let reads = 0;
-  const { transport } = router([
-    [/infoV3/, () => { reads += 1; return reads === 1 ? infoOk({ signed: false }) : 'boom'; }],
-    [
-      /startSignIn/,
-      () => JSON.stringify({ code: 0, msg: 'success', result: { todaySignIn: true, signInPoints: 3 } }),
-    ],
-  ]);
-  const out = await runSign({ store, transport, nowIso: NOW, lateMs: 0, settleMs: 0 });
-  assert.equal(out.ok, true, '动作做过了，不是失败');
-  assert.equal(out.pending, true, '要标「等服务端确认」');
-  assert.doesNotMatch(out.note, /成功/, '没回话就不许说成功');
-  assert.doesNotMatch(out.note, /云朵/, '也不许把提交响应里的云朵数报出去');
-  assert.equal(store.getState(STATE_SIGN_DONE) ?? '', '', '更不许写「今天已签」');
-});
-
-test('⚠ 顶层字段说签了、日历说没签 ⇒ 仍去提交（优先成功，别拦）', async () => {
-  const store = seeded();
-  const r = router([
-    [/infoV3/, () => infoOk({ signed: true, calSigned: false })],
-    [/startSignIn/, () => JSON.stringify({ code: 0, msg: 'success', result: { todaySignIn: false } })],
+    [/infoV3/, () => infoOk({ signed: false, calSigned: true, clouds: 3 })],
   ]);
   const out = await runSign({ store, transport: r.transport, nowIso: NOW, lateMs: 0, settleMs: 0 });
-  assert.equal(
-    r.sent.filter((u) => /startSignIn/.test(u)).length,
-    SIGN_MAX_SUBMITS,
-    '必须真去提交（日历一直说没签，两次都该发出去）',
-  );
-  assert.notEqual(out.idle, true, '不许拿残留的顶层字段当"今天已签"');
+  assert.equal(out.ok, true);
+  assert.match(out.note, /网盘签到成功，\+3 云朵/);
+  assert.equal(r.sent.filter((u) => /startSignIn/.test(u)).length, 1, '一次执行提交一次');
+
+  // 第二次执行：**照样提交**（没有"今天已签就跳过"的本地记录）
+  r.sent.length = 0;
+  const again = await runSign({ store, transport: r.transport, nowIso: NOW, lateMs: 0, settleMs: 0 });
+  assert.equal(again.ok, true);
+  assert.equal(r.sent.filter((u) => /startSignIn/.test(u)).length, 1, '签到幂等，每次都提交');
 });
 
-test('✅ 上次留下的 stage 记录（新旧形状）都不参与判断：这次照样读、照样打', async () => {
-  for (const legacy of ['need-verify', JSON.stringify({ stage: 'need-verify', day: '2000-01-01', at: '2000-01-01T00:00:00.000Z', tries: 2 })]) {
-    const store = seeded();
-    store.setState(STATE_STAGE, legacy, NOW);
-    const r = router([
-      [/infoV3/, () => infoOk({ signed: false })],
-      [/startSignIn/, () => JSON.stringify({ code: 0, msg: 'success', result: {} })],
-    ]);
-    await runSign({ store, transport: r.transport, nowIso: NOW, lateMs: 0, settleMs: 0 });
-    assert.equal(
-      r.sent.filter((u) => /startSignIn/.test(u)).length,
-      SIGN_MAX_SUBMITS,
-      `${legacy.slice(0, 24)}…：那是诊断记录，不该挡住这次的提交`,
-    );
-  }
+test('sign：提交响应说已签 ⇒ 直接成功，不再等状态', async () => {
+  const store = seeded();
+  const r = router([
+    [/startSignIn/, () => JSON.stringify({ code: 0, msg: 'success', result: { todaySignIn: true, signInPoints: 5 } })],
+    [/infoV3/, () => infoOk({ signed: false })],
+  ]);
+  const out = await runSign({ store, transport: r.transport, nowIso: NOW, lateMs: 0, settleMs: 0 });
+  assert.equal(out.ok, true);
+  assert.match(out.note, /网盘签到成功，\+5 云朵/);
+  assert.equal(r.sent.filter((u) => /infoV3/.test(u)).length, 0, '响应已经说了，不用再问一次');
 });
 
-test('parseInfoV3：日历当天格优先，跨月同名日号不算今天，读不到时不冒充"没签"', () => {
+test('sign：日历今天那格没签 ⇒ 报失败（不粉饰、不报云朵）', async () => {
+  const store = seeded();
+  const r = router([
+    [/startSignIn/, () => JSON.stringify({ code: 0, msg: 'success', result: {} })],
+    [/infoV3/, () => infoOk({ signed: false, calSigned: false })],
+  ]);
+  const out = await runSign({ store, transport: r.transport, nowIso: NOW, lateMs: 0, settleMs: 0 });
+  assert.equal(out.ok, false);
+  assert.match(out.note, /网盘签到失败/);
+  assert.doesNotMatch(out.note, /云朵/);
+});
+
+test('sign：日历里没有今天那一格 ⇒ 也算没成（原因说清）', async () => {
+  const store = seeded();
+  const r = router([
+    [/startSignIn/, () => JSON.stringify({ code: 0, msg: 'success', result: {} })],
+    [/infoV3/, () => infoOk({ calSigned: 'missing' })],
+  ]);
+  const out = await runSign({ store, transport: r.transport, nowIso: NOW, lateMs: 0, settleMs: 0 });
+  assert.equal(out.ok, false);
+  assert.match(out.note, /没有今天那一格/);
+});
+
+test('sign：看状态没回话 ⇒ 报「没确认上」，不说成功', async () => {
+  const store = seeded();
+  const r = router([
+    [/startSignIn/, () => JSON.stringify({ code: 0, msg: 'success', result: { todaySignIn: false } })],
+    [/infoV3/, () => 'boom'],
+  ]);
+  const out = await runSign({ store, transport: r.transport, nowIso: NOW, lateMs: 0, settleMs: 0 });
+  assert.equal(out.ok, false);
+  assert.match(out.note, /没确认上/);
+  assert.doesNotMatch(out.note, /成功/);
+});
+
+test('parseInfoV3：今天那一格靠 `currentMonth` + `t` 认，读不到就是 undefined', () => {
   const cal = [
-    { d: 13, s: true, currentMonth: 1 },
-    { d: 13, s: true, currentMonth: 0 }, // 同一个日号，别的月
-    { d: 14, s: false, currentMonth: 1 },
+    { d: 13, s: true, n: 3, p: 2, t: true, currentMonth: 1 }, // 今天
+    { d: 13, s: true, n: 3, p: 0, t: true, currentMonth: 0 }, // 别的月里的同一天
+    { d: 14, s: false, n: 0, p: 0, t: false, currentMonth: 1 },
   ];
-  const a = parseInfoV3({ todaySignIn: false, cal }, 13);
-  assert.equal(a.calTodaySigned, true);
+  const a = parseInfoV3({ todaySignIn: false, cal });
+  assert.deepEqual(a.calToday, { d: 13, s: true, clouds: 5 });
   assert.equal(a.todaySigned, true);
-  const b = parseInfoV3({ todaySignIn: true, cal }, 14);
-  assert.equal(b.calTodaySigned, false);
-  assert.equal(b.todaySigned, false, '日历有今天格时，顶层字段压不过它');
-  const c = parseInfoV3({ todaySignIn: true, cal: [] }, 13);
-  assert.equal(c.calTodaySigned, undefined, '读不到就是 undefined，不能冒充"没签"');
-  assert.equal(c.todaySigned, true, '没有今天格才退回顶层');
+
+  const b = parseInfoV3({ todaySignIn: true, cal: [{ d: 14, s: false, t: false, currentMonth: 1 }] });
+  assert.equal(b.calToday, undefined, '没有今天那一格就是 undefined');
+  assert.equal(b.todaySigned, true, '读不到才退回顶层字段');
 });
+
 test('multiple：门槛不成立时一个请求都不发', async () => {
   // 本月没有机会
   const a = seeded();
@@ -525,22 +439,4 @@ test('receiveV3 的请求体：cloudType 缺省是**空串**而不是 0', async 
     receiveV3Body('cid', 0, 'dev'),
     '{"client":"app","cloudId":"cid","cloudType":0,"deviceId":"dev"}',
   );
-});
-
-test('⚠ 提交响应说已签、日历还没跟上：报「服务端还没认」，不报失败、也不写「今天已签」', async () => {
-  // 2026-10-17：响应说已签、infoV3 还 false —— 只认 infoV3 会每趟报失败。
-  const store = seeded();
-  const { transport } = router([
-    [/infoV3/, () => infoOk({ signed: false })],
-    [
-      /startSignIn/,
-      () =>
-        JSON.stringify({ code: 0, msg: 'success', result: { todaySignIn: true, signInPoints: 3, signCount: 17 } }),
-    ],
-  ]);
-  const out = await runSign({ store, transport, nowIso: NOW, lateMs: 0, settleMs: 0 });
-  assert.equal(out.ok, true, '响应说签上了就别报失败（2026-10-17 的教训：每趟报失败）');
-  assert.equal(out.pending, true, '但日历没认 ⇒ 标「服务端还没认」');
-  assert.match(out.note, /服务端都没确认/);
-  assert.equal(store.getState(STATE_SIGN_DONE) ?? '', '', '弱证据不写「今天已签」');
 });

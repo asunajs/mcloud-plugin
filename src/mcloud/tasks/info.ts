@@ -47,12 +47,22 @@ export interface ReceiveItem {
   raw: unknown;
 }
 
+/** 日历里「今天」那一格。 */
+export interface CalToday {
+  /** 日号 */
+  d: number;
+  /** 这天签没签 */
+  s: boolean;
+  /** 这天拿到的云朵（`n + p`） */
+  clouds: number;
+}
+
 export interface InfoV3 {
-  /** 兼容口径：日历当天格优先，缺了才用顶层。判"跳过"请用 `calTodaySigned`。 */
+  /** 兼容口径：日历今天那格优先，缺了才用顶层字段。 */
   todaySigned: boolean;
-  /** 日历里今天那一格（`currentMonth` 是本月 && `d` 是今天）；找不到就是 `undefined`。 */
-  calTodaySigned?: boolean | undefined;
-  /** 顶层 `todaySignIn` 原话（跨日不重置，单独不足以判已签）。 */
+  /** 日历里今天那一格；读不到就是 `undefined`。 */
+  calToday?: CalToday | undefined;
+  /** 顶层 `todaySignIn` 原话。 */
   topLevelSigned: boolean;
   /** 待领取清单 */
   receiveList: ReceiveItem[];
@@ -67,25 +77,26 @@ export interface InfoV3 {
 
 const bool = (v: unknown, dflt = false): boolean => (typeof v === 'boolean' ? v : dflt);
 
-/** 挑出 `cal` 里今天那一格。`d` 会跨月重复（本月 1 号、下月 1 号都是 `d:1`），
- *  所以必须连 `currentMonth` 一起认；找不到返回 `undefined`（读不到 ≠ 没签）。 */
-function calSignedToday(calRaw: unknown, todayDom: number | undefined): boolean | undefined {
-  if (!Array.isArray(calRaw) || typeof todayDom !== 'number' || !(todayDom > 0)) return undefined;
+/** 挑出 `cal` 里今天那一格：上游用 `currentMonth` 标本月、`t` 标今天
+ *  （判据照参考实现 `mcloud-sign` 的 `packages/core/src/tasks/sign/task.ts`）。 */
+function calTodayOf(calRaw: unknown): CalToday | undefined {
+  if (!Array.isArray(calRaw)) return undefined;
   for (const x of calRaw) {
     if (typeof x !== 'object' || x === null) continue;
     const it = x as Record<string, unknown>;
     const cur = it.currentMonth ?? it.current_month;
     const isThisMonth = cur === 1 || cur === true || cur === '1';
-    if (!isThisMonth) continue;
-    if (Number(it.d) !== todayDom) continue;
-    const v = it.s;
-    return v === true || v === 1 || v === 'true';
+    const isToday = it.t === true || it.t === 1 || it.t === 'true';
+    if (!isThisMonth || !isToday) continue;
+    const n = Number(it.n) || 0;
+    const p = Number(it.p) || 0;
+    return { d: Number(it.d) || 0, s: it.s === true || it.s === 1 || it.s === 'true', clouds: n + p };
   }
   return undefined;
 }
 
-/** 解析 `infoV3` 的 `result`。`todayDom` = 今天的日号（本地）；不给就只用顶层字段。 */
-export function parseInfoV3(result: unknown, todayDom?: number | undefined): InfoV3 {
+/** 解析 `infoV3` 的 `result`。 */
+export function parseInfoV3(result: unknown): InfoV3 {
   const o = resultObject({ code: 0, message: '', result, ok: true });
   const pick = (...keys: string[]): unknown => {
     for (const k of keys) if (o[k] !== undefined) return o[k];
@@ -115,11 +126,11 @@ export function parseInfoV3(result: unknown, todayDom?: number | undefined): Inf
         : undefined;
 
   const topLevelSigned = bool(pick('todaySignIn', 'today_sign_in'));
-  const calTodaySigned = calSignedToday(pick('cal'), todayDom);
+  const calToday = calTodayOf(pick('cal'));
 
   return {
-    todaySigned: calTodaySigned ?? topLevelSigned,
-    calTodaySigned,
+    todaySigned: calToday?.s ?? topLevelSigned,
+    calToday,
     topLevelSigned,
     receiveList,
     curMonthBackup: bool(pick('curMonthBackup', 'cur_month_backup')),
@@ -136,8 +147,6 @@ export async function fetchInfoV3(deps: {
   store: Store;
   transport: Transport;
   baseUrl?: string | undefined;
-  /** 今天的日号（本地）；给了才认日历当天格。 */
-  todayDom?: number | undefined;
 }): Promise<{ ok: true; info: InfoV3; tookMs: number } | { ok: false; error: string }> {
   const session: Session | null = loadSession(deps.store);
   if (!session) return { ok: false, error: '还没有网页会话 —— 上面「换票」那一步说了原因' };
@@ -155,5 +164,5 @@ export async function fetchInfoV3(deps: {
   const res: CallResult = await callOnce(deps.transport, req);
   if (!res.ok) return { ok: false, error: res.error ?? '未知失败' };
   const env = res.env as SignInEnvelope;
-  return { ok: true, info: parseInfoV3(env.result, deps.todayDom), tookMs: res.tookMs };
+  return { ok: true, info: parseInfoV3(env.result), tookMs: res.tookMs };
 }

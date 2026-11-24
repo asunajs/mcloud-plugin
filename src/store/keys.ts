@@ -149,9 +149,7 @@ export const KEY_SCOPE: Readonly<Record<string, KeyScope>> = {
   // 直播这条链的追踪环：一趟一条，**全局**（跨账号，看的是"这一趟走到哪"）
   'mcloud.live.trace': 'global',
   'mcloud.login.userDomainId': 'global',
-  'mcloud.sign.stage': 'account',
   'mcloud.sign.last': 'account',
-  'mcloud.sign.done': 'account',
   // 上传那台状态机**按任务分槽**：`mcloud.upload.state` 是 App 任务那一格，
   // `mcloud.upload.state.expansion` 是任务拓展那一格（见 tasks/upload.ts 文件头）。
   // 槽位名带任务 ⇒ 整串是拼出来的，静态扫描扫不到，所以按前缀也登记一条。

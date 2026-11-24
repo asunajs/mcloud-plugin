@@ -82,53 +82,6 @@ test('出口 ②：`skipped` 也停下（receive / prizes 用它说「条件不�
   assert.equal(r.idle, true, 'skipped 对 drain 来说也是「不用继续」');
 });
 
-// ── 那条差点漏掉的：签到三段式 ─────────────────────────────────────────
-
-test('⚠ 签到三段式：只调一次 ⇒ 提交了但回查不跑（这就是那个 bug）', async () => {
-  const store = memStore();
-  const STAGE = 'mcloud.sign.stage';
-  let calls = 0;
-
-  // 照 sign.ts 的真实行为写：① 问状态（未签）→ ② 提交并落 stage；③ 回查并清 stage
-  const runSign = (_d: TaskDeps): TaskOutcome => {
-    calls++;
-    if (store.getState(STAGE) === 'need-verify') {
-      store.setState(STAGE, '', NOW);
-      return { ok: true, note: '签到完成（回查 infoV3 确认今日已签）' };
-    }
-    store.setState(STAGE, 'need-verify', NOW);
-    // ⚠ 提交完返回的是 ok —— 这就是「看着成功、其实只做了一半」的来源
-    return { ok: true, note: '签到已提交（下次触发回查状态）' };
-  };
-
-  // 只调一次：提交了，回查没跑，而返回值是 ok
-  const one = runSign(deps(store));
-  assert.equal(one.ok, true);
-  assert.equal(calls, 1);
-  assert.equal(store.getState(STAGE), 'need-verify', '状态还停在「待回查」');
-
-  // drain + more：跑到状态里没有未完成的段为止
-  const store2 = memStore();
-  let calls2 = 0;
-  const runSign2 = (_d: TaskDeps): TaskOutcome => {
-    calls2++;
-    if (store2.getState(STAGE) === 'need-verify') {
-      store2.setState(STAGE, '', NOW);
-      return { ok: true, note: '签到完成（回查确认）' };
-    }
-    store2.setState(STAGE, 'need-verify', NOW);
-    return { ok: true, note: '签到已提交' };
-  };
-  const r = await drain(runSign2, deps(store2), {
-    ...OPTS,
-    label: '签到',
-    more: () => (store2.getState(STAGE) ?? '') === 'need-verify',
-  });
-  assert.equal(calls2, 2, '必须跑两趟：提交 + 回查');
-  assert.equal(store2.getState(STAGE), '', '状态清干净了');
-  assert.match(r.note, /回查/);
-});
-
 test('`more()` 为 false 时**仍然先跑一次**（总得先跑一次才知道要干嘛）', async () => {
   let n = 0;
   const r = await drain(
