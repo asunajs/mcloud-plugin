@@ -119,7 +119,7 @@ test('sign：每次执行都提交，判据是日历「今天」那一格（curr
   ]);
   const out = await runSign({ store, transport: r.transport, nowIso: NOW, lateMs: 0, settleMs: 0 });
   assert.equal(out.ok, true);
-  assert.match(out.note, /网盘签到成功，\+3 云朵/);
+  assert.match(out.note, /签到成功，获得 3 云朵/);
   assert.equal(r.sent.filter((u) => /startSignIn/.test(u)).length, 1, '一次执行提交一次');
 
   // 第二次执行：**照样提交**（没有"今天已签就跳过"的本地记录）
@@ -137,7 +137,7 @@ test('sign：提交响应说已签 ⇒ 直接成功，不再等状态', async ()
   ]);
   const out = await runSign({ store, transport: r.transport, nowIso: NOW, lateMs: 0, settleMs: 0 });
   assert.equal(out.ok, true);
-  assert.match(out.note, /网盘签到成功，\+5 云朵/);
+  assert.match(out.note, /网盘今日已签，\+5 云朵/);
   assert.equal(r.sent.filter((u) => /infoV3/.test(u)).length, 0, '响应已经说了，不用再问一次');
 });
 
@@ -149,7 +149,7 @@ test('sign：日历今天那格没签 ⇒ 报失败（不粉饰、不报云朵�
   ]);
   const out = await runSign({ store, transport: r.transport, nowIso: NOW, lateMs: 0, settleMs: 0 });
   assert.equal(out.ok, false);
-  assert.match(out.note, /网盘签到失败/);
+  assert.match(out.note, /还没签上/);
   assert.doesNotMatch(out.note, /云朵/);
 });
 
@@ -172,7 +172,7 @@ test('sign：看状态没回话 ⇒ 报「没确认上」，不说成功', async
   ]);
   const out = await runSign({ store, transport: r.transport, nowIso: NOW, lateMs: 0, settleMs: 0 });
   assert.equal(out.ok, false);
-  assert.match(out.note, /没确认上/);
+  assert.match(out.note, /没回话/);
   assert.doesNotMatch(out.note, /成功/);
 });
 

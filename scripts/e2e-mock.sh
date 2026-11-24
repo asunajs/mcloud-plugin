@@ -429,19 +429,20 @@ assert rte[-1]['path'] == '/ycloud/signin/page/receiveTaskExpansion', (
 #   `backupCanReceive` —— 老断言读它会 KeyError。要看的"备份相关状态"只剩下面这个。
 
 
-# 签到是三段式：先 infoV3（说没签）→ startSignIn → 再 infoV3（说签了）
+# 签到：**一次执行提交一次**（startSignIn），提交完再读一次 infoV3 看日历今天那格
 # ⚠️ 大小写：端点里是 `startSignIn`（大写 S），别写成 `signIn` 去 in 一下 ——
 # 那次我因此得到"插件没提交签到"的假象，白白绕了几个来回。
 # 过滤器一律用路径片段 `/signin/`（全小写、两边都对得上）。
 sig_seq = [r['path'].split('?')[0] for r in reqs if '/signin/' in r['path']]
-if sig_seq.count('/ycloud/signin/page/startSignIn') != 1:
+sub = '/ycloud/signin/page/startSignIn'
+if sig_seq.count(sub) != 1:
     diagnose('签到提交次数不是 1：' + str(sig_seq))
-if sig_seq.count('/ycloud/signin/page/infoV3') < 2:
-    diagnose('签到回查那一步没发生：' + str(sig_seq))
-assert sig_seq.count('/ycloud/signin/page/startSignIn') == 1, '提交只该一次：' + str(sig_seq)
-assert sig_seq.count('/ycloud/signin/page/infoV3') >= 2, '回查那一步没发生：' + str(sig_seq)
+assert sig_seq.count(sub) == 1, '提交只该一次：' + str(sig_seq)
+assert '/ycloud/signin/page/infoV3' in sig_seq[sig_seq.index(sub) + 1:], (
+    '提交之后要看一次状态（按日历判成败）：' + str(sig_seq)
+)
 
-print('   ✅ 全部断言通过：query 逐字、旧任务真的没再发、签到三段式（含回查）、')
+print('   ✅ 全部断言通过：query 逐字、旧任务真的没再发、签到（提交一次 + 看日历）、')
 print('      翻倍门槛、逐条领取、只领一次、没有任务报错 —— 且 mock 侧状态真的变了')
 print('   ✅ 面板日志：' + sys.argv[1].replace('plugin.json', 'panel.log'))
 PY

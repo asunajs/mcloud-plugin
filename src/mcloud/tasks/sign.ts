@@ -47,17 +47,17 @@ export async function runSign(deps: TaskDeps): Promise<TaskOutcome> {
   // 提交响应说"今天已签" ⇒ 就是签上了（参考实现同样认这一句）
   if (saidSigned) {
     const got = points !== undefined && points > 0 ? `，+${points} 云朵` : '';
-    return { ok: true, note: `网盘签到成功${got}` };
+    return { ok: true, note: `网盘今日已签${got}` };
   }
 
   // 否则等一秒再看日历：`currentMonth` 且 `t` 的那一格才是今天
   waitMs(deps, Math.min(Math.max(deps.settleMs ?? SIGN_SETTLE_MS, 0), 8000));
   const info = await fetchInfoV3({ store: deps.store, transport: deps.transport, baseUrl: deps.baseUrl });
-  if (!info.ok) return { ok: false, note: `签到结果没确认上：${info.error}` };
+  if (!info.ok) return { ok: false, note: `看结果时没回话（${info.error}）` };
 
   const today = info.info.calToday;
-  if (today === undefined) return { ok: false, note: '网盘签到失败：日历里没有今天那一格' };
-  if (!today.s) return { ok: false, note: `网盘签到失败：今天（${today.d} 号）还没签上` };
-  const got = today.clouds > 0 ? `，+${today.clouds} 云朵` : '';
-  return { ok: true, note: `网盘签到成功${got}` };
+  if (today === undefined) return { ok: false, note: '日历里没有今天那一格，没法确认' };
+  if (!today.s) return { ok: false, note: `今天（${today.d} 号）还没签上` };
+  const got = today.clouds > 0 ? `，获得 ${today.clouds} 云朵` : '';
+  return { ok: true, note: `签到成功${got}` };
 }
