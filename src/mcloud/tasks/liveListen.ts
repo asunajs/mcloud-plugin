@@ -143,6 +143,10 @@ function idleCooldownMs(deps: ListenDeps, nowMs: number): number {
   return Math.min(sleep, MAX_IDLE_RECHECK_MS);
 }
 /** 单次调用里最多读多久（毫秒）—— 预算是 2000ms，留出余量给心跳/落库/日志。 */
+/** 空听止损：这么久一帧都没来（连 SockJS 的 `h` 心跳都没有）⇒ 判定"连接没被喂数据"，
+ *  不再干等满窗口。判据：帧 ≤ 1（只有 open 帧）且一帧 `h` 都没有 ——
+ *  真安静的房间也会 25 秒来一帧 `h`（liveGate 的实测），所以"零心跳"是强信号。 */
+export const EMPTY_GIVEUP_MS = 90_000;
 export const READ_BURST_MS = 1600;
 /** 一次 `ws_recv` 等多久（毫秒）。loop 起来凑满 [`READ_BURST_MS`]。 */
 export const RECV_SLICE_MS = 700;
@@ -215,6 +219,8 @@ export interface ListenState {
   serverAcks?: number;
   /** WS 句柄（宿主侧的编号；**面板重启后就失效** ⇒ 那时必须重新 `ws_open`）。 */
   handle?: number;
+  /** 这条 WS 是什么时候开的（`Date.now()`）—— 空听止损按它算「静默了多久」。 */
+  openedAtMs?: number;
   lastHeartbeatAtMs?: number;
   /** 这一轮的读数。 */
   frames: number;
@@ -727,6 +733,7 @@ function openStep(deps: ListenDeps, st: ListenState, nowMs: number): TaskOutcome
   }
 
   st.handle = handle;
+  st.openedAtMs = Date.now();
   const listener = listenerFor(deps, st, nowMs, {
     accessToken: st.jwt,
     chatRoomId: st.chatRoomId,
@@ -799,6 +806,24 @@ function listenStep(deps: ListenDeps, st: ListenState, nowMs: number, windowMs: 
     chatRoomId: st.chatRoomId,
     phone: parsed.phone,
   });
+
+  // 空听止损（见 `EMPTY_GIVEUP_MS`）：别把窗口耗在一条没被喂数据的连接上。
+  const silentMs = Date.now() - (st.openedAtMs ?? st.windowStartMs);
+  if (silentMs >= EMPTY_GIVEUP_MS && st.frames <= 1 && (st.sockjsHb ?? 0) === 0) {
+    try {
+      deps.host.wsClose(handle);
+    } catch {
+      /* 幂等 */
+    }
+    current = undefined;
+    st.handle = undefined;
+    st.step = 'done';
+    st.closedReason = 'none';
+    st.finishedAt = deps.nowIso;
+    st.note = `听不到数据：${Math.round(silentMs / 1000)} 秒里一帧都没来（房间 ${st.roomId ?? '-'}）—— 连接没被认，下一拍会重新握手`;
+    persist(deps, st);
+    return { ok: false, note: st.note };
+  }
 
   const deadline = Date.now() + READ_BURST_MS;
   const found: string[] = [];
@@ -911,7 +936,7 @@ function listenStep(deps: ListenDeps, st: ListenState, nowMs: number, windowMs: 
     st.step = 'done';
     st.closedReason = endReason;
     st.finishedAt = deps.nowIso;
-    st.note = `弹幕连接结束：${endReason}（这一段里收到 ${st.frames} 帧、弹幕 ${st.danmakuFrames} 条）`;
+    st.note = `弹幕连接结束：${endReason}（房间 ${st.roomId ?? '-'}：${st.frames} 帧 / 心跳 ${st.sockjsHb ?? 0} / 弹幕 ${st.danmakuFrames} 条）`;
     persist(deps, st);
     return { ok: true, note: st.note };
   }
@@ -927,7 +952,7 @@ function listenStep(deps: ListenDeps, st: ListenState, nowMs: number, windowMs: 
     st.step = 'done';
     st.closedReason = '窗口到点';
     st.finishedAt = deps.nowIso;
-    st.note = `窗口到点，主动断开（收到 ${st.frames} 帧、弹幕 ${st.danmakuFrames} 条、口令 ${st.codes.length} 条）`;
+    st.note = `窗口到点，主动断开（房间 ${st.roomId ?? '-'}：${st.frames} 帧 / 心跳 ${st.sockjsHb ?? 0} / 弹幕 ${st.danmakuFrames} 条 / 口令 ${st.codes.length} 条）`;
     persist(deps, st);
     return { ok: true, note: st.note };
   }
@@ -1004,6 +1029,8 @@ export function listenReadingLine(st: ListenState | null): string {
   if (st.step === 'listen') {
     // 用户只关心"听到几条弹幕、捡到几条口令"；帧数/心跳是排查用的，不写
     const bits = [`收到 ${st.danmakuFrames} 条弹幕`];
+    // 一条都没有时，把房间号带上 —— 排查第一句就是"听的是哪间"
+    if (st.danmakuFrames === 0 && st.roomId !== undefined) bits.push(`房间 ${st.roomId}`);
     if (st.codes.length > 0) bits.push(`捡到 ${st.codes.length} 条口令`);
     if ((st.serverAcks ?? 0) > 0) bits.push(`回了 ${st.serverAcks} 次`);
     return `正在听（${bits.join('、')}）`;

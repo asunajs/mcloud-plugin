@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import {
   BASE_VIDEO_IM_WS,
   DEFAULT_LISTEN_SECONDS,
+  EMPTY_GIVEUP_MS,
   IDLE_RECHECK_MS,
   RECV_SLICE_MS,
   STATE_LISTEN,
@@ -448,6 +449,31 @@ test('窗口到点 ⇒ **主动** `ws_close`，并把状态收尾成 done', asyn
   const out = await runLiveListen(deps(store, up.transport, f.host));
   assert.match(out.note, /窗口到点/);
   assert.deepEqual(f.closed, [f.lastHandle], '该 ws_close 掉那个句柄（而且是同一个）');
+  assert.equal(loadListenState(store)?.step, 'done');
+});
+
+test('⚠ 连着但一帧都不来（90 秒零心跳）⇒ 不等满窗口，如实报听不到', async () => {
+  // 2026-11-24 现场：9 分钟只收到 1 帧（SockJS 的 `o`），连 `h` 心跳都没有 ——
+  // 连接在、但服务端不喂数据（那一趟 HTTP 门同时 401，同一张票被拒）。
+  const store = memStore();
+  store.setState(STATE_AUTH, AUTH, NOW);
+  const up = fakeUpstream({ live: true });
+  const f = fakeHost(['o'], 'timeout');
+  await advanceToListen(store, up.transport, f.host);
+  const st = loadListenState(store);
+  assert.ok(st);
+
+  // 把"开这条连接的时刻"往前拨过观察期
+  store.setState(
+    STATE_LISTEN,
+    JSON.stringify({ ...st, openedAtMs: Date.now() - (EMPTY_GIVEUP_MS + 1000) }),
+    NOW,
+  );
+  const out = await runLiveListen(deps(store, up.transport, f.host));
+  assert.equal(out.ok, false, '听不到数据不能报「正在听」');
+  assert.match(out.note, /听不到数据/);
+  assert.match(out.note, /房间 \d+/, '要说清听的是哪一间');
+  assert.deepEqual(f.closed, [f.lastHandle], '该把这条连接关掉');
   assert.equal(loadListenState(store)?.step, 'done');
 });
 
