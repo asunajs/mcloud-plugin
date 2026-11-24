@@ -42,7 +42,8 @@
 //
 // # JWT 落盘是必要的，但**跑完就抹**
 //
-// 直播侧 JWT（≈30 天）要从 handshake 步活到 rooms 步 ⇒ 必须落盘（跨调用）。
+// 直播门户票要从 handshake 步活到 rooms 步 ⇒ 必须落盘（跨调用）。
+// ⚠ 有效期**不在这里假设**（30 天那是 auth 的事）；手头这份票是当场换的。
 // 但它是一份**凭据**，所以：`done` 时立刻 `delete`，接口**一律不回显**
 // （`/api/live` 只回读数；e2e 里有"响应里不含 JWT"的断言）。
 // ⚠ 每轮都重新换一次（照 mcloud 的 `gate_jwt`，不缓存跨轮）—— 少写一个"票还有多久过期"
@@ -90,7 +91,7 @@ export type GateStep = 'handshake' | 'rooms' | 'done';
 
 export interface GateState {
   step: GateStep;
-  /** 直播侧 JWT —— 只在**这一轮**里活（handshake → rooms）。`done` 时抹掉。 */
+  /** 直播门户票 —— 只在**这一轮**里活（handshake → rooms）。`done` 时抹掉。 */
   jwt?: string;
   /** rooms 步的结果（落盘是为了让"这一轮看到了什么"可查）。 */
   rooms?: LiveRoom[];
@@ -158,7 +159,7 @@ export async function runLiveGate(deps: TaskDeps): Promise<TaskOutcome> {
   return await roomsStep(deps, st, base, nowMs);
 }
 
-/** handshake 步：① 换 SSO + ② 换直播侧 JWT（**必须同一次调用** —— SSO 只活几分钟）。 */
+/** handshake 步：① 换 SSO + ② 换直播门户票（**必须同一次调用** —— SSO 只活几分钟）。 */
 async function handshake(deps: TaskDeps, st: GateState, base: string | undefined): Promise<TaskOutcome> {
   const TASK = 'live-gate';
   const auth = loadAuthRaw(deps.store);
@@ -176,14 +177,14 @@ async function handshake(deps: TaskDeps, st: GateState, base: string | undefined
   }
 
   const r2 = await callRawText(deps.transport, cmpassLoginRequest(sso.value, base));
-  if (!r2.ok) return stepFail(deps, TASK, `② 换直播侧 JWT 失败：${r2.error ?? '未知失败'}`);
+  if (!r2.ok) return stepFail(deps, TASK, `② 换门户票失败：${r2.error ?? '未知失败'}`);
   const env = parseCmlive(r2.text);
   if (!env.ok || env.value === undefined) {
-    return stepFail(deps, TASK, `② 换直播侧 JWT 失败：${env.error ?? '响应解不出来'}`);
+    return stepFail(deps, TASK, `② 换门户票失败：${env.error ?? '响应解不出来'}`);
   }
   const jwt = parseCmpassLogin(env.value);
   if (!jwt.ok || jwt.value === undefined) {
-    return stepFail(deps, TASK, `② 换直播侧 JWT 失败：${jwt.error ?? 'object 不是 JWT'}`);
+    return stepFail(deps, TASK, `② 换门户票失败：${jwt.error ?? '响应里没有票'}`);
   }
 
   st.jwt = jwt.value;
@@ -211,7 +212,7 @@ async function roomsStep(
     // 凭据丢了（被手清过 / 盘上被抹过）⇒ 退回第一步，别拿空 JWT 去撞上游
     st.step = 'handshake';
     deps.store.setState(STATE_GATE, JSON.stringify(st), deps.nowIso);
-    return { ok: true, idle: true, note: '这一轮没有 JWT ⇒ 退回第一步（点「现在跑一次」会重新握手）' };
+    return { ok: true, idle: true, note: '这一轮没有门户票 ⇒ 退回第一步（下一拍会自动重新握手）' };
   }
 
   const groups: LiveRoom[][] = [];
@@ -267,7 +268,7 @@ async function roomsStep(
 
 /** ③ 失败：**把 JWT 丢掉**再如实报错。
  *
- *  为什么丢：它是最可能的原因（30 天的票也可能被上游作废），而这条路**全是只读**
+ *  为什么丢：它是最可能的原因（刚换的票也可能立刻被上游作废），而这条路**全是只读**
  *  ⇒ 下一趟从头握手没有任何代价。留着它反而会让"票坏了"表现成"门一直是关的"
  *  —— 一个**假结论**，而假结论比失败难查得多（mcloud 在参考实现上吃过这个亏，
  *  注释原话：「让"凭据坏了"表现成"门开着、却一条口令也听不到"」）。 */
@@ -275,7 +276,7 @@ function dropJwtAndFail(deps: TaskDeps, st: GateState, note: string): TaskOutcom
   st.step = 'handshake';
   delete st.jwt;
   deps.store.setState(STATE_GATE, JSON.stringify(st), deps.nowIso);
-  return stepFail(deps, 'live-gate', `${note}（已丢弃 JWT，点「现在跑一次」会重新握手）`);
+  return stepFail(deps, 'live-gate', `${note}（这张票丢掉了，下一拍会自动重新握手）`);
 }
 
 function stepFail(deps: TaskDeps, task: string, note: string): TaskOutcome {

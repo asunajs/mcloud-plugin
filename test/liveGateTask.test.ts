@@ -172,7 +172,7 @@ test('handshake：② 的 rtnCode 不是 "0" ⇒ 失败并带上游原话', asyn
 
   const out = await runLiveGate(deps(store, transport));
   assert.equal(out.ok, false);
-  assert.match(out.note ?? '', /② 换直播侧 JWT 失败/);
+  assert.match(out.note ?? '', /② 换门户票失败/);
   assert.match(out.note ?? '', /1001/, '要带上游原话');
   assert.equal(loadGateState(store), null, '没写状态 ⇒ 下一趟从第一步重来');
 });

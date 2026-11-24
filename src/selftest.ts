@@ -82,7 +82,7 @@ export function selftest(store: Store): SelftestResult {
 
   // ⑤ 宿主的 **native TLS** 后端在不在。
   //
-  //  ⚠ 这条是**真的会坏**的：直播那一链（换直播侧 JWT / 门 / WS）走 `tls:"native"`，
+  //  ⚠ 这条是**真的会坏**的：直播那一链（换门户票 / 门 / WS）走 `tls:"native"`，
   //  而面板默认构建里只有 rustls ⇒ 整个「直播」会在第一步就 warn「没成」，
   //  而自检那时候是绿的。用户看到的是"日志里一句 warn，其余全好"。
   //  （2026-10-17 真撞到：面板被重编成不带 `--features legacy-tls`，直播就废了。）

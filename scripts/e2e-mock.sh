@@ -855,7 +855,7 @@ assert pool['nextStart'] == preview[0]['expectStartTime'], (pool.get('nextStart'
 assert len(pool['sessions']) >= 1, pool.get('sessions')
 
 # ── ④ 凭据不回显（JWT 是凭据：它落盘是为了跨调用，但**不进任何响应**）──
-assert 'MOCK-LIVE-JWT' not in json.dumps(live), '直播侧 JWT 不该出现在响应里'
+assert 'MOCK-LIVE-JWT' not in json.dumps(live), '门户票不该出现在响应里'
 print('   ✅ 直播日程：三步四发、只查 127/129、去重、日程与「下一场」落池、凭据不回显')
 GATEPY
 

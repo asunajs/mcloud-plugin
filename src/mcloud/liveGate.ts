@@ -157,7 +157,8 @@ function objectOf(env: CmliveEnvelope, what: string): Parsed<Record<string, unkn
  *
  *  # ⚠ 鉴权是标准 `Authorization` 头，**不是**签到族的 `jwttoken`
  *
- *  直播侧的凭据是**独立一套 JWT**（payload 含 `phone`/`userId`，≈30 天），
+ *  直播门户的凭据是**独立一套票**（payload 含 `phone`/`userId`；有效期以上游为准，
+ *  **别在这里假设天数** —— 30 天那是 `auth`（原生凭据）的事），
  *  与签到/兑换那串 `pc:`/`mobile:` 凭据不是同一个东西 —— 别互搬。 */
 export function cmliveHeaders(jwt?: string | undefined): Record<string, string> {
   const h: Record<string, string> = {
@@ -190,7 +191,7 @@ export function gateSpecTokenRequest(
   return req;
 }
 
-/** ② 用 SSO 换**直播侧 JWT**。 */
+/** ② 用 SSO 换**直播门户票**。 */
 export function cmpassLoginRequest(ssoToken: string, base?: string | undefined): BuiltRequest {
   return {
     url: `${rootOrDefault(base, BASE_CMLIVE)}/api/user/auth/cmpassLoginByCmToken`,

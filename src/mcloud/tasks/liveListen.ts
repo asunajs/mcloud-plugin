@@ -488,7 +488,7 @@ function stepFail(deps: ListenDeps, st: ListenState, note: string): TaskOutcome 
   return { ok: false, note };
 }
 
-/** ①+②：换 SSO 再换直播侧 JWT。**必须同一次调用**（SSO 只活几分钟 —— 门那边实测过）。 */
+/** ①+②：换 SSO 再换直播门户票。**必须同一次调用**（SSO 只活几分钟 —— 门那边实测过）。 */
 async function handshakeStep(deps: ListenDeps, st: ListenState): Promise<TaskOutcome> {
   const base = loadGateBaseOf(deps.store);
   const auth = loadAuthRaw(deps.store);
@@ -504,14 +504,14 @@ async function handshakeStep(deps: ListenDeps, st: ListenState): Promise<TaskOut
   }
 
   const r2 = await callRawText(deps.transport, cmpassLoginRequest(sso.value, base));
-  if (!r2.ok) return stepFail(deps, st, `② 换直播侧 JWT 失败：${r2.error ?? '未知失败'}`);
+  if (!r2.ok) return stepFail(deps, st, `② 换门户票失败：${r2.error ?? '未知失败'}`);
   const env = parseCmlive(r2.text);
   if (!env.ok || env.value === undefined) {
-    return stepFail(deps, st, `② 换直播侧 JWT 失败：${env.error ?? '响应解不出来'}`);
+    return stepFail(deps, st, `② 换门户票失败：${env.error ?? '响应解不出来'}`);
   }
   const jwt = parseCmpassLogin(env.value);
   if (!jwt.ok || jwt.value === undefined) {
-    return stepFail(deps, st, `② 换直播侧 JWT 失败：${jwt.error ?? 'object 不是 JWT'}`);
+    return stepFail(deps, st, `② 换门户票失败：${jwt.error ?? '响应里没有票'}`);
   }
 
   st.jwt = jwt.value;
@@ -525,7 +525,7 @@ async function handshakeStep(deps: ListenDeps, st: ListenState): Promise<TaskOut
 async function roomsStep(deps: ListenDeps, st: ListenState, nowMs: number): Promise<TaskOutcome> {
   const base = loadGateBaseOf(deps.store);
   const jwt = st.jwt ?? '';
-  if (jwt === '') return stepFail(deps, st, '③ 没有票（上一拍的 JWT 不在）');
+  if (jwt === '') return stepFail(deps, st, '③ 没有票（上一拍的门户票不在）');
 
   const groups: LiveRoom[][] = [];
   for (const tabId of GATE_TAB_IDS) {
@@ -616,7 +616,7 @@ function hours(ms: number): string {
 async function userTokenStep(deps: ListenDeps, st: ListenState): Promise<TaskOutcome> {
   const base = loadGateBaseOf(deps.store);
   const jwt = st.jwt ?? '';
-  if (jwt === '') return stepFail(deps, st, '③ 没有票（上一拍的 JWT 不在）');
+  if (jwt === '') return stepFail(deps, st, '③ 没有票（上一拍的门户票不在）');
   const r = await callRawText(deps.transport, userTokenRequest(jwt, base));
   if (!r.ok) return stepFail(deps, st, `③ 取 WS 凭据失败：${r.error ?? '未知失败'}`);
   const parsed = parseUserToken(r.text);

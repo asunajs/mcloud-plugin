@@ -2,7 +2,7 @@
 //
 // # 为什么要有这个文件
 //
-// 直播那条链（换直播侧 JWT、连弹幕 WS）必须用 `tls:"native"`：上游
+// 直播那条链（换门户票、连弹幕 WS）必须用 `tls:"native"`：上游
 // `v.cmcc-cs.cn` / `videoim.cmcc-cs.cn:20102` 只给 CBC 套件，而 rustls 一个 CBC
 // 都不实现。`tls:"native"` 又要宿主用 `--features legacy-tls` 编 —— 默认关闭。
 //
@@ -10,7 +10,7 @@
 // 一条长警告：
 //
 // ```
-// ② 换直播侧 JWT 失败：tls:"native" 需要宿主用 `--features legacy-tls` 构建
+// ② 换门户票失败：tls:"native" 需要宿主用 `--features legacy-tls` 构建
 // （本构建里只有 rustls；那条路会在 Linux 上引入 OpenSSL 依赖，所以默认不编）（继续试一次）
 // ```
 //
