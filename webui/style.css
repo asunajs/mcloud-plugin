@@ -1387,18 +1387,8 @@ button.picker-row {
    ⚠ 颜色走本文件的短名字 `--dim`（= 面板的 `--text-dim`），别自造 `--muted`
      —— 那个变量在这个文件里不存在，只会恒等于硬编码值（评审 2026-11-01）。
    ⚠ 没有版本时（`/readings` 没给）要**整格消失**，别留一个空边框药丸。 */
-.ver {
-  font: 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
-  color: var(--dim);
-  padding: 2px 6px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  white-space: nowrap;
-}
-
-#plugin-ver:empty {
-  display: none;
-}
+/* 版本药丸改由面板提供（`<p-plugin-ver>` + `/app.css` 的 `.plugin-ver`）：
+   版本的真源是插件清单，插件自己不该再存一份，也不该再画一遍。 */
 
 /* 兼容层已删（第 140 轮）：0.4.0 的 /app.css 里已经有 .dialog* / .badge / .input /
    .field-label，以及 .btn.ghost|sm|primary 这些旧式修饰符 —— 同一套控件不留两份定义。 */

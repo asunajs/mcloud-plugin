@@ -3,7 +3,7 @@
   "version": "0.7.1",
   "order": 13,
   "description": "直播任务",
-  "min_panel": "0.8.0",
+  "min_panel": "0.8.2",
   "capabilities": [
     "http",
     "sqlite",

@@ -2969,7 +2969,6 @@ async function loadRunDetail(stepsId, id) {
 
 function render(r) {
   // 版本号：`/readings` 给什么印什么（没有就留空，不写死一个数在界面里）
-  setText('plugin-ver', r.version ? `v${String(r.version)}` : '');
   renderAccount(r.account || {}, r.login || {});
   renderDaily(r.daily || {});
   renderExchange(r.exchange || {});

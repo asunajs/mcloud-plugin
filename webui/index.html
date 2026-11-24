@@ -66,9 +66,9 @@
         <!-- 登录状态用面板的徽章（`.badge` + 变体），不是自己画一个 chip：
              对齐全站的那一个"状态"长相，用户不用重新认。 -->
         <span id="acct-chip" class="badge idle">还没登录</span>
-        <!-- 跑的是哪一版：用户排查时第一句就问这个。数据来自 `/readings` 的 `version`
-             （源码里只有一处真相，见 src/version.ts）。 -->
-        <span id="plugin-ver" class="ver" title="插件版本"></span>
+        <!-- 跑的是哪一版：用户排查时第一句就问这个。版本由**面板**给（它读的就是插件清单），
+             插件自己不再维护第二份 —— 见面板的 <p-plugin-ver>。 -->
+        <p-plugin-ver></p-plugin-ver>
         <button id="refresh" class="btn">刷新</button>
       </div>
     </header>

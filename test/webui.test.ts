@@ -1720,17 +1720,19 @@ test('⚠ 领奖块与弹窗里不许出现滑块图 / 偏移量 / 像素输入�
   }
 });
 
-test('顶栏要印插件版本（跑的是哪一版）', async () => {
+test('顶栏要印插件版本（用面板的 <p-plugin-ver>）', async () => {
   const html = srcOf('webui/index.html');
   const js = srcOf('webui/app.js');
-  assert.match(html, /id="plugin-ver"/, '顶栏要有版本位');
-  assert.match(js, /setText\('plugin-ver',\s*r\.version/, '要拿 /readings 的 version 去填');
+  assert.match(html, /<p-plugin-ver\b/, '顶栏要有版本位（面板元素，版本来自清单）');
+  assert.equal(/id="plugin-ver"/.test(html), false, '别再自己画一个版本药丸');
+  assert.equal(/setText\('plugin-ver'/.test(js), false, '别再自己拿 /readings 的 version 去填');
   assert.equal(/v0\.\d+\.\d+/.test(html), false, '界面里不许写死版本号');
 });
 
-test('版本那一格：空时整格消失，颜色走本文件的 token', async () => {
+test('版本那一格：样式由面板统一给，本仓不再定义', async () => {
   const css = srcOf('webui/style.css');
-  assert.match(css, /#plugin-ver:empty\s*\{[^}]*display:\s*none/, '没有版本时不许留空药丸');
+  assert.equal(/\.ver\s*\{/.test(css), false, '别在本仓重复定义版本药丸样式（面板 /app.css 有 .plugin-ver）');
+  assert.equal(/#plugin-ver/.test(css), false, '旧的 id 选择器要删干净');
   assert.equal(/var\(--muted/.test(css), false, '本文件没有 --muted，别自造一个恒等于硬编码的变量');
 });
 
