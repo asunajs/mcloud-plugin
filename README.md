@@ -300,6 +300,16 @@ git worktree add /tmp/rel-v0.4.0 v0.4.0
 cd /tmp/rel-vX.Y.Z && npm ci && npm run build && npm run pack
 ```
 
+**发完还要同步官方货架**（`asunajs/panel-single-plugins` 的 `catalog.json`）—— 那是「插件商店」
+的目录，商店卡片上「版本」那一格读的就是它。漏了这一步，商店会一直显示旧版本 + 旧哈希：
+
+```bash
+# catalog.json 里 mcloud 那条改三处：version / asset / sha256（= Release 资产的 digest）
+gh release view v<version> --json assets -q '.assets[].digest'   # 核对哈希
+```
+
+（2026-11-24 就漏过一次：发 0.7.4 之后商店仍写 0.7.3、哈希还是 0.7.3 的，卡片显示「版本 0.7.3 / 已装 0.7.4」。）
+
 面板 → 插件卡片 → **配置** 里有表单（不再是裸 JSON），四份清单各自声明自己真读的格子：
 
 | 插件 | 配置项 | 落在哪 |
