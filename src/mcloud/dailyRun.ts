@@ -194,7 +194,7 @@ export async function runDaily(
   // 判据从状态键读，不从返回值猜：`runSign` 提交完和回查完都是 ok。
   // ⚠ 同样按账号（多账号下读模块级 store 会读到别的号那一格）
   opts.onPhase?.('签到');
-  // 签到自己在一趟里走完 读→提交→回查，不能 drain（两趟是独立尝试，不接着上一趟走）。
+  // 签到自己在一趟里走完 读→提交→回查，不能 drain（每次执行独立，不接着上一次走）。
   push(await once('签到', runSign, deps));
   // 这两条是单发动作（各自只有一个状态键，没有多段）
   for (const [name, fn] of [

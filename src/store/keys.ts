@@ -230,7 +230,7 @@ export const KEY_SCOPE: Readonly<Record<string, KeyScope>> = {
   'mcloud.tokenpk.upload': 'account',
   // 代抽的开关与每日上限（缺省不抽：花的是用户的次数）。
   'mcloud.tokenpk.draw': 'account',
-  // 代抽的按天账（今天抽了几次、中了什么）—— 上限按天算，第二趟不重置。
+  // 代抽的按天账（今天抽了几次、中了什么）—— 上限按天算，同一天再跑也不重置。
   'mcloud.tokenpk.draw.state': 'account',
 
   // ── 实例级配置 / 跨账号共享 ────────────────────────────────

@@ -43,9 +43,9 @@
 //
 //   ① 读到没见过的状态码 ⇒ **不发写**，只说一句「暂不可做 …（没见过的状态 N）」。
 //      参照实现会把陌生码当"未完成"照打写请求（判据与理由在 `redpackRules.classify`）。
-//   ② 同一条任务**一天只写一次**（`written` 按天存）。面板的日常一天两趟，
-//      第二趟是兜底 —— 而"登记过但表里还是 0"的那几条（真机读数里的
-//      `已登记: 打开云手机消息通知 (未完成)`）要是第二趟再登记一遍，
+//   ② 同一条任务**一天只写一次**（`written` 按天存）。用户一天可能跑好几趟，
+//      后一趟是兜底 —— 而"登记过但表里还是 0"的那几条（真机读数里的
+//      `已登记: 打开云手机消息通知 (未完成)`）要是后一趟再登记一遍，
 //      就是在往活动站重复报同一条。
 //   ③ 活动站票与华为侧的票**跑完就抹**（`finishRedpack`），不跨趟复用 ——
 //      这张票的有效期**一条样本都没有**，留着等于留一份不知道什么时候烂的凭据。
@@ -116,7 +116,7 @@ export function redpackOn(deps: TaskDeps): boolean {
 
 /** 这一族**根本没开**时给 `idle` —— 一个请求都不发。
  *
- *  ⚠ 这里**不**判"今天已经跑过"：日常一天两趟是用户定的口径（第二趟是容错，
+ *  ⚠ 这里**不**判"今天已经跑过"：跑几趟由用户定（后一趟是容错，
  *  见 `entries/daily.ts` 那段原话），而"重复发写"这件事由按天的 `written` 挡
  *  （见 `redpackState.ts` 文件头），不由这道闸挡。 */
 export function redpackGate(deps: TaskDeps): TaskOutcome {
@@ -183,7 +183,7 @@ export async function redpackStep(deps: TaskDeps): Promise<TaskOutcome> {
 
 /** 起这一趟：接着今天那一份走；今天那份已经收尾 ⇒ 另起一份，**但把按天的账带过去**。
  *
- *  ⚠ 第二趟不能把 `written` 清空 —— 那是"今天已经为哪几条发过写请求"的账。 */
+ *  ⚠ 后面再跑的那一趟不能把 `written` 清空 —— 那是"今天已经为哪几条发过写请求"的账。 */
 function beginLeg(deps: TaskDeps, day: string): RedpackState {
   const prev = loadRedpackState(deps.store, day);
   if (prev === null) {

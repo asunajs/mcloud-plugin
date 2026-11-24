@@ -789,7 +789,7 @@ function runsToday(recent, todayKey) {
 function renderDaily(d) {
   const run = d.last;
   // ⚠ 这里**不能**写「今天已完成」—— 那读起来像"今天不会再跑了"。
-  //   一天两趟都是**照跑**的：第二趟是兜底（插件没法证明所有小任务都到了预期，
+  //   每一趟都是**照跑**的：后一趟是兜底（插件没法证明所有小任务都到了预期，
   //   见 `src/entries/daily.ts` 里那段）。所以这里说"跑过几趟"。
   const todayKey = new Date().toLocaleDateString('sv');
   // ⚠ 按 `at` 去重算「趟」，不是数条数：一次触发每个账号各一条记录（见 runsToday）。

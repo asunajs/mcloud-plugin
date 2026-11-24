@@ -5,7 +5,7 @@
 // 在 \`src/app/daily/run.ts\` —— 原来这些都挤在这里，一条链要翻 300 行。
 //
 // 业务口径（每一步做什么、为什么这么切）见 \`docs/task-state.md\`；
-// "日常"这条任务的两跳（08:00 / 20:00）与"第二趟是兜底不是重复"的来由在 run.ts 里。
+// "每一趟都照跑、不讲今天跑过了"的来由在 run.ts 里。
 
 // 三条任务的开场是同一套（建 store → 并配置 → 算预算 → 注册 → 写卡片），见 ./register.ts。
 import { registerTask } from './register.ts';
@@ -31,8 +31,8 @@ function dailyBudgetMs(store: { getState(k: string): string | null | undefined }
 await registerTask({
   plugin: 'mcloud-daily',
   name: '日常',
-  // 白天两跳：低配盒子不常在线时，上线之后的那一跳就是兜底
-  // （面板不补跑；"第二趟是兜底不是重复"的来由见 app/daily/run.ts 头注）。
+  // 这是我们**建议**的排期。真正跑几次、几点跑由面板（用户）决定 ——
+  // 用户可能改成每天一次或每三小时一次，代码不得假设趟数。
   cron: '0 8,20 * * *',
   budgetMs: dailyBudgetMs,
   // 日常是"随时跑都安全"的环境型任务：面板任务列表里显示；没账号时是"未就绪"（灰）。

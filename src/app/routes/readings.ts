@@ -69,7 +69,7 @@ export function buildReadings(deps: RouteDeps): Record<string, unknown> {
       return { ...r, qr: r.qr === null ? null : { ...r.qr, svg: qrSvg(r.qr.payload) } };
     })(),
     daily: {
-      // ⚠ `doneToday` 是**读数**，不是闸 —— 日常一天两趟都照跑（第二趟兜底，
+      // ⚠ `doneToday` 是**读数**，不是闸 —— 日常的每一趟都照跑（后一趟兜底，
       //   见 `entries/daily.ts` 里那段）。界面上别把它说成"今天已完成（不会再跑）"。
       // 「今天跑过没」看标记；「上次跑成什么样」看读数。两个都要，
       // 因为它们回答的是不同的问题（用户真正会问的是后面那个）。

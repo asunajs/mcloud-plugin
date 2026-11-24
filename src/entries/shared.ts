@@ -232,7 +232,7 @@ export interface TaskPayload {
    *  （手动触发时 `scheduledAt` 还是下一次理论时刻 ⇒ 负数）。
    *
    *  ⚠ 本仓现在**没有消费者**：daily 里那个"定时跳过"的闸已按用户口径撤掉
-   *  （一天两趟都跑，第二趟是容错，见 `docs/findings.md` F-105）。留着的是宿主能力。 */
+   *  （每一趟都跑，用户设几趟就几趟，见 `docs/findings.md` F-105）。留着的是宿主能力。 */
   manual?: boolean;
   /** 这一拍相对**理论**时刻抖了多少毫秒（没写抖动规则时恒为 0）。
    *

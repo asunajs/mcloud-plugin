@@ -24,7 +24,7 @@ export const STATE_TOKENPK_ENABLED = 'mcloud.tokenpk.enabled';
 export const STATE_TOKENPK_UPLOAD = 'mcloud.tokenpk.upload';
 /** 代抽的配置（`{enabled,max}`）。**没写过 = 不抽**（花用户的次数，必须显式开）。 */
 export const STATE_TOKENPK_DRAW = 'mcloud.tokenpk.draw';
-/** 代抽的**按天账**（`{day,drawn,wins}`）—— 上限按天算，第二趟同一天不重置。 */
+/** 代抽的**按天账**（`{day,drawn,wins}`）—— 上限按天算，同一天再跑也不重置。 */
 export const STATE_TOKENPK_DRAW_DAY = 'mcloud.tokenpk.draw.state';
 
 export type PkPhase = 'list' | 'act' | 'verify' | 'claim' | 'chance' | 'draw' | 'progress' | 'done';

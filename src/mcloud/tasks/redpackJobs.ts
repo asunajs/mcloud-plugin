@@ -139,9 +139,9 @@ export async function runRedpackJob(ctx: RedpackCtx): Promise<JobStep> {
       }
       if (alreadyWritten(ctx.st, job.taskCode)) {
         // 今天已经为它发过写请求 ⇒ 不再发，但**照样回查一次**，句子按这一条的种类说。
-        // ⚠ 这里直接印「已登记」就收工的话，「每日使用云机」那一会在第二趟变成
+        // ⚠ 这里直接印「已登记」就收工的话，「每日使用云机」那一会在后一趟变成
         //   「已登记: … (未完成)」—— 而它的人话口径是「需云机内实际使用」（见 `confirmUse`），
-        //   一天两趟的用户会看到同一件事换了一种说法。
+        //   一天跑多趟的用户会看到同一件事换了一种说法。
         const recheck = readOnlyConfirm(job.kind);
         if (recheck === undefined) {
           // 装机那一支**没有**只读的出路：它的回查链要问应用列表、要装包 ⇒ 只能说登记过了

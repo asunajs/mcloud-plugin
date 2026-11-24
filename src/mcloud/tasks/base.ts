@@ -48,7 +48,7 @@ export function hostBase(deps: { baseUrl?: string | undefined }, fallback: strin
 }
 
 /** 本地日历日（`YYYY-MM-DD`）。别用 `nowIso.slice(0, 10)`：那是 UTC 日，
- *  日界落在北京 08:00，跟日常 08:00 / 20:00 两趟撞在一起。 */
+ *  日界落在北京 08:00，跟日常早上那一趟撞在一起。 */
 export function localDay(nowIso: string): string {
   const d = new Date(nowIso);
   if (Number.isNaN(d.getTime())) return nowIso.slice(0, 10);

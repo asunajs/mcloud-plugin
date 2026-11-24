@@ -16,9 +16,9 @@
 //
 // # `written` 是**按天**的，不是按趟
 //
-// 面板的日常一天跑两趟（08:00 / 20:00，第二趟是兜底，见 `entries/daily.ts`）。
+// 用户一天可能让日常跑好几趟（后一趟是兜底，见 `entries/daily.ts`）。
 // 参照实现一天只跑一次，所以它只需要"这一趟最多写一次"。我们要是只按趟记，
-// 第二趟就会把第一趟**登记过但状态还是 0** 的那几条再登记一遍
+// 后面那一趟就会把上一趟**登记过但状态还是 0** 的那几条再登记一遍
 // （真机读数里 `已登记: 打开云手机消息通知 (未完成)` 就是这种：写过了，表里还是 0）。
 // ⇒ 按天记：同一个 taskCode 今天写过就不再写。
 
@@ -167,9 +167,8 @@ export function loadRedpackBase(store: Pick<Store, 'getState'>): string | undefi
 /** 今天（**本地**日）。
  *
  *  ⚠ 不能像 `appTask.today()` 那样切 `nowIso` 的前十位：那是 UTC 日，
- *  而 UTC 的日界正好落在北京 08:00 —— 面板的日常一天跑两趟（08:00 / 20:00），
- *  按 UTC 分的话这两趟会落进两个"天"里，`written` 那道闸就形同没有
- *  （08:00 登记过的，20:00 再登记一遍）。 */
+ *  而 UTC 的日界正好落在北京 08:00 —— 日常早上那一趟按 UTC 算会落进"前一天"，
+ *  于是同一趟里的登记账分属两个"天"，`written` 那道闸形同没有。 */
 export function redpackDay(nowIso: string): string {
   const d = new Date(nowIso);
   if (Number.isNaN(d.getTime())) return nowIso.slice(0, 10);
