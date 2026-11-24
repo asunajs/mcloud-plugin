@@ -495,6 +495,8 @@ export function loginRoutes(deps: RouteDeps, base: string, verify: () => Promise
         if (out.kind === 'success') {
           // ⚠ 前缀是 **`mobile`**，钥匙是 **App 那把** —— 两处都与 PC 不同。
           const adopted = adoptLoginResult(deps, out.encrypted, '手机端登录成功', APP_AUTH_PREFIX, APP_LOGIN_AES_KEY, undefined, decryptAppUserInfo);
+          // 失败也要进日志：界面上那句话用户会贴出来，但日志里没有就查不了现场（2026-11-24 那次）
+          if (!adopted.ok) deps.log(`手机端登录：${adopted.note}`);
           return json(200, { ...adopted, stop: true });
         }
         return json(200, { ok: false, stop: false, note: out.note });
