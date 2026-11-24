@@ -130,6 +130,44 @@ export function shiftHead10ToBack(hex: string): string {
 
 // ══════════════════════════ 加解密 ══════════════════════════
 
+/** 反错位 n：前 n 个字符挪到最后（n=10 就是实拍那条）。 */
+function unshift(hex: string, n: number): string {
+  return n <= 0 || hex.length <= n ? hex : hex.slice(n) + hex.slice(0, n);
+}
+
+/** 解 App 的登录响应，**带上兜底与诊断**。
+ *
+ *  正路是实拍那条（primary 密钥 + 反错位 10）。解不开时依次试备用密钥与其它错位 ——
+ *  只在**登录这一格**用，而且必须解出带 `authToken`/`account` 的 JSON 才算数
+ *  （"padding 侥幸合法"不算）。返回的 `how` 进日志：走了别的组合就说明上游换了钥匙/错位。 */
+export function decryptAppUserInfo(wireHex: string): { info: Record<string, unknown>; how: string } {
+  const keys: Array<[string, string]> = [
+    ['primary', APP_LOGIN_AES_KEY],
+    ['alt', APP_LOGIN_AES_KEY_ALT],
+  ];
+  const tried: string[] = [];
+  for (const [kname, key] of keys) {
+    for (const n of [10, 0, 8, 12, 16]) {
+      try {
+        const plain = aesEcbPkcs7DecryptHex(key, unshift(wireHex.trim(), n));
+        const v: unknown = JSON.parse(plain);
+        if (typeof v === 'object' && v !== null) {
+          const o = v as Record<string, unknown>;
+          if (typeof o['authToken'] === 'string' || typeof o['account'] === 'string') {
+            return { info: o, how: `${kname}/shift${n}` };
+          }
+        }
+        tried.push(`${kname}/shift${n}: 解出来不是 userInfo`);
+      } catch (e) {
+        tried.push(`${kname}/shift${n}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+  }
+  throw new Error(
+    `密文 ${wireHex.trim().length} 字符，${tried.length} 种组合都不行（${tried.slice(0, 4).join('；')}…）`,
+  );
+}
+
 /** 明文 → 线上请求体（hex 字符串，**小写**）。 */
 export function encryptBody(plaintext: string, key: string = APP_LOGIN_AES_KEY): string {
   return shiftTail10ToFront(aesEcbPkcs7EncryptHex(key, plaintext));

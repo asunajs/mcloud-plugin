@@ -18,6 +18,8 @@ import { readFileSync } from 'node:fs';
 //   "文件的父目录的父"（`test/` 的上一级已经是仓库根了），会多退一级。
 const SRC = new URL('../src/mcloud/appLogin.ts', import.meta.url);
 
+import { aesEcbPkcs7EncryptHex } from '../src/crypto/aes.ts';
+
 import {
   APP_CLIENT_TYPE,
   APP_CPID,
@@ -32,6 +34,7 @@ import {
   appClientInfo,
   appDeviceInfo,
   appHeaders,
+  decryptAppUserInfo,
   decryptBody,
   encryptBody,
   newLoginRandom,
@@ -133,6 +136,40 @@ test('解密：`decryptBody` 自己会反错位（传**线上形态**，不是�
   //   （"只反错位不解密也能得到一个看起来正常的 hex 串"）。
   assert.equal(decryptBody(SORTED_WIRE), SORTED_PLAINTEXT, '传线上形态就对了');
   assert.equal(decryptBody(GOLDEN_WIRE), CAPTURED_PLAINTEXT);
+});
+
+/** 一份 userInfo 形状的明文（登录响应解出来的就是这个；上面那两个常量是**请求体**的）。 */
+const USERINFO_PLAINTEXT =
+  '{"account":"19900000000","authToken":"TOKEN-XYZ","userDomainId":"1234567890123456789"}';
+
+test('`decryptAppUserInfo`：正路（primary + 反错位10）原样解开，并报出走的是哪条', async () => {
+  const wire = shiftTail10ToFront(aesEcbPkcs7EncryptHex(APP_LOGIN_AES_KEY, USERINFO_PLAINTEXT));
+  const got = decryptAppUserInfo(wire);
+  assert.equal(got.how, 'primary/shift10');
+  assert.deepEqual(got.info, JSON.parse(USERINFO_PLAINTEXT));
+});
+
+test('`decryptAppUserInfo`：上游若换成备用密钥，也能解开并把组合报出来', async () => {
+  // 造一份「用备用密钥加密、同样错位」的线上形态
+  const wire = shiftTail10ToFront(aesEcbPkcs7EncryptHex(APP_LOGIN_AES_KEY_ALT, USERINFO_PLAINTEXT));
+  const got = decryptAppUserInfo(wire);
+  assert.equal(got.how, 'alt/shift10', '要走备用密钥那一格');
+  assert.deepEqual(got.info, JSON.parse(USERINFO_PLAINTEXT));
+});
+
+test('`decryptAppUserInfo`：全都解不开时，报「试过几种」+ 前几条原因（不带密钥/密文）', async () => {
+  const junk = 'ab'.repeat(64); // 128 个 hex 字符、16 的整数倍，但解不出 userInfo
+  assert.throws(
+    () => decryptAppUserInfo(junk),
+    (e: unknown) => {
+      const msg = e instanceof Error ? e.message : String(e);
+      assert.match(msg, /128 字符/, msg);
+      assert.match(msg, /10 种组合都不行/, msg);
+      assert.equal(msg.includes(APP_LOGIN_AES_KEY), false, '别把密钥写进报错');
+      assert.equal(msg.includes(junk), false, '别把密文写进报错');
+      return true;
+    },
+  );
 });
 
 test('⚠ 备用密钥解不出东西（它是排查用的判据，不是"另一个可用选项"）', async () => {

@@ -13,7 +13,7 @@ import { CODES, LOGIN_AES_KEY, PC_AUTH_PREFIX, QR_TTL_SECONDS, applyPoll, classi
 import type { SliderPuzzle } from '../../../mcloud/login.ts';
 import { QR_POLL_MS, clearLogin, loadAppSession, loadDeviceId, loadQrSession, loadSmsSession, loginReading, resetDeviceId, saveAppSession, saveQrSession, saveSmsSession, setSmsSlider, startAppSession, startQrSession, startSmsSession } from '../../../mcloud/loginSession.ts';
 import { rawStoreOf, scoped } from '../../../store/scoped.ts';
-import { APP_LOGIN_AES_KEY, APP_SLIDER_PUZZLE_PATH, appPost, appSendSmsCodeRequest, appThirdloginRequest, classifyAppLogin, classifyAppSendSms } from '../../../mcloud/appLogin.ts';
+import { APP_LOGIN_AES_KEY, APP_SLIDER_PUZZLE_PATH, appPost, appSendSmsCodeRequest, appThirdloginRequest, classifyAppLogin, classifyAppSendSms, decryptAppUserInfo } from '../../../mcloud/appLogin.ts';
 import { adoptLoginResult, autoPassSlider, json, loadLoginBase, loginCall, loginPlatform, newTid, readBody, sessionPlatform } from '../support.ts';
 import type { RouteDeps, RouteEntry, SliderSendResult } from '../support.ts';
 
@@ -494,7 +494,7 @@ export function loginRoutes(deps: RouteDeps, base: string, verify: () => Promise
         const out = classifyAppLogin(r.env);
         if (out.kind === 'success') {
           // ⚠ 前缀是 **`mobile`**，钥匙是 **App 那把** —— 两处都与 PC 不同。
-          const adopted = adoptLoginResult(deps, out.encrypted, '手机端登录成功', APP_AUTH_PREFIX, APP_LOGIN_AES_KEY);
+          const adopted = adoptLoginResult(deps, out.encrypted, '手机端登录成功', APP_AUTH_PREFIX, APP_LOGIN_AES_KEY, undefined, decryptAppUserInfo);
           return json(200, { ...adopted, stop: true });
         }
         return json(200, { ok: false, stop: false, note: out.note });

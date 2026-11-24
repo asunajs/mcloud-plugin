@@ -379,12 +379,20 @@ export function adoptLoginResult(
   //  （Windows 与 macOS 都是它），分不出 win/mac。不传的话账号卡上只能瞎标一个，
   //  而"这条凭据当初是按哪种客户端登的"就永远丢了（见 `Account.pcPlatform`）。
   pcPlatform?: PcPlatform,
+  // 换解密器（手机端那条会用「带兜底与诊断」的那个；PC 那条仍是严格单密钥）
+  decrypt?: (cipher: string) => { info: Record<string, unknown>; how?: string | undefined },
 ): { ok: boolean; note: string; account?: { id: string; label: string } } {
   let info: Record<string, unknown>;
+  let how: string | undefined;
   try {
-    info = decryptUserInfo(encrypted, key);
+    const got = decrypt === undefined ? { info: decryptUserInfo(encrypted, key) } : decrypt(encrypted);
+    info = got.info;
+    how = got.how;
   } catch (e) {
     return { ok: false, note: `登录成功了，但结果解不开：${e instanceof Error ? e.message : String(e)}` };
+  }
+  if (how !== undefined && how !== 'primary/shift10') {
+    deps.log(`登录结果是用 ${how} 解的 —— 服务端换了钥匙或错位，要落档`);
   }
   let auth: string;
   try {
@@ -418,5 +426,10 @@ export function adoptLoginResult(
   // 账号数变了 ⇒ 三条任务的“未就绪”和卡片摘要跟着变（日常/直播不再显示“还没有账号”，
   // 兑换也不再显示“还没有选账号”）。
   syncTaskReadiness(deps.store);
-  return { ok: true, note: `${note} · ${up.account.label}`, account: { id: up.account.id, label: up.account.label } };
+  const howNote = how === undefined || how === 'primary/shift10' ? '' : `（解密走了 ${how}）`;
+  return {
+    ok: true,
+    note: `${note}${howNote} · ${up.account.label}`,
+    account: { id: up.account.id, label: up.account.label },
+  };
 }
