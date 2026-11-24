@@ -1,6 +1,6 @@
 {
   "name": "mcloud-plugin",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "private": true,
   "type": "module",
   "description": "mcloud 的 JS/TS 重写版 —— panel-llrt 的四个插件 + 一个 Node CLI（共用一份核心）",
