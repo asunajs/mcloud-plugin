@@ -1,6 +1,6 @@
 {
   "title": "移动云盘 · 直播",
-  "version": "0.7.3",
+  "version": "0.7.4",
   "order": 13,
   "description": "直播任务",
   "min_panel": "0.8.3",
