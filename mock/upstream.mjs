@@ -407,7 +407,7 @@ export async function startMock(options = {}) {
         marketname: '全网算力大作战',
         marketid: 'National_TokenPK',
         expireTime: '2026-10-31T23:59:59.000+08:00',
-        servNumber: '138****8000',
+        servNumber: '138***8000',
       },
       {
         oId: 1283824132,
@@ -418,7 +418,7 @@ export async function startMock(options = {}) {
         marketname: '全网云朵兑好礼',
         marketid: 'sign_in_3_ex',
         expireTime: '2026-11-30T23:59:59.000+08:00',
-        servNumber: '138****8000',
+        servNumber: '138***8000',
       },
       {
         oId: 1276337710,
@@ -429,7 +429,7 @@ export async function startMock(options = {}) {
         marketname: '全网云朵兑好礼',
         marketid: 'sign_in_3_ex',
         expireTime: '2026-11-20T23:59:59.000+08:00',
-        servNumber: '138****8000',
+        servNumber: '138***8000',
       },
       {
         oId: 1299999999,
@@ -440,7 +440,7 @@ export async function startMock(options = {}) {
         marketname: '全网云朵兑好礼',
         marketid: 'sign_in_3_ex',
         expireTime: '2026-11-21T23:59:59.000+08:00',
-        servNumber: '138****8000',
+        servNumber: '138***8000',
       },
     ],
     /** 最近一次发码的单号（`acceptPrizeV2` 只认它 —— 模拟"没发码不能领"） */

@@ -3,7 +3,7 @@
  *  用法（三块任务页都走这里，别直接调 `host-api` 的 `log`/`warn`）：
  *
  *  ```ts
- *  logBoth(store, 'start', `账号 138****8001`);
+ *  logBoth(store, 'start', `账号 138***8001`);
  *  logBoth(store, 'success', `签到：领到 3 云朵`);
  *  logBoth(store, 'fail', `换票：没成 —— 暂无权限！`);
  *  ```

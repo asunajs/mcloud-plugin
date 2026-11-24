@@ -55,7 +55,7 @@ const PICTURE_B64 = readFileSync(
   'utf8',
 ).trim();
 
-function setup(label = '138****8000'): { store: Store; one: Store; acctId: string } {
+function setup(label = '138***8000'): { store: Store; one: Store; acctId: string } {
   const store = memStore();
   store.ensureSchema();
   const { account } = upsertAccount(
@@ -108,7 +108,7 @@ const rec = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
   marketname: '全网算力大作战',
   marketid: 'National_TokenPK',
   expireTime: '2026-10-31T23:59:59.000+08:00',
-  servNumber: '138****8000',
+  servNumber: '138***8000',
   ...over,
 });
 
@@ -143,7 +143,7 @@ function itemOf(over: Partial<PrizeItem> = {}): PrizeItem {
     marketId: 'National_TokenPK',
     expireAt: '2026-10-31T23:59:59.000+08:00',
     insertedAt: '2026.10.24',
-    phone: '138****8000',
+    phone: '138***8000',
     claimable: true,
     ...over,
   };
@@ -287,12 +287,12 @@ test('发码：详情/滑块/发短信三枪的形状与顺序；offset 是本�
   const r = await startPrizeClaim(
     depsOf(one, okClaimTransport({ seen }), clock),
     itemOf(),
-    '138****8000',
+    '138***8000',
   );
   assert.equal(r.ok, true, r.note);
   assert.equal(r.offset, 282);
   assert.equal(r.prizetype, '1035');
-  assert.match(r.note, /验证码已发到 138\*{4}8000/);
+  assert.match(r.note, /验证码已发到 138\*{3}8000/);
 
   assert.equal(seen.length, 3);
   assert.match(
@@ -392,7 +392,7 @@ function withPendingClaim(one: Store, over: Record<string, unknown> = {}): void 
       prizeId: 260907019,
       marketId: 'National_TokenPK',
       name: '0.41元支付宝话费红包',
-      phone: '138****8000',
+      phone: '138***8000',
       prizetype: '1035',
       sentAtMs: Date.parse(NOW),
       ...over,
@@ -586,7 +586,7 @@ test('手机号自己再脱敏：上游哪天改成明文也不会把完整号�
   assert.equal(maskPhoneLike('15912345678'), '1****5678');
   assert.equal(maskPhoneLike('159-1234-5678'), '1****5678');
   assert.equal(maskPhoneLike('+86 15912345678'), '1****5678');
-  assert.equal(maskPhoneLike('138****8000'), '138****8000');
+  assert.equal(maskPhoneLike('138***8000'), '138***8000');
   assert.equal(maskPhoneLike(''), undefined);
   assert.equal(maskPhoneLike(undefined), undefined);
 });
@@ -655,7 +655,7 @@ test('路由：列表 → 发码 → 确认 → 列表（缓存已摘掉那一�
   assert.equal(first.pending, 2);
   assert.equal(first.cached, false);
   assert.equal(first.account?.id, acctId);
-  assert.equal(first.items[0]!.phone, '138****8000');
+  assert.equal(first.items[0]!.phone, '138***8000');
   // 凭据不回显
   const text = JSON.stringify(first);
   assert.equal(text.includes(JWT), false, '列表不许回显 jwttoken');

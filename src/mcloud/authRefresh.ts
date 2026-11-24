@@ -14,7 +14,7 @@
 // ```text
 // Authorization: Basic base64("端别:手机号:token")
 //                               ↑     ↑
-//                     解一次 base64 就有（真机：mobile / 137****7001 / 201 字符）
+//                     解一次 base64 就有（真机：mobile / 137***7001 / 201 字符）
 //
 // jwttoken 的 payload.sub（一个 JSON 串）→ userDomainId
 //                    （真机：1125330776486986478，与账号里登录时记的那个**同值**）

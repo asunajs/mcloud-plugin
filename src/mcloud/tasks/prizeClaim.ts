@@ -152,7 +152,7 @@ const str = (v: unknown): string | undefined =>
 
 /** 手机号**自己再脱敏一层**。
  *
- *  ⚠ 上游的 `servNumber` 实拍是掩码（`138****8000`），但"上游会脱敏"不是我们的
+ *  ⚠ 上游的 `servNumber` 实拍是掩码（`138***8000`），但"上游会脱敏"不是我们的
  *  安全边界：哪天它改成明文，界面就会把一个完整手机号显示出来。所以这里再判一次：
  *  整串是 11 位手机号（或只带分隔符）就换成 `1****xxxx`；已经带 `*` 的原样留。 */
 export function maskPhoneLike(raw: string | undefined): string | undefined {

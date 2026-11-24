@@ -102,8 +102,8 @@ node --test test/appTask.test.ts test/appTaskRules.test.ts test/appTaskExtra.tes
 
 | 账号 | 待办 | 顺序（taskId 升序，434 垫底） |
 |---|---|---|
-| 小号 138****8000 | 16 | 113 → 409 → 431 → 522 → 547 → 604 → 609 → 1004 → 1005 → 1014 → 1017 → 1020 → 1029 → 1057 → 1075 → **434** |
-| 测试 137****7001 | 15 | 113 → 409 → 431 → 522 → 547 → 604 → 609 → 1004 → 1005 → 1014 → 1017 → 1020 → 1057 → 1075 → **434** |
+| 小号 138***8000 | 16 | 113 → 409 → 431 → 522 → 547 → 604 → 609 → 1004 → 1005 → 1014 → 1017 → 1020 → 1029 → 1057 → 1075 → **434** |
+| 测试 137***7001 | 15 | 113 → 409 → 431 → 522 → 547 → 604 → 609 → 1004 → 1005 → 1014 → 1017 → 1020 → 1057 → 1075 → **434** |
 | 移动 anon-aohk08 | 16 | 113 → 409 → 431 → 522 → 547 → 604 → 609 → 1004 → 1005 → 1014 → 1017 → 1020 → 1029 → 1057 → 1075 → **434** |
 
 （去重后 16/15/16；106 已经 FINISH，所以不在里面。）
@@ -125,7 +125,7 @@ node --test test/appTask.test.ts test/appTaskRules.test.ts test/appTaskExtra.tes
 
 | # | 症状 | 真因 | 修法 | 修完的读数 |
 |---|---|---|---|---|
-| 1 | `AI 对话没取到输出（events=1 code=01000002 鉴权失败）` | DES 解出的手机号**带 PKCS#5 填充**：`137****7001\x05\x05\x05\x05\x05` ⇒ `Basic mobile:<手机号>:<token>` 是脏的 | `desDecryptBase64` 去 PKCS#5 填充（Rust `des_decrypt_b64` 同口径） | 真机对话成功：`events=23`，回「你好！我是 AI 助手…」，`code=0000` |
+| 1 | `AI 对话没取到输出（events=1 code=01000002 鉴权失败）` | DES 解出的手机号**带 PKCS#5 填充**：`137***7001\x05\x05\x05\x05\x05` ⇒ `Basic mobile:<手机号>:<token>` 是脏的 | `desDecryptBase64` 去 PKCS#5 填充（Rust `des_decrypt_b64` 同口径） | 真机对话成功：`events=23`，回「你好！我是 AI 助手…」，`code=0000` |
 | 2 | `#1014` 60 步死循环（传-转-收尾-又 1014） | `currstep != 0` 的 runner 不打卡 ⇒ 从没进 `clicked` ⇒ 收尾后又把它挑回来 | 不打卡也记 `clicked`；收尾那枪也走 `doneState` | 22 步跑完整趟，不再打转 |
 | 3 | `PDF 转换没成（code=FA_INVALID_SESSION User Session Expired）` | ① Cookie 只有 `RMKEY`，参考实现是 `RMKEY; Os_Sso_Sid`；② `1004/1014/1029/472` 这几条**直接进动作阶段**，没先登邮箱 ⇒ 带空 sid 出去 | Cookie 补 `Os_Sso_Sid`；要邮箱会话的 runner 入口**统一走 `mailLogin`** | `PDF 转换完成` ✓ |
 | 4 | `#1004 取不到 composeId` | `mbox:getComposeId` 回的是**单引号伪 JSON**：`{'code':'S_OK','var':'…'}` ⇒ `JSON.parse` 直接抛 | `mailCode`/`parseComposeId` 兼容单引号；解析不了把原文前 80 字带出来 | `邮件已发送到 …@139.com` ✓ |

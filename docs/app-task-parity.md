@@ -50,7 +50,7 @@
 
 ### 106 实机对照（2026-10-20 23:09）
 
-同一小号（138****8000）上直接跑参考 `mcloud app-task --onlyTaskIds=106`：
+同一小号（138***8000）上直接跑参考 `mcloud app-task --onlyTaskIds=106`：
 
 ```text
 106：currStep=1 ⇒ clicked:false（参考自己也不打卡）
