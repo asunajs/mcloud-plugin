@@ -18,6 +18,7 @@ import { accountsView, json, readBody } from '../support.ts';
 import type { RouteDeps, RouteEntry } from '../support.ts';
 import { TASK_SWITCHES, isTaskSwitchId, resetTaskOn, setTaskOn } from '../../../mcloud/tasks/taskSwitches.ts';
 import { applyLegacyImport, parseLegacyAsign } from '../../../mcloud/legacyImport.ts';
+import { commonKeyOf } from '../../../mcloud/tasks/taskSwitches.ts';
 
 /** accounts 组。deps 是路由依赖；base 是 /plugins/mcloud/api；verify 是「拿当前会话验一次」。 */
 export function accountsRoutes(deps: RouteDeps, base: string, verify: () => Promise<{ ok: boolean; note: string }>): RouteEntry[] {
@@ -144,6 +145,30 @@ export function accountsRoutes(deps: RouteDeps, base: string, verify: () => Prom
         //
         // ⚠ 与 `refresh` 同一个理由：这两个键是按账号的，而"改哪一条"必须由
         //   调用方**指名**，不能靠"当前选中是谁" —— 那会改错人而且看不出来。
+        // **公共默认**（所有号共用的那一层）：写 `config.json` 的 `task_*`。
+        //
+        // ⚠ 它以前放在面板的「插件配置」表单里，与账号页的「这个号跑哪些任务」
+        //   分在两个界面 —— 用户原话：「一个插件里面配置一个去面板配置，太割裂」。
+        //   现在两个入口都在账号页：这个号的在卡片「设置」，公共的在这里。
+        if (op === 'set-common-tasks') {
+          const tasks = body.tasks;
+          if (typeof tasks !== 'object' || tasks === null || Array.isArray(tasks)) {
+            return json(400, { error: 'tasks 必须是 { 开关id: true|false }' });
+          }
+          const done: string[] = [];
+          for (const [id, v] of Object.entries(tasks as Record<string, unknown>)) {
+            if (!isTaskSwitchId(id)) {
+              return json(400, { error: `没有这个任务开关：${id}`, valid: TASK_SWITCHES.map((t) => t.id) });
+            }
+            if (typeof v !== 'boolean') return json(400, { error: `开关 ${id} 的值必须是 true/false` });
+            // config 作用域 ⇒ 写到 `config.json` 的 `task_<id>`
+            deps.store.setState(commonKeyOf(id), v ? '1' : '0', now);
+            done.push(`${id}=${v ? '开' : '关'}`);
+          }
+          deps.log(`公共默认（所有账号）：${done.join('、') || '无变化'}`);
+          return json(200, { ...accountsView(deps.store), note: `公共默认已存下：${done.join('、')}` });
+        }
+
         if (op === 'set-settings') {
           const id = typeof body.id === 'string' ? body.id : '';
           const found = loadAccounts(deps.store).find((a) => a.id === id);

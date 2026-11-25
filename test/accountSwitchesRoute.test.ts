@@ -83,6 +83,42 @@ test('set-settings：值不是布尔 ⇒ 400（别把 "false" 字符串当关）
   assert.equal(taskOn(scoped(rawStoreOf(store), id), 'tokenpk'), true, '被拒的写不能生效');
 });
 
+test('set-common-tasks：写公共层（config.json），没单独设过的号跟着变', async () => {
+  const { store, id, settings } = setup();
+  const r = await post(settings, { op: 'set-common-tasks', tasks: { redpack: true, tokenpk: false } });
+  assert.equal(r.status, 200);
+  assert.equal(store.userConfig?.read('task_redpack'), true, '公共层要写进 config.json');
+  assert.equal(store.userConfig?.read('task_tokenpk'), false);
+  // 这个号没单独设过 ⇒ 跟着公共层走
+  const one = scoped(rawStoreOf(store), id);
+  assert.equal(taskOn(one, 'redpack'), true);
+  assert.equal(taskSource(one, 'redpack'), 'common');
+  // 账号层设过之后，公共层再改也压不过它
+  await post(settings, { op: 'set-settings', id, tasks: { redpack: false } });
+  await post(settings, { op: 'set-common-tasks', tasks: { redpack: true } });
+  assert.equal(taskOn(one, 'redpack'), false, '账号层优先');
+});
+
+test('set-common-tasks：不认识的 id / 非布尔 ⇒ 400', async () => {
+  const { settings } = setup();
+  const bad = await post(settings, { op: 'set-common-tasks', tasks: { nope: true } });
+  assert.equal(bad.status, 400);
+  const badType = await post(settings, { op: 'set-common-tasks', tasks: { tokenpk: 'off' } });
+  assert.equal(badType.status, 400);
+});
+
+test('读数里要带上公共默认（界面「公共默认」弹窗只认这一个口）', async () => {
+  const { store, settings } = setup();
+  await post(settings, { op: 'set-common-tasks', tasks: { redpack: true } });
+  const routes = mcloudRoutes(testDeps(store, { now: NOW }));
+  const readings = routes.find((x) => x.path === '/plugins/mcloud/api/readings' && x.method === 'GET')!;
+  const r = await readings.handler({ query: '' });
+  const body = JSON.parse(r.body) as { account: { taskCommon?: { id: string; on: boolean }[] } };
+  const list = body.account.taskCommon ?? [];
+  assert.equal(list.length, 5, '五格都要在（少了界面就是空弹窗）');
+  assert.equal(list.find((x) => x.id === 'redpack')?.on, true);
+});
+
 test('导入旧配置：dry-run 不写盘，真导入才落账号与开关', async () => {
   const { store, importRoute } = setup();
   const doc = {

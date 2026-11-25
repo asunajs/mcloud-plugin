@@ -316,7 +316,7 @@ gh release view v<version> --json assets -q '.assets[].digest'   # 核对哈希
 |---|---|---|
 | `mcloud` / `mcloud-daily` | `daily_budget_s`（日常一趟预算，60–600 秒） | `mcloud.daily.budget_s` |
 | `mcloud` / `mcloud-exchange` | `exchange_enabled`（定时抢兑开关） | `mcloud.exchange.schedule.enabled` |
-| `mcloud`（公共默认） | `task_signin` / `task_expansion` / `task_app_task` / `task_redpack` / `task_tokenpk` | 见下「子任务开关」 |
+| （子任务开关的公共默认） | `task_signin` / `task_expansion` / `task_app_task` / `task_redpack` / `task_tokenpk` | 见下「子任务开关」——**在插件页的账号工具栏改**，不在面板的插件配置里 |
 
 ### 子任务开关（按账号 + 公共默认）
 
@@ -333,8 +333,8 @@ gh release view v<version> --json assets -q '.assets[].digest'   # 核对哈希
 取值三层，**账号那层赢**：
 
 ```text
-账号层  mcloud.task.<id>.on        账号卡片 →「设置」→「这个号跑哪些任务」
-公共层  config.json 的 task_<id>    插件卡片 →「配置」→「默认开：…」
+账号层  mcloud.task.<id>.on        账号页 → 卡片「设置」→「这个号跑哪些任务」
+公共层  config.json 的 task_<id>    账号页 → 工具栏「公共默认」
 缺省    （见上表）
 ```
 

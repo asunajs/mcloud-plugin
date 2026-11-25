@@ -156,10 +156,10 @@ test('⚠ 界面里不许出现用词规则禁掉的那些词', async () => {
   const jsCode = js.replace(/^\s*\/\/.*$/gm, '');
 
   const banned = ['上游', 'mock', 'budget_ms', '推进一步', '只验证', '换一步'];
-  // ⚠ **例外**：「上游状态」这个按钮/页名保留 —— 参考实现自己就叫这个
-  //   （`web/src/ui/nav.ts` / `app-task-list.tsx`）。规则管的是**说明文字**，
-  //   不管参考实现已经定下的名字。所以先把这一处替掉再查其余的。
-  const stripAllowed = (t: string): string => t.replaceAll('上游状态', '「状态」');
+  // ⚠ 例外**已经没有了**：2026-11-25 用户要求删掉「上游状态」那个按钮（它只是跳
+  //   「数据」区块，而区块导航就在页面顶部）。现在界面上一个「上游」都不许出现 ——
+  //   所以这里不再放行，发现谁写回来就是红。
+  const stripAllowed = (t: string): string => t;
   for (const [name, textRaw] of [
     ['index.html', visible],
     ['app.js', jsCode],

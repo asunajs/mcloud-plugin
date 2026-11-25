@@ -2996,11 +2996,10 @@ async function load() {
 
 // ──────────────────────────────────────────────────────────── 区块切换
 
-/** 切到某个区块（顶部菜单与账号页工具栏共用）。
+/** 切到某个区块（顶部菜单用；账号页那几个跳转按钮已按用户要求删掉）。
  *
- *  ⚠ 提取出来的理由：工具栏那三个按钮（账号配置 / 上游状态）要跳到别的区块，
- *  而原来这套逻辑**内联在菜单的事件处理里** —— 复用只能靠复制一份，
- *  复制的那份迟早和菜单不一致。 */
+ *  ⚠ 提取出来的理由：这套逻辑原来**内联在菜单的事件处理里**，别处要用就只能复制
+ *  一份，而复制的那份迟早和菜单不一致。 */
 
 // ══════════ 运行日志（终端样式，SSE） ══════════
 //
@@ -3539,9 +3538,8 @@ $('add-mac').addEventListener('click', (e) =>
   act(e.currentTarget, () => setAddPc('mac'), (r) => (r && r.note) || '已切成 macOS'),
 );
 
-// 工具栏剩下的两个（「上游状态」是跳读数，另一个是真动作）。
-// ⚠ 「账号配置」那个跳「设置」页的按钮跟着那一页一起删了 —— 见 index.html 那段说明。
-$('acct-upstream').addEventListener('click', () => showBlock('data'));
+// 工具栏这个是真动作（刷全部账号的凭据）。
+// ⚠ 「账号配置」「上游状态」两个跳转按钮都删了 —— 见 index.html 那段说明。
 $('acct-refresh-all').addEventListener('click', (e) =>
   act(e.currentTarget, () => api('/auth/refresh', { method: 'POST', write: true }), (r) => r.note || '已刷新'),
 );
@@ -3852,6 +3850,64 @@ $('acct-cfg-save').addEventListener('click', (e) =>
       return r;
     },
     (r) => r.note || '设置已存下',
+  ),
+);
+
+// ══════════ 公共默认（所有账号共用的缺省） ══════════
+//
+// 与账号卡「设置」里那五格是**同一件事的两层**：这里写公共层，那里写账号层。
+// 两个入口都在账号页 —— 别把公共那半放回面板的插件配置表单（那样用户得跑两个界面）。
+let commonTaskOrig = {};
+
+function renderCommonTasks(list) {
+  const box = $('common-tasks');
+  box.innerHTML = '';
+  for (const t of list) {
+    const li = document.createElement('li');
+    li.className = 'task-switch';
+    const lab = document.createElement('span');
+    lab.className = 'task-switch-label';
+    lab.textContent = t.label;
+    const sw = document.createElement('p-switch');
+    sw.setAttribute('data-task', t.id);
+    if (t.on) sw.setAttribute('checked', '');
+    li.append(lab, sw);
+    box.append(li);
+  }
+}
+
+$('acct-common').addEventListener('click', () => {
+  const list = (last && last.account && last.account.taskCommon) || [];
+  commonTaskOrig = {};
+  for (const t of list) commonTaskOrig[t.id] = t.on === true;
+  renderCommonTasks(list);
+  setText('common-note', '');
+  $('common-dialog').hidden = false;
+});
+$('common-close').addEventListener('click', () => {
+  $('common-dialog').hidden = true;
+});
+$('common-dialog').addEventListener('click', (ev) => {
+  if (ev.target === $('common-dialog')) $('common-dialog').hidden = true;
+});
+$('common-save').addEventListener('click', (e) =>
+  act(
+    e.currentTarget,
+    async () => {
+      const tasks = {};
+      for (const sw of $('common-tasks').querySelectorAll('p-switch')) {
+        const el = /** @type {any} */ (sw);
+        const id = String(el.dataset.task || '');
+        const now = Boolean(el.value);
+        if (id !== '' && commonTaskOrig[id] !== now) tasks[id] = now;
+      }
+      const body = { op: 'set-common-tasks', tasks };
+      const r = await api('/accounts', { method: 'POST', write: true, body });
+      $('common-dialog').hidden = true;
+      await load();
+      return r;
+    },
+    (r) => r.note || '公共默认已存下',
   ),
 );
 

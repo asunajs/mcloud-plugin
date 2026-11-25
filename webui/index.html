@@ -88,19 +88,20 @@
       <!-- ══════════════ 账号 ══════════════ -->
       <section class="block is-on" id="block-account">
         <!-- 工具栏 —— 照 mcloud 的账号页。
-             ⚠「上游状态」是我这边的，其余两个复刻。
              只有「添加账号」是主要动作，所以只有它用 `primary`：按钮一样重
              等于没有主次，用户还是要读完才知道点哪个。
              ⚠ **「账号配置」删了**：它做的事是跳到「设置」那一页，而那一页
              （六个地址口子 + 自检）整个删掉了 —— 留着就是一个跳空的死按钮。
+             ⚠ **「上游状态」也删了**（2026-11-25 用户要求）：它只是跳到「数据」区块，
+             而区块导航就在页面顶部，多一个按钮等于同一件事两个入口。
              按账号的那三格（听窗口长度 / 只听这间房 / 心跳回帧）在账号卡片的
-             「设置」弹窗里，跟这个按钮没关系。 -->
+             「设置」弹窗里，跟这个工具栏没关系。 -->
         <div class="row toolbar">
-          <button class="btn" id="acct-upstream">上游状态</button>
           <button class="btn" id="acct-refresh-all">全部刷新</button>
           <button class="btn primary" id="acct-add">添加账号</button>
           <!-- 第一次装这个插件的人，手里常常只有旧版 mcloud-sign 的 asign.json。
                以前只能去命令行跑 config:import；装完就能用是面板用户的前提。 -->
+          <button class="btn" id="acct-common">公共默认</button>
           <button class="btn" id="acct-import">导入旧配置</button>
         </div>
 
@@ -185,6 +186,30 @@
             <p class="hint">留空的那一项<b>不改</b>（不是设成 0）。</p>
             <div class="row">
               <button class="btn primary" id="acct-cfg-save">存下</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ══════════ 公共默认（弹窗） ══════════
+           与账号卡「设置」里那五格是**同一件事的两层**：这里改的是"所有号共用的缺省"，
+           那个号没单独设过时就用这里的值。两个入口都在账号页 —— 不要一个在插件页、
+           一个在面板的插件配置里（用户原话：太割裂）。 -->
+      <div class="dialog-back" id="common-dialog" hidden>
+        <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="common-title">
+          <div class="dialog-head">
+            <span id="common-title">公共默认 · 所有账号</span>
+            <button class="btn ghost" id="common-close">关闭</button>
+          </div>
+          <div class="dialog-body">
+            <p class="hint">
+              这里改的是<b>所有账号共用的缺省</b>。某个号在「设置」里单独设过，就以那个为准；
+              没单独设过的号都跟着这里走。
+            </p>
+            <ul class="task-switches" id="common-tasks"></ul>
+            <p class="hint" id="common-note"></p>
+            <div class="row">
+              <button class="btn primary" id="common-save">存下</button>
             </div>
           </div>
         </div>

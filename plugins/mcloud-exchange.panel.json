@@ -1,6 +1,6 @@
 {
   "title": "移动云盘 · 兑换",
-  "version": "0.7.5",
+  "version": "0.7.6",
   "order": 12,
   "description": "积分兑换",
   "min_panel": "0.8.3",

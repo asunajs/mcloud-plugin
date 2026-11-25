@@ -44,6 +44,8 @@ export function buildReadings(deps: RouteDeps): Record<string, unknown> {
       loggedIn: view.accounts.length > 0,
       current: view.current,
       accounts: view.accounts,
+      // 子任务开关的**公共默认**（所有号共用的那一层）：界面「公共默认」弹窗读它
+      taskCommon: view.taskCommon,
       session: sessionStatus(deps.store, nowIso),
     },
 

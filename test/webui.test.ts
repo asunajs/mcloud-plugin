@@ -498,19 +498,18 @@ test('每账号「设置」弹窗里有子任务开关：用面板的 <p-switch>
   assert.match(js, /data-task-reset/, '「跟随公共」按钮要能被事件委派认出来');
 });
 
-test('清单里的公共默认：五个 bool 字段，label 是人话', async () => {
-  const man = JSON.parse(srcOf('mcloud.panel.json')) as {
-    config: { fields: { name: string; label: string; type: string; default?: unknown }[] };
-  };
-  const byName = new Map(man.config.fields.map((f) => [f.name, f]));
-  for (const name of ['task_signin', 'task_expansion', 'task_app_task', 'task_redpack', 'task_tokenpk']) {
-    const f = byName.get(name);
-    assert.ok(f, `清单缺 ${name}`);
-    assert.equal(f.type, 'bool');
-    assert.match(f.label, /^默认开：/, `${name} 的 label 要说清这是"默认值"`);
-  }
-  assert.equal(byName.get('task_redpack')?.default, false, '云手机的公共默认也是关');
-  assert.equal(byName.get('task_signin')?.default, true);
+test('公共默认也在账号页：工具栏有入口、弹窗五个开关（不再放面板的插件配置里）', async () => {
+  const html = srcOf('webui/index.html');
+  const js = srcOf('webui/app.js');
+  assert.ok(html.includes('id="acct-common"'), '账号工具栏要有「公共默认」入口');
+  assert.ok(html.includes('id="common-dialog"'), '要有公共默认弹窗');
+  assert.ok(html.includes('id="common-tasks"'), '弹窗里要有开关容器');
+  assert.match(js, /set-common-tasks/, '保存要调公共默认那一条');
+  // ⚠ 清单里**不再**声明这五格：同一个功能不许有两个界面入口
+  //   （用户原话：「一个插件里面配置一个去面板配置，太割裂」）
+  const man = JSON.parse(srcOf('mcloud.panel.json')) as { config: { fields: { name: string }[] } };
+  const names = man.config.fields.map((f) => f.name);
+  assert.deepEqual(names.filter((n) => n.startsWith('task_')), [], '清单里不该再有 task_* 字段');
 });
 
 test('「导入旧配置」入口在账号工具栏，且只贴文本（不读服务器路径）', async () => {
