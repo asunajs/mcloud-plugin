@@ -59,7 +59,7 @@
   --font-mono: var(--mono);
   /* 样式表版本号：页面上的「样式自检」读它，用来判断浏览器用的是哪一份 style.css。
      改了本文件就把它加一（一个数字，别指望它自动同步）。 */
-  --style-ver: 162;
+  --style-ver: 164;
 }
 
 /* 为什么还留着这几个短名字：界面上其余的区块（日常 / 兑换 / 直播 / 数据）
@@ -1016,12 +1016,26 @@ button.picker-row {
 .term-meta { color: var(--text-dim); flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .term-actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
 .term-follow { display: inline-flex; align-items: center; gap: 4px; color: var(--text-dim); white-space: nowrap; }
+/* 下拉一律用面板的 <p-select>。⚠ 它默认是 `inline-flex` + `min-width:160px`（够用），
+   但放在 `.field` 里会被 flex 拉伸成**整行宽** —— 一个只有两三个选项的下拉占满一行，
+   看着像输入框（用户原话：「太宽了，select」）。所以只让它**按内容宽**，上限留给视口。
+   ⚠ 只写布局，不碰控件长相（边框/底色/圆角归面板的 `.select-trigger`）。 */
+.field > p-select,
+.row > p-select {
+  align-self: flex-start;
+  max-width: 100%;
+}
+
+/* 日志级别那一格是面板的 <p-select>（原生 <select> 的下拉是系统画的，配色/主题都不跟）。
+   ⚠ 只调**尺寸**：它默认 `min-width:160px`、控件高 32px，在终端标题行里太占地方；
+   颜色与边框一律留给面板的 `.select-trigger`，别在这里重画控件。 */
 .term-level {
-  background: var(--surface);
-  color: var(--text);
-  border: 1px solid var(--border-control);
-  border-radius: 6px;
-  padding: 2px 4px;
+  min-width: 0;
+}
+
+.term-level .select-trigger {
+  min-height: 0;
+  padding: 2px 6px;
   font-size: 12px;
 }
 .term-clear { padding: 2px 8px; font-size: 12px; }

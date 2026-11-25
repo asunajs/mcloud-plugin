@@ -483,6 +483,25 @@ test('⚠ 过期的码不许画得像还活着（"剩 0 秒"看起来完全像�
   );
 });
 
+test('下拉一律用面板的 <p-select>（原生 select 的列表是系统画的，配色/主题都不跟）', async () => {
+  const html = srcOf('webui/index.html');
+  const js = srcOf('webui/app.js');
+  assert.equal(/<select[\s>]/.test(html), false, '界面里不许再出现原生 <select>');
+  // 动态选项靠 `pSelect()` 重建（p-select 的选项只能在挂载时定）
+  assert.match(js, /function pSelect\(/, '要有统一的 p-select 重建助手');
+  // 重建会换节点 ⇒ 事件必须走委派，不能挂在元素上
+  assert.match(js, /const SELECT_HANDLERS = \{\};/, 'change 要登记在 SELECT_HANDLERS 里');
+  assert.match(js, /document\.addEventListener\('change'/, '要有一个委派监听分发');
+  // 那几个下拉的 change 不许再写成挂在元素上的形式
+  for (const id of ['ex-account', 'ex-verdict', 'matrix-account', 'daily-term-level']) {
+    assert.equal(
+      new RegExp(`\\$\\('${id}'\\)\\.addEventListener\\('change'`).test(js),
+      false,
+      `${id} 的 change 还挂在元素上 —— 重建之后就失效了`,
+    );
+  }
+});
+
 test('每账号「设置」弹窗里有子任务开关：用面板的 <p-switch>，不是自己画的', async () => {
   const html = srcOf('webui/index.html');
   const js = srcOf('webui/app.js');
@@ -776,8 +795,9 @@ test('⚠ 运行日志是**终端样式**，接的是面板的日志流（SSE）
   assert.ok(/TERM_MAX_LINES/.test(js), '行数要封顶');
   assert.ok(/msg\.textContent = String\(text/.test(js), '日志文本要用 textContent 画');
   assert.ok(!/innerHTML[^\n]*d\.msg/.test(js), '不许把日志塞进 innerHTML');
-  // 换级别要重连（过滤在服务端）：处理器是字面量，重连逻辑在 `reload()` 里
-  assert.ok(/\$\('daily-term-level'\)\.addEventListener\('change', \(\) => termHandle\('daily'\)\.reload\(\)\)/.test(js),
+  // 换级别要重连（过滤在服务端）：处理器登记在 `SELECT_HANDLERS`（元素会被重建，
+  // 挂节点上的监听会失效），重连逻辑在 `reload()` 里
+  assert.ok(/SELECT_HANDLERS\['daily-term-level'\] = \(\) => termHandle\('daily'\)\.reload\(\)/.test(js),
     '换级别要重连（daily）');
   assert.ok(/function reload\(\)[\s\S]{0,200}?close\(\)[\s\S]{0,200}?open\(\)/.test(js), 'reload 要真的重连');
 });

@@ -16,7 +16,7 @@
     <!-- 面板 0.4.0 只有一份 /app.css：token（含 [data-theme=dark]）+ 组件（.btn/.card/.field/.pill…）
          都在里面。旧面板的 /css/reset|theme|components.css 已经不存在了（第 139 轮）。 -->
     <link rel="stylesheet" href="/app.css" />
-    <link rel="stylesheet" href="style.css?v=20261125-0915" />
+    <link rel="stylesheet" href="style.css?v=20261125-1025" />
 
     <!-- 主题跟随 + embed 标记，必须赶在第一帧之前（见 boot.js 的文件头） -->
     <script src="boot.js?v=20261116-2230"></script>
@@ -256,9 +256,9 @@
             <p class="hint">给 <strong id="ex-plan-prize">还没选目标</strong><span id="ex-plan-price"></span>
               排一条定时计划。一条计划只跑一个账号；它只影响定时那一场，手动兑换不受影响。</p>
             <label class="field"><span class="field-label">这条计划用哪个账号</span>
-              <select id="ex-plan-account" class="input" aria-label="这条计划用哪个账号"></select></label>
+              <p-select id="ex-plan-account" aria-label="这条计划用哪个账号"></p-select></label>
             <label class="field"><span class="field-label">兑换目标</span>
-              <select id="ex-plan-target" class="input" aria-label="要兑换的奖品"></select></label>
+              <p-select id="ex-plan-target" aria-label="要兑换的奖品"></p-select></label>
 
             <label class="field"><span class="field-label">Cron 表达式</span>
               <input id="ex-plan-cron" class="input" type="text" inputmode="text"
@@ -612,11 +612,8 @@
               <label class="term-follow" title="滚到最新一行">
                 <input type="checkbox" id="daily-term-follow" checked /> 跟随
               </label>
-              <select class="term-level" id="daily-term-level" aria-label="日志级别">
-                <option value="info">全部</option>
-                <option value="warn">提醒以上</option>
-                <option value="error">只看错误</option>
-              </select>
+              <p-select class="term-level" id="daily-term-level" aria-label="日志级别"
+                      options='[{"value":"info","label":"全部"},{"value":"warn","label":"提醒以上"},{"value":"error","label":"只看错误"}]' value="info"></p-select>
               <button class="btn term-clear" id="daily-term-clear">清空</button>
             </span>
           </div>
@@ -656,7 +653,7 @@
         <p class="hint">用<b>当前账号</b>马上换；只影响这一下，不改定时任务的目标。</p>
         <div class="row" style="align-items:flex-end; margin-top:var(--sp-3)">
           <label class="field"><span class="field-label">当前账号（手动兑换）</span>
-            <select id="ex-account"></select></label>
+            <p-select id="ex-account"></p-select></label>
           <label class="term-follow" title="关掉之后点「立即兑换」会直接下单扣豆">
             <input type="checkbox" id="ex-confirm-first" checked /> 下单前再确认一次
           </label>
@@ -683,11 +680,10 @@
         <p class="hint" id="ex-note"></p>
         <div class="row">
           <input id="ex-filter" class="input" type="search" placeholder="搜名字或编号" />
-          <select id="ex-verdict" aria-label="筛选能不能换">
-            <option value="">全部</option>
-            <option value="ok">只看可兑</option>
-            <option value="sub">只看关注</option>
-          </select>
+          <!-- ⚠ 第一项的 value 是空串（筛选逻辑按空串=全部），而 <p-select> 把空串当"没选"、
+                   于是显示 placeholder —— 所以 placeholder 必须写「全部」，否则那一格会显示「请选择」。 -->
+              <p-select id="ex-verdict" aria-label="筛选能不能换" placeholder="全部"
+                        options='[{"value":"","label":"全部"},{"value":"ok","label":"只看可兑"},{"value":"sub","label":"只看关注"}]'></p-select>
           <label class="term-follow"><input type="checkbox" id="ex-show-blocked" />
             显示不可兑（<span id="ex-blocked-count">0</span>）</label>
           <span class="hint" id="ex-count"></span>
@@ -710,11 +706,8 @@
               <label class="term-follow" title="滚到最新一行">
                 <input type="checkbox" id="exchange-term-follow" checked /> 跟随
               </label>
-              <select class="term-level" id="exchange-term-level" aria-label="日志级别">
-                <option value="info">全部</option>
-                <option value="warn">提醒以上</option>
-                <option value="error">只看错误</option>
-              </select>
+              <p-select class="term-level" id="exchange-term-level" aria-label="日志级别"
+                      options='[{"value":"info","label":"全部"},{"value":"warn","label":"提醒以上"},{"value":"error","label":"只看错误"}]' value="info"></p-select>
               <button class="btn term-clear" id="exchange-term-clear">清空</button>
             </span>
           </div>
@@ -804,11 +797,8 @@
               <label class="term-follow" title="滚到最新一行">
                 <input type="checkbox" id="live-term-follow" checked /> 跟随
               </label>
-              <select class="term-level" id="live-term-level" aria-label="日志级别">
-                <option value="info">全部</option>
-                <option value="warn">提醒以上</option>
-                <option value="error">只看错误</option>
-              </select>
+              <p-select class="term-level" id="live-term-level" aria-label="日志级别"
+                      options='[{"value":"info","label":"全部"},{"value":"warn","label":"提醒以上"},{"value":"error","label":"只看错误"}]' value="info"></p-select>
               <button class="btn term-clear" id="live-term-clear">清空</button>
             </span>
           </div>
@@ -832,7 +822,7 @@
               <span class="card-title">待领取</span>
             </div>
             <div class="card-actions">
-              <select id="prize-account" aria-label="看哪个账号的待领取商品"></select>
+              <p-select id="prize-account" aria-label="看哪个账号的待领取商品"></p-select>
               <button class="btn" id="prize-refresh" type="button">刷新</button>
             </div>
           </div>
@@ -869,7 +859,7 @@
               <span class="card-title">App 任务</span>
             </div>
             <div class="card-actions">
-              <select id="matrix-account" aria-label="看哪个账号的任务状态"></select>
+              <p-select id="matrix-account" aria-label="看哪个账号的任务状态"></p-select>
               <button class="btn ghost" id="matrix-refresh" type="button">刷新</button>
             </div>
           </div>
@@ -882,6 +872,6 @@
     </main>
 
     <div class="toast" id="toast" hidden></div>
-    <script src="app.js?v=20261125-0915"></script>
+    <script src="app.js?v=20261125-1025"></script>
   </body>
 </html>

@@ -26,7 +26,7 @@
 // 页面版本号：和 style.css 里的 --style-ver 一起人工递增。
 // 「样式自检」（boot.js 的 ?diag=1）会读它 —— 用来区分「CSS 是新的、JS 还是旧的」这种
 // 半新半旧状态（第 155 轮：样式表是 v155，但 DOM 里根本没有 .ex-group-row 这种行）。
-document.documentElement.dataset.appVer = '168';
+document.documentElement.dataset.appVer = '169';
 
 /** 插件自己的接口。 */
 const API = '/plugins/mcloud/api';
@@ -708,6 +708,52 @@ function renderAccount(a, login) {
 }
 
 
+// ══════════ 下拉：统一用面板的 <p-select> ══════════
+//
+// ⚠ 别再用原生 `<select>`：它的下拉列表是**操作系统画的**（macOS 上是一块深色浮层），
+//   与面板的配色、圆角、字体都不是一套，深色/浅色主题也不跟（用户截图圈出来的就是这个）。
+//
+// ⚠ `<p-select>` 的选项只能在**挂载时**定（属性 `options` 或子 `<option>`），之后改不了 ⇒
+//   选项变了就**重建元素**。重建会换掉节点，所以事件**不许挂在元素上** ——
+//   统一登记到 `SELECT_HANDLERS`，由下面那个委派监听分发（`p-select` 的 change 会冒泡）。
+
+/** id → change 处理函数。 */
+const SELECT_HANDLERS = {};
+
+/** 把 `id` 那一格换成（或重画成）`<p-select>`。
+ *  @param {string} id
+ *  @param {{value: string, label: string, disabled?: boolean}[]} opts
+ *  @param {string} [value] 选中值（空串 = 没选中，显示 placeholder）
+ *  @param {{disabled?: boolean, placeholder?: string, empty?: string}} [extra] */
+function pSelect(id, opts, value, extra) {
+  const old = $(id);
+  if (!old) return null;
+  const el = document.createElement('p-select');
+  el.id = id;
+  if (old.className) el.className = old.className;
+  for (const attr of ['aria-label', 'placeholder', 'empty']) {
+    const v = old.getAttribute(attr);
+    if (v !== null) el.setAttribute(attr, v);
+  }
+  const ex = extra || {};
+  if (ex.placeholder !== undefined) el.setAttribute('placeholder', ex.placeholder);
+  if (ex.empty !== undefined) el.setAttribute('empty', ex.empty);
+  el.setAttribute('options', JSON.stringify(opts));
+  el.setAttribute('value', value === undefined || value === null ? '' : String(value));
+  if (ex.disabled === true) el.setAttribute('disabled', '');
+  old.replaceWith(el);
+  return el;
+}
+
+// 一个委派监听管全部（元素会被重建，挂在节点上的监听会跟着消失）
+document.addEventListener('change', (ev) => {
+  const t = ev.target;
+  const id = t && /** @type {{ id?: string }} */ (t).id;
+  if (!id) return;
+  const fn = SELECT_HANDLERS[id];
+  if (fn) fn(ev);
+});
+
 // ══════════ 任务排期（来自**面板**，不是写死的文案） ══════════
 //
 // 界面上那句「它自己什么时候跑」必须是**真的**：原来写死成「白天每 30 分钟跑一次」，
@@ -1143,15 +1189,16 @@ function renderExchangeAccount() {
   const acc = (last && last.account) || {};
   const list = Array.isArray(acc.accounts) ? acc.accounts : [];
   if (document.activeElement === sel) return;
-  sel.innerHTML = list.length
-    ? list
-        .map(
-          (a) =>
-            `<option value="${esc(a.id)}"${a.current ? ' selected' : ''}>${esc(a.label || a.id)}</option>`,
-        )
-        .join('')
-    : '<option value="">还没有账号</option>';
-  sel.disabled = list.length === 0;
+  if (list.length === 0) {
+    pSelect('ex-account', [], '', { disabled: true, placeholder: '还没有账号' });
+    return;
+  }
+  const cur = list.find((a) => a.current) || list[0];
+  pSelect(
+    'ex-account',
+    list.map((a) => ({ value: String(a.id), label: String(a.label || a.id) })),
+    sel.value && list.some((a) => String(a.id) === sel.value) ? sel.value : String(cur.id),
+  );
 }
 
 /** 我关注的：固定在上面，和下面清单里的星星是同一份数据。 */
@@ -1353,14 +1400,16 @@ function fillPlanAccounts(selected) {
   if (!sel) return;
   const all = (last && last.account && last.account.accounts) || [];
   const usable = all.filter((a) => !a.disabled || a.id === selected);
-  sel.innerHTML = usable
-    .map(
-      (a) =>
-        `<option value="${esc(a.id)}">${esc(a.label || a.id)}${a.disabled ? '（已停用）' : ''}</option>`,
-    )
-    .join('');
   const cur = all.find((a) => a.current);
-  sel.value = selected || (cur && cur.id) || (usable[0] && usable[0].id) || '';
+  const want = selected || (cur && cur.id) || (usable[0] && usable[0].id) || '';
+  pSelect(
+    'ex-plan-account',
+    usable.map((a) => ({
+      value: String(a.id),
+      label: `${a.label || a.id}${a.disabled ? '（已停用）' : ''}`,
+    })),
+    String(want),
+  );
 }
 
 /** 填目标下拉：优先用清单缓存；编辑的目标不在缓存里时补一条（保留 prizeId）。 */
@@ -1370,19 +1419,17 @@ function fillPlanTargets(name, id) {
   const items = exPicks || [];
   const wantId = id === null || id === undefined ? '' : String(id);
   const match = (p) => (wantId !== '' ? String(p.id) === wantId : !!name && p.name === name);
-  const opts = items.map((p) => {
-    const pid = p.id === undefined ? '' : String(p.id);
-    return (
-      `<option value="${esc(p.name)}" data-id="${esc(pid)}"${match(p) ? ' selected' : ''}>` +
-      `${esc(p.name)}${p.id === undefined ? '' : ` · #${p.id}`}</option>`
-    );
-  });
+  const opts = items.map((p) => ({
+    value: String(p.name),
+    label: p.id === undefined ? String(p.name) : `${p.name} · #${p.id}`,
+  }));
   if (name && !items.some(match)) {
-    opts.unshift(
-      `<option value="${esc(name)}" data-id="${esc(wantId)}" selected>${esc(name)}${wantId === '' ? '' : ` · #${wantId}`}</option>`,
-    );
+    // 编辑的目标不在当前清单里（换月 / 清单没读）：补一条，别让用户以为目标丢了
+    opts.unshift({ value: String(name), label: wantId === '' ? String(name) : `${name} · #${wantId}` });
   }
-  sel.innerHTML = opts.join('') || '<option value="">先点「读一次」拿清单</option>';
+  const hit = items.find(match);
+  const want = hit ? String(hit.name) : name ? String(name) : '';
+  pSelect('ex-plan-target', opts, want, { placeholder: '先点「读一次」拿清单', empty: '先点「读一次」拿清单' });
 }
 
 /** 打开「定时抢兑」弹窗。`p` 是清单/关注里点的那一件；`plan` 是编辑已有计划。 */
@@ -1411,10 +1458,12 @@ function openPlanDialog(p, plan) {
 /** 保存一条计划：写计划表 + 目标/时刻/提前量（不 startsOrder、不发请求）。 */
 async function savePlanDialog() {
   // 目标以下拉为准（编辑时可能是缓存里没有的旧目标）。
+  // ⚠ `<p-select>` 只有 value/label：名字 → prizeId 要回清单里查（见 `SELECT_HANDLERS`）。
   const t = $('ex-plan-target');
-  if (t && t.selectedOptions[0] && t.value !== '') {
+  if (t && t.value !== '') {
     planDialogQuery = t.value;
-    planDialogId = t.selectedOptions[0].dataset.id ? Number(t.selectedOptions[0].dataset.id) : null;
+    const hit = (exPicks || []).find((x) => String(x.name) === t.value);
+    planDialogId = hit && hit.id !== undefined ? Number(hit.id) : planDialogId;
   }
   const query = planDialogQuery.trim();
   if (query === '') throw new Error('先从清单里选一件，再保存计划');
@@ -1996,13 +2045,15 @@ function fillMatrixAccounts(accounts, current) {
   if (matrixAccountId === '' || !list.some((a) => a.id === matrixAccountId)) {
     matrixAccountId = current || (list[0] ? list[0].id : '');
   }
-  sel.innerHTML = list
-    .map(
-      (a) =>
-        `<option value="${esc(a.id)}"${a.id === matrixAccountId ? ' selected' : ''}>${esc(a.label || a.id)}</option>`,
-    )
-    .join('');
-  if (list.length === 0) sel.innerHTML = '<option value="">还没有账号</option>';
+  if (list.length === 0) {
+    pSelect('matrix-account', [], '', { disabled: true, placeholder: '还没有账号' });
+    return;
+  }
+  pSelect(
+    'matrix-account',
+    list.map((a) => ({ value: String(a.id), label: String(a.label || a.id) })),
+    String(matrixAccountId),
+  );
 }
 
 const BACKUP_STEP_TEXT = {
@@ -2078,12 +2129,12 @@ function renderData(d, account) {
   paintMatrixLine(matrixLabel(accounts, selected), m.groups, m.backup);
 }
 
-$('matrix-account').addEventListener('change', (ev) => {
+SELECT_HANDLERS['matrix-account'] = (ev) => {
   const id = evCur(ev).value;
   if (!id) return;
   matrixAccountId = id;
   void loadMatrix(id).catch((e) => toast(`读不到任务状态：${e.message || String(e)}`, true));
-});
+};
 
 $('matrix-refresh').addEventListener('click', (ev) => {
   const id = matrixAccountId || $('matrix-account').value;
@@ -2343,12 +2394,10 @@ let prizeResendTimer = null;
 
 /** 这个号叫啥（接口给的 `label` 已经脱敏，直接显示）。 */
 function prizeLabelOf(id) {
-  const sel = $('prize-account');
-  if (sel) {
-    for (const opt of Array.from(/** @type {any} */ (sel).options)) {
-      if (opt.value === id) return opt.textContent || id;
-    }
-  }
+  // ⚠ `<p-select>` 没有 `.options`：从读数里那份账号表查（它就是画下拉的来源）
+  const list = (last && last.account && last.account.accounts) || [];
+  const hit = list.find((a) => String(a.id) === String(id));
+  if (hit) return String(hit.label || hit.id);
   // 下拉还没画出来的那一瞬间（或者这个号不在列表里）：退回读数里那一份。
   const r = prizesNow;
   if (r && r.account && r.account.id === id) return r.account.label || id;
@@ -2376,24 +2425,22 @@ function fillPrizeAccounts(accounts, current) {
   const sel = $('prize-account');
   if (!sel) return;
   if (prizesNow === null) {
-    sel.disabled = true;
-    sel.innerHTML = '<option value="">正在读…</option>';
+    pSelect('prize-account', [], '', { disabled: true, placeholder: '正在读…' });
     return;
   }
   const list = accounts || [];
   if (prizesAccountId === '' || !list.some((a) => a.id === prizesAccountId)) {
     prizesAccountId = current || (list[0] ? list[0].id : '');
   }
-  sel.disabled = list.length === 0;
-  sel.innerHTML =
-    list.length === 0
-      ? '<option value="">还没有账号</option>'
-      : list
-          .map(
-            (a) =>
-              `<option value="${esc(a.id)}"${a.id === prizesAccountId ? ' selected' : ''}>${esc(a.label || a.id)}</option>`,
-          )
-          .join('');
+  if (list.length === 0) {
+    pSelect('prize-account', [], '', { disabled: true, placeholder: '还没有账号' });
+    return;
+  }
+  pSelect(
+    'prize-account',
+    list.map((a) => ({ value: String(a.id), label: String(a.label || a.id) })),
+    String(prizesAccountId),
+  );
 }
 
 /** 第一行回答"有几件要领"。
@@ -3360,11 +3407,11 @@ function makeTerm(plugin, el) {
 // 三个终端的「清空」「级别」—— 写成**字面量**（`$('…')`），
 // 因为界面测试会逐个核对"HTML 里的按钮都真的挂了处理器"。
 $('daily-term-clear').addEventListener('click', () => termHandle('daily').clearNow());
-$('daily-term-level').addEventListener('change', () => termHandle('daily').reload());
+SELECT_HANDLERS['daily-term-level'] = () => termHandle('daily').reload();
 $('exchange-term-clear').addEventListener('click', () => termHandle('exchange').clearNow());
-$('exchange-term-level').addEventListener('change', () => termHandle('exchange').reload());
+SELECT_HANDLERS['exchange-term-level'] = () => termHandle('exchange').reload();
 $('live-term-clear').addEventListener('click', () => termHandle('live').clearNow());
-$('live-term-level').addEventListener('change', () => termHandle('live').reload());
+SELECT_HANDLERS['live-term-level'] = () => termHandle('live').reload();
 
 /** 三块各自的终端实例（懒建：第一次显示那一块时才建）。 */
 const termOf = {};
@@ -4328,7 +4375,7 @@ $('daily-stop').addEventListener('click', (e) => stopRunning('daily', e.currentT
 
 // 兑换
 // 当前账号（手动兑换用）。切号会改全局「当前账号」—— 原页面也是这个语义。
-$('ex-account').addEventListener('change', async (ev) => {
+SELECT_HANDLERS['ex-account'] = async (ev) => {
   const id = evEl(ev).value;
   if (!id) return;
   try {
@@ -4338,7 +4385,7 @@ $('ex-account').addEventListener('change', async (ev) => {
   } catch (e) {
     toast(String(e && e.message ? e.message : e), true);
   }
-});
+};
 
 // 二次确认偏好（localStorage：这台浏览器的事，不是账号属性）。
 $('ex-confirm-first').addEventListener('change', (ev) => {
@@ -4369,7 +4416,7 @@ const repaintExchange = () => {
   if (last && last.exchange) renderExchangeTable(last.exchange, exSay);
 };
 $('ex-filter').addEventListener('input', repaintExchange);
-$('ex-verdict').addEventListener('change', repaintExchange);
+SELECT_HANDLERS['ex-verdict'] = () => repaintExchange();
 $('ex-show-blocked').addEventListener('change', repaintExchange);
 $('ex-session-refresh').addEventListener('click', (e) =>
   act(
@@ -4570,13 +4617,15 @@ $('ex-sched-list').addEventListener('click', async (ev) => {
 });
 
 // 定时抢兑弹窗：入口是清单/关注行的「定时」。
-$('ex-plan-target').addEventListener('change', () => {
-  const opt = $('ex-plan-target').selectedOptions[0];
-  planDialogQuery = opt ? opt.value : '';
-  planDialogId = opt && opt.dataset.id ? Number(opt.dataset.id) : null;
+SELECT_HANDLERS['ex-plan-target'] = () => {
+  // ⚠ 名字 → prizeId 要自己查（`<p-select>` 只有 value/label，没有 `dataset`）
+  const name = $('ex-plan-target').value;
+  planDialogQuery = name;
+  const hit = (exPicks || []).find((x) => x.name === name);
+  planDialogId = hit && hit.id !== undefined ? Number(hit.id) : null;
   setText('ex-plan-prize', planDialogQuery || '还没选目标');
   setText('ex-plan-price', '');
-});
+};
 $('ex-plan-close').addEventListener('click', () => {
   $('ex-plan-dialog').hidden = true;
 });
