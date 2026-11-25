@@ -40,6 +40,7 @@ import { openFileStore, panelStoreDir } from '../host/fs/fileStore.ts';
 import { importFromPanelSqlite } from '../host/panel/legacy.ts';
 import { rawStoreOf, scoped } from '../store/scoped.ts';
 import { resolveTaskAccounts, type TaskAccountMode } from '../mcloud/taskAccounts.ts';
+import { migrateTaskSwitches } from '../mcloud/tasks/taskSwitches.ts';
 import { migrateFlatKeys } from '../store/keys.ts';
 import { migrateUserConfig, type MigrateResult } from '../host/fs/configMigrate.ts';
 import { loadBaseUrl } from '../mcloud/session.ts';
@@ -118,6 +119,10 @@ export async function makeStore(plugin: string): Promise<Store> {
   // 老扁平键 → 账号袋（一次性、幂等）。⚠ 传**裸 store**：
   //   `migrateFlatKeys` 读写的是扁平键，传路由后的那个会把袋键当普通键读。
   const { moved } = migrateFlatKeys(store, new Date().toISOString());
+  // 日常子任务开关：老的两个开关键（`mcloud.redpack.enabled` / `mcloud.tokenpk.enabled`）
+  // 改名到 `mcloud.task.<id>.on`（一次性、幂等）。**必须在 `scoped()` 之前** ——
+  // 它直接读写账号袋，包过的那层会把袋键当普通键路由。
+  const switchesMoved = migrateTaskSwitches(store, new Date().toISOString());
   // **唯一用户配置文件**：第一次加载时把旧来源（四份 config.json + 旧 state 键）合进
   // `<store>/config.json`；之后每次空转。⚠ 必须在 `scoped()` 之前跑 —— 它要直接
   // 读旧键、删旧键，而包过的那层已经把配置键指到新文件了。
@@ -126,6 +131,9 @@ export async function makeStore(plugin: string): Promise<Store> {
   const s = scoped(store);
   if (moved.length > 0) {
     logTo('info', `状态迁移：${moved.length} 个键搬进账号袋（${moved.join(', ')}）`);
+  }
+  if (switchesMoved.length > 0) {
+    logTo('info', `任务开关已迁移：${switchesMoved.length} 条（${switchesMoved.join('、')}）`);
   }
   return s;
 }

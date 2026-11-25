@@ -91,12 +91,12 @@ import {
   loadRedpackState,
   newRedpackState,
   redpackDay,
-  redpackEnabled,
   rpLine,
   saveRedpackState,
   summarize,
 } from './redpackState.ts';
 import type { RedpackQueueItem, RedpackState } from './redpackState.ts';
+import { taskGate, taskOn } from './taskSwitches.ts';
 
 /** 整趟的调度上限（`dailyRun` 那边用）。
  *
@@ -110,8 +110,13 @@ export const REDPACK_BUDGET = { maxSteps: 90 };
  *
  *  参照实现的账号默认值就是 `红包派对.开启 = true` ⇒ "没写过这一格"必须是开着。
  *  自造一道默认关的闸，等于偷偷把这一族停掉，而日志里一句都不说。 */
+/** 开没开 —— **统一走子任务开关**（账号层 > 公共层 > 缺省，见 `taskSwitches.ts`）。
+ *
+ *  ⚠ 云手机的缺省是**关**（2026-11-25 口径）：它会往用户的云机里装应用。
+ *  老键 `mcloud.redpack.enabled` 由 `migrateTaskSwitches` 一次性搬到
+ *  `mcloud.task.redpack.on`，这里不再读它（两份真值是这类 bug 的根源）。 */
 export function redpackOn(deps: TaskDeps): boolean {
-  return redpackEnabled(deps.store);
+  return taskOn(deps.store, 'redpack');
 }
 
 /** 这一族**根本没开**时给 `idle` —— 一个请求都不发。
@@ -120,8 +125,7 @@ export function redpackOn(deps: TaskDeps): boolean {
  *  见 `entries/daily.ts` 那段原话），而"重复发写"这件事由按天的 `written` 挡
  *  （见 `redpackState.ts` 文件头），不由这道闸挡。 */
 export function redpackGate(deps: TaskDeps): TaskOutcome {
-  if (redpackOn(deps)) return { ok: true, idle: false, note: '' };
-  return { ok: true, idle: true, skipped: true, note: '这一族没开（账号设置里可以开）' };
+  return taskGate(deps, 'redpack');
 }
 
 function save(deps: TaskDeps, st: RedpackState): void {

@@ -111,16 +111,25 @@
   裸 store 上写配置键**直接抛错**（`assertNotConfigKey`）—— 免得又造出第二个家。
 * **不必重载插件**：`JsonFile` 按 `mtime+size` 失效缓存 ⇒ 面板保存之后，插件**下一次读**
   就是新值（以前要等面板重载那个插件）。
-* **面板清单**只有 `mcloud` 声明 `config.fields`（两格：日常预算 / 定时抢兑）；
+* **子任务开关是"两层"的**：账号级那格在**账号袋**（`mcloud.task.<id>.on`，`'1'`/`'0'`，
+  空串 = 没设过），公共默认在 `config.json`（`task_signin` … `task_tokenpk`）。
+  取值顺序 **账号 > 公共 > 缺省**（`src/mcloud/tasks/taskSwitches.ts`）。为什么不把账号级
+  也塞进 `config.json`：它是"这个号的属性"，与 `shared.json` 里其它按账号的东西同源；
+  塞进配置就要为每个号开一个 `accounts.<id>.*` 分支，而账号是会删会加的。
+  老键 `mcloud.redpack.enabled` / `mcloud.tokenpk.enabled` 在加载时**一次性**搬到
+  `mcloud.task.<id>.on`（值归一、旧键置空、幂等），之后不再参与判定。
+* **面板清单**只有 `mcloud` 声明 `config.fields`（日常预算 / 定时抢兑 / 五个公共默认）；
   `mcloud-daily` / `mcloud-exchange` / `mcloud-live` **不再有配置表单** —— 同一格设置
   不会再有四个入口。面板机制要求文件存在的话也无所谓：那三份 `config.json` 从此没人读。
 * **迁移**：第一次加载把旧来源合进来，然后**删掉**旧 state 键（`shared.json` / 账号袋），
   旧的四份 `plugin-data/<插件>/config.json` 原样留着但不再读。幂等判据 = `schema_version`。
   合并前把旧文件原文与被搬走的键备份到 `backup/config-migration-<时间>/`。
 * **旧 CLI 配置**：`asign.json` / `asign.config.js|mjs` 可以一次性搬进来 ——
-  `mcloud-sign config:import --config asign.json --data-dir <…> [--dry-run]`
-  （或导出的 `importLegacyConfig()`）。账号进 `shared.json` 的 `mcloud.accounts`，
-  `standalone.http|ws` 进 `cli.*`。之后 `--config` 直接指 `<store>/config.json` 即可。
+  CLI：`mcloud-sign config:import --config asign.json --data-dir <…> [--dry-run]`；
+  面板：账号页「导入旧配置」贴 JSON（同一个解析/落地，见 `src/mcloud/legacyImport.ts`，
+  面板侧不读服务器路径）。账号进 `shared.json` 的 `mcloud.accounts`，
+  `standalone.http|ws` 进 `cli.*`，两个活动开关进 `mcloud.task.<id>.on`，
+  不认识的键列出来但不搬。之后 `--config` 直接指 `<store>/config.json` 即可。
 * **文件权限**：0600（里面有推送口令 / 代理地址这类东西）；坏 JSON 不拦加载 ——
   `JsonFile` 会把它改名成 `config.json.corrupt-<ts>` 后按空继续。
 

@@ -88,12 +88,12 @@ test('独立运行时：配置里写了「红包派对.开启」才落到账号�
   c.close();
 });
 
-test('独立运行时：配置没写这一格 ⇒ 不碰面板设过的值（缺省才是开）', async () => {
+test('独立运行时：配置没写这一格 ⇒ 不碰面板设过的值（缺省是关）', async () => {
   const d = mkdtempSync(join(tmpdir(), 'mcloud-rt-'));
   const p = cfg(d);
   const a = await createRuntime({ configPath: p });
   const id = loadAccounts(a.rawStore)[0]!.id;
-  assert.equal(redpackEnabled(scoped(a.rawStore, id)), true, '没写过 = 开着（照参照实现的默认值）');
+  assert.equal(redpackEnabled(scoped(a.rawStore, id)), false, '没写过 = 缺省关（2026-11-25 口径）');
   // 用户在面板上关掉它
   setRedpackEnabled(scoped(a.rawStore, id), false, '2026-10-23T02:00:00.000Z');
   a.close();

@@ -24,6 +24,7 @@ import { resolveTaskAccounts } from '../../mcloud/taskAccounts.ts';
 import { syncTaskReadiness } from '../../mcloud/taskReadiness.ts';
 import type { HostWs } from '../../mcloud/tasks/base.ts';
 import { STATE_EXPAND, STATE_MONTH_BACKUP } from '../../mcloud/tasks/taskExpansion.ts';
+import { TASK_SWITCHES, taskOn, taskSource } from '../../mcloud/tasks/taskSwitches.ts';
 export const PLUGIN = 'mcloud';
 
 export interface RouteRequest {
@@ -98,7 +99,7 @@ export function liveStore(deps: RouteDeps): Store {
   return first === '' ? deps.store : scoped(rawStoreOf(deps.store), first);
 }
 
-export function accountsView(store: Pick<Store, 'getState'>): {
+export function accountsView(store: Store): {
   current: string;
   accounts: {
     id: string;
@@ -133,7 +134,11 @@ export function accountsView(store: Pick<Store, 'getState'>): {
     listenRoom: number;
     /** 弹幕心跳的回帧内容。**按账号**。空串 = 用缺省。 */
     wsHeartbeat: string;
+    /** 这个号跑哪些子任务（`on` 是**合并后**的值，`source` 说明它是哪一层来的）。 */
+    tasks: { id: string; label: string; on: boolean; source: 'account' | 'common' | 'default' }[];
   }[];
+  /** 公共默认（所有号共用的那一层，写的是 `config.json`）。 */
+  taskCommon: { id: string; label: string; on: boolean }[];
 } {
   const cur = currentAccount(store);
   const nowMs = Date.now();
@@ -142,7 +147,10 @@ export function accountsView(store: Pick<Store, 'getState'>): {
   const raw = rawStoreOf(store);
   return {
     current: cur?.id ?? '',
+    // 公共层：读的是**当前 store** 的 config 作用域（所有账号共用一份）
+    taskCommon: TASK_SWITCHES.map((t) => ({ id: t.id, label: t.label, on: taskOn(store, t.id) })),
     accounts: loadAccounts(store).map((a) => {
+      const one = scoped(raw, a.id);
       const info = parseAuth(a.auth);
       const exp = info?.expire ?? 0;
       return {
@@ -173,6 +181,14 @@ export function accountsView(store: Pick<Store, 'getState'>): {
         listenSeconds: Number.parseInt(readBag(raw, a.id)['mcloud.live.listen_seconds'] ?? '', 10),
         listenRoom: Number.parseInt(readBag(raw, a.id)['mcloud.live.listen_room'] ?? '', 10),
         wsHeartbeat: readBag(raw, a.id)['mcloud.live.ws_heartbeat_reply'] ?? '',
+        // ⚠ 同样**按 id 读那一条**（`scoped(raw, a.id)`）：用当前账号那一格会把 A 的开关
+        //   显示在 B 的弹窗里，而用户改完才发现改错了号。
+        tasks: TASK_SWITCHES.map((t) => ({
+          id: t.id,
+          label: t.label,
+          on: taskOn(one, t.id),
+          source: taskSource(one, t.id),
+        })),
       };
     }),
   };

@@ -26,7 +26,7 @@
 // 页面版本号：和 style.css 里的 --style-ver 一起人工递增。
 // 「样式自检」（boot.js 的 ?diag=1）会读它 —— 用来区分「CSS 是新的、JS 还是旧的」这种
 // 半新半旧状态（第 155 轮：样式表是 v155，但 DOM 里根本没有 .ex-group-row 这种行）。
-document.documentElement.dataset.appVer = '167';
+document.documentElement.dataset.appVer = '168';
 
 /** 插件自己的接口。 */
 const API = '/plugins/mcloud/api';
@@ -3738,6 +3738,11 @@ document.addEventListener('click', (ev) => {
 //   搬到这里之后，"改的是哪一条"由**打开弹窗时点的那条**决定，不再靠猜。
 let acctSettingsId = '';
 
+/** 打开弹窗那一刻每格的值。保存时**只发改过的** ——
+ *  否则"没动过的那几格"会被写成显式的账号层值，用户就再也回不到"跟随公共"了
+ *  （现场：点一次存下，五格全变成"本号单独设过"）。 */
+let acctTaskOrig = {};
+
 function openAcctSettings(id) {
   const list = (last && last.account && last.account.accounts) || [];
   const a = list.find((x) => x.id === id);
@@ -3747,8 +3752,44 @@ function openAcctSettings(id) {
   $('acct-cfg-seconds').value = Number.isFinite(a.listenSeconds) ? String(a.listenSeconds) : '';
   $('acct-cfg-room').value = Number.isFinite(a.listenRoom) && a.listenRoom > 0 ? String(a.listenRoom) : '';
   $('acct-cfg-heartbeat').value = a.wsHeartbeat || '';
+  renderAcctTasks(a);
+  acctTaskOrig = {};
+  for (const t of Array.isArray(a.tasks) ? a.tasks : []) acctTaskOrig[t.id] = t.on === true;
   setText('acct-cfg-note', '');
   $('acct-cfg-dialog').hidden = false;
+}
+
+/** 弹窗里那五格开关。
+ *
+ *  ⚠ `on` 是**合并后**的值（账号 > 公共 > 缺省），`source` 说明它来自哪一层 ——
+ *  只有 `source==='account'` 时才给「跟随公共」按钮：没单独设过的号本来就在跟随，
+ *  再摆一个按钮会让人以为"现在不是跟随"。
+ *
+ *  ⚠ 用面板的 `<p-switch>`（`web/ui.js`），不自己画 —— 主题、键盘、读屏都跟着面板走。 */
+function renderAcctTasks(a) {
+  const box = $('acct-cfg-tasks');
+  const list = Array.isArray(a.tasks) ? a.tasks : [];
+  box.innerHTML = '';
+  for (const t of list) {
+    const li = document.createElement('li');
+    li.className = 'task-switch';
+    const lab = document.createElement('span');
+    lab.className = 'task-switch-label';
+    lab.textContent = t.label;
+    const sw = document.createElement('p-switch');
+    sw.setAttribute('data-task', t.id);
+    if (t.on) sw.setAttribute('checked', '');
+    li.append(lab, sw);
+    if (t.source === 'account') {
+      const reset = document.createElement('button');
+      reset.type = 'button';
+      reset.className = 'btn btn-sm task-switch-reset';
+      reset.setAttribute('data-task-reset', t.id);
+      reset.textContent = '跟随公共';
+      li.append(reset);
+    }
+    box.append(li);
+  }
 }
 
 $('acct-cfg-close').addEventListener('click', () => {
@@ -3757,6 +3798,35 @@ $('acct-cfg-close').addEventListener('click', () => {
 $('acct-cfg-dialog').addEventListener('click', (ev) => {
   if (ev.target === $('acct-cfg-dialog')) $('acct-cfg-dialog').hidden = true;
 });
+// 「跟随公共」：只清这一个号的账号层，弹窗不关（用户可能还要改别的格）。
+$('acct-cfg-tasks').addEventListener('click', (e) => {
+  const btn = evEl(e).closest('[data-task-reset]');
+  if (btn === null) return;
+  const id = btn.dataset.taskReset;
+  void act(
+    btn,
+    async () => {
+      const r = await api('/accounts', {
+        method: 'POST',
+        write: true,
+        body: { op: 'set-settings', id: acctSettingsId, taskReset: [id] },
+      });
+      // ⚠ 必须**重新拉读数**再重画：拿旧 payload 重画的话，按钮还在、值还是旧的
+      //   （现场：点了没反应）。
+      await load();
+      const list = (last && last.account && last.account.accounts) || [];
+      const one = list.find((x) => x.id === acctSettingsId);
+      if (one) {
+        renderAcctTasks(one);
+        acctTaskOrig = {};
+        for (const t of Array.isArray(one.tasks) ? one.tasks : []) acctTaskOrig[t.id] = t.on === true;
+      }
+      return r;
+    },
+    (r) => r.note || '已跟随公共配置',
+  );
+});
+
 $('acct-cfg-save').addEventListener('click', (e) =>
   act(
     e.currentTarget,
@@ -3768,11 +3838,71 @@ $('acct-cfg-save').addEventListener('click', (e) =>
       if (secs !== '') body.listenSeconds = Number(secs);
       if (room !== '') body.listenRoom = Number(room);
       body.wsHeartbeat = $('acct-cfg-heartbeat').value.trim();
+      // 只提交**改过的**那几格（见 `acctTaskOrig`）。`<p-switch>` 的 `.value` 是布尔。
+      const tasks = {};
+      for (const sw of $('acct-cfg-tasks').querySelectorAll('p-switch')) {
+        const el = /** @type {any} */ (sw);
+        const id = String(el.dataset.task || '');
+        const now = Boolean(el.value);
+        if (id !== '' && acctTaskOrig[id] !== now) tasks[id] = now;
+      }
+      if (Object.keys(tasks).length > 0) body.tasks = tasks;
       const r = await api('/accounts', { method: 'POST', write: true, body });
       $('acct-cfg-dialog').hidden = true;
       return r;
     },
     (r) => r.note || '设置已存下',
+  ),
+);
+
+// ══════════ 导入旧配置（asign.json） ══════════
+//
+// 只做两件事：dry-run 看清单、真导入。**不读服务器上的路径**（用户贴什么就是什么）。
+// ⚠ 成功后要 `load()` 一次：账号表、开关、未就绪状态都变了，界面得跟着重画。
+$('acct-import').addEventListener('click', () => {
+  setText('import-note', '');
+  $('import-dialog').hidden = false;
+});
+$('import-close').addEventListener('click', () => {
+  $('import-dialog').hidden = true;
+});
+$('import-dialog').addEventListener('click', (ev) => {
+  if (ev.target === $('import-dialog')) $('import-dialog').hidden = true;
+});
+
+function importBody(dryRun) {
+  const text = $('import-text').value.trim();
+  if (text === '') {
+    setText('import-note', '先把 asign.json 的内容贴进来');
+    return null;
+  }
+  return { text, dryRun };
+}
+
+$('import-dry').addEventListener('click', (e) =>
+  act(
+    e.currentTarget,
+    async () => {
+      const body = importBody(true);
+      if (body === null) return null;
+      return await api('/config/import', { method: 'POST', write: true, body });
+    },
+    (r) => r.note || '（没有可搬的内容）',
+  ),
+);
+
+$('import-go').addEventListener('click', (e) =>
+  act(
+    e.currentTarget,
+    async () => {
+      const body = importBody(false);
+      if (body === null) return null;
+      const r = await api('/config/import', { method: 'POST', write: true, body });
+      $('import-dialog').hidden = true;
+      await load();
+      return r;
+    },
+    (r) => r.note || '已导入',
   ),
 );
 

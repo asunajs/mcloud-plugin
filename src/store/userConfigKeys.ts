@@ -54,6 +54,15 @@ export const CONFIG_BINDINGS: readonly ConfigBinding[] = [
   { key: 'mcloud.exchange.target_hour', path: 'exchange.target_hour', kind: 'text' },
 
   { key: 'mcloud.exchange.order.lead_ms', path: 'exchange.lead_ms', kind: 'number', min: 0, max: 600_000 },
+  // ── 日常子任务开关的**公共默认**（`mcloud/tasks/taskSwitches.ts`）──
+  // 账号级那一格在账号袋里（`mcloud.task.<id>.on`），这里只放"所有号共用的缺省"。
+  // ⚠ **不给 seed**：缺席就是缺省值，不往用户的文件里塞六行噪音，也不用升 schema。
+  { key: 'mcloud.task.signin.common', path: 'task_signin', kind: 'bool' },
+  { key: 'mcloud.task.expansion.common', path: 'task_expansion', kind: 'bool' },
+  { key: 'mcloud.task.appTask.common', path: 'task_app_task', kind: 'bool' },
+  { key: 'mcloud.task.redpack.common', path: 'task_redpack', kind: 'bool' },
+  { key: 'mcloud.task.tokenpk.common', path: 'task_tokenpk', kind: 'bool' },
+
   // ── 直播 ──────────────────────────────────────────────────────
   { key: 'mcloud.live.listen_seconds.task', path: 'live.listen_seconds', kind: 'number', min: 5, max: 1800, seed: 600 },
 

@@ -227,9 +227,15 @@ async function runLeg(deps: TaskDeps, maxSteps = 300): Promise<{ outcomes: TaskO
 
 const nPath = (sent: Sent[], needle: string): number => sent.filter((s) => s.path.includes(needle)).length;
 
-test('这一族没开 ⇒ 一个请求都不发；没写过开关 ⇒ 默认开（照参照实现的默认值）', async () => {
+test('这一族没开 ⇒ 一个请求都不发；**缺省是关**（2026-11-25 口径：会往云机装应用）', async () => {
+  const fresh = harness();
+  assert.equal(redpackOn(fresh.deps), false, '缺省必须是关 —— 它会往用户的云机里装应用');
+  assert.equal(redpackGate(fresh.deps).idle, true);
+
+  // 显式打开之后才跑
   const on = harness();
-  assert.equal(redpackOn(on.deps), true, '缺省必须是开着 —— 自造一道默认关的闸等于偷偷停掉这一族');
+  setRedpackEnabled(on.store, true, NOW);
+  assert.equal(redpackOn(on.deps), true);
   assert.equal(redpackGate(on.deps).idle, false);
 
   const off = harness();

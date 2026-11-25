@@ -231,6 +231,15 @@ export const KEY_SCOPE: Readonly<Record<string, KeyScope>> = {
   // 代抽的按天账（今天抽了几次、中了什么）—— 上限按天算，同一天再跑也不重置。
   'mcloud.tokenpk.draw.state': 'account',
 
+  // ── 日常子任务开关（`mcloud/tasks/taskSwitches.ts`）─────────────────
+  // 五个 id 一个形状：`mcloud.task.<id>.on`，'1'/'0'，**空串 = 没设过**（回落公共层）。
+  // ⚠ 按账号：同一个号关掉算力大作战，不该影响另一个号。
+  'mcloud.task.signin.on': 'account',
+  'mcloud.task.expansion.on': 'account',
+  'mcloud.task.appTask.on': 'account',
+  'mcloud.task.redpack.on': 'account',
+  'mcloud.task.tokenpk.on': 'account',
+
   // ── 实例级配置 / 跨账号共享 ────────────────────────────────
   /** 账号表本身。 */
   'mcloud.accounts': 'global',
@@ -363,6 +372,31 @@ export function readBag(store: ReadableState, acctId: string): Record<string, st
 
 function writeBag(store: WritableState, acctId: string, bag: Record<string, string>, nowIso: string): void {
   store.setState(acctBagKey(acctId), JSON.stringify(bag), nowIso);
+}
+
+/** 把一个账号袋里的某个键**改名**（值归一由调用方给 `normalize`）。
+ *
+ *  用途只有一个：老键 → 统一形状的一次性迁移（见 `mcloud/tasks/taskSwitches.ts`）。
+ *  ⚠ 迁完**把老键置空**（不 delete 键本身）—— 袋是整块 JSON 读改写的，
+ *    置空既够用又不会被"另一个进程刚好在读"这种时序问题咬到。
+ *  @returns 真的搬了才 `true`（目标已有值 ⇒ 不覆盖，返回 `false`） */
+export function moveBagKey(
+  store: WritableState,
+  acctId: string,
+  from: string,
+  to: string,
+  nowIso: string,
+  normalize?: (v: string) => string,
+): boolean {
+  const bag = readBag(store, acctId);
+  const raw = bag[from];
+  if (raw === undefined || raw.trim() === '') return false;
+  const had = bag[to];
+  if (had !== undefined && had.trim() !== '') return false;
+  bag[to] = normalize === undefined ? raw : normalize(raw);
+  bag[from] = '';
+  writeBag(store, acctId, bag, nowIso);
+  return true;
 }
 
 /** 删掉一个账号的整个袋 —— **删账号时必须调**。

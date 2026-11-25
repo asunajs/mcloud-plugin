@@ -24,7 +24,7 @@ import { basename, join } from 'node:path';
 import { openFileStore } from '../host/fs/fileStore.ts';
 import { migrateUserConfig } from '../host/fs/configMigrate.ts';
 import { loadConfig } from './config.ts';
-import { seedAccounts } from './runtime.ts';
+import { applyLegacyImport, planFromSeedableConfig } from '../mcloud/legacyImport.ts';
 
 export interface ImportResult {
   ok: boolean;
@@ -68,21 +68,20 @@ export async function importLegacyConfig(opts: ImportOptions): Promise<ImportRes
   const port = raw.userConfig;
   if (port === undefined) throw new Error('这个 store 没有 userConfig 端口');
 
+  // ② 解析 + 落地都走**业务层那一份**（`mcloud/legacyImport.ts`）——
+  //    面板的「导入旧配置」用的是同一个 `parseLegacyAsign` / `applyLegacyImport`，
+  //    两端不许各写一份映射（R3）。
+  const plan = planFromSeedableConfig(cfg);
   const settings: string[] = [];
-  const put = (path: string, value: unknown): void => {
-    if (value === undefined) return;
-    settings.push(path);
-    if (opts.dryRun !== true) port.write(path, value);
-  };
-  put('cli.http.timeout_ms', cfg.http.timeoutMs);
-  put('cli.http.insecure', cfg.http.insecure);
-  put('cli.http.follow_redirects', cfg.http.followRedirects);
-  put('cli.http.proxy', cfg.http.proxy);
-  put('cli.ws.timeout_ms', cfg.ws.timeoutMs);
-  put('cli.ws.insecure', cfg.ws.insecure);
-
-  // ② 账号（走与面板同一套 upsert；空配置不动账号表 —— 否则等于把号全删了）
-  if (opts.dryRun !== true && cfg.accounts.length > 0) seedAccounts(raw, cfg);
+  if (opts.dryRun !== true) {
+    for (const one of plan.settings) {
+      port.write(one.path, one.value);
+      settings.push(one.path);
+    }
+    if (plan.common.accounts.length > 0) applyLegacyImport(raw, { ...plan, settings: [] }, new Date().toISOString());
+  } else {
+    for (const one of plan.settings) settings.push(one.path);
+  }
   let accounts = 0;
   try {
     const list = JSON.parse(raw.getState('mcloud.accounts') ?? '[]') as unknown;

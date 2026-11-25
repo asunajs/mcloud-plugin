@@ -66,6 +66,7 @@ import type { PkSession } from '../tokenPk.ts';
 import { planTasks, summaryOf, tasksFrom } from '../tokenPkRules.ts';
 import type { PkDrawDay } from '../tokenPkState.ts';
 import type { PkAction } from '../tokenPkRules.ts';
+import { taskGate } from './taskSwitches.ts';
 
 /** 整趟的调度上限（`dailyRun` 那边用）。
  *
@@ -102,8 +103,7 @@ export function tokenPkSummary(store: Pick<Store, 'getState'>): string | undefin
 }
 
 export function tokenPkGate(deps: TaskDeps): TaskOutcome {
-  if (tokenPkEnabled(deps.store)) return { ok: true, idle: false, note: '' };
-  return { ok: true, idle: true, skipped: true, note: '这一族没开（账号设置里可以开）' };
+  return taskGate(deps, 'tokenpk');
 }
 
 /** 会话：H5 票（`jwttoken`）+ cookie + UA。抓包证明这一族**只认这张票**，不用另换活动站票。 */

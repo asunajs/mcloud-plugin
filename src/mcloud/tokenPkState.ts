@@ -15,6 +15,7 @@
 // （`clearAttempt`），不进日志、不进读数接口。
 
 import type { Store } from '../store/types.ts';
+import { setTaskOn, taskOn } from './tasks/taskSwitches.ts';
 
 /** 整趟的状态（含逐行账）。 */
 export const STATE_TOKENPK = 'mcloud.tokenpk.state';
@@ -156,17 +157,17 @@ export function takeTokenPkLines(store: Store, nowIso: string): string[] {
   return lines;
 }
 
-/** 开没开。**没写过 = 开着**（参照实现的默认值就是 true）。 */
+/** 开没开。**委托给统一的子任务开关**（账号 > 公共 > 缺省，见 `taskSwitches.ts`）；
+ *  没写过 = 缺省（这一族是**开**）。
+ *
+ *  ⚠ 老键 `mcloud.tokenpk.enabled` 只在 `migrateTaskSwitches` 里读一次（它还写着
+ *  `'true'/'false'` 这种编码），之后不再参与判定 —— 一份设置只有一个家。 */
 export function tokenPkEnabled(store: Pick<Store, 'getState'>): boolean {
-  const v = store.getState(STATE_TOKENPK_ENABLED);
-  // ⚠ `getState` 在"没写过"时回的是 **null**（不是 undefined）—— e2e 抓到的：
-  //   写成 `v === undefined` 时，新号读到的 null 落到下面 ⇒ `false` ⇒ 「这一族没开」。
-  if (v === null || v === undefined || v === '') return true;
-  return v === 'true' || v === '1';
+  return taskOn(store, 'tokenpk');
 }
 
 export function setTokenPkEnabled(store: Store, on: boolean, nowIso: string): void {
-  store.setState(STATE_TOKENPK_ENABLED, on ? 'true' : 'false', nowIso);
+  setTaskOn(store, 'tokenpk', on, nowIso);
 }
 
 // ── 代抽（`lottery`）──────────────────────────────────────────────────

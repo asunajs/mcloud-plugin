@@ -1,0 +1,115 @@
+// 路由层：账号「设置」里的子任务开关，以及「导入旧配置」。
+//
+// 这一层要钉住的是**写哪一格**和**拒绝什么**：
+//   · `tasks` 写账号层、`taskReset` 清账号层（不是设成开）；
+//   · 不认识的开关 id 要 400 并列出合法 id（静默丢弃会让用户以为改了）；
+//   · 导入只收粘贴文本、dry-run 不写盘。
+
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+
+import { memStore } from '../src/store/memory.ts';
+import { rawStoreOf, scoped } from '../src/store/scoped.ts';
+import { mcloudRoutes } from '../src/mcloud/routes.ts';
+import { upsertAccount, loadAccounts } from '../src/mcloud/accounts.ts';
+import { taskOn, taskSource } from '../src/mcloud/tasks/taskSwitches.ts';
+import { testDeps } from './helpers.ts';
+import type { RouteEntry } from '../src/app/routes/support.ts';
+
+const NOW = '2026-11-25T03:00:00.000Z';
+const AUTH = 'Basic bW9iaWxlOjEzOTAwMTM5MDAwOnRva2Vu';
+
+function setup() {
+  const store = memStore();
+  store.ensureSchema();
+  const { account } = upsertAccount(store, AUTH, NOW, '测试号');
+  const routes = mcloudRoutes(testDeps(store, { now: NOW }));
+  const settings = routes.find(
+    (x) => x.path === '/plugins/mcloud/api/accounts' && x.method === 'POST',
+  )!;
+  const importRoute = routes.find(
+    (x) => x.path === '/plugins/mcloud/api/config/import' && x.method === 'POST',
+  )!;
+  return { store, id: account.id, settings, importRoute };
+}
+
+/** 调一条路由并解出 JSON。`handler` 可能是同步返回（`RouteResponse | Promise<…>`）。 */
+async function post(
+  route: RouteEntry,
+  body: unknown,
+): Promise<{ status: number; json: Record<string, unknown> }> {
+  const r = await route.handler({ body: JSON.stringify(body), query: '' });
+  return { status: r.status, json: JSON.parse(r.body) as Record<string, unknown> };
+}
+
+test('set-settings：`tasks` 写账号层，读数里的 source 跟着变', async () => {
+  const { store, id, settings } = setup();
+  const r = await post(settings, { op: 'set-settings', id, tasks: { tokenpk: false } });
+  assert.equal(r.status, 200);
+  const one = scoped(rawStoreOf(store), id);
+  assert.equal(taskOn(one, 'tokenpk'), false);
+  assert.equal(taskSource(one, 'tokenpk'), 'account');
+  // 返回的读数里要能看出"这个号单独设过"
+  const accounts = (r.json['accounts'] ?? []) as { id: string; tasks: { id: string; on: boolean; source: string }[] }[];
+  const me = accounts.find((a) => a.id === id)!;
+  const t = me.tasks.find((x) => x.id === 'tokenpk')!;
+  assert.equal(t.on, false);
+  assert.equal(t.source, 'account');
+});
+
+test('set-settings：`taskReset` 清账号层 ⇒ 回到公共默认（不是设成开）', async () => {
+  const { store, id, settings } = setup();
+  const one = scoped(rawStoreOf(store), id);
+  await post(settings, { op: 'set-settings', id, tasks: { redpack: true } });
+  assert.equal(taskOn(one, 'redpack'), true);
+
+  await post(settings, { op: 'set-settings', id, taskReset: ['redpack'] });
+  assert.equal(taskSource(one, 'redpack'), 'default');
+  assert.equal(taskOn(one, 'redpack'), false, '清掉之后回到缺省（云手机缺省关）');
+});
+
+test('set-settings：不认识的开关 id ⇒ 400 并列出合法 id（不静默丢）', async () => {
+  const { id, settings } = setup();
+  const bad = await post(settings, { op: 'set-settings', id, tasks: { nope: true } });
+  assert.equal(bad.status, 400);
+  assert.ok(Array.isArray(bad.json['valid']), '要把合法 id 列出来');
+  assert.equal((bad.json['valid'] as string[]).includes('tokenpk'), true);
+});
+
+test('set-settings：值不是布尔 ⇒ 400（别把 "false" 字符串当关）', async () => {
+  const { store, id, settings } = setup();
+  const r = await post(settings, { op: 'set-settings', id, tasks: { tokenpk: 'false' } });
+  assert.equal(r.status, 400);
+  assert.equal(taskOn(scoped(rawStoreOf(store), id), 'tokenpk'), true, '被拒的写不能生效');
+});
+
+test('导入旧配置：dry-run 不写盘，真导入才落账号与开关', async () => {
+  const { store, importRoute } = setup();
+  const doc = {
+    caiyun: [{ auth: 'Basic bW9iaWxlOjEzOTAwMTM5MDAxOnRva2Vu', nickname: '旧配置里的号', 红包派对: { 开启: true } }],
+  };
+  const dry = await post(importRoute, { text: JSON.stringify(doc), dryRun: true });
+  assert.equal(dry.status, 200);
+  assert.equal(dry.json['dryRun'], true);
+  assert.equal(loadAccounts(store).length, 1, 'dry-run 不许新增账号');
+
+  const real = await post(importRoute, { text: JSON.stringify(doc) });
+  assert.equal(real.status, 200);
+  assert.equal(loadAccounts(store).length, 2, '真导入要多出那个号');
+  const imported = loadAccounts(store).find((a) => a.label === '旧配置里的号')!;
+  assert.equal(taskOn(scoped(rawStoreOf(store), imported.id), 'redpack'), true, '`开启:true` 要搬过来');
+});
+
+test('导入旧配置：不是 JSON / 缺 auth ⇒ 400 说清楚', async () => {
+  const { importRoute } = setup();
+  const notJson = await post(importRoute, { text: 'not json' });
+  assert.equal(notJson.status, 400);
+  assert.match(String(notJson.json['error']), /JSON/);
+
+  const noAuth = await post(importRoute, { text: JSON.stringify({ caiyun: [{}] }) });
+  assert.equal(noAuth.status, 400);
+  assert.match(String(noAuth.json['error']), /auth/);
+
+  const empty = await post(importRoute, { text: '   ' });
+  assert.equal(empty.status, 400);
+});

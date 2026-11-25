@@ -68,6 +68,8 @@ function scannedKeys(): Set<string> {
     for (const m of readFileSync(f, 'utf-8').matchAll(/'(mcloud\.[a-zA-Z0-9_.]*)'/g)) {
       const k = m[1]!;
       if (k.endsWith('.com') || k.endsWith('.cn')) continue; // 域名不是状态键
+      // 文件名也不是状态键（`mcloud.panel.json` 这种在测试里当路径用）
+      if (/\.(json|md|js|ts|txt)$/.test(k)) continue;
       if (k === ACCT_PREFIX) continue; // 袋的物理键前缀不是逻辑键
       if (k === PLUGIN_NS) continue; // 命名空间本身不是键
       found.add(k);

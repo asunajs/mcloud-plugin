@@ -59,7 +59,7 @@
   --font-mono: var(--mono);
   /* 样式表版本号：页面上的「样式自检」读它，用来判断浏览器用的是哪一份 style.css。
      改了本文件就把它加一（一个数字，别指望它自动同步）。 */
-  --style-ver: 161;
+  --style-ver: 162;
 }
 
 /* 为什么还留着这几个短名字：界面上其余的区块（日常 / 兑换 / 直播 / 数据）
@@ -401,6 +401,36 @@ textarea:focus {
   .tab {
     padding-inline: var(--sp-1);
   }
+}
+
+/* 「这个号跑哪些任务」那五格：一行一个开关。
+   ⚠ 只写布局（行怎么排），开关本身的长相归面板的 `.switch` —— 别在这里画控件。 */
+.task-switches {
+  list-style: none;
+  margin: var(--sp-1) 0 0;
+  padding: 0;
+}
+
+.task-switch {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-1) 0;
+  border-top: 1px solid var(--line);
+}
+
+.task-switch:first-child {
+  border-top: none;
+}
+
+.task-switch-label {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 「跟随公共」只在"本号单独设过"时出现；它是次要动作，别抢开关的视觉重量。 */
+.task-switch-reset {
+  flex: 0 0 auto;
 }
 
 /* 页签里的一个面板（登录的五条路各一块）。底色用面板的「第二层」面色，

@@ -316,6 +316,42 @@ gh release view v<version> --json assets -q '.assets[].digest'   # 核对哈希
 |---|---|---|
 | `mcloud` / `mcloud-daily` | `daily_budget_s`（日常一趟预算，60–600 秒） | `mcloud.daily.budget_s` |
 | `mcloud` / `mcloud-exchange` | `exchange_enabled`（定时抢兑开关） | `mcloud.exchange.schedule.enabled` |
+| `mcloud`（公共默认） | `task_signin` / `task_expansion` / `task_app_task` / `task_redpack` / `task_tokenpk` | 见下「子任务开关」 |
+
+### 子任务开关（按账号 + 公共默认）
+
+「日常」一条任务里有五族互不相干的事，可以**逐个关**（关掉的那族一个请求都不发）：
+
+| 开关 | 管什么 | 缺省 |
+|---|---|---|
+| 每日签到 | 签到 / 签到翻倍 / 复活卡 | 开 |
+| 任务拓展 | 随机文件上传 + 快照（跑完自己清理） | 开 |
+| App 任务 | App 任务清单与打卡、**分享领奖** | 开 |
+| 云手机 | 红包派对（**会往你的云机里装应用**） | **关** |
+| 算力大作战 | 活动任务、阶段奖励、代抽 | 开 |
+
+取值三层，**账号那层赢**：
+
+```text
+账号层  mcloud.task.<id>.on        账号卡片 →「设置」→「这个号跑哪些任务」
+公共层  config.json 的 task_<id>    插件卡片 →「配置」→「默认开：…」
+缺省    （见上表）
+```
+
+- 账号层写 `'1'`/`'0'`，**空串 = 没设过**（跟随公共层）。「跟随公共」按钮就是把这一格清空；
+- 公共层**没写** = 用缺省（不往你的 `config.json` 里塞默认值）；
+- 老键 `mcloud.redpack.enabled` / `mcloud.tokenpk.enabled` 会在加载时**一次性**搬到
+  `mcloud.task.redpack.on` / `mcloud.task.tokenpk.on`（值归一、旧键置空、幂等）。
+
+### 从旧版 `asign.json` 导入
+
+第一次装这个插件、手里只有老版 mcloud-sign 的 `asign.json`：
+
+- **面板**：账号页工具栏 →「导入旧配置」→ 粘贴整份 JSON →「先看看会搬什么」→「导入」；
+- **CLI**：`mcloud-sign config:import --config asign.json --data-dir <面板的 plugin-data/mcloud> [--dry-run]`。
+
+两端走**同一份**解析与落地（`src/mcloud/legacyImport.ts`）。会搬：账号、云手机/算力大作战的开关、
+`standalone.http|ws.*` → `cli.*`；**不认识的键不搬**，会在结果里列出来。幂等、不改旧文件。
 
 判据是**三方合并**：插件配置页写的 `plugin-data/<插件>/config.json` 与插件自己界面改的值
 互不覆盖 —— 文件里的值只在**它自己变过**的那一次生效（指纹在 `mcloud.cfg.applied`）。

@@ -55,7 +55,8 @@ function depsFor(redpack: boolean): { deps: TaskDeps; sent: string[] } {
   const store = memStore();
   store.ensureSchema();
   store.setState(STATE_AUTH, AUTH, NOW);
-  if (!redpack) setRedpackEnabled(store, false, NOW);
+  // 缺省是**关**（2026-11-25）⇒ 这两条用例都必须显式写开关，不能靠缺省
+  setRedpackEnabled(store, redpack, NOW);
   const { transport, sent } = transportFor(redpack);
   return { deps: { store, transport, nowIso: NOW, nowMs: () => Date.parse(NOW), settleMs: 0, gapMs: [0, 0] }, sent };
 }
@@ -87,6 +88,6 @@ test('关掉 ⇒ 这一族一步都不做，也不往活动站发任何东西', 
   assert.equal(step?.idle, true);
   assert.ok(!r.detail.some((l) => l.startsWith('余额: 可用')), r.detail.join('\n'));
   assert.equal(sent.filter((p) => p.includes('/cloudphone-market')).length, 0);
-  // 关掉 ≠ 没跑：界面要说清是"没开"，而不是"今天没事"
-  assert.match(step?.note ?? '', /没开/);
+  // 关掉 ≠ 没跑：界面要说清是"关着"，而不是"今天没事"
+  assert.match(step?.note ?? '', /已关闭/);
 });

@@ -32,6 +32,7 @@ import { loadQueue } from './tasks/receive.ts';
 import { runAuthRefresh } from './authRefresh.ts';
 import { runOwnedCleanup } from './tasks/ownedFiles.ts';
 import { runTodayCloud } from './tasks/todayCloud.ts';
+import { taskGate } from './tasks/taskSwitches.ts';
 
 /** 这一趟要跑的族**分别落在哪一页** —— 一页一张票，所以按页换。
  *
@@ -194,19 +195,26 @@ export async function runDaily(
   // 判据从状态键读，不从返回值猜：`runSign` 提交完和回查完都是 ok。
   // ⚠ 同样按账号（多账号下读模块级 store 会读到别的号那一格）
   opts.onPhase?.('签到');
-  // 签到自己提交一次、看一眼状态就完事，不能 drain（每次执行独立）。
-  push(await once('签到', runSign, deps));
-  // 这两条是单发动作（各自只有一个状态键，没有多段）
-  for (const [name, fn] of [
-    ['签到翻倍', runMultiple],
-    ['复活卡', runRevival],
-  ] as const) {
-    push(await once(name, fn, deps));
+  const signOff = taskGate(deps, 'signin');
+  if (signOff.idle === true) {
+    // 关掉的族仍留一行（灰）：运行记录要能回答"这一趟为什么没签"
+    push({ name: '签到', ok: true, note: signOff.note, idle: true });
+  } else {
+    // 签到自己提交一次、看一眼状态就完事，不能 drain（每次执行独立）。
+    push(await once('签到', runSign, deps));
+    // 这两条是单发动作（各自只有一个状态键，没有多段）
+    for (const [name, fn] of [
+      ['签到翻倍', runMultiple],
+      ['复活卡', runRevival],
+    ] as const) {
+      push(await once(name, fn, deps));
+    }
   }
 
   // ③ 任务拓展（状态机：读 → 随机文件+快照触发备份 → 清理自己造的；不再领云朵）
   // ⚠ 不能只看“键在不在”：`done` 是**当天**的完成标记，跨天必须重新起。
-  const expKick = startExpansion(deps);
+  const expOff = taskGate(deps, 'expansion');
+  const expKick = expOff.idle === true ? expOff : startExpansion(deps);
   if (expKick.idle) {
     push({ name: '任务拓展', ok: true, note: expKick.note, idle: true });
   } else {
@@ -227,6 +235,10 @@ export async function runDaily(
   //   旧的靠「每 15 分钟一跳」在几个小时内把一轮读满 —— 而一轮没读满时，
   //   待办列表是**不全**的，App 任务就会漏做。
   //   所以这里 drain **整一轮**：两发，很便宜，而且读完就是完整读数。
+  const appOff = taskGate(deps, 'appTask');
+  if (appOff.idle === true) {
+    push({ name: 'App 任务', ok: true, note: appOff.note, idle: true });
+  } else {
   push(
     await (async () => {
       const r = await drain(runAppTaskMatrix, deps, {
@@ -288,6 +300,7 @@ export async function runDaily(
   //     ⚠ 放在 ⑤ 领取AI豆 **之前**：那一族只认 `receiveList` 账本，
   //       这 20 豆不走它（抓包里 `receiveList` 只有 `cloudType=2` 下月可领）。
   push(await once('分享领奖', runShareClaim, deps));
+  }  // ← appTask 开关的 else 到这里结束（矩阵/做任务/状态/分享领奖同属一档）
 
   // ④.5 红包派对（移动云手机的活动站）—— 另一台主机、**另一套凭据**。
   //

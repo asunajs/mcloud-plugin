@@ -483,6 +483,46 @@ test('⚠ 过期的码不许画得像还活着（"剩 0 秒"看起来完全像�
   );
 });
 
+test('每账号「设置」弹窗里有子任务开关：用面板的 <p-switch>，不是自己画的', async () => {
+  const html = srcOf('webui/index.html');
+  const js = srcOf('webui/app.js');
+  // 容器与渲染函数
+  assert.ok(html.includes('id="acct-cfg-tasks"'), '弹窗里要有开关容器');
+  assert.match(js, /function renderAcctTasks\(/, '要有渲染函数');
+  // 用面板组件（组件优先：主题、键盘、读屏都跟着面板走）
+  assert.match(js, /document\.createElement\('p-switch'\)/, '开关必须是 <p-switch>');
+  // 保存时把五格一起提交
+  assert.match(js, /body\.tasks = tasks/, '保存要把开关一起发出去');
+  // 「跟随公共」只在"本号单独设过"时出现
+  assert.match(js, /t\.source === 'account'/, '只有账号层设过的才给「跟随公共」');
+  assert.match(js, /data-task-reset/, '「跟随公共」按钮要能被事件委派认出来');
+});
+
+test('清单里的公共默认：五个 bool 字段，label 是人话', async () => {
+  const man = JSON.parse(srcOf('mcloud.panel.json')) as {
+    config: { fields: { name: string; label: string; type: string; default?: unknown }[] };
+  };
+  const byName = new Map(man.config.fields.map((f) => [f.name, f]));
+  for (const name of ['task_signin', 'task_expansion', 'task_app_task', 'task_redpack', 'task_tokenpk']) {
+    const f = byName.get(name);
+    assert.ok(f, `清单缺 ${name}`);
+    assert.equal(f.type, 'bool');
+    assert.match(f.label, /^默认开：/, `${name} 的 label 要说清这是"默认值"`);
+  }
+  assert.equal(byName.get('task_redpack')?.default, false, '云手机的公共默认也是关');
+  assert.equal(byName.get('task_signin')?.default, true);
+});
+
+test('「导入旧配置」入口在账号工具栏，且只贴文本（不读服务器路径）', async () => {
+  const html = srcOf('webui/index.html');
+  const js = srcOf('webui/app.js');
+  assert.ok(html.includes('id="acct-import"'), '账号工具栏要有入口');
+  assert.ok(html.includes('id="import-dialog"'), '要有导入弹窗');
+  assert.ok(html.includes('id="import-text"'), '要有粘贴框');
+  assert.match(js, /\/config\/import/, '要调插件自己的导入路由');
+  assert.match(js, /importBody\(true\)/, '要能先 dry-run 看清单');
+});
+
 test('⚠「手机短信」页签下不出现「客户端形态」（那一路没有 win/mac 之分）', async () => {
   // 用户的原话：「手机端哪来的 macOS 和 Windows」。
   // 形态是弹窗级的（扫码 / 电脑短信 / 账密 / 凭据都按它来），但**手机短信那一路走

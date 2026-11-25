@@ -16,6 +16,8 @@ import { rawStoreOf, scoped } from '../../../store/scoped.ts';
 import { syncTaskReadiness } from '../../../mcloud/taskReadiness.ts';
 import { accountsView, json, readBody } from '../support.ts';
 import type { RouteDeps, RouteEntry } from '../support.ts';
+import { TASK_SWITCHES, isTaskSwitchId, resetTaskOn, setTaskOn } from '../../../mcloud/tasks/taskSwitches.ts';
+import { applyLegacyImport, parseLegacyAsign } from '../../../mcloud/legacyImport.ts';
 
 /** accounts 组。deps 是路由依赖；base 是 /plugins/mcloud/api；verify 是「拿当前会话验一次」。 */
 export function accountsRoutes(deps: RouteDeps, base: string, verify: () => Promise<{ ok: boolean; note: string }>): RouteEntry[] {
@@ -161,7 +163,34 @@ export function accountsRoutes(deps: RouteDeps, base: string, verify: () => Prom
           if (typeof body.wsHeartbeat === 'string') {
             one.setState('mcloud.live.ws_heartbeat_reply', body.wsHeartbeat.trim(), now);
           }
-          deps.log(`账号设置（${found.label}）：窗口 ${secs ?? '不变'}s / 房间 ${room ?? '不变'}`);
+          // 子任务开关：`tasks: { tokenpk: false }` 写账号层；`taskReset: ['appTask']`
+          // 清掉账号层 ⇒ 回到公共默认（**不是**设成开）。
+          const touched: string[] = [];
+          const reset = Array.isArray(body.taskReset) ? body.taskReset : [];
+          for (const raw of reset) {
+            if (typeof raw !== 'string' || !isTaskSwitchId(raw)) {
+              return json(400, { error: `没有这个任务开关：${String(raw)}`, valid: TASK_SWITCHES.map((t) => t.id) });
+            }
+            resetTaskOn(one, raw, now);
+            touched.push(`${raw}=跟随公共`);
+          }
+          if (body.tasks !== undefined) {
+            if (typeof body.tasks !== 'object' || body.tasks === null || Array.isArray(body.tasks)) {
+              return json(400, { error: 'tasks 必须是 { 开关id: true|false }' });
+            }
+            for (const [id, v] of Object.entries(body.tasks as Record<string, unknown>)) {
+              if (!isTaskSwitchId(id)) {
+                return json(400, { error: `没有这个任务开关：${id}`, valid: TASK_SWITCHES.map((t) => t.id) });
+              }
+              if (typeof v !== 'boolean') return json(400, { error: `开关 ${id} 的值必须是 true/false` });
+              setTaskOn(one, id, v, now);
+              touched.push(`${id}=${v ? '开' : '关'}`);
+            }
+          }
+          deps.log(
+            `账号设置（${found.label}）：窗口 ${secs ?? '不变'}s / 房间 ${room ?? '不变'}`
+              + (touched.length > 0 ? ` / 任务 ${touched.join('、')}` : ''),
+          );
           return json(200, {
             ...accountsView(deps.store as unknown as Store),
             note: `${found.label} 的设置已存下`,
@@ -244,6 +273,72 @@ export function accountsRoutes(deps: RouteDeps, base: string, verify: () => Prom
           return json(200, { ...accountsView(deps.store), note: `已删掉 ${id}` });
         }
         return json(400, { error: '需要 {"op":"add|select|remove", …}' });
+      },
+    },
+
+{
+      // **导入旧配置**（老版 mcloud-sign 的 `asign.json`）。
+      //
+      // 为什么面板要有这一格：用户第一次装这个插件时，手里常常只有一份旧的 `asign.json`；
+      // 以前只能去命令行跑 `config:import`，而"装完插件就能用"是面板用户的前提（R1/R3）。
+      //
+      // ⚠ 只收**粘贴的文本**，不收服务器路径 —— 不让这个口子变成"读任意文件"。
+      // ⚠ `dryRun` 先算不写：用户要能先看见"会搬什么、哪些不搬"再决定。
+      path: `${base}/config/import`,
+      method: 'POST',
+      handler: async (req) => {
+        const body = readBody(req);
+        const text = typeof body.text === 'string' ? body.text.trim() : '';
+        if (text === '') return json(400, { error: '把 asign.json 的内容贴进来' });
+        const dryRun = body.dryRun === true;
+        let doc: unknown;
+        try {
+          doc = JSON.parse(text);
+        } catch (e) {
+          return json(400, {
+            error: `不是合法 JSON：${e instanceof Error ? e.message : String(e)}（asign.config.js 请先转成 JSON）`,
+          });
+        }
+        let plan: ReturnType<typeof parseLegacyAsign>;
+        try {
+          plan = parseLegacyAsign(doc);
+        } catch (e) {
+          return json(400, { error: e instanceof Error ? e.message : String(e) });
+        }
+        if (dryRun) {
+          return json(200, {
+            ok: true,
+            dryRun: true,
+            accounts: plan.common.accounts.length,
+            settings: plan.settings.map((x) => x.path),
+            skipped: plan.skipped,
+            note: `会搬 ${plan.common.accounts.length} 个账号、${plan.settings.length} 格设置`
+              + (plan.skipped.length > 0 ? `；不搬：${plan.skipped.join('、')}` : ''),
+          });
+        }
+        let report: ReturnType<typeof applyLegacyImport>;
+        try {
+          report = applyLegacyImport(deps.store, plan, deps.now());
+        } catch (e) {
+          return json(500, { error: `导入失败：${e instanceof Error ? e.message : String(e)}` });
+        }
+        deps.log(
+          `导入旧配置：${report.accounts} 个账号、${report.settings.length} 格设置`
+            + (report.switches.length > 0 ? `、开关 ${report.switches.join('、')}` : '')
+            + (report.skipped.length > 0 ? `；不搬：${report.skipped.join('、')}` : ''),
+        );
+        syncTaskReadiness(deps.store);
+        return json(200, {
+          ...accountsView(deps.store),
+          ok: true,
+          dryRun: false,
+          accounts: report.accounts,
+          settings: report.settings,
+          switches: report.switches,
+          skipped: report.skipped,
+          note: `已导入 ${report.accounts} 个账号、${report.settings.length} 格设置`
+            + (report.skipped.length > 0 ? `；没搬：${report.skipped.join('、')}` : ''),
+        });
       },
     }
   ];

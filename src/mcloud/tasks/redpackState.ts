@@ -24,6 +24,7 @@
 
 import type { Store } from '../../store/types.ts';
 import type { RedpackKind } from '../redpackRules.ts';
+import { setTaskOn, taskOn } from './taskSwitches.ts';
 
 /** 本趟进度（含按天的 `written`）。 */
 export const STATE_REDPACK = 'mcloud.redpack.state';
@@ -150,12 +151,16 @@ export interface RedpackState {
 }
 
 /** 开没开（**默认开**）。 */
+/** 开没开。**委托给统一的子任务开关**（账号 > 公共 > 缺省，见 `taskSwitches.ts`）。
+ *
+ *  ⚠ 缺省是**关**（2026-11-25 口径）。老键 `mcloud.redpack.enabled` 只在
+ *  `migrateTaskSwitches` 里读一次，之后不再参与判定 —— 一份设置只有一个家。 */
 export function redpackEnabled(store: Pick<Store, 'getState'>): boolean {
-  return (store.getState(STATE_REDPACK_ENABLED) ?? '').trim() !== '0';
+  return taskOn(store, 'redpack');
 }
 
 export function setRedpackEnabled(store: Store, on: boolean, nowIso: string): void {
-  store.setState(STATE_REDPACK_ENABLED, on ? '1' : '0', nowIso);
+  setTaskOn(store, 'redpack', on, nowIso);
 }
 
 /** 基址口子（空 = 真站点）。照 `liveGateTask.loadGateBase` 的口径去尾斜杠。 */

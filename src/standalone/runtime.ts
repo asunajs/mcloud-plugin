@@ -2,15 +2,12 @@
 //
 // 任务逻辑本身不 import 这里；它只拿 TaskDeps。这样面板与独立入口共用同一批任务。
 
-import { loadAccounts, saveAccounts, phoneOf, upsertAccount, type Account } from '../mcloud/accounts.ts';
 import { STATE_CURRENT_ACCOUNT } from '../store/keys.ts';
 import { scoped } from '../store/scoped.ts';
 import type { Store } from '../store/types.ts';
 import { taskDeps } from '../mcloud/accountRuntime.ts';
 import type { HostWs, TaskDeps } from '../mcloud/tasks/base.ts';
 import { applyDefaultContentType, type Transport } from '../mcloud/client.ts';
-import { setRedpackEnabled } from '../mcloud/tasks/redpackState.ts';
-import { setTokenPkDraw, setTokenPkEnabled } from '../mcloud/tokenPkState.ts';
 import type { PkDrawConfig } from '../mcloud/tokenPkState.ts';
 import type { ListenDeps } from '../mcloud/tasks/liveListen.ts';
 import { dirname } from 'node:path';
@@ -39,72 +36,12 @@ export interface Runtime {
  *
  *  ⚠ `config.accounts` 为空时**不要调**它：它会把账号表整份替换成空 —— 统一配置模式下
  *  账号本来就不在配置里（在 `shared.json`），那种情况跳过是唯一正确的做法。 */
-export function seedAccounts(raw: Store, config: StandaloneConfig): void {
-  const nowIso = new Date().toISOString();
-  const existing = loadAccounts(raw);
-  const next: Account[] = [];
-  const used = new Set<string>();
-  // 账号 id ← 「红包派对.开启」里**明确写了**的那个值。
-  // 攒着统一落：新号要等 `upsertAccount` 之后才有 id 可写。
-  const redpack: { id: string; on: boolean }[] = [];
-  // 算力大作战的开关（同样只在配置里**明确写了**时才落状态；默认是开）
-  const tokenPk: { id: string; on: boolean }[] = [];
-  // 代抽（默认不抽；只有配置里写了「代抽」才落状态）
-  const tokenPkDraw: { id: string; cfg: PkDrawConfig }[] = [];
-  for (const [index, seed] of config.accounts.entries()) {
-    const phone = phoneOf(seed.auth);
-    const hit =
-      existing.find((a) => (phone !== undefined && phoneOf(a.auth) === phone) || a.auth === seed.auth) ??
-      // 没有手机号可比时按配置顺序对齐：旧版配置只给 auth/nickname，换票后的
-      // auth 可能完全认不出手机号，但账号顺序仍然是稳定的。
-      existing.find((a, i) => i === index && !used.has(a.id)) ??
-      undefined;
-    const label = seed.label ?? seed.nickname ?? hit?.label ?? phone ?? '账号';
-    // 三层合并照参照实现：账号那层赢，其次 `common`，**都没写就不写这一格**
-    // （缺省本来就是"开着"，见 `redpackState.redpackEnabled`）。
-    const on = seed.redpackEnabled ?? config.commonRedpackEnabled;
-    const pkOn = seed.tokenPkEnabled ?? config.commonTokenPkEnabled;
-    const pkDraw = seed.tokenPkDraw ?? config.commonTokenPkDraw;
-    if (hit !== undefined) {
-      if (used.has(hit.id)) continue;
-      used.add(hit.id);
-      next.push({
-        ...hit,
-        label,
-        auth: seed.replaceAuth === true || hit.auth === '' ? seed.auth : hit.auth,
-        disabled: seed.disabled === true,
-      });
-      if (on !== undefined) redpack.push({ id: hit.id, on });
-      if (pkOn !== undefined) tokenPk.push({ id: hit.id, on: pkOn });
-      if (pkDraw !== undefined) tokenPkDraw.push({ id: hit.id, cfg: pkDraw });
-      continue;
-    }
-    // 新号：走 upsertAccount，id/平台/手机号规则与面板一致
-    const { account } = upsertAccount(raw, seed.auth, nowIso, label);
-    if (account.id === '') continue;
-    if (used.has(account.id)) continue;
-    used.add(account.id);
-    next.push({ ...account, label, disabled: seed.disabled === true });
-    if (on !== undefined) redpack.push({ id: account.id, on });
-    if (pkOn !== undefined) tokenPk.push({ id: account.id, on: pkOn });
-    if (pkDraw !== undefined) tokenPkDraw.push({ id: account.id, cfg: pkDraw });
-  }
-  saveAccounts(raw, next, nowIso);
-  if (next.length > 0 && (raw.getState(STATE_CURRENT_ACCOUNT) ?? '') === '') {
-    raw.setState(STATE_CURRENT_ACCOUNT, next[0]!.id, nowIso);
-  }
-  // ⚠ 这一格是 **account** 作用域 ⇒ 必须经 `scoped(raw, acctId)` 写，
-  //   直接写 `raw` 会落到"当前账号"上（多账号时就是把 A 的开关写到 B 名下）。
-  for (const one of redpack) {
-    setRedpackEnabled(scoped(raw, one.id), one.on, nowIso);
-  }
-  for (const one of tokenPk) {
-    setTokenPkEnabled(scoped(raw, one.id), one.on, nowIso);
-  }
-  for (const one of tokenPkDraw) {
-    setTokenPkDraw(scoped(raw, one.id), one.cfg, nowIso);
-  }
-}
+// `seedAccounts` 搬到业务层了（`mcloud/legacyImport.ts`）：面板的「导入旧配置」也要用它，
+// 而那个文件顶层 import 了 `node:fs`/`node:path`，沙箱里一 import 就炸。
+// 这里只 re-export，老的调用点（`configImport.ts` / 测试）一行不用改。
+import { seedAccounts } from '../mcloud/legacyImport.ts';
+
+export { seedAccounts };
 
 export async function createRuntime(opts: { configPath?: string; stateFile?: string } = {}): Promise<Runtime> {
   const config = await await loadConfig(opts.configPath);

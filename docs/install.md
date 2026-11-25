@@ -69,6 +69,23 @@ npm ci && npm run build        # 产出 dist/panel-llrt/（四份 .js + 四份�
 单文件还是"共用核心"的目录形态；要强制一种就设 `MCLOUD_PKG=single|dir`。
 面板扫描的是**构建产物**，所以改完源码要重新 build 再拷；只拷 `src/` 跑不起来。
 
+## 三之二、从旧版 mcloud-sign 的 `asign.json` 搬过来
+
+第一次用这个插件、手里只有老版 `asign.json`：
+
+1. 面板 → 插件 → 移动云盘 →「账号」页工具栏 →**「导入旧配置」**；
+2. 把 `asign.json` 整份贴进去 →「先看看会搬什么」（只算不写）→「导入」；
+3. 会搬：账号、云手机/算力大作战的开关、`standalone.http|ws` → `cli.*`；
+   **不认识的键不搬**，会在提示里列出来。
+
+命令行等价物（同一份实现）：
+
+```sh
+mcloud-sign config:import --config asign.json --data-dir ~/panel-3030/data/plugin-data/mcloud --dry-run
+```
+
+⚠ `asign.config.js|mjs` 面板里贴不了（不是 JSON），先用 CLI 那条；面板只收 JSON 文本。
+
 ## 四、升级
 
 新版本同样是一个 zip，**直接再传一次**（默认覆盖）。传完插件会自动热更，
