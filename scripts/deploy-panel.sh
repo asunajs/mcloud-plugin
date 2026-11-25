@@ -23,6 +23,8 @@ DEST="${PANEL_PLUGINS_DIR:-$HOME/panel-3030/plugins}"
 DIST="$ROOT/dist/panel-llrt"
 # 四个插件 + 一份界面（mcloud 是服务插件，其余三个各跑一类任务，共用同一份 webui）
 PLUGINS=(mcloud mcloud-daily mcloud-exchange mcloud-live)
+# 收拢形状（第 269 轮）：四个插件 + 清单 + 界面都收进 `mcloud/` 这一个属地目录
+GROUP=mcloud
 WEBUI_FILES=(index.html style.css app.js boot.js)
 # 目录式产物：<name>/index.js + <name>/lib/**（mcloud 里是唯一一份核心）
 DIRS=(mcloud mcloud-daily mcloud-exchange mcloud-live)
@@ -115,24 +117,25 @@ for f in "${MANIFESTS[@]}"; do [ -f "$DEST/$f" ] && cp "$DEST/$f" "$BK/"; done
 echo "→ 旧的一套装在 $BK"
 
 echo "→ 装到 $DEST"
-# 先清掉**另一种形状**的旧产物，免得更新的插件发现"两个都在"（面板先看 <name>.js）
-for n in "${PLUGINS[@]}"; do rm -rf "${DEST:?}/$n.js" "${DEST:?}/$n"; done
+# 先清掉**两种形状**的旧产物（散件 + 老目录形态 + 旧属地），免得更新的插件发现"两个都在"
+for n in "${PLUGINS[@]}"; do rm -rf "${DEST:?}/$n.js" "${DEST:?}/$n.panel.json" "${DEST:?}/$n"; done
+rm -rf "${DEST:?}/mcloud.webui" "${DEST:?}/${GROUP:?}"
+mkdir -p "${DEST:?}/$GROUP"
 if [ -d "$DIST/mcloud" ]; then
-  for n in "${DIRS[@]}"; do cp -R "$DIST/$n" "$DEST/$n"; done
+  for n in "${DIRS[@]}"; do cp -R "$DIST/$n" "$DEST/$GROUP/$n"; done
 else
-  for n in "${PLUGINS[@]}"; do cp "$DIST/$n.js" "$DEST/$n.js"; done
+  for n in "${PLUGINS[@]}"; do cp "$DIST/$n.js" "$DEST/$GROUP/$n.js"; done
 fi
-rm -rf "${DEST:?}/mcloud.webui"
-cp -R "$DIST/mcloud.webui" "$DEST/mcloud.webui"
-for f in "${MANIFESTS[@]}"; do cp "$DIST/$f" "$DEST/$f"; done
+cp -R "$DIST/mcloud.webui" "$DEST/$GROUP/mcloud.webui"
+for f in "${MANIFESTS[@]}"; do cp "$DIST/$f" "$DEST/$GROUP/$f"; done
 
 if [ -d "$DIST/mcloud" ]; then
-  for n in "${DIRS[@]}" mcloud.webui; do diff -r "$DIST/$n" "$DEST/$n"; done
+  for n in "${DIRS[@]}" mcloud.webui; do diff -r "$DIST/$n" "$DEST/$GROUP/$n"; done
 else
-  for n in "${PLUGINS[@]}"; do cmp "$DIST/$n.js" "$DEST/$n.js"; done
+  for n in "${PLUGINS[@]}"; do cmp "$DIST/$n.js" "$DEST/$GROUP/$n.js"; done
 fi
-for f in "${MANIFESTS[@]}"; do cmp "$DIST/$f" "$DEST/$f"; done
-for f in "${WEBUI_FILES[@]}"; do cmp "$DIST/mcloud.webui/$f" "$DEST/mcloud.webui/$f"; done
+for f in "${MANIFESTS[@]}"; do cmp "$DIST/$f" "$DEST/$GROUP/$f"; done
+for f in "${WEBUI_FILES[@]}"; do cmp "$DIST/mcloud.webui/$f" "$DEST/$GROUP/mcloud.webui/$f"; done
 echo "✅ $(( ${#PLUGINS[@]} + ${#WEBUI_FILES[@]} )) 个文件逐个 cmp 一致"
 
 if [ "$RESTART" = 1 ]; then
