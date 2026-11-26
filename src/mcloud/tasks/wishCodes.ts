@@ -35,6 +35,21 @@ import { BASE_MCLOUD, H5_SALT_KEY } from '../h5session.ts';
 import { loadSession } from '../../store/types.ts';
 import { loadJwt } from '../sessionExchange.ts';
 import type { TaskDeps, TaskOutcome } from './base.ts';
+import type { Store } from '../../store/types.ts';
+
+/** 「用 AI豆换许愿码」的开关：`'1'` / `'0'`。**没写过 = 关**。
+ *
+ *  ⚠ 缺省关的理由和代抽一样：**花的是用户自己的豆**（300 豆换 1 张码）。
+ *  这种"花资源"的事必须用户显式点头，不能默认替他花。 */
+export const STATE_WISH_EXCHANGE = 'mcloud.wish.exchange';
+
+export function wishExchangeEnabled(store: Pick<Store, 'getState'>): boolean {
+  return (store.getState(STATE_WISH_EXCHANGE) ?? '') === '1';
+}
+
+export function setWishExchangeEnabled(store: Store, on: boolean, nowIso: string): void {
+  store.setState(STATE_WISH_EXCHANGE, on ? '1' : '0', nowIso);
+}
 
 /** 活动页（`task/list` 与 `auto-advance` 都要求带它当 referer）。 */
 export const WISH_REFERER =
@@ -170,6 +185,51 @@ export function pageClickRequest(s: WishSession, taskId: number, base?: string |
   };
 }
 
+/** 读「豆换码」的余额与剩余次数（**只读**）。 */
+export function exchangeInfoRequest(s: WishSession, base?: string | undefined) {
+  const qs = new URLSearchParams(WISH_QUERY).toString();
+  return {
+    url: `${wishUrl('/ycloud/makewish/task/cloud-exchange/info', base)}?${qs}`,
+    method: 'GET' as const,
+    headers: wishHeaders(s),
+    body: undefined,
+  };
+}
+
+/** 用 AI豆换一张许愿码（**写、花豆**）。 */
+export function exchangeRequest(s: WishSession, base?: string | undefined) {
+  return {
+    url: wishUrl('/ycloud/makewish/task/cloud-exchange', base),
+    method: 'POST' as const,
+    headers: wishHeaders(s),
+    body: JSON.stringify(WISH_QUERY),
+  };
+}
+
+/** 「豆换码」的读数（纯函数，好单测）。 */
+export interface ExchangeInfo {
+  cost: number;
+  remaining: number;
+  balance: number;
+  canExchange: boolean;
+}
+
+export function parseExchangeInfo(result: unknown): ExchangeInfo | null {
+  if (typeof result !== 'object' || result === null) return null;
+  const r = result as Record<string, unknown>;
+  const num = (k: string): number => {
+    const v = r[k];
+    const n = typeof v === 'number' ? v : Number(v);
+    return Number.isFinite(n) ? n : 0;
+  };
+  return {
+    cost: num('cost'),
+    remaining: num('remaining'),
+    balance: num('balance'),
+    canExchange: r['canExchange'] === true,
+  };
+}
+
 /** 让上游把 `autoAdvanceable` 的那几条推成完成（**写**）。 */
 export function autoAdvanceRequest(s: WishSession, base?: string | undefined) {
   return {
@@ -205,14 +265,6 @@ export async function runWishCodes(deps: TaskDeps): Promise<TaskOutcome> {
   const auto = waiting.filter((t) => t.autoAdvanceable);
   // `page/click` 的条件照页面 JS：`WAIT` + `clickAdvance` + **不是** `popAdvanceJump`
   const clickable = waiting.filter((t) => t.clickAdvance && t.buttonAction !== 'popAdvanceJump');
-  if (auto.length === 0 && clickable.length === 0) {
-    return {
-      ok: true,
-      idle: true,
-      note: `没有能自动领的许愿码（${String(tasks.length - waiting.length)}/${String(tasks.length)} 条已完成）`,
-    };
-  }
-
   const got: string[] = [];
   const bad: string[] = [];
 
@@ -248,10 +300,55 @@ export async function runWishCodes(deps: TaskDeps): Promise<TaskOutcome> {
     }
   }
 
+  // ③ 用 AI豆换码（**缺省关**，花的是用户的豆；开了也只换一张）
+  let exchangeNote = '';
+  if (wishExchangeEnabled(deps.store)) {
+    const infoRes = await callRawText(deps.transport, exchangeInfoRequest(s, deps.baseUrl));
+    let info: ExchangeInfo | null = null;
+    if (infoRes.ok) {
+      try {
+        info = parseExchangeInfo((JSON.parse(infoRes.text) as WishEnvelope)?.result);
+      } catch {
+        info = null;
+      }
+    }
+    if (info === null) {
+      bad.push('读豆余额没成');
+    } else if (!info.canExchange || info.remaining <= 0) {
+      // 不能换就如实说，不算失败
+      exchangeNote = `；豆换码这次换不了（剩 ${String(info.remaining)} 次 / 余额 ${String(info.balance)}）`;
+    } else if (info.balance < info.cost) {
+      exchangeNote = `；豆不够换码（要 ${String(info.cost)}，有 ${String(info.balance)}）`;
+    } else {
+      const exRes = await callRawText(deps.transport, exchangeRequest(s, deps.baseUrl));
+      if (!exRes.ok) {
+        bad.push(`豆换码没发出去（${exRes.error ?? '未知失败'}）`);
+      } else {
+        try {
+          const env = JSON.parse(exRes.text) as WishEnvelope;
+          if (String(env?.code ?? '') === '0') {
+            got.push(`豆换码(-${String(info.cost)}豆)`);
+          } else {
+            bad.push(`豆换码被拒（${String(env?.msg ?? env?.code ?? '?')}）`);
+          }
+        } catch {
+          bad.push('豆换码：响应不是 JSON');
+        }
+      }
+    }
+  }
+
   if (got.length === 0) {
-    const why = bad.length > 0 ? `；${bad.join('，')}` : '（可自动的都没被推进）';
-    return { ok: bad.length === 0, idle: true, note: `这次没有新领到许愿码${why}` };
+    // ⚠ 「没有可自动的」这句要放在**兑换之后**判：豆换码是独立的一条路，
+    //   前面两条都没得做时它照样能换（2026-11-27 踩过：提前 return 把兑换跳过了）。
+    const why =
+      bad.length > 0
+        ? `；${bad.join('，')}`
+        : auto.length === 0 && clickable.length === 0
+          ? `（${String(tasks.length - waiting.length)}/${String(tasks.length)} 条已完成，没有能自动领的）`
+          : '（可自动的都没被推进）';
+    return { ok: bad.length === 0, idle: true, note: `这次没有新领到许愿码${why}${exchangeNote}` };
   }
   const tail = bad.length > 0 ? `；另有 ${String(bad.length)} 条没成（${bad.join('，')}）` : '';
-  return { ok: true, note: `领到 ${String(got.length)} 张许愿码：${got.join(' / ')}${tail}` };
+  return { ok: true, note: `领到 ${String(got.length)} 张许愿码：${got.join(' / ')}${tail}${exchangeNote}` };
 }

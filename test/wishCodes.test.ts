@@ -208,3 +208,55 @@ test('没有会话 ⇒ 明说"票没换成"，不发请求', async () => {
   assert.match(r.note, /还没有网页会话/);
   assert.equal(sent.length, 0);
 });
+
+// ── 豆换码（缺省关：花的是用户的豆）──────────────────────────────────
+
+test('豆换码**缺省关**：开关没开时，一发都不发（哪怕余额够）', async () => {
+  const { deps, sent } = harness((url) => {
+    if (url.includes('task/list')) {
+      return { code: 0, result: { tasks: [{ taskId: 1004, taskState: 'FINISH', autoAdvanceable: false, clickAdvance: false }] } };
+    }
+    return { code: 0, result: {} };
+  });
+  await runWishCodes(deps);
+  assert.equal(sent.filter((x) => /cloud-exchange/.test(String(x.url))).length, 0, '缺省关就别碰豆');
+});
+
+test('开了豆换码 + 余额够 ⇒ 换一张，并说清扣了多少豆', async () => {
+  const { deps, sent, store } = harness((url) => {
+    if (url.includes('task/list')) {
+      return { code: 0, result: { tasks: [{ taskId: 1004, taskState: 'FINISH', autoAdvanceable: false, clickAdvance: false }] } };
+    }
+    if (url.includes('cloud-exchange/info')) {
+      return { code: 0, result: { cost: 300, remaining: 9, balance: 10843, canExchange: true } };
+    }
+    if (url.includes('cloud-exchange')) return { code: 0, result: {} };
+    return { code: 0, result: {} };
+  });
+  const { setWishExchangeEnabled } = await import('../src/mcloud/tasks/wishCodes.ts');
+  setWishExchangeEnabled(store, true, NOW);
+  const r = await runWishCodes(deps);
+  assert.equal(r.ok, true);
+  assert.match(r.note, /豆换码\(-300豆\)/, r.note);
+  assert.equal(sent.filter((x) => String(x.url).endsWith('/cloud-exchange')).length, 1, '只换一张');
+});
+
+test('余额不够 / 不能换 ⇒ 如实说，不发写请求', async () => {
+  for (const [info, want] of [
+    [{ cost: 300, remaining: 9, balance: 100, canExchange: true }, /豆不够换码/],
+    [{ cost: 300, remaining: 0, balance: 10843, canExchange: false }, /换不了/],
+  ] as const) {
+    const { deps, sent, store } = harness((url) => {
+      if (url.includes('task/list')) {
+        return { code: 0, result: { tasks: [{ taskId: 1004, taskState: 'FINISH', autoAdvanceable: false, clickAdvance: false }] } };
+      }
+      if (url.includes('cloud-exchange/info')) return { code: 0, result: info };
+      return { code: 0, result: {} };
+    });
+    const { setWishExchangeEnabled } = await import('../src/mcloud/tasks/wishCodes.ts');
+    setWishExchangeEnabled(store, true, NOW);
+    const r = await runWishCodes(deps);
+    assert.match(r.note, want, r.note);
+    assert.equal(sent.filter((x) => String(x.url).endsWith('/cloud-exchange')).length, 0, '不该发写请求');
+  }
+});
