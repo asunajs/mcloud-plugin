@@ -504,3 +504,89 @@ test('会做的有三件（AI助手 / AI相机 / 扫描文档）；一趟先挑*
   assert.deepEqual(JSON.parse(String(reg.body)), { moduleId: '1-250730', taskId: 'aizhushou' },
     '先挑不写云盘的那件');
 });
+
+test('挑到 AI 相机那件时：整条链走完、文件登记、回读翻位才算做完', async () => {
+  const { desEncryptBase64 } = await import('../src/crypto/des.ts');
+  const { ownedFileIds } = await import('../src/mcloud/tasks/ownedFiles.ts');
+  const store = memStore();
+  store.ensureSchema();
+  store.setState(
+    SESSION_KEY,
+    JSON.stringify({ cookie: 'c=1', jwt: 'JWT', deviceId: 'D1', userAgent: 'UA', savedAt: NOW }),
+    NOW,
+  );
+  store.setState(STATE_JWT, JSON.stringify({ at: NOW, jwt: 'JWT', referer: '', fingerprint: 'f' }), NOW);
+  const account = desEncryptBase64('13800138000', '139_mail');
+  const sent: BuiltRequest[] = [];
+  let chatted = false;
+  const transport = ((req: BuiltRequest) => {
+    sent.push(req);
+    const url = String(req.url);
+    if (url.includes('/funai/api/page/register')) {
+      return { status: 200, headers: {}, body: JSON.stringify({ code: 0, msg: 'success', result: 0 }) };
+    }
+    if (url.includes('/funai/api/page/getmodule')) {
+      return {
+        status: 200,
+        headers: {},
+        body: JSON.stringify({
+          code: 0,
+          msg: 'success',
+          result: {
+            moduleId: '1-250730',
+            drawTimes: 0,
+            drawsUsed: 0,
+            todayGetLotteryCount: 0,
+            taskIds: [
+              { id: 'aixiangji', taskName: 'AI相机', taskSign: 0, isComplete: chatted ? 1 : 0 },
+            ],
+          },
+        }),
+      };
+    }
+    if (url.includes('/funai/api/timed/getmodule')) {
+      return { status: 200, headers: {}, body: JSON.stringify({ code: 0, msg: 'success', result: [] }) };
+    }
+    if (url.includes('querySpecTokenV2')) {
+      return { status: 200, headers: {}, body: JSON.stringify({ success: true, data: { token: 'SSO' } }) };
+    }
+    if (url.includes('inlogin.action')) {
+      return { status: 200, headers: {}, body: JSON.stringify({ var: { sid: 'S', rmkey: 'R' } }) };
+    }
+    if (url.includes('queryUserToken')) {
+      return {
+        status: 200,
+        headers: {},
+        body: JSON.stringify({ var: { data: { data: { account, token: 'T', userDomainId: 'D' } } } }),
+      };
+    }
+    if (url.includes('aiRecognize')) {
+      return { status: 200, headers: {}, body: JSON.stringify({ success: true, data: { fileId: 'IMG1', taskId: '9' } }) };
+    }
+    if (url.includes('assistant/chat/v2/add')) {
+      chatted = true;
+      return { status: 200, headers: {}, body: 'data: {"data":{"flowResult":{"outContent":"hi"}}}\n' };
+    }
+    return { status: 200, headers: {}, body: JSON.stringify({ code: 90001, msg: '未登录' }) };
+  }) as never;
+  let fake = Date.parse(NOW);
+  const deps = {
+    store,
+    transport,
+    nowIso: NOW,
+    now: () => NOW,
+    nowMs: () => (fake += 1000),
+    baseUrl: undefined,
+  } as unknown as TaskDeps;
+
+  const notes: string[] = [];
+  for (let i = 0; i < 14; i++) {
+    const r = await playAiStep(deps);
+    notes.push(r.note);
+    if (r.ok === false && r.pending !== true) break;
+    if (r.idle === true) break;
+  }
+  assert.ok(sent.some((x) => String(x.url).includes('aiRecognize')), '要识图');
+  assert.deepEqual(ownedFileIds(deps), ['IMG1'], '落的那张图要登记（否则永远不删）');
+  assert.ok(notes.some((n) => /做完了/.test(n)), `回读翻位要判做完：${notes.join(' | ')}`);
+});

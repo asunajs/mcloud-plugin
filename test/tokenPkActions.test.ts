@@ -83,3 +83,23 @@ test('AI 相机那条链：识图落的文件要登记成"我们造的"（否则
   assert.ok(urls.some((u) => u.includes('assistant/chat/v2/add')), '要对话');
   assert.deepEqual(ownedFileIds(deps), [FILE_ID], '识图落的文件必须进"我们造的"清单');
 });
+
+test('识图落的那张图，链尾清理会真的把它移进回收站（闭环）', async () => {
+  const { deps, sent } = harness();
+  const attempt: PkAttempt = { taskId: 585, name: '体验AI相机', key: 'aiCamera', step: 'ai-mail-sso' };
+  const session = { jwt: 'JWT', cookie: 'c=1', userAgent: 'UA', deviceId: 'D1' };
+  for (let i = 0; i < 12; i++) {
+    const r = await stepAction(deps, session, attempt);
+    if (r.finished) break;
+  }
+  assert.deepEqual(ownedFileIds(deps), [FILE_ID], '先确认登记上了');
+
+  const { runOwnedCleanup } = await import('../src/mcloud/tasks/ownedFiles.ts');
+  const before = sent.length;
+  const out = await runOwnedCleanup(deps);
+  assert.equal(out.ok, true, out.note);
+  const trash = sent.slice(before).filter((x) => /trash|recycle/i.test(String(x.url)));
+  assert.equal(trash.length, 1, `要发一发回收站请求（实际 ${trash.length}）`);
+  assert.match(String(trash[0]!.body ?? ''), new RegExp(FILE_ID), '要删的就是那张图');
+  assert.deepEqual(ownedFileIds(deps), [], '删干净之后名单要清空');
+});
