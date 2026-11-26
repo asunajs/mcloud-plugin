@@ -26,7 +26,7 @@
 // 页面版本号：和 style.css 里的 --style-ver 一起人工递增。
 // 「样式自检」（boot.js 的 ?diag=1）会读它 —— 用来区分「CSS 是新的、JS 还是旧的」这种
 // 半新半旧状态（第 155 轮：样式表是 v155，但 DOM 里根本没有 .ex-group-row 这种行）。
-document.documentElement.dataset.appVer = '170';
+document.documentElement.dataset.appVer = '171';
 
 /** 插件自己的接口。 */
 const API = '/plugins/mcloud/api';
@@ -3459,7 +3459,11 @@ function showBlock(name) {
   // 日志流跟着"这一块是不是显示着"开关（见 TERMS 那段说明）
   syncTerms(name);
   // 「数据」页的第一格是**主动请求**的：开这一页就去取，不用先点一下。
-  if (name === 'data') autoFetchBeansOnce();
+  if (name === 'data') {
+    autoFetchBeansOnce();
+    // 趣玩AI 那一格只画**上次读到的**（不发请求）
+    renderPlayAi();
+  }
   // 兑换页同理：今天还没读到清单就补一枪（清单是下拉的唯一来源）。
   if (name === 'exchange') autoFetchPicksOnce();
   // 「领奖」页也是：第一次进就读一次未领取（之后点「刷新」/切账号才重取）。
@@ -3917,6 +3921,32 @@ $('acct-cfg-save').addEventListener('click', (e) =>
     (r) => r.note || '设置已存下',
   ),
 );
+
+/** 趣玩AI 那一格：**只画上次读到的**，不发请求。
+ *
+ *  ⚠ 别在这里"进页面就读一次"：那一族一次要发两发（页面模块 + 主题模块），
+ *    而这一页只是"看一眼读数"。要新的去「日常」跑一趟。
+ */
+function renderPlayAi() {
+  const box = $('playai-line');
+  const meta = $('playai-meta');
+  if (!box) return;
+  const p = last && last.playai;
+  if (!p) {
+    box.textContent = '还没读过 —— 跑一趟「日常」就会读一次。';
+    setText('playai-meta', '');
+    return;
+  }
+  box.textContent = p.line || (p.ok ? '读到了' : '上次没读成');
+  const bits = [`读到于 ${when(p.at)}`];
+  if (p.reading) {
+    const r = p.reading;
+    if (r.canDraw > 0) bits.push(`现在能抽 ${r.canDraw} 次`);
+    const names = (r.modules || []).map((m) => m.subtitle).filter(Boolean).slice(0, 4);
+    if (names.length > 0) bits.push(names.join(' / '));
+  }
+  setText('playai-meta', bits.join(' · '));
+}
 
 // ══════════ 调试页：只跑某一族 · 单个账号 ══════════
 //

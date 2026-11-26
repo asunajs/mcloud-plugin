@@ -1568,7 +1568,8 @@ test('⚠ 「数据」页第一格是主动请求的：开这一页自己取，�
   const js = srcOf('webui/app.js');
   const html = srcOf('webui/index.html');
   // 切到「数据」就自动取一次
-  assert.ok(/if \(name === 'data'\) autoFetchBeansOnce\(\);/.test(js), '开这一页要自己取');
+  // ⚠ 2026-11-26：这一句外面加了 `{ }`（同一处还要画趣玩AI 那张卡，而那张卡**不发请求**）
+  assert.ok(/if \(name === 'data'\) \{[\s\S]{0,80}?autoFetchBeansOnce\(\);/.test(js), '开这一页要自己取');
   // 只取一次（切回来不重打 —— 那是按账号一枪的请求）
   assert.ok(/let beansAutoFetched = false;/.test(js), '要有"只自动取一次"的闸');
   // 按钮叫「刷新」（不是「取一次」—— 用户不用先点一下）

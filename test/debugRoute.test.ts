@@ -76,3 +76,30 @@ test('一条记录都没有 ⇒ 全是 null（不是空对象、不是编"成功
     assert.equal(body.tasks[k], null, `${k} 应该是 null`);
   }
 });
+
+test('读数里带上趣玩AI 上次读到的那一份（没读过就是 null）', async () => {
+  const store = memStore();
+  store.ensureSchema();
+  const routes = mcloudRoutes(testDeps(store, { now: NOW }));
+  const rd = routes.find((x) => x.path === '/plugins/mcloud/api/readings' && x.method === 'GET')!;
+  const before = JSON.parse((await rd.handler({ query: '' })).body) as { playai?: unknown };
+  assert.equal(before.playai, null, '没读过就是 null，不编一个空读数');
+
+  const { savePlayAiSnapshot } = await import('../src/mcloud/playAiState.ts');
+  savePlayAiSnapshot(
+    store,
+    {
+      at: NOW,
+      ok: true,
+      line: '2 个模块 · 5 件任务 · 2 件可做',
+      reading: { modules: [], total: 5, done: 0, runnable: 2, manual: 1, todayGot: 0, canDraw: 0 },
+      error: '',
+    },
+    NOW,
+  );
+  const after = JSON.parse((await rd.handler({ query: '' })).body) as {
+    playai: { line: string; at: string } | null;
+  };
+  assert.equal(after.playai?.line, '2 个模块 · 5 件任务 · 2 件可做');
+  assert.equal(after.playai?.at, NOW);
+});

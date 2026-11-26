@@ -30,6 +30,7 @@ import { resolveTaskAccounts, taskAccountsView } from '../../mcloud/taskAccounts
 import { planViews } from '../../mcloud/exchangePlans.ts';
 import { accountsView, loadLoginBase, loginPlatform, readBackupState, readMatrixLocal, sessionPlatform } from './support.ts';
 import type { RouteDeps } from './support.ts';
+import { loadPlayAiSnapshot } from '../../mcloud/playAiState.ts';
 
 export function buildReadings(deps: RouteDeps): Record<string, unknown> {
   const nowMs = Date.parse(deps.now());
@@ -48,6 +49,15 @@ export function buildReadings(deps: RouteDeps): Record<string, unknown> {
       taskCommon: view.taskCommon,
       session: sessionStatus(deps.store, nowIso),
     },
+
+    // 趣玩AI 的**最后一份读数**（`list` 那一步落下的）。
+    // ⚠ 这是"上次读到的"，不是"现在去读一次" —— 界面只显示，不替用户发请求。
+    //   要新的就点「现在跑一次」（或调试页只跑这一族）。
+    playai: (() => {
+      const snap = loadPlayAiSnapshot(deps.store);
+      if (snap === null) return null;
+      return { at: snap.at, ok: snap.ok, line: snap.line, error: snap.error, reading: snap.reading };
+    })(),
 
     // 三条任务各自"跑哪些账号"。⚠ 与上面那个 `account`（账号表）**分开给**：
     //   一个是"有哪些号"，一个是"这条任务用哪些号"—— 界面上它们在不同页
