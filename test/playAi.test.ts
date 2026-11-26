@@ -23,6 +23,7 @@ import {
   timedModuleRequest,
 } from '../src/mcloud/playAi.ts';
 import { lineLevel } from '../src/mcloud/tasks/stepLog.ts';
+import { PLAYAI_ACTION_KEYS } from '../src/mcloud/tasks/playAi.ts';
 
 /** 2026-11-26 实拍：页面模块（15 件）+ 主题模块（3 × 3 件）。这里只留判据字段。 */
 const PAGE = {
@@ -226,4 +227,51 @@ test('没有票那一条要能被"级联折叠"识别（否则会话坏了会刷
   assert.equal(lineText(raw), '趣玩AI：跳过（没有网页会话）');
   // 折叠之后不再是失败色
   assert.notEqual(lineLevel(lineText(raw)), 'fail');
+});
+
+// ── 真实响应（2026-11-26 实拍裁出来的判据字段）──────────────────────
+//
+// 上面那些 fixture 是我手写的"最小形状"；这一份是**真实报文**裁出来的：
+// 页面模块 15 件任务、主题模块 3 个各 3 件，`drawTimes/drawsUsed/todayGetLotteryCount`
+// 在主题模块里是 `null`。手写的 fixture 永远可能"刚好合我的解析器"，真实报文不会。
+
+test('真实报文（2026-11-26 实拍）：15 件 + 3 个主题模块，数字对得上', async () => {
+  const fs = await import('node:fs');
+  const raw = JSON.parse(
+    fs.readFileSync('test/fixtures/playai-getmodule-20261126.json', 'utf8'),
+  ) as { page: unknown; timed: unknown[] };
+
+  const page = parseModules(raw.page);
+  assert.equal(page.length, 1);
+  assert.equal(page[0]!.moduleId, '1-250730');
+  assert.equal(page[0]!.tasks.length, 15, '页面模块 15 件任务');
+  assert.equal(page[0]!.drawTimes, 0);
+  assert.equal(page[0]!.todayGetLotteryCount, 0);
+
+  const timed = parseModules(raw.timed);
+  assert.equal(timed.length, 3, '主题模块 3 个');
+  for (const m of timed) {
+    assert.equal(m.tasks.length, 3, `${m.moduleId} 应有 3 件任务`);
+    assert.equal(m.drawTimes, null, '主题模块的计数是 null，不是 0');
+    assert.equal(m.todayGetLotteryCount, null);
+  }
+
+  const all = summarize([...page, ...timed]);
+  assert.equal(all.total, 24, '15 + 9');
+  assert.equal(all.done, 0, '这一期实拍里一件都没完成');
+  // 真实报文里 `invite` 是 taskSign 1、`ailuyinzhuanxie` 是 taskSign 2 ⇒ 都算"要手动"
+  assert.equal(all.manual, 2);
+  assert.equal(all.runnable, 22);
+  assert.equal(all.canDraw, 0);
+});
+
+test('真实报文里"我们会做"的那三件都在（AI助手 / AI相机 / 扫描文档）', async () => {
+  const fs = await import('node:fs');
+  const raw = JSON.parse(
+    fs.readFileSync('test/fixtures/playai-getmodule-20261126.json', 'utf8'),
+  ) as { page: unknown };
+  const ids = parseModules(raw.page)[0]!.tasks.map((t) => t.id);
+  for (const id of Object.keys(PLAYAI_ACTION_KEYS)) {
+    assert.ok(ids.includes(id), `真实报文里应该有 ${id}（否则映射白写）`);
+  }
 });

@@ -1,0 +1,233 @@
+{
+ "_note": "2026-11-26 实拍（har/2026-11-26-playai-portal.har）裁出来的判据字段；图片 URL / 描述等长字段已去掉，形状不变",
+ "page": {
+  "moduleId": "1-250730",
+  "subtitle": "趣玩AI赢好礼",
+  "drawTimes": 0,
+  "drawsUsed": 0,
+  "todayGetLotteryCount": 0,
+  "taskIds": [
+   {
+    "id": "003",
+    "taskName": "智能抠图，一键抠图超轻松",
+    "taskDesc": "抽奖次数+1",
+    "taskSign": 0,
+    "isComplete": 0,
+    "innerLink": "https://yun.139.com/aiTools/#/faceMattingOffice?enableShare=1&token=#ssoToken#&sourceId=170423"
+   },
+   {
+    "id": "aixiangji",
+    "taskName": "AI相机，学习、翻译、问答全都有",
+    "taskDesc": "抽奖次数+1",
+    "taskSign": 0,
+    "isComplete": 0,
+    "innerLink": "mcloud://main/aiCamera?params=eyJ0YXJnZXQiOiJxdWVzdGlvbiIsInBhdGgiOiIxIiwiZ3JvdXAiOiIxIiwic291cmNlSWQiOiI4MTAxMzMifQ=="
+   },
+   {
+    "id": "aizhushou",
+    "taskName": "AI助手，打工人必备神器",
+    "taskDesc": "抽奖次数+1",
+    "taskSign": 0,
+    "isComplete": 0,
+    "innerLink": "mcloud://main/aiAssistantGlobal?params=eyJwYXJhbXMiOnsiYWRJZCI6IjY2MTk3IiwiYWRWdCI6IjQ3NTM1Iiwic291cmNlSWQiOiIxMDExNTEwMDAifX0="
+   },
+   {
+    "id": "007",
+    "taskName": "AI头像，个性头像秒出圈",
+    "taskDesc": "抽奖次数+1",
+    "taskSign": 0,
+    "isComplete": 0,
+    "innerLink": "https://yun.139.com/aiTools/#/aiAvatarOffice?enableShare=1&token=#ssoToken#&sourceId=170420"
+   },
+   {
+    "id": "204",
+    "taskName": "扫描文档，纸质文件秒变电子档",
+    "taskDesc": "抽奖次数+1",
+    "taskSign": 0,
+    "isComplete": 0,
+    "innerLink": "mcloud://main/aiCamera?params=eyJ0YXJnZXQiOiJkb2N1bWVudCIsInBhdGgiOiIxIiwiZ3JvdXAiOiIxIiwic291cmNlSWQiOiI4MTAxMzcifQ=="
+   },
+   {
+    "id": "034",
+    "taskName": "AI快照，一键get晶彩合照",
+    "taskDesc": "抽奖次数+1",
+    "taskSign": 0,
+    "isComplete": 0,
+    "innerLink": "https://yun.139.com/aiTools/#/aiPhotoStudioOffice?enableShare=1&token=#ssoToken#&sourceId=170422"
+   },
+   {
+    "id": "031",
+    "taskName": "AI表情包，斗图必备神器",
+    "taskDesc": "抽奖次数+1",
+    "taskSign": 0,
+    "isComplete": 0,
+    "innerLink": "https://yun.139.com/aiTools/#/aiEmojiOffice?enableShare=1&token=#ssoToken#&sourceId=170424"
+   },
+   {
+    "id": "008",
+    "taskName": "老图片修复，让旧照重拾往日光彩",
+    "taskDesc": "抽奖次数+1",
+    "taskSign": 0,
+    "isComplete": 0,
+    "innerLink": "https://yun.139.com/aiTools/#/picRepairOffice?enableShare=1&token=#ssoToken#&sourceId=170425"
+   },
+   {
+    "id": "invite",
+    "taskName": "邀请好友，一起趣玩AI",
+    "taskDesc": "抽奖次数+1",
+    "taskSign": 1,
+    "isComplete": 0,
+    "innerLink": null
+   },
+   {
+    "id": "006",
+    "taskName": "智能消除，杂乱背景一键清",
+    "taskDesc": "抽奖次数+1",
+    "taskSign": 0,
+    "isComplete": 0,
+    "innerLink": "https://yun.139.com/aiTools/#/picEliminateOffice?enableShare=1&token=#ssoToken#&sourceId=170426"
+   },
+   {
+    "id": "004",
+    "taskName": "AI漫画风，一键秒变二次元主角",
+    "taskDesc": "抽奖次数+1",
+    "taskSign": 0,
+    "isComplete": 0,
+    "innerLink": "https://yun.139.com/aiTools/#/aiComicOffice?enableShare=1&token=#ssoToken#&sourceId=170484"
+   },
+   {
+    "id": "009",
+    "taskName": "画质修复，老照片瞬间变高清",
+    "taskDesc": "抽奖次数+1",
+    "taskSign": 0,
+    "isComplete": 0,
+    "innerLink": "https://yun.139.com/aiTools/#/resolutionRepairOffice?enableShare=1&token=#ssoToken#&sourceId=170483"
+   },
+   {
+    "id": "3Drenou",
+    "taskName": "3D人偶制作，秒变3D潮玩模型",
+    "taskDesc": "抽奖次数+1",
+    "taskSign": 0,
+    "isComplete": 0,
+    "innerLink": "https://yun.139.com/aiTools/#/3dDollFigurineOffice?enableShare=1&token=#ssoToken#&sourceId=170618"
+   },
+   {
+    "id": "zhishiku",
+    "taskName": "AI知识库，构建专属知识图谱",
+    "taskDesc": "抽奖次数+1",
+    "taskSign": 0,
+    "isComplete": 0,
+    "innerLink": "mcloud://main/aiAssistantGlobal?params=eyJqdW1wQ29uZmlnIjp7InRhYiI6ImFpS25vd2xlZGdlIn0sInNvdXJjZUlkIjoiODEwMjkyIn0="
+   },
+   {
+    "id": "yunbiji",
+    "taskName": "AI云笔记",
+    "taskDesc": "抽奖次数+1",
+    "taskSign": 0,
+    "isComplete": 0,
+    "innerLink": "mcloud://main/featureServices?params=eyJsaW5rVXJsIjoiMHwyMDQwIiwidGl0bGUiOiLnrJTorrDlrp7ml7bovazlhpkifQ==&pullapp=810359"
+   }
+  ]
+ },
+ "timed": [
+  {
+   "moduleId": "2-261104-1",
+   "subtitle": "假日出行助手",
+   "drawTimes": null,
+   "drawsUsed": null,
+   "todayGetLotteryCount": null,
+   "taskIds": [
+    {
+     "id": "003",
+     "taskName": "智能抠图，一键抠图超轻松",
+     "taskDesc": "抽奖次数+1",
+     "taskSign": 0,
+     "isComplete": 0,
+     "innerLink": "https://yun.139.com/aiTools/#/faceMattingOffice?enableShare=1&token=#ssoToken#&sourceId=170423"
+    },
+    {
+     "id": "004",
+     "taskName": "AI漫画风，一键秒变二次元主角",
+     "taskDesc": "抽奖次数+1",
+     "taskSign": 0,
+     "isComplete": 0,
+     "innerLink": "https://yun.139.com/aiTools/#/aiComicOffice?enableShare=1&token=#ssoToken#&sourceId=170484"
+    },
+    {
+     "id": "006",
+     "taskName": "智能消除，杂乱背景一键清",
+     "taskDesc": "抽奖次数+1",
+     "taskSign": 0,
+     "isComplete": 0,
+     "innerLink": "https://yun.139.com/aiTools/#/picEliminateOffice?enableShare=1&token=#ssoToken#&sourceId=170426"
+    }
+   ]
+  },
+  {
+   "moduleId": "2-261104-2",
+   "subtitle": "AI创意工坊",
+   "drawTimes": null,
+   "drawsUsed": null,
+   "todayGetLotteryCount": null,
+   "taskIds": [
+    {
+     "id": "007",
+     "taskName": "AI头像，个性头像秒出圈",
+     "taskDesc": "抽奖次数+1",
+     "taskSign": 0,
+     "isComplete": 0,
+     "innerLink": "https://yun.139.com/aiTools/#/aiAvatarOffice?enableShare=1&token=#ssoToken#&sourceId=170420"
+    },
+    {
+     "id": "034",
+     "taskName": "AI快照，一键get晶彩合照",
+     "taskDesc": "抽奖次数+1",
+     "taskSign": 0,
+     "isComplete": 0,
+     "innerLink": "https://yun.139.com/aiTools/#/aiPhotoStudioOffice?enableShare=1&token=#ssoToken#&sourceId=170422"
+    },
+    {
+     "id": "3Drenou",
+     "taskName": "3D人偶制作，秒变3D潮玩模型",
+     "taskDesc": "抽奖次数+1",
+     "taskSign": 0,
+     "isComplete": 0,
+     "innerLink": "https://yun.139.com/aiTools/#/3dDollFigurineOffice?enableShare=1&token=#ssoToken#&sourceId=170618"
+    }
+   ]
+  },
+  {
+   "moduleId": "2-261104-3",
+   "subtitle": "职场达人养成",
+   "drawTimes": null,
+   "drawsUsed": null,
+   "todayGetLotteryCount": null,
+   "taskIds": [
+    {
+     "id": "011",
+     "taskName": "AI写真",
+     "taskDesc": null,
+     "taskSign": 0,
+     "isComplete": 0,
+     "innerLink": "mcloud://mcMiniProgram?params=eyJtaW5pSWQiOiI2NTA0MzVhNWVlM2IwZTAwMDEzNjhhMDkiLCJuYW1lIjoiQUnlhpnnnJ8iLCJtaW5pVHlwZSI6IjEifQ=="
+    },
+    {
+     "id": "ailuyinzhuanxie",
+     "taskName": "AI录音转写",
+     "taskDesc": null,
+     "taskSign": 2,
+     "isComplete": 0,
+     "innerLink": "mcloud://main/featureServices?params=eyJsaW5rVXJsIjoiMHwyMDQwIiwidGl0bGUiOiLnrJTorrDlrp7ml7bovazlhpkifQ=="
+    },
+    {
+     "id": "zhishiku",
+     "taskName": "AI知识库，构建专属知识图谱",
+     "taskDesc": "抽奖次数+1",
+     "taskSign": 0,
+     "isComplete": 0,
+     "innerLink": "mcloud://main/aiAssistantGlobal?params=eyJqdW1wQ29uZmlnIjp7InRhYiI6ImFpS25vd2xlZGdlIn0sInNvdXJjZUlkIjoiODEwMjkyIn0="
+    }
+   ]
+  }
+ ]
+}
