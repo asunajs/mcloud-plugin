@@ -194,8 +194,16 @@ export async function runDaily(
   //
   // ⚠ 调试运行（`only !== null`）里，如果点名的族**一个都不需要这张票**（只跑云手机之类），
   //   就整段跳过：换票本身是两发上游请求，调试不该为没用到的票多打两枪。
+  //
+  // ⚠⚠ **趣玩AI 也在名单里**（2026-11-26 补）：它读模块与点任务用的就是 `sign-in` 那套
+  //   `jwttoken`（`tasks/playAi.ts::session()` 走 `loadJwt()` 的缺省配方）。
+  //   漏了它的后果不是"少换一张票"，而是**读写表现不一致**：
+  //   读口（`getmodule`）拿过期票也回数据，写口（`page/register`）直接 `code:90001 未登录`
+  //   ⇒ 日志上看着"读到了 24 件任务"，然后"上报被拒：服务端说 未登录"，方向会被带偏到
+  //   "灵犀对话不算"或"写口要另一套鉴权"上去。
   const needTicket =
-    only === null || only.some((id) => id === 'signin' || id === 'appTask' || id === 'tokenpk');
+    only === null
+    || only.some((id) => id === 'signin' || id === 'appTask' || id === 'tokenpk' || id === 'playAI');
   if (!needTicket) {
     push({ name: '换票（签到）', ok: true, note: '这次只跑了不需要它的族', idle: true });
   }

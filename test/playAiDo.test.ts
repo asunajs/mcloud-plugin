@@ -39,7 +39,7 @@ function pageModule(complete: Record<string, number>, drawTimes = 0): Record<str
         task('003', '智能抠图，一键抠图超轻松', 0), // 我们不会做 ⇒ 不点
         task('aizhushou', 'AI助手，打工人必备神器', 0), // ← 唯一会做的那件
         task('invite', '邀请好友，一起趣玩AI', 1), // taskSign 1 ⇒ 不点
-        task('ailuyinzhuanxie', 'AI录音转写', 2), // taskSign 2 ⇒ 不点
+        task('ailuyinzhuanxie', 'AI录音转写', 2), // taskSign 2 ⇒ 走完成口（2026-11-26 已跑通）
       ],
     },
   };
@@ -165,7 +165,7 @@ test('`register` 被拒 ⇒ 判失败，且**不再**往下做动作', async () 
   assert.equal(sent.filter((x) => String(x.url).includes('ai.yun.139.com')).length, 0);
 });
 
-test('今天点过就不再点：同一天再跑一趟，`register` 一发都不发', async () => {
+test('今天点过就不再点：同一天再跑一趟，同一件不点第二次', async () => {
   const { deps, sent } = harness({ flip: false });
   await drainAll(deps);
   const first = sent.filter((x) => String(x.url).includes('/page/register')).length;
@@ -173,9 +173,11 @@ test('今天点过就不再点：同一天再跑一趟，`register` 一发都不
   // 同一天再跑一趟（状态还在）
   await drainAll(deps);
   const second = sent.filter((x) => String(x.url).includes('/page/register')).length;
-  assert.equal(second, 1, `同一天不该再点一次（实际 ${second} 发）`);
+  // ⚠ 第二趟会做**另一件**（`ailuyinzhuanxie`，taskSign=2 走完成口），但那不是 register；
+  //   这里钉的是「同一件（aizhushou）不再点」，不是「第二趟什么都不做」。
+  assert.equal(second, 1, `同一件不该再点一次（实际 ${second} 发）`);
   const st = loadPlayAi(deps.store);
-  assert.equal(Object.keys(st?.tried ?? {}).length, 1);
+  assert.ok(Object.keys(st?.tried ?? {}).length >= 1, '点过的要记下来');
 });
 
 test('点完之后**真的进动作链**：第一发是灵犀的换票（`toSourceId=001003`）', async () => {
@@ -855,4 +857,58 @@ test('⚠ 失败时那一步的 note 必须是**失败原因**，不能是读数
   assert.equal(step.ok, false, '写口被拒 ⇒ 这一步是失败');
   assert.match(step.note, /上报被拒|没成/, `note 要是失败原因：${step.note}`);
   assert.equal(/个模块 · .*件任务/.test(step.note), false, `note 不该是读数：${step.note}`);
+});
+
+test('⚠ 调试只跑趣玩AI 时，**必须**去换票（它读模块与点任务用的就是 sign-in 那张）', async () => {
+  // 现场（2026-11-26 22:42，真号）：日志是「读数 ok=True（24 件任务）」+「上报被拒：服务端说 未登录」。
+  // 真因：`needTicket` 的名单里**漏了 playAI** ⇒ 调试只跑这一族时整段换票被跳过，
+  // 用的是残留的过期票；读口拿过期票也回数据，写口直接 `90001 未登录`。
+  // 表现极容易带偏：看着像"写口要另一套鉴权"或"灵犀对话不算"。
+  const { runDaily } = await import('../src/mcloud/dailyRun.ts');
+  const store = memStore();
+  store.ensureSchema();
+  // 只给会话与**原生凭据**、不给 H5 票 —— 换票该自己去换一张回来。
+  // ⚠ 原生凭据不能少：`needExchange()` 第一条就是"没凭据 ⇒ 换不了，也别报错"。
+  store.setState(
+    SESSION_KEY,
+    JSON.stringify({ cookie: 'c=1', jwt: '', deviceId: 'D1', userAgent: 'UA', savedAt: NOW }),
+    NOW,
+  );
+  store.setState('mcloud.h5.auth', 'Basic ZmFrZS1hdXRo', NOW);
+  const sent: BuiltRequest[] = [];
+  const transport = ((req: BuiltRequest) => {
+    sent.push(req);
+    const url = String(req.url);
+    if (url.includes('/funai/api/page/getmodule')) {
+      return { status: 200, headers: {}, body: JSON.stringify(pageModule({ aizhushou: 0 })) };
+    }
+    if (url.includes('/funai/api/timed/getmodule')) {
+      return { status: 200, headers: {}, body: JSON.stringify({ code: 0, msg: 'success', result: [] }) };
+    }
+    return { status: 200, headers: {}, body: JSON.stringify({ code: 90001, msg: '未登录' }) };
+  }) as never;
+  let fake = Date.parse(NOW);
+  const deps = {
+    store,
+    transport,
+    nowIso: NOW,
+    now: () => NOW,
+    nowMs: () => (fake += 1000),
+    baseUrl: undefined,
+  } as unknown as TaskDeps;
+
+  const r = await runDaily(deps, { only: ['playAI'], force: true });
+  // 换票那一步**不能**是「这次只跑了不需要它的族」
+  const swap = r.steps.find((s) => s.name.startsWith('换票'));
+  assert.ok(swap !== undefined, '要有换票那一步');
+  assert.equal(
+    /不需要它/.test(swap!.note),
+    false,
+    `只跑趣玩AI 时换票被跳过了：${swap!.note}`,
+  );
+  // 并且真的为它发过换票请求（`tyrzLogin` / `querySpecToken` 那一族）
+  assert.ok(
+    sent.some((x) => /tyrzLogin|querySpecToken/.test(String(x.url))),
+    '没有为趣玩AI 发过换票请求',
+  );
 });

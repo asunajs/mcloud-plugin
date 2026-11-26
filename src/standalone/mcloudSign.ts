@@ -14,6 +14,7 @@ import { lineLevel } from '../mcloud/tasks/stepLog.ts';
 import { parseTaskRunParams } from '../mcloud/tasks/taskSwitches.ts';
 import { TASK_SWITCHES } from '../mcloud/tasks/taskSwitches.ts';
 import { PLUGIN_VERSION } from '../version.ts';
+import { loadAccounts } from '../mcloud/accounts.ts';
 import { labelOf } from '../mcloud/taskAccounts.ts';
 
 export { exchange, printExchangeList };
@@ -51,16 +52,22 @@ export async function run(configPath?: string, argv: readonly string[] = []): Pr
   const rt = await await createRuntime({ configPath });
   const log = createCliLogger({ colorize: colorizeFrom(rt.config.common) });
   try {
-    if (rt.config.accounts.length === 0) {
-      // ⚠ 这句话原来写的是「未找到配置文件或无账号」—— 可走到这里时**文件已经读到了**
-      //   （文件不存在在上面就报 `配置文件不存在：<路径>` 并退 2）。
-      //   两种情况说成一句，用户会先去怀疑路径，而真正要做的是"加一个号"。
-      log.error(`配置里没有账号：${rt.config.path} —— 先在面板里加一个，或用 config:import 搬旧的`);
+    // ⚠⚠ 账号要从 **store** 里读，不能读 `rt.config.accounts`（2026-11-26 修）。
+    //   统一配置模式（`--config …/plugin-data/mcloud/config.json`）下账号**不在配置里**，
+    //   而在同目录的 `shared.json` —— `createRuntime` 建 store 时已经把它们读进去了。
+    //   原来这里看 `rt.config.accounts`（统一模式下**恒为空数组**）⇒ 指到面板数据目录时
+    //   永远报「配置里没有账号」，而那几个号好好地躺在 shared.json 里。
+    const accounts = loadAccounts(rt.rawStore);
+    if (accounts.length === 0) {
+      log.error(
+        `这个目录里没有账号：${rt.config.path} 所在目录`
+        + ' —— 先在面板里加一个，或用 config:import 搬旧的',
+      );
       process.exitCode = 1;
       return;
     }
     log.info(`配置文件: ${rt.config.path}`);
-    log.info(`共 ${rt.config.accounts.length} 个账号`);
+    log.info(`共 ${accounts.length} 个账号`);
     if (parsed.include !== null || parsed.account !== null || parsed.force) {
       const bits: string[] = [];
       if (parsed.include !== null) bits.push(`只跑 ${parsed.include.join('、')}`);
