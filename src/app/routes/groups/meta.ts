@@ -75,7 +75,10 @@ export function metaRoutes(deps: RouteDeps, base: string, verify: () => Promise<
       method: 'GET',
       handler: () => {
         // ⚠ 用 `readRunsOf`（带 `steps` 的原始记录），`recentRuns` 是**摘要**、没有 steps
-        const runs = readRunsOf(deps.store, 'daily').slice(0, 12);
+        // ⚠ 窗口别给太小：**一次触发 = 每个账号一条记录**。3 个号时 12 条只等于最近 4 次触发，
+        //   某族要是前几次被关掉了，这里就会显示「还没跑过」—— 那是**假的**。
+        //   60 条 ≈ 20 次触发，够覆盖"最近一次跑过它"。
+        const runs = readRunsOf(deps.store, 'daily').slice(0, 60);
         // 运行记录里每一步都有 `name`；按族名找到它最近一次出现的那一步。
         // ⚠ 步骤名与开关的 label **不是同一个词**：开关叫「每日签到」，而 `dailyRun`
         //    push 的步骤名是「签到」、还有「签到翻倍 / 复活卡」；算力那一族叫「算力大作战」；

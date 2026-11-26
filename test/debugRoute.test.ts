@@ -160,3 +160,33 @@ test('每族映射的步骤名，必须真的出现在 `dailyRun` 的 push 里�
   const missing = names.filter((n) => !pushed.has(n));
   assert.deepEqual(missing, [], `这些名字在 dailyRun 里没有对应的 push（会静默失配）：${missing.join(',')}`);
 });
+
+test('窗口要够宽：3 个号 × 多次触发之后，某族"上次跑过"仍读得出来', async () => {
+  const store = memStore();
+  store.ensureSchema();
+  // 3 个号 × 6 次触发 = 18 条记录；只有**最早**那一条里有「红包派对」
+  for (let i = 0; i < 6; i++) {
+    for (const acct of ['a', 'b', 'c']) {
+      const at = `2026-11-2${6 - i}T0${i}:00:00.000Z`;
+      appendRun(store, {
+        task: 'daily',
+        acct,
+        who: acct,
+        at,
+        ms: 100,
+        ok: true,
+        note: 'ok',
+        steps:
+          i === 5 && acct === 'a'
+            ? [{ name: '红包派对', ok: false, note: '那次没成', idle: false }]
+            : [{ name: '签到', ok: true, note: '签了', idle: false }],
+      });
+    }
+  }
+  const routes = mcloudRoutes(testDeps(store, { now: NOW }));
+  const route = routes.find((x) => x.path === '/plugins/mcloud/api/debug/last' && x.method === 'GET')!;
+  const body = JSON.parse((await route.handler({ query: '' })).body) as {
+    tasks: Record<string, { note: string } | null>;
+  };
+  assert.equal(body.tasks['redpack']?.note, '那次没成', '18 条之前的记录也要看得到');
+});
