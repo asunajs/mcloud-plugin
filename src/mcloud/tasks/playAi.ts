@@ -145,12 +145,20 @@ async function readModules(
  *   · 没有动作钥匙的 —— **不点**。点了却做不了那件事，等于把"看起来在干活"写进日志。 */
 function pickTarget(modules: readonly PlayAiModule[], tried: Record<string, string>): PlayAiTarget | null {
   const all: PlayAiTask[] = modules.flatMap((m) => m.tasks);
+  // ⚠ 同一件任务会**同时出现在页面模块和主题模块**里（实拍：`004` 两处都有）。
+  //   规则成文是「相同任务只能获得 1 次」⇒ 只要它在**任一模块**里已完成，就整件跳过；
+  //   今天在**任一模块**里点过，也别换个 moduleId 再点一次（那是白发一发，
+  //   而且回读不翻位时会给用户一个莫名其妙的 pending）。
+  const doneIds = new Set(all.filter((t) => t.isComplete).map((t) => t.id));
+  const triedIds = new Set(Object.keys(tried).map((k) => k.split('|')[1] ?? ''));
   const cands: PlayAiTarget[] = [];
   for (const t of all) {
-    if (t.isComplete || t.taskSign !== 0) continue;
-    if (tried[`${t.moduleId}|${t.id}`] !== undefined) continue;
+    if (doneIds.has(t.id) || t.taskSign !== 0) continue;
+    if (triedIds.has(t.id)) continue;
     const actionKey = PLAYAI_ACTION_KEYS[t.id] ?? '';
     if (actionKey === '') continue;
+    // 同一 taskId 在多个模块里出现时只留第一条（顺序已按 ACTION_RANK 之外的偏好排）
+    if (cands.some((c) => c.taskId === t.id)) continue;
     cands.push({ moduleId: t.moduleId, taskId: t.id, name: shortTaskName(t.name), actionKey });
   }
   // 偏好按 `ACTION_RANK`（不写云盘的先做）；同档按任务表原顺序，保证可预测

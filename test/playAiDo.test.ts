@@ -670,3 +670,78 @@ test('动作没成 ⇒ 不等那 3 秒、也不多读一次（服务端不会因
   assert.equal(reads, 2, `动作没成时只该读两次（实际 ${reads}）：${notes.join(' | ')}`);
   assert.equal(notes.some((n) => /再读一次/.test(n)), false, '不该出现"再读一次"');
 });
+
+test('同一件任务出现在两个模块里：任一模块完成/点过，就整件跳过（规则：相同任务只算 1 次）', async () => {
+  const store = memStore();
+  store.ensureSchema();
+  store.setState(
+    SESSION_KEY,
+    JSON.stringify({ cookie: 'c=1', jwt: 'JWT', deviceId: 'D1', userAgent: 'UA', savedAt: NOW }),
+    NOW,
+  );
+  store.setState(STATE_JWT, JSON.stringify({ at: NOW, jwt: 'JWT', referer: '', fingerprint: 'f' }), NOW);
+  const sent: BuiltRequest[] = [];
+  const transport = ((req: BuiltRequest) => {
+    sent.push(req);
+    const url = String(req.url);
+    if (url.includes('/funai/api/page/register')) {
+      return { status: 200, headers: {}, body: JSON.stringify({ code: 0, msg: 'success', result: 0 }) };
+    }
+    if (url.includes('/funai/api/page/getmodule')) {
+      return {
+        status: 200,
+        headers: {},
+        body: JSON.stringify({
+          code: 0,
+          msg: 'success',
+          result: {
+            moduleId: '1-250730',
+            drawTimes: 0,
+            drawsUsed: 0,
+            todayGetLotteryCount: 0,
+            // 页面模块里 `aizhushou` **已完成**
+            taskIds: [{ id: 'aizhushou', taskName: 'AI助手', taskSign: 0, isComplete: 1 }],
+          },
+        }),
+      };
+    }
+    if (url.includes('/funai/api/timed/getmodule')) {
+      return {
+        status: 200,
+        headers: {},
+        body: JSON.stringify({
+          code: 0,
+          msg: 'success',
+          result: [
+            {
+              moduleId: '2-261104-1',
+              subtitle: '假日出行助手',
+              drawTimes: null,
+              drawsUsed: null,
+              todayGetLotteryCount: null,
+              // 主题模块里同一件还是"未完成" —— 不许因为换了 moduleId 再点一次
+              taskIds: [{ id: 'aizhushou', taskName: 'AI助手', taskSign: 0, isComplete: 0 }],
+            },
+          ],
+        }),
+      };
+    }
+    return { status: 200, headers: {}, body: JSON.stringify({ code: 90001, msg: '未登录' }) };
+  }) as never;
+  let fake = Date.parse(NOW);
+  const deps = {
+    store,
+    transport,
+    nowIso: NOW,
+    now: () => NOW,
+    nowMs: () => (fake += 1000),
+    baseUrl: undefined,
+  } as unknown as TaskDeps;
+  await playAiStep(deps); // list
+  await playAiStep(deps);
+  assert.equal(
+    sent.filter((x) => String(x.url).includes('/page/register')).length,
+    0,
+    '任一模块里已完成 ⇒ 整件跳过，不该再点',
+  );
+});
