@@ -322,3 +322,92 @@ test('调试运行只点一族时，收尾那几步（领取AI豆 / 待领取奖
     );
   }
 });
+
+// ── 整条动作链（灵犀）走通一遍：这是唯一一处"真做那件事"的接线 ──────
+//
+// ⚠ 这一条**不碰真主机**：transport 是注入的假函数，按 URL 分派。
+//   之所以现在能这么测，是因为 `desEncryptBase64` 也在本仓 —— `deriveAiAuth` 要
+//   一份能解出 11 位手机号的 `account`，以前只能靠真号，现在可以自己造。
+
+test('整条动作链：换票 → 邮箱登录 → 拿 AI 鉴权 → 聊一句 ⇒ 回读翻位算做完', async () => {
+  const { desEncryptBase64 } = await import('../src/crypto/des.ts');
+  const store = memStore();
+  store.ensureSchema();
+  store.setState(
+    SESSION_KEY,
+    JSON.stringify({ cookie: 'c=1', jwt: 'JWT', deviceId: 'D1', userAgent: 'UA', savedAt: NOW }),
+    NOW,
+  );
+  store.setState(STATE_JWT, JSON.stringify({ at: NOW, jwt: 'JWT', referer: '', fingerprint: 'f' }), NOW);
+
+  const sent: BuiltRequest[] = [];
+  let registered = false;
+  let chatted = false;
+  const phone = '13800138000';
+  const account = desEncryptBase64(phone, '139_mail');
+  const transport = ((req: BuiltRequest) => {
+    sent.push(req);
+    const url = String(req.url);
+    if (url.includes('/funai/api/page/register')) {
+      registered = true;
+      return { status: 200, headers: {}, body: JSON.stringify({ code: 0, msg: 'success', result: 0 }) };
+    }
+    if (url.includes('/funai/api/page/getmodule')) {
+      return {
+        status: 200,
+        headers: {},
+        body: JSON.stringify(pageModule({ aizhushou: chatted ? 1 : 0 })),
+      };
+    }
+    if (url.includes('/funai/api/timed/getmodule')) {
+      return { status: 200, headers: {}, body: JSON.stringify({ code: 0, msg: 'success', result: [] }) };
+    }
+    // ① 换邮箱 SSO
+    if (url.includes('querySpecTokenV2')) {
+      return { status: 200, headers: {}, body: JSON.stringify({ success: true, data: { token: 'SSO' } }) };
+    }
+    // ② 邮箱登录
+    if (url.includes('inlogin.action')) {
+      return { status: 200, headers: {}, body: JSON.stringify({ var: { sid: 'SID', rmkey: 'RMKEY' } }) };
+    }
+    // ③ queryUserToken（`account` 是 DES 密文，解出来才是手机号）
+    if (url.includes('queryUserToken')) {
+      return {
+        status: 200,
+        headers: {},
+        body: JSON.stringify({ var: { data: { data: { account, token: 'TOK', userDomainId: 'DOM' } } } }),
+      };
+    }
+    // ④ 灵犀对话（SSE）
+    if (url.includes('/assistant/chat/v2/add')) {
+      chatted = true;
+      const sse = [
+        'data: {"code":"0000","message":"请求成功"}',
+        'data: {"data":{"flowResult":{"outContent":"你好"}}}',
+        'data: {"data":{"flowResult":{"outContent":"，我是灵犀。"}}}',
+        'data: [DONE]',
+      ].join('\n');
+      return { status: 200, headers: {}, body: sse };
+    }
+    return { status: 200, headers: {}, body: JSON.stringify({ code: 90001, msg: '未登录' }) };
+  }) as never;
+  const deps = { store, transport, nowIso: NOW, now: () => NOW, baseUrl: undefined } as unknown as TaskDeps;
+
+  const notes: string[] = [];
+  for (let i = 0; i < 12; i++) {
+    const r = await playAiStep(deps);
+    notes.push(r.note);
+    if (r.ok === false && r.pending !== true) break;
+    if (r.idle === true) break;
+  }
+  assert.equal(registered, true, '要点那件任务');
+  assert.equal(chatted, true, '要真的聊一句');
+  // 四段动作都发了，且顺序固定
+  const order = sent.map((x) => String(x.url));
+  const iSso = order.findIndex((u) => u.includes('querySpecTokenV2'));
+  const iLogin = order.findIndex((u) => u.includes('inlogin.action'));
+  const iToken = order.findIndex((u) => u.includes('queryUserToken'));
+  const iChat = order.findIndex((u) => u.includes('/assistant/chat/v2/add'));
+  assert.ok(iSso >= 0 && iLogin > iSso && iToken > iLogin && iChat > iToken, `顺序不对：${order.join('\n')}`);
+  assert.ok(notes.some((n) => /做完了/.test(n)), `回读翻位要判做完：${notes.join(' | ')}`);
+});
