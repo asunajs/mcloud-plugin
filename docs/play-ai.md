@@ -60,8 +60,9 @@ verify    再读一次 getmodule → **只有 isComplete 翻位才算做完**
 draw      开了代抽且 drawTimes > 0 时抽一发（一趟最多一发）
 ```
 
-- 一趟最多做 **1 件**（`PLAYAI_TASKS_PER_RUN`），`drain` 上限 **12** 步
-  （list 1 + register 1 + 动作链 4 + verify 1 + 再读 1 + verify 1 + draw 1 = 10，留余量）；
+- 一趟最多做 **1 件**（`PLAYAI_TASKS_PER_RUN`），`drain` 上限 **16** 步
+  （最长那条：list 1 + register 1 + 相机链 5 + verify 1 + 再读 1 + verify 1 + draw 1 = 11，
+  余下是重试的余量 —— 撞上限时 `drain` 报的是"假失败"）；
 - **同一天第二趟会重开一轮**（否则 `phase='done'` 会把这一族当天封死），`tried` 带过来；
 - **动作没成也照样回读** —— 那件事可能本来就算完成；失败那句进 `lines`。
 

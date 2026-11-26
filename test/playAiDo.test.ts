@@ -235,8 +235,10 @@ test('回执没有 `isWin` ⇒ 既不写"中了"也不写"没中"', async () => 
 });
 
 test('`drain` 的步数上限够走完一整趟（给紧了会报假失败）', () => {
-  // list 1 + register 1 + 灵犀动作链 4 + verify 1 + draw 1 = 8，留重试余量
-  assert.ok(PLAYAI_MAX_STEPS >= 8, `上限 ${PLAYAI_MAX_STEPS} 太小`);
+  // 最长那条：list 1 + register 1 + 相机链 5 + verify 1 + 再读 1 + verify 1 + draw 1 = 11
+  assert.ok(PLAYAI_MAX_STEPS >= 11, `上限 ${PLAYAI_MAX_STEPS} 太小`);
+  // 还要留重试余量：撞上限时 `drain` 报「走到第 N 步就停了」，那是假失败
+  assert.ok(PLAYAI_MAX_STEPS >= 13, `上限 ${PLAYAI_MAX_STEPS} 没留重试余量`);
 });
 
 test('动作那一步没成，也**照样回读**（判据只有回读，失败那一句进 lines）', async () => {
