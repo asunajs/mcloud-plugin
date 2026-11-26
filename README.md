@@ -241,17 +241,21 @@ mcloud-sign config:import --config asign.json --data-dir <…>          # 真搬
 
 ```text
 读   page/getmodule + timed/getmodule   → 几个模块 / 几件任务 / 几件可做 / 能抽几次
-点   page/register {moduleId,taskId}    → 只点「AI 助手」那一件
-做   复用算力族的灵犀对话动作链         → 不往云盘写文件（其余工具会写，所以不碰）
+点   page/register {moduleId,taskId}    → 只点「我们会做」的那几件
+做   复用算力族已有的动作链             → 灵犀对话 / 识图 / 建笔记；不碰 H5 图片工具
 验   再读一次 getmodule                 → **只有 isComplete 翻位才算做完**
 抽   page/lottery（body 只带 moduleId） → 缺省关，有次数才抽，一趟最多 1 次
 ```
+
+**会做 5 件**（AI 助手 / AI 相机 / 扫描文档 / AI 录音转写 / AI 云笔记），
+其余 19 件的完成判据落在**工具内部**（H5 图片工具要登录 `aiTools` 且两边不互通），
+插件够不着 —— 判据与实测证据见 [`docs/play-ai.md`](docs/play-ai.md)「会做的五件」那一节。
 
 三条口径，改代码前先看：
 
 - **`register` 的回执零信息**（`{"code":0,"result":0}`）：点完不等于做完，判据只有回读。
   没翻位就写「已上报，服务端还没认」（`pending`），**不写成功**；
-- **只点我们会做的那一件**：`PLAYAI_ACTION_KEYS` 里没有的任务（智能抠图 / AI头像 / 扫描文档…）
+- **只点我们会做的**：`PLAYAI_ACTION_KEYS` 里没有的任务（智能抠图 / AI头像 / 表情包…）
   一律不点也不做 —— 点了却做不了，等于把"看起来在干活"写进日志；
 - **抽奖花的是你自己的次数**：`mcloud.playai.draw` 缺省关，在「数据」页那张卡上开。
 

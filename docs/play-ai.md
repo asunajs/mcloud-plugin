@@ -76,21 +76,52 @@ draw      开了代抽且 drawTimes > 0 时抽一发（一趟最多一发）
 - **同一天第二趟会重开一轮**（否则 `phase='done'` 会把这一族当天封死），`tried` 带过来；
 - **动作没成也照样回读** —— 那件事可能本来就算完成；失败那句进 `lines`。
 
-### 为什么只接「AI 助手」
+### 会做的五件，以及其余 19 件为什么不做
 
-`PLAYAI_ACTION_KEYS` 现在登记三件（都是动作层已有的工具）：
+`PLAYAI_ACTION_KEYS` 现在登记五件（**全部复用动作层已有的动作**）：
 
-| 趣玩AI 任务 | 动作 | 落盘 |
-| --- | --- | --- |
-| `aizhushou`（AI 助手） | `aiAssistant`（灵犀对话） | **不落盘**（09-25 第三轮实拍零 `hcy/file/create`） |
-| `aixiangji`（AI 相机） | `aiCamera`（识图 → 对话） | 会落一张图，**已登记**，链尾清理会删（F-153） |
-| `204`（扫描文档） | `aiCamera` | 同上（`innerLink` 也是那台相机） |
+| 趣玩AI 任务 | 动作 | 落盘 | 怎么找到的 |
+| --- | --- | --- | --- |
+| `aizhushou`（AI 助手） | `aiAssistant`（灵犀对话） | **不落盘**（09-25 第三轮实拍零 `hcy/file/create`） | `innerLink` 是 `aiAssistantGlobal` |
+| `aixiangji`（AI 相机） | `aiCamera`（识图 → 对话） | 会落一张图，**已登记**，链尾清理会删（F-153） | `innerLink` 是 `main/aiCamera` |
+| `204`（扫描文档） | `aiCamera` | 同上 | 同上（`target=document`） |
+| `ailuyinzhuanxie`（AI 录音转写） | **独立完成口** `timed/transcriptioncompleted` | 不落盘 | 抓包 §7.8：`taskSign=2` 不走 `register` |
+| `yunbiji`（AI 云笔记） | `createNote`（笔记鉴权 → 建 → 回读） | 建一条笔记 | `innerLink` 是 `featureServices?linkUrl=0|2040`；动作层早就有（算力族 107 号） |
 
-挑的**偏好**：不落盘的排前面（`ACTION_RANK`）—— 一趟只做一件，先做 AI 助手能少一份垃圾。
+挑的**偏好**：不落盘的排前面（`ACTION_RANK`）。
 
-其余任务（智能抠图 / AI头像 / AI快照 / 表情包 / 老图片修复 / 画质修复 / 3D人偶 /
-AI漫画风 / 智能消除 / AI知识库 / 云笔记 / 邀请 / AI录音转写）要进各自工具页做图，
-形状没抓过，而且会往云盘写东西 —— **不点也不做**，免得把"看起来在干活"写进日志。
+#### 其余 19 件：**H5 工具那一族做不了，这不是"还没抓包"**
+
+按 `innerLink` 分两类，两类都卡死在同一个地方：
+
+**① 9 件是 `yun.139.com/aiTools/#/xxx?token=#ssoToken#` 的 H5 工具**
+（智能抠图 / AI头像 / AI快照 / 表情包 / 老图片修复 / 画质修复 / 智能消除 / AI漫画风 / 3D人偶）
+
+2026-11-27 把 `aiTools` 的前端 bundle 拆开看过，**接口全在手里**：
+
+```
+POST https://ai.yun.139.com/aitools/applet/content/createUploadTask   body {imageBase64List, module}
+POST https://ai.yun.139.com/aitools/applet/task/getLastTaskRecordStatus
+加密：AES-CBC/Pkcs7，key = appKey，iv = appKey 末 16 位 → base64（`pu()` 逐字）
+appKey：按 module 编号硬编在 bundle 里（module 10/13/4/5/9/12 六组 `outerAppKey`）
+```
+
+**但登录链过不去**：这些接口要 `Authorization: <aiTools 自己的 token>`，
+而那个 token 要先 `auth-rebuild/permission/v1.0/login`（`mcloud-client: 10805` + `mcloud-skey`
++ 短信验证码）。拿我们的 `jwttoken` 去换，上游回 **`05050009 非法的token！`**（实测）。
+
+**更要紧的一条**：`aiTools` 的 bundle 里**一处 funai 的引用都没有**（`grep funai|playAI`
+零命中）⇒ 两边不互通，`isComplete` 是**服务端自己核对的**（用户真在工具里做完，服务端从
+工具那边拿记录）。所以"调一次接口就算完成"这条路**不存在**——要接这 9 件，
+等于把 9 个图片工具本身复刻一遍（传图、选模板、轮询生成、取结果）。**那是另一个产品**。
+
+**② 剩下 10 件**（AI知识库 / AI写真 / 邀请 / 其余）
+`zhishiku`（AI知识库）试过：`innerLink` 与 AI 助手同一个原生页（只是 tab 不同），
+复用 `aiAssistant` 后**点了、也聊了，回读 `isComplete` 两次都没翻** ⇒ 它要的是知识库里
+真建了东西。`invite`（邀请）要真邀一位好友登录。其余同理：**都要求工具内的具体动作**。
+
+⚠ 这一段的结论是**实测的**（2026-11-26/27，三个真号）：不是"形状没抓过"，
+是**这些任务的完成判据落在工具内部**，插件够不着。别再把它们当成"再抓一轮包就能做"。
 
 ## 4. 抽奖
 
