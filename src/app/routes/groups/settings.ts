@@ -14,6 +14,7 @@ import { STATE_LOGIN_BASE, STATE_LOGIN_PREF } from '../../../mcloud/loginSession
 import { buildReadings } from '../readings.ts';
 import { json, loginPlatform, readBody } from '../support.ts';
 import type { RouteDeps, RouteEntry } from '../support.ts';
+import { setWishExchangeEnabled } from '../../../mcloud/tasks/wishCodes.ts';
 import { setPlayAiDrawEnabled } from '../../../mcloud/playAiState.ts';
 
 /** settings 组。deps 是路由依赖；base 是 /plugins/mcloud/api；verify 是「拿当前会话验一次」。 */
@@ -73,6 +74,22 @@ export function settingsRoutes(deps: RouteDeps, base: string, verify: () => Prom
         setPlayAiDrawEnabled(deps.store, body.on, deps.now());
         deps.log(`趣玩AI 代抽：${body.on ? '开' : '关'}`);
         return json(200, { drawEnabled: body.on, note: body.on ? '代抽已开：有次数就替你抽' : '代抽已关' });
+      },
+    },
+
+{
+      // 许愿活动「用 AI豆换抽奖码」的开关。**缺省关** —— 花的是用户的豆。
+      path: `${base}/wish/exchange`,
+      method: 'POST',
+      handler: (req) => {
+        const body = readBody(req);
+        if (typeof body.on !== 'boolean') return json(400, { error: '需要 {"on": true|false}' });
+        setWishExchangeEnabled(deps.store, body.on, deps.now());
+        deps.log(`许愿码豆换码：${body.on ? '开' : '关'}`);
+        return json(200, {
+          exchangeEnabled: body.on,
+          note: body.on ? '豆换码已开：每趟最多换 1 张（300 豆/张）' : '豆换码已关',
+        });
       },
     },
 

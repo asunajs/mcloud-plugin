@@ -51,6 +51,34 @@ export function setWishExchangeEnabled(store: Store, on: boolean, nowIso: string
   store.setState(STATE_WISH_EXCHANGE, on ? '1' : '0', nowIso);
 }
 
+/** 上一趟的结论（界面读它，**不在这里发请求**）。 */
+export const STATE_WISH_SNAPSHOT = 'mcloud.wish.reading';
+
+export interface WishSnapshot {
+  at: string;
+  ok: boolean;
+  line: string;
+}
+
+export function loadWishSnapshot(store: Pick<Store, 'getState'>): WishSnapshot | null {
+  const raw = store.getState(STATE_WISH_SNAPSHOT) ?? '';
+  if (raw.trim() === '') return null;
+  try {
+    const v = JSON.parse(raw) as Partial<WishSnapshot>;
+    return {
+      at: typeof v.at === 'string' ? v.at : '',
+      ok: v.ok === true,
+      line: typeof v.line === 'string' ? v.line : '',
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function saveWishSnapshot(store: Store, snap: WishSnapshot, nowIso: string): void {
+  store.setState(STATE_WISH_SNAPSHOT, JSON.stringify(snap), nowIso);
+}
+
 /** 活动页（`task/list` 与 `auto-advance` 都要求带它当 referer）。 */
 export const WISH_REFERER =
   'https://m.mcloud.139.com/portal/hcyview/index.html?path=National_AnnualRewarding';
@@ -246,6 +274,13 @@ export function autoAdvanceRequest(s: WishSession, base?: string | undefined) {
  *  它们要"真的先做那件事"（登录 PC 传文件、去云朵中心签到），点一下不算。
  */
 export async function runWishCodes(deps: TaskDeps): Promise<TaskOutcome> {
+  const out = await runWishCodesInner(deps);
+  // 落一份"上次结论"给界面读（⚠ 每个出口都要落 —— 少一个界面就显示上一次的旧话）
+  saveWishSnapshot(deps.store, { at: deps.nowIso, ok: out.ok, line: out.note }, deps.nowIso);
+  return out;
+}
+
+async function runWishCodesInner(deps: TaskDeps): Promise<TaskOutcome> {
   const s = session(deps);
   if (s === undefined) return { ok: false, note: '还没有网页会话（票没换成）—— 许愿码这次没领' };
 

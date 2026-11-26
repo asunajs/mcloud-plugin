@@ -250,6 +250,7 @@ export const KEY_SCOPE: Readonly<Record<string, KeyScope>> = {
   'mcloud.playai.draw.state': 'account',
   // 许愿活动「用 AI豆换抽奖码」的开关（缺省关：花的是用户的豆）
   'mcloud.wish.exchange': 'account',
+  'mcloud.wish.reading': 'account',
 
   // ── 实例级配置 / 跨账号共享 ────────────────────────────────
   /** 账号表本身。 */

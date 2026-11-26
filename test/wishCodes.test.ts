@@ -260,3 +260,26 @@ test('余额不够 / 不能换 ⇒ 如实说，不发写请求', async () => {
     assert.equal(sent.filter((x) => String(x.url).endsWith('/cloud-exchange')).length, 0, '不该发写请求');
   }
 });
+
+test('快照：每趟都要落一份（界面读它，不发请求）', async () => {
+  const { loadWishSnapshot, saveWishSnapshot } = await import('../src/mcloud/tasks/wishCodes.ts');
+  const store = memStore();
+  store.ensureSchema();
+  assert.equal(loadWishSnapshot(store), null, '没跑过就是 null（不是一份空壳）');
+  saveWishSnapshot(store, { at: NOW, ok: true, line: '领到 1 张' }, NOW);
+  const got = loadWishSnapshot(store);
+  assert.deepEqual(got, { at: NOW, ok: true, line: '领到 1 张' });
+});
+
+test('跑完一趟后快照里就是那句结论（不是上一次的旧话）', async () => {
+  const { loadWishSnapshot } = await import('../src/mcloud/tasks/wishCodes.ts');
+  const { deps, store } = harness(() => ({
+    code: 0,
+    result: { tasks: [{ taskId: 1004, taskState: 'FINISH', autoAdvanceable: false, clickAdvance: false }] },
+  }));
+  const r = await runWishCodes(deps);
+  const snap = loadWishSnapshot(store);
+  assert.ok(snap !== null);
+  assert.equal(snap!.line, r.note);
+  assert.equal(snap!.ok, r.ok);
+});

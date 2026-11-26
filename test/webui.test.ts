@@ -1889,3 +1889,18 @@ test('⚠ 清单里的 `config.fields` 必须都能落到绑定表（写错一�
   const missing = man.config.fields.map((f) => f.name).filter((n) => !paths.has(n));
   assert.deepEqual(missing, [], `清单里这些字段在绑定表里没有：${missing.join(', ')}`);
 });
+
+test('⚠ 许愿码那一格在数据页：读数 + 豆换码开关都要有（功能做了却没人看得到 = 没做）', async () => {
+  // 2026-11-27：许愿码那一族做完了，但**界面上一个字都没有** ——
+  // 用户既看不到领了几张，也打不开「豆换码」那个开关（它缺省关，没入口等于永远关着）。
+  const html = srcOf('webui/index.html');
+  const js = srcOf('webui/app.js');
+  assert.ok(html.includes('id="wish-line"'), '要有读数那一行');
+  assert.ok(html.includes('id="wish-meta"'), '要有"跑到于"那一行');
+  assert.ok(html.includes('id="wish-exchange"'), '要有豆换码开关');
+  assert.match(js, /function renderWish\(/, '要有渲染函数');
+  assert.match(js, /renderWish\(\)/, '要真的被调用');
+  assert.match(js, /\/wish\/exchange/, '开关要调插件自己的路由');
+  // 「还没跑过」与「上次没领成」要分开（与趣玩AI 同一条教训）
+  assert.match(js, /w\.at === ''[\s\S]{0,120}还没领过/, '没跑过时说"还没领过"，不说"上次没领成"');
+});

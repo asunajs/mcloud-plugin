@@ -2,6 +2,7 @@
 //
 // 单独一份是因为它只读：不写状态、不发请求（只读会话）。
 
+import { loadWishSnapshot, wishExchangeEnabled } from '../../mcloud/tasks/wishCodes.ts';
 import { PLUGIN_VERSION } from '../../version.ts';
 import { loadBaseUrl, sessionStatus } from '../../mcloud/session.ts';
 import { hasBigInt } from '../../mcloud/caps.ts';
@@ -72,6 +73,20 @@ export function buildReadings(deps: RouteDeps): Record<string, unknown> {
         reading: snap.reading,
         drawEnabled,
         autoTaskIds,
+      };
+    })(),
+
+    // 许愿码（`National_MakeWish`）：**只给开关与上次那句结论**，不在这里发请求。
+    //
+    // ⚠ 与 `playai` 同一口径：读数由那一趟跑完写进 state，界面只读。
+    //   `exchangeEnabled` 是「用 AI豆换码」的开关（缺省关 —— 花的是用户的豆）。
+    wish: (() => {
+      const snap = loadWishSnapshot(deps.store);
+      return {
+        at: snap?.at ?? '',
+        ok: snap?.ok ?? false,
+        line: snap?.line ?? '',
+        exchangeEnabled: wishExchangeEnabled(deps.store),
       };
     })(),
 

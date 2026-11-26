@@ -26,7 +26,7 @@
 // 页面版本号：和 style.css 里的 --style-ver 一起人工递增。
 // 「样式自检」（boot.js 的 ?diag=1）会读它 —— 用来区分「CSS 是新的、JS 还是旧的」这种
 // 半新半旧状态（第 155 轮：样式表是 v155，但 DOM 里根本没有 .ex-group-row 这种行）。
-document.documentElement.dataset.appVer = '179';
+document.documentElement.dataset.appVer = '180';
 
 /** 插件自己的接口。 */
 const API = '/plugins/mcloud/api';
@@ -3463,6 +3463,7 @@ function showBlock(name) {
     autoFetchBeansOnce();
     // 趣玩AI 那一格只画**上次读到的**（不发请求）
     renderPlayAi();
+  renderWish();
   }
   // 兑换页同理：今天还没读到清单就补一枪（清单是下拉的唯一来源）。
   if (name === 'exchange') autoFetchPicksOnce();
@@ -3922,6 +3923,29 @@ $('acct-cfg-save').addEventListener('click', (e) =>
   ),
 );
 
+/** 许愿码那一格：**只画上次跑到的**，不发请求（与趣玩AI 同一口径）。
+ *
+ *  ⚠ 「豆换码」开关要单独画：读数可能还没跑过，而开关随时可看可改。 */
+function renderWish() {
+  const box = $('wish-line');
+  if (!box) return;
+  const w = last && last.wish;
+  const sw = $('wish-exchange');
+  if (sw) {
+    const el = /** @type {any} */ (sw);
+    if (w && w.exchangeEnabled === true) el.setAttribute('checked', '');
+    else el.removeAttribute('checked');
+  }
+  if (!w || w.at === '') {
+    box.textContent = '还没领过 —— 跑一趟「日常」就会领一次。';
+    setText('wish-meta', '');
+    return;
+  }
+  box.textContent = w.line || (w.ok ? '领到了' : '上次没领成');
+  const bits = [`跑到于 ${when(w.at)}`];
+  setText('wish-meta', bits.join(' · '));
+}
+
 /** 趣玩AI 那一格：**只画上次读到的**，不发请求。
  *
  *  ⚠ 别在这里"进页面就读一次"：那一族一次要发两发（页面模块 + 主题模块），
@@ -4140,6 +4164,16 @@ document.addEventListener('change', (ev) => {
   const on = t.value === true;
   void api('/playai/draw', { method: 'POST', write: true, body: { on } })
     .then((r) => toast((r && r.note) || (on ? '代抽已开' : '代抽已关')))
+    .catch((e) => toast(String(e && e.message ? e.message : e), true));
+});
+
+// 许愿码「豆换码」开关（花 AI豆 ⇒ 缺省关；开/关都要立刻存）
+document.addEventListener('change', (ev) => {
+  const t = /** @type {{ id?: string, value?: boolean }} */ (ev.target);
+  if (t.id !== 'wish-exchange') return;
+  const on = t.value === true;
+  void api('/wish/exchange', { method: 'POST', write: true, body: { on } })
+    .then((r) => toast((r && r.note) || (on ? '豆换码已开' : '豆换码已关')))
     .catch((e) => toast(String(e && e.message ? e.message : e), true));
 });
 
