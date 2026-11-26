@@ -289,3 +289,20 @@ test('入口步骤问动作层，不硬编（动作层换入口时这一族跟�
   assert.match(src, /step: firstActionStep\(t\.actionKey\)/, '入口步骤要问动作层');
   assert.equal(/step: 'ai-mail-sso'/.test(src), false, '不许硬编入口步骤');
 });
+
+test('读失败时**保留上一份好读数**（别把可做清单一起擦掉）', async () => {
+  const { deps, store } = harness({ flip: true });
+  await drainAll(deps); // 先成功读一次
+  const { loadPlayAiSnapshot } = await import('../src/mcloud/playAiState.ts');
+  const good = loadPlayAiSnapshot(store);
+  assert.ok(good?.ok === true && good.reading !== null, '先要有一份好读数');
+
+  // 把票拿掉，模拟"这一趟换票没成"
+  store.setState(STATE_JWT, '', NOW);
+  await playAiStep(deps);
+  const after = loadPlayAiSnapshot(store);
+  assert.equal(after?.ok, false, '这次是失败');
+  assert.match(String(after?.error), /H5 票/);
+  assert.equal(after?.line, good!.line, '读数那一行要保留上一份');
+  assert.deepEqual(after?.reading, good!.reading, '可做清单也要保留');
+});

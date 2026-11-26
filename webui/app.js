@@ -26,7 +26,7 @@
 // 页面版本号：和 style.css 里的 --style-ver 一起人工递增。
 // 「样式自检」（boot.js 的 ?diag=1）会读它 —— 用来区分「CSS 是新的、JS 还是旧的」这种
 // 半新半旧状态（第 155 轮：样式表是 v155，但 DOM 里根本没有 .ex-group-row 这种行）。
-document.documentElement.dataset.appVer = '173';
+document.documentElement.dataset.appVer = '174';
 
 /** 插件自己的接口。 */
 const API = '/plugins/mcloud/api';
@@ -3946,6 +3946,8 @@ function renderPlayAi() {
     else el.removeAttribute('checked');
   }
   const bits = [p.at === '' ? '还没读过' : `读到于 ${when(p.at)}`];
+  // 这一趟没读成时，读数保留上一份，理由挂在后面（不把清单擦掉）
+  if (p.ok === false && p.error) bits.push(`这次没读成：${p.error}`);
   if (p.reading) {
     const r = p.reading;
     if (r.canDraw > 0) bits.push(`现在能抽 ${r.canDraw} 次`);

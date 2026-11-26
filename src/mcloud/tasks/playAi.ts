@@ -48,6 +48,7 @@ import type { PlayAiModule, PlayAiSession, PlayAiTask } from '../playAi.ts';
 import {
   loadDrawDay,
   loadPlayAi,
+  loadPlayAiSnapshot,
   newPlayAi,
   playAiDrawEnabled,
   saveDrawDay,
@@ -166,6 +167,26 @@ function snapshot(deps: TaskDeps, modules: readonly PlayAiModule[], ok: boolean,
   return line;
 }
 
+/** 读失败时**保留上一份好读数**，只把错误挂上去。
+ *
+ *  ⚠ 别用 `snapshot(..., false, ...)` 覆盖：那会把"上次读到的那几件任务"一起擦掉，
+ *    卡片变成只剩一句错误 —— 用户本来能照着那张单子去 App 里做，现在连单子都没了。 */
+function snapshotError(deps: TaskDeps, error: string): void {
+  const prev = loadPlayAiSnapshot(deps.store);
+  const keep = prev !== null && prev.ok === true && prev.reading !== null;
+  savePlayAiSnapshot(
+    deps.store,
+    {
+      at: deps.nowIso,
+      ok: false,
+      line: keep ? prev.line : error,
+      reading: keep ? prev.reading : null,
+      error,
+    },
+    deps.nowIso,
+  );
+}
+
 /** 推进一步。**一次调用最多一发上游请求**（动作链自己也是这个粒度）。 */
 export async function playAiStep(deps: TaskDeps): Promise<TaskOutcome> {
   const day = deps.nowIso.slice(0, 10);
@@ -184,7 +205,7 @@ export async function playAiStep(deps: TaskDeps): Promise<TaskOutcome> {
   const s = session(deps);
   if (s === undefined) {
     const error = '还没有可用的 H5 票（日常第①步换票没成）—— 这一族这次没做';
-    savePlayAiSnapshot(deps.store, { at: deps.nowIso, ok: false, line: error, reading: null, error }, deps.nowIso);
+    snapshotError(deps, error);
     return { ok: false, note: error };
   }
 
@@ -194,7 +215,7 @@ export async function playAiStep(deps: TaskDeps): Promise<TaskOutcome> {
       const got = await readModules(deps.transport, s, deps.baseUrl);
       if (!got.ok) {
         const line = `读不到趣玩AI：${got.error}`;
-        snapshot(deps, [], false, got.error);
+        snapshotError(deps, got.error);
         st.phase = 'done';
         save(deps, st);
         return { ok: false, note: line };
