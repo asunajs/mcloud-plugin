@@ -1139,3 +1139,59 @@ unknown = liveish - known
 assert not unknown, f'出现了不认识的 live 路径（可能拼错/被删）：{unknown}'
 print('   ✅ 路径总闸：整趟 live 路径都在白名单内（无拼错/无幽灵端点）')
 PATHSET
+# ══════════════════════════════════════════════════════════════════
+# ⑭ 趣玩AI赢好礼（`National_playAI`）：读 → （没有会做的任务）→ 抽
+#
+# ⚠ mock 的页面任务表里**故意不放 `aizhushou`**：那一件的动作链会去打
+#   `mail.10086.cn` / `ai.yun.139.com`（真主机，mock 拦不到），放进来会卡在真网络上。
+#   所以这一节验的是"读数落地 + 代抽开关 + 抽一发的字节"，动作链由单测钉。
+# ══════════════════════════════════════════════════════════════════
+echo
+echo "⑭ 趣玩AI（读 + 抽）"
+# 代抽**缺省关**：先跑一趟，应该一发 lottery 都没有
+curl -fsS -X POST "http://127.0.0.1:$MOCK_PORT/_debug/requests/clear" -o /dev/null || true
+try_write /dev/null "${W[@]}" -X POST "$B/api/tasks/mcloud-daily/%E6%97%A5%E5%B8%B8/run" > /dev/null 2>&1 || true
+# ⚠ 面板的 `/run` 只是**派发**，任务可能还在跑 ⇒ 等 funai 的请求真的出现（最多 15 秒）
+for _ in $(seq 1 30); do
+  curl -fsS "http://127.0.0.1:$MOCK_PORT/_debug/requests" -o "$TMP/playai-req1.json" || true
+  if grep -q 'funai/api/page/getmodule' "$TMP/playai-req1.json" 2>/dev/null; then break; fi
+  sleep 0.5
+done
+curl -fsS "${W[@]}" "$B/plugins/mcloud/api/readings" -o "$TMP/playai1.json"
+python3 - "$TMP/playai1.json" "$TMP/playai-req1.json" <<'PLAYAI1'
+import json, sys
+rd = json.load(open(sys.argv[1]))
+reqs = json.load(open(sys.argv[2]))
+pa = rd.get('playai')
+assert pa is not None, '读数里要有 playai 这一格'
+assert pa['drawEnabled'] is False, '代抽缺省必须是关'
+assert pa['line'] != '', f'要读到一行读数：{pa}'
+gets = [r for r in reqs if r['path'].startswith('/ycloud/funai/api/')]
+assert any('page/getmodule' in r['path'] for r in gets), f'要读页面模块：{gets}'
+assert any('timed/getmodule' in r['path'] for r in gets), '要读主题模块'
+lots = [r for r in gets if 'lottery' in r['path']]
+assert not lots, f'代抽关着却抽了：{lots}'
+regs = [r for r in gets if 'register' in r['path']]
+assert not regs, f'没有会做的任务，不该点任何任务：{regs}'
+print('   ✅ 读数落地；代抽缺省关 ⇒ 零 lottery、零 register')
+PLAYAI1
+
+# 打开代抽，再跑一趟：应该正好一发 lottery，body 只有 moduleId
+curl -fsS -X POST "${W[@]}" -H 'content-type: application/json' \
+  -d '{"on":true}' "$B/plugins/mcloud/api/playai/draw" -o /dev/null
+curl -fsS -X POST "http://127.0.0.1:$MOCK_PORT/_debug/requests/clear" -o /dev/null || true
+try_write /dev/null "${W[@]}" -X POST "$B/api/tasks/mcloud-daily/%E6%97%A5%E5%B8%B8/run" > /dev/null 2>&1 || true
+for _ in $(seq 1 30); do
+  curl -fsS "http://127.0.0.1:$MOCK_PORT/_debug/requests" -o "$TMP/playai-req2.json" || true
+  if grep -q 'funai/api/page/lottery' "$TMP/playai-req2.json" 2>/dev/null; then break; fi
+  sleep 0.5
+done
+python3 - "$TMP/playai-req2.json" <<'PLAYAI2'
+import json, sys
+reqs = json.load(open(sys.argv[1]))
+lots = [r for r in reqs if 'funai/api/page/lottery' in r['path']]
+assert len(lots) == 1, f'开了代抽、有次数 ⇒ 正好一发（实际 {len(lots)}）'
+b = json.loads(lots[0].get('body') or '{}')
+assert b == {'moduleId': '1-250730'}, f'抽奖 body 只带 moduleId：{b}'
+print('   ✅ 开代抽 ⇒ 正好一发 lottery，body 逐字 {"moduleId":"1-250730"}')
+PLAYAI2

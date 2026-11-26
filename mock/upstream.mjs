@@ -493,6 +493,14 @@ export async function startMock(options = {}) {
         },
       ],
     },
+    // 趣玩AI：**故意不给"我们会做"的任务**（`aizhushou` 不放进表里）——
+    // 那一件的动作链会去打 `mail.10086.cn` / `ai.yun.139.com`（真主机，mock 拦不到），
+    // 放进来会让 e2e 卡在真网络上。这里只验"读 + 抽"两段。
+    playAi: {
+      registers: [],
+      lottery: [],
+      drawTimes: 2,
+    },
   };
   // behavior: 'normal' | 'biz-fail' | 'http-500' | 'not-json' | 'timeout'
   let behavior = options.behavior ?? 'normal';
@@ -938,6 +946,84 @@ export async function startMock(options = {}) {
       if (url.pathname === '/ycloud/tokenpk/toplist/progress/autoReceiveLotteryChance') {
         return json(res, 200, { code: 0, msg: 'success', result: { totalChance: 1, rewardCount: 1 } });
       }
+      // ── 趣玩AI赢好礼（`National_playAI`）──
+      // 形状照 2026-11-26 的 HAR：页面模块回**单个对象**、主题模块回**数组**；
+      // 主题模块的三个计数是 `null`（不是 0）。
+      if (url.pathname === '/ycloud/funai/api/page/getmodule') {
+        return json(res, 200, {
+          code: 0,
+          msg: 'success',
+          result: {
+            moduleId: '1-250730',
+            subtitle: '趣玩AI赢好礼',
+            startTime: '2025-05-28T00:00:00',
+            endTime: '2026-12-31T23:59:59',
+            drawTimes: st.playAi.drawTimes,
+            drawsUsed: st.playAi.lottery.length,
+            todayGetLotteryCount: st.playAi.drawTimes + st.playAi.lottery.length,
+            isDraw: null,
+            taskIds: [
+              // 已完成的那件
+              { id: 'aizhushou', taskName: 'AI助手，打工人必备神器', taskSign: 0, isComplete: 1, innerLink: 'mcloud://main/aiAssistantGlobal' },
+              // 我们会做、但**故意不放**（见状态那段注释）
+              // 不会做的两件 + 邀请那件
+              { id: '003', taskName: '智能抠图，一键抠图超轻松', taskSign: 0, isComplete: 0, innerLink: 'https://yun.139.com/aiTools/#/faceMattin' },
+              { id: 'invite', taskName: '邀请好友，一起趣玩AI', taskSign: 1, isComplete: 0, innerLink: '' },
+              { id: 'ailuyinzhuanxie', taskName: 'AI录音转写', taskSign: 2, isComplete: 0, innerLink: '' },
+            ],
+          },
+        });
+      }
+      if (url.pathname === '/ycloud/funai/api/timed/getmodule') {
+        return json(res, 200, {
+          code: 0,
+          msg: 'success',
+          result: [
+            {
+              moduleId: '2-261104-1',
+              subtitle: '假日出行助手',
+              drawTimes: null,
+              drawsUsed: null,
+              todayGetLotteryCount: null,
+              taskIds: [
+                { id: '004', taskName: 'AI漫画风，一键秒变二次元主角', taskSign: 0, isComplete: 0, innerLink: 'https://yun.139.com/aiTools/#/aiComicOff' },
+              ],
+            },
+          ],
+        });
+      }
+      if (url.pathname === '/ycloud/funai/api/page/register') {
+        let b = {};
+        try { b = JSON.parse(body || '{}'); } catch {}
+        st.playAi.registers.push({ moduleId: String(b.moduleId ?? ''), taskId: String(b.taskId ?? '') });
+        return json(res, 200, { code: 0, msg: 'success', result: 0 });
+      }
+      if (url.pathname === '/ycloud/funai/api/page/lottery') {
+        let b = {};
+        try { b = JSON.parse(body || '{}'); } catch {}
+        // 第一发中、第二发不中（照 09-25 四份真样本的两种形状）
+        const win = st.playAi.lottery.length % 2 === 0;
+        st.playAi.lottery.push({ moduleId: String(b.moduleId ?? ''), win });
+        st.playAi.drawTimes = Math.max(0, st.playAi.drawTimes - 1);
+        return json(res, 200, {
+          code: 0,
+          msg: 'success',
+          result: {
+            id: win ? 4226417 : 10657867,
+            isWin: win ? 1 : 0,
+            prizeId: win ? 250624008 : null,
+            prizeName: win ? '20云盘专属AI豆' : null,
+            prizeUrl: win ? 'https://img.mcloud.139.com/x.png' : null,
+            // ⚠ 没中也有 prizeType（真样本如此）
+            prizeType: win ? 2 : 1,
+            marketName: 'National_PlayAI',
+          },
+        });
+      }
+      if (url.pathname === '/ycloud/funai/api/page/prizes') {
+        return json(res, 200, { code: 0, msg: 'success', result: [] });
+      }
+
       if (url.pathname === '/ycloud/tokenpk/toplist/progress/queryRemainChance') {
         return json(res, 200, { code: 0, msg: 'success', result: Math.max(0, 3 - st.tokenPk.lottery.length) });
       }
