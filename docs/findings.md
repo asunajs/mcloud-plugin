@@ -8010,3 +8010,18 @@ const st = prev !== null && prev.day === day ? prev : newPlayAi(day, …);
 **改法**：两处都在拿到 `fileId` 之后 `registerOwnedFile(deps, rec.fileId)`。
 验证：`test/tokenPkActions.test.ts`（整条 AI 相机链走一遍，断言 `ownedFileIds` 里有它）+
 `test/appTask.test.ts` 的 585 那条补同一句断言。
+
+## F-154 回读"再读一次"那条路被 `phase='done'` 吃掉（2026-11-26）
+
+**背景**：服务端翻位是**事后**的（09-25 抓包里隔了 68 秒），刚做完就回读很容易读到"还没翻"。
+所以 `verify` 加了一条"没翻位就等 3 秒再读一次"。
+
+**第一次实现错在哪**：`st.phase = 'done'` 写在判断**之前** —— 于是"再读一次"那一拍
+先把 `done` 存进状态，下一拍进来正好撞上 F-149 修的那个"上一趟已走完 ⇒ 重开一轮"，
+于是它回去重新 `list`、报「没有我会做的可做任务」，**pending 那句永远出不来**。
+
+**改法**：`done` 只在**真收尾**的两条路上写（翻位了 / 两次都没翻位）；
+"再读一次"那条停在 `verify`。
+
+**怎么发现的**：新加的 pending 用例红了，顺着 `playAiStep` 逐拍打日志才看见第 4 拍走的是 `list`。
+—— 这类"状态机某一格提前落盘"的错，只看最终 note 是看不出来的。

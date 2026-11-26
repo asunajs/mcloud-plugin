@@ -88,6 +88,8 @@ export interface PlayAiState {
   tried?: Record<string, string> | undefined;
   /** 动作层正在走的那一段（`tokenPkActions.PkAttempt` 的形状）。 */
   attempt?: unknown;
+  /** 这一趟已经回读了几次（见 `verify` 那段的"再读一次"）。 */
+  verifyTries?: number | undefined;
 }
 
 export function loadPlayAi(store: Pick<Store, 'getState'>): PlayAiState | null {

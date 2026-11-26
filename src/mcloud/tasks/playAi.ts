@@ -57,6 +57,7 @@ import {
 } from '../playAiState.ts';
 import type { PlayAiState, PlayAiTarget } from '../playAiState.ts';
 import { firstActionStep, stepAction } from './tokenPkActions.ts';
+import { waitMs } from './base.ts';
 import type { TaskDeps, TaskOutcome } from './base.ts';
 
 /** 一趟最多做几件。
@@ -308,9 +309,12 @@ export async function playAiStep(deps: TaskDeps): Promise<TaskOutcome> {
       }
       const line = snapshot(deps, got.modules, true, '');
       st.modules = got.modules;
-      st.phase = 'done';
+      // ⚠ **先别**把 `phase` 写成 `done`：下面"再读一次"那条路要停在 `verify`。
+      //   写成 done 的后果实测过：下一拍会被当成"上一趟已走完 ⇒ 重开一轮"，
+      //   于是它回去重新 `list`、报「没有我会做的可做任务」，pending 那句永远出不来。
       const now = got.modules.flatMap((m) => m.tasks).find((x) => x.id === t?.taskId && x.moduleId === t?.moduleId);
       if (t === undefined) {
+        st.phase = 'done';
         st.lines = [];
         save(deps, st);
         return { ok: true, idle: true, note: line };
@@ -327,7 +331,18 @@ export async function playAiStep(deps: TaskDeps): Promise<TaskOutcome> {
         save(deps, st);
         return { ok: true, idle: true, note: `「${t.name}」做完了 —— ${line}` };
       }
-      // 没翻位：**如实说**。这不是失败（我们该做的都做了），也不是成功（上游没认）
+      // 没翻位：**再读一次**再下结论。
+      //   ⚠ 服务端翻位是**事后**的（抓包里隔了 68 秒），刚聊完就回读很容易读到"还没翻"。
+      //   只多读一次、等 3 秒 —— 不无限重试（那是"下一趟再验"，用户否过）。
+      const tries = st.verifyTries ?? 0;
+      if (tries < 1) {
+        st.verifyTries = tries + 1;
+        save(deps, st);
+        waitMs(deps, 3000);
+        return { ok: true, note: `「${t.name}」回读还没翻位 —— 等一会儿再读一次` };
+      }
+      // 两次都没翻位：**如实说**。这不是失败（我们该做的都做了），也不是成功（服务端没认）
+      st.phase = 'done';
       st.lines = [`「${t.name}」已上报，服务端还没认 —— 那件事要在工具里真的做完才算`];
       save(deps, st);
       return { ok: true, pending: true, idle: true, note: `「${t.name}」已上报，服务端还没认 —— ${line}` };

@@ -93,7 +93,16 @@ function harness(
     // 动作链（灵犀）：一律给"没成"，这样链会很快收尾 —— 这一篇不管它成不成
     return { status: 200, headers: {}, body: JSON.stringify({ code: 500, msg: '动作链不在本篇范围' }) };
   }) as never;
-  const deps = { store, transport, nowIso: NOW, now: () => NOW, baseUrl: undefined } as unknown as TaskDeps;
+  // ⚠ `waitMs` 是**忙等**：给一个每轮 +1000ms 的假时钟，等待就不花真秒数
+  let fake = Date.parse(NOW);
+  const deps = {
+    store,
+    transport,
+    nowIso: NOW,
+    now: () => NOW,
+    nowMs: () => (fake += 1000),
+    baseUrl: undefined,
+  } as unknown as TaskDeps;
   return { deps, sent, store };
 }
 
@@ -391,7 +400,16 @@ test('整条动作链：换票 → 邮箱登录 → 拿 AI 鉴权 → 聊一句 
     }
     return { status: 200, headers: {}, body: JSON.stringify({ code: 90001, msg: '未登录' }) };
   }) as never;
-  const deps = { store, transport, nowIso: NOW, now: () => NOW, baseUrl: undefined } as unknown as TaskDeps;
+  // ⚠ `waitMs` 是**忙等**：给一个每轮 +1000ms 的假时钟，等待就不花真秒数
+  let fake = Date.parse(NOW);
+  const deps = {
+    store,
+    transport,
+    nowIso: NOW,
+    now: () => NOW,
+    nowMs: () => (fake += 1000),
+    baseUrl: undefined,
+  } as unknown as TaskDeps;
 
   const notes: string[] = [];
   for (let i = 0; i < 12; i++) {
