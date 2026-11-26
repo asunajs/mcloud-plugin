@@ -229,3 +229,22 @@ test('`drain` 的步数上限够走完一整趟（给紧了会报假失败）', 
   // list 1 + register 1 + 灵犀动作链 4 + verify 1 + draw 1 = 8，留重试余量
   assert.ok(PLAYAI_MAX_STEPS >= 8, `上限 ${PLAYAI_MAX_STEPS} 太小`);
 });
+
+test('动作那一步没成，也**照样回读**（判据只有回读，失败那一句进 lines）', async () => {
+  // 夹具里动作链一律回 500 ⇒ 第一步就 fail；但回读仍要发生，且结论按 isComplete 走
+  const { deps, sent } = harness({ flip: true });
+  const { notes } = await drainAll(deps);
+  // 回读至少两次：list 一次 + verify 一次
+  const reads = sent.filter((x) => String(x.url).includes('/funai/api/page/getmodule')).length;
+  assert.ok(reads >= 2, `list + verify 都要读（实际 ${reads} 次）`);
+  assert.ok(
+    notes.some((n) => /做完了/.test(n)),
+    `动作失败不影响"回读已翻位"这个判据：${notes.join(' | ')}`,
+  );
+  const { loadPlayAi } = await import('../src/mcloud/playAiState.ts');
+  const st = loadPlayAi(deps.store);
+  assert.ok(
+    (st?.lines ?? []).some((l) => /没成/.test(l)) || (st?.lines ?? []).some((l) => /做完了/.test(l)),
+    '动作失败那一句要留在 lines 里（或被完成那句覆盖）',
+  );
+});

@@ -251,9 +251,11 @@ export async function playAiStep(deps: TaskDeps): Promise<TaskOutcome> {
       }
       st.attempt = undefined;
       st.phase = 'verify';
+      // 动作没做成也**照样回读**：那一件事可能本来就算完成（或者上一趟已经做完了），
+      // 判据只有回读。失败那一句进 `lines`（运行记录里看得到），不吞掉。
+      if (!r.ok) st.lines = [...(st.lines ?? []), `做「${t.name}」那一步没成：${r.note}`];
       save(deps, st);
-      // ⚠ 动作"做完了"**不等于任务完成**（判据是回读）—— 所以这里不写成功，只往下走
-      return { ok: r.ok, note: `${r.note} —— 回读看服务端认不认` };
+      return { ok: true, note: `${r.note} —— 回读看服务端认不认` };
     }
 
     // ④ 回读：**唯一**的完成判据
