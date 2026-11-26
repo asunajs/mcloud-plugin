@@ -7931,3 +7931,65 @@ App 里三个号都没签上。
 
 验证：`test/tasks2.test.ts` 6 条（每次执行都提交、响应说已签就不再问、日历没签判失败、
 没有今天那格判失败、没回话不说成功、`cal` 靠 `currentMonth`+`t` 认），`npm test` 1309/1309。
+
+## F-149 趣玩AI 那一族：同一天第二趟被 `done` 封死（2026-11-26）
+
+**现场**：这一族的状态机是 `list → register → act → verify → draw → done`，一趟走完把
+`phase` 落成 `'done'`。而 `playAiStep` 开头只判"是不是同一天"：
+
+```ts
+const st = prev !== null && prev.day === day ? prev : newPlayAi(day, …);
+```
+
+于是同一天**第二趟**进来，`prev.phase === 'done'` ⇒ 直接落到 `switch` 的 `default:` 分支
+⇒ 返回 `idle`，这一族当天**再也不干活**。
+
+**为什么这是硬伤**：用户的口径是"用户设几趟就跑几趟、每一趟都是独立的"（`dailyRun` 顶部那段）。
+一族一天只跑一次，等于替用户把第二趟偷偷删掉。
+
+**改法**：`phase === 'done'` ⇒ **重开一轮**（`newPlayAi(day, …)`），但把 `tried`
+（今天点过的 `moduleId|taskId`）带过来 —— 重开不等于重做，点过的不再点。
+
+**同一轮里发现的第二条**（同一个函数）：代抽的闸写成了
+`loadDrawDay(...).drawn < PLAYAI_DRAWS_PER_RUN`，可那个账是**按天**的 ⇒ 用户有 3 次也只抽 1 次。
+改成"一趟最多一发"（抽完就 `phase='done'`，同一次运行回不到 `draw`），按天账只用来报数。
+
+验证：`test/playAiDo.test.ts` 两条（同一天第二趟仍要读一遍；两个号各跑一趟 ⇒ 两发 lottery，
+而一趟里只有一发）。
+
+## F-150 「只跑一族」的调试运行，收尾四步照样在发请求（2026-11-26）
+
+**现场**：写 CLI `--only` 的验收时数出来的 —— 只点了趣玩AI，`sent` 里却有
+`signin/page/infoV3`、`signin/public/record`（领取AI豆）、`待领取奖品`、`清理临时文件`、
+`signin/public/cloudRecordV2`（今日云朵）。
+
+**真因**：`only` 只接进了**六族**那几道闸（`selected()`），收尾那四步不在族里，
+它们直接 `once(...)` / `drain(...)`，压根没看 `only`。
+
+**改法**：`only !== null` 时这四步整段跳过，各留一行「这次不跑（调试只点了别的）」。
+⚠ 只跳这四步；**凭据续期与换票照旧** —— 那是被点到的族要用的前提，跳了就什么都跑不了。
+
+验证：`test/standaloneOnly.test.ts`（走 CLI 那半边同一个 `runDailyAll`）+
+`test/playAiDo.test.ts` 一条"收尾三发一个都不发"。
+
+## F-151 `debug/last` 六族全回 null：映射表按"开关 label"找步骤名（2026-11-26）
+
+**现场**：调试页「每族上次的结果」六格全写「还没跑过」，可运行记录里明明有。
+
+**真因**：`/debug/last` 拿开关的 `label`（「每日签到」「云手机」）去 `steps[].name` 里找，
+而 `dailyRun` push 的步骤名是**另一套词**（「签到」「红包派对」）⇒ 一个都匹配不上。
+
+**改法**：加一张显式的 `STEP_NAMES` 映射，并补一条测试钉住"表里的名字必须真的出现在
+`dailyRun` 的 `push` 里"（两种写法都认：`push({name})` 与 `push(await once('X'))`）。
+这条测试当场又抓出表里三个**不是步骤名**的词：「签到翻倍」「复活卡」是签到那一步**里面的行**。
+
+## F-152 `activityid` 硬编成 `sign_in_3`：那是 `localStorage` 的残留值，不是这一页的（2026-11-26）
+
+**现场**：实现趣玩AI 时照 09-25 的抓包把 `activityid` 写成 `sign_in_3`。核 11-26 的 HAR
+发现那一轮 **条条是 `National_TokenPK`** —— 同一批端点、两轮两个值、都 `code:0`。
+
+**真因**：这一格不是页面设的，是壳层把 `localStorage.marketName` **原样**写进请求头
+（谁最后写过谁就赢，见 `app-play-ai-samples.txt` §7.9 后那段）。
+
+**改法**：实现里**不发**这一格（发一个猜的值与不发一样没依据）；抓包文档同步订正
+（初稿照抄了旧读数、没核 HAR）。
