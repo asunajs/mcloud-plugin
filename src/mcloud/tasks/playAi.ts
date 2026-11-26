@@ -330,6 +330,7 @@ export async function playAiStep(deps: TaskDeps): Promise<TaskOutcome> {
         return { ok: true, note: r.note };
       }
       st.attempt = undefined;
+      st.actOk = r.ok;
       st.phase = 'verify';
       // 动作没做成也**照样回读**：那一件事可能本来就算完成（或者上一趟已经做完了），
       // 判据只有回读。失败那一句进 `lines`（运行记录里看得到），不吞掉。
@@ -374,8 +375,10 @@ export async function playAiStep(deps: TaskDeps): Promise<TaskOutcome> {
       // 没翻位：**再读一次**再下结论。
       //   ⚠ 服务端翻位是**事后**的（抓包里隔了 68 秒），刚聊完就回读很容易读到"还没翻"。
       //   只多读一次、等 3 秒 —— 不无限重试（那是"下一趟再验"，用户否过）。
+      // ⚠ 只有**动作成了**才值得等：动作没成（换票/登录/对话失败）时，服务端不会因为
+      //   等 3 秒就翻位 —— 那 3 秒是白等的，还占着面板的执行位。
       const tries = st.verifyTries ?? 0;
-      if (tries < 1) {
+      if (st.actOk !== false && tries < 1) {
         st.verifyTries = tries + 1;
         save(deps, st);
         waitMs(deps, 3000);

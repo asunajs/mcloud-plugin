@@ -90,6 +90,8 @@ export interface PlayAiState {
   attempt?: unknown;
   /** 这一趟已经回读了几次（见 `verify` 那段的"再读一次"）。 */
   verifyTries?: number | undefined;
+  /** 动作那一步**成了没有**。没成的话不必等那 3 秒 —— 服务端不会因为等一会儿就翻位。 */
+  actOk?: boolean | undefined;
 }
 
 export function loadPlayAi(store: Pick<Store, 'getState'>): PlayAiState | null {

@@ -654,3 +654,19 @@ test('相机链被打断时，那张图要算"还在用"—— 清理不能把�
   );
   assert.equal(activePlayAiFileId(deps), undefined);
 });
+
+test('动作没成 ⇒ 不等那 3 秒、也不多读一次（服务端不会因为等一会儿就翻位）', async () => {
+  // 夹具里动作链一律回 500 ⇒ actOk=false
+  const { deps, sent } = harness({ flip: false });
+  const notes: string[] = [];
+  for (let i = 0; i < 14; i++) {
+    const r = await playAiStep(deps);
+    notes.push(r.note);
+    if (r.ok === false && r.pending !== true) break;
+    if (r.idle === true) break;
+  }
+  // list 一次 + verify 一次 = 2 次读；不该有"再读一次"
+  const reads = sent.filter((x) => String(x.url).includes('/funai/api/page/getmodule')).length;
+  assert.equal(reads, 2, `动作没成时只该读两次（实际 ${reads}）：${notes.join(' | ')}`);
+  assert.equal(notes.some((n) => /再读一次/.test(n)), false, '不该出现"再读一次"');
+});

@@ -56,7 +56,8 @@ list      读两个模块 → 落读数 → 挑**一件**（taskSign=0 + 未完�
 register  POST page/register → 记进 tried（不论成败）
 act       复用算力族的动作层（stepAction），一次推一步
 verify    再读一次 getmodule → **只有 isComplete 翻位才算做完**
-          （没翻位就等 3 秒**再读一次**；两次都没翻才写「已上报，服务端还没认」）
+          （动作**成了**且没翻位 ⇒ 等 3 秒**再读一次**；动作没成不等；
+            两次都没翻才写「已上报，服务端还没认」）
 draw      开了代抽且 drawTimes > 0 时抽一发（一趟最多一发）
 ```
 
