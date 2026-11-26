@@ -56,11 +56,12 @@ list      读两个模块 → 落读数 → 挑**一件**（taskSign=0 + 未完�
 register  POST page/register → 记进 tried（不论成败）
 act       复用算力族的动作层（stepAction），一次推一步
 verify    再读一次 getmodule → **只有 isComplete 翻位才算做完**
+          （没翻位就等 3 秒**再读一次**；两次都没翻才写「已上报，服务端还没认」）
 draw      开了代抽且 drawTimes > 0 时抽一发（一趟最多一发）
 ```
 
 - 一趟最多做 **1 件**（`PLAYAI_TASKS_PER_RUN`），`drain` 上限 **12** 步
-  （list 1 + register 1 + 动作链 4 + verify 1 + draw 1 = 8，留重试余量）；
+  （list 1 + register 1 + 动作链 4 + verify 1 + 再读 1 + verify 1 + draw 1 = 10，留余量）；
 - **同一天第二趟会重开一轮**（否则 `phase='done'` 会把这一族当天封死），`tried` 带过来；
 - **动作没成也照样回读** —— 那件事可能本来就算完成；失败那句进 `lines`。
 
