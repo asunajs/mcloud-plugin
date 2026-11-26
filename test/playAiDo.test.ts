@@ -18,7 +18,7 @@ import type { TaskDeps } from '../src/mcloud/tasks/base.ts';
 
 const NOW = '2026-11-26T07:00:00.000Z';
 
-function pageModule(complete: Record<string, number>): Record<string, unknown> {
+function pageModule(complete: Record<string, number>, drawTimes = 0): Record<string, unknown> {
   const task = (id: string, name: string, sign: number) => ({
     id,
     taskName: name,
@@ -32,7 +32,7 @@ function pageModule(complete: Record<string, number>): Record<string, unknown> {
     result: {
       moduleId: '1-250730',
       subtitle: '趣玩AI赢好礼',
-      drawTimes: 0,
+      drawTimes,
       drawsUsed: 0,
       todayGetLotteryCount: 0,
       taskIds: [
@@ -46,7 +46,9 @@ function pageModule(complete: Record<string, number>): Record<string, unknown> {
 }
 
 /** 造一个"上游"：按 URL 分派，记录所有请求。`flip` = 回读时 aizhushou 是否已完成。 */
-function harness(opts: { flip?: boolean; registerCode?: number } = {}) {
+function harness(
+  opts: { flip?: boolean; registerCode?: number; drawTimes?: number; draw?: boolean; isWin?: number | null } = {},
+) {
   const store = memStore();
   store.ensureSchema();
   store.setState(
@@ -71,7 +73,19 @@ function harness(opts: { flip?: boolean; registerCode?: number } = {}) {
     }
     if (url.includes('/funai/api/page/getmodule')) {
       const done = registered && opts.flip === true ? 1 : 0;
-      return { status: 200, headers: {}, body: JSON.stringify(pageModule({ aizhushou: done })) };
+      return {
+        status: 200,
+        headers: {},
+        body: JSON.stringify(pageModule({ aizhushou: done }, opts.drawTimes ?? 0)),
+      };
+    }
+    if (url.includes('/funai/api/page/lottery')) {
+      const win = opts.isWin === undefined ? 1 : opts.isWin;
+      const result =
+        win === null
+          ? { id: 1, prizeType: 1 } // 没有 isWin 键
+          : { id: 1, isWin: win, prizeName: win === 1 ? '30云盘专属AI豆' : null, prizeType: 1 };
+      return { status: 200, headers: {}, body: JSON.stringify({ code: 0, msg: 'success', result }) };
     }
     if (url.includes('/funai/api/timed/getmodule')) {
       return { status: 200, headers: {}, body: JSON.stringify({ code: 0, msg: 'success', result: [] }) };
@@ -157,4 +171,43 @@ test('今天点过就不再点：同一天再跑一趟，`register` 一发都不
 
 test('预算常量是 1（写口，别放开成"全做"）', () => {
   assert.equal(PLAYAI_TASKS_PER_RUN, 1);
+});
+
+// ── 抽奖（step ③）──────────────────────────────────────────────────
+
+test('代抽**缺省关**：开关没开时，一次都不抽（哪怕有次数）', async () => {
+  const { deps, sent } = harness({ flip: true, drawTimes: 3 });
+  await drainAll(deps);
+  assert.equal(sent.filter((x) => String(x.url).includes('/page/lottery')).length, 0, '缺省关就别抽');
+});
+
+test('开了代抽 + 有次数 ⇒ 抽一发；`isWin:1` 判中、`isWin:0` 判没中', async () => {
+  for (const [isWin, expect] of [[1, /抽中了/], [0, /没中/]] as const) {
+    const { deps, sent, store } = harness({ flip: true, drawTimes: 2, draw: true, isWin });
+    const { setPlayAiDrawEnabled } = await import('../src/mcloud/playAiState.ts');
+    setPlayAiDrawEnabled(store, true, NOW);
+    const { notes } = await drainAll(deps);
+    const draws = sent.filter((x) => String(x.url).includes('/page/lottery'));
+    assert.equal(draws.length, 1, '抽一发');
+    assert.deepEqual(JSON.parse(String(draws[0]!.body)), { moduleId: '1-250730' });
+    assert.ok(notes.some((n) => expect.test(n)), `要有结论：${notes.join(' | ')}`);
+  }
+});
+
+test('次数是 0 ⇒ 不抽（`drawTimes` 本身已是余额，不再减 `drawsUsed`）', async () => {
+  const { deps, sent, store } = harness({ flip: true, drawTimes: 0, draw: true, isWin: 1 });
+  const { setPlayAiDrawEnabled } = await import('../src/mcloud/playAiState.ts');
+  setPlayAiDrawEnabled(store, true, NOW);
+  await drainAll(deps);
+  assert.equal(sent.filter((x) => String(x.url).includes('/page/lottery')).length, 0);
+});
+
+test('回执没有 `isWin` ⇒ 既不写"中了"也不写"没中"', async () => {
+  const { deps, store } = harness({ flip: true, drawTimes: 1, draw: true, isWin: null });
+  const { setPlayAiDrawEnabled } = await import('../src/mcloud/playAiState.ts');
+  setPlayAiDrawEnabled(store, true, NOW);
+  const { notes } = await drainAll(deps);
+  assert.ok(notes.some((n) => /判不出/.test(n)), `要如实说：${notes.join(' | ')}`);
+  // ⚠ 别写成 `/没中$/`：那句「判不出中没中」正好以「没中」结尾，会误伤
+  assert.equal(notes.some((n) => /抽中了/.test(n) || /^抽了一次，没中$/.test(n)), false);
 });

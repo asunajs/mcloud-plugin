@@ -157,6 +157,48 @@ export function registerRequest(
   };
 }
 
+/** 抽一次（**写**）：body 只带 `moduleId`（实拍七发逐字 `{"moduleId":"1-250730"}`）。
+ *
+ *  ⚠ 判"中没中"**只看 `isWin`**：`isWin:0` 时 `prizeId/prizeName/prizeUrl` 三键都是 `null`，
+ *    但 `prizeType` **有值**（`1`）—— 拿 `prizeType` 当"有没有奖品"的信号会判错。 */
+export function lotteryRequest(
+  s: PlayAiSession,
+  moduleId: string,
+  base?: string | undefined,
+): BuiltRequest {
+  return {
+    url: playAiUrl(PLAYAI_EP.lottery, base),
+    method: 'POST',
+    headers: {
+      ...playAiHeaders(s, { showLoading: true }),
+      'content-type': 'application/json;charset=UTF-8',
+      origin: 'https://m.mcloud.139.com',
+      'cache-control': 'no-cache',
+    },
+    body: JSON.stringify({ moduleId }),
+  };
+}
+
+/** 一次抽奖的结果（只留判据格 + 奖品名）。 */
+export interface PlayAiDraw {
+  /** `isWin === 1` 才算中；没有这个键 ⇒ `null`（判不出来就别当成功） */
+  win: boolean | null;
+  prizeName: string;
+  prizeType: number | null;
+}
+
+export function parseDraw(result: unknown): PlayAiDraw {
+  const o = (typeof result === 'object' && result !== null ? result : {}) as Record<string, unknown>;
+  const raw = o['isWin'];
+  // ⚠ 只认 1/0（数字或数字串）。缺键 / 别的值 ⇒ null，**不当成功也不当没中**
+  const win = raw === 1 || raw === '1' ? true : raw === 0 || raw === '0' ? false : null;
+  return {
+    win,
+    prizeName: typeof o['prizeName'] === 'string' ? o['prizeName'] : '',
+    prizeType: typeof o['prizeType'] === 'number' ? o['prizeType'] : null,
+  };
+}
+
 // ══════════════════════════ 解析 ══════════════════════════
 
 /** 一件任务（**原样留几个判据格**，别把整条对象塞进状态）。 */

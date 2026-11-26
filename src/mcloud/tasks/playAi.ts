@@ -36,19 +36,32 @@ import {
   parseEnvelope,
   parseModules,
   readingLine,
+  lotteryRequest,
+  parseDraw,
   registerRequest,
   shortTaskName,
   summarize,
   timedModuleRequest,
 } from '../playAi.ts';
 import type { PlayAiModule, PlayAiSession, PlayAiTask } from '../playAi.ts';
-import { loadPlayAi, newPlayAi, savePlayAi, savePlayAiSnapshot } from '../playAiState.ts';
+import {
+  loadDrawDay,
+  loadPlayAi,
+  newPlayAi,
+  playAiDrawEnabled,
+  saveDrawDay,
+  savePlayAi,
+  savePlayAiSnapshot,
+} from '../playAiState.ts';
 import type { PlayAiState, PlayAiTarget } from '../playAiState.ts';
 import { stepAction } from './tokenPkActions.ts';
 import type { TaskDeps, TaskOutcome } from './base.ts';
 
 /** 一趟最多做几件。**写口**，别放开成"全做"。 */
 export const PLAYAI_TASKS_PER_RUN = 1;
+
+/** 一趟最多抽几次。**1**：抽奖花的是用户的次数，一次一发，出问题一眼看得见。 */
+export const PLAYAI_DRAWS_PER_RUN = 1;
 
 /** 趣玩AI 的任务 → 动作层认识的那把钥匙。
  *
@@ -109,6 +122,25 @@ function pickTarget(modules: readonly PlayAiModule[], tried: Record<string, stri
   return null;
 }
 
+/** 日期键（与其它族同一口径：`nowIso` 的 UTC 日）。 */
+function dayKey(deps: TaskDeps): string {
+  return deps.nowIso.slice(0, 10);
+}
+
+/** 现在该不该抽一发。
+ *
+ *  四个条件缺一不可：① 用户**显式开了**代抽（缺省关）；② 页面模块说**还有次数**
+ *  （`drawTimes > 0` —— 它本身已经是余额，别再减 `drawsUsed`）；
+ *  ③ 今天还没抽满这一趟的上限；④ 这一趟还没抽过（`drawn` 按天记）。 */
+function shouldDraw(deps: TaskDeps, modules: readonly PlayAiModule[]): boolean {
+  if (!playAiDrawEnabled(deps.store)) return false;
+  const page = modules.find((m) => !m.moduleId.startsWith('2-')) ?? modules[0];
+  if (page === undefined) return false;
+  if (page.drawTimes === null || page.drawTimes <= 0) return false;
+  const day = loadDrawDay(deps.store, dayKey(deps));
+  return day.drawn < PLAYAI_DRAWS_PER_RUN;
+}
+
 function save(deps: TaskDeps, st: PlayAiState): void {
   savePlayAi(deps.store, st, deps.nowIso);
 }
@@ -148,8 +180,14 @@ export async function playAiStep(deps: TaskDeps): Promise<TaskOutcome> {
       st.modules = got.modules;
       const target = pickTarget(got.modules, st.tried ?? {});
       if (target === null) {
-        st.phase = 'done';
+        // 没有会做的任务 ⇒ 直接看能不能抽（次数是之前攒下的）
         st.lines = [`没有我会做的可做任务（${line}）`];
+        if (shouldDraw(deps, got.modules)) {
+          st.phase = 'draw';
+          save(deps, st);
+          return { ok: true, note: `没有要做的任务，但还有次数 —— 去抽一次（${line}）` };
+        }
+        st.phase = 'done';
         save(deps, st);
         return { ok: true, idle: true, note: `没有我会做的可做任务 —— ${line}` };
       }
@@ -231,6 +269,13 @@ export async function playAiStep(deps: TaskDeps): Promise<TaskOutcome> {
       }
       if (now?.isComplete === true) {
         st.lines = [`「${t.name}」做完了（回读已翻位）`];
+        // 做成了 ⇒ 次数应该 +1，接着看能不能抽
+        if (shouldDraw(deps, got.modules)) {
+          st.phase = 'draw';
+          save(deps, st);
+          return { ok: true, note: `「${t.name}」做完了 —— 还有次数，去抽一次` };
+        }
+        st.phase = 'done';
         save(deps, st);
         return { ok: true, idle: true, note: `「${t.name}」做完了 —— ${line}` };
       }
@@ -238,6 +283,46 @@ export async function playAiStep(deps: TaskDeps): Promise<TaskOutcome> {
       st.lines = [`「${t.name}」已上报，服务端还没认 —— 那件事要在工具里真的做完才算`];
       save(deps, st);
       return { ok: true, pending: true, idle: true, note: `「${t.name}」已上报，服务端还没认 —— ${line}` };
+    }
+
+    // ⑤ 抽一发（**写**：花次数）。只在"开了代抽 + 今天还有次数"时才走到这里
+    case 'draw': {
+      const page = st.modules.find((m) => !m.moduleId.startsWith('2-')) ?? st.modules[0];
+      if (page === undefined) {
+        st.phase = 'done';
+        save(deps, st);
+        return { ok: true, idle: true, note: '没有页面模块 —— 不抽' };
+      }
+      const res = await callRawText(deps.transport, lotteryRequest(s, page.moduleId, deps.baseUrl));
+      const day = loadDrawDay(deps.store, dayKey(deps));
+      if (!res.ok) {
+        st.phase = 'done';
+        save(deps, st);
+        return { ok: false, note: `抽奖没发出去：${res.error ?? '未知失败'}` };
+      }
+      const env = parseEnvelope(res.text);
+      if (!env.ok) {
+        st.phase = 'done';
+        save(deps, st);
+        return { ok: false, note: `抽奖被拒：${env.error}` };
+      }
+      const d = parseDraw(env.result);
+      // 账要记：抽了就是抽了（**不论中没中**，次数已经花掉）
+      saveDrawDay(deps.store, { day: day.day, drawn: day.drawn + 1, wins: day.wins + (d.win === true ? 1 : 0) }, deps.nowIso);
+      st.phase = 'done';
+      if (d.win === null) {
+        // 判不出来 ⇒ 既不写"中了"也不写"没中"
+        st.lines = ['抽了一次，但回执里没有 isWin —— 中了没中判不出来，去活动页看一眼'];
+        save(deps, st);
+        return { ok: true, idle: true, note: '抽了一次，但回执判不出中没中' };
+      }
+      st.lines = [
+        d.win
+          ? `抽中了：${d.prizeName || '（回执没给奖品名）'}`
+          : '抽了一次，没中',
+      ];
+      save(deps, st);
+      return { ok: true, idle: true, note: d.win ? `抽中了：${d.prizeName || '（没给名字）'}` : '抽了一次，没中' };
     }
 
     default: {

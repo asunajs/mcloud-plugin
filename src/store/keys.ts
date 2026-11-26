@@ -245,6 +245,9 @@ export const KEY_SCOPE: Readonly<Record<string, KeyScope>> = {
   // 这一趟的进度（读了哪些模块）与最后一份读数。按账号：模块表与次数都是某个号的。
   'mcloud.playai.state': 'account',
   'mcloud.playai.reading': 'account',
+  // 代抽开关与按天账（花的是次数，缺省关；见 `playAiState.ts`）
+  'mcloud.playai.draw': 'account',
+  'mcloud.playai.draw.state': 'account',
 
   // ── 实例级配置 / 跨账号共享 ────────────────────────────────
   /** 账号表本身。 */

@@ -16,10 +16,47 @@ import type { PlayAiModule, PlayAiReading } from './playAi.ts';
 
 /** 这一趟的进度（可恢复：面板一次调用只有 2 秒预算）。 */
 export const STATE_PLAYAI = 'mcloud.playai.state';
+/** 代抽开关：`'1'` / `'0'`。**没写过 = 关**（花的是用户的次数，必须显式开）。 */
+export const STATE_PLAYAI_DRAW = 'mcloud.playai.draw';
+/** 今天的抽奖账（`{day, drawn, wins}`）—— 上限按天算，同一天再跑也不重置。 */
+export const STATE_PLAYAI_DRAW_DAY = 'mcloud.playai.draw.state';
+
+/** 代抽开没开。缺省**关**（与算力族的代抽同一口径：花次数的事必须用户点头）。 */
+export function playAiDrawEnabled(store: Pick<Store, 'getState'>): boolean {
+  return (store.getState(STATE_PLAYAI_DRAW) ?? '') === '1';
+}
+
+export function setPlayAiDrawEnabled(store: Store, on: boolean, nowIso: string): void {
+  store.setState(STATE_PLAYAI_DRAW, on ? '1' : '0', nowIso);
+}
+
+export interface PlayAiDrawDay {
+  day: string;
+  drawn: number;
+  wins: number;
+}
+
+export function loadDrawDay(store: Pick<Store, 'getState'>, day: string): PlayAiDrawDay {
+  const raw = store.getState(STATE_PLAYAI_DRAW_DAY) ?? '';
+  if (raw.trim() !== '') {
+    try {
+      const v = JSON.parse(raw) as PlayAiDrawDay;
+      if (v.day === day && typeof v.drawn === 'number') return v;
+    } catch {
+      // 坏格当新的一天
+    }
+  }
+  return { day, drawn: 0, wins: 0 };
+}
+
+export function saveDrawDay(store: Store, v: PlayAiDrawDay, nowIso: string): void {
+  store.setState(STATE_PLAYAI_DRAW_DAY, JSON.stringify(v), nowIso);
+}
+
 /** 最后一份读数（给界面/调试页）。 */
 export const STATE_PLAYAI_READING = 'mcloud.playai.reading';
 
-export type PlayAiPhase = 'list' | 'register' | 'act' | 'verify' | 'done';
+export type PlayAiPhase = 'list' | 'register' | 'act' | 'verify' | 'draw' | 'done';
 
 /** 这一趟挑中的那件任务。 */
 export interface PlayAiTarget {
