@@ -35,6 +35,7 @@ import { runTodayCloud } from './tasks/todayCloud.ts';
 import { TASK_SWITCH_BY_ID, type TaskSwitchId, taskOn } from './tasks/taskSwitches.ts';
 import { playAiStep } from './tasks/playAi.ts';
 import { takePlayAiLines } from './playAiState.ts';
+import { loadPlayAiSnapshot } from './playAiState.ts';
 
 /** 这一趟要跑的族**分别落在哪一页** —— 一页一张票，所以按页换。
  *
@@ -414,8 +415,19 @@ export async function runDaily(
   if (!paSel.run) {
     push({ name: '趣玩AI', ok: true, note: paSel.skipNote ?? '', idle: true });
   } else {
-    const r = await once('趣玩AI', playAiStep, deps);
-    push({ ...r, lines: takePlayAiLines(deps.store, deps.nowIso) });
+    // ⚠ 用 `drain`（不是 `once`）：这一族是 list → register → act → verify 四段，
+    //   一次调用只推一步。`maxSteps` 给宽一点（动作链本身也要走好几段）。
+    const r = await drain(playAiStep, deps, { label: '趣玩AI', maxSteps: 8 });
+    // 小结用**读数那一句**（`drain` 会把超过 40 字的原话折成一句，这一族的结论是几个计数）
+    const snap = loadPlayAiSnapshot(deps.store);
+    push({
+      name: '趣玩AI',
+      ok: r.ok,
+      note: snap !== null && snap.line !== '' ? snap.line : r.note,
+      idle: true,
+      pending: r.ok && /已上报/.test(r.note) ? true : undefined,
+      lines: takePlayAiLines(deps.store, deps.nowIso),
+    });
   }
 
   // ⑤ 领取类必须放在**所有会产生奖励的动作之后**：签到/任务拓展/App 任务

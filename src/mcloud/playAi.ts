@@ -82,11 +82,16 @@ export function playAiHeaders(
 ): Record<string, string> {
   const h: Record<string, string> = {
     Accept: '*/*',
-    activityid: 'sign_in_3',
     appversion: H5_APP_VERSION,
     Referer: PLAYAI_REFERER,
     jwttoken: s.jwt,
   };
+  // ⚠ `activityid` 这一格**故意不发**。
+  //   它是壳层把 `localStorage.marketName` 原样写进请求头的（谁最后写过 localStorage 谁就赢，
+  //   见 `app-play-ai-samples.txt` §7.9 后面那段机制），**不是这一页设的**。
+  //   两轮实拍就撞出两个不同的值：09-25 全是 `sign_in_3`、11-26 全是 `National_TokenPK`
+  //   —— 同一批端点、两轮都 `code:0` ⇒ 上游**不看**它。
+  //   所以这里不编一个值：编 `sign_in_3` 是照抄旧样本（我第一版就写错了），编别的同样是猜。
   if (opts.showLoading !== undefined) h.showloading = opts.showLoading ? 'true' : 'false';
   if (s.userAgent !== undefined && s.userAgent !== '') h['user-agent'] = s.userAgent;
   if (s.cookie !== undefined && s.cookie !== '') h.cookie = s.cookie;
@@ -119,13 +124,36 @@ export function timedModuleRequest(s: PlayAiSession, base?: string | undefined):
   };
 }
 
-/** 本活动的奖品记录（GET）。实拍：不带 showloading。 */
+/** 本活动的奖品记录（GET）。实拍（11-26）：`showloading: true`。 */
 export function prizesRequest(s: PlayAiSession, base?: string | undefined): BuiltRequest {
   return {
     url: playAiUrl(PLAYAI_EP.prizes, base),
     method: 'GET',
-    headers: { ...playAiHeaders(s), 'cache-control': 'no-cache' },
+    headers: { ...playAiHeaders(s, { showLoading: true }), 'cache-control': 'no-cache' },
     body: undefined,
+  };
+}
+
+/** 点一件任务（**写**）：`{moduleId,taskId}` 两键，回 `{"code":0,"result":0}`。
+ *
+ *  ⚠ 回执**零信息**（`result` 是数字 0）：这一次算不算数，只能回读 `getmodule`
+ *    看那条 `isComplete` 有没有翻位（见文件头 ②）。 */
+export function registerRequest(
+  s: PlayAiSession,
+  moduleId: string,
+  taskId: string,
+  base?: string | undefined,
+): BuiltRequest {
+  return {
+    url: playAiUrl(PLAYAI_EP.register, base),
+    method: 'POST',
+    headers: {
+      ...playAiHeaders(s, { showLoading: true }),
+      'content-type': 'application/json;charset=UTF-8',
+      origin: 'https://m.mcloud.139.com',
+      'cache-control': 'no-cache',
+    },
+    body: JSON.stringify({ moduleId, taskId }),
   };
 }
 

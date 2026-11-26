@@ -15,6 +15,7 @@ import {
   pageModuleRequest,
   parseModules,
   readingLine,
+  registerRequest,
   shortTaskName,
   summarize,
   timedModuleRequest,
@@ -101,8 +102,16 @@ test('请求形状：两口的 `showloading` 不一样（实拍 page=true / time
   const s = { jwt: 'JWT' };
   assert.equal(pageModuleRequest(s, 'https://m.example.com').headers['showloading'], 'true');
   assert.equal(timedModuleRequest(s, 'https://m.example.com').headers['showloading'], 'false');
-  // `activityid` 是跨页残留值 `sign_in_3`（两轮实拍条条如此），别"修正"它
-  assert.equal(pageModuleRequest(s).headers['activityid'], 'sign_in_3');
+  // ⚠ `activityid` **不发**：两轮实拍撞出两个不同的值（`sign_in_3` / `National_TokenPK`），
+  //   同一批端点都 `code:0` ⇒ 上游不看它。编一个值就是猜（第一版硬编过 `sign_in_3`）。
+  assert.equal(pageModuleRequest(s).headers['activityid'], undefined);
+  // 写口：两键 body + JSON 头 + origin（实拍逐字）
+  const reg = registerRequest(s, '1-250730', '204', 'https://m.example.com');
+  assert.equal(reg.method, 'POST');
+  assert.deepEqual(JSON.parse(String(reg.body)), { moduleId: '1-250730', taskId: '204' });
+  assert.equal(reg.headers['content-type'], 'application/json;charset=UTF-8');
+  assert.equal(reg.headers['origin'], 'https://m.mcloud.139.com');
+  assert.equal(reg.headers['showloading'], 'true');
 });
 
 test('规则里的日上限是个常量，写在模块里（别散在调用点）', () => {
