@@ -90,6 +90,21 @@ export const PLAYAI_MAX_STEPS = 12;
  *  表里没有的 taskId 就是"我们不会做"，`actionKey` 留空。 */
 export const PLAYAI_ACTION_KEYS: Record<string, string> = {
   aizhushou: 'aiAssistant',
+  // 这两件的 `innerLink` 都是 `mcloud://main/aiCamera`（扫描文档也是那一台相机），
+  // 与 App 任务的 585/618 是同一个工具 ⇒ 复用同一个动作（识图 → 对话）。
+  // ⚠ 这条会**往用户云盘落一张图**：`tokenPkActions` 里已登记成"我们造的"，
+  //   链尾「清理临时文件」会删掉它（见 findings F-153）。
+  aixiangji: 'aiCamera',
+  '204': 'aiCamera',
+};
+
+/** 挑任务的偏好：**不写云盘**的排前面。
+ *
+ *  ⚠ 顺序有实际后果：一趟只做一件，先做 `aiAssistant`（零落盘）能少一份垃圾；
+ *    真要跑相机那件时，那一张图也是登记过的、当趟就清。 */
+const ACTION_RANK: Record<string, number> = {
+  aiAssistant: 0,
+  aiCamera: 1,
 };
 
 /** 会话：H5 票（`jwttoken`）+ cookie + UA —— 与算力族同一张票，不另换活动站票。 */
@@ -126,14 +141,17 @@ async function readModules(
  *   · 没有动作钥匙的 —— **不点**。点了却做不了那件事，等于把"看起来在干活"写进日志。 */
 function pickTarget(modules: readonly PlayAiModule[], tried: Record<string, string>): PlayAiTarget | null {
   const all: PlayAiTask[] = modules.flatMap((m) => m.tasks);
+  const cands: PlayAiTarget[] = [];
   for (const t of all) {
     if (t.isComplete || t.taskSign !== 0) continue;
     if (tried[`${t.moduleId}|${t.id}`] !== undefined) continue;
     const actionKey = PLAYAI_ACTION_KEYS[t.id] ?? '';
     if (actionKey === '') continue;
-    return { moduleId: t.moduleId, taskId: t.id, name: shortTaskName(t.name), actionKey };
+    cands.push({ moduleId: t.moduleId, taskId: t.id, name: shortTaskName(t.name), actionKey });
   }
-  return null;
+  // 偏好按 `ACTION_RANK`（不写云盘的先做）；同档按任务表原顺序，保证可预测
+  cands.sort((a, b) => (ACTION_RANK[a.actionKey] ?? 9) - (ACTION_RANK[b.actionKey] ?? 9));
+  return cands[0] ?? null;
 }
 
 /** 日期键（与其它族同一口径：`nowIso` 的 UTC 日）。 */

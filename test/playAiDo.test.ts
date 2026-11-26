@@ -441,3 +441,66 @@ test('`PLAYAI_ACTION_KEYS` 里的钥匙必须是动作层真认识的（写错�
     );
   }
 });
+
+// ── 三件会做的任务：偏好"不写云盘"的先做 ─────────────────────────────
+
+test('会做的有三件（AI助手 / AI相机 / 扫描文档）；一趟先挑**不落盘**的 AI 助手', async () => {
+  const store = memStore();
+  store.ensureSchema();
+  store.setState(
+    SESSION_KEY,
+    JSON.stringify({ cookie: 'c=1', jwt: 'JWT', deviceId: 'D1', userAgent: 'UA', savedAt: NOW }),
+    NOW,
+  );
+  store.setState(STATE_JWT, JSON.stringify({ at: NOW, jwt: 'JWT', referer: '', fingerprint: 'f' }), NOW);
+  const sent: BuiltRequest[] = [];
+  const transport = ((req: BuiltRequest) => {
+    sent.push(req);
+    const url = String(req.url);
+    if (url.includes('/funai/api/page/register')) {
+      return { status: 200, headers: {}, body: JSON.stringify({ code: 0, msg: 'success', result: 0 }) };
+    }
+    if (url.includes('/funai/api/page/getmodule')) {
+      // 相机那两件排在 AI 助手**前面**（照 11-26 的真实顺序）
+      return {
+        status: 200,
+        headers: {},
+        body: JSON.stringify({
+          code: 0,
+          msg: 'success',
+          result: {
+            moduleId: '1-250730',
+            drawTimes: 0,
+            drawsUsed: 0,
+            todayGetLotteryCount: 0,
+            taskIds: [
+              { id: 'aixiangji', taskName: 'AI相机，学习、翻译、问答全都有', taskSign: 0, isComplete: 0 },
+              { id: '204', taskName: '扫描文档，纸质文件秒变电子档', taskSign: 0, isComplete: 0 },
+              { id: 'aizhushou', taskName: 'AI助手，打工人必备神器', taskSign: 0, isComplete: 0 },
+            ],
+          },
+        }),
+      };
+    }
+    if (url.includes('/funai/api/timed/getmodule')) {
+      return { status: 200, headers: {}, body: JSON.stringify({ code: 0, msg: 'success', result: [] }) };
+    }
+    return { status: 200, headers: {}, body: JSON.stringify({ code: 500, msg: 'no' }) };
+  }) as never;
+  let fake = Date.parse(NOW);
+  const deps = {
+    store,
+    transport,
+    nowIso: NOW,
+    now: () => NOW,
+    nowMs: () => (fake += 1000),
+    baseUrl: undefined,
+  } as unknown as TaskDeps;
+
+  await playAiStep(deps); // list
+  const r = await playAiStep(deps); // register
+  assert.ok(r.ok, r.note);
+  const reg = sent.find((x) => String(x.url).includes('/page/register'))!;
+  assert.deepEqual(JSON.parse(String(reg.body)), { moduleId: '1-250730', taskId: 'aizhushou' },
+    '先挑不写云盘的那件');
+});
