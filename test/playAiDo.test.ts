@@ -411,3 +411,15 @@ test('整条动作链：换票 → 邮箱登录 → 拿 AI 鉴权 → 聊一句 
   assert.ok(iSso >= 0 && iLogin > iSso && iToken > iLogin && iChat > iToken, `顺序不对：${order.join('\n')}`);
   assert.ok(notes.some((n) => /做完了/.test(n)), `回读翻位要判做完：${notes.join(' | ')}`);
 });
+
+test('`PLAYAI_ACTION_KEYS` 里的钥匙必须是动作层真认识的（写错就是静默什么都不做）', async () => {
+  const { firstActionStep } = await import('../src/mcloud/tasks/tokenPkActions.ts');
+  const { PLAYAI_ACTION_KEYS } = await import('../src/mcloud/tasks/playAi.ts');
+  for (const [taskId, key] of Object.entries(PLAYAI_ACTION_KEYS)) {
+    assert.notEqual(
+      firstActionStep(key),
+      'done',
+      `任务 ${taskId} 映射到动作 ${key}，但动作层说它一步就完（等于什么都不做）`,
+    );
+  }
+});
