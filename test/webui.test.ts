@@ -483,6 +483,25 @@ test('⚠ 过期的码不许画得像还活着（"剩 0 秒"看起来完全像�
   );
 });
 
+test('下拉浮层不许被容器裁掉（卡片/日志台/弹窗都有 overflow，展开时要放开）', async () => {
+  // 注释里会提到那种错误写法（解释为什么不行），所以先剥注释再查
+  const css = srcOf('webui/style.css').replace(/\/\*[\s\S]*?\*\//g, '');
+  // ⚠ 用**后代**选择器：面板那个组件的浮层父节点是内部 `div`，不是 `<p-select>` 本身
+  //   （第一版写成 `p-select > .select-panel` 恒假，改了等于没改）
+  for (const box of ['.card', '.term', '.dialog-body']) {
+    assert.match(
+      css,
+      new RegExp(`${box.replace('.', '\\.')}:has\\(\\.select-panel:not\\(\\[hidden\\]\\)\\)`),
+      `${box} 展开下拉时要把 overflow 放开，否则靠下的下拉被裁半截`,
+    );
+  }
+  assert.equal(
+    /p-select\s*>\s*\.select-panel/.test(css),
+    false,
+    '别用直接子代选择器 —— 实测恒假',
+  );
+});
+
 test('调试页：只跑某一族 · 单个账号（清单一屏、不看总开关）', async () => {
   const html = srcOf('webui/index.html');
   const js = srcOf('webui/app.js');

@@ -59,7 +59,7 @@
   --font-mono: var(--mono);
   /* 样式表版本号：页面上的「样式自检」读它，用来判断浏览器用的是哪一份 style.css。
      改了本文件就把它加一（一个数字，别指望它自动同步）。 */
-  --style-ver: 165;
+  --style-ver: 167;
 }
 
 /* 为什么还留着这几个短名字：界面上其余的区块（日常 / 兑换 / 直播 / 数据）
@@ -1024,6 +1024,22 @@ button.picker-row {
 .row > p-select {
   align-self: flex-start;
   max-width: 100%;
+}
+
+/* ⚠ 下拉的浮层是 `position: absolute` 的（面板 `.select-panel`），而它的容器
+   —— 面板的 `.card`、本文件的 `.term`、面板的 `.dialog-body` —— 都带 `overflow: hidden/auto`。
+   结果：靠页面下方的下拉一展开就被**裁掉半截**（用户截图：调试页「用哪个账号」只露出
+   第一个选项和半个第二个）。
+
+   改法：只在**有下拉展开时**把那层容器的裁切放开（`:has()` 按 DOM 现状判断）。
+   不改成常开 `overflow: visible` —— 那会让卡片的圆角裁切和日志台的滚动条都跟着变形。 */
+/* ⚠ 用**后代**选择器（`:has(.select-panel:not([hidden]))`），别写成 `p-select > .select-panel`：
+   面板那个组件把浮层包在内部的一层 `div` 里（实测 `.select-panel` 的父节点是 `div`，
+   不是 `<p-select>` 本身）⇒ 直接子代匹配恒假，改了等于没改（第一版就写错了）。 */
+.card:has(.select-panel:not([hidden])),
+.term:has(.select-panel:not([hidden])),
+.dialog-body:has(.select-panel:not([hidden])) {
+  overflow: visible;
 }
 
 /* 日志级别那一格是面板的 <p-select>（原生 <select> 的下拉是系统画的，配色/主题都不跟）。
