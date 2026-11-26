@@ -190,3 +190,24 @@ test('窗口要够宽：3 个号 × 多次触发之后，某族"上次跑过"仍
   };
   assert.equal(body.tasks['redpack']?.note, '那次没成', '18 条之前的记录也要看得到');
 });
+
+test('⚠ `STEP_NAMES` 里写的步骤名，必须真的在 `dailyRun` 里 push 过（写错 = 那一格永远「还没跑过」）', async () => {
+  // 2026-11-26：这张表是"族 id → 运行记录里的步骤名"的**唯一出处**，但它和
+  // `dailyRun.ts` 里的 `push({name})` / `once('…')` 是两处手写的，没有任何东西钉住它们对齐。
+  // 名字写错不会报错，只会让调试页那一格永远显示「还没跑过」—— 看起来像"没跑"。
+  const { readFileSync } = await import('node:fs');
+  const daily = readFileSync('src/mcloud/dailyRun.ts', 'utf8');
+  const meta = readFileSync('src/app/routes/groups/meta.ts', 'utf8');
+  // 真跑出来的步骤名（`once('X'` 与 `push({ name: 'X'`）
+  const real = new Set<string>();
+  for (const m of daily.matchAll(/once\('([^']+)'/g)) real.add(m[1]!);
+  for (const m of daily.matchAll(/name: '([^']+)'/g)) real.add(m[1]!);
+  assert.ok(real.size > 5, `只从 dailyRun 里抽到 ${real.size} 个步骤名，抽取规则可能失效了`);
+  // STEP_NAMES 里的名字（只取 `族id: ['…', '…']` 那种形状的值，注释里的 `…` 不算）
+  const start = meta.indexOf('const STEP_NAMES');
+  const block = meta.slice(start, meta.indexOf('};', start));
+  const claimed = [...block.matchAll(/^\s*[a-zA-Z]+:\s*\[([^\]]*)\]/gm)]
+    .flatMap((m) => [...m[1]!.matchAll(/'([^']+)'/g)].map((x) => x[1]!));
+  const missing = claimed.filter((n) => !real.has(n));
+  assert.deepEqual(missing, [], `这些步骤名在 dailyRun 里不存在：${missing.join(', ')}`);
+});

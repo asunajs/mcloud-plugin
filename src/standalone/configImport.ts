@@ -24,7 +24,7 @@ import { basename, join } from 'node:path';
 import { openFileStore } from '../host/fs/fileStore.ts';
 import { migrateUserConfig } from '../host/fs/configMigrate.ts';
 import { loadConfig } from './config.ts';
-import { applyLegacyImport, planFromSeedableConfig } from '../mcloud/legacyImport.ts';
+import { applyLegacyImport, describePlanSwitches, planFromSeedableConfig } from '../mcloud/legacyImport.ts';
 
 export interface ImportResult {
   ok: boolean;
@@ -36,6 +36,8 @@ export interface ImportResult {
   accounts: number;
   /** 搬进配置的 CLI 旋钮（`cli.http.timeout_ms` …） */
   settings: string[];
+  /** 会搬的**账号级开关**（人话，`红包派对=开` 这种）。dry-run 也要能看到。 */
+  switches: string[];
   backupDir: string;
   /** `--dry-run` 时为 true：什么都没写 */
   dryRun: boolean;
@@ -73,6 +75,10 @@ export async function importLegacyConfig(opts: ImportOptions): Promise<ImportRes
   //    两端不许各写一份映射（R3）。
   const plan = planFromSeedableConfig(cfg);
   const settings: string[] = [];
+  // 账号级开关单独列出来：用户点「先看看会搬什么」时，最想确认的就是"我那几族开着的会不会丢"。
+  // （2026-11-26 实测：dry-run 只说"账号表 1 个"，开关一个字没提，而它们其实会写进账号袋。）
+  const switches: string[] = [];
+  switches.push(...describePlanSwitches(plan));
   if (opts.dryRun !== true) {
     for (const one of plan.settings) {
       port.write(one.path, one.value);
@@ -115,6 +121,7 @@ export async function importLegacyConfig(opts: ImportOptions): Promise<ImportRes
     written: port.path,
     accounts: opts.dryRun === true ? cfg.accounts.length : accounts,
     settings: settings.filter((v, i, a) => a.indexOf(v) === i),
+    switches,
     backupDir: opts.dryRun === true ? '' : backupDir,
     dryRun: opts.dryRun === true,
   };

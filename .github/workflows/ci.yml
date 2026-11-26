@@ -47,6 +47,16 @@ jobs:
       - name: 单元测试（密码学对 Node 的 crypto 逐用例比对）
         run: npm test
 
+      # R5：真手机号 / 地址 / 凭据**不进仓库**。这条纯本地脚本，CI 里能跑也该跑 ——
+      # 以前只有人手动跑，等于"规则写在 AGENTS 里、门没装在 CI 上"。
+      - name: 手机号泄露扫描（R5）
+        run: node scripts/check-phone-leak.mjs
+
+      # 版本号四处一致（package.json / src/version.ts / 四份清单）——
+      # AGENTS 里一直写着"构建期校验"，但**以前根本没有这道检查**。
+      - name: 版本号一致
+        run: npm run check:versions
+
       # 产物**不再提交**（dist/ 是 gitignore 的），所以这里改成"连打两次，逐字节一致"：
       # 防的是打包不确定（时间戳、并行顺序、随机的 chunk 名）。
       # 忘了重新构建这件事由 deploy/pack 兜住 —— 它们自己会先 build。

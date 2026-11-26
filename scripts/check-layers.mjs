@@ -10,6 +10,19 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+/** 这一份源码里有没有 import 某个 specifier（三种写法都认）。
+ *
+ *  ⚠ 只认 `from 'x'` 是不够的：`import 'x';`（副作用形式）与 `import('x')`（动态）
+ *    都能真的把模块拉进来，而它们不带 `from`。 */
+export function importsOf(src, spec) {
+  const esc = spec.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // ⚠ 先剥**注释**：仓库里到处写着"不许 `from 'node:fs'`"这种句子，
+  //   不剥的话每写一句说明就红一次。只剥**整行** `//`（不碰行尾，免得把
+  //   `const u = 'http://x'; import 'node:fs'` 那种同一行的真代码吃掉）。
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  return new RegExp(`(?:\\bfrom\\s*|\\bimport\\s*\\(\\s*|\\bimport\\s+)[\"']${esc}`).test(code);
+}
+
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SRC = join(ROOT, 'src');
 
@@ -60,12 +73,15 @@ for (const file of files) {
   //     src/app/routes/ 是路由（P5 从 3400 行的 mcloud/routes.ts 拆出来的）：
   //     它跟领域层一样**不知道宿主存在** —— 依赖由 `RouteDeps` 注进来。
   if (r.startsWith('src/mcloud/') || r.startsWith('src/app/')) {
-    for (const forbidden of ["'../host/", "'../../host/", "'../../../host/", "'../entries/", "'../../entries/", "'../../../entries/", "'panel:host'"]) {
-      if (src.includes(`from ${forbidden}`)) {
-        problems.push(`R3 ${r}：领域层不许 import ${forbidden.replace("'", '')}`);
+    // ⚠ 三种 import 形状都要抓：`from 'x'` / `import 'x'`（副作用）/ `import('x')`（动态）。
+    //   2026-11-26 实测：原来只认 `from 'node:`，我往 `src/mcloud/rand.ts` 里加一行
+    //   `import 'node:fs';` —— **门禁照样通过**。只查一种写法的门禁等于没有。
+    for (const spec of ['../host/', '../../host/', '../../../host/', '../entries/', '../../entries/', '../../../entries/', 'panel:host']) {
+      if (importsOf(src, spec)) {
+        problems.push(`R3 ${r}：领域层不许 import ${spec}`);
       }
     }
-    if (/\bfrom\s+'node:/.test(src)) {
+    if (importsOf(src, 'node:')) {
       problems.push(`R3 ${r}：领域层不许 import node:*（面板引擎里没有）`);
     }
     // 领域层也不许用 Node/引擎专有的全局（面板引擎里没有，写了在真机才炸）
@@ -86,10 +102,11 @@ for (const file of files) {
   }
 }
 
-if (problems.length > 0) {
+const isMain = process.argv[1] && process.argv[1].endsWith('check-layers.mjs');
+if (isMain && problems.length > 0) {
   console.error('❌ 分层门禁没过：');
   for (const p of problems) console.error('   · ' + p);
   console.error('\n规则见 docs/architecture.md §2（R1–R6）。');
   process.exit(1);
 }
-console.log(`✅ 分层门禁通过（${files.length} 个文件）`);
+if (isMain) console.log(`✅ 分层门禁通过（${files.length} 个文件）`);

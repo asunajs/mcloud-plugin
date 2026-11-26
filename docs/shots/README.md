@@ -31,24 +31,40 @@
 |---|---|---|
 | `01-account.png` | 账号 | 登录了吗 |
 | `01b-qr.png` | 账号（点了「添加账号」→「生成二维码」） | 二维码出来了 —— 用手机 App 扫 |
-| `08-daily-recent.png` | 日常（跑完之后） | **「最近几次」+ 展开的那一次每一步** —— ⑤-2 的交付物 |
+| `08-daily-recent.png` | 日常（跑完之后） | **每个号成了几项**（胶囊）+ 运行日志（那一趟一行一行） |
 | `02-daily.png` | 日常 | 今天跑了吗 |
 | `03-exchange.png` | 兑换 | 要换什么 · 换得到吗 |
 | `04-live.png` | 直播 | 口令池里有几条能用 |
 | `05-data.png` | 数据 | 读了几个市场（纯读数，没有动作） |
-| `06-push.png` | 推送 | 还没配推送 · 配一个渠道 |
+| `06-debug.png` | 调试 | 只跑一族 · 一个号（**不看**子任务开关与停用）+ 每族上次的结果 |
+| `09-dark.png` | 数据（**深色主题**） | 深浅色跟着面板走 —— 同一张卡在深色下长什么样 |
+| `10-embed.png` | 账号（**嵌在面板 iframe 里**：`?embed=1&theme=light`） | 用户真正的入口长什么样：**没有两层标题**，主题跟着 `?theme=` |
+| `11-in-panel.png` | 账号（**从面板侧栏点进来**） | 动线的起点：侧栏「插件界面 → 移动云盘」点开就是这一屏 |
 
 ⚠ 原来还有一张 `07-settings.png`（「设置」那一页），**已删** —— 那一页在 F-068 里
 整个去掉了，留着图会让人以为界面上还有它。
+
+⚠ 还有一张 `06-push.png`（「推送」），**2026-11-26 删了** —— 那一块也早从界面上没了，
+而 `shots.mjs` 还在截它（点一个不存在的 `data-block="push"` 不会报错，只会留在原地再拍一张
+数据页）。现在那一格换成了「调试」页。
 
 ⚠ 截图时库里的账号是**造出来的假账号**（对着 mock 上游跑，见 `scripts/e2e-mock.sh`），
 不是真号：卡片上那个设备串和凭据都是 mock 的。要重截：
 
 ```bash
-./scripts/e2e-mock.sh ../rust-plugin-panel/target/release/plugin-panel 18899
+PANEL_BIN=$HOME/panel-3030/panel ./scripts/e2e-mock.sh ../panel-llrt/target/release/panel 18899
 # 判据：账号页要有 1 个以上账号，否则卡片那一段看不到
 node scripts/shots.mjs http://127.0.0.1:18899 e2e-mock-token docs/shots
+# ⚠ `11-in-panel.png` 不归 `shots.mjs` 管，用另一个脚本（它走的是"先开面板、再点侧栏"那条顺序，
+#   而 `shots.mjs` 先直接打开过插件页，之后面板会自己回到 `#plugin:mcloud`、侧栏那条就点不到了）：
+node scripts/shot-in-panel.mjs http://127.0.0.1:18899 e2e-mock-token docs/shots
 ```
+
+⚠ **`05-data.png` / `09-dark.png` 里「趣玩AI」那张卡的读数是"种"进去的**，不是 mock 出来的：
+那一族要真票才读得到模块，而 mock 上游没有 `funai/*` 的假数据。种子取自
+`test/fixtures/playai-getmodule-20261126.json`（2026-11-26 的真实报文），
+写进临时实例的 `state/<账号>.json` 的 `mcloud.playai.reading` 那一格。
+其余区块（账号 / 日常 / 兑换 / 直播 / 领奖 / 调试）都是对着 mock 真跑出来的。
 
 ⚠ 第二十九轮起，这套界面**不再自带配色**：它引主面板的 `/css/theme.css` 与
 `/css/components.css`（按钮、卡片、徽章、弹窗、字段全是面板那套组件），

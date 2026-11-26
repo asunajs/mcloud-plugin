@@ -232,7 +232,7 @@ export const KEY_SCOPE: Readonly<Record<string, KeyScope>> = {
   'mcloud.tokenpk.draw.state': 'account',
 
   // ── 日常子任务开关（`mcloud/tasks/taskSwitches.ts`）─────────────────
-  // 五个 id 一个形状：`mcloud.task.<id>.on`，'1'/'0'，**空串 = 没设过**（回落公共层）。
+  // 每个 id 一个形状：`mcloud.task.<id>.on`，'1'/'0'，**空串 = 没设过**（回落公共层）。
   // ⚠ 按账号：同一个号关掉算力大作战，不该影响另一个号。
   'mcloud.task.signin.on': 'account',
   'mcloud.task.expansion.on': 'account',

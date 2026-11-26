@@ -125,3 +125,36 @@ test('独立运行时：代抽只在配置写了才落状态（账号 > common�
   assert.deepEqual(tokenPkDraw(scoped(c.rawStore, loadAccounts(c.rawStore)[0]!.id)), { enabled: false, max: 10 });
   c.close();
 });
+
+test('⚠ CLI 契约：`--version` 只打版本号（脚本要读它），`--help` 要列全六族', async () => {
+  // 契约（`panel-plugins/AGENTS.md` §2）：CLI 至少支持 `--help` / `--version` / `--config`。
+  // 2026-11-26 实测：`--version` **没实现** —— 落进了正常执行那条路，报
+  // 「找不到配置文件，请确保当前目录有 asign.json」，退出码还是 2。
+  const { execFileSync } = await import('node:child_process');
+  const { existsSync } = await import('node:fs');
+  const { PLUGIN_VERSION } = await import('../src/version.ts');
+  const { cliAction } = await import('../src/standalone/mcloudSign.ts');
+  const cli = 'dist/standalone/mcloud-sign.mjs';
+
+  // ① 判定是纯函数：CI 里 `dist/` 是 gitignore 的（`npm test` 跑在 build 之前），
+  //    所以**契约本身**用这一半钉住，不依赖产物。
+  assert.equal(cliAction(['--version']), 'version');
+  assert.equal(cliAction(['-v']), 'version');
+  assert.equal(cliAction(['--help']), 'help');
+  assert.equal(cliAction(['-h']), 'help');
+  assert.equal(cliAction(['config:import', '--config', 'x.json']), 'config-import');
+  assert.equal(cliAction(['--config', 'x.json', '--only', 'tokenpk']), 'run');
+
+  // ② 端到端：产物在就跑（本机 / build 之后），不在就跳过（CI 的 check job）
+  if (!existsSync(cli)) {
+    assert.ok(true, '没有 dist/standalone（CI 里正常），只跑了判定那一半');
+    return;
+  }
+  const out = execFileSync('node', [cli, '--version'], { encoding: 'utf8' }).trim();
+  assert.equal(out, PLUGIN_VERSION, `--version 要只打版本号，实际：${JSON.stringify(out)}`);
+
+  const help = execFileSync('node', [cli, '--help'], { encoding: 'utf8' });
+  for (const id of ['signin', 'expansion', 'appTask', 'redpack', 'tokenpk', 'playAI']) {
+    assert.match(help, new RegExp(`\\b${id}\\b`), `--help 里没列 ${id}`);
+  }
+});

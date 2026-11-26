@@ -72,3 +72,26 @@ test('params 不是对象 ⇒ 错误', () => {
   assert.ok('error' in parseTaskRunParams('x'));
   assert.ok('error' in parseTaskRunParams([1, 2]));
 });
+
+test('⚠ 族开关的条数不许在注释/文案里写死（加族时最容易被忘掉的就是它）', async () => {
+  // 2026-11-26：`taskSwitches.ts` 的注释写着"五个 id"，而实际早就是**六个**（加了趣玩AI）；
+  // `webui` 里也有四处"那五格"。这类写死的条数不会报错，只会让下一个人数一遍再怀疑自己。
+  const { readdirSync, readFileSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const walk = (dir: string): string[] =>
+    readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+      e.isDirectory() ? walk(join(dir, e.name)) : [join(dir, e.name)],
+    );
+  const files = [
+    ...walk('src').filter((f) => f.endsWith('.ts')),
+    ...readdirSync('webui').map((f) => join('webui', f)),
+  ];
+  const bad: string[] = [];
+  for (const f of files) {
+    const text = readFileSync(f, 'utf8');
+    for (const m of text.matchAll(/(五个|五格|五族|五条)(?=\s*(id|开关|族|那格|：))/g)) {
+      bad.push(`${f}: ${m[0]}`);
+    }
+  }
+  assert.deepEqual(bad, [], `这些地方把族数写死了：\n${bad.join('\n')}`);
+});

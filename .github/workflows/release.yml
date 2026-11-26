@@ -78,7 +78,11 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${{ inputs.tag }}"
-          ZIP=$(ls dist/*-panel<NN>.zip)
+          # ⚠ 原来写的是 `ZIP=$(ls dist/*-panel<NN>.zip)` —— `<NN>` 是**文档里的占位符**，
+          #   真放进 shell 里就是个字面量，glob 匹配不到 ⇒ `ls` 报错、`set -e` 直接退出
+          #   （或者 ZIP 为空、下一步 `gh release upload ""` 失败）。按版本号取才对。
+          VERSION=$(node -p "require('./package.json').version")
+          ZIP=$(ls dist/mcloud-plugin-"$VERSION"-panel*.zip | head -1)
           SUM="$ZIP.sha256"
           # 已经存在就先补传（发布要幂等：同一个 tag 重跑一次得到同一个结果）
           if gh release view "$TAG" >/dev/null 2>&1; then
@@ -88,7 +92,7 @@ jobs:
             gh release create "$TAG" \
               --title "mcloud-plugin $TAG" \
               --generate-notes \
-              --notes "面板 0.4 能直接装的 zip：**插件管理 → 上传**选中下面这个 \`.zip\`（也可以解压进 \`PLUGINS_DIR\`）。装完打开「云盘」导入会话，再点一次「日常」。" \
+              --notes "面板 0.8.3 起能直接装的 zip：**插件管理 → 上传**选中下面这个 \`.zip\`（也可以解压进 \`PLUGINS_DIR\`）。装完打开侧栏「插件界面 → 移动云盘」，导入会话后再点一次「日常」。" \
               "$ZIP" "$SUM"
           fi
           echo "✅ https://github.com/${{ github.repository }}/releases/tag/$TAG"

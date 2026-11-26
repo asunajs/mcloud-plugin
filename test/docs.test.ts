@@ -89,8 +89,14 @@ test('README 必须说清是**四条**插件，且四条都在', async () => {
   assert.ok(/四条插件/.test(prose(readme)), 'README 没说清现在是四条插件');
 });
 
-test('README 必须指向阶段计划（那是进度的唯一权威）', async () => {
+test('README 要指向设计总纲，且**说清那是历史**（2026-11-26 改口径）', async () => {
   assert.ok(readme.includes('docs/redesign-plan.md'), 'README 没有指向 redesign-plan');
+  // ⚠ 那份计划的进度日志停在 2026-10-31，原文却写着"每个会话开始时先读它、唯一事实来源"。
+  //   现在它的头注已经改成"历史"，README 那一行也标了「历史」—— 两边必须一致。
+  const plan = readFileSync(resolve(root, 'docs/redesign-plan.md'), 'utf8');
+  assert.ok(/这份文件现在是\*\*历史\*\*/.test(plan), 'redesign-plan 的头注要标历史');
+  const row = readme.split('\n').find((l) => l.includes('docs/redesign-plan.md') && l.startsWith('|'));
+  assert.ok(row && row.includes('历史'), `README 那一行要标「历史」：${row}`);
 });
 
 // ── ③ 历史文档必须标清是历史 ─────────────────────────────────────────
@@ -255,4 +261,84 @@ test('⚠ 长 token 的容器必须能断行（不然会把整块撑破、下面
   //   不剥注释的话这条断言会被自己的说明文案判红。
   const visible = ui.replace(/<!--[\s\S]*?-->/g, '');
   assert.ok(!visible.includes('我的码一直扫不出来'), '那个按症状命名的第二个按钮已经删了');
+});
+
+test('⚠ 文档里提到的 `src/**.ts` 路径必须真的存在（改名/搬家后文档会静默过期）', async () => {
+  // 只查**看起来是路径**的片段：`src/…​.ts`，前后不能紧挨着字母数字（否则 `…src/x.ts.bak` 也算）。
+  // 说明性文字里偶尔会写"曾经的 `src/foo.ts`"，那种就用反引号包住并加上"曾经"——
+  // 这里不做语义判断，凡是写出来的路径都要求存在；要写历史路径就写**不带 `src/` 前缀**的文件名。
+  const { readFileSync } = await import('node:fs');
+  // ⚠ **只查"当前口径"的文档**：findings / 历史 / 计划类写的是当时那个文件，
+  //   要求它们指向现在存在的路径是错的（它们本来就该保留旧路径）。
+  const CURRENT = ['README.md', 'docs/architecture.md', 'docs/install.md', 'docs/play-ai.md', 'docs/standalone.md', 'docs/prize-claim.md'];
+  const md = CURRENT.filter((f) => {
+    try {
+      readFileSync(f, 'utf8');
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  const missing: string[] = [];
+  for (const f of md) {
+    const text = readFileSync(f, 'utf8');
+    for (const m of text.matchAll(/(?<![A-Za-z0-9_./-])src\/[A-Za-z0-9_./-]+\.ts(?![A-Za-z0-9_])/g)) {
+      const p = m[0];
+      try {
+        readFileSync(p, 'utf8');
+      } catch {
+        missing.push(`${f}: ${p}`);
+      }
+    }
+  }
+  assert.deepEqual(missing, [], `这些文档里的代码路径不存在了：\n${missing.join('\n')}`);
+});
+
+test('⚠ README「面板为此补了什么」表里的宿主 op 名，必须在同步来的契约里存在', async () => {
+  // 2026-11-26 两次踩到同一类：①-1 写 `worker_hint('exclusive')`、①-3 写 `register_nav` ——
+  // 那两个都是**旧面板**的 op，新面板一个叫"默认行为"、一个改名叫 `sidebar`。
+  // 判据：表格里出现的 `xxx(` 形状的 op，要么在 `types/panel-host.d.ts` 里有，要么这一行
+  // 明确写着"旧面板"（历史对照）。
+  const { readFileSync } = await import('node:fs');
+  const readme = readFileSync('README.md', 'utf8');
+  const contract = readFileSync('types/panel-host.d.ts', 'utf8');
+  const table = readme.slice(readme.indexOf('| # | 能力 |'), readme.indexOf('## 仓库结构'));
+  assert.ok(table.includes('| ①-1 |'), '找不到那张能力表（README 改结构了？）');
+  const bad: string[] = [];
+  for (const line of table.split('\n')) {
+    if (!line.startsWith('| ①-')) continue;
+    if (line.includes('旧面板')) continue; // 历史对照，允许写旧名字
+    for (const m of line.matchAll(/`([a-z_]+)\(/g)) {
+      const op = m[1]!;
+      if (!contract.includes(op)) bad.push(`${op}（${line.slice(0, 24)}…）`);
+    }
+  }
+  assert.deepEqual(bad, [], `这些 op 在 types/panel-host.d.ts 里没有：${bad.join('、')}`);
+});
+
+test('⚠ `findings.md` 的目录必须是最新的（154 条、8000 行，靠人翻不现实）', async () => {
+  const { readFileSync } = await import('node:fs');
+  const { buildIndex, START, END } = await import('../scripts/gen-findings-index.mjs');
+  const text = readFileSync('docs/findings.md', 'utf8');
+  const s = text.indexOf(START);
+  const e = text.indexOf(END);
+  assert.ok(s >= 0 && e > s, '`docs/findings.md` 里没有目录标记（被删了？）');
+  const actual = text.slice(s, e + END.length);
+  assert.equal(
+    actual,
+    buildIndex(text),
+    '目录过期了 —— 跑 `node scripts/gen-findings-index.mjs` 重生成',
+  );
+});
+
+test('⚠ README 说"产物提交进仓库"就错了 —— `dist/` 是 gitignore 的', async () => {
+  // 2026-11-26 撞到：README 的仓库结构里还写着 `dist/panel-llrt/*.js … 提交进仓库，CI 检查是否最新`，
+  // 而 `.gitignore` 里 `dist/` 整条忽略、`git ls-files dist` 是空的，CI 的注释也写着"产物不再提交"。
+  const { readFileSync } = await import('node:fs');
+  const readme = readFileSync('README.md', 'utf8');
+  const ignore = readFileSync('.gitignore', 'utf8');
+  assert.ok(/^dist\/$/m.test(ignore), '.gitignore 里应该整条忽略 dist/');
+  const line = readme.split('\n').find((l) => l.includes('dist/') && l.includes('提交进仓库'));
+  assert.equal(line, undefined, `README 还写着产物提交进仓库：${line}`);
+  assert.ok(readme.includes('构建产物（**gitignore，不进仓库**）'), 'README 要写清 dist/ 不进仓库');
 });

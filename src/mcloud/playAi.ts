@@ -225,6 +225,8 @@ export interface PlayAiModule {
   /** 活动窗口（`2025-05-28T00:00:00` 这种墙钟串；主题模块没有） */
   startTime: string;
   endTime: string;
+  /** 活动开关位（实拍 `1` = 开）。`0` 时页面自己也不让做。 */
+  flag: number | null;
   /** 页面模块才有；主题模块是 `null`（实拍如此，别当成 0） */
   drawTimes: number | null;
   drawsUsed: number | null;
@@ -263,6 +265,7 @@ export function parseModules(result: unknown): PlayAiModule[] {
       subtitle: s('subtitle') || s('title'),
       startTime: s('startTime'),
       endTime: s('endTime'),
+      flag: typeof o['flag'] === 'number' ? o['flag'] : null,
       drawTimes: num(o['drawTimes']),
       drawsUsed: num(o['drawsUsed']),
       todayGetLotteryCount: num(o['todayGetLotteryCount']),
@@ -287,6 +290,30 @@ export interface PlayAiReading {
   todayGot: number | null;
   /** 现在**可抽**几次：`drawTimes`（它本身已经是余额，别再减 `drawsUsed`） */
   canDraw: number | null;
+}
+
+/** 活动还在不在（**只读**：用我们本来就读到的模块判断，不多发请求）。
+ *
+ *  ⚠ 为什么要判：活动 2026-12-31 结束之后，这一族会每天照读照点 —— 日志上看着在干活，
+ *    其实什么也拿不到。R9 那条"错过就等下一个窗口、不假装补上了"同样适用：
+ *    结束了就说结束了，别每天刷一遍"0 件任务"。
+ *
+ *  `flag === 0` 也算结束（页面自己也不让做）。`endTime` 是墙钟串（`2026-12-31T23:59:59`），
+ *  解析不出来就**当它还在**（宁可多跑一趟，也不因为解析失败把好端端的活动停掉）。 */
+export function activityState(
+  modules: readonly PlayAiModule[],
+  nowMs: number,
+): { live: boolean; why: string } {
+  const page = pageModule(modules);
+  if (page === undefined) return { live: false, why: '没读到门户页模块' };
+  if (page.flag === 0) return { live: false, why: '活动已下线（flag=0）' };
+  if (page.endTime !== '') {
+    const end = Date.parse(page.endTime);
+    if (Number.isFinite(end) && nowMs > end) {
+      return { live: false, why: `活动已结束（${page.endTime.slice(0, 10)}）` };
+    }
+  }
+  return { live: true, why: '' };
 }
 
 /** 门户页那个模块（带 `drawTimes/drawsUsed/todayGetLotteryCount` 的那一个）。

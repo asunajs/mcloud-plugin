@@ -184,6 +184,12 @@ async function main() {
 
   // 顶栏 + 菜单栏 + 当前区块的合影
   const shot = async (name) => {
+    // ⚠ 截图前把 toast 收起来：它是**浮层**，会盖在 hero 上（重截时亲眼看到
+    //   一张图里顶着"还没有网页会话 —— 上面「换票」那一步说了原因"）。
+    await send('Runtime.evaluate', {
+      expression: `(() => { const t = document.getElementById('toast'); if (t) t.hidden = true; return 1; })()`,
+      returnByValue: true,
+    });
     const { data } = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true });
     const p = path.join(outDir, `${name}.png`);
     fs.writeFileSync(p, Buffer.from(data, 'base64'));
@@ -209,21 +215,39 @@ async function main() {
   await send('Runtime.evaluate', { expression: `document.getElementById('add-close').click()` });
   await sleep(200);
 
-  // 逐块切过去截（⚠「设置」那一块已经删了 —— 见 findings F-068）
+  // 逐块切过去截（⚠「设置」那一块已经删了 —— 见 findings F-068；
+  //   「推送」那一块也早删了，2026-11-26 之前这里还在截它 ⇒ 那张图其实是**数据页的重复**，
+  //   点一个不存在的 `data-block="push"` 不会报错，只会留在原地再拍一张）
   const blocks = [
     ['daily', '02-daily'],
     ['exchange', '03-exchange'],
     ['live', '04-live'],
     ['data', '05-data'],
-    ['push', '06-push'],
+    ['debug', '06-debug'],
   ];
   for (const [block, name] of blocks) {
     await send('Runtime.evaluate', {
       expression: `document.querySelector('.seg-item[data-block="${block}"]').click()`,
     });
-    await sleep(400);
+    // ⚠ 400ms 对「调试」那块不够：它的「每族上次的结果」是**异步**读的，
+    //   拍早了会拍到「正在读…」（2026-11-26 重截时亲眼看到）。
+    await sleep(name === '06-debug' ? 1500 : 400);
     await shot(name);
   }
+
+  // 再来一张**深色**：README 里写着"深浅色跟着面板走"，光有浅色的图没法核这句话。
+  // ⚠ 放在"真跑一次"**之前**：那一跑会把趣玩AI 的读数刷成"这次没读成"
+  //   （假账号没有真会话），深色那张就会拍到失败态，不能代表界面。
+  await send('Runtime.evaluate', {
+    expression: `document.documentElement.dataset.theme = 'dark'`,
+  });
+  await send('Runtime.evaluate', {
+    expression: `document.querySelector('.seg-item[data-block="data"]').click()`,
+  });
+  await sleep(600);
+  await shot('09-dark');
+  // 换回浅色，免得后面那张「跑完之后」也是深色的
+  await send('Runtime.evaluate', { expression: `document.documentElement.dataset.theme = 'light'` });
 
   // 回到「日常」，真跑一次，再截一张 —— 「最近几次」那个列表只有真跑过才有内容
   await send('Runtime.evaluate', {
@@ -233,6 +257,13 @@ async function main() {
   await send('Runtime.evaluate', { expression: `document.getElementById('daily-run').click()` });
   await sleep(8000);
   await shot('08-daily-recent');
+
+  // 最后一张：**嵌在面板里的样子**（用户真正的入口）。面板用 iframe 打开
+  // `/plugins/<name>/?embed=1&theme=…`，插件那边靠 `boot.js` 挂 `data-embed` 收掉自己的大标题。
+  // 这一张能核两件事：① 没有两层标题；② 主题是跟着 `?theme=` 走的。
+  await send('Page.navigate', { url: `${url}?embed=1&theme=light` });
+  await sleep(2200);
+  await shot('10-embed');
 
   ws.close();
   // ⚠ 先等浏览器**真的退出**再删 profile 目录。

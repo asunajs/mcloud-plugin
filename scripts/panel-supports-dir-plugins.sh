@@ -27,6 +27,8 @@ for _ in $(seq 1 20); do
   out="$(curl -fsS -m 1 -H 'X-Panel-Token: probe' "http://127.0.0.1:$PORT/api/state" 2>/dev/null)" || continue
   # 插件在列表里、且没有 error ⇒ 目录形态 + 相对 import 都通了
   if printf '%s' "$out" | grep -q '"name":"probe"' && ! printf '%s' "$out" | grep -q '"name":"probe","error":"'; then
+    # 成功也说一句：静默 exit 0 在 CI 日志里跟"没跑"分不开
+    echo "✅ 支持目录式插件（相对 import 也通）：$BIN"
     exit 0
   fi
 done

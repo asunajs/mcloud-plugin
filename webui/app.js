@@ -26,7 +26,7 @@
 // 页面版本号：和 style.css 里的 --style-ver 一起人工递增。
 // 「样式自检」（boot.js 的 ?diag=1）会读它 —— 用来区分「CSS 是新的、JS 还是旧的」这种
 // 半新半旧状态（第 155 轮：样式表是 v155，但 DOM 里根本没有 .ex-group-row 这种行）。
-document.documentElement.dataset.appVer = '175';
+document.documentElement.dataset.appVer = '178';
 
 /** 插件自己的接口。 */
 const API = '/plugins/mcloud/api';
@@ -3807,7 +3807,7 @@ let acctSettingsId = '';
 
 /** 打开弹窗那一刻每格的值。保存时**只发改过的** ——
  *  否则"没动过的那几格"会被写成显式的账号层值，用户就再也回不到"跟随公共"了
- *  （现场：点一次存下，五格全变成"本号单独设过"）。 */
+ *  （现场：点一次存下，每一格都变成"本号单独设过"）。 */
 let acctTaskOrig = {};
 
 function openAcctSettings(id) {
@@ -3826,7 +3826,7 @@ function openAcctSettings(id) {
   $('acct-cfg-dialog').hidden = false;
 }
 
-/** 弹窗里那五格开关。
+/** 弹窗里那几格族开关（六族；数量由接口给，别在文案里钉死）。
  *
  *  ⚠ `on` 是**合并后**的值（账号 > 公共 > 缺省），`source` 说明它来自哪一层 ——
  *  只有 `source==='account'` 时才给「跟随公共」按钮：没单独设过的号本来就在跟随，
@@ -3932,25 +3932,32 @@ function renderPlayAi() {
   const meta = $('playai-meta');
   if (!box) return;
   const p = last && last.playai;
-  if (!p) {
-    box.textContent = '还没读过 —— 跑一趟「日常」就会读一次。';
-    setText('playai-meta', '');
-    return;
-  }
-  box.textContent = p.line || (p.ok ? '读到了' : '上次没读成');
-  // 代抽开关：读数里单独给的一格（读数可能还没跑过，开关照样要能看能改）
+  // 代抽开关：读数里**单独**给的一格 —— 没读过也要能看能改，所以先画它
   const sw = $('playai-draw');
   if (sw) {
     const el = /** @type {any} */ (sw);
-    if (p.drawEnabled === true) el.setAttribute('checked', '');
+    if (p && p.drawEnabled === true) el.setAttribute('checked', '');
     else el.removeAttribute('checked');
   }
+  // ⚠ 「从没读过」要跟「上次没读成」分开：`at === ''` 时服务端给的是一份空壳，
+  //   照 `p.ok ? '读到了' : '上次没读成'` 画会显示「上次没读成」—— 可它一次都没跑过。
+  //   （2026-11-26 重截 docs 截图时看见的。）
+  if (!p || p.at === '') {
+    box.textContent = '还没读过 —— 跑一趟「日常」就会读一次。';
+    setText('playai-meta', '');
+    $('playai-tasks').innerHTML = '';
+    return;
+  }
+  box.textContent = p.line || (p.ok ? '读到了' : '上次没读成');
   const bits = [p.at === '' ? '还没读过' : `读到于 ${when(p.at)}`];
   // 这一趟没读成时，读数保留上一份，理由挂在后面（不把清单擦掉）
   if (p.ok === false && p.error) bits.push(`这次没读成：${p.error}`);
   if (p.reading) {
     const r = p.reading;
     if (r.canDraw > 0) bits.push(`现在能抽 ${r.canDraw} 次`);
+    // 活动到哪天：页面模块的 `endTime` 是墙钟串，只取日期部分
+    const end = (r.modules || []).map((m) => String(m.endTime || '')).find((x) => x.length >= 10);
+    if (end) bits.push(`活动到 ${end.slice(0, 10)}`);
     const names = (r.modules || []).map((m) => m.subtitle).filter(Boolean).slice(0, 4);
     if (names.length > 0) bits.push(names.join(' / '));
   }
@@ -4002,6 +4009,12 @@ let debugPicked = {};   // 族 id → 是否勾上（这一次的）
 let debugAccountId = '';
 
 function renderDebug() {
+  // 标题与说明（⚠ 原来这两格在 HTML 里是占位 `…`，从来没人填 —— 打开就是一串省略号）
+  setText('debug-hero', '调试');
+  setText(
+    'debug-sub',
+    '测一个新族时用这里：只跑点名的族、一次一个号。它不改「日常」的设置，跑完也不改开关与停用。',
+  );
   const acc = (last && last.account) || {};
   const list = Array.isArray(acc.accounts) ? acc.accounts : [];
   // ① 族开关：第一次进来按"现在开着什么"预勾（关着的默认不勾，但可以手动勾上）
@@ -4041,6 +4054,10 @@ function renderDebug() {
     document.getElementById('debug-account').dataset.debugAccount = '1';
   }
   syncDebugRunBtn();
+  // 先给一句"在读"，别让那张卡空着（读得慢的时候看起来像坏了）
+  if ($('debug-last').childElementCount === 0) {
+    $('debug-last').innerHTML = '<li class="hint">正在读…</li>';
+  }
   void refreshDebugLast();
 }
 
@@ -4116,7 +4133,7 @@ document.addEventListener('change', (ev) => {
 
 // ══════════ 公共默认（所有账号共用的缺省） ══════════
 //
-// 与账号卡「设置」里那五格是**同一件事的两层**：这里写公共层，那里写账号层。
+// 与账号卡「设置」里那几格是**同一件事的两层**：这里写公共层，那里写账号层。
 // 两个入口都在账号页 —— 别把公共那半放回面板的插件配置表单（那样用户得跑两个界面）。
 let commonTaskOrig = {};
 

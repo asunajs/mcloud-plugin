@@ -86,7 +86,7 @@ export function isTaskSwitchId(v: string): v is TaskSwitchId {
   return TASK_SWITCH_BY_ID.has(v as TaskSwitchId);
 }
 
-/** 账号层键。五个 id 一个形状 —— 不许再出现 `enabled` / `on` 混用。 */
+/** 账号层键。**每个 id 一个形状**（别在注释里写死条数：加族时最容易被忘掉的就是它）—— 不许再出现 `enabled` / `on` 混用。 */
 export function accountKeyOf(id: TaskSwitchId): string {
   return `mcloud.task.${id}.on`;
 }

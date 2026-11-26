@@ -1,11 +1,13 @@
 # 装到面板里（发布产物怎么用）
 
-> 一句话：**下载 `mcloud-plugin-<版本>-panel04.zip` → 面板「插件管理」→ 上传 → 选中那个 zip。**
+> 一句话：**下载 `mcloud-plugin-<版本>-panel08.zip` → 面板「插件管理」→ 上传 → 选中那个 zip。**
 > 面板会自己解压、重启插件、把三条任务挂上调度。
 >
-> ⚠ 只面向 **panel-llrt 0.4**（清单里 `min_panel: 0.4.0`）。形状是**全部平铺**：
-> `<name>.js` + `<name>.panel.json` + `mcloud.webui/` 都在 zip 根 —— 0.4 的加载器只扫
-> `plugins/*.js`，塞进 `js/` 子目录等于「装了但面板看不见」。
+> ⚠ 面向 **panel-llrt 0.8.3 起**（清单里 `min_panel: 0.8.3`）。
+> 发布包是**单文件平铺**：`<name>.js` + `<name>.panel.json` + `mcloud.webui/` 都在 zip 根
+> —— 面板只扫 `plugins/*.js`，塞进 `js/` 子目录等于「装了但面板看不见」。
+> （面板也认目录式 `plugins/<name>/index.js`，那是 `npm run deploy:panel` 往本机实例装时的形状；
+> 发布包保持平铺是为了兼容线更宽。）
 
 ## 一、用 Release 里的 zip（推荐）
 
@@ -16,7 +18,8 @@
 
    | 任务 | 表达式 | 说明 |
    |---|---|---|
-   | 日常 | `0 8,20 * * *` | 签到、领取、App 任务… |
+   | 日常 | `0 8,20 * * *` | 签到 / 任务拓展 / App 任务 / 云手机 / 算力大作战 / 趣玩AI（可逐族关） |
+   | 兑换 | `0 10 * * *` | 只负责**叫醒**与记录；换什么在插件里配（见下） |
    | 直播 | `30 10,15 * * *` | 听口令 + 领小红花 |
 
    **兑换的计划在「云盘 → 兑换 → 定时抢兑」里配**（面板那条任务只负责叫醒与记录）。
@@ -24,7 +27,8 @@
    两个号换不同的东西或不同的时间，就建两条计划。新装默认暂停；点「添加计划」并保存后
    面板那条「兑换」会自动启用，cron 取所有启用计划整点的并集。
 
-4. 打开左侧「云盘」，**导入会话**（账号页的二维码 / Cookie），然后点一次「日常」跑起来。
+4. 打开左侧 **「插件界面 → 移动云盘」**，**导入会话**（账号页的二维码 / Cookie），
+   然后点一次「日常」跑起来。
 
 zip 里只有这些文件，没有源码、没有文档：
 
@@ -36,8 +40,9 @@ mcloud.webui/{index.html,style.css,app.js,boot.js}
 
 清单里的 `config.fields` 决定「插件卡片 → 配置」显示什么：现在只有两格
 `daily_budget_s`（日常预算 60–600 秒）与 `exchange_enabled`（定时抢兑开关），
-写进 `plugin-data/<插件>/config.json`；插件自己界面改的值不会被它覆盖
-（判据见 `src/mcloud/configOverlay.ts` 文件头）。
+写进**统一**的 `plugin-data/mcloud/config.json`（`schema_version` 幂等）。
+⚠ 早先那套"插件配置页与插件界面各写一份、靠指纹三方合并"的机制**已删** ——
+现在只有一份配置，两个入口写的是同一格。迁移实现见 `src/host/fs/configMigrate.ts` 文件头。
 
 ## 二、zip 为什么"面板能直接用"
 
@@ -89,16 +94,23 @@ mcloud-sign config:import --config asign.json --data-dir ~/panel-3030/data/plugi
 ## 四、升级
 
 新版本同样是一个 zip，**直接再传一次**（默认覆盖）。传完插件会自动热更，
-不用重启面板；会话、读数、任务设置都在数据库里，不会丢。
+不用重启面板；会话、读数、任务设置都在 `plugin-data/mcloud/`（`shared.json` + `state/<账号>.json`
++ `config.json`）里，不会丢。
 
 ## 五、自己发一个版本（维护者）
 
 ```sh
 npm run all             # 门：类型检查 / 测试 / 产物一致
-npm version --no-git-tag-version 0.4.3   # 改 package.json（tag 会跟它比）
-npm run build && npm run pack:panel04    # 出 dist/mcloud-plugin-0.4.3-panel04.zip
-git add -A && git commit -m "release v0.2.0" && git tag v0.2.0 && git push --follow-tags
+# 版本号三处要一起改（构建期会校验）：package.json / src/version.ts / 四份 *.panel.json
+npm run build && npm run pack            # 出 dist/mcloud-plugin-<版本>-panel08.zip
+git add package.json src/version.ts mcloud.panel.json plugins/*.panel.json   # 只加明确路径
+git commit -m "release v<版本>" && git tag v<版本> && git push --follow-tags
 ```
 
-推了 tag 之后 `.github/workflows/release.yml` 会自动：跑门 → 打包 →
-**把这个 zip 传进一个空面板试装一遍**（装不起来就不发）→ 挂到 Release 上。
+推了 tag 之后 `.github/workflows/release.yml` 会自动：跑门（类型/测试/产物一致/版本对齐）→
+`npm run build:panelllrt` + `npm run pack` → 挂到 Release 上（已有就 `--clobber` 覆盖，发布幂等）。
+
+⚠ 它**不会**帮你试装到一个空面板 —— 那一步是本机 `npm run deploy:panel -- --restart` 做的
+（构建 + 样式门禁 + 整份拷贝 + 逐个 cmp + 重启 + 等 readyz）。
+⚠ 发完还要**同步货架** `asunajs/panel-single-plugins` 的 `catalog.json`（版本 / 资产名 / sha256），
+否则商店卡片还写着旧版本。

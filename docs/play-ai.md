@@ -57,7 +57,8 @@
 ## 3. 状态机（`src/mcloud/tasks/playAi.ts`）
 
 ```text
-list      读两个模块 → 落读数 → 挑**一件**（taskSign=0 + 未完成 + 今天没点过 + 我们会做）
+list      读两个模块 → 落读数 → **活动还在吗**（endTime / flag）→ 挑**一件**
+          （taskSign=0 + 未完成 + 今天没点过 + 我们会做）
 register  POST page/register → 记进 tried（不论成败）
 act       复用算力族的动作层（stepAction），一次推一步
 verify    再读一次 getmodule → **只有 isComplete 翻位才算做完**
@@ -66,6 +67,9 @@ verify    再读一次 getmodule → **只有 isComplete 翻位才算做完**
 draw      开了代抽且 drawTimes > 0 时抽一发（一趟最多一发）
 ```
 
+- **活动结束就停**：`endTime` 过了或 `flag=0` ⇒ 不再点、不再抽，只留一句「已结束」。
+  判据只用本来就读到的模块（**不多发请求**）；`endTime` 解析不出来时**当它还在** ——
+  宁可多跑一趟，也不因为解析失败把好端端的活动停掉。
 - 一趟最多做 **1 件**（`PLAYAI_TASKS_PER_RUN`），`drain` 上限 **16** 步
   （最长那条：list 1 + register 1 + 相机链 5 + verify 1 + 再读 1 + verify 1 + draw 1 = 11，
   余下是重试的余量 —— 撞上限时 `drain` 报的是"假失败"）；

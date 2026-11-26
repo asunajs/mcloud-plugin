@@ -745,3 +745,114 @@ test('同一件任务出现在两个模块里：任一模块完成/点过，就�
     '任一模块里已完成 ⇒ 整件跳过，不该再点',
   );
 });
+
+test('活动已结束 ⇒ 不点、不抽，只留一句「已结束」', async () => {
+  const store = memStore();
+  store.ensureSchema();
+  store.setState(
+    SESSION_KEY,
+    JSON.stringify({ cookie: 'c=1', jwt: 'JWT', deviceId: 'D1', userAgent: 'UA', savedAt: NOW }),
+    NOW,
+  );
+  store.setState(STATE_JWT, JSON.stringify({ at: NOW, jwt: 'JWT', referer: '', fingerprint: 'f' }), NOW);
+  const sent: BuiltRequest[] = [];
+  const transport = ((req: BuiltRequest) => {
+    sent.push(req);
+    const url = String(req.url);
+    if (url.includes('/funai/api/page/getmodule')) {
+      return {
+        status: 200,
+        headers: {},
+        body: JSON.stringify({
+          code: 0,
+          msg: 'success',
+          result: {
+            moduleId: '1-250730',
+            // 结束时间已经过了
+            endTime: '2026-11-01T23:59:59',
+            flag: 1,
+            drawTimes: 3,
+            drawsUsed: 0,
+            todayGetLotteryCount: 3,
+            taskIds: [{ id: 'aizhushou', taskName: 'AI助手', taskSign: 0, isComplete: 0 }],
+          },
+        }),
+      };
+    }
+    if (url.includes('/funai/api/timed/getmodule')) {
+      return { status: 200, headers: {}, body: JSON.stringify({ code: 0, msg: 'success', result: [] }) };
+    }
+    return { status: 200, headers: {}, body: JSON.stringify({ code: 0 }) };
+  }) as never;
+  let fake = Date.parse(NOW);
+  const deps = {
+    store,
+    transport,
+    nowIso: NOW,
+    now: () => NOW,
+    nowMs: () => (fake += 1000),
+    baseUrl: undefined,
+  } as unknown as TaskDeps;
+  // 代抽开着也不该抽
+  const { setPlayAiDrawEnabled } = await import('../src/mcloud/playAiState.ts');
+  setPlayAiDrawEnabled(store, true, NOW);
+
+  const notes: string[] = [];
+  for (let i = 0; i < 8; i++) {
+    const r = await playAiStep(deps);
+    notes.push(r.note);
+    if (r.idle === true) break;
+  }
+  assert.equal(sent.filter((x) => String(x.url).includes('/page/register')).length, 0, '不该点任务');
+  assert.equal(sent.filter((x) => String(x.url).includes('/page/lottery')).length, 0, '不该抽奖');
+  assert.ok(notes.some((n) => /已结束/.test(n)), notes.join(' | '));
+});
+
+test('⚠ 失败时那一步的 note 必须是**失败原因**，不能是读数那一句', async () => {
+  // 现场（2026-11-26，用 scripts/check-playai.sh 翻实例日志）：
+  //   「趣玩AI：没成 —— 4 个模块 · 24 件任务 · 22 件可做 …」
+  // 读数是**成功**读到的，可它被当成了失败原因写出来 —— 真正的失败（上报被拒 / 动作链断在哪）
+  // 被 `snap.line` 盖掉了。
+  const { runDaily } = await import('../src/mcloud/dailyRun.ts');
+  const store = memStore();
+  store.ensureSchema();
+  store.setState(
+    SESSION_KEY,
+    JSON.stringify({ cookie: 'c=1', jwt: 'JWT', deviceId: 'D1', userAgent: 'UA', savedAt: NOW }),
+    NOW,
+  );
+  store.setState(STATE_JWT, JSON.stringify({ at: NOW, jwt: 'JWT', referer: '', fingerprint: 'f' }), NOW);
+  const transport = ((req: BuiltRequest) => {
+    const url = String(req.url);
+    if (url.includes('/funai/api/page/getmodule')) {
+      return {
+        status: 200,
+        headers: {},
+        body: JSON.stringify(pageModule({ aizhushou: 0 })),
+      };
+    }
+    if (url.includes('/funai/api/timed/getmodule')) {
+      return { status: 200, headers: {}, body: JSON.stringify({ code: 0, msg: 'success', result: [] }) };
+    }
+    if (url.includes('/funai/api/page/register')) {
+      // 写口被拒
+      return { status: 200, headers: {}, body: JSON.stringify({ code: 40000, msg: '不行' }) };
+    }
+    return { status: 200, headers: {}, body: JSON.stringify({ code: 90001, msg: '未登录' }) };
+  }) as never;
+  let fake = Date.parse(NOW);
+  const deps = {
+    store,
+    transport,
+    nowIso: NOW,
+    now: () => NOW,
+    nowMs: () => (fake += 1000),
+    baseUrl: undefined,
+  } as unknown as TaskDeps;
+
+  const r = await runDaily(deps, { only: ['playAI'], force: true });
+  const step = r.steps.find((s) => s.name === '趣玩AI')!;
+  assert.equal(step.ok, false, '写口被拒 ⇒ 这一步是失败');
+  assert.match(step.note, /上报被拒|没成/, `note 要是失败原因：${step.note}`);
+  assert.equal(/个模块 · .*件任务/.test(step.note), false, `note 不该是读数：${step.note}`);
+});

@@ -22,9 +22,12 @@
 | `mcloud-exchange` | **兑换** |
 | `mcloud-live` | **直播** |
 
-界面是**菜单栏 + 一次一块**，六块：账号 / 日常 / 兑换 / 直播 / **领奖** / 数据。
+界面是**菜单栏 + 一次一块**，七块：账号 / 日常 / 兑换 / 直播 / **领奖** / 数据 / **调试**。
 每块第一行回答那个块的核心问题（「登录了吗」「今天跑了吗」「有几件待领取」），
 **读数直接显示**，按钮说人话（「现在跑一次」「贴进去领取」「扫码登录」「领取」）。
+
+「调试」是 2026-11-26 加的**测试入口**（测新族用）：只跑点名的族、一次一个号，
+**不看**子任务开关与账号停用，跑完也不改它们。详见下面「『调试』页」那一节。
 
 「领奖」那一块是 2026-10-31 新加的：**选账号 → 看未领取 → 点「领取」→ 填短信验证码**。
 滑块由后端本地解（底图是 JPEG，见 [`docs/prize-claim.md`](docs/prize-claim.md)），
@@ -167,9 +170,9 @@ PANEL_TOKEN_HASH="$(printf '%s' '<你的令牌>' | <面板二进制> hash-token)
 
 | # | 能力 | 为什么这个插件非要 |
 |---|---|---|
-| ①-1 | **worker 隔离**（`worker_hint('exclusive')`） | 抢兑和长路由不能被十几步的日常/直播拖住；日常/直播共享粗粒度 lane |
+| ①-1 | **一个插件一条执行通道** | 抢兑和长路由不能被十几步的日常/直播拖住。⚠ 现在是面板的**默认行为**（每个插件一条 lane），不用声明；旧面板要 `worker_hint('exclusive')`，那个 op 在这里没有对应物 |
 | ①-2 | **任务参数**（`register_cron(..., { params })`） | 脚本任务用；兑换的多计划走插件自己的计划表（一条计划一个账号），面板仍是一条任务 |
-| ①-3 | **侧边栏入口**（`register_nav`） | 插件得在面板上有个门 |
+| ①-3 | **侧边栏入口**（`sidebar({title})`） | 插件得在面板上有个门。⚠ 旧面板那个 op 叫 `register_nav`，新面板改成 `sidebar`（旧名仍兼容） |
 | ①-4 | **随机表达式**（`@every 5s -200ms` / cron 抖动） | 定时不该齐步走 |
 | ①-5 | **`smtp_send`** | 10 个推送渠道里，邮件是唯一要发信的那条 |
 | ①-6 | **按任务/路由声明执行预算**（`{ budget_ms }`） | **没有它三条任务一条都跑不起来** |
@@ -185,7 +188,10 @@ mcloud-plugin/
     mcloud/                上游层：签名、信封、H5、登录、会话、口令池、直播…
       tasks/               每条任务的协议逻辑
     entries/               四个插件入口（mcloud / daily / exchange / live）
-  dist/panel-llrt/*.js     构建产物（单文件，提交进仓库，CI 检查是否最新）
+  dist/                  构建产物（**gitignore，不进仓库**）：
+    panel-llrt/            面板插件产物 —— `npm run build` 出单文件 `<name>.js`，
+                           `npm run build:dir` 出目录式 `<name>/index.js`（部署到支持目录式的面板用这个）
+    standalone/            CLI 产物（`mcloud-sign` 等）
   webui/                   WebUI 源码（原生 ESM + CSS，零依赖）→ 构建成 <产物>/mcloud.webui/
   mcloud.panel.json        主清单（版本/配置表单）；另外三份在 plugins/ 下平铺：
   plugins/mcloud-*.panel.json   daily / exchange / live 的清单
@@ -227,7 +233,9 @@ mcloud-sign config:import --config asign.json --data-dir <…>          # 真搬
 - **只放宽这两层**：凭据自检、幂等键、串行、间隔、预算、脱敏一条都不放宽。
 - 一次**只跑一个号**（要跑多个号请用「日常」页）；只跑一族时收尾的读数三步也跳过，
   但**清理临时文件照旧**（那一族可能往云盘写东西）。
-- CLI 同一套参数：`mcloud-sign --only playAI --account <id> --force`。
+- CLI 同一套参数：`mcloud-sign --only playAI --account <id> --force
+
+`mcloud-sign --help` 列全部族与参数；`mcloud-sign --version` 只打版本号。`。
 
 ### 趣玩AI 赢好礼（`National_playAI`）怎么跑的
 
@@ -384,6 +392,7 @@ gh release view v<version> --json assets -q '.assets[].digest'   # 核对哈希
 两端走**同一份**解析与落地（`src/mcloud/legacyImport.ts`）。会搬：账号、云手机/算力大作战的开关、
 `standalone.http|ws.*` → `cli.*`；**不认识的键不搬**，会在结果里列出来。幂等、不改旧文件。
 
-判据是**三方合并**：插件配置页写的 `plugin-data/<插件>/config.json` 与插件自己界面改的值
-互不覆盖 —— 文件里的值只在**它自己变过**的那一次生效（指纹在 `mcloud.cfg.applied`）。
-实现与理由见 `src/mcloud/configOverlay.ts` 的文件头。
+⚠ 这里曾经有一套**三方合并**（`configOverlay.ts` + `mcloud.cfg.applied` 指纹）：面板的插件配置页
+和插件自己界面都能改同一格，靠指纹判断"这次是文件变过还是界面变过"。
+**那套机制已经删了** —— 现在配置只有一份（`config.json`），两个入口写的是同一格，
+不需要也不会再做合并。一次性迁移的实现见 `src/host/fs/configMigrate.ts` 的文件头。

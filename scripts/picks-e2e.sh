@@ -11,6 +11,10 @@ B="http://127.0.0.1:$PORT"
 H=(-H "X-Panel-Token:$TOKEN")
 W=("${H[@]}" -H "x-panel:1")
 OUT=/tmp/apv-run
+# ⚠ 这个脚本没有 `set -e`（几十条 curl，任何一条非零就停会把"某一步没成"变成"整篇不跑"）。
+#   但那样一来**探针失败也退 0** —— 2026-11-26 实测：探针 ③ 撞了 429、断言抛了
+#   AssertionError，脚本照样 exit 0，而我只看 `grep ✅` 就以为过了。所以改成显式记账。
+FAIL=0
 # ⚠ 先把目录建出来：下面第一句就是 `> "$OUT/e2e-picks.log"`，目录不在的话重定向直接失败，
 #   而脚本没有 `set -e` ⇒ 它会一路往下跑、每个探针都报"连不上"，看起来像**面板起不来**。
 #   （2026-11-26 现场：干净机器上这个脚本从来没成功过。）
@@ -40,7 +44,7 @@ echo "面板 PID=$PANEL_PID mock PID=$MOCK_PID"
 
 echo "── 探针 ①：今天第一次打开这一屏（缓存该是空的）"
 curl -fsS "${H[@]}" "$B/plugins/mcloud/api/readings" -o "$OUT/v0.json"
-python3 - "$OUT/v0.json" <<'PY'
+python3 - "$OUT/v0.json" <<'PY' || FAIL=1
 import json, sys
 d = json.load(open(sys.argv[1])) or {}
 ex = d.get('exchange') or {}
@@ -50,7 +54,7 @@ PY
 
 echo "── 探针 ②：手动刷新（POST /exchange/picks）"
 wpost "$B/plugins/mcloud/api/exchange/picks" '{}' "$OUT/picks.json"
-python3 - "$OUT/picks.json" <<'PY'
+python3 - "$OUT/picks.json" <<'PY' || FAIL=1
 import json, sys
 d = json.load(open(sys.argv[1]))
 items = (d.get('picks') or {}).get('items') or []
@@ -66,10 +70,9 @@ PY
 
 echo "── 探针 ③：刷新只打「清单」那一枪（mock 侧数请求）"
 curl -fsS -X POST "http://127.0.0.1:$MOCK/_debug/requests/clear" >/dev/null
-curl -fsS "${W[@]}" -X POST -H 'content-type: application/json' -d '{}' \
-  "$B/plugins/mcloud/api/exchange/picks" -o /dev/null
+wpost "$B/plugins/mcloud/api/exchange/picks" '{}'
 curl -fsS "http://127.0.0.1:$MOCK/_debug/requests" -o "$OUT/mock2.json"
-python3 - "$OUT/mock2.json" <<'PY'
+python3 - "$OUT/mock2.json" <<'PY' || FAIL=1
 import json, sys
 reqs = json.load(open(sys.argv[1]))
 paths = [r['path'].split('?')[0] for r in reqs]
@@ -100,7 +103,7 @@ wpost "$B/plugins/mcloud/api/exchange/order" \
 curl -fsS -X POST "http://127.0.0.1:$MOCK/_debug/requests/clear" >/dev/null
 curl -fsS "${H[@]}" "$B/plugins/mcloud/api/readings" -o "$OUT/v2.json"
 curl -fsS "http://127.0.0.1:$MOCK/_debug/requests" -o "$OUT/mock3.json"
-python3 - "$OUT/v2.json" "$OUT/mock3.json" "$NAME" <<'PY'
+python3 - "$OUT/v2.json" "$OUT/mock3.json" "$NAME" <<'PY' || FAIL=1
 import json, sys
 d = json.load(open(sys.argv[1])) or {}
 ex = d.get('exchange') or {}
@@ -117,7 +120,7 @@ PY
 echo "── 探针 ⑥：凭据不回显 + 日志里那一行说人话"
 grep -oE '"note": *"[^"]*"' "$OUT/picks.json" | head -3
 curl -fsS "${H[@]}" "$B/plugins/mcloud/api/log/tail?limit=8" -o "$OUT/log.json" 2>/dev/null || true
-python3 - "$OUT/log.json" <<'PY'
+python3 - "$OUT/log.json" <<'PY' || FAIL=1
 import json, sys
 try:
     d = json.load(open(sys.argv[1]))
@@ -133,3 +136,8 @@ node "$HERE/scripts/../../scripts/picks_probe.mjs" "$B" "$TOKEN" 2>/dev/null || 
 
 echo "收摊"
 kill "$PANEL_PID" "$MOCK_PID" 2>/dev/null || true
+if [ "$FAIL" -ne 0 ]; then
+  echo "❌ 有探针没过（上面有 AssertionError / 429）" >&2
+  exit 1
+fi
+echo "✅ 全部探针通过"

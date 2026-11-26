@@ -120,6 +120,21 @@ export interface LegacyPlan {
   skipped: string[];
 }
 
+/** 这份计划会搬哪些**账号级开关**（人话，`假号 红包派对=开` 那种）。
+ *
+ *  两个入口共用：CLI 的 `config:import` 小结、面板「先看看会搬什么」的预览。
+ *  ⚠ 不写在这里的话，两端会各写一份，然后慢慢不一致（R3）。 */
+export function describePlanSwitches(plan: LegacyPlan): string[] {
+  const out: string[] = [];
+  for (const one of plan.common.accounts) {
+    const who = one.label ?? one.nickname ?? '(没写名字的号)';
+    if (one.redpackEnabled !== undefined) out.push(`${who} 红包派对=${one.redpackEnabled ? '开' : '关'}`);
+    if (one.tokenPkEnabled !== undefined) out.push(`${who} 算力大作战=${one.tokenPkEnabled ? '开' : '关'}`);
+    if (one.tokenPkDraw !== undefined) out.push(`${who} 算力代抽=${one.tokenPkDraw.enabled ? '开' : '关'}`);
+  }
+  return out;
+}
+
 const KNOWN_TOP = new Set(['version', 'caiyun', 'common', 'standalone', 'message']);
 
 function asObject(v: unknown): Record<string, unknown> | undefined {

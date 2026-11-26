@@ -275,3 +275,32 @@ test('真实报文里"我们会做"的那三件都在（AI助手 / AI相机 / �
     assert.ok(ids.includes(id), `真实报文里应该有 ${id}（否则映射白写）`);
   }
 });
+
+// ── 活动结束之后别再假装在干活（R9 同一条口径）──────────────────────
+
+test('活动还没结束 ⇒ 活着；结束时间过了 / flag=0 / 没读到模块 ⇒ 停', async () => {
+  const { activityState } = await import('../src/mcloud/playAi.ts');
+  const NOW = Date.parse('2026-11-26T00:00:00Z');
+  const mod = (extra: Record<string, unknown> = {}) =>
+    parseModules({
+      moduleId: '1-250730',
+      drawTimes: 0,
+      drawsUsed: 0,
+      todayGetLotteryCount: 0,
+      endTime: '2026-12-31T23:59:59',
+      flag: 1,
+      taskIds: [],
+      ...extra,
+    });
+
+  assert.equal(activityState(mod(), NOW).live, true);
+  const ended = activityState(mod({ endTime: '2026-11-01T00:00:00' }), NOW);
+  assert.equal(ended.live, false);
+  assert.match(ended.why, /已结束/);
+  assert.equal(activityState(mod({ flag: 0 }), NOW).live, false);
+  assert.match(activityState(mod({ flag: 0 }), NOW).why, /下线/);
+  // 没读到模块 ⇒ 也不能算"活着"
+  assert.equal(activityState([], NOW).live, false);
+  // 结束时间解析不出来 ⇒ 当它还在（宁可多跑一趟，也别把好活动停掉）
+  assert.equal(activityState(mod({ endTime: '不是时间' }), NOW).live, true);
+});

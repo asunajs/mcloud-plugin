@@ -32,6 +32,7 @@ import type { Transport } from '../client.ts';
 import { loadSession } from '../../store/types.ts';
 import { loadJwt } from '../sessionExchange.ts';
 import {
+  activityState,
   pageModuleRequest,
   parseEnvelope,
   pageModule,
@@ -271,6 +272,28 @@ export async function playAiStep(deps: TaskDeps): Promise<TaskOutcome> {
       }
       const line = snapshot(deps, got.modules, true, '');
       st.modules = got.modules;
+      // 活动结束了就**到此为止**：不再点、不再抽、不再每天刷一遍"0 件任务"。
+      // （判据只用我们本来就读到的模块，不多发请求。）
+      const live = activityState(got.modules, Date.parse(deps.nowIso));
+      if (!live.live) {
+        st.phase = 'done';
+        st.lines = [live.why];
+        save(deps, st);
+        // ⚠ 快照也要说清"结束了"：卡上显示的是 `line`，只存读数的话
+        //   用户看到的还是「4 个模块 · 24 件任务 …」，像一切正常。
+        savePlayAiSnapshot(
+          deps.store,
+          {
+            at: deps.nowIso,
+            ok: true,
+            line: `${live.why} —— ${line}`,
+            reading: summarize(got.modules),
+            error: '',
+          },
+          deps.nowIso,
+        );
+        return { ok: true, idle: true, note: `${live.why} —— 这一族不再往下做（${line}）` };
+      }
       const target = pickTarget(got.modules, st.tried ?? {});
       if (target === null) {
         // 没有会做的任务 ⇒ 直接看能不能抽（次数是之前攒下的）

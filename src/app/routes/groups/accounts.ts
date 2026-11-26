@@ -17,7 +17,7 @@ import { syncTaskReadiness } from '../../../mcloud/taskReadiness.ts';
 import { accountsView, json, readBody } from '../support.ts';
 import type { RouteDeps, RouteEntry } from '../support.ts';
 import { TASK_SWITCHES, isTaskSwitchId, resetTaskOn, setTaskOn } from '../../../mcloud/tasks/taskSwitches.ts';
-import { applyLegacyImport, parseLegacyAsign } from '../../../mcloud/legacyImport.ts';
+import { applyLegacyImport, describePlanSwitches, parseLegacyAsign } from '../../../mcloud/legacyImport.ts';
 import { commonKeyOf } from '../../../mcloud/tasks/taskSwitches.ts';
 
 /** accounts 组。deps 是路由依赖；base 是 /plugins/mcloud/api；verify 是「拿当前会话验一次」。 */
@@ -331,13 +331,22 @@ export function accountsRoutes(deps: RouteDeps, base: string, verify: () => Prom
           return json(400, { error: e instanceof Error ? e.message : String(e) });
         }
         if (dryRun) {
+          // ⚠ 预览里也要说**账号级开关**：用户点「先看看会搬什么」时最想确认的就是
+          //   "我那几族开着的会不会丢"。原来只说"几个账号、几格设置"，开关一个字没提。
+          const switches = describePlanSwitches(plan);
           return json(200, {
             ok: true,
             dryRun: true,
             accounts: plan.common.accounts.length,
             settings: plan.settings.map((x) => x.path),
+            switches,
             skipped: plan.skipped,
+            // ⚠ 界面上只显示 `note`，所以**开关要写进 note 本身**，不能只放进 `switches` 字段
+            //   （2026-11-26：只写"3 个开关"，用户看不到是哪三个）。
             note: `会搬 ${plan.common.accounts.length} 个账号、${plan.settings.length} 格设置`
+              + (switches.length > 0
+                ? `；开关：${switches.slice(0, 4).join('、')}${switches.length > 4 ? ` 等 ${switches.length} 个` : ''}`
+                : '')
               + (plan.skipped.length > 0 ? `；不搬：${plan.skipped.join('、')}` : ''),
           });
         }

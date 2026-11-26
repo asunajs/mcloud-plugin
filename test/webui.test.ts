@@ -483,6 +483,13 @@ test('⚠ 过期的码不许画得像还活着（"剩 0 秒"看起来完全像�
   );
 });
 
+test('调试页的标题/说明要有人填（HTML 里那两个占位符别留成省略号）', async () => {
+  const js = srcOf('webui/app.js');
+  // 2026-11-26 重截截图时发现的：`#debug-hero` 一直显示 `…`，从来没人 setText
+  assert.match(js, /setText\('debug-hero',/, 'hero 要填');
+  assert.match(js, /setText\(\s*'debug-sub',/, 'sub 要填');
+});
+
 test('下拉浮层不许被容器裁掉（卡片/日志台/弹窗都有 overflow，展开时要放开）', async () => {
   // 注释里会提到那种错误写法（解释为什么不行），所以先剥注释再查
   const css = srcOf('webui/style.css').replace(/\/\*[\s\S]*?\*\//g, '');
@@ -1857,4 +1864,28 @@ test('日志：新面板的帧走默认 message 事件，按插件过滤、从�
   // 断线重连要带游标（EventSource 自动重连不带 since，会丢一段）
   assert.ok(/q\.set\('since', String\(lastId\)\)/.test(js), '重连要带 since');
   assert.ok(/typeof d\.id === 'number' && d\.id > lastId/.test(js), '要记 lastId');
+});
+
+test('⚠ `app.js` 里 `$()` 取过的 id，`index.html` 里必须真的有（否则运行到那行才炸）', async () => {
+  // 2026-11-26 加：删按钮时最容易漏掉"JS 还在取它"（「上游状态」那次就差点留下）。
+  // 这类错**测试全绿、界面打开就红**，而且只在走到那一行时才炸。
+  const js = srcOf('webui/app.js');
+  const html = srcOf('webui/index.html');
+  const ids = new Set([...js.matchAll(/\$\('([a-z0-9-]+)'\)/g)].map((m) => m[1]!));
+  const inHtml = new Set([...html.matchAll(/id="([^"]+)"/g)].map((m) => m[1]!));
+  // 动态造出来的 id 放这里（今天没有；有的话连注释一起加，别默默放行）
+  const DYNAMIC: string[] = [];
+  const missing = [...ids].filter((id) => !inHtml.has(id) && !DYNAMIC.includes(id));
+  assert.deepEqual(missing, [], `这些 id 在 index.html 里不存在：${missing.join(', ')}`);
+});
+
+test('⚠ 清单里的 `config.fields` 必须都能落到绑定表（写错一个名字 = 用户改的那格永远不生效）', async () => {
+  // 2026-11-26 核了一遍：现在两格（`daily_budget_s` / `exchange_enabled`）都对得上。
+  // 这条防的是以后：清单里写一个绑定表里没有的名字，面板照样画出来、用户照样能改，
+  // 但值**写不进去**（`assertNotConfigKey` 只拦裸 store 写配置键，不拦清单）。
+  const { CONFIG_BINDINGS } = await import('../src/store/userConfigKeys.ts');
+  const paths = new Set(CONFIG_BINDINGS.map((b) => b.path));
+  const man = JSON.parse(srcOf('mcloud.panel.json')) as { config: { fields: { name: string }[] } };
+  const missing = man.config.fields.map((f) => f.name).filter((n) => !paths.has(n));
+  assert.deepEqual(missing, [], `清单里这些字段在绑定表里没有：${missing.join(', ')}`);
 });

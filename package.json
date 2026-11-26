@@ -24,7 +24,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit && npm run typecheck:webui",
     "typecheck:standalone": "tsc -p tsconfig.standalone.json --noEmit",
     "test": "node --test \"test/*.test.ts\"",
-    "all": "npm run gen && npm run check:types && npm run typecheck && npm run build && npm test && npm run check-build && npm run check-layers",
+    "all": "npm run gen && npm run check:types && npm run typecheck && npm run build && npm test && npm run check:versions && npm run check-build && npm run check-layers",
     "check-layers": "node scripts/check-layers.mjs",
     "gen": "node scripts/gen-constants.mjs",
     "e2e": "./scripts/e2e-mock.sh \"${PANEL_BIN:-../../panel-llrt/target/release/panel}\"",
@@ -35,7 +35,10 @@
     "install:panel-binary": "bash scripts/install-panel-binary.sh",
     "check:types": "node scripts/sync-types.mjs --check",
     "typecheck:webui": "tsc -p tsconfig.webui.json --noEmit",
-    "check": "node scripts/check-phone-leak.mjs && npm run check:types && npm run typecheck && npm test"
+    "check": "node scripts/check-phone-leak.mjs && npm run check:types && npm run typecheck && npm test",
+    "gen:findings": "node scripts/gen-findings-index.mjs",
+    "check:findings": "node scripts/gen-findings-index.mjs --check",
+    "check:versions": "node scripts/check-versions.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

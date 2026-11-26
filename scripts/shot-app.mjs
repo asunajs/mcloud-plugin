@@ -9,9 +9,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+// ⚠ 候选表要与 `shots.mjs` / `shot-cfg.mjs` 等**同一份**：这台机器上只装了 Edge，
+//   少了这一条就报"找不到浏览器"（2026-11-26 实测：四个 shot 脚本里只有这个跑不起来）。
 const BROWSERS = [
   process.env.BROWSER,
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
   '/Applications/Chromium.app/Contents/MacOS/Chromium',
   '/usr/bin/google-chrome',
   '/usr/bin/chromium',

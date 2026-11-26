@@ -418,12 +418,15 @@ export async function runDaily(
     // ⚠ 用 `drain`（不是 `once`）：这一族是 list → register → act → verify 四段，
     //   一次调用只推一步。`maxSteps` 给宽一点（动作链本身也要走好几段）。
     const r = await drain(playAiStep, deps, { label: '趣玩AI', maxSteps: PLAYAI_MAX_STEPS });
-    // 小结用**读数那一句**（`drain` 会把超过 40 字的原话折成一句，这一族的结论是几个计数）
+    // 小结用**读数那一句**（`drain` 会把超过 40 字的原话折成一句，这一族的结论是几个计数）。
+    // ⚠ **失败时不能用读数**：`userLine()` 会把它渲染成「趣玩AI：没成 —— 4 个模块 · 24 件任务 …」，
+    //   看起来像"读数是失败原因"，真正的失败原因（上报被拒 / 动作链断在哪）被盖掉了。
+    //   （2026-11-26 用 `scripts/check-playai.sh` 翻实例日志时看见的。）
     const snap = loadPlayAiSnapshot(deps.store);
     push({
       name: '趣玩AI',
       ok: r.ok,
-      note: snap !== null && snap.line !== '' ? snap.line : r.note,
+      note: r.ok && snap !== null && snap.line !== '' ? snap.line : r.note,
       idle: true,
       pending: r.ok && /已上报/.test(r.note) ? true : undefined,
       lines: takePlayAiLines(deps.store, deps.nowIso),

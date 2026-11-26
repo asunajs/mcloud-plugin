@@ -109,3 +109,55 @@ test('不是对象 / 缺 auth ⇒ 报清楚', () => {
   assert.throws(() => parseLegacyAsign('nope'), /JSON 对象/);
   assert.throws(() => parseLegacyAsign({ caiyun: [{}] }), /caiyun\[0\] 缺少 auth/);
 });
+
+test('预览要列出**账号级开关**（用户最想确认的就是"我那几族开着的会不会丢"）', async () => {
+  // 2026-11-26 实测：CLI 的 `config:import --dry-run` 只说"账号表 1 个、N 格设置"，
+  // 而旧文件里的 `红包派对.开启` / `算力大作战.开启` 其实会写进账号袋 —— 预览里一个字没提。
+  const { parseLegacyAsign, describePlanSwitches } = await import('../src/mcloud/legacyImport.ts');
+  const plan = parseLegacyAsign({
+    caiyun: [
+      { phone: '13900139000', auth: 'Basic ZmFrZQ==', nickname: '假号', 红包派对: { 开启: true }, 算力大作战: { 开启: false } },
+    ],
+  });
+  const got = describePlanSwitches(plan);
+  assert.ok(got.some((x) => x.includes('红包派对=开')), got.join(' | '));
+  assert.ok(got.some((x) => x.includes('算力大作战=关')), got.join(' | '));
+  // 没写开关的号不该冒出来
+  const plan2 = parseLegacyAsign({ caiyun: [{ phone: '13900139003', auth: 'Basic ZmFrZQ==' }] });
+  assert.deepEqual(describePlanSwitches(plan2), []);
+});
+
+test('面板预览的 note 里要**看得见是哪几个开关**（界面只显示 note）', async () => {
+  // 2026-11-26：只往响应里加 `switches` 字段没用 —— 界面渲染的是 `r.note`。
+  // 所以 note 本身要列出开关（超过 4 个就折成"等 N 个"）。
+  const { mcloudRoutes } = await import('../src/mcloud/routes.ts');
+  const { memStore } = await import('../src/store/memory.ts');
+  const store = memStore();
+  store.ensureSchema();
+  const routes = mcloudRoutes({
+    store,
+    now: () => '2026-11-26T00:00:00.000Z',
+    log: () => {},
+    baseUrl: '',
+    // 这个路由用不到这两样，但类型要求给（`RouteDeps`）
+    transport: (() => {
+      throw new Error('不该发请求');
+    }) as never,
+    pushDeps: {} as never,
+  });
+  const route = routes.find((r) => r.path.endsWith('/config/import'))!;
+  const doc = {
+    caiyun: [
+      { phone: '13900139003', auth: 'Basic ZmFrZQ==', nickname: '假号', 红包派对: { 开启: true } },
+    ],
+  };
+  const res = await route.handler({
+    method: 'POST',
+    path: route.path,
+    query: new URLSearchParams(),
+    headers: {},
+    body: JSON.stringify({ text: JSON.stringify(doc), dryRun: true }),
+  } as never);
+  const body = JSON.parse(String((res as { body: string }).body));
+  assert.match(body.note, /红包派对=开/, `note 里要看得见开关：${body.note}`);
+});

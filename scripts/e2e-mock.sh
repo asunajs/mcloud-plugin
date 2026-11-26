@@ -1201,3 +1201,39 @@ b = json.loads(lots[0].get('body') or '{}')
 assert b == {'moduleId': '1-250730'}, f'抽奖 body 只带 moduleId：{b}'
 print('   ✅ 开代抽 ⇒ 正好一发 lottery，body 逐字 {"moduleId":"1-250730"}')
 PLAYAI2
+
+# ══════════════════════════════════════════════════════════════════
+# ⑮ 「只跑一族」在真面板里真的只跑那一族（调试页背后那套 `only`）
+#
+# 单测钉的是 `parseTaskRunParams` 与 `selected()`；这一节钉**整条路**：
+# 面板 `POST …/run` 带 `{params}` → handler → runDaily(only) → 只发那一族的请求。
+# ══════════════════════════════════════════════════════════════════
+echo
+echo "⑮ 只跑一族（only）"
+curl -fsS -X POST "http://127.0.0.1:$MOCK_PORT/_debug/requests/clear" -o /dev/null || true
+try_write /dev/null "${W[@]}" -X POST -H 'content-type: application/json' \
+  -d '{"params":{"include":["tokenpk"],"force":true}}' \
+  "$B/api/tasks/mcloud-daily/%E6%97%A5%E5%B8%B8/run" > /dev/null 2>&1 || true
+for _ in $(seq 1 30); do
+  curl -fsS "http://127.0.0.1:$MOCK_PORT/_debug/requests" -o "$TMP/only.json" || true
+  if grep -q 'tokenpk/task/list' "$TMP/only.json" 2>/dev/null; then break; fi
+  sleep 0.5
+done
+python3 - "$TMP/only.json" <<'ONLY'
+import json, sys
+reqs = json.load(open(sys.argv[1]))
+paths = [r['path'].split('?')[0] for r in reqs]
+pk = [p for p in paths if p.startswith('/ycloud/tokenpk/')]
+assert pk, f'点了 tokenpk，却没打它的口：{paths[:8]}'
+# 别的族的口一个都不该出现
+others = {
+    '签到': ['/ycloud/signin/page/infoV3', '/ycloud/signin/public/record'],
+    '趣玩AI': ['/ycloud/funai/api/page/getmodule', '/ycloud/funai/api/timed/getmodule'],
+    '兑换': ['/market/exchange/exchangeList'],
+    '直播': ['/ycloud/liveRoomFeedback/user/info'],
+}
+hit = {name: [p for p in paths if p in want] for name, want in others.items()}
+bad = {k: v for k, v in hit.items() if v}
+assert not bad, f'只点了 tokenpk，却还打了别的族：{bad}'
+print(f'   ✅ 只跑一族：tokenpk {len(pk)} 发；签到/趣玩AI/兑换/直播 都是 0 发')
+ONLY

@@ -191,8 +191,10 @@ export function liveRoutes(deps: RouteDeps, base: string, verify: () => Promise<
     },
 
 {
-      // 调试口：原样返回这次小红书请求的 body。只读、无凭据；
+      // 调试口：原样返回小红书那个页面的 body。只读、无凭据；
       // 用户要核对“到底请求到了什么”时，不能只给字符数。
+      // ⚠ 它**每次都现发一次请求**（不是读上次的缓存）—— 所以每点一次就是一次真实流量，
+      //   没有缓存也没有节流。界面上没有入口，只能手敲 URL（2026-11-26 实测 269KB/次）。
       path: `${base}/live/raw`,
       method: 'GET',
       handler: async () => {

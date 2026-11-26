@@ -13,6 +13,7 @@ import { createCliLogger, colorizeFrom } from './logger.ts';
 import { lineLevel } from '../mcloud/tasks/stepLog.ts';
 import { parseTaskRunParams } from '../mcloud/tasks/taskSwitches.ts';
 import { TASK_SWITCHES } from '../mcloud/tasks/taskSwitches.ts';
+import { PLUGIN_VERSION } from '../version.ts';
 import { labelOf } from '../mcloud/taskAccounts.ts';
 
 export { exchange, printExchangeList };
@@ -51,7 +52,10 @@ export async function run(configPath?: string, argv: readonly string[] = []): Pr
   const log = createCliLogger({ colorize: colorizeFrom(rt.config.common) });
   try {
     if (rt.config.accounts.length === 0) {
-      log.error('未找到配置文件或无账号');
+      // ⚠ 这句话原来写的是「未找到配置文件或无账号」—— 可走到这里时**文件已经读到了**
+      //   （文件不存在在上面就报 `配置文件不存在：<路径>` 并退 2）。
+      //   两种情况说成一句，用户会先去怀疑路径，而真正要做的是"加一个号"。
+      log.error(`配置里没有账号：${rt.config.path} —— 先在面板里加一个，或用 config:import 搬旧的`);
       process.exitCode = 1;
       return;
     }
@@ -127,6 +131,7 @@ export async function configImport(argv: string[]): Promise<void> {
     log.info(`统一配置文件: ${r.written}`);
     log.info(`账号表: ${r.accounts} 个${r.dryRun ? '（会写入）' : ''}`);
     log.info(`搬进配置的旋钮: ${r.settings.length > 0 ? r.settings.join('，') : '（无）'}`);
+    if (r.switches.length > 0) log.info(`搬进账号的开关: ${r.switches.join('，')}`);
     if (r.backupDir !== '') log.info(`备份: ${r.backupDir}`);
     if (r.dryRun) log.info('这是 dry-run：什么都没写。去掉 --dry-run 再跑一次。');
   } catch (e) {
@@ -142,11 +147,24 @@ function configFromArgv(argv: string[]): string | undefined {
   return eq === undefined ? undefined : eq.slice('--config='.length);
 }
 
+/** 这一组参数要干什么。**纯函数**，不读文件、不联网 —— 这样"契约里那几个开关在不在"
+ *  能被单测直接钉住（不必先 build 出 CLI 产物）。
+ *
+ *  契约（`panel-plugins/AGENTS.md` §2）：CLI 至少支持 `--help` / `--version` / `--config`。
+ *  `--config` 不是"一种动作"，它是 `run` 的参数，所以不在这张表里。 */
+export type CliAction = 'help' | 'version' | 'config-import' | 'run';
+export function cliAction(argv: readonly string[]): CliAction {
+  if (argv.includes('--help') || argv.includes('-h')) return 'help';
+  if (argv.includes('--version') || argv.includes('-v')) return 'version';
+  if (argv[0] === 'config:import') return 'config-import';
+  return 'run';
+}
+
 const isMain = process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
   const argv = process.argv.slice(2);
   try {
-    if (argv.includes('--help') || argv.includes('-h')) {
+    if (cliAction(argv) === 'help') {
       // ⚠ 合法的族 id 从 `TASK_SWITCHES` 里取（单一事实源），别在这里再列一份
       createCliLogger().info(
         '用法：mcloud-sign [--config <path>] [--only <族,…>] [--account <id|label>] [--force]\n'
@@ -157,7 +175,12 @@ if (isMain) {
           + '  config:import --config <asign.json> --data-dir <dir> [--dry-run]',
       );
       process.exitCode = 0;
-    } else if (argv[0] === 'config:import') {
+    } else if (cliAction(argv) === 'version') {
+      // ⚠ 契约要求（`panel-plugins/AGENTS.md` §2）：CLI 至少支持 `--help` / `--version` / `--config`。
+      //   这里**只打版本号本身**（不带 `[info] 时间` 前缀）—— `--version` 是给脚本读的。
+      process.stdout.write(`${PLUGIN_VERSION}\n`);
+      process.exitCode = 0;
+    } else if (cliAction(argv) === 'config-import') {
       await configImport(argv.slice(1));
     } else {
       await run(configFromArgv(argv), argv);
