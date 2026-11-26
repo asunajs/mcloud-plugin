@@ -21,11 +21,15 @@ const NOW = '2026-11-26T00:00:00.000Z';
 function store() {
   const s = memStore();
   s.ensureSchema();
-  saveAccounts(s, [
-    { id: 'a', label: 'A', auth: 'Basic YQ==', disabled: false },
-    { id: 'b', label: 'B（停用）', auth: 'Basic Yg==', disabled: true },
-    { id: 'c', label: 'C', auth: 'Basic Yw==', disabled: false },
-  ]);
+  saveAccounts(
+    s,
+    [
+      { id: 'a', label: 'A', auth: 'Basic YQ==', platform: 'mobile', addedAt: NOW, disabled: false },
+      { id: 'b', label: 'B（停用）', auth: 'Basic Yg==', platform: 'mobile', addedAt: NOW, disabled: true },
+      { id: 'c', label: 'C', auth: 'Basic Yw==', platform: 'mobile', addedAt: NOW, disabled: false },
+    ],
+    NOW,
+  );
   return s;
 }
 
