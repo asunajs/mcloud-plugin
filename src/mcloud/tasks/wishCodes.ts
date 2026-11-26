@@ -19,12 +19,15 @@
 // - `auto-advance` 回 `{"code":0,"result":{"advancedTasks":[{taskCode:"DAILY_CHECKIN",taskState:"FINISH"}]}}`
 // - 抽奖码从 **8 张涨到 9 张**，来源里 `TASK_DAILY_CHECKIN` 从 2 变 3。
 //
-// # 为什么只做 `auto-advance`，不做 `page/click`
+// # 两条路都做（`auto-advance` + `page/click`）
 //
-// `task/page/click` 在真号上是 **404**（试过 `{taskId}` / `{taskCode}` 两种 body）——
-// 路径或方法不对，而 `auto-advance` 一次就把 `autoAdvanceable` 的那几条全推完了。
-// 剩下 `clickAdvance: true` 的（`PC_UPLOAD` / `CLOUD_SIGN_IN`）要**先真的做那件事**
-// （登录 PC 客户端传文件、去云朵中心签到），不是点一下就能成的，所以不碰。
+// 页面 JS 里 `registerTask` 的调用条件是：
+// `taskState === 'WAIT' && clickAdvance === true && action !== 'popAdvanceJump'`，
+// body 是 `{platform, appVersion, channel, taskId}` —— **四个键都要**。
+//
+// ⚠ 我第一版只发了 `{taskId}`，回 **404**（nginx 那种），于是误判成"路径不对"。
+//   补上那三个参数之后 `code:0`，`CLOUD_SIGN_IN` 当场变 `FINISH`、码 +1（实测 9 → 10 张）。
+//   ⇒ 这类 404 要怀疑**参数不全**，别急着说接口不存在。
 
 import { callRawText } from '../client.ts';
 import { rootOrDefault, SHOW_LOADING } from '../h5.ts';
@@ -79,8 +82,12 @@ export interface WishTask {
   taskState: string;
   /** 上游标的「这条能自动推进」。 */
   autoAdvanceable: boolean;
-  /** 上游标的「点一下就行」—— 但实测 `page/click` 是 404，所以只记着、不用它。 */
+  /** 上游标的「点一下就行」。 */
   clickAdvance: boolean;
+  /** 按钮动作词（`jump` / `popjump` / `share` / `aiCloudExchange` / `popAdvanceJump`…）。
+   *
+   *  ⚠ `popAdvanceJump` 那条**不能**走 `page/click`（页面 JS 里明确排除它）。 */
+  buttonAction: string;
 }
 
 /** 从 `task/list` 的 result 里抽任务表。**纯函数**，好单测。 */
@@ -101,6 +108,10 @@ export function parseWishTasks(result: unknown): WishTask[] {
       taskState: typeof t['taskState'] === 'string' ? t['taskState'] : '',
       autoAdvanceable: t['autoAdvanceable'] === true,
       clickAdvance: t['clickAdvance'] === true,
+      buttonAction:
+        typeof (t['button'] as Record<string, unknown> | undefined)?.['action'] === 'string'
+          ? String((t['button'] as Record<string, unknown>)['action'])
+          : '',
     });
   }
   return out;
@@ -146,6 +157,19 @@ export function taskListRequest(s: WishSession, base?: string | undefined) {
   };
 }
 
+/** 点一下「已经能点」的那条（**写**）。
+ *
+ *  调用条件照页面 JS：`taskState==='WAIT' && clickAdvance===true && action!=='popAdvanceJump'`。
+ *  body **四个键都要**（`platform/appVersion/channel/taskId`）—— 少一个回 404。 */
+export function pageClickRequest(s: WishSession, taskId: number, base?: string | undefined) {
+  return {
+    url: wishUrl('/ycloud/makewish/task/page/click', base),
+    method: 'POST' as const,
+    headers: wishHeaders(s),
+    body: JSON.stringify({ ...WISH_QUERY, taskId }),
+  };
+}
+
 /** 让上游把 `autoAdvanceable` 的那几条推成完成（**写**）。 */
 export function autoAdvanceRequest(s: WishSession, base?: string | undefined) {
   return {
@@ -179,7 +203,9 @@ export async function runWishCodes(deps: TaskDeps): Promise<TaskOutcome> {
   const tasks = parseWishTasks(listed?.result);
   const waiting = tasks.filter((t) => t.taskState !== 'FINISH');
   const auto = waiting.filter((t) => t.autoAdvanceable);
-  if (auto.length === 0) {
+  // `page/click` 的条件照页面 JS：`WAIT` + `clickAdvance` + **不是** `popAdvanceJump`
+  const clickable = waiting.filter((t) => t.clickAdvance && t.buttonAction !== 'popAdvanceJump');
+  if (auto.length === 0 && clickable.length === 0) {
     return {
       ok: true,
       idle: true,
@@ -187,20 +213,45 @@ export async function runWishCodes(deps: TaskDeps): Promise<TaskOutcome> {
     };
   }
 
-  const advRes = await callRawText(deps.transport, autoAdvanceRequest(s, deps.baseUrl));
-  if (!advRes.ok) return { ok: false, note: `领许愿码没成：${advRes.error ?? '未知失败'}` };
-  let adv: WishEnvelope;
-  try {
-    adv = JSON.parse(advRes.text) as WishEnvelope;
-  } catch {
-    return { ok: false, note: '领许愿码：响应不是 JSON' };
+  const got: string[] = [];
+  const bad: string[] = [];
+
+  // ① 自动推进（一次把 `autoAdvanceable` 的全推完）
+  if (auto.length > 0) {
+    const advRes = await callRawText(deps.transport, autoAdvanceRequest(s, deps.baseUrl));
+    if (!advRes.ok) {
+      bad.push(`自动推进没发出去（${advRes.error ?? '未知失败'}）`);
+    } else {
+      try {
+        const adv = JSON.parse(advRes.text) as WishEnvelope;
+        if (String(adv?.code ?? '') === '0') got.push(...parseAdvanced(adv?.result));
+        else bad.push(`自动推进被拒（${String(adv?.msg ?? adv?.code ?? '?')}）`);
+      } catch {
+        bad.push('自动推进：响应不是 JSON');
+      }
+    }
   }
-  if (String(adv?.code ?? '') !== '0') {
-    return { ok: false, note: `领许愿码被拒：${String(adv?.msg ?? adv?.code ?? '?')}` };
+
+  // ② 逐条点「已经能点」的（每条一发；条数不多，而且它们互不影响）
+  for (const t of clickable) {
+    const r = await callRawText(deps.transport, pageClickRequest(s, t.taskId, deps.baseUrl));
+    if (!r.ok) {
+      bad.push(`${t.taskCode} 没发出去（${r.error ?? '未知失败'}）`);
+      continue;
+    }
+    try {
+      const env = JSON.parse(r.text) as WishEnvelope;
+      if (String(env?.code ?? '') === '0') got.push(t.taskCode);
+      else bad.push(`${t.taskCode} 被拒（${String(env?.msg ?? env?.code ?? '?')}）`);
+    } catch {
+      bad.push(`${t.taskCode}：响应不是 JSON`);
+    }
   }
-  const got = parseAdvanced(adv?.result);
+
   if (got.length === 0) {
-    return { ok: true, idle: true, note: `这次没有新领到许愿码（可自动的 ${String(auto.length)} 条没被推进）` };
+    const why = bad.length > 0 ? `；${bad.join('，')}` : '（可自动的都没被推进）';
+    return { ok: bad.length === 0, idle: true, note: `这次没有新领到许愿码${why}` };
   }
-  return { ok: true, note: `领到 ${String(got.length)} 张许愿码：${got.join(' / ')}` };
+  const tail = bad.length > 0 ? `；另有 ${String(bad.length)} 条没成（${bad.join('，')}）` : '';
+  return { ok: true, note: `领到 ${String(got.length)} 张许愿码：${got.join(' / ')}${tail}` };
 }

@@ -81,6 +81,7 @@ test('解析任务表：只取判据那几格，`autoAdvanceable` / `clickAdvanc
     taskState: 'WAIT',
     autoAdvanceable: true,
     clickAdvance: false,
+    buttonAction: '',
   });
   assert.equal(got[1]!.clickAdvance, true);
   assert.equal(got[2]!.taskState, 'FINISH');
@@ -95,13 +96,13 @@ test('解析 auto-advance 回执：只取 taskCode', () => {
   assert.deepEqual(parseAdvanced(null), []);
 });
 
-test('没有可自动推进的 ⇒ 不打 auto-advance（省一发写请求）', async () => {
+test('既没有 auto 也没有 click ⇒ 一发写请求都不发（省流量）', async () => {
   const { deps, sent } = harness(() => ({
     code: 0,
     result: {
       tasks: [
         { taskId: 1004, taskCode: 'AI_LINGXI', taskState: 'FINISH', autoAdvanceable: false, clickAdvance: false },
-        { taskId: 1011, taskCode: 'PC_UPLOAD', taskState: 'WAIT', autoAdvanceable: false, clickAdvance: true },
+        { taskId: 1015, taskCode: 'AI_ERASE', taskState: 'WAIT', autoAdvanceable: false, clickAdvance: false, button: { action: 'popjump' } },
       ],
     },
   }));
@@ -109,11 +110,50 @@ test('没有可自动推进的 ⇒ 不打 auto-advance（省一发写请求）',
   assert.equal(r.ok, true);
   assert.equal(r.idle, true);
   assert.match(r.note, /没有能自动领/);
-  assert.equal(
-    sent.filter((x) => String(x.url).includes('auto-advance')).length,
-    0,
-    '没有可自动的就不该发写请求',
-  );
+  assert.equal(sent.filter((x) => /auto-advance|page\/click/.test(String(x.url))).length, 0, '不该发写请求');
+});
+
+test('`clickAdvance` 的逐条点（body 四个键都要：platform/appVersion/channel/taskId）', async () => {
+  const { deps, sent } = harness((url) => {
+    if (url.includes('task/list')) {
+      return {
+        code: 0,
+        result: {
+          tasks: [
+            { taskId: 1017, taskCode: 'CLOUD_SIGN_IN', taskState: 'WAIT', autoAdvanceable: false, clickAdvance: true, button: { action: 'popjump' } },
+            { taskId: 1011, taskCode: 'PC_UPLOAD', taskState: 'WAIT', autoAdvanceable: false, clickAdvance: true, button: { action: 'popjump' } },
+          ],
+        },
+      };
+    }
+    return { code: 0, result: { task: { taskState: 'FINISH' } } };
+  });
+  const r = await runWishCodes(deps);
+  assert.equal(r.ok, true);
+  assert.match(r.note, /领到 2 张许愿码/);
+  const clicks = sent.filter((x) => String(x.url).includes('page/click'));
+  assert.equal(clicks.length, 2, '两条 clickAdvance 各一发');
+  const body = JSON.parse(String(clicks[0]!.body));
+  assert.deepEqual(body, { ...WISH_QUERY, taskId: 1017 });
+});
+
+test('`popAdvanceJump` 那条**不能**走 page/click（页面 JS 明确排除它）', async () => {
+  const { deps, sent } = harness((url) => {
+    if (url.includes('task/list')) {
+      return {
+        code: 0,
+        result: {
+          tasks: [
+            { taskId: 1099, taskCode: 'WEIRD', taskState: 'WAIT', autoAdvanceable: false, clickAdvance: true, button: { action: 'popAdvanceJump' } },
+          ],
+        },
+      };
+    }
+    return { code: 0, result: {} };
+  });
+  const r = await runWishCodes(deps);
+  assert.match(r.note, /没有能自动领/);
+  assert.equal(sent.filter((x) => String(x.url).includes('page/click')).length, 0);
 });
 
 test('有可自动推进的 ⇒ 推一次，并把推进了哪几条说出来', async () => {
