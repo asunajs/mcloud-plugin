@@ -16,7 +16,15 @@ import { callRawText } from '../client.ts';
 import type { Transport } from '../client.ts';
 import { loadSession } from '../../store/types.ts';
 import { loadJwt } from '../sessionExchange.ts';
-import { readingLine, pageModuleRequest, parseEnvelope, parseModules, summarize, timedModuleRequest } from '../playAi.ts';
+import {
+  pageModuleRequest,
+  parseEnvelope,
+  parseModules,
+  readingLine,
+  shortTaskName,
+  summarize,
+  timedModuleRequest,
+} from '../playAi.ts';
 import type { PlayAiModule } from '../playAi.ts';
 import { loadPlayAi, newPlayAi, savePlayAi, savePlayAiSnapshot } from '../playAiState.ts';
 import type { PlayAiSession } from '../playAi.ts';
@@ -74,12 +82,22 @@ export async function playAiStep(deps: TaskDeps): Promise<TaskOutcome> {
   const line = readingLine(reading);
   savePlayAiSnapshot(deps.store, { at: deps.nowIso, ok: true, line, reading, error: '' }, deps.nowIso);
 
-  // 逐行：每件"可做"的任务一行（下一轮就拿这张表去登记）；其余只进总数
-  const runnable = got.modules.flatMap((m) =>
-    m.tasks.filter((t) => !t.isComplete && t.taskSign === 0).map((t) => `${t.name}（${t.moduleId}）`),
-  );
+  // 逐行：只报"可做"的**名字**（短名、不带上游的整句营销词、不带 `moduleId`）。
+  // ⚠ 别把整张表刷出来：22 件 × 一句营销名 = 日志三四行，读的人只会跳过。
+  //   要明细的看运行记录里的 `lines`/读数，日志只给"大概有什么可做"。
+  const runnable = got.modules
+    .flatMap((m) => m.tasks)
+    .filter((t) => !t.isComplete && t.taskSign === 0)
+    .map((t) => shortTaskName(t.name));
   st.modules = got.modules;
-  st.lines = runnable.length > 0 ? [`可以做的：${runnable.slice(0, 6).join('、')}${runnable.length > 6 ? ' 等' : ''}`] : [];
+  st.lines =
+    runnable.length === 0
+      ? []
+      : [
+          `可做：${runnable.slice(0, 3).join('、')}${
+            runnable.length > 3 ? ` 等 ${runnable.length} 件` : ''
+          }`,
+        ];
   st.phase = 'done';
   savePlayAi(deps.store, st, deps.nowIso);
 

@@ -234,14 +234,28 @@ export function summarize(modules: readonly PlayAiModule[]): PlayAiReading {
   };
 }
 
-/** 给界面/日志的一行读数。 */
+/** 任务名的**短名**：上游给的是整句营销名（「智能抠图，一键抠图超轻松」），
+ *  日志里只需要逗号前那一段。 */
+export function shortTaskName(name: string): string {
+  const head = name.split(/[，,]/)[0] ?? '';
+  return (head.trim() === '' ? name : head).trim();
+}
+
+/** 给界面/日志的一行读数。
+ *
+ *  ⚠ 措辞有两处讲究（`stepLog.lineLevel` 按词着色）：
+ *   · 用「**要手动**」而不是「需手动」—— 后者会命中"需要用户动手"那条规则被涂成**黄**，
+ *     可这一行是**读数**（跟「今日云朵」一类），不是"这一趟要你去做点什么"；
+ *   · 不出现 `moduleId`（`1-250730` 这种）—— 那是我们内部的对号用的，用户不认。 */
 export function readingLine(r: PlayAiReading): string {
   const bits = [`${r.modules.length} 个模块`, `${r.total} 件任务`];
   if (r.done > 0) bits.push(`${r.done} 件已完成`);
   if (r.runnable > 0) bits.push(`${r.runnable} 件可做`);
-  if (r.manual > 0) bits.push(`${r.manual} 件需手动`);
+  if (r.manual > 0) bits.push(`${r.manual} 件要手动`);
   if (r.canDraw !== null && r.canDraw > 0) bits.push(`可抽 ${r.canDraw} 次`);
-  else if (r.todayGot !== null) bits.push(`今天已得 ${r.todayGot} 次`);
+  // ⚠ 写「今日」不写「今天」：`lineLevel` 里「今天」是**过程信息**（灰）的触发词，
+  //   而这一行是读数（跟「今日云朵」同一类），要 info。
+  else if (r.todayGot !== null) bits.push(`今日已得 ${r.todayGot} 次`);
   return bits.join(' · ');
 }
 
