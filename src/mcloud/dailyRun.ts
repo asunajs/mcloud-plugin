@@ -33,7 +33,7 @@ import { runAuthRefresh } from './authRefresh.ts';
 import { runOwnedCleanup } from './tasks/ownedFiles.ts';
 import { runTodayCloud } from './tasks/todayCloud.ts';
 import { TASK_SWITCH_BY_ID, type TaskSwitchId, taskOn } from './tasks/taskSwitches.ts';
-import { PLAYAI_MAX_STEPS, playAiStep } from './tasks/playAi.ts';
+import { PLAYAI_MAX_STEPS, activePlayAiFileId, playAiStep } from './tasks/playAi.ts';
 import { takePlayAiLines } from './playAiState.ts';
 import { loadPlayAiSnapshot } from './playAiState.ts';
 
@@ -481,7 +481,7 @@ export async function runDaily(
   // 忘了收尾。登记表按账号存，所以昨天的遗留今天还能清。
   // ⚠ 只登记 `ownedByUs === true` 的 fileId；撞上用户已有文件的那一档绝不进来。
   // ⚠ 今天这一趟还在用的（任务尚未收尾）跳过：现在删了，下一趟就没有那枚文件了。
-  const inUse = [activeAppTaskFileId(deps), activeExpansionFileId(deps)].filter(
+  const inUse = [activeAppTaskFileId(deps), activeExpansionFileId(deps), activePlayAiFileId(deps)].filter(
     (x): x is string => x !== undefined,
   );
   // ⚠ 清理**不跟着调试跳过**：调试跑的那一族也可能往云盘写东西（AI 相机 / 上传 / 备份），

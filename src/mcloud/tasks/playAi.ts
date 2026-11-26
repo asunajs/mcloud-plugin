@@ -206,6 +206,24 @@ function snapshotError(deps: TaskDeps, error: string): void {
   );
 }
 
+/** 这一趟**还在用**的那个文件（AI 相机识图落的那张图）。
+ *
+ *  ⚠ 为什么要有它：清理那一步会把"我们造的"文件全删。若相机链被打断
+ *    （识图完了、对话还没发），下一趟要接着用那枚 `fileId` —— 先删了就只能重来。
+ *    与 `activeAppTaskFileId` / `activeExpansionFileId` 是同一类护栏。
+ */
+export function activePlayAiFileId(deps: TaskDeps): string | undefined {
+  const st = loadPlayAi(deps.store);
+  if (st === null || st.day !== dayKey(deps)) return undefined;
+  if (st.phase !== 'act') return undefined;
+  const attempt = st.attempt as { key?: string; step?: string; data?: Record<string, string> } | undefined;
+  if (attempt === undefined) return undefined;
+  if (attempt.key !== 'aiCamera') return undefined;
+  // 只有"已经识图完、还没对话"那一段才需要留着那张图
+  if (attempt.step !== 'ai-camera-chat') return undefined;
+  return attempt.data?.['fileId'];
+}
+
 /** 推进一步。**一次调用最多一发上游请求**（动作链自己也是这个粒度）。 */
 export async function playAiStep(deps: TaskDeps): Promise<TaskOutcome> {
   const day = deps.nowIso.slice(0, 10);

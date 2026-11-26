@@ -590,3 +590,65 @@ test('挑到 AI 相机那件时：整条链走完、文件登记、回读翻位�
   assert.deepEqual(ownedFileIds(deps), ['IMG1'], '落的那张图要登记（否则永远不删）');
   assert.ok(notes.some((n) => /做完了/.test(n)), `回读翻位要判做完：${notes.join(' | ')}`);
 });
+
+test('相机链被打断时，那张图要算"还在用"—— 清理不能把它删了（否则下一趟没得用）', async () => {
+  const { activePlayAiFileId } = await import('../src/mcloud/tasks/playAi.ts');
+  const { savePlayAi } = await import('../src/mcloud/playAiState.ts');
+  const store = memStore();
+  store.ensureSchema();
+  let fake = Date.parse(NOW);
+  const deps = {
+    store,
+    transport: (() => ({ status: 200, headers: {}, body: '{}' })) as never,
+    nowIso: NOW,
+    now: () => NOW,
+    nowMs: () => (fake += 1000),
+    baseUrl: undefined,
+  } as unknown as TaskDeps;
+
+  // ① 识图完、还没对话 ⇒ 这张图"还在用"
+  savePlayAi(
+    store,
+    {
+      day: NOW.slice(0, 10),
+      phase: 'act',
+      modules: [],
+      lines: [],
+      at: NOW,
+      target: { moduleId: '1-250730', taskId: 'aixiangji', name: 'AI相机', actionKey: 'aiCamera' },
+      attempt: { taskId: 0, name: 'AI相机', key: 'aiCamera', step: 'ai-camera-chat', data: { fileId: 'IMG1' } },
+    },
+    NOW,
+  );
+  assert.equal(activePlayAiFileId(deps), 'IMG1');
+
+  // ② 已经收尾 ⇒ 不算在用（该清就清）
+  savePlayAi(
+    store,
+    {
+      day: NOW.slice(0, 10),
+      phase: 'done',
+      modules: [],
+      lines: [],
+      at: NOW,
+      attempt: { taskId: 0, name: 'AI相机', key: 'aiCamera', step: 'ai-camera-chat', data: { fileId: 'IMG1' } },
+    },
+    NOW,
+  );
+  assert.equal(activePlayAiFileId(deps), undefined);
+
+  // ③ 不是相机那条链（AI 助手不落文件）⇒ 也不算
+  savePlayAi(
+    store,
+    {
+      day: NOW.slice(0, 10),
+      phase: 'act',
+      modules: [],
+      lines: [],
+      at: NOW,
+      attempt: { taskId: 0, name: 'AI助手', key: 'aiAssistant', step: 'ai-chat', data: {} },
+    },
+    NOW,
+  );
+  assert.equal(activePlayAiFileId(deps), undefined);
+});
