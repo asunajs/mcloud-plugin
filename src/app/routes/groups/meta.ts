@@ -81,7 +81,9 @@ export function metaRoutes(deps: RouteDeps, base: string, verify: () => Promise<
         //    push 的步骤名是「签到」、还有「签到翻倍 / 复活卡」；算力那一族叫「算力大作战」；
         //    云手机那一族在记录里叫「红包派对」。下面这张表是**一一对应**的唯一出处。
         const STEP_NAMES: Record<string, string[]> = {
-          signin: ['签到', '签到翻倍', '复活卡'],
+          // ⚠ 只写**步骤名**（`push({name})` / `push(await once('…'))` 里那个词）。
+          //   「签到翻倍」「复活卡」是签到那一步**里面的行**，不是步骤 —— 写在这里永远匹配不上。
+          signin: ['签到'],
           expansion: ['任务拓展'],
           appTask: ['App 任务', 'App 任务状态', '分享领奖'],
           redpack: ['红包派对'],

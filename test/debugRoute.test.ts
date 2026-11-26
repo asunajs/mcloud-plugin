@@ -136,3 +136,27 @@ test('代抽开关：缺省关、能开能关，且与读数分开给（读数�
   const off = JSON.parse((await rd.handler({ query: '' })).body) as { playai: { drawEnabled: boolean } };
   assert.equal(off.playai.drawEnabled, false);
 });
+
+test('每族映射的步骤名，必须真的出现在 `dailyRun` 的 push 里（防静默失配）', async () => {
+  // ⚠ 这条是补一次真实事故：`/debug/last` 原来按"开关 label"去运行记录里找步骤名，
+  //   而 `dailyRun` push 的是「签到」「红包派对」这种**不同的词** ⇒ 六族全部回 null，
+  //   界面上每格都写「还没跑过」。现在有一张显式映射表，这里再钉一遍"表里的名字真的有"。
+  const fs = await import('node:fs');
+  const daily = fs.readFileSync('src/mcloud/dailyRun.ts', 'utf8');
+  // 两种写法都算：`push({ name: 'X' … })` 与 `push(await once('X', …))`
+  const pushed = new Set(
+    [
+      ...daily.matchAll(/push\(\{\s*name: '([^']+)'/g),
+      ...daily.matchAll(/name: '([^']+)', ok/g),
+      ...daily.matchAll(/push\(await once\('([^']+)'/g),
+    ].map((m) => m[1]),
+  );
+  const meta = fs.readFileSync('src/app/routes/groups/meta.ts', 'utf8');
+  const block = /const STEP_NAMES: Record<string, string\[\]> = \{([\s\S]*?)\};/.exec(meta);
+  assert.ok(block, '要有 STEP_NAMES 那张表');
+  // ⚠ 先剥注释：注释里举了 `once('…')` 这种例子，直接抽会把 `…` 当成一个名字
+  const names = [...block[1]!.replace(/\/\/[^\n]*/g, '').matchAll(/'([^']+)'/g)].map((m) => m[1]);
+  assert.ok(names.length >= 6, `表里要有各族的步骤名：${names.join(',')}`);
+  const missing = names.filter((n) => !pushed.has(n));
+  assert.deepEqual(missing, [], `这些名字在 dailyRun 里没有对应的 push（会静默失配）：${missing.join(',')}`);
+});
