@@ -438,7 +438,15 @@ export async function runDaily(
   //      挣到的云朵会进 `receiveList`，由下面这一步领走（每趟重读，不用改）。
   //      现在还需要知道的是那几条**现在什么状态** —— 见后面的「App 任务状态」。
   //    「做完了」信号是 `skipped: true`，所以不给 `more`。
+  // ⚠ **调试运行（`only !== null`）跳过整段收尾**：领取AI豆 / 待领取奖品 / 清理 /
+  //   今日云朵 都是"这一趟全跑"的收尾，只跑一族时它们一个都不该发（用户没点它们）。
+  //   仍然各留一行灰的，运行记录里能看出"这几步这次不跑"。
+  const tailSkip = only !== null ? '这次不跑（调试只点了别的）' : '';
   for (const [name, fn] of [['领取AI豆', runReceive]] as const) {
+    if (tailSkip !== '') {
+      push({ name, ok: true, note: tailSkip, idle: true });
+      continue;
+    }
     const r = await drain(fn, deps, {
       label: name,
       // ⚠ 领取这一类是"队列里一条一个请求"：**队列空了就停**（`more`），
@@ -457,8 +465,12 @@ export async function runDaily(
 
   // ⑧ 收尾读数
   // 收尾几发都是**只读**：它们回答"现在有什么"，不是"这一趟做成了什么"。
-  const prizeStep = await once('待领取奖品', runPrizes, deps);
-  push({ ...prizeStep, idle: true });
+  if (tailSkip !== '') {
+    push({ name: '待领取奖品', ok: true, note: tailSkip, idle: true });
+  } else {
+    const prizeStep = await once('待领取奖品', runPrizes, deps);
+    push({ ...prizeStep, idle: true });
+  }
   // mcloud 2026-10-07 起把 `cloud-snapshot` / `task-list` 从任务注册里摘掉，
   // 读数改由「上游状态 / 数据」页按需取 —— 这里不再作为日常一步跑。
 
@@ -472,13 +484,21 @@ export async function runDaily(
   const inUse = [activeAppTaskFileId(deps), activeExpansionFileId(deps)].filter(
     (x): x is string => x !== undefined,
   );
-  push(await once('清理临时文件', async (d) => await runOwnedCleanup(d, { skip: inUse }), deps));
+  if (tailSkip !== '') {
+    push({ name: '清理临时文件', ok: true, note: tailSkip, idle: true });
+  } else {
+    push(await once('清理临时文件', async (d) => await runOwnedCleanup(d, { skip: inUse }), deps));
+  }
 
   // ⑩ 今日云朵（参考实现 `afterTask::printTodayCloud` 那一行，但数据源用当前端点）。
   // 走 `cloudRecordV2`（与面板「今日AI豆」同一条链），不是参考实现的旧 `cloudRecord`；
   // 理由与真跑读数见 `tasks/todayCloud.ts` 文件头。
   // 走 `push` ⇒ 面板日志、CLI 日志、运行结束推送三处都会带上这一行。
-  push(await once('今日云朵', runTodayCloud, deps));
+  if (tailSkip !== '') {
+    push({ name: '今日云朵', ok: true, note: tailSkip, idle: true });
+  } else {
+    push(await once('今日云朵', runTodayCloud, deps));
+  }
 
   // ⚠ `pending` 不是失败：动作做了、服务端还没确认，不能把整趟染红。
   const pendingCount = steps.filter((s) => s.pending === true).length;

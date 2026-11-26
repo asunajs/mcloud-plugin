@@ -306,3 +306,19 @@ test('读失败时**保留上一份好读数**（别把可做清单一起擦掉�
   assert.equal(after?.line, good!.line, '读数那一行要保留上一份');
   assert.deepEqual(after?.reading, good!.reading, '可做清单也要保留');
 });
+
+// ── 调试运行的收尾（与 `only` 有关）────────────────────────────────
+
+test('调试运行只点一族时，收尾那几步（领取AI豆 / 待领取奖品 / 清理 / 今日云朵）一个请求都不发', async () => {
+  const { deps, sent } = harness({ flip: true });
+  await drainAll(deps);
+  // 收尾几发各自的特征端点
+  const tails = ['/signin/page/infoV3', '/signin/public/record', '/signin/public/cloudRecordV2'];
+  for (const t of tails) {
+    assert.equal(
+      sent.filter((x) => String(x.url).includes(t)).length,
+      0,
+      `${t} 是收尾读数，调试只跑一族时不该发`,
+    );
+  }
+});
