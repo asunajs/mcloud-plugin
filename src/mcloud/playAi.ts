@@ -289,9 +289,19 @@ export interface PlayAiReading {
   canDraw: number | null;
 }
 
+/** 门户页那个模块（带 `drawTimes/drawsUsed/todayGetLotteryCount` 的那一个）。
+ *
+ *  ⚠ 判据是**计数是不是 `null`**，不是 `moduleId` 的前缀：主题模块的这三个格子实拍全是
+ *    `null`，而页面模块有值。按 `2-` 前缀猜是能跑，但那是在猜 id 的命名规则 ——
+ *    上游哪天换前缀就会静默认错模块（抽奖的 `moduleId` 也跟着错）。
+ */
+export function pageModule(modules: readonly PlayAiModule[]): PlayAiModule | undefined {
+  return modules.find((m) => m.drawTimes !== null) ?? modules[0];
+}
+
 export function summarize(modules: readonly PlayAiModule[]): PlayAiReading {
   const tasks = modules.flatMap((m) => m.tasks);
-  const page = modules.find((m) => !m.moduleId.startsWith('2-')) ?? modules[0];
+  const page = pageModule(modules);
   return {
     modules: [...modules],
     total: tasks.length,

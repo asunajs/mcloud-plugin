@@ -14,6 +14,7 @@ import {
   PLAYAI_DAILY_CHANCE_CAP,
   pageModuleRequest,
   parseDraw,
+  pageModule,
   parseModules,
   readingLine,
   registerRequest,
@@ -199,4 +200,21 @@ test('抽奖回执：缺 `isWin` / 别的值 ⇒ `null`（判不出来就别当�
   // 数字串也认（上游两种都见过）
   assert.equal(parseDraw({ isWin: '1' }).win, true);
   assert.equal(parseDraw({ isWin: '0' }).win, false);
+});
+
+test('认"门户页那个模块"看的是计数有没有值，**不看 `moduleId` 前缀**', () => {
+  // 故意造一个 id 以 `2-` 开头的**页面**模块：按前缀猜会挑错，按 `drawTimes` 就不会
+  const odd = parseModules({
+    moduleId: '2-weird-page',
+    drawTimes: 3,
+    drawsUsed: 1,
+    todayGetLotteryCount: 4,
+    taskIds: [],
+  });
+  const timed = parseModules([{ moduleId: '1-weird-timed', taskIds: [] }]);
+  const all = [...odd, ...timed];
+  assert.equal(pageModule(all)?.moduleId, '2-weird-page', '有计数的那一个才是页面模块');
+  // 抽奖要用的就是它
+  assert.equal(summarize(all).canDraw, 3);
+  assert.equal(summarize(all).todayGot, 4);
 });

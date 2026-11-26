@@ -34,6 +34,7 @@ import { loadJwt } from '../sessionExchange.ts';
 import {
   pageModuleRequest,
   parseEnvelope,
+  pageModule,
   parseModules,
   readingLine,
   lotteryRequest,
@@ -141,7 +142,7 @@ function dayKey(deps: TaskDeps): string {
  *  ③ 今天还没抽满这一趟的上限；④ 这一趟还没抽过（`drawn` 按天记）。 */
 function shouldDraw(deps: TaskDeps, modules: readonly PlayAiModule[]): boolean {
   if (!playAiDrawEnabled(deps.store)) return false;
-  const page = modules.find((m) => !m.moduleId.startsWith('2-')) ?? modules[0];
+  const page = pageModule(modules);
   if (page === undefined) return false;
   if (page.drawTimes === null || page.drawTimes <= 0) return false;
   // ⚠ **不再**拿按天账卡这里：那样一天只能抽一次，而用户有几次就该能抽几次
@@ -307,7 +308,7 @@ export async function playAiStep(deps: TaskDeps): Promise<TaskOutcome> {
 
     // ⑤ 抽一发（**写**：花次数）。只在"开了代抽 + 今天还有次数"时才走到这里
     case 'draw': {
-      const page = st.modules.find((m) => !m.moduleId.startsWith('2-')) ?? st.modules[0];
+      const page = pageModule(st.modules);
       if (page === undefined) {
         st.phase = 'done';
         save(deps, st);
