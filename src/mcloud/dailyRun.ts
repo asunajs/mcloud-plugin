@@ -33,7 +33,7 @@ import { runAuthRefresh } from './authRefresh.ts';
 import { runOwnedCleanup } from './tasks/ownedFiles.ts';
 import { runTodayCloud } from './tasks/todayCloud.ts';
 import { TASK_SWITCH_BY_ID, type TaskSwitchId, taskOn } from './tasks/taskSwitches.ts';
-import { playAiStep } from './tasks/playAi.ts';
+import { PLAYAI_MAX_STEPS, playAiStep } from './tasks/playAi.ts';
 import { takePlayAiLines } from './playAiState.ts';
 import { loadPlayAiSnapshot } from './playAiState.ts';
 
@@ -417,7 +417,7 @@ export async function runDaily(
   } else {
     // ⚠ 用 `drain`（不是 `once`）：这一族是 list → register → act → verify 四段，
     //   一次调用只推一步。`maxSteps` 给宽一点（动作链本身也要走好几段）。
-    const r = await drain(playAiStep, deps, { label: '趣玩AI', maxSteps: 8 });
+    const r = await drain(playAiStep, deps, { label: '趣玩AI', maxSteps: PLAYAI_MAX_STEPS });
     // 小结用**读数那一句**（`drain` 会把超过 40 字的原话折成一句，这一族的结论是几个计数）
     const snap = loadPlayAiSnapshot(deps.store);
     push({

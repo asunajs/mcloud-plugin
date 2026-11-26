@@ -8,7 +8,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { PLAYAI_TASKS_PER_RUN, playAiStep } from '../src/mcloud/tasks/playAi.ts';
+import { PLAYAI_MAX_STEPS, PLAYAI_TASKS_PER_RUN, playAiStep } from '../src/mcloud/tasks/playAi.ts';
 import { loadPlayAi } from '../src/mcloud/playAiState.ts';
 import { STATE_JWT } from '../src/mcloud/sessionExchange.ts';
 import { SESSION_KEY } from '../src/store/types.ts';
@@ -223,4 +223,9 @@ test('回执没有 `isWin` ⇒ 既不写"中了"也不写"没中"', async () => 
   assert.ok(notes.some((n) => /判不出/.test(n)), `要如实说：${notes.join(' | ')}`);
   // ⚠ 别写成 `/没中$/`：那句「判不出中没中」正好以「没中」结尾，会误伤
   assert.equal(notes.some((n) => /抽中了/.test(n) || /^抽了一次，没中$/.test(n)), false);
+});
+
+test('`drain` 的步数上限够走完一整趟（给紧了会报假失败）', () => {
+  // list 1 + register 1 + 灵犀动作链 4 + verify 1 + draw 1 = 8，留重试余量
+  assert.ok(PLAYAI_MAX_STEPS >= 8, `上限 ${PLAYAI_MAX_STEPS} 太小`);
 });

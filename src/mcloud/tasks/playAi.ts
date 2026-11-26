@@ -63,6 +63,13 @@ export const PLAYAI_TASKS_PER_RUN = 1;
 /** 一趟最多抽几次。**1**：抽奖花的是用户的次数，一次一发，出问题一眼看得见。 */
 export const PLAYAI_DRAWS_PER_RUN = 1;
 
+/** 这一族一趟最多推几步（`drain` 的 `maxSteps`）。
+ *
+ *  账：`list` 1 + `register` 1 + 动作链 4（灵犀：换票 → 邮箱登录 → 拿鉴权 → 对话）
+ *  + `verify` 1 + `draw` 1 = **8**。给到 12 是留重试的余量 —— 给紧了 `drain` 会报
+ *  「走到第 N 步就停了」，那是**假失败**（事情其实在推进，只是这一趟没走完）。 */
+export const PLAYAI_MAX_STEPS = 12;
+
 /** 趣玩AI 的任务 → 动作层认识的那把钥匙。
  *
  *  ⚠ 只登记**实拍确认过**的对应关系：
