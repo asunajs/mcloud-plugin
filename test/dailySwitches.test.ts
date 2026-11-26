@@ -154,3 +154,51 @@ test('两族一开一关：关 tokenpk 不影响 redpack 自己跑', async () =>
   assert.ok(sent.length > 0, '整趟总得发点请求');
   assert.equal(countOf(sent, 'tokenpk'), 0);
 });
+
+test('⚠ 调试日志打的是**账号名**，不是 id（id 可能是 `anon-…` 那种退化串）', async () => {
+  const { runDailyTask } = await import('../src/app/daily/run.ts');
+  const { readRing } = await import('../src/mcloud/logRing.ts');
+  const { upsertAccount } = await import('../src/mcloud/accounts.ts');
+  const store = memStore();
+  store.ensureSchema();
+  store.setState(
+    SESSION_KEY,
+    JSON.stringify({ cookie: 'c=1', jwt: 'JWT', deviceId: 'D1', userAgent: 'UA', savedAt: NOW }),
+    NOW,
+  );
+  store.setState(STATE_JWT, JSON.stringify({ at: NOW, jwt: 'JWT', referer: '', fingerprint: 'f' }), NOW);
+  // 一个"从凭据里认不出手机号"的号：id 退化成 `anon-…`，label 是人给的「移动」
+  const made = upsertAccount(store, 'Basic cGM6dG9rZW4=', NOW, '移动');
+  assert.match(made.account.id, /^anon-/, '这个夹具要的就是退化 id');
+  const sent: BuiltRequest[] = [];
+  await runDailyTask(
+    {
+      store,
+      transport: ((req: BuiltRequest) => {
+        sent.push(req);
+        return { status: 200, headers: {}, body: JSON.stringify({ code: 90001, msg: '未登录' }) };
+      }) as never,
+      now: () => NOW,
+      log: () => {},
+      // 推送那一格在收尾时会被调一次（`runDailyTask` 末尾），给个空实现
+      notify: async () => {},
+    } as never,
+    {
+      name: '日常',
+      plugin: 'mcloud-daily',
+      expr: '',
+      runs: 0,
+      scheduledAt: NOW,
+      firedAt: NOW,
+      lateMs: 0,
+      jitterMs: 0,
+      realigned: false,
+      params: { include: ['playAI'], accounts: [made.account.id], force: true },
+    } as never,
+  );
+  const lines = readRing(store).map((x) => x.m);
+  const scope = lines.find((l) => l.includes('调试：'));
+  assert.ok(scope, `要有范围那一行：${lines.slice(0, 6).join(' | ')}`);
+  assert.match(scope, /账号 移动/, '要打 label（「移动」）');
+  assert.equal(scope.includes('anon-'), false, `不许把 anon id 打进日志：${scope}`);
+});

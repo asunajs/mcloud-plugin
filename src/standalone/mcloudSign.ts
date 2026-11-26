@@ -13,6 +13,7 @@ import { createCliLogger, colorizeFrom } from './logger.ts';
 import { lineLevel } from '../mcloud/tasks/stepLog.ts';
 import { parseTaskRunParams } from '../mcloud/tasks/taskSwitches.ts';
 import { TASK_SWITCHES } from '../mcloud/tasks/taskSwitches.ts';
+import { labelOf } from '../mcloud/taskAccounts.ts';
 
 export { exchange, printExchangeList };
 
@@ -59,7 +60,8 @@ export async function run(configPath?: string, argv: readonly string[] = []): Pr
     if (parsed.include !== null || parsed.account !== null || parsed.force) {
       const bits: string[] = [];
       if (parsed.include !== null) bits.push(`只跑 ${parsed.include.join('、')}`);
-      if (parsed.account !== null) bits.push(`账号 ${parsed.account}`);
+      // 打账号名（label），不打 id —— id 可能是 `anon-…` 那种退化串
+      if (parsed.account !== null) bits.push(`账号 ${labelOf(rt.store, parsed.account)}`);
       if (parsed.force) bits.push('不看开关/停用');
       log.info(`调试运行：${bits.join(' · ')}`);
     }

@@ -81,7 +81,10 @@ export async function runDailyTask(ctx: DailyCtx, p: TaskPayload): Promise<void>
     if (parsed.include !== null) {
       scopeBits.push(`只跑 ${parsed.include.map((id) => TASK_SWITCH_BY_ID.get(id)?.label ?? id).join('、')}`);
     }
-    if (parsed.account !== null) scopeBits.push(`账号 ${parsed.account}`);
+    // ⚠ 打**账号名**（脱敏后的 label），不打 id：id 可能是 `anon-aohk08` 这种
+    //   从凭据里认不出手机号时退化出来的串（见 `accounts.ts::idOf`），
+    //   用户看到只会问"这是哪来的"。
+    if (parsed.account !== null) scopeBits.push(`账号 ${labelOf(store, parsed.account)}`);
     if (parsed.force) scopeBits.push('不看开关/停用');
     logBoth(
       store,
@@ -136,6 +139,7 @@ export async function runDailyTask(ctx: DailyCtx, p: TaskPayload): Promise<void>
     // ⚠ 但**调试点名了一个号**却找不到时要说出来（静默返回会让用户以为跑过了）。
     if (runs.length === 0) {
       if (parsed.account !== null) {
+        // 这里找不到号，`labelOf` 会退回 id —— 那正是排查时需要的（用户拿它去核对列表）
         const note = `账号 ${parsed.account} 不在列表里（或已删除）—— 这次什么都没跑`;
         logBoth(store, 'fail', note, nowIso);
         store.recordRun({
