@@ -351,6 +351,9 @@ test('585 AI 相机：识图 → 对话', async () => {
   const urls = sent.map((r) => r.url);
   assert.ok(urls.some((u) => u.includes('aiRecognize')));
   assert.ok(urls.some((u) => u.includes('assistant/chat/v2/add')));
+  // ⚠ 识图会在用户网盘里落一个文件 ⇒ 必须登记成"我们造的"，否则清理那一步不会删它
+  //   （mock 回 `fileId: 'F'`）。与 2026-11-12「每天上传图片却没有清理」同一类。
+  assert.deepEqual(ownedFileIds(deps), ['F'], '识图落的文件要进"我们造的"清单');
 });
 
 test('1014 PDF 转换：传 PDF → convertPdfFromYunFile', async () => {

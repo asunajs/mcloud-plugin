@@ -7993,3 +7993,20 @@ const st = prev !== null && prev.day === day ? prev : newPlayAi(day, …);
 
 **改法**：实现里**不发**这一格（发一个猜的值与不发一样没依据）；抓包文档同步订正
 （初稿照抄了旧读数、没核 HAR）。
+
+## F-153 `aiRecognize` 落的文件没登记：AI 相机那两族每天往用户网盘堆一个（2026-11-26）
+
+**现场**：审 `tokenPkActions` 的 `ai-recognize` 分支时发现的 —— 识图成功、拿到 `fileId`、
+接着对话、任务完成，**但那个 `fileId` 从没进过"我们造的"清单**。
+
+**为什么是 bug**：`aiRecognize` 带 `uploadToCloud`，服务端会把这张图**存进用户云盘**。
+而清理那一步（`runOwnedCleanup`）只删**登记过**的文件 ⇒ 不登记就永远不删。
+这与 2026-11-12 用户报的「算力大作战每天上传图片却没有清理」是**同一类**，
+当时修的是上传链（`upload.ts` 那一口），**`aiRecognize` 这一口漏了**。
+
+**影响面**：`算力大作战` 的 585 / 618 两件，以及 `App 任务` 里同一件（`appTask.ts` 的
+`camRecognize` 分支也漏了）。趣玩AI 的「扫描文档 / AI相机」如果以后接进来，会继承同一个坑。
+
+**改法**：两处都在拿到 `fileId` 之后 `registerOwnedFile(deps, rec.fileId)`。
+验证：`test/tokenPkActions.test.ts`（整条 AI 相机链走一遍，断言 `ownedFileIds` 里有它）+
+`test/appTask.test.ts` 的 585 那条补同一句断言。

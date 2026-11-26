@@ -36,7 +36,7 @@ import { MATRIX_MARKETS, judgeItem, readMatrix, runAppTaskMatrix } from './appTa
 import { clearUpload, loadUpload, runUploadStep, startUpload, uploadDone } from './upload.ts';
 import { readMonthBackup } from './taskExpansion.ts';
 import { parseTrashResult } from './cloudTrash.ts';
-import { unregisterOwnedFile } from './ownedFiles.ts';
+import { registerOwnedFile, unregisterOwnedFile } from './ownedFiles.ts';
 import { cloudFileOpHeaders, deterministicFile, randomHex } from '../cloudUpload.ts';
 import { SHARE_TASK_ID, isShareClaim, monthGateSkips, shouldSkip, stepFor, uploadShapeFor } from '../appTaskRules.ts';
 import type { AppRunner, TaskStep } from '../appTaskRules.ts';
@@ -1424,6 +1424,8 @@ export async function runAppTaskStep(deps: TaskDeps): Promise<TaskOutcome> {
     if (!rec || !rec.success || !rec.fileId) {
       return itemFailed(deps, st, `AI 相机识图没成：${rec?.message ?? res.error ?? '没有 fileId'}`);
     }
+    // ⚠ 识图会在用户网盘里落一个文件 ⇒ 登记成"我们造的"，否则清理那一步不会删它
+    registerOwnedFile(deps, rec.fileId);
     save(deps, {
       ...st,
       phase: 'camChat',

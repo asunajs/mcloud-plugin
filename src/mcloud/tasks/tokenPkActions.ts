@@ -353,6 +353,11 @@ export async function stepAction(deps: TaskDeps, s: PkSession, a: PkAttempt): Pr
     if (rec === undefined || !rec.success || rec.fileId === undefined) {
       return fail(`AI 相机识图没成：${rec?.message ?? res.error ?? '没有 fileId'}`);
     }
+    // ⚠ 识图**会在用户网盘里落一个文件**（`aiRecognize` 带 `uploadToCloud`）——
+    //   必须登记成"我们造的"，否则链尾的 `runOwnedCleanup` 不会删它，
+    //   每天跑就天天堆一个（与 2026-11-12 那条「算力大作战每天上传图片却没有清理」同一类，
+    //   只是那条修的是上传链，这一口漏了）。
+    registerOwnedFile(deps, rec.fileId);
     advance(a, 'ai-camera-chat', { fileId: rec.fileId, camTaskId: rec.taskId ?? '' });
     return more('AI 相机识图好了 —— 下一步对话');
   }
