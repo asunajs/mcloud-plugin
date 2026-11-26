@@ -218,3 +218,12 @@ test('认"门户页那个模块"看的是计数有没有值，**不看 `moduleId
   assert.equal(summarize(all).canDraw, 3);
   assert.equal(summarize(all).todayGot, 4);
 });
+
+test('没有票那一条要能被"级联折叠"识别（否则会话坏了会刷一屏"没成"）', async () => {
+  const { lineText, lineLevel } = await import('../src/mcloud/tasks/stepLog.ts');
+  // 会话坏了的时候：换票已经单独一行 fail，下面每一族都只是"没跑"，不是"失败"
+  const raw = '趣玩AI：没成 —— 还没有网页会话（票没换成）—— 这一族这次没做';
+  assert.equal(lineText(raw), '趣玩AI：跳过（没有网页会话）');
+  // 折叠之后不再是失败色
+  assert.notEqual(lineLevel(lineText(raw)), 'fail');
+});

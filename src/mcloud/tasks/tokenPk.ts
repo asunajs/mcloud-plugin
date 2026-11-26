@@ -145,7 +145,7 @@ export async function tokenPkStep(deps: TaskDeps): Promise<TaskOutcome> {
       if (s === undefined) {
         return {
           ok: false,
-          note: '还没有可用的 H5 票（日常第①步换票没成）—— 这一族这次没做',
+          note: '还没有网页会话（票没换成）—— 这一族这次没做',
         };
       }
       const res = await callRawText(deps.transport, listRequest(s, deps.baseUrl));

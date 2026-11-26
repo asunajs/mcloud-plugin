@@ -313,7 +313,7 @@ test('读失败时**保留上一份好读数**（别把可做清单一起擦掉�
   await playAiStep(deps);
   const after = loadPlayAiSnapshot(store);
   assert.equal(after?.ok, false, '这次是失败');
-  assert.match(String(after?.error), /H5 票/);
+  assert.match(String(after?.error), /网页会话/);
   assert.equal(after?.line, good!.line, '读数那一行要保留上一份');
   assert.deepEqual(after?.reading, good!.reading, '可做清单也要保留');
 });

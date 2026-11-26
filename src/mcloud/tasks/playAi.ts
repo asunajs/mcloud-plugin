@@ -245,7 +245,7 @@ export async function playAiStep(deps: TaskDeps): Promise<TaskOutcome> {
 
   const s = session(deps);
   if (s === undefined) {
-    const error = '还没有可用的 H5 票（日常第①步换票没成）—— 这一族这次没做';
+    const error = '还没有网页会话（票没换成）—— 这一族这次没做';
     snapshotError(deps, error);
     return { ok: false, note: error };
   }
