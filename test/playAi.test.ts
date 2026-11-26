@@ -73,19 +73,19 @@ test('`taskSign` 缺省给 9（未知档），不许退化成 0 —— 0 意味�
   assert.equal(m[0]!.tasks[0]!.taskSign, 9);
 });
 
-test('汇总：可做 / 要手动 / 已完成分开数（`taskSign≠0` 一件都不算可做）', () => {
+test('汇总：可做 / 要手动 / 已完成分开数（`taskSign=2` 算可做，`=1` 才算要手动）', () => {
   const r = summarize([...parseModules(PAGE), ...parseModules(TIMED)]);
   assert.equal(r.total, 5);
   assert.equal(r.done, 1, 'aizhushou 已完成');
-  assert.equal(r.runnable, 2, '003 / 204 可做');
-  assert.equal(r.manual, 2, 'invite（sign 1）+ ailuyinzhuanxie（sign 2）');
+  assert.equal(r.runnable, 3, '003 / 204 + ailuyinzhuanxie（sign 2，走完成口）');
+  assert.equal(r.manual, 1, '只剩 invite（sign 1 邀请）');
   assert.equal(r.canDraw, 0);
   assert.equal(r.todayGot, 0);
 });
 
 test('读数那一行：级别是 **info**，不是黄（"要手动"不是"要你现在去做"）', () => {
   const line = readingLine(summarize([...parseModules(PAGE), ...parseModules(TIMED)]));
-  assert.equal(line, '2 个模块 · 5 件任务 · 1 件已完成 · 2 件可做 · 2 件要手动 · 今日已得 0 次（上限 5）');
+  assert.equal(line, '2 个模块 · 5 件任务 · 1 件已完成 · 3 件可做 · 1 件要手动 · 今日已得 0 次（上限 5）');
   assert.equal(lineLevel(`趣玩AI：${line}`), 'info', `读数不该被涂黄：${lineLevel(`趣玩AI：${line}`)}`);
 });
 
@@ -259,9 +259,9 @@ test('真实报文（2026-11-26 实拍）：15 件 + 3 个主题模块，数字�
   const all = summarize([...page, ...timed]);
   assert.equal(all.total, 24, '15 + 9');
   assert.equal(all.done, 0, '这一期实拍里一件都没完成');
-  // 真实报文里 `invite` 是 taskSign 1、`ailuyinzhuanxie` 是 taskSign 2 ⇒ 都算"要手动"
-  assert.equal(all.manual, 2);
-  assert.equal(all.runnable, 22);
+  // 真实报文里 `invite` 是 taskSign 1（要手动）、`ailuyinzhuanxie` 是 taskSign 2（走完成口，算可做）
+  assert.equal(all.manual, 1, '只剩 invite');
+  assert.equal(all.runnable, 23, '22 + ailuyinzhuanxie');
   assert.equal(all.canDraw, 0);
 });
 

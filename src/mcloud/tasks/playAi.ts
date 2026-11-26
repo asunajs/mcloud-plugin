@@ -41,6 +41,7 @@ import {
   lotteryRequest,
   parseDraw,
   registerRequest,
+  transcriptionCompletedRequest,
   shortTaskName,
   summarize,
   timedModuleRequest,
@@ -110,6 +111,8 @@ export const PLAYAI_ACTION_KEYS: Record<string, string> = {
 const ACTION_RANK: Record<string, number> = {
   aiAssistant: 0,
   aiCamera: 1,
+  // 转写完成口是纯 POST、不需要动作层，排最后
+  transcription: 9,
 };
 
 /** 会话：H5 票（`jwttoken`）+ cookie + UA —— 与算力族同一张票，不另换活动站票。 */
@@ -154,8 +157,23 @@ function pickTarget(modules: readonly PlayAiModule[], tried: Record<string, stri
   const triedIds = new Set(Object.keys(tried).map((k) => k.split('|')[1] ?? ''));
   const cands: PlayAiTarget[] = [];
   for (const t of all) {
-    if (doneIds.has(t.id) || t.taskSign !== 0) continue;
+    if (doneIds.has(t.id)) continue;
     if (triedIds.has(t.id)) continue;
+    // `taskSign=2`（AI录音转写）：有**独立完成口**（`timed/transcriptioncompleted`），
+    // 不走动作层、也不需要 `PLAYAI_ACTION_KEYS` 里那条。
+    // 2026-11-26 在 cmcc-plugin 侧实测：POST 之后回读该条任务翻位。
+    if (t.taskSign === 2) {
+      if (!cands.some((c) => c.taskId === t.id)) {
+        cands.push({
+          moduleId: t.moduleId,
+          taskId: t.id,
+          name: shortTaskName(t.name),
+          actionKey: 'transcription',
+        });
+      }
+      continue;
+    }
+    if (t.taskSign !== 0) continue;
     const actionKey = PLAYAI_ACTION_KEYS[t.id] ?? '';
     if (actionKey === '') continue;
     // 同一 taskId 在多个模块里出现时只留第一条（顺序已按 ACTION_RANK 之外的偏好排）
@@ -321,7 +339,15 @@ export async function playAiStep(deps: TaskDeps): Promise<TaskOutcome> {
         save(deps, st);
         return { ok: true, idle: true, note: '没有挑中的任务' };
       }
-      const res = await callRawText(deps.transport, registerRequest(s, t.moduleId, t.taskId, deps.baseUrl));
+      // `taskSign=2`（AI录音转写）不是「先点后做」，而是**一发完成口**。
+      // 所以这里分流：直接 POST `timed/transcriptioncompleted`，然后进 verify 回读。
+      const isTranscription = t.actionKey === 'transcription';
+      const res = await callRawText(
+        deps.transport,
+        isTranscription
+          ? transcriptionCompletedRequest(s, t.moduleId, t.taskId, deps.baseUrl)
+          : registerRequest(s, t.moduleId, t.taskId, deps.baseUrl),
+      );
       // ⚠ 点过就记下（**不论成败**）：成败都不该在当天再点一次
       st.tried = { ...(st.tried ?? {}), [`${t.moduleId}|${t.taskId}`]: deps.nowIso };
       if (!res.ok) {
@@ -334,6 +360,12 @@ export async function playAiStep(deps: TaskDeps): Promise<TaskOutcome> {
         st.phase = 'done';
         save(deps, st);
         return { ok: false, note: `「${t.name}」上报被拒：${env.error}` };
+      }
+      // 转写已经「做完」了（那一发就是完成口）⇒ 直接回读判据，不进动作层
+      if (isTranscription) {
+        st.phase = 'verify';
+        save(deps, st);
+        return { ok: true, note: `「${t.name}」完成口已提交 —— 回读看服务端认不认` };
       }
       // 动作钥匙在挑的时候就定下了；没有钥匙的不会被挑中
       st.phase = 'act';

@@ -17,7 +17,8 @@
 // # 三条**实测**出来的判据（写代码前先记住，别"优化"掉）
 //
 // ① **`taskSign` 只认 `0` 才走 `page/register`**：`1` = 邀请（走分享链路）、
-//    `2` = AI录音转写（2026-11-26 才出现，走法零样本）⇒ 这两档一律「需手动」，一个字节都不发。
+//    `2` = AI录音转写 —— **2026-11-26 已跑通**（见下），走 `timed/transcriptioncompleted`。
+//    ⇒ 只有 `1`（邀请）仍「需手动」；`2` 现在会做。
 // ② **`register` 的响应零信息**（`{"code":0,"result":0}`）：成败只能**回读 `getmodule`**
 //    看那条 `isComplete` 有没有翻位（实测隔 68 秒才翻；点一下不等于完成）。
 // ③ **`moduleId` 会变**（页面那个 `1-250730` 稳定，主题那批 `2-261104-*` 随周次换）
@@ -56,6 +57,8 @@ export const PLAYAI_EP = {
   register: '/ycloud/funai/api/page/register',
   /** 写：抽一次（本轮**不接**） */
   lottery: '/ycloud/funai/api/page/lottery',
+  /** `taskSign=2`（AI录音转写）的完成口 —— 2026-11-26 在 cmcc-plugin 侧真跑通后迁来 */
+  transcriptionCompleted: '/ycloud/funai/api/timed/transcriptioncompleted',
   /** 写：刮刮乐（本轮**不接**） */
   timedLottery: '/ycloud/funai/api/timed/lottery',
 } as const;
@@ -157,6 +160,33 @@ export function registerRequest(
   };
 }
 
+/** 报「AI录音转写做完了」（**写**）：`taskSign=2` 的完成口。
+ *
+ *  2026-11-26 在 cmcc-plugin 侧实测：POST 这个端点后，回读 `getmodule` 该条任务从
+ *  「可完成」消失（`isComplete` 翻位）。隔壁原先标的是「走法零样本 ⇒ 需手动」，
+ *  这条把那个空白补上了。
+ *
+ *  body 与 `register` 同形：`{moduleId,taskId}`。
+ */
+export function transcriptionCompletedRequest(
+  s: PlayAiSession,
+  moduleId: string,
+  taskId: string,
+  base?: string | undefined,
+): BuiltRequest {
+  return {
+    url: playAiUrl(PLAYAI_EP.transcriptionCompleted, base),
+    method: 'POST',
+    headers: {
+      ...playAiHeaders(s, { showLoading: true }),
+      'content-type': 'application/json;charset=UTF-8',
+      origin: 'https://m.mcloud.139.com',
+      'cache-control': 'no-cache',
+    },
+    body: JSON.stringify({ moduleId, taskId }),
+  };
+}
+
 /** 抽一次（**写**）：body 只带 `moduleId`（实拍七发逐字 `{"moduleId":"1-250730"}`）。
  *
  *  ⚠ 判"中没中"**只看 `isWin`**：`isWin:0` 时 `prizeId/prizeName/prizeUrl` 三键都是 `null`，
@@ -206,7 +236,7 @@ export interface PlayAiTask {
   /** 任务 id（`003` / `aizhushou` / `204` …；跨族共享，判据是 `(moduleId, taskId)` 这一对） */
   id: string;
   name: string;
-  /** `0` = 走 `page/register`；`1` = 邀请；`2` = AI录音转写（走法零样本） */
+  /** `0` = 走 `page/register`；`1` = 邀请（不做）；`2` = AI录音转写（走 `timed/transcriptioncompleted`） */
   taskSign: number;
   /** 服务端的事后翻位 —— **完成判据只看这一格** */
   isComplete: boolean;
@@ -282,7 +312,7 @@ export interface PlayAiReading {
   modules: PlayAiModule[];
   /** 页面模块（`1-…`）与主题模块合在一起的任务总数 */
   total: number;
-  /** 已完成 / 可登记（`taskSign:0` 且未完成）/ 需手动（`taskSign≠0`） */
+  /** 已完成 / 可登记（`taskSign:0` 或 `2` 且未完成）/ 需手动（`taskSign:1` 邀请） */
   done: number;
   runnable: number;
   manual: number;
@@ -333,8 +363,8 @@ export function summarize(modules: readonly PlayAiModule[]): PlayAiReading {
     modules: [...modules],
     total: tasks.length,
     done: tasks.filter((t) => t.isComplete).length,
-    runnable: tasks.filter((t) => !t.isComplete && t.taskSign === 0).length,
-    manual: tasks.filter((t) => !t.isComplete && t.taskSign !== 0).length,
+    runnable: tasks.filter((t) => !t.isComplete && (t.taskSign === 0 || t.taskSign === 2)).length,
+    manual: tasks.filter((t) => !t.isComplete && t.taskSign !== 0 && t.taskSign !== 2).length,
     todayGot: page ? page.todayGetLotteryCount : null,
     // ⚠ `drawTimes` 已经是"还剩几次"（实拍 11 个时刻：todayGet = drawTimes + drawsUsed）
     canDraw: page ? page.drawTimes : null,
