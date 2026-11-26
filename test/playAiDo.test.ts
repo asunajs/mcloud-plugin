@@ -279,3 +279,13 @@ test('一趟最多抽一发：一次 drain 里不会连抽', async () => {
   const draws = sent.filter((x) => String(x.url).includes('/page/lottery')).length;
   assert.equal(draws, 1, `一趟只准一发（实际 ${draws}）`);
 });
+
+test('入口步骤问动作层，不硬编（动作层换入口时这一族跟着走）', async () => {
+  const { firstActionStep } = await import('../src/mcloud/tasks/tokenPkActions.ts');
+  // 这一族现在只接 AI 助手；它的入口是动作层说了算
+  assert.equal(firstActionStep('aiAssistant'), 'ai-mail-sso');
+  // 钉住"我们用的是动作层那个函数"而不是字面量
+  const src = (await import('node:fs')).readFileSync('src/mcloud/tasks/playAi.ts', 'utf8');
+  assert.match(src, /step: firstActionStep\(t\.actionKey\)/, '入口步骤要问动作层');
+  assert.equal(/step: 'ai-mail-sso'/.test(src), false, '不许硬编入口步骤');
+});

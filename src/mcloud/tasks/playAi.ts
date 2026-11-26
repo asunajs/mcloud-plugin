@@ -55,10 +55,14 @@ import {
   savePlayAiSnapshot,
 } from '../playAiState.ts';
 import type { PlayAiState, PlayAiTarget } from '../playAiState.ts';
-import { stepAction } from './tokenPkActions.ts';
+import { firstActionStep, stepAction } from './tokenPkActions.ts';
 import type { TaskDeps, TaskOutcome } from './base.ts';
 
-/** 一趟最多做几件。**写口**，别放开成"全做"。 */
+/** 一趟最多做几件。
+ *
+ *  ⚠ **当前实现就是 1**：`pickTarget` 只挑一件，做完回读就收工。
+ *  这个常量是"预算"的**声明**（测试与文档引用它），不是循环次数 ——
+ *  要放开成多做几件时，得同时想清楚"每件之间要不要等"（动作链本身十来发）。 */
 export const PLAYAI_TASKS_PER_RUN = 1;
 
 /** 一趟最多抽几次。**1**：抽奖花的是用户的次数，一次一发，出问题一眼看得见。 */
@@ -240,7 +244,9 @@ export async function playAiStep(deps: TaskDeps): Promise<TaskOutcome> {
       }
       // 动作钥匙在挑的时候就定下了；没有钥匙的不会被挑中
       st.phase = 'act';
-      st.attempt = { taskId: 0, name: t.name, key: t.actionKey, step: 'ai-mail-sso' };
+      // ⚠ 入口步骤**问动作层**，别硬编 `'ai-mail-sso'`：动作层哪天换入口，
+      //   硬编的那一份会静默走错分支（`stepAction` 会一路落到默认 done）。
+      st.attempt = { taskId: 0, name: t.name, key: t.actionKey, step: firstActionStep(t.actionKey) };
       save(deps, st);
       return { ok: true, note: `「${t.name}」已上报 —— 下一步去做那件事` };
     }
