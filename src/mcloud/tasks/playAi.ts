@@ -62,26 +62,38 @@ import { firstActionStep, stepAction } from './tokenPkActions.ts';
 import { waitMs } from './base.ts';
 import type { TaskDeps, TaskOutcome } from './base.ts';
 
-/** 一趟最多做几件。
+/** 一趟最多做几件（**真的会做这么多**，2026-11-26 起）。
  *
- *  ⚠ **当前实现就是 1**：`pickTarget` 只挑一件，做完回读就收工。
- *  这个常量是"预算"的**声明**（测试与文档引用它），不是循环次数 ——
- *  要放开成多做几件时，得同时想清楚"每件之间要不要等"（动作链本身十来发）。 */
-export const PLAYAI_TASKS_PER_RUN = 1;
+ *  原来是 1：做完一件回读就 `idle` 收工。真号实测之后改成"做满 N 件再收工"——
+ *  用户一趟只想跑一次，而这一族有二十来件可做，一件一趟等于要手动点二十次。
+ *
+ *  ⚠ 三道边界，别只看到这一个数：
+ *    · 每件之间**不等**：`register → act → verify` 本身就是十来发请求，
+ *      再叠一层等待只会把预算吃光（面板的执行预算是外部的，见 `drain` 文件头）；
+ *    · 做过的任务记在 `tried`（`(moduleId|taskId) → 时刻`）里，**同一趟不会再挑**；
+ *    · 真正兜底的是 `drain` 的 `PLAYAI_MAX_STEPS`：步数走满就如实说"没走完"。
+ *
+ *  动作链本身失败（换票/登录/对话没成）时**立刻收工**：那种情况下再挑一件也一样做不成，
+ *  继续撞只会把同一段错误刷 N 遍。 */
+export const PLAYAI_TASKS_PER_RUN = 3;
 
 /** 一趟最多抽几次。**1**：抽奖花的是用户的次数，一次一发，出问题一眼看得见。 */
 export const PLAYAI_DRAWS_PER_RUN = 1;
 
 /** 这一族一趟最多推几步（`drain` 的 `maxSteps`）。
  *
- *  账（按最长那条链算）：
+ *  账（**按"做满 `PLAYAI_TASKS_PER_RUN` 件"算**，一件的链是）：
  *  `list` 1 + `register` 1 + **相机链 5**（换票 → 邮箱登录 → 拿鉴权 → 识图 → 对话）
- *  + `verify` 1 + 再读 1 + `verify` 1 + `draw` 1 = **11**。
+ *  + `verify` 1（+ 没翻位时再读 1）= **8~9 步**。
  *
- *  ⚠ 给 12 只富余 1 步 —— 动作链里任何一次重试都会撞上限，而撞上限时 `drain` 报的是
- *  「走到第 N 步就停了」，那是**假失败**（事情在推进，只是这一趟没走完）。
- *  给到 16：够最长链 + 两次重试。 */
-export const PLAYAI_MAX_STEPS = 16;
+ *  · 3 件：24~27 步
+ *  · 抽奖：1 步
+ *  ⇒ **给到 32**，够 3 件满链 + 两次重试。
+ *
+ *  ⚠ 这个数**跟着 `PLAYAI_TASKS_PER_RUN` 一起改**：改大件数忘了改这里，表现是
+ *  `drain` 报「走到第 N 步就停了」—— 那是**假失败**（事情在推进，只是这一趟没走完），
+ *  而用户看到的是"这一族没成"。两个常量挨着放就是为了让人看见这件事。 */
+export const PLAYAI_MAX_STEPS = 32;
 
 /** 趣玩AI 的任务 → 动作层认识的那把钥匙。
  *
@@ -312,10 +324,19 @@ export async function playAiStep(deps: TaskDeps): Promise<TaskOutcome> {
         );
         return { ok: true, idle: true, note: `${live.why} —— 这一族不再往下做（${line}）` };
       }
+      // 这一趟做满了就收工（`verify` 那边已经判过一次，这里再判一道 —— 因为
+      // `list` 也可能是这一趟的第一拍：上一趟 `done` 之后重开、而 `doneCount` 没清）。
+      if ((st.doneCount ?? 0) >= PLAYAI_TASKS_PER_RUN) {
+        st.phase = 'done';
+        save(deps, st);
+        return { ok: true, idle: true, note: `做满 ${PLAYAI_TASKS_PER_RUN} 件了 —— ${line}` };
+      }
       const target = pickTarget(got.modules, st.tried ?? {});
       if (target === null) {
         // 没有会做的任务 ⇒ 直接看能不能抽（次数是之前攒下的）
-        st.lines = [`没有我会做的可做任务（${line}）`];
+        // ⚠ **追加**不是覆盖：一趟会连做几件，覆盖的话前面几件的成绩全没了
+        //   （实测现场：做完「AI助手」之后下一件点不动，账上只剩"没有我会做的"）。
+        st.lines = [...(st.lines ?? []), `没有我会做的可做任务（${line}）`];
         if (shouldDraw(deps, got.modules)) {
           st.phase = 'draw';
           save(deps, st);
@@ -424,8 +445,27 @@ export async function playAiStep(deps: TaskDeps): Promise<TaskOutcome> {
         return { ok: true, idle: true, note: line };
       }
       if (now?.isComplete === true) {
-        st.lines = [`「${t.name}」做完了（回读已翻位）`];
-        // 做成了 ⇒ 次数应该 +1，接着看能不能抽
+        // 做成了 ⇒ 记一笔（一件一行），然后看"这一趟还做不做下一件"
+        const doneCount = (st.doneCount ?? 0) + 1;
+        st.doneCount = doneCount;
+        st.doneNames = [...(st.doneNames ?? []), t.name];
+        // ⚠ **追加**不是覆盖：一趟现在会连做几件，覆盖的话前面几件的成绩就没了
+        //   （只有最后一件留在账上）。用户要看的是"这一趟做成了哪几件"。
+        st.lines = [...(st.lines ?? []), `「${t.name}」做完了（回读已翻位）`];
+        // 次数应该 +1 ⇒ 抽奖排在"这一趟做完所有能做之后"，别每件后面插一发
+        const more = doneCount < PLAYAI_TASKS_PER_RUN
+          && pickTarget(got.modules, st.tried ?? {}) !== null;
+        if (more) {
+          // ⚠ 回 `list` 继续挑下一件，**不返回 `idle`** —— `idle` 是 `drain` 的出口，
+          //   一返回这一趟就收工了（那就又变成"一件一趟"）。
+          st.phase = 'list';
+          st.target = undefined;
+          st.verifyTries = 0;
+          st.actOk = undefined;
+          st.attempt = undefined;
+          save(deps, st);
+          return { ok: true, note: `「${t.name}」做完了（${doneCount}/${PLAYAI_TASKS_PER_RUN}）—— 接着做下一件` };
+        }
         if (shouldDraw(deps, got.modules)) {
           st.phase = 'draw';
           save(deps, st);
@@ -448,8 +488,15 @@ export async function playAiStep(deps: TaskDeps): Promise<TaskOutcome> {
         return { ok: true, note: `「${t.name}」回读还没翻位 —— 等一会儿再读一次` };
       }
       // 两次都没翻位：**如实说**。这不是失败（我们该做的都做了），也不是成功（服务端没认）
+      st.lines = [...(st.lines ?? []), `「${t.name}」已上报，服务端还没认 —— 那件事要在工具里真的做完才算`];
+      // ⚠ 这一趟要是**前面已经做成过**别的，抽奖还得给机会：次数是前面那几件挣的，
+      //   跟这一件没翻位无关（2026-11-26：连做几件时第二件没翻位，把抽奖一起吞了）。
+      if ((st.doneCount ?? 0) > 0 && shouldDraw(deps, got.modules)) {
+        st.phase = 'draw';
+        save(deps, st);
+        return { ok: true, pending: true, note: `「${t.name}」已上报，服务端还没认 —— 但前面做成的还有次数，去抽一次` };
+      }
       st.phase = 'done';
-      st.lines = [`「${t.name}」已上报，服务端还没认 —— 那件事要在工具里真的做完才算`];
       save(deps, st);
       return { ok: true, pending: true, idle: true, note: `「${t.name}」已上报，服务端还没认 —— ${line}` };
     }
@@ -481,11 +528,12 @@ export async function playAiStep(deps: TaskDeps): Promise<TaskOutcome> {
       st.phase = 'done';
       if (d.win === null) {
         // 判不出来 ⇒ 既不写"中了"也不写"没中"
-        st.lines = ['抽了一次，但回执里没有 isWin —— 中了没中判不出来，去活动页看一眼'];
+        st.lines = [...(st.lines ?? []), '抽了一次，但回执里没有 isWin —— 中了没中判不出来，去活动页看一眼'];
         save(deps, st);
         return { ok: true, idle: true, note: '抽了一次，但回执判不出中没中' };
       }
       st.lines = [
+        ...(st.lines ?? []),
         d.win
           ? `抽中了：${d.prizeName || '（回执没给奖品名）'}`
           : '抽了一次，没中',

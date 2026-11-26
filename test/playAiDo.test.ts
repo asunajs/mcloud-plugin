@@ -8,7 +8,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { PLAYAI_MAX_STEPS, PLAYAI_TASKS_PER_RUN, playAiStep } from '../src/mcloud/tasks/playAi.ts';
+import {
+  PLAYAI_MAX_STEPS,
+  PLAYAI_TASKS_PER_RUN,
+  playAiStep,
+} from '../src/mcloud/tasks/playAi.ts';
 import { loadPlayAi } from '../src/mcloud/playAiState.ts';
 import { STATE_JWT } from '../src/mcloud/sessionExchange.ts';
 import { SESSION_KEY } from '../src/store/types.ts';
@@ -58,12 +62,23 @@ function harness(
   );
   store.setState(STATE_JWT, JSON.stringify({ at: NOW, jwt: 'JWT', referer: '', fingerprint: 'f' }), NOW);
   const sent: BuiltRequest[] = [];
-  let registered = false;
+  // ⚠ 按**任务**记翻位，不是一个全局布尔（2026-11-26 改）。
+  //   原来一个开关管所有任务 ⇒ 一趟连做几件时，第二件刚 `register`、回读就把**所有**
+  //   任务都报成"已完成"，`lines` 里于是全是"做完了"、一条"没成"都没有。
+  //   夹具的假设过时了（那时一趟只做 1 件），不是代码错。
+  const registered = new Set<string>();
   const transport = ((req: BuiltRequest) => {
     sent.push(req);
     const url = String(req.url);
-    if (url.includes('/funai/api/page/register')) {
-      registered = true;
+    if (url.includes('/funai/api/page/register') || url.includes('/funai/api/timed/transcriptioncompleted')) {
+      // ⚠ 转写的完成口也要认（`taskSign=2`）：不认的话它会落到"动作链 500"那条默认分支，
+      //   整条链当场断掉 —— 一趟连做几件时第二件就废了（2026-11-26 踩到）。
+      try {
+        const b = JSON.parse(String(req.body ?? '{}')) as { taskId?: string };
+        registered.add(String(b.taskId ?? ''));
+      } catch {
+        /* body 不是 JSON 就算了 */
+      }
       const code = opts.registerCode ?? 0;
       return {
         status: 200,
@@ -72,7 +87,8 @@ function harness(
       };
     }
     if (url.includes('/funai/api/page/getmodule')) {
-      const done = registered && opts.flip === true ? 1 : 0;
+      // 只有**点过**才会翻位（真实行为就是这样：点过 ≠ 全做完）
+      const done = registered.size > 0 && opts.flip === true ? 1 : 0;
       return {
         status: 200,
         headers: {},
@@ -109,7 +125,9 @@ function harness(
 /** 一直推，直到 idle（`drain` 的语义）。 */
 async function drainAll(deps: TaskDeps): Promise<{ notes: string[]; idle: boolean }> {
   const notes: string[] = [];
-  for (let i = 0; i < 12; i++) {
+  // ⚠ 上限要跟着 `PLAYAI_MAX_STEPS`（一趟现在会连做几件，12 步走不完）——
+  //   走不完时 `lines` 停在半路，测试会看到"做完了"消失这种假失败。
+  for (let i = 0; i < PLAYAI_MAX_STEPS + 4; i++) {
     const r = await playAiStep(deps);
     notes.push(r.note);
     if (r.idle === true) return { notes, idle: true };
@@ -193,8 +211,17 @@ test('点完之后**真的进动作链**：第一发是灵犀的换票（`toSour
   assert.equal(sso.length, 1, `要有一发灵犀换票（实际 ${sso.length}）`);
 });
 
-test('预算常量是 1（写口，别放开成"全做"）', () => {
-  assert.equal(PLAYAI_TASKS_PER_RUN, 1);
+test('一趟做几件是**有上限**的（不是"全做"，也不是 1）', () => {
+  // 2026-11-26 从 1 改成 3：一件一趟等于要手动点二十来次，而用户一趟只想跑一次。
+  // ⚠ 这条钉的是**有上限且与步数预算配套**，不是钉某个具体数字 ——
+  //   数字以后可能再调，但"不能是 1、不能是无穷、步数够走完"这三条要一直成立。
+  assert.ok(PLAYAI_TASKS_PER_RUN >= 2, '别退回"一件一趟"');
+  assert.ok(PLAYAI_TASKS_PER_RUN <= 10, '一趟做太多会把执行预算吃光');
+  // 一件的链 8~9 步 ⇒ 步数预算至少够做满
+  assert.ok(
+    PLAYAI_MAX_STEPS >= PLAYAI_TASKS_PER_RUN * 8,
+    `步数预算 ${PLAYAI_MAX_STEPS} 不够做满 ${PLAYAI_TASKS_PER_RUN} 件（每件约 8 步）`,
+  );
 });
 
 // ── 抽奖（step ③）──────────────────────────────────────────────────
@@ -212,7 +239,7 @@ test('开了代抽 + 有次数 ⇒ 抽一发；`isWin:1` 判中、`isWin:0` 判�
     setPlayAiDrawEnabled(store, true, NOW);
     const { notes } = await drainAll(deps);
     const draws = sent.filter((x) => String(x.url).includes('/page/lottery'));
-    assert.equal(draws.length, 1, '抽一发');
+    assert.equal(draws.length, 1, `抽一发；实际 notes=${notes.join(' | ')}`);
     assert.deepEqual(JSON.parse(String(draws[0]!.body)), { moduleId: '1-250730' });
     assert.ok(notes.some((n) => expect.test(n)), `要有结论：${notes.join(' | ')}`);
   }
@@ -258,7 +285,7 @@ test('动作那一步没成，也**照样回读**（判据只有回读，失败�
   const st = loadPlayAi(deps.store);
   assert.ok(
     (st?.lines ?? []).some((l) => /没成/.test(l)) || (st?.lines ?? []).some((l) => /做完了/.test(l)),
-    '动作失败那一句要留在 lines 里（或被完成那句覆盖）',
+    `动作失败那一句要留在 lines 里（或被完成那句覆盖）；实际 lines=${JSON.stringify(st?.lines)} phase=${st?.phase} done=${st?.doneCount} notes=${notes.join(' | ')}`,
   );
 });
 

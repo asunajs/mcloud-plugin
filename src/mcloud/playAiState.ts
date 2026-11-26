@@ -92,6 +92,16 @@ export interface PlayAiState {
   verifyTries?: number | undefined;
   /** 动作那一步**成了没有**。没成的话不必等那 3 秒 —— 服务端不会因为等一会儿就翻位。 */
   actOk?: boolean | undefined;
+  /** 这一趟已经做完了**几件**（回读翻位的）。
+   *
+   *  为什么要记：一趟现在会连做几件（`PLAYAI_TASKS_PER_RUN`），而每件之间要
+   *  `verify → list` 回到挑任务那一步。不记的话分不清"这一趟做了 3 件"和
+   *  "绕回 list 又挑了同一件"——后者会无限转（`tried` 只能防"点过的"，
+   *  防不住"回读没翻位但也没记进 tried"那条路）。
+   *  它与 `tried` 不是一回事：`tried` 是"点过"，这个是"**做成了**"。 */
+  doneCount?: number | undefined;
+  /** 这一趟做成的任务名（给逐行账用，一件一行）。 */
+  doneNames?: string[] | undefined;
 }
 
 export function loadPlayAi(store: Pick<Store, 'getState'>): PlayAiState | null {
