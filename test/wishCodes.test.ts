@@ -283,3 +283,25 @@ test('跑完一趟后快照里就是那句结论（不是上一次的旧话）',
   assert.equal(snap!.line, r.note);
   assert.equal(snap!.ok, r.ok);
 });
+
+test('「心愿记录不存在，请先许愿」不算失败 —— 那是用户还没参加活动', async () => {
+  // 真号现场（2026-11-27，`19****16` 没许愿）：两条 page/click 都回这句，
+  // 整趟被染成 `[fail]` —— 看起来像插件坏了。
+  const { deps } = harness((url) => {
+    if (url.includes('task/list')) {
+      return {
+        code: 0,
+        result: {
+          tasks: [
+            { taskId: 1017, taskCode: 'CLOUD_SIGN_IN', taskState: 'WAIT', autoAdvanceable: false, clickAdvance: true, button: { action: 'popjump' } },
+          ],
+        },
+      };
+    }
+    return { code: 500, msg: '心愿记录不存在，请先许愿' };
+  });
+  const r = await runWishCodes(deps);
+  assert.equal(r.ok, true, '不该标成失败');
+  assert.equal(r.idle, true);
+  assert.match(r.note, /还没参加许愿活动/);
+});

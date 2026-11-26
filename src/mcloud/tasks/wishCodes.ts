@@ -373,6 +373,17 @@ async function runWishCodesInner(deps: TaskDeps): Promise<TaskOutcome> {
     }
   }
 
+  // ⚠ 「心愿记录不存在，请先许愿」不是失败 —— 那是**用户还没参加活动**。
+  //   标成失败会让人以为插件坏了（真号现场 2026-11-27：`19****16` 没许愿，
+  //   两条 page/click 都回这句，整趟被染成 `[fail]`）。
+  const notJoined = bad.length > 0 && bad.every((x) => /心愿记录不存在|请先许愿/.test(x));
+  if (notJoined) {
+    return {
+      ok: true,
+      idle: true,
+      note: `这个号还没参加许愿活动（先去 App 里许一次愿，之后就能自动领码）${exchangeNote}`,
+    };
+  }
   if (got.length === 0) {
     // ⚠ 「没有可自动的」这句要放在**兑换之后**判：豆换码是独立的一条路，
     //   前面两条都没得做时它照样能换（2026-11-27 踩过：提前 return 把兑换跳过了）。
