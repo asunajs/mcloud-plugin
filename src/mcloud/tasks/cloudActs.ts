@@ -52,6 +52,11 @@ export const CLOUD_ACT_ENDPOINTS: CloudActEndpoint[] = [
   { label: '许愿奖品列表', path: '/ycloud/makewish/prize/list' },
   { label: '推送任务状态', path: '/ycloud/msgPushOn/task/status' },
   { label: '美图备份次数', path: '/ycloud/meitu/new/prizeCount' },
+  // 这两个回答的是"**能不能领奖**"（`isAward:0` = 还没领）——
+  // 只读，不发写请求。真要领要先去 App 里授权相册（上游没有"授权"写接口，
+  // 2026-11-27 逐口看过那 8 个端点），所以这里只报状态。
+  { label: '美图授权状态', path: '/ycloud/meitu/new/authStatus' },
+  { label: '美图备份状态', path: '/ycloud/meitu/new/backUpStatus' },
   { label: 'AI通讯邀请', path: '/ycloud/aitongxun/invite/user/info' },
 ];
 
@@ -63,6 +68,13 @@ export const CLOUD_ACT_GONE: string[] = [
   '/ycloud/luckybag/common/user/info',
   '/ycloud/bill/taskLottery/getMyPrizeList',
   '/ycloud/simple/yunpanli/prize/status',
+  // ⚠ **整个 `luckybag` 族都下线了**（2026-11-27 逐口实测，全 404）：
+  //   前端 chunk（`National_OpenLuckybag.*.js`）还在、接口名也还在里面，
+  //   但上游全关了 —— 只按 chunk 里有名字就加回来，会天天 404。
+  '/ycloud/luckybag/task/list',
+  '/ycloud/luckybag/bag/list',
+  '/ycloud/luckybag/common/isNewUser',
+  '/ycloud/luckybag/blindbox/listCloudRecord',
 ];
 
 /** 把一个端点的 result 压成一行。纯函数，好单测。 */
@@ -88,6 +100,12 @@ export function actSummaryLine(label: string, result: unknown): string {
     }
     if (typeof d['qoutaCnt'] === 'string') {
       return label + '：额度 ' + d['qoutaCnt'] + '，奖品 ' + String(d['prizeCnt'] ?? '?');
+    }
+    // `{authStatus, isAward}` / `{backupStatus, isAward}`：0 = 没做 / 没领
+    if (typeof d['authStatus'] === 'number' || typeof d['backupStatus'] === 'number') {
+      const done = (d['authStatus'] ?? d['backupStatus']) === 1;
+      const got = d['isAward'] === 1;
+      return `${label}：${done ? '已做' : '还没做'}${got ? '，奖已领' : '，奖还没领'}`;
     }
     if (d['config'] !== undefined) return label + '：有活动配置';
     const keys = Object.keys(d);

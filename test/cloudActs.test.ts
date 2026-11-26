@@ -65,3 +65,10 @@ test('actSummaryLine：null / 空对象 / 标量都要能出人话', () => {
   assert.equal(actSummaryLine('x', {}), 'x：空对象');
   assert.equal(actSummaryLine('x', 42), 'x：42');
 });
+test('美图那两个状态要说清「做没做 / 奖领没领」（`0` = 没做、没领）', () => {
+  // 2026-11-27 真号读数：`{"authStatus":0,"isAward":0}` / `{"backupStatus":0,"isAward":0}`
+  // 只报数字用户读不懂；要说成"还没做，奖还没领"。
+  assert.equal(actSummaryLine('美图授权状态', { authStatus: 0, isAward: 0 }), '美图授权状态：还没做，奖还没领');
+  assert.equal(actSummaryLine('美图备份状态', { backupStatus: 1, isAward: 0 }), '美图备份状态：已做，奖还没领');
+  assert.equal(actSummaryLine('美图备份状态', { backupStatus: 1, isAward: 1 }), '美图备份状态：已做，奖已领');
+});
