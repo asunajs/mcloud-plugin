@@ -108,6 +108,19 @@ export const PLAYAI_MAX_STEPS = 32;
  *  表里没有的 taskId 就是"我们不会做"，`actionKey` 留空。 */
 export const PLAYAI_ACTION_KEYS: Record<string, string> = {
   aizhushou: 'aiAssistant',
+  // `yunbiji`（AI云笔记）的 `innerLink` 是 `mcloud://main/featureServices?linkUrl=0|2040`
+  // —— 就是"打开云笔记页"。动作层里已有 `createNote`（建一条笔记的完整链：
+  // 笔记鉴权 → 建 → 回读），算力族那 107 号任务走的就是它。
+  // ⚠ 只登记**动作层真的会做**的那件：这里登记了却没有 case 的话，`firstActionStep`
+  //   会拿不到入口，表现是"挑中了但一步也走不动"。
+  yunbiji: 'createNote',
+  // ⚠ `zhishiku`（AI知识库）**登记过又被撤掉**（2026-11-26 真号实测）：
+  //   它的 `innerLink` 是 `mcloud://main/aiAssistantGlobal?params={jumpConfig:{tab:'aiKnowledge'}}`
+  //   —— 与 AI助手同一个原生页，所以试过复用 `aiAssistant`（灵犀对话）。
+  //   结果：点了、也聊了，回读 `isComplete` **两次都没翻**。
+  //   ⇒ "同一个页面"不等于"同一件任务"：它要的是**知识库里真的建了东西**。
+  //   登记了却没做成，只会把"看起来在干活"写进日志（`已上报，服务端还没认`）——
+  //   那比不登记更糟：用户会以为这条路是通的。
   // 这两件的 `innerLink` 都是 `mcloud://main/aiCamera`（扫描文档也是那一台相机），
   // 与 App 任务的 585/618 是同一个工具 ⇒ 复用同一个动作（识图 → 对话）。
   // ⚠ 这条会**往用户云盘落一张图**：`tokenPkActions` 里已登记成"我们造的"，
@@ -385,6 +398,9 @@ export async function playAiStep(deps: TaskDeps): Promise<TaskOutcome> {
       // 转写已经「做完」了（那一发就是完成口）⇒ 直接回读判据，不进动作层
       if (isTranscription) {
         st.phase = 'verify';
+        // ⚠ 这里**不给** `actOk`（保持 undefined ⇒ 会等一次）：
+        //   转写是"提交完成口、服务端事后翻位"，跟动作链那种"动作没成就不用等"不是一回事。
+        //   实测：转写提交后回读确实要等一下才翻（抓包里页面版隔了几十秒）。
         save(deps, st);
         return { ok: true, note: `「${t.name}」完成口已提交 —— 回读看服务端认不认` };
       }
@@ -489,8 +505,21 @@ export async function playAiStep(deps: TaskDeps): Promise<TaskOutcome> {
       }
       // 两次都没翻位：**如实说**。这不是失败（我们该做的都做了），也不是成功（服务端没认）
       st.lines = [...(st.lines ?? []), `「${t.name}」已上报，服务端还没认 —— 那件事要在工具里真的做完才算`];
-      // ⚠ 这一趟要是**前面已经做成过**别的，抽奖还得给机会：次数是前面那几件挣的，
-      //   跟这一件没翻位无关（2026-11-26：连做几件时第二件没翻位，把抽奖一起吞了）。
+      // ⚠ **这一件没翻位，不代表别的也做不成** —— 接着挑下一件（2026-11-26 真号现场：
+      //   挑中「扫描文档」回读没翻位，整趟就收工了，而后面「AI云笔记」「AI录音转写」
+      //   本来都做得成）。`tried` 已经记下这件，不会重复点它。
+      //   挑不到下一件时才收工。
+      const next = pickTarget(got.modules, st.tried ?? {});
+      if ((st.doneCount ?? 0) < PLAYAI_TASKS_PER_RUN && next !== null) {
+        st.phase = 'list';
+        st.target = undefined;
+        st.verifyTries = 0;
+        st.actOk = undefined;
+        st.attempt = undefined;
+        save(deps, st);
+        return { ok: true, pending: true, note: `「${t.name}」已上报，服务端还没认 —— 接着做下一件` };
+      }
+      // 没有下一件了：要是前面做成过、次数也在，抽奖照样给机会
       if ((st.doneCount ?? 0) > 0 && shouldDraw(deps, got.modules)) {
         st.phase = 'draw';
         save(deps, st);
