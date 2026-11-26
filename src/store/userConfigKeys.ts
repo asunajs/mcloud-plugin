@@ -62,6 +62,7 @@ export const CONFIG_BINDINGS: readonly ConfigBinding[] = [
   { key: 'mcloud.task.appTask.common', path: 'task_app_task', kind: 'bool' },
   { key: 'mcloud.task.redpack.common', path: 'task_redpack', kind: 'bool' },
   { key: 'mcloud.task.tokenpk.common', path: 'task_tokenpk', kind: 'bool' },
+  { key: 'mcloud.task.playAI.common', path: 'task_play_ai', kind: 'bool' },
 
   // ── 直播 ──────────────────────────────────────────────────────
   { key: 'mcloud.live.listen_seconds.task', path: 'live.listen_seconds', kind: 'number', min: 5, max: 1800, seed: 600 },

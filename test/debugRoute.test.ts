@@ -54,7 +54,7 @@ test('每族取"最近一条包含该族步骤"的记录；从没出现过的回
     tasks: Record<string, { at: string; ok: boolean; note: string } | null>;
     switches: { id: string; label: string }[];
   };
-  assert.equal(body.switches.length, 5, '五族都要列出来（界面按它画卡）');
+  assert.equal(body.switches.length, 6, '六族都要列出来（界面按它画卡）');
   assert.equal(body.tasks['signin']?.ok, true);
   assert.equal(body.tasks['signin']?.at, NOW, '要取**最近**那条');
   assert.equal(body.tasks['tokenpk']?.ok, true, '旧的失败被新的成功盖掉');
@@ -72,7 +72,7 @@ test('一条记录都没有 ⇒ 全是 null（不是空对象、不是编"成功
   const body = JSON.parse((await route.handler({ query: '' })).body) as {
     tasks: Record<string, unknown>;
   };
-  for (const k of ['signin', 'expansion', 'appTask', 'redpack', 'tokenpk']) {
+  for (const k of ['signin', 'expansion', 'appTask', 'redpack', 'tokenpk', 'playAI']) {
     assert.equal(body.tasks[k], null, `${k} 应该是 null`);
   }
 });

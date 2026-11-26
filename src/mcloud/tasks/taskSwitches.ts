@@ -26,7 +26,7 @@ import { loadAccounts } from '../accounts.ts';
 import type { Store } from '../../store/types.ts';
 import type { TaskDeps, TaskOutcome } from './base.ts';
 
-export type TaskSwitchId = 'signin' | 'expansion' | 'appTask' | 'redpack' | 'tokenpk';
+export type TaskSwitchId = 'signin' | 'expansion' | 'appTask' | 'redpack' | 'tokenpk' | 'playAI';
 
 export interface TaskSwitchSpec {
   id: TaskSwitchId;
@@ -67,6 +67,13 @@ export const TASK_SWITCHES: readonly TaskSwitchSpec[] = [
     id: 'tokenpk',
     label: '算力大作战',
     help: '活动任务、阶段奖励、代抽',
+    defaultOn: true,
+  },
+  {
+    id: 'playAI',
+    // ⚠ 名字要让用户认得出：活动页上写的是「趣玩AI赢好礼」
+    label: '趣玩AI',
+    help: 'AI 任务的读数；第一版**只读**（不替你做任务、不抽奖）',
     defaultOn: true,
   },
 ];

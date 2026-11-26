@@ -33,6 +33,8 @@ import { runAuthRefresh } from './authRefresh.ts';
 import { runOwnedCleanup } from './tasks/ownedFiles.ts';
 import { runTodayCloud } from './tasks/todayCloud.ts';
 import { TASK_SWITCH_BY_ID, type TaskSwitchId, taskOn } from './tasks/taskSwitches.ts';
+import { playAiStep } from './tasks/playAi.ts';
+import { takePlayAiLines } from './playAiState.ts';
 
 /** 这一趟要跑的族**分别落在哪一页** —— 一页一张票，所以按页换。
  *
@@ -399,6 +401,21 @@ export async function runDaily(
       pending: r.pending === true,
       lines: takeTokenPkLines(deps.store, deps.nowIso),
     });
+  }
+
+  // ④.7 趣玩AI赢好礼（`National_playAI`）—— 与算力同一个 `funai` 端点族、同一张 H5 票。
+  //
+  // ⚠ **第一版只读**：读门户页模块 + 主题模块，落读数（几个模块 / 几件任务 / 几件可做 / 能抽几次）。
+  //   写口（`page/register` / `page/lottery`）下一轮接 —— 理由是"点了不等于完成、判据要回读"，
+  //   得先有稳定的读（见 `src/mcloud/playAi.ts` 文件头）。
+  //
+  // 位置：与算力挨着（同属活动站、同一张票），在所有领奖之前。
+  const paSel = selected('playAI');
+  if (!paSel.run) {
+    push({ name: '趣玩AI', ok: true, note: paSel.skipNote ?? '', idle: true });
+  } else {
+    const r = await once('趣玩AI', playAiStep, deps);
+    push({ ...r, lines: takePlayAiLines(deps.store, deps.nowIso) });
   }
 
   // ⑤ 领取类必须放在**所有会产生奖励的动作之后**：签到/任务拓展/App 任务

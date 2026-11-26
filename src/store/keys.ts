@@ -239,6 +239,12 @@ export const KEY_SCOPE: Readonly<Record<string, KeyScope>> = {
   'mcloud.task.appTask.on': 'account',
   'mcloud.task.redpack.on': 'account',
   'mcloud.task.tokenpk.on': 'account',
+  'mcloud.task.playAI.on': 'account',
+
+  // ── 趣玩AI赢好礼（`National_playAI`，与算力同一个 `funai` 端点族）──
+  // 这一趟的进度（读了哪些模块）与最后一份读数。按账号：模块表与次数都是某个号的。
+  'mcloud.playai.state': 'account',
+  'mcloud.playai.reading': 'account',
 
   // ── 实例级配置 / 跨账号共享 ────────────────────────────────
   /** 账号表本身。 */

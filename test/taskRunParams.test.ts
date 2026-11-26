@@ -45,9 +45,9 @@ test('不认识的族 id ⇒ 错误并列出合法 id', () => {
 });
 
 test('账号：只接受一个；两个就是错误（调试一次跑一个号）', () => {
-  const ok = parseTaskRunParams({ accounts: ['19142492716'] });
+  const ok = parseTaskRunParams({ accounts: ['13800138000'] });
   assert.ok(!('error' in ok));
-  assert.equal(ok.account, '19142492716');
+  assert.equal(ok.account, '13800138000');
 
   const two = parseTaskRunParams({ accounts: ['a', 'b'] });
   assert.ok('error' in two);

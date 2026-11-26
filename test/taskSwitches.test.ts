@@ -34,10 +34,10 @@ function storeWithAccount(): { raw: ReturnType<typeof memStore>; store: ReturnTy
 
 const oneOf = (raw: ReturnType<typeof memStore>, id: string) => scoped(raw, id);
 
-test('五个开关的形状一致：账号键都是 `mcloud.task.<id>.on`，没有 enabled', () => {
+test('六个开关的形状一致：账号键都是 `mcloud.task.<id>.on`，没有 enabled', () => {
   assert.deepEqual(
     TASK_SWITCHES.map((s) => s.id),
-    ['signin', 'expansion', 'appTask', 'redpack', 'tokenpk'],
+    ['signin', 'expansion', 'appTask', 'redpack', 'tokenpk', 'playAI'],
   );
   for (const s of TASK_SWITCHES) {
     assert.equal(accountKeyOf(s.id), `mcloud.task.${s.id}.on`);

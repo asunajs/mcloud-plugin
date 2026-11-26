@@ -115,7 +115,7 @@ test('读数里要带上公共默认（界面「公共默认」弹窗只认这�
   const r = await readings.handler({ query: '' });
   const body = JSON.parse(r.body) as { account: { taskCommon?: { id: string; on: boolean }[] } };
   const list = body.account.taskCommon ?? [];
-  assert.equal(list.length, 5, '五格都要在（少了界面就是空弹窗）');
+  assert.equal(list.length, 6, '六格都要在（少了界面就是空弹窗）');
   assert.equal(list.find((x) => x.id === 'redpack')?.on, true);
 });
 
