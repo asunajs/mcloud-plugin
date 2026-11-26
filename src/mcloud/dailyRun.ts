@@ -484,11 +484,10 @@ export async function runDaily(
   const inUse = [activeAppTaskFileId(deps), activeExpansionFileId(deps)].filter(
     (x): x is string => x !== undefined,
   );
-  if (tailSkip !== '') {
-    push({ name: '清理临时文件', ok: true, note: tailSkip, idle: true });
-  } else {
-    push(await once('清理临时文件', async (d) => await runOwnedCleanup(d, { skip: inUse }), deps));
-  }
+  // ⚠ 清理**不跟着调试跳过**：调试跑的那一族也可能往云盘写东西（AI 相机 / 上传 / 备份），
+  //   跳过清理就等于"调试一次留一份垃圾"。而它没有东西要清时**一个请求都不发**，
+  //   所以对"只跑一族"的请求数没有影响。
+  push(await once('清理临时文件', async (d) => await runOwnedCleanup(d, { skip: inUse }), deps));
 
   // ⑩ 今日云朵（参考实现 `afterTask::printTodayCloud` 那一行，但数据源用当前端点）。
   // 走 `cloudRecordV2`（与面板「今日AI豆」同一条链），不是参考实现的旧 `cloudRecord`；
