@@ -13,6 +13,7 @@ import assert from 'node:assert/strict';
 import {
   PLAYAI_DAILY_CHANCE_CAP,
   pageModuleRequest,
+  parseDraw,
   parseModules,
   readingLine,
   registerRequest,
@@ -116,4 +117,86 @@ test('请求形状：两口的 `showloading` 不一样（实拍 page=true / time
 
 test('规则里的日上限是个常量，写在模块里（别散在调用点）', () => {
   assert.equal(PLAYAI_DAILY_CHANCE_CAP, 5);
+});
+
+// ── 抽奖回执：四份**真样本**（2026-09-25 的 HAR，号码已按仓库口径换成合成掩码）──
+
+/** 中奖（云盘专属AI豆） */
+const WIN_AI_DOU = {
+  code: 0,
+  msg: 'success',
+  result: {
+    id: 4226417,
+    phone: '138****0000',
+    type: '1',
+    moduleId: '1-250730',
+    lotteryDate: '20260925',
+    isWin: 1,
+    prizeId: 250624008,
+    prizeName: '20云盘专属AI豆',
+    prizeUrl: 'https://img.mcloud.139.com//uop_prod/20260730/x.png',
+    prizeType: 2,
+    lotteryTime: '2026-09-25T20:21:39.009960926',
+    marketName: 'National_playAI',
+    source: '0',
+  },
+};
+
+/** 中奖（支付宝话费红包）—— 注意它的 `prizeType` 是 **1** */
+const WIN_REDPACK = {
+  code: 0,
+  msg: 'success',
+  result: {
+    id: 4226316,
+    isWin: 1,
+    prizeId: 260907027,
+    prizeName: '0.41元支付宝话费红包',
+    prizeUrl: 'https://img.mcloud.139.com//uop_prod/20260907/y.png',
+    prizeType: 1,
+    lotteryTime: '2026-09-25T19:50:09.408316866',
+    marketName: 'National_playAI',
+  },
+};
+
+/** 没中：三键全 `null`，而 `prizeType` **仍然是 1** */
+const LOSE = {
+  code: 0,
+  msg: 'success',
+  result: {
+    id: 10657867,
+    isWin: 0,
+    prizeId: null,
+    prizeName: null,
+    prizeUrl: null,
+    prizeType: 1,
+    lotteryTime: '2026-09-25T20:21:43.238687928',
+    marketName: 'National_playAI',
+  },
+};
+
+test('抽奖回执（真样本）：中没中只看 `isWin`', () => {
+  assert.deepEqual(parseDraw(WIN_AI_DOU.result), { win: true, prizeName: '20云盘专属AI豆', prizeType: 2 });
+  assert.deepEqual(parseDraw(WIN_REDPACK.result), {
+    win: true,
+    prizeName: '0.41元支付宝话费红包',
+    prizeType: 1,
+  });
+  assert.deepEqual(parseDraw(LOSE.result), { win: false, prizeName: '', prizeType: 1 });
+});
+
+test('⚠ `prizeType` 不是"有没有奖"的信号：中奖那份和没中那份都是 `1`', () => {
+  // 这两份真样本把这条钉死 —— 拿 prizeType 判会把这个红包判成"没中"
+  assert.equal(parseDraw(WIN_REDPACK.result).prizeType, 1);
+  assert.equal(parseDraw(LOSE.result).prizeType, 1);
+  assert.equal(parseDraw(WIN_REDPACK.result).win, true);
+  assert.equal(parseDraw(LOSE.result).win, false);
+});
+
+test('抽奖回执：缺 `isWin` / 别的值 ⇒ `null`（判不出来就别当成功）', () => {
+  assert.equal(parseDraw({ prizeType: 1 }).win, null);
+  assert.equal(parseDraw({ isWin: 'yes' }).win, null);
+  assert.equal(parseDraw(null).win, null);
+  // 数字串也认（上游两种都见过）
+  assert.equal(parseDraw({ isWin: '1' }).win, true);
+  assert.equal(parseDraw({ isWin: '0' }).win, false);
 });

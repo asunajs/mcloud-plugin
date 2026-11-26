@@ -144,8 +144,10 @@ function shouldDraw(deps: TaskDeps, modules: readonly PlayAiModule[]): boolean {
   const page = modules.find((m) => !m.moduleId.startsWith('2-')) ?? modules[0];
   if (page === undefined) return false;
   if (page.drawTimes === null || page.drawTimes <= 0) return false;
-  const day = loadDrawDay(deps.store, dayKey(deps));
-  return day.drawn < PLAYAI_DRAWS_PER_RUN;
+  // ⚠ **不再**拿按天账卡这里：那样一天只能抽一次，而用户有几次就该能抽几次
+  //   （跑几趟由用户定）。"一趟最多一发"由状态机保证 —— 抽完就 `phase='done'`，
+  //   同一次运行里回不到 `draw` 了。按天账（`drawn/wins`）只用来报数。
+  return true;
 }
 
 function save(deps: TaskDeps, st: PlayAiState): void {
@@ -163,7 +165,16 @@ function snapshot(deps: TaskDeps, modules: readonly PlayAiModule[], ok: boolean,
 export async function playAiStep(deps: TaskDeps): Promise<TaskOutcome> {
   const day = deps.nowIso.slice(0, 10);
   const prev = loadPlayAi(deps.store);
-  const st = prev !== null && prev.day === day ? prev : newPlayAi(day, deps.nowIso);
+  // ⚠ 同一天**第二趟**：上一趟已经 `done` ⇒ 必须重开一轮。
+  //   不重开的话 `phase === 'done'` 会一直落到 `default:` 分支，这一族当天就再也不干活了
+  //   —— 那正好违反"用户设几趟就跑几趟、每一趟都是独立的"这条口径。
+  //   重开时把 `tried`（今天点过的）带过来：点过的不再点。
+  const st =
+    prev === null || prev.day !== day
+      ? newPlayAi(day, deps.nowIso)
+      : prev.phase === 'done'
+        ? { ...newPlayAi(day, deps.nowIso), tried: prev.tried }
+        : prev;
 
   const s = session(deps);
   if (s === undefined) {

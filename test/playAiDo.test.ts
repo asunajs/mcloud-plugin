@@ -248,3 +248,34 @@ test('动作那一步没成，也**照样回读**（判据只有回读，失败�
     '动作失败那一句要留在 lines 里（或被完成那句覆盖）',
   );
 });
+
+// ── 同一天的第二趟（用户设几趟就该跑几趟）──────────────────────────
+
+test('⚠ 同一天第二趟照样干活：上一趟 `done` 不能把这一族当天封死', async () => {
+  const { deps, sent } = harness({ flip: true });
+  await drainAll(deps);
+  const reads1 = sent.filter((x) => String(x.url).includes('/page/getmodule')).length;
+  // 第二趟（同一天、状态还在 phase='done'）
+  await drainAll(deps);
+  const reads2 = sent.filter((x) => String(x.url).includes('/page/getmodule')).length;
+  assert.ok(reads2 > reads1, `第二趟也要读一遍（${reads1} → ${reads2}）`);
+});
+
+test('有几次就能抽几次：两个号各跑一趟 ⇒ 两发 lottery（不是一天只准一发）', async () => {
+  const { deps, sent, store } = harness({ flip: true, drawTimes: 3, draw: true, isWin: 1 });
+  const { setPlayAiDrawEnabled } = await import('../src/mcloud/playAiState.ts');
+  setPlayAiDrawEnabled(store, true, NOW);
+  await drainAll(deps);
+  await drainAll(deps); // 同一天第二趟
+  const draws = sent.filter((x) => String(x.url).includes('/page/lottery')).length;
+  assert.equal(draws, 2, `两趟该抽两发（实际 ${draws}）`);
+});
+
+test('一趟最多抽一发：一次 drain 里不会连抽', async () => {
+  const { deps, sent, store } = harness({ flip: true, drawTimes: 9, draw: true, isWin: 1 });
+  const { setPlayAiDrawEnabled } = await import('../src/mcloud/playAiState.ts');
+  setPlayAiDrawEnabled(store, true, NOW);
+  await drainAll(deps);
+  const draws = sent.filter((x) => String(x.url).includes('/page/lottery')).length;
+  assert.equal(draws, 1, `一趟只准一发（实际 ${draws}）`);
+});
