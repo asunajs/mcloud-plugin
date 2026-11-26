@@ -112,7 +112,7 @@
 * **不必重载插件**：`JsonFile` 按 `mtime+size` 失效缓存 ⇒ 面板保存之后，插件**下一次读**
   就是新值（以前要等面板重载那个插件）。
 * **子任务开关是"两层"的**：账号级那格在**账号袋**（`mcloud.task.<id>.on`，`'1'`/`'0'`，
-  空串 = 没设过），公共默认在 `config.json`（`task_signin` … `task_tokenpk`）。
+  空串 = 没设过），公共默认在 `config.json`（`task_signin` … `task_tokenpk` / `task_play_ai`）。
   取值顺序 **账号 > 公共 > 缺省**（`src/mcloud/tasks/taskSwitches.ts`）。为什么不把账号级
   也塞进 `config.json`：它是"这个号的属性"，与 `shared.json` 里其它按账号的东西同源；
   塞进配置就要为每个号开一个 `accounts.<id>.*` 分支，而账号是会删会加的。

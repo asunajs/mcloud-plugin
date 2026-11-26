@@ -92,7 +92,8 @@ mcloud-sign --config ~/panel-3030/data/plugin-data/mcloud/config.json \
 ```json
 {
   "task_redpack": true,
-  "task_tokenpk": false
+  "task_tokenpk": false,
+  "task_play_ai": true
 }
 ```
 
