@@ -82,8 +82,13 @@ test('读数里带上趣玩AI 上次读到的那一份（没读过就是 null）
   store.ensureSchema();
   const routes = mcloudRoutes(testDeps(store, { now: NOW }));
   const rd = routes.find((x) => x.path === '/plugins/mcloud/api/readings' && x.method === 'GET')!;
-  const before = JSON.parse((await rd.handler({ query: '' })).body) as { playai?: unknown };
-  assert.equal(before.playai, null, '没读过就是 null，不编一个空读数');
+  const before = JSON.parse((await rd.handler({ query: '' })).body) as {
+    playai?: { line: string; reading: unknown; drawEnabled: boolean } | null;
+  };
+  // 没读过时**仍给一份壳**（代抽开关要能看），但读数是空的 —— 不编一个空读数
+  assert.equal(before.playai?.line, '', '没读过时读数是空串');
+  assert.equal(before.playai?.reading, null, '没读过就没有 reading');
+  assert.equal(before.playai?.drawEnabled, false);
 
   const { savePlayAiSnapshot } = await import('../src/mcloud/playAiState.ts');
   savePlayAiSnapshot(
@@ -102,4 +107,32 @@ test('读数里带上趣玩AI 上次读到的那一份（没读过就是 null）
   };
   assert.equal(after.playai?.line, '2 个模块 · 5 件任务 · 2 件可做');
   assert.equal(after.playai?.at, NOW);
+});
+
+test('代抽开关：缺省关、能开能关，且与读数分开给（读数没跑过也能看开关）', async () => {
+  const store = memStore();
+  store.ensureSchema();
+  const routes = mcloudRoutes(testDeps(store, { now: NOW }));
+  const rd = routes.find((x) => x.path === '/plugins/mcloud/api/readings' && x.method === 'GET')!;
+  const before = JSON.parse((await rd.handler({ query: '' })).body) as {
+    playai: { drawEnabled: boolean; line: string } | null;
+  };
+  assert.equal(before.playai?.drawEnabled, false, '缺省必须是关（花的是用户的次数）');
+  assert.equal(before.playai?.line, '', '没读过时读数是空，不是编一个');
+
+  const post = routes.find((x) => x.path === '/plugins/mcloud/api/playai/draw' && x.method === 'POST')!;
+  assert.ok(post, '要有代抽开关这条路由');
+  const bad = await post.handler({ query: '', body: JSON.stringify({ on: 'yes' }) });
+  assert.equal(bad.status, 400, 'on 必须是布尔');
+
+  const on = await post.handler({ query: '', body: JSON.stringify({ on: true }) });
+  assert.equal(on.status, 200);
+  const after = JSON.parse((await rd.handler({ query: '' })).body) as {
+    playai: { drawEnabled: boolean };
+  };
+  assert.equal(after.playai.drawEnabled, true);
+
+  await post.handler({ query: '', body: JSON.stringify({ on: false }) });
+  const off = JSON.parse((await rd.handler({ query: '' })).body) as { playai: { drawEnabled: boolean } };
+  assert.equal(off.playai.drawEnabled, false);
 });

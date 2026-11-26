@@ -30,7 +30,7 @@ import { resolveTaskAccounts, taskAccountsView } from '../../mcloud/taskAccounts
 import { planViews } from '../../mcloud/exchangePlans.ts';
 import { accountsView, loadLoginBase, loginPlatform, readBackupState, readMatrixLocal, sessionPlatform } from './support.ts';
 import type { RouteDeps } from './support.ts';
-import { loadPlayAiSnapshot } from '../../mcloud/playAiState.ts';
+import { loadPlayAiSnapshot, playAiDrawEnabled } from '../../mcloud/playAiState.ts';
 
 export function buildReadings(deps: RouteDeps): Record<string, unknown> {
   const nowMs = Date.parse(deps.now());
@@ -55,8 +55,10 @@ export function buildReadings(deps: RouteDeps): Record<string, unknown> {
     //   要新的就点「现在跑一次」（或调试页只跑这一族）。
     playai: (() => {
       const snap = loadPlayAiSnapshot(deps.store);
-      if (snap === null) return null;
-      return { at: snap.at, ok: snap.ok, line: snap.line, error: snap.error, reading: snap.reading };
+      // 代抽开关与读数**分开给**：读数可能还没跑过，而开关随时可看可改
+      const drawEnabled = playAiDrawEnabled(deps.store);
+      if (snap === null) return { at: '', ok: false, line: '', error: '', reading: null, drawEnabled };
+      return { at: snap.at, ok: snap.ok, line: snap.line, error: snap.error, reading: snap.reading, drawEnabled };
     })(),
 
     // 三条任务各自"跑哪些账号"。⚠ 与上面那个 `account`（账号表）**分开给**：

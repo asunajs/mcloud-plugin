@@ -26,7 +26,7 @@
 // 页面版本号：和 style.css 里的 --style-ver 一起人工递增。
 // 「样式自检」（boot.js 的 ?diag=1）会读它 —— 用来区分「CSS 是新的、JS 还是旧的」这种
 // 半新半旧状态（第 155 轮：样式表是 v155，但 DOM 里根本没有 .ex-group-row 这种行）。
-document.documentElement.dataset.appVer = '171';
+document.documentElement.dataset.appVer = '172';
 
 /** 插件自己的接口。 */
 const API = '/plugins/mcloud/api';
@@ -3938,7 +3938,14 @@ function renderPlayAi() {
     return;
   }
   box.textContent = p.line || (p.ok ? '读到了' : '上次没读成');
-  const bits = [`读到于 ${when(p.at)}`];
+  // 代抽开关：读数里单独给的一格（读数可能还没跑过，开关照样要能看能改）
+  const sw = $('playai-draw');
+  if (sw) {
+    const el = /** @type {any} */ (sw);
+    if (p.drawEnabled === true) el.setAttribute('checked', '');
+    else el.removeAttribute('checked');
+  }
+  const bits = [p.at === '' ? '还没读过' : `读到于 ${when(p.at)}`];
   if (p.reading) {
     const r = p.reading;
     if (r.canDraw > 0) bits.push(`现在能抽 ${r.canDraw} 次`);
@@ -4060,6 +4067,16 @@ async function refreshDebugLast() {
 }
 
 $('debug-last-refresh').addEventListener('click', () => void refreshDebugLast());
+
+// 趣玩AI 的代抽开关（花次数 ⇒ 缺省关；开/关都要立刻存）
+document.addEventListener('change', (ev) => {
+  const t = /** @type {{ id?: string, value?: boolean }} */ (ev.target);
+  if (t.id !== 'playai-draw') return;
+  const on = t.value === true;
+  void api('/playai/draw', { method: 'POST', write: true, body: { on } })
+    .then((r) => toast((r && r.note) || (on ? '代抽已开' : '代抽已关')))
+    .catch((e) => toast(String(e && e.message ? e.message : e), true));
+});
 
 // ══════════ 公共默认（所有账号共用的缺省） ══════════
 //
