@@ -133,7 +133,7 @@ PY
 echo "④ 读待领取"
 curl -fsS "${H[@]}" "$B/plugins/mcloud/api/prizes" -o "$TMP/list.json"
 python3 - "$TMP/list.json" <<'PY'
-import json, sys
+import json, re, sys
 d = json.load(open(sys.argv[1]))
 assert d.get('ok') is True, d
 assert d.get('pending') == 2, 'flag=1 应当只有 2 件：' + str(d)
@@ -142,7 +142,12 @@ assert '0.41元支付宝话费红包' in names, names
 # flag=2 / flag=10 不许进来
 assert '已经领过的会员月卡' not in names and '不知道哪一档（flag=10）' not in names, names
 for x in d['items']:
-    assert '****' in (x.get('phone') or ''), '手机号要脱敏：' + json.dumps(x, ensure_ascii=False)
+    # ⚠ 判据是"**没有完整号码**"，不是"必须四个星"：上游自己的掩码是 `138***8000`（三个星），
+    #   而 `maskPhoneLike` 对"已经带 `*` 的值"**原样保留**（再掩一次只会更难看）。
+    #   原来这里写 `'****' in phone` ⇒ 对着真实形状永远红（2026-11-26 现场）。
+    ph = x.get('phone') or ''
+    assert '*' in ph, '手机号要脱敏：' + json.dumps(x, ensure_ascii=False)
+    assert not re.search(r'(?<!\d)1[3-9]\d{9}(?!\d)', ph), '不许出现完整号码：' + ph
 s = json.dumps(d)
 assert 'mock-jwttoken' not in s and 'mockcookie' not in s, '列表不许回显凭据'
 assert 'Bmock-device' not in s, '列表不许回显 deviceId'

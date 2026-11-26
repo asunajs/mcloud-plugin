@@ -11,6 +11,23 @@ B="http://127.0.0.1:$PORT"
 H=(-H "X-Panel-Token:$TOKEN")
 W=("${H[@]}" -H "x-panel:1")
 OUT=/tmp/apv-run
+# ⚠ 先把目录建出来：下面第一句就是 `> "$OUT/e2e-picks.log"`，目录不在的话重定向直接失败，
+#   而脚本没有 `set -e` ⇒ 它会一路往下跑、每个探针都报"连不上"，看起来像**面板起不来**。
+#   （2026-11-26 现场：干净机器上这个脚本从来没成功过。）
+mkdir -p "$OUT"
+
+# ⚠ 面板对**写口**有速率限制：连着几发会回 429。这个脚本里几处 POST 都是写口，
+#   不重试的话会静默不生效（现场：探针 ⑤ 存目标那一发被 429，后面断言说 plan 是空串，
+#   看起来像"存目标坏了"，其实是限速）。
+wpost() { # wpost <url> <json> [out]
+  local url="$1" body="$2" out="${3:-/dev/null}" i
+  for i in $(seq 1 12); do
+    if curl -fsS -o "$out" "${W[@]}" -X POST -H 'content-type: application/json' -d "$body" "$url"; then return 0; fi
+    sleep 0.5
+  done
+  echo "   ✗ 写口一直失败（429？）：$url" >&2
+  return 1
+}
 
 cd "$HERE" || exit 1
 E2E_KEEP=1 ./scripts/e2e-mock.sh "$BIN" "$PORT" > "$OUT/e2e-picks.log" 2>&1
@@ -32,8 +49,7 @@ print('   exchange.plan  =', repr(ex.get('plan')))
 PY
 
 echo "── 探针 ②：手动刷新（POST /exchange/picks）"
-curl -fsS "${W[@]}" -X POST -H 'content-type: application/json' -d '{}' \
-  "$B/plugins/mcloud/api/exchange/picks" -o "$OUT/picks.json"
+wpost "$B/plugins/mcloud/api/exchange/picks" '{}' "$OUT/picks.json"
 python3 - "$OUT/picks.json" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
@@ -79,9 +95,8 @@ done
 
 echo "── 探针 ⑤：存目标 = 缓存里那一句名字（写那半仍然只写字，不发枪）"
 NAME=$(cat "$OUT/pick-name.txt")
-curl -fsS -o /dev/null "${W[@]}" -X POST -H 'content-type: application/json' \
-  -d "{\"query\": $(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$NAME")}" \
-  "$B/plugins/mcloud/api/exchange/order"
+wpost "$B/plugins/mcloud/api/exchange/order" \
+  "{\"query\": $(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$NAME")}"
 curl -fsS -X POST "http://127.0.0.1:$MOCK/_debug/requests/clear" >/dev/null
 curl -fsS "${H[@]}" "$B/plugins/mcloud/api/readings" -o "$OUT/v2.json"
 curl -fsS "http://127.0.0.1:$MOCK/_debug/requests" -o "$OUT/mock3.json"

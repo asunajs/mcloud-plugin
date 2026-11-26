@@ -14,7 +14,10 @@
 npm run all          # gen + typecheck + build + test + check-build + check-layers
 npm test             # node --test（~1305 条）
 npm run deploy:panel -- --restart   # 构建 + 门禁 + 装进 ~/panel-3030 并重启
-./scripts/e2e-mock.sh               # 对 mock 上游的全链路（不碰真账号）
+# 三条 mock 全链路（都不碰真账号；需要面板二进制，用 PANEL_BIN 指）
+PANEL_BIN=$HOME/panel-3030/panel ./scripts/e2e-mock.sh   # 日常/签到/算力/趣玩AI/直播 全链路
+PANEL_BIN=$HOME/panel-3030/panel bash scripts/picks-e2e.sh   # 「选奖品」缓存那条链
+PANEL_BIN=$HOME/panel-3030/panel bash scripts/e2e-prize.sh   # 领奖链（含本地解 JPEG 滑块）
 ```
 
 面板仓侧的界面门禁：`node ../../panel-llrt/scripts/check-plugin-style.mjs`
