@@ -218,6 +218,24 @@ mcloud-sign config:import --config asign.json --data-dir <…>          # 真搬
 
 边界一句话：**用户能改的 → `config.json`；程序自己写的 → `shared.json` / 账号袋。**
 
+### 趣玩AI 赢好礼（`National_playAI`）怎么跑的
+
+```text
+读   page/getmodule + timed/getmodule   → 几个模块 / 几件任务 / 几件可做 / 能抽几次
+点   page/register {moduleId,taskId}    → 只点「AI 助手」那一件
+做   复用算力族的灵犀对话动作链         → 不往云盘写文件（其余工具会写，所以不碰）
+验   再读一次 getmodule                 → **只有 isComplete 翻位才算做完**
+抽   page/lottery（body 只带 moduleId） → 缺省关，有次数才抽，一趟最多 1 次
+```
+
+三条口径，改代码前先看：
+
+- **`register` 的回执零信息**（`{"code":0,"result":0}`）：点完不等于做完，判据只有回读。
+  没翻位就写「已上报，服务端还没认」（`pending`），**不写成功**；
+- **只点我们会做的那一件**：`PLAYAI_ACTION_KEYS` 里没有的任务（智能抠图 / AI头像 / 扫描文档…）
+  一律不点也不做 —— 点了却做不了，等于把"看起来在干活"写进日志；
+- **抽奖花的是你自己的次数**：`mcloud.playai.draw` 缺省关，在「数据」页那张卡上开。
+
 ## 文档
 
 | 文件 | 里面是什么 |
@@ -329,6 +347,7 @@ gh release view v<version> --json assets -q '.assets[].digest'   # 核对哈希
 | App 任务 | App 任务清单与打卡、**分享领奖** | 开 |
 | 云手机 | 红包派对（**会往你的云机里装应用**） | **关** |
 | 算力大作战 | 活动任务、阶段奖励、代抽 | 开 |
+| 趣玩AI | 读模块/任务表；只做「AI 助手」那一件（其余不点）；抽奖另有一个**缺省关**的开关 | 开 |
 
 取值三层，**账号那层赢**：
 
