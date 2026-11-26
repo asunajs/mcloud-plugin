@@ -26,7 +26,7 @@
 // 页面版本号：和 style.css 里的 --style-ver 一起人工递增。
 // 「样式自检」（boot.js 的 ?diag=1）会读它 —— 用来区分「CSS 是新的、JS 还是旧的」这种
 // 半新半旧状态（第 155 轮：样式表是 v155，但 DOM 里根本没有 .ex-group-row 这种行）。
-document.documentElement.dataset.appVer = '174';
+document.documentElement.dataset.appVer = '175';
 
 /** 插件自己的接口。 */
 const API = '/plugins/mcloud/api';
@@ -3960,17 +3960,20 @@ function renderPlayAi() {
   // 邀请 / 录音转写那两件走不了这条路，列出来只会让人以为能自动做。
   const box2 = $('playai-tasks');
   const runs = [];
+  // 「插件会做」的 id 清单由后端给（`/readings` 的 `autoTaskIds`），界面不硬编
+  const auto = new Set((p.autoTaskIds || []).map(String));
   for (const m of (p.reading && p.reading.modules) || []) {
     for (const t of m.tasks || []) {
       if (t.isComplete || t.taskSign !== 0) continue;
-      runs.push({ name: shortName(t.name), where: m.subtitle || '' });
+      runs.push({ name: shortName(t.name), where: m.subtitle || '', auto: auto.has(String(t.id)) });
     }
   }
   box2.innerHTML = runs
     .slice(0, 8)
     .map(
       (x) =>
-        `<li class="item"><div class="item-main"><span class="item-t">${esc(x.name)}</span>` +
+        `<li class="item"><div class="item-main"><span class="item-t">${esc(x.name)}` +
+        `${x.auto ? ' <span class="badge success">插件会做</span>' : ''}</span>` +
         `<span class="item-s">${esc(x.where)}</span></div></li>`,
     )
     .join('');

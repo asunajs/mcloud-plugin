@@ -31,6 +31,7 @@ import { planViews } from '../../mcloud/exchangePlans.ts';
 import { accountsView, loadLoginBase, loginPlatform, readBackupState, readMatrixLocal, sessionPlatform } from './support.ts';
 import type { RouteDeps } from './support.ts';
 import { loadPlayAiSnapshot, playAiDrawEnabled } from '../../mcloud/playAiState.ts';
+import { PLAYAI_ACTION_KEYS } from '../../mcloud/tasks/playAi.ts';
 
 export function buildReadings(deps: RouteDeps): Record<string, unknown> {
   const nowMs = Date.parse(deps.now());
@@ -57,8 +58,21 @@ export function buildReadings(deps: RouteDeps): Record<string, unknown> {
       const snap = loadPlayAiSnapshot(deps.store);
       // 代抽开关与读数**分开给**：读数可能还没跑过，而开关随时可看可改
       const drawEnabled = playAiDrawEnabled(deps.store);
-      if (snap === null) return { at: '', ok: false, line: '', error: '', reading: null, drawEnabled };
-      return { at: snap.at, ok: snap.ok, line: snap.line, error: snap.error, reading: snap.reading, drawEnabled };
+      // 「插件会做哪几件」由后端给（唯一出处是 `PLAYAI_ACTION_KEYS`）——
+      // 界面别自己硬编一份 id 清单，那样两边迟早对不上
+      const autoTaskIds = Object.keys(PLAYAI_ACTION_KEYS);
+      if (snap === null) {
+        return { at: '', ok: false, line: '', error: '', reading: null, drawEnabled, autoTaskIds };
+      }
+      return {
+        at: snap.at,
+        ok: snap.ok,
+        line: snap.line,
+        error: snap.error,
+        reading: snap.reading,
+        drawEnabled,
+        autoTaskIds,
+      };
     })(),
 
     // 三条任务各自"跑哪些账号"。⚠ 与上面那个 `account`（账号表）**分开给**：
