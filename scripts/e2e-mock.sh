@@ -1177,8 +1177,14 @@ print('   ✅ 读数落地；代抽缺省关 ⇒ 零 lottery、零 register')
 PLAYAI1
 
 # 打开代抽，再跑一趟：应该正好一发 lottery，body 只有 moduleId
-curl -fsS -X POST "${W[@]}" -H 'content-type: application/json' \
-  -d '{"on":true}' "$B/plugins/mcloud/api/playai/draw" -o /dev/null
+# ⚠ 面板对写口有速率限制：连着两趟跑完立刻再写会回 429 ⇒ 重试几次（最多 5 秒）
+ok_toggle=0
+for _ in $(seq 1 10); do
+  if curl -fsS -X POST "${W[@]}" -H 'content-type: application/json' \
+      -d '{"on":true}' "$B/plugins/mcloud/api/playai/draw" -o /dev/null 2>/dev/null; then ok_toggle=1; break; fi
+  sleep 0.5
+done
+[ "$ok_toggle" = "1" ] || { echo "   ✗ 代抽开关打不开（一直 429？）" >&2; exit 1; }
 curl -fsS -X POST "http://127.0.0.1:$MOCK_PORT/_debug/requests/clear" -o /dev/null || true
 try_write /dev/null "${W[@]}" -X POST "$B/api/tasks/mcloud-daily/%E6%97%A5%E5%B8%B8/run" > /dev/null 2>&1 || true
 for _ in $(seq 1 30); do
