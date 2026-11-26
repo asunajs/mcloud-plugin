@@ -48,9 +48,9 @@ export const PLAYAI_EP = {
   page: '/ycloud/funai/api/page/getmodule',
   /** 主题/限时模块数组 */
   timed: '/ycloud/funai/api/timed/getmodule',
-  /** 本活动自己的奖品记录 */
+  /** 本活动自己的奖品记录（**还没接**：目前不读它，留着形状备用） */
   prizes: '/ycloud/funai/api/page/prizes',
-  /** 邀请码 */
+  /** 邀请码（**还没接**：`taskSign:1` 的邀请链路我们不做） */
   invite: '/ycloud/funai/api/invite/getcode',
   /** 写：点一件任务（本轮**不接**） */
   register: '/ycloud/funai/api/page/register',
@@ -335,7 +335,10 @@ export function readingLine(r: PlayAiReading): string {
   if (r.canDraw !== null && r.canDraw > 0) bits.push(`可抽 ${r.canDraw} 次`);
   // ⚠ 写「今日」不写「今天」：`lineLevel` 里「今天」是**过程信息**（灰）的触发词，
   //   而这一行是读数（跟「今日云朵」同一类），要 info。
-  else if (r.todayGot !== null) bits.push(`今日已得 ${r.todayGot} 次`);
+  else if (r.todayGot !== null) {
+    // 带上规则里的日上限 —— 只写「已得 0 次」看不出还剩多少空间
+    bits.push(`今日已得 ${r.todayGot} 次（上限 ${PLAYAI_DAILY_CHANCE_CAP}）`);
+  }
   return bits.join(' · ');
 }
 

@@ -84,7 +84,7 @@ test('汇总：可做 / 要手动 / 已完成分开数（`taskSign≠0` 一件�
 
 test('读数那一行：级别是 **info**，不是黄（"要手动"不是"要你现在去做"）', () => {
   const line = readingLine(summarize([...parseModules(PAGE), ...parseModules(TIMED)]));
-  assert.equal(line, '2 个模块 · 5 件任务 · 1 件已完成 · 2 件可做 · 2 件要手动 · 今日已得 0 次');
+  assert.equal(line, '2 个模块 · 5 件任务 · 1 件已完成 · 2 件可做 · 2 件要手动 · 今日已得 0 次（上限 5）');
   assert.equal(lineLevel(`趣玩AI：${line}`), 'info', `读数不该被涂黄：${lineLevel(`趣玩AI：${line}`)}`);
 });
 
