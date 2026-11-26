@@ -33,6 +33,7 @@ import { runAuthRefresh } from './authRefresh.ts';
 import { runOwnedCleanup } from './tasks/ownedFiles.ts';
 import { runTodayCloud } from './tasks/todayCloud.ts';
 import { runCloudActs } from './tasks/cloudActs.ts';
+import { runWishCodes } from './tasks/wishCodes.ts';
 import { TASK_SWITCH_BY_ID, type TaskSwitchId, taskOn } from './tasks/taskSwitches.ts';
 import { PLAYAI_MAX_STEPS, activePlayAiFileId, playAiStep } from './tasks/playAi.ts';
 import { takePlayAiLines } from './playAiState.ts';
@@ -530,6 +531,18 @@ export async function runDaily(
     push({ name: '云盘活动', ok: true, note: tailSkip, idle: true });
   } else {
     push(await once('云盘活动', runCloudActs, deps));
+  }
+  // ⑫ 许愿码（`National_MakeWish`）：让上游把「能自动推进」的那几条推成完成，拿抽奖码。
+  //
+  // 与上一步的区别：`云盘活动` 是**只读**（5 个 GET 拼一行），这一步是**写**
+  // （`task/auto-advance`）。分开是因为口径不同 —— 只读失败不染红，写口失败要说清哪一条。
+  //
+  // ⚠ 只做 `autoAdvanceable` 那几条（上游自己标的）。`clickAdvance` 的**不碰**：
+  //   它们要"真的先做那件事"（登录 PC 传文件、去云朵中心签到），点一下不算。
+  if (tailSkip !== '') {
+    push({ name: '许愿码', ok: true, note: tailSkip, idle: true, skipped: true });
+  } else {
+    push(await once('许愿码', runWishCodes, deps));
   }
 
   // ⚠ `pending` 不是失败：动作做了、服务端还没确认，不能把整趟染红。
