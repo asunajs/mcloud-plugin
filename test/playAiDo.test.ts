@@ -169,6 +169,19 @@ test('今天点过就不再点：同一天再跑一趟，`register` 一发都不
   assert.equal(Object.keys(st?.tried ?? {}).length, 1);
 });
 
+test('点完之后**真的进动作链**：第一发是灵犀的换票（`toSourceId=001003`）', async () => {
+  // ⚠ 这一条钉的是"接线"，不是"能不能聊成"：动作链的第一步是 m.mcloud 上的
+  //   `querySpecTokenV2`（`mailSpecTokenRequest` → `specTokenRequest`），
+  //   它发出来了就说明 `stepAction` 拿到了正确的 `PkAttempt`（key=aiAssistant / step=ai-mail-sso）。
+  const { deps, sent } = harness({ flip: true });
+  await drainAll(deps);
+  // ⚠ `toSourceId` 在 **body** 里（不是 query），别按 URL 找
+  const sso = sent.filter(
+    (x) => /querySpecToken/i.test(String(x.url)) && String(x.body ?? '').includes('001003'),
+  );
+  assert.equal(sso.length, 1, `要有一发灵犀换票（实际 ${sso.length}）`);
+});
+
 test('预算常量是 1（写口，别放开成"全做"）', () => {
   assert.equal(PLAYAI_TASKS_PER_RUN, 1);
 });

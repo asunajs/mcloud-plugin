@@ -118,7 +118,7 @@
   塞进配置就要为每个号开一个 `accounts.<id>.*` 分支，而账号是会删会加的。
   老键 `mcloud.redpack.enabled` / `mcloud.tokenpk.enabled` 在加载时**一次性**搬到
   `mcloud.task.<id>.on`（值归一、旧键置空、幂等），之后不再参与判定。
-* **面板清单**只有 `mcloud` 声明 `config.fields`（日常预算 / 定时抢兑）。五个子任务开关的
+* **面板清单**只有 `mcloud` 声明 `config.fields`（日常预算 / 定时抢兑）。六个子任务开关的
   公共默认**不在**清单里 —— 它们的入口与账号级那一半同在插件页的账号工具栏（「公共默认」），
   一个功能不跨两个界面（2026-11-25 用户口径）；存储仍是这份 `config.json` 的 `task_*`。
   `mcloud-daily` / `mcloud-exchange` / `mcloud-live` **不再有配置表单** —— 同一格设置
