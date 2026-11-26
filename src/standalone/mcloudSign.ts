@@ -11,10 +11,41 @@ import { exchange, printExchangeList } from './exchange.ts';
 import { createRuntime } from './runtime.ts';
 import { createCliLogger, colorizeFrom } from './logger.ts';
 import { lineLevel } from '../mcloud/tasks/stepLog.ts';
+import { parseTaskRunParams } from '../mcloud/tasks/taskSwitches.ts';
+import { TASK_SWITCHES } from '../mcloud/tasks/taskSwitches.ts';
 
 export { exchange, printExchangeList };
 
-export async function run(configPath?: string): Promise<void> {
+/** 取一段 `--k v` 或 `--k=v`。 */
+function argOf(argv: readonly string[], name: string): string | undefined {
+  const i = argv.indexOf(name);
+  if (i >= 0 && argv[i + 1] !== undefined && !argv[i + 1]!.startsWith('--')) return argv[i + 1];
+  const eq = argv.find((x) => x.startsWith(name + '='));
+  return eq === undefined ? undefined : eq.slice(name.length + 1);
+}
+
+/** 跑日常。`argv` 里认三个调试参数（与面板「调试」页同一份 `parseTaskRunParams`）：
+ *
+ *  ```text
+ *    --only tokenpk,redpack      只跑这几族（名字见 `--help`）
+ *    --account <id|label>        只跑这一个号
+ *    --force                     忽略子任务开关与账号停用（**只**放宽这两层）
+ *  ```
+ */
+export async function run(configPath?: string, argv: readonly string[] = []): Promise<void> {
+  const onlyRaw = argOf(argv, '--only');
+  const accountRaw = argOf(argv, '--account');
+  const force = argv.includes('--force');
+  const parsed = parseTaskRunParams({
+    ...(onlyRaw === undefined ? {} : { include: onlyRaw.split(',').map((x) => x.trim()).filter(Boolean) }),
+    ...(accountRaw === undefined ? {} : { accounts: [accountRaw] }),
+    ...(force ? { force: true } : {}),
+  });
+  if ('error' in parsed) {
+    createCliLogger().error(`参数不对：${parsed.error}`);
+    process.exitCode = 2;
+    return;
+  }
   const rt = await await createRuntime({ configPath });
   const log = createCliLogger({ colorize: colorizeFrom(rt.config.common) });
   try {
@@ -25,7 +56,18 @@ export async function run(configPath?: string): Promise<void> {
     }
     log.info(`配置文件: ${rt.config.path}`);
     log.info(`共 ${rt.config.accounts.length} 个账号`);
-    const results = await runDailyAll(rt);
+    if (parsed.include !== null || parsed.account !== null || parsed.force) {
+      const bits: string[] = [];
+      if (parsed.include !== null) bits.push(`只跑 ${parsed.include.join('、')}`);
+      if (parsed.account !== null) bits.push(`账号 ${parsed.account}`);
+      if (parsed.force) bits.push('不看开关/停用');
+      log.info(`调试运行：${bits.join(' · ')}`);
+    }
+    const results = await runDailyAll(rt, {
+      ...(parsed.account === null ? {} : { account: parsed.account }),
+      ...(parsed.include === null ? {} : { only: parsed.include }),
+      ...(parsed.force ? { force: true } : {}),
+    });
     if (results.length === 0) {
       log.error('没有启用账号');
       process.exitCode = 1;
@@ -102,11 +144,21 @@ const isMain = process.argv[1] !== undefined && resolve(process.argv[1]) === fil
 if (isMain) {
   const argv = process.argv.slice(2);
   try {
-    // 子命令先分派（只有一条）：`config:import`
-    if (argv[0] === 'config:import') {
+    if (argv.includes('--help') || argv.includes('-h')) {
+      // ⚠ 合法的族 id 从 `TASK_SWITCHES` 里取（单一事实源），别在这里再列一份
+      createCliLogger().info(
+        '用法：mcloud-sign [--config <path>] [--only <族,…>] [--account <id|label>] [--force]\n'
+          + `  族：${TASK_SWITCHES.map((t) => t.id).join(' / ')}\n`
+          + '  --only    只跑这几族（逗号分隔）\n'
+          + '  --account 只跑这一个号\n'
+          + '  --force   忽略子任务开关与账号停用（只放宽这两层）\n'
+          + '  config:import --config <asign.json> --data-dir <dir> [--dry-run]',
+      );
+      process.exitCode = 0;
+    } else if (argv[0] === 'config:import') {
       await configImport(argv.slice(1));
     } else {
-      await run(configFromArgv(argv));
+      await run(configFromArgv(argv), argv);
     }
   } catch (e) {
     // 配置都还没读出来时没有 `common.colorize`；用默认（TTY 判断）。

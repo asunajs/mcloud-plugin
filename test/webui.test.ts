@@ -240,17 +240,17 @@ test('动作接口都是**写**（带 `x-panel: 1`），否则会被面板挡成
 
 // ── ⑤ 菜单栏与区块一一对应 ────────────────────────────────────────────
 
-test('⚠ 菜单栏六块，与六个区块一一对应（少一块 = 用户点不到）', async () => {
+test('⚠ 菜单栏七块，与七个区块一一对应（少一块 = 用户点不到）', async () => {
   // 2026-11-13：导航改用面板的分段控件（`.seg-item` + `aria-pressed`），不再自造下划线 tabs
   const items = [...html.matchAll(/class="seg-item[^"]*" (?:type="button" )?data-block="([a-z]+)"/g)].map(
     (m) => m[1] as string,
   );
-  // ⚠ 原来是七块：「设置」和「推送」都按用户要求删掉了；2026-10-31 加了「领奖」
-  //   （待领取奖品 → 点领取 → 短信验证码）。六个词就是用户看到的全部区块。
+  // ⚠ 「设置」「推送」都按用户要求删掉了；2026-10-31 加了「领奖」（待领取奖品 → 点领取 →
+  //   短信验证码）；2026-11-26 加了「调试」（只跑某一族 · 单个账号，给测试用）。
   assert.deepEqual(
     items,
-    ['account', 'daily', 'exchange', 'live', 'prizes', 'data'],
-    '菜单栏的顺序与名字就是用户看到的那六个词，别随手改',
+    ['account', 'daily', 'exchange', 'live', 'prizes', 'data', 'debug'],
+    '菜单栏的顺序与名字就是用户看到的全部区块，别随手改',
   );
   for (const name of items) {
     assert.ok(html.includes(`id="block-${name}"`), `菜单里有「${name}」，但没有对应的区块`);
@@ -481,6 +481,24 @@ test('⚠ 过期的码不许画得像还活着（"剩 0 秒"看起来完全像�
       /qr\.expired[\s\S]{0,300}?qr-box[\s\S]{0,80}?hidden = true/.test(js),
     '过期的码要从屏幕上撤掉，别留一张扫不出结果的图',
   );
+});
+
+test('调试页：只跑某一族 · 单个账号（清单一屏、不看总开关）', async () => {
+  const html = srcOf('webui/index.html');
+  const js = srcOf('webui/app.js');
+  // 页签与块
+  assert.ok(html.includes('data-block="debug"'), '顶部要有「调试」页签');
+  assert.ok(html.includes('id="block-debug"'), '要有 block-debug 这一块');
+  // 三个关键控件
+  assert.ok(html.includes('id="debug-tasks"'), '要有选族的开关容器');
+  assert.ok(html.includes('id="debug-account"'), '要有选号的控件');
+  assert.ok(html.includes('id="debug-run"'), '要有「只跑这个号」');
+  // ⚠ 选号必须是**单选**：`<p-select>`（多选是 `<p-multiselect>`）
+  assert.equal(/<p-multiselect[^>]*id="debug-account"/.test(html), false, '调试页不许用多选');
+  // 点它会带 include + accounts + force
+  assert.match(js, /runTaskAndWait\('daily',[^)]*\{[^}]*include[^}]*accounts[^}]*force:\s*true/, '要带 include/accounts/force');
+  // 空选时按钮禁用
+  assert.match(js, /btn\.disabled = n === 0/, '一族都没选时不许点');
 });
 
 test('下拉一律用面板的 <p-select>（原生 select 的列表是系统画的，配色/主题都不跟）', async () => {
@@ -971,7 +989,7 @@ test('⚠ 「跑一次」要**等它真跑完**再说结果（面板那个接口
   // 原来的写法是 `act(btn, () => runTask('daily'), '跑完了 —— 看下面的每一步')`：
   // 触发接口是异步的，它回 `{ok:true}` 只表示"收下了"，任务还要跑几十秒 ——
   // 于是用户看到"跑完了"、读数却还是上一次的。
-  assert.ok(/async function runTaskAndWait\(key, btn\)/.test(js), '缺"触发并等完"');
+  assert.ok(/async function runTaskAndWait\(key, btn, params\)/.test(js), '缺"触发并等完"（第三个参数是这一次的 params）');
   assert.ok(/async function waitRun\(/.test(js), '缺"等这一次跑完"');
   // 判据①：按面板回的 `run_id` 取那一条 —— 不用比时间，也不会挑错记录
   assert.ok(/const runId = queued && queued\.run_id;/.test(js), '要用面板回的 run_id');

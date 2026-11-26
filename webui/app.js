@@ -26,7 +26,7 @@
 // 页面版本号：和 style.css 里的 --style-ver 一起人工递增。
 // 「样式自检」（boot.js 的 ?diag=1）会读它 —— 用来区分「CSS 是新的、JS 还是旧的」这种
 // 半新半旧状态（第 155 轮：样式表是 v155，但 DOM 里根本没有 .ex-group-row 这种行）。
-document.documentElement.dataset.appVer = '169';
+document.documentElement.dataset.appVer = '170';
 
 /** 插件自己的接口。 */
 const API = '/plugins/mcloud/api';
@@ -188,7 +188,7 @@ async function waitRun(plugin, task, sinceMs, onTick, runId) {
 }
 
 /** 触发一条任务，等它跑完，再把真结果说出来。 */
-async function runTaskAndWait(key, btn) {
+async function runTaskAndWait(key, btn, params) {
   const pair = TASK[key];
   // ⚠ 筛在「提醒以上」时，一次跑完界面上一行都没有 —— 用户的原话就是
   //   「没看到任何日志」。**提示要跟在结果那句里**：单发一条 toast 会被
@@ -214,7 +214,9 @@ async function runTaskAndWait(key, btn) {
     // 必须和新面板一起用。
     const queued = await call(
       `/api/tasks/${encodeURIComponent(pair[0])}/${encodeURIComponent(pair[1])}/run?async=1`,
-      { method: 'POST', write: true },
+      // `params` 是**这一次**的参数（调试页的 include/accounts/force）；
+      // 面板按 `{params}` 原样交给 handler 的 `payload.params`（见 host-api.md）。
+      { method: 'POST', write: true, ...(params === undefined ? {} : { body: { params } }) },
     );
     // 面板**立刻**回 `run_id`（它只是把这次派发出去），拿它去取那一条记录 —— 最准。
     const runId = queued && queued.run_id;
@@ -3082,6 +3084,17 @@ const TERMS = {
       clear: $('exchange-term-clear'),
     }),
   },
+  debug: {
+    // 调试页跑的是「日常」那条任务（同一套日志流）
+    plugin: 'mcloud-daily',
+    el: () => ({
+      body: $('debug-term-body'),
+      meta: $('debug-term-meta'),
+      follow: $('debug-term-follow'),
+      level: $('debug-term-level'),
+      clear: $('debug-term-clear'),
+    }),
+  },
   live: {
     plugin: 'mcloud-live',
     el: () => ({
@@ -3404,14 +3417,17 @@ function makeTerm(plugin, el) {
   return { open, close, clearNow, reload, get isOpen() { return es !== null; } };
 }
 
-// 三个终端的「清空」「级别」—— 写成**字面量**（`$('…')`），
+// 四个终端的「清空」「级别」—— 写成**字面量**（`$('…')`），
 // 因为界面测试会逐个核对"HTML 里的按钮都真的挂了处理器"。
+// ⚠ 第四个是「调试」页那块（跑的是 mcloud-daily 的同一条日志流）。
 $('daily-term-clear').addEventListener('click', () => termHandle('daily').clearNow());
 SELECT_HANDLERS['daily-term-level'] = () => termHandle('daily').reload();
 $('exchange-term-clear').addEventListener('click', () => termHandle('exchange').clearNow());
 SELECT_HANDLERS['exchange-term-level'] = () => termHandle('exchange').reload();
 $('live-term-clear').addEventListener('click', () => termHandle('live').clearNow());
 SELECT_HANDLERS['live-term-level'] = () => termHandle('live').reload();
+$('debug-term-clear').addEventListener('click', () => termHandle('debug').clearNow());
+SELECT_HANDLERS['debug-term-level'] = () => termHandle('debug').reload();
 
 /** 三块各自的终端实例（懒建：第一次显示那一块时才建）。 */
 const termOf = {};
@@ -3448,6 +3464,8 @@ function showBlock(name) {
   if (name === 'exchange') autoFetchPicksOnce();
   // 「领奖」页也是：第一次进就读一次未领取（之后点「刷新」/切账号才重取）。
   if (name === 'prizes') autoFetchPrizesOnce();
+  // 「调试」页：进去**不跑任何东西**，只把开关与账号画出来、读一次"每族上次"。
+  if (name === 'debug') renderDebug();
 }
 
 $('menu').addEventListener('click', (ev) => {
@@ -3899,6 +3917,119 @@ $('acct-cfg-save').addEventListener('click', (e) =>
     (r) => r.note || '设置已存下',
   ),
 );
+
+// ══════════ 调试页：只跑某一族 · 单个账号 ══════════
+//
+// ⚠ 这一页**故意不看**两样东西：账号设置里的子任务开关、以及账号是不是停用
+//   （用户原话：「总开关都关了我还调个屁」）。跑完**不改**开关、不改停用。
+// ⚠ 只放宽这两层门 —— 凭据、幂等、串行、间隔、预算一律照旧（判据在 `dailyRun`）。
+//
+// 一次**只跑一个号**：`<p-select>` 本来就是单选，正好；要跑多个号回「日常」页。
+let debugPicked = {};   // 族 id → 是否勾上（这一次的）
+let debugAccountId = '';
+
+function renderDebug() {
+  const acc = (last && last.account) || {};
+  const list = Array.isArray(acc.accounts) ? acc.accounts : [];
+  // ① 族开关：第一次进来按"现在开着什么"预勾（关着的默认不勾，但可以手动勾上）
+  const box = $('debug-tasks');
+  if (box.childElementCount === 0) {
+    for (const t of (acc.taskCommon || [])) {
+      const li = document.createElement('li');
+      li.className = 'task-switch';
+      const lab = document.createElement('span');
+      lab.className = 'task-switch-label';
+      lab.textContent = t.label;
+      const sw = document.createElement('p-switch');
+      sw.setAttribute('data-task', t.id);
+      if (t.on) {
+        sw.setAttribute('checked', '');
+        debugPicked[t.id] = true;
+      }
+      li.append(lab, sw);
+      box.append(li);
+    }
+  }
+  // ② 账号（单选）
+  if (list.length === 0) {
+    pSelect('debug-account', [], '', { disabled: true, placeholder: '还没有账号' });
+  } else {
+    if (debugAccountId === '' || !list.some((a) => String(a.id) === debugAccountId)) {
+      debugAccountId = String((acc.accounts.find((a) => a.current) || list[0]).id);
+    }
+    pSelect(
+      'debug-account',
+      list.map((a) => ({
+        value: String(a.id),
+        label: `${a.label || a.id}${a.disabled ? '（已停用）' : ''}`,
+      })),
+      debugAccountId,
+    );
+    document.getElementById('debug-account').dataset.debugAccount = '1';
+  }
+  syncDebugRunBtn();
+  void refreshDebugLast();
+}
+
+/** 选中的族（从 DOM 读，DOM 才是这一页的真身）。 */
+function debugPickedIds() {
+  const out = [];
+  for (const sw of $('debug-tasks').querySelectorAll('p-switch')) {
+    const el = /** @type {any} */ (sw);
+    if (el.value === true) out.push(String(el.dataset.task || ''));
+  }
+  return out;
+}
+
+function syncDebugRunBtn() {
+  const n = debugPickedIds().length;
+  const btn = $('debug-run');
+  btn.disabled = n === 0;
+  setText('debug-note', n === 0 ? '至少选一族' : '');
+}
+
+$('debug-tasks').addEventListener('change', syncDebugRunBtn);
+SELECT_HANDLERS['debug-account'] = () => {
+  debugAccountId = $('debug-account').value;
+};
+
+$('debug-run').addEventListener('click', (e) => {
+  const include = debugPickedIds();
+  if (include.length === 0) {
+    toast('至少选一族', true);
+    return;
+  }
+  const acct = $('debug-account') ? $('debug-account').value : '';
+  if (acct === '') {
+    toast('还没有账号', true);
+    return;
+  }
+  void runTaskAndWait('daily', e.currentTarget, { include, accounts: [acct], force: true });
+});
+$('debug-stop').addEventListener('click', (e) => stopRunning('daily', e.currentTarget));
+
+/** 每族上次的结果（读 `/debug/last`，不新造状态）。 */
+async function refreshDebugLast() {
+  const box = $('debug-last');
+  try {
+    const r = await api('/debug/last');
+    const tasks = r.tasks || {};
+    const labels = (r.switches || []).map((t) => [t.id, t.label]);
+    box.innerHTML = labels
+      .map(([id, label]) => {
+        const one = tasks[id];
+        const atText = one ? when(one.at) : '还没跑过';
+        const ok = one ? (one.ok ? '成了' : '没成') : '';
+        const note = one && one.note ? ` —— ${esc(one.note)}` : '';
+        return `<li class="item"><div class="item-main"><span class="item-t">${esc(label)}${ok === '' ? '' : ` · ${ok}`}</span><span class="item-s">${esc(atText)}${note}</span></div></li>`;
+      })
+      .join('');
+  } catch (e) {
+    box.innerHTML = `<li class="hint">读不到：${esc(String(e && e.message ? e.message : e))}</li>`;
+  }
+}
+
+$('debug-last-refresh').addEventListener('click', () => void refreshDebugLast());
 
 // ══════════ 公共默认（所有账号共用的缺省） ══════════
 //

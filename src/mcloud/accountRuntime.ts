@@ -8,6 +8,7 @@ import { loadAuthRaw } from './sessionExchange.ts';
 import { authorizeRequest } from './cloudUpload.ts';
 import type { Transport } from './client.ts';
 import { DEFAULT_GAP_MS, type TaskDeps } from './tasks/base.ts';
+import { loadAccounts } from './accounts.ts';
 
 export async function forEachTaskAccount<T>(
   base: Store,
@@ -15,11 +16,27 @@ export async function forEachTaskAccount<T>(
   payload: { lateMs: number; manual?: boolean | undefined },
   transport: Transport,
   fn: (deps: TaskDeps, acctId: string, index: number, total: number) => T | Promise<T>,
+  /** 省略 / `null` = 按任务自己的选择（auto/manual）；给了就**只跑这几个号**（调试用） */
+  accounts?: string[] | null,
+): Promise<{ acctId: string; result: Awaited<T> }[]>;
+export async function forEachTaskAccount<T>(
+  base: Store,
+  task: string,
+  payload: { lateMs: number; manual?: boolean | undefined },
+  transport: Transport,
+  fn: (deps: TaskDeps, acctId: string, index: number, total: number) => T | Promise<T>,
+  accounts: string[] | null = null,
 ): Promise<{ acctId: string; result: Awaited<T> }[]> {
   // ⚠ `all` 在**这里**展开（不是存的时候）—— 以后新登录的账号也进得来。
   const mode: TaskAccountMode =
     payload.manual === true || payload.lateMs < 0 ? 'manual' : 'auto';
-  const targets = resolveTaskAccounts(rawStoreOf(base), task, mode);
+  // **调试**：明确点名了就只跑那几个号 —— 既不走 auto/manual，也**不过滤停用**
+  // （停用是"定时别拿它跑"，不是"调试不许碰它"）。不存在的 id 当场跳过并记一行。
+  const wanted = accounts === null ? [] : accounts;
+  const targets =
+    accounts === null
+      ? resolveTaskAccounts(rawStoreOf(base), task, mode)
+      : wanted.filter((id) => loadAccounts(rawStoreOf(base)).some((a) => a.id === id));
   const out: { acctId: string; result: Awaited<T> }[] = [];
   for (const [i, acctId] of targets.entries()) {
     // ⚠ **每个账号一个 store**：`scoped(base, acctId)` 让这一趟里所有按账号的

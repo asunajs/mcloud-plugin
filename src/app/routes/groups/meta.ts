@@ -6,10 +6,11 @@ import { STATE_LAST_TASKLIST, TASK_NAMES } from '../../../mcloud/tasks/taskList.
 import { groupView } from '../../../mcloud/groups.ts';
 import { hasBigInt, sandboxCaps } from '../../../mcloud/caps.ts';
 import { parseQuery } from '../../../mcloud/query.ts';
-import { readRun, recentRuns } from '../../../mcloud/runLog.ts';
+import { readRun, readRunsOf, recentRuns } from '../../../mcloud/runLog.ts';
 import { readRing } from '../../../mcloud/logRing.ts';
 import { json } from '../support.ts';
 import type { RouteDeps, RouteEntry, RouteRequest } from '../support.ts';
+import { TASK_SWITCHES } from '../../../mcloud/tasks/taskSwitches.ts';
 
 /** meta 组。deps 是路由依赖；base 是 /plugins/mcloud/api；verify 是「拿当前会话验一次」。 */
 export function metaRoutes(deps: RouteDeps, base: string, verify: () => Promise<{ ok: boolean; note: string }>): RouteEntry[] {
@@ -62,6 +63,45 @@ export function metaRoutes(deps: RouteDeps, base: string, verify: () => Promise<
           lines: all.slice(Math.max(0, all.length - limit)),
           total: all.length,
         });
+      },
+    },
+
+{
+      // **调试页**要的那一排小卡：每族最近一条结果（读运行记录，**不新造状态**）。
+      //
+      // ⚠ 这不是"子任务开关"的读数，也不是"今天跑了几趟"：它回答的是
+      //   "这一族上次跑成了没有、什么时候、结论那句是什么"。
+      path: `${base}/debug/last`,
+      method: 'GET',
+      handler: () => {
+        // ⚠ 用 `readRunsOf`（带 `steps` 的原始记录），`recentRuns` 是**摘要**、没有 steps
+        const runs = readRunsOf(deps.store, 'daily').slice(0, 12);
+        // 运行记录里每一步都有 `name`；按族名找到它最近一次出现的那一步。
+        // ⚠ 步骤名与开关的 label **不是同一个词**：开关叫「每日签到」，而 `dailyRun`
+        //    push 的步骤名是「签到」、还有「签到翻倍 / 复活卡」；算力那一族叫「算力大作战」；
+        //    云手机那一族在记录里叫「红包派对」。下面这张表是**一一对应**的唯一出处。
+        const STEP_NAMES: Record<string, string[]> = {
+          signin: ['签到', '签到翻倍', '复活卡'],
+          expansion: ['任务拓展'],
+          appTask: ['App 任务', 'App 任务状态', '分享领奖'],
+          redpack: ['红包派对'],
+          tokenpk: ['算力大作战'],
+        };
+        const out: Record<string, { at: string; ok: boolean; note: string } | null> = {};
+        for (const spec of TASK_SWITCHES) {
+          out[spec.id] = null;
+          const names = STEP_NAMES[spec.id] ?? [spec.label];
+          for (const r of runs) {
+            // 一族可能有好几步（签到 / 翻倍 / 复活卡）⇒ 取这条记录里该族**最差**的那一步：
+            // "上次这一族到底成了没有"要按最差的算，不能拿成功的那一步盖住失败。
+            const hits = (r.steps ?? []).filter((st) => names.includes(st.name));
+            if (hits.length === 0) continue;
+            const bad = hits.find((st) => !st.ok) ?? hits[0]!;
+            out[spec.id] = { at: r.at, ok: hits.every((st) => st.ok), note: bad.note };
+            break;
+          }
+        }
+        return json(200, { tasks: out, switches: TASK_SWITCHES.map((t) => ({ id: t.id, label: t.label })) });
       },
     },
 

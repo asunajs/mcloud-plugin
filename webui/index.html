@@ -16,7 +16,7 @@
     <!-- 面板 0.4.0 只有一份 /app.css：token（含 [data-theme=dark]）+ 组件（.btn/.card/.field/.pill…）
          都在里面。旧面板的 /css/reset|theme|components.css 已经不存在了（第 139 轮）。 -->
     <link rel="stylesheet" href="/app.css" />
-    <link rel="stylesheet" href="style.css?v=20261125-1025" />
+    <link rel="stylesheet" href="style.css?v=20261126-1145" />
 
     <!-- 主题跟随 + embed 标记，必须赶在第一帧之前（见 boot.js 的文件头） -->
     <script src="boot.js?v=20261116-2230"></script>
@@ -82,6 +82,7 @@
       <button class="seg-item" type="button" data-block="live" aria-pressed="false">直播</button>
       <button class="seg-item" type="button" data-block="prizes" aria-pressed="false">领奖</button>
       <button class="seg-item" type="button" data-block="data" aria-pressed="false">数据</button>
+      <button class="seg-item" type="button" data-block="debug" aria-pressed="false">调试</button>
     </nav>
 
     <main class="main">
@@ -869,9 +870,69 @@
 
       </section>
 
+      <!-- ══════════════ 调试 ══════════════
+           给**测试新功能**用的：一次只跑一个号、只跑点名的族。
+           ⚠ 它有意**不看**两样东西：账号设置里的子任务开关、以及账号是不是停用
+             （用户原话：「总开关都关了我还调个屁」）。跑完**不改**开关、不改停用。
+           ⚠ 只放宽这两层门。凭据自检 / 幂等 / 串行 / 间隔 / 预算 / 脱敏一条都不放宽。
+           ⚠ 一次**只跑一个号**（单选）：要跑多个号请回「日常」页。 -->
+      <section class="block" id="block-debug">
+        <p class="hero" id="debug-hero">…</p>
+        <p class="sub" id="debug-sub"></p>
+
+        <div class="card">
+          <div class="card-head">
+            <div class="card-head-main">
+              <span class="card-title">只跑某一族 · 单个账号</span>
+            </div>
+          </div>
+          <p class="hint">
+            只影响这一次：<b>不改</b>账号设置里的开关，也<b>不改</b>账号的停用状态。
+            关着的族、停用的号，这里勾上/选中也照样跑。
+          </p>
+          <p class="field-label">跑哪几族</p>
+          <ul class="task-switches" id="debug-tasks"></ul>
+          <label class="field"><span class="field-label">用哪个账号</span>
+            <p-select id="debug-account" aria-label="调试用哪个账号"></p-select></label>
+          <p class="hint" id="debug-note"></p>
+          <div class="row">
+            <button class="btn primary" id="debug-run">只跑这个号</button>
+            <button class="btn ghost" id="debug-stop" hidden>停止</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <div class="card-head-main">
+              <span class="card-title">每族上次的结果</span>
+            </div>
+            <div class="card-actions">
+              <button class="btn small" id="debug-last-refresh" type="button">刷新</button>
+            </div>
+          </div>
+          <ul class="list" id="debug-last"></ul>
+        </div>
+
+        <div class="term" id="debug-term">
+          <div class="term-bar">
+            <span class="term-title">运行日志</span>
+            <span class="term-meta" id="debug-term-meta">连接中…</span>
+            <span class="term-actions">
+              <label class="term-follow" title="滚到最新一行">
+                <input type="checkbox" id="debug-term-follow" checked /> 跟随
+              </label>
+              <p-select class="term-level" id="debug-term-level" aria-label="日志级别"
+                      options='[{"value":"info","label":"全部"},{"value":"warn","label":"提醒以上"},{"value":"error","label":"只看错误"}]' value="info"></p-select>
+              <button class="btn term-clear" id="debug-term-clear">清空</button>
+            </span>
+          </div>
+          <pre class="term-body" id="debug-term-body" tabindex="0"></pre>
+        </div>
+      </section>
+
     </main>
 
     <div class="toast" id="toast" hidden></div>
-    <script src="app.js?v=20261125-1025"></script>
+    <script src="app.js?v=20261126-1145"></script>
   </body>
 </html>

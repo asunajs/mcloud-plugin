@@ -67,6 +67,22 @@ mcloud-sign --config ./asign.json
 - 状态默认写 `./.mcloud/state.json`，与面板数据库不互通
 - 运行时换票后的 auth 保存在状态里，旧 config 不会覆盖；要强制覆盖某账号加 `"replaceAuth": true`
 
+## 只跑某一族 / 某一个号（调试）
+
+测一个新族时不用把 16 步全跑一遍：
+
+```bash
+mcloud-sign --config ~/panel-3030/data/plugin-data/mcloud/config.json \
+  --only tokenpk --account <账号 id> --force
+```
+
+- `--only`：只跑这几族（逗号分隔；合法 id 见 `mcloud-sign --help`）；
+- `--account`：只跑这一个号（面板「调试」页也是**一次一个号**）；
+- `--force`：**忽略子任务开关与账号停用**这两层门 —— 只放宽这两层。
+  凭据自检、幂等键、串行、间隔、预算**一律不放宽**；跑完**不改**开关与停用状态。
+
+面板上对应的入口是插件页的**「调试」**页签（同一份 `parseTaskRunParams`）。
+
 ## 任务开关（按账号 + 公共默认）
 
 日常里的五族可以逐个关：`每日签到` / `任务拓展` / `App 任务`（含分享领奖）/

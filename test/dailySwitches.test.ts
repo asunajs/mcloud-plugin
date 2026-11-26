@@ -103,6 +103,50 @@ test('关掉「任务拓展」⇒ 不传文件（不发 upload 那一族）', as
   void sent;
 });
 
+test('⚠ 调试运行：开关关着 + force ⇒ 点名的那族**照样跑**（这就是调试页的用处）', async () => {
+  const { deps, sent } = depsFor([]);
+  // 用户先在账号设置里把算力大作战关掉
+  setTaskOn(deps.store, 'tokenpk', false, NOW);
+  // 日常那一趟：关着就不跑（现状不变）
+  const normal = depsFor([]);
+  setTaskOn(normal.deps.store, 'tokenpk', false, NOW);
+  await runDaily(normal.deps);
+  assert.equal(
+    normal.sent.filter((x) => /tokenpk/.test(String(x.url))).length,
+    0,
+    '日常（只跑一个号、没 force）里关掉的族不该发请求',
+  );
+
+  // 调试运行：only + force ⇒ **闸放行**（这一族的步骤真的进了 drain）。
+  // ⚠ 这里不发真请求：上游一律 90001，"放行"看的是步骤名与它的 note，
+  //   而不是"有没有打到 tokenpk"—— 那取决于票，不取决于闸。
+  const dbg = depsFor([]);
+  setTaskOn(dbg.deps.store, 'tokenpk', false, NOW);
+  const dr = await runDaily(dbg.deps, { only: ['tokenpk'], force: true });
+  const step = dr.steps.find((s) => s.name === '算力大作战');
+  assert.ok(step, '算力那一族要有步骤');
+  assert.doesNotMatch(step.note, /已关闭/, `关着也必须放行：${step.note}`);
+  assert.doesNotMatch(step.note, /这次不跑/, `点名了就必须进：${step.note}`);
+});
+
+test('调试运行只点一族 ⇒ 其它族一个请求都不发，且各留一行「这次不跑」', async () => {
+  const { deps, sent } = depsFor([]);
+  const r = await runDaily(deps, { only: ['tokenpk'], force: true });
+  // 签到/App 任务/任务拓展/云手机 都不该发
+  for (const needle of ['startSignIn', 'taskListV3', 'multiple', 'revival']) {
+    assert.equal(countOf(sent, needle), 0, `${needle} 不该发`);
+  }
+  const skipped = r.steps.filter((s) => /这次不跑/.test(s.note));
+  assert.ok(skipped.length >= 3, `其它族要各留一行：${r.steps.map((s) => s.name + '=' + s.note).join(' | ')}`);
+});
+
+test('调试运行只点「云手机」⇒ 换票那两发也跳过（没人需要 H5 票）', async () => {
+  const { deps, sent } = depsFor([]);
+  await runDaily(deps, { only: ['redpack'], force: true });
+  assert.equal(countOf(sent, 'querySpecToken'), 0, '不需要票就不换票');
+  assert.equal(countOf(sent, 'tyrzLogin'), 0);
+});
+
 test('两族一开一关：关 tokenpk 不影响 redpack 自己跑', async () => {
   const { deps, sent } = depsFor(['tokenpk']);
   await runDaily(deps);

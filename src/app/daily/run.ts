@@ -15,6 +15,7 @@ import { lineLevel, lineText, onceHint, stepTally } from '../../mcloud/tasks/ste
 import { rawStoreOf, scoped } from '../../store/scoped.ts';
 import type { TaskPayload } from '../../ports/panel.ts';
 import type { DailyCtx } from './ctx.ts';
+import { TASK_SWITCH_BY_ID, parseTaskRunParams } from '../../mcloud/tasks/taskSwitches.ts';
 
 /** 今天跑过没 / 上一次的读数 —— 键名只在 mcloud/dailyState.ts 落一次，这里只是别名。 */
 const DONE_KEY = DAILY_DONE_KEY;
@@ -54,10 +55,40 @@ export async function runDailyTask(ctx: DailyCtx, p: TaskPayload): Promise<void>
     // `DONE_KEY` 仍然要写（下面 writeDone 那段）：它现在是**读数**
     // （"今天跑过几趟 / 今天有没有跑过"），不再是闸。
 
+    // ── 调试运行的参数（面板 `POST …/run` 的 body `{params}`）──
+    //   非法就**一条运行都不跑**：记一条 fail 运行并返回，别静默按"全跑"来。
+    const parsed = parseTaskRunParams(p.params ?? null);
+    if ('error' in parsed) {
+      const note = `运行参数不对：${parsed.error}`;
+      logBoth(store, 'fail', note, nowIso);
+      store.recordRun({
+        task: p.name,
+        runs: p.runs,
+        scheduledAt: p.scheduledAt,
+        firedAt: p.firedAt,
+        lateMs: p.lateMs,
+        ok: false,
+        note,
+      });
+      return;
+    }
+
     // 这一趟里"已经解释过的后缀"（跨账号共用，见 onceHint）
     const onceHints = new Set<string>();
     // 先打一行，别让用户只看到插件加载的三行
-    logBoth(store, 'start', '日常 · 开始', nowIso);
+    // 调试运行要**写清范围**：看日志的人第一句就是"这一趟到底跑了什么"
+    const scopeBits: string[] = [];
+    if (parsed.include !== null) {
+      scopeBits.push(`只跑 ${parsed.include.map((id) => TASK_SWITCH_BY_ID.get(id)?.label ?? id).join('、')}`);
+    }
+    if (parsed.account !== null) scopeBits.push(`账号 ${parsed.account}`);
+    if (parsed.force) scopeBits.push('不看开关/停用');
+    logBoth(
+      store,
+      'start',
+      scopeBits.length > 0 ? `日常 · 开始（调试：${scopeBits.join(' · ')}）` : '日常 · 开始',
+      nowIso,
+    );
     // ⚠ 这里**没有**整趟硬截止：插件不再自己叠时间限制（用户口径 2026-11-16
     //   「不需要任何内部时间限制，这个没搞懂有什么作用除了制造麻烦」）。
     //   运行时长由面板的执行预算管（`budget_ms`），超了是面板的事，日志也看得见。
@@ -85,6 +116,9 @@ export async function runDailyTask(ctx: DailyCtx, p: TaskPayload): Promise<void>
           }
           logBoth(store, lineLevel(shown), `${tag} ${shown}`, nowIso);
         },
+        // 调试运行：只跑选中的族、忽略开关/停用（见 `taskSwitches.parseTaskRunParams`）
+        ...(parsed.include === null ? {} : { only: parsed.include }),
+        ...(parsed.force ? { force: true } : {}),
       });
       if (skippedSteps.length > 0) {
         const head = skippedSteps.slice(0, 3).join('、');
@@ -96,10 +130,26 @@ export async function runDailyTask(ctx: DailyCtx, p: TaskPayload): Promise<void>
         );
       }
       return r;
-    });
+    }, parsed.account === null ? null : [parsed.account]);
 
     // 没选到账号 ⇒ **静默返回**。那不是失败，是"这条任务没配账号"。
-    if (runs.length === 0) return;
+    // ⚠ 但**调试点名了一个号**却找不到时要说出来（静默返回会让用户以为跑过了）。
+    if (runs.length === 0) {
+      if (parsed.account !== null) {
+        const note = `账号 ${parsed.account} 不在列表里（或已删除）—— 这次什么都没跑`;
+        logBoth(store, 'fail', note, nowIso);
+        store.recordRun({
+          task: p.name,
+          runs: p.runs,
+          scheduledAt: p.scheduledAt,
+          firedAt: p.firedAt,
+          lateMs: p.lateMs,
+          ok: false,
+          note,
+        });
+      }
+      return;
+    }
 
     const results: typeof runs = [];
     for (const [i, one] of runs.entries()) {

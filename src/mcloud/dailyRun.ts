@@ -20,9 +20,9 @@ import { appTaskStatusLines } from './tasks/appTaskStatus.ts';
 import { runShareClaim } from './tasks/shareClaim.ts';
 import { runMultiple } from './tasks/multiple.ts';
 import { runPrizes } from './tasks/prizes.ts';
-import { REDPACK_BUDGET, redpackGate, redpackStep } from './tasks/redpack.ts';
+import { REDPACK_BUDGET, redpackStep } from './tasks/redpack.ts';
 import { redpackDay, redpackSummary, takeRedpackLines } from './tasks/redpackState.ts';
-import { TOKENPK_BUDGET, tokenPkGate, tokenPkStep, tokenPkSummary } from './tasks/tokenPk.ts';
+import { TOKENPK_BUDGET, tokenPkStep, tokenPkSummary } from './tasks/tokenPk.ts';
 import { takeTokenPkLines } from './tokenPkState.ts';
 import { runReceive } from './tasks/receive.ts';
 import { runRevival } from './tasks/revival.ts';
@@ -32,7 +32,7 @@ import { loadQueue } from './tasks/receive.ts';
 import { runAuthRefresh } from './authRefresh.ts';
 import { runOwnedCleanup } from './tasks/ownedFiles.ts';
 import { runTodayCloud } from './tasks/todayCloud.ts';
-import { taskGate } from './tasks/taskSwitches.ts';
+import { TASK_SWITCH_BY_ID, type TaskSwitchId, taskOn } from './tasks/taskSwitches.ts';
 
 /** 这一趟要跑的族**分别落在哪一页** —— 一页一张票，所以按页换。
  *
@@ -92,6 +92,10 @@ export async function runDaily(
     onPhase?: (phase: string) => void;
     /** 长状态机的逐步原话（上传 / 打卡 / 重试）—— 不等整步结束。 */
     onNote?: (note: string) => void;
+    /** **调试运行**：只跑这几族（`null` = 全跑）。见 `taskSwitches.parseTaskRunParams`。 */
+    only?: TaskSwitchId[] | null;
+    /** 调试运行：忽略**子任务开关**与**账号停用**这两层门（别的一概不放宽）。 */
+    force?: boolean;
   } = {},
 ): Promise<{
   ok: boolean;
@@ -130,6 +134,24 @@ export async function runDaily(
     return one;
   };
 
+  // 这一趟跑不跑某一族。**两句话不一样**，运行记录要能区分：
+  //   · 「已关闭」= 用户在账号设置里关了它；
+  //   · 「这次不跑」= 调试运行只点了别的族。
+  //
+  // ⚠ `only !== null` 时**不看开关**（调试就是这么用的：从调试页打开它，而不是去改配置），
+  //   但 `force` 只放宽"开关/停用"这两层 —— 凭据、幂等、串行、间隔一律照旧。
+  const only = opts.only ?? null;
+  const force = opts.force === true;
+  const selected = (id: TaskSwitchId): { run: boolean; skipNote?: string } => {
+    if (only !== null) {
+      return only.includes(id) ? { run: true } : { run: false, skipNote: '这次不跑（调试只点了别的）' };
+    }
+    if (force) return { run: true };
+    return taskOn(deps.store, id)
+      ? { run: true }
+      : { run: false, skipNote: `「${TASK_SWITCH_BY_ID.get(id)?.label ?? id}」已关闭（账号设置里可以开）` };
+  };
+
   // ⓪ 凭据续期（原生 token 约 30 天）：**先于所有任务**判一次。
   // 之前放在最后一步，票到期那天前面所有任务先集体失败、最后才续上；
   // 现在先续，当前这一趟就能用新 token。离过期还远时一个请求都不发。
@@ -153,7 +175,16 @@ export async function runDaily(
   //   （现场 2026-10-17：移动的票 15:33 过期，而「测试」16:31 刚续过 ⇒ 判"还新"，
   //     移动那 8 步全废。与 F-081 同一族。）
   opts.onPhase?.('正在检查登录票');
+  //
+  // ⚠ 调试运行（`only !== null`）里，如果点名的族**一个都不需要这张票**（只跑云手机之类），
+  //   就整段跳过：换票本身是两发上游请求，调试不该为没用到的票多打两枪。
+  const needTicket =
+    only === null || only.some((id) => id === 'signin' || id === 'appTask' || id === 'tokenpk');
+  if (!needTicket) {
+    push({ name: '换票（签到）', ok: true, note: '这次只跑了不需要它的族', idle: true });
+  }
   for (const page of DAILY_PAGES) {
+    if (!needTicket) break;
     opts.onPhase?.(`换票（${PAGE_LABEL[page]}）`);
     if (needExchange(deps.store, Date.now(), page)) {
       // ⚠ `runExchangeStep` 只**接着走**已有那一轮，它不会**开始**一轮 ——
@@ -195,10 +226,10 @@ export async function runDaily(
   // 判据从状态键读，不从返回值猜：`runSign` 提交完和回查完都是 ok。
   // ⚠ 同样按账号（多账号下读模块级 store 会读到别的号那一格）
   opts.onPhase?.('签到');
-  const signOff = taskGate(deps, 'signin');
-  if (signOff.idle === true) {
-    // 关掉的族仍留一行（灰）：运行记录要能回答"这一趟为什么没签"
-    push({ name: '签到', ok: true, note: signOff.note, idle: true });
+  const signSel = selected('signin');
+  if (!signSel.run) {
+    // 关掉/没选中这一族的仍留一行（灰）：运行记录要能回答"这一趟为什么没签"
+    push({ name: '签到', ok: true, note: signSel.skipNote ?? '', idle: true });
   } else {
     // 签到自己提交一次、看一眼状态就完事，不能 drain（每次执行独立）。
     push(await once('签到', runSign, deps));
@@ -213,8 +244,8 @@ export async function runDaily(
 
   // ③ 任务拓展（状态机：读 → 随机文件+快照触发备份 → 清理自己造的；不再领云朵）
   // ⚠ 不能只看“键在不在”：`done` 是**当天**的完成标记，跨天必须重新起。
-  const expOff = taskGate(deps, 'expansion');
-  const expKick = expOff.idle === true ? expOff : startExpansion(deps);
+  const expSel = selected('expansion');
+  const expKick = expSel.run ? startExpansion(deps) : { ok: true, idle: true, note: expSel.skipNote ?? '' };
   if (expKick.idle) {
     push({ name: '任务拓展', ok: true, note: expKick.note, idle: true });
   } else {
@@ -235,9 +266,9 @@ export async function runDaily(
   //   旧的靠「每 15 分钟一跳」在几个小时内把一轮读满 —— 而一轮没读满时，
   //   待办列表是**不全**的，App 任务就会漏做。
   //   所以这里 drain **整一轮**：两发，很便宜，而且读完就是完整读数。
-  const appOff = taskGate(deps, 'appTask');
-  if (appOff.idle === true) {
-    push({ name: 'App 任务', ok: true, note: appOff.note, idle: true });
+  const appSel = selected('appTask');
+  if (!appSel.run) {
+    push({ name: 'App 任务', ok: true, note: appSel.skipNote ?? '', idle: true });
   } else {
   push(
     await (async () => {
@@ -309,7 +340,10 @@ export async function runDaily(
   //
   // ⚠ 这一族的成败判据**不在 `drain` 的 `note` 上**：一条任务一行，那些行由任务层
   //   写进台账（`redpackState.takeRedpackLines`），这里取出来交给日志与运行记录。
-  const rpKick = redpackGate(deps);
+  // ⚠ `selected()` 已经把"要不要跑这一族"判过了；内层 `*Gate()` 会**再看一次开关**
+  //   （调试的 force 就过不去）。所以这里放行时给一个"不拦"的闸，别调内层那个。
+  const rpSel = selected('redpack');
+  const rpKick = rpSel.run ? { ok: true, idle: false, note: '' } : { ok: true, idle: true, skipped: true, note: rpSel.skipNote ?? '' };
   if (rpKick.idle === true || rpKick.skipped === true) {
     push({ name: '红包派对', ok: true, note: rpKick.note, idle: true });
   } else {
@@ -345,7 +379,8 @@ export async function runDaily(
   // `RESERVE` 成功后不再领）。
   //
   // ⚠ 小结同样用**台账**那句（`drain` 的 note 会在 40 字处截断，这一族的结论就是几张计数）。
-  const pkKick = tokenPkGate(deps);
+  const pkSel = selected('tokenpk');
+  const pkKick = pkSel.run ? { ok: true, idle: false, note: '' } : { ok: true, idle: true, skipped: true, note: pkSel.skipNote ?? '' };
   if (pkKick.idle === true || pkKick.skipped === true) {
     push({ name: '算力大作战', ok: true, note: pkKick.note, idle: true });
   } else {

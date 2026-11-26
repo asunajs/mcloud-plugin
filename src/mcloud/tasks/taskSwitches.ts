@@ -139,6 +139,64 @@ export function taskGate(deps: TaskDeps, id: TaskSwitchId): TaskOutcome {
   return { ok: true, idle: true, skipped: true, note: `「${label}」已关闭（账号设置里可以开）` };
 }
 
+/** 一次「调试运行」的参数（面板 `POST /api/tasks/<plugin>/<task>/run` 的 `params`）。
+ *
+ *  ```jsonc
+ *  { "include": ["tokenpk"], "accounts": ["<账号 id>"], "force": true }
+ *  ```
+ *
+ *  - `include`：只跑这些族；`null`/没写 = 全跑；**空数组是错误**（"至少选一族"，
+ *    不是"全跑" —— 那会静默反直觉）；
+ *  - `accounts`：**只接受一个** id。调试一次只跑一个号：多号请用「日常」页
+ *    （那里的自动/本次选择才是多号的家）；
+ *  - `force`：只放宽**两层门** —— 子任务开关（`taskOn`）与账号停用。
+ *    凭据、幂等、串行、间隔、预算、脱敏**一律不放宽**。
+ *
+ *  ⚠ 为什么 `force` 存在：调试一个新族时，"先去账号设置里把它打开"这一步
+ *  本身就是多余的门（用户原话：「总开关都关了我还调个屁」）。 */
+export interface TaskRunParams {
+  /** `null` = 全跑 */
+  include: TaskSwitchId[] | null;
+  /** 只跑这一个账号；`null` = 按任务自己的选择（auto/manual） */
+  account: string | null;
+  force: boolean;
+}
+
+export function parseTaskRunParams(raw: unknown): TaskRunParams | { error: string } {
+  const valid = TASK_SWITCHES.map((t) => t.id);
+  if (raw === null || raw === undefined) return { include: null, account: null, force: false };
+  if (typeof raw !== 'object' || Array.isArray(raw)) return { error: 'params 必须是对象' };
+  const o = raw as Record<string, unknown>;
+
+  let include: TaskSwitchId[] | null = null;
+  if (o['include'] !== undefined && o['include'] !== null) {
+    if (!Array.isArray(o['include'])) return { error: 'include 必须是族 id 的数组' };
+    const list: TaskSwitchId[] = [];
+    for (const one of o['include']) {
+      if (typeof one !== 'string' || !isTaskSwitchId(one)) {
+        return { error: `没有这个任务：${String(one)}（可用：${valid.join(' / ')}）` };
+      }
+      if (!list.includes(one)) list.push(one);
+    }
+    if (list.length === 0) return { error: '至少选一族（空数组不等于全跑）' };
+    include = list;
+  }
+
+  let account: string | null = null;
+  if (o['accounts'] !== undefined && o['accounts'] !== null) {
+    if (!Array.isArray(o['accounts'])) return { error: 'accounts 必须是数组' };
+    if (o['accounts'].length !== 1) {
+      return { error: '调试一次只跑一个号；要跑多个号请用「日常」页的账号选择' };
+    }
+    const one = o['accounts'][0];
+    if (typeof one !== 'string' || one.trim() === '') return { error: '账号 id 不能为空' };
+    account = one.trim();
+  }
+
+  const force = o['force'] === true;
+  return { include, account, force };
+}
+
 /** 旧键 → 新键。**只搬一次**，搬完旧键置空（不留两份值）。 */
 const LEGACY_KEYS: readonly { from: string; id: TaskSwitchId }[] = [
   { from: 'mcloud.redpack.enabled', id: 'redpack' },
