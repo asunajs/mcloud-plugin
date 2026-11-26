@@ -26,7 +26,7 @@
 // 页面版本号：和 style.css 里的 --style-ver 一起人工递增。
 // 「样式自检」（boot.js 的 ?diag=1）会读它 —— 用来区分「CSS 是新的、JS 还是旧的」这种
 // 半新半旧状态（第 155 轮：样式表是 v155，但 DOM 里根本没有 .ex-group-row 这种行）。
-document.documentElement.dataset.appVer = '172';
+document.documentElement.dataset.appVer = '173';
 
 /** 插件自己的接口。 */
 const API = '/plugins/mcloud/api';
@@ -3953,6 +3953,37 @@ function renderPlayAi() {
     if (names.length > 0) bits.push(names.join(' / '));
   }
   setText('playai-meta', bits.join(' · '));
+
+  // 可做的那几件（短名 + 所属主题）。⚠ 只列 `taskSign===0` 且未完成的 ——
+  // 邀请 / 录音转写那两件走不了这条路，列出来只会让人以为能自动做。
+  const box2 = $('playai-tasks');
+  const runs = [];
+  for (const m of (p.reading && p.reading.modules) || []) {
+    for (const t of m.tasks || []) {
+      if (t.isComplete || t.taskSign !== 0) continue;
+      runs.push({ name: shortName(t.name), where: m.subtitle || '' });
+    }
+  }
+  box2.innerHTML = runs
+    .slice(0, 8)
+    .map(
+      (x) =>
+        `<li class="item"><div class="item-main"><span class="item-t">${esc(x.name)}</span>` +
+        `<span class="item-s">${esc(x.where)}</span></div></li>`,
+    )
+    .join('');
+  if (runs.length > 8) {
+    box2.insertAdjacentHTML(
+      'beforeend',
+      `<li class="hint">还有 ${runs.length - 8} 件没列出来</li>`,
+    );
+  }
+}
+
+/** 任务短名：接口给的是整句营销词（「智能抠图，一键抠图超轻松」），只取逗号前那一段。 */
+function shortName(name) {
+  const head = String(name || '').split(/[，,]/)[0];
+  return (head || String(name || '')).trim();
 }
 
 // ══════════ 调试页：只跑某一族 · 单个账号 ══════════

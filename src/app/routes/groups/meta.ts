@@ -86,6 +86,8 @@ export function metaRoutes(deps: RouteDeps, base: string, verify: () => Promise<
           appTask: ['App 任务', 'App 任务状态', '分享领奖'],
           redpack: ['红包派对'],
           tokenpk: ['算力大作战'],
+          // 趣玩AI 的步骤名与开关 label 恰好同名，但仍写出来 —— 以后改 label 时不会静默失配
+          playAI: ['趣玩AI'],
         };
         const out: Record<string, { at: string; ok: boolean; note: string } | null> = {};
         for (const spec of TASK_SWITCHES) {
