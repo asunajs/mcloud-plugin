@@ -94,7 +94,7 @@ export function metaRoutes(deps: RouteDeps, base: string, verify: () => Promise<
           // 趣玩AI 的步骤名与开关 label 恰好同名，但仍写出来 —— 以后改 label 时不会静默失配
           playAI: ['趣玩AI'],
         };
-        const out: Record<string, { at: string; ok: boolean; note: string } | null> = {};
+        const out: Record<string, { at: string; state: 'done' | 'failed' | 'idle' | 'skipped'; note: string } | null> = {};
         for (const spec of TASK_SWITCHES) {
           out[spec.id] = null;
           const names = STEP_NAMES[spec.id] ?? [spec.label];
@@ -103,8 +103,22 @@ export function metaRoutes(deps: RouteDeps, base: string, verify: () => Promise<
             // "上次这一族到底成了没有"要按最差的算，不能拿成功的那一步盖住失败。
             const hits = (r.steps ?? []).filter((st) => names.includes(st.name));
             if (hits.length === 0) continue;
-            const bad = hits.find((st) => !st.ok) ?? hits[0]!;
-            out[spec.id] = { at: r.at, ok: hits.every((st) => st.ok), note: bad.note };
+            // ⚠ 四态，**不能只看 `ok`**：`ok` 为真有三种完全不同的意思 ——
+            //   ① 真做成了；② 跑了但没事可做（idle，"这个月已经翻倍过了"）；
+            //   ③ 这一趟根本没轮到它（skipped，"这次不跑（调试只点了别的）"）。
+            //   只按 `ok` 画的话 ②③ 都显示成「成了」—— 2026-11-26 用户点「只跑趣玩AI」，
+            //   调试页告诉他六族全成了，那一页因此给不出任何结论。
+            //   优先级：没成 > 没跑 > 没事可做 > 成了（越靠前越"值得看一眼"）。
+            const bad = hits.find((st) => !st.ok);
+            const skipped = hits.find((st) => st.skipped === true);
+            const state = bad !== undefined
+              ? 'failed'
+              : skipped !== undefined
+                ? 'skipped'
+                : hits.every((st) => st.idle === true)
+                  ? 'idle'
+                  : 'done';
+            out[spec.id] = { at: r.at, state, note: (bad ?? skipped ?? hits[0]!).note };
             break;
           }
         }

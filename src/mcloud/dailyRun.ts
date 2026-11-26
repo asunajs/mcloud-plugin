@@ -32,6 +32,7 @@ import { loadQueue } from './tasks/receive.ts';
 import { runAuthRefresh } from './authRefresh.ts';
 import { runOwnedCleanup } from './tasks/ownedFiles.ts';
 import { runTodayCloud } from './tasks/todayCloud.ts';
+import { runCloudActs } from './tasks/cloudActs.ts';
 import { TASK_SWITCH_BY_ID, type TaskSwitchId, taskOn } from './tasks/taskSwitches.ts';
 import { PLAYAI_MAX_STEPS, activePlayAiFileId, playAiStep } from './tasks/playAi.ts';
 import { takePlayAiLines } from './playAiState.ts';
@@ -59,6 +60,9 @@ interface StepResult {
   ok: boolean;
   note: string;
   idle?: boolean;
+  /** 这一族**这次没跑**（开关关着 / 调试只点了别的）—— 与 `idle` 分开：
+   *  `idle` 是"跑了没事做"（正常结果），`skipped` 是"没轮到它"（不是结果）。 */
+  skipped?: boolean;
   /** 动作做了、等服务端确认（不是失败） */
   pending?: boolean;
   /** 内部管道步骤（成功时不进用户日志）—— 见 `tasks/stepLog.ts` */
@@ -75,11 +79,14 @@ async function once(
   try {
     const r = await fn(deps);
     // `skipped` 也是「这一步什么都没做」—— 运行记录里要显示成灰色，不是绿勾。
+    // ⚠ 但要**单独留一个标记**：界面要能区分"跑了没事做"（idle，是正常结果）
+    //   与"这趟没轮到它"（skipped，不是结果）。只看 `ok` 的话两者都会被画成「成了」。
     return {
       name,
       ok: r.ok,
       note: r.note,
       idle: r.idle === true || r.skipped === true,
+      ...(r.skipped === true ? { skipped: true } : {}),
       pending: r.pending === true,
     };
   } catch (e) {
@@ -145,14 +152,20 @@ export async function runDaily(
   //   但 `force` 只放宽"开关/停用"这两层 —— 凭据、幂等、串行、间隔一律照旧。
   const only = opts.only ?? null;
   const force = opts.force === true;
-  const selected = (id: TaskSwitchId): { run: boolean; skipNote?: string } => {
+  // ⚠ 返回值带 `skipped: true`：这一族**这次根本没跑**（开关关着 / 调试只点了别的）。
+  //   它和 `idle`（跑了、但没事可做）都是 `ok: true`，只看 `ok` 会把两者都画成「成了」。
+  const selected = (id: TaskSwitchId): { run: boolean; skipped?: boolean; skipNote?: string } => {
     if (only !== null) {
-      return only.includes(id) ? { run: true } : { run: false, skipNote: '这次不跑（调试只点了别的）' };
+      return only.includes(id) ? { run: true } : { run: false, skipped: true, skipNote: '这次不跑（调试只点了别的）' };
     }
     if (force) return { run: true };
     return taskOn(deps.store, id)
       ? { run: true }
-      : { run: false, skipNote: `「${TASK_SWITCH_BY_ID.get(id)?.label ?? id}」已关闭（账号设置里可以开）` };
+      : {
+          run: false,
+          skipped: true,
+          skipNote: `「${TASK_SWITCH_BY_ID.get(id)?.label ?? id}」已关闭（账号设置里可以开）`,
+        };
   };
 
   // ⓪ 凭据续期（原生 token 约 30 天）：**先于所有任务**判一次。
@@ -232,7 +245,7 @@ export async function runDaily(
   const signSel = selected('signin');
   if (!signSel.run) {
     // 关掉/没选中这一族的仍留一行（灰）：运行记录要能回答"这一趟为什么没签"
-    push({ name: '签到', ok: true, note: signSel.skipNote ?? '', idle: true });
+    push({ name: '签到', ok: true, note: signSel.skipNote ?? '', idle: true, skipped: true });
   } else {
     // 签到自己提交一次、看一眼状态就完事，不能 drain（每次执行独立）。
     push(await once('签到', runSign, deps));
@@ -250,7 +263,7 @@ export async function runDaily(
   const expSel = selected('expansion');
   const expKick = expSel.run ? startExpansion(deps) : { ok: true, idle: true, note: expSel.skipNote ?? '' };
   if (expKick.idle) {
-    push({ name: '任务拓展', ok: true, note: expKick.note, idle: true });
+    push({ name: '任务拓展', ok: true, note: expKick.note, idle: true, ...(expSel.skipped === true ? { skipped: true } : {}) });
   } else {
     push(
       await (async () => {
@@ -271,7 +284,7 @@ export async function runDaily(
   //   所以这里 drain **整一轮**：两发，很便宜，而且读完就是完整读数。
   const appSel = selected('appTask');
   if (!appSel.run) {
-    push({ name: 'App 任务', ok: true, note: appSel.skipNote ?? '', idle: true });
+    push({ name: 'App 任务', ok: true, note: appSel.skipNote ?? '', idle: true, skipped: true });
   } else {
   push(
     await (async () => {
@@ -348,7 +361,7 @@ export async function runDaily(
   const rpSel = selected('redpack');
   const rpKick = rpSel.run ? { ok: true, idle: false, note: '' } : { ok: true, idle: true, skipped: true, note: rpSel.skipNote ?? '' };
   if (rpKick.idle === true || rpKick.skipped === true) {
-    push({ name: '红包派对', ok: true, note: rpKick.note, idle: true });
+    push({ name: '红包派对', ok: true, note: rpKick.note, idle: true, skipped: true });
   } else {
     const r = await drain(redpackStep, deps, {
       label: '红包派对',
@@ -385,7 +398,7 @@ export async function runDaily(
   const pkSel = selected('tokenpk');
   const pkKick = pkSel.run ? { ok: true, idle: false, note: '' } : { ok: true, idle: true, skipped: true, note: pkSel.skipNote ?? '' };
   if (pkKick.idle === true || pkKick.skipped === true) {
-    push({ name: '算力大作战', ok: true, note: pkKick.note, idle: true });
+    push({ name: '算力大作战', ok: true, note: pkKick.note, idle: true, skipped: true });
   } else {
     const r = await drain(tokenPkStep, deps, {
       label: '算力大作战',
@@ -413,7 +426,7 @@ export async function runDaily(
   // 位置：与算力挨着（同属活动站、同一张票），在所有领奖之前。
   const paSel = selected('playAI');
   if (!paSel.run) {
-    push({ name: '趣玩AI', ok: true, note: paSel.skipNote ?? '', idle: true });
+    push({ name: '趣玩AI', ok: true, note: paSel.skipNote ?? '', idle: true, skipped: true });
   } else {
     // ⚠ 用 `drain`（不是 `once`）：这一族是 list → register → act → verify 四段，
     //   一次调用只推一步。`maxSteps` 给宽一点（动作链本身也要走好几段）。
@@ -447,7 +460,7 @@ export async function runDaily(
   const tailSkip = only !== null ? '这次不跑（调试只点了别的）' : '';
   for (const [name, fn] of [['领取AI豆', runReceive]] as const) {
     if (tailSkip !== '') {
-      push({ name, ok: true, note: tailSkip, idle: true });
+      push({ name, ok: true, note: tailSkip, idle: true, skipped: true });
       continue;
     }
     const r = await drain(fn, deps, {
@@ -502,6 +515,15 @@ export async function runDaily(
     push(await once('今日云朵', runTodayCloud, deps));
   }
 
+  // ⑪ 云盘活动面（只读）：许愿 / 奖品 / 推送任务 / 美图备份 / AI通讯邀请。
+  // 5 个端点全 GET，没有写口。从 cmcc-plugin 迁来（2026-11-26 实测 5/5 端点 code=0）。
+  // 与「今日云朵」一样是**读数**，失败不染红整趟。
+  if (tailSkip !== '') {
+    push({ name: '云盘活动', ok: true, note: tailSkip, idle: true });
+  } else {
+    push(await once('云盘活动', runCloudActs, deps));
+  }
+
   // ⚠ `pending` 不是失败：动作做了、服务端还没确认，不能把整趟染红。
   const pendingCount = steps.filter((s) => s.pending === true).length;
   const failed = steps.filter((s) => !s.ok && s.pending !== true);
@@ -513,6 +535,7 @@ export async function runDaily(
     ok: r.ok,
     note: r.note,
     idle: r.idle === true,
+    ...(r.skipped === true ? { skipped: true } : {}),
     pending: r.pending === true,
     // 逐行读数也要进运行记录（历史那一页得能看到"这一族今天看到了什么"），
     // 但**空的就不带** —— 一堆 `lines: []` 会让记录里的每一步长得一样，

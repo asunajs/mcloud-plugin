@@ -26,7 +26,7 @@
 // 页面版本号：和 style.css 里的 --style-ver 一起人工递增。
 // 「样式自检」（boot.js 的 ?diag=1）会读它 —— 用来区分「CSS 是新的、JS 还是旧的」这种
 // 半新半旧状态（第 155 轮：样式表是 v155，但 DOM 里根本没有 .ex-group-row 这种行）。
-document.documentElement.dataset.appVer = '178';
+document.documentElement.dataset.appVer = '179';
 
 /** 插件自己的接口。 */
 const API = '/plugins/mcloud/api';
@@ -4098,7 +4098,18 @@ $('debug-run').addEventListener('click', (e) => {
 });
 $('debug-stop').addEventListener('click', (e) => stopRunning('daily', e.currentTarget));
 
-/** 每族上次的结果（读 `/debug/last`，不新造状态）。 */
+/** 每族上次的结果（读 `/debug/last`，不新造状态）。
+ *
+ *  ⚠ 四种状态，**不是"成了/没成"两态**：`ok:true` 有三种完全不同的意思 ——
+ *  真做成了 / 跑了没事可做 / 这一趟根本没轮到它。只按 `ok` 画的话后两种都显示成
+ *  「成了」（2026-11-26 用户点「只跑趣玩AI」，这一页告诉他六族全成了）。 */
+const DEBUG_STATE_TEXT = {
+  done: { text: '成了', cls: 'ok' },
+  failed: { text: '没成', cls: 'bad' },
+  idle: { text: '没事可做', cls: 'mute' },
+  skipped: { text: '这次没跑', cls: 'mute' },
+};
+
 async function refreshDebugLast() {
   const box = $('debug-last');
   try {
@@ -4109,9 +4120,10 @@ async function refreshDebugLast() {
       .map(([id, label]) => {
         const one = tasks[id];
         const atText = one ? when(one.at) : '还没跑过';
-        const ok = one ? (one.ok ? '成了' : '没成') : '';
+        const st = one ? DEBUG_STATE_TEXT[one.state] || DEBUG_STATE_TEXT.idle : null;
         const note = one && one.note ? ` —— ${esc(one.note)}` : '';
-        return `<li class="item"><div class="item-main"><span class="item-t">${esc(label)}${ok === '' ? '' : ` · ${ok}`}</span><span class="item-s">${esc(atText)}${note}</span></div></li>`;
+        const head = st === null ? esc(label) : `${esc(label)} · <span class="tag-${st.cls}">${st.text}</span>`;
+        return `<li class="item"><div class="item-main"><span class="item-t">${head}</span><span class="item-s">${esc(atText)}${note}</span></div></li>`;
       })
       .join('');
   } catch (e) {

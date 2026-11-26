@@ -53,6 +53,13 @@ export interface RunStep {
   note: string;
   /** 这一步什么都没做（条件不成立）—— 界面据此显示成灰色而不是绿勾 */
   idle: boolean;
+  /** 这一族**这次根本没跑**（开关关着 / 调试只点了别的族）。
+   *
+   *  ⚠ 必须与 `idle` 分开存：`idle` 是"跑了、但没事可做"（"这个月已经翻倍过了"），
+   *  那是**正常结果**；`skipped` 是"这一趟没轮到它"，**不是结果**。
+   *  两者都是 `ok: true`，所以只看 `ok` 会把「这次不跑」画成「成了」——
+   *  2026-11-26 的调试页就是这么骗人的（点「只跑趣玩AI」，页面说六族全成了）。 */
+  skipped?: boolean;
   /** 动作做了、等服务端确认（不是失败） */
   pending?: boolean;
   /** 内部管道步骤（换票、凭据续期之类）—— **成了就不该出现在用户眼前**。
@@ -101,6 +108,7 @@ function cleanStep(s: RunStep): RunStep {
     ok: s.ok === true,
     note: clip(s.note),
     idle: s.idle === true,
+    ...(s.skipped === true ? { skipped: true } : {}),
     ...(s.pending === true ? { pending: true } : {}),
     // ⚠ 这个标记要跟着走：界面靠它把"内部管道"（换票之类）成功时藏起来。
     //   漏掉的话，界面上会冒出「换票（签到族）：没有待换票的任务」这种话。

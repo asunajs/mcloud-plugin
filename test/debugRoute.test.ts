@@ -51,13 +51,13 @@ test('每族取"最近一条包含该族步骤"的记录；从没出现过的回
   assert.ok(route, '要有 /debug/last 这条路由');
   const r = await route.handler({ query: '' });
   const body = JSON.parse(r.body) as {
-    tasks: Record<string, { at: string; ok: boolean; note: string } | null>;
+    tasks: Record<string, { at: string; state: string; note: string } | null>;
     switches: { id: string; label: string }[];
   };
   assert.equal(body.switches.length, 6, '六族都要列出来（界面按它画卡）');
-  assert.equal(body.tasks['signin']?.ok, true);
+  assert.equal(body.tasks['signin']?.state, 'done');
   assert.equal(body.tasks['signin']?.at, NOW, '要取**最近**那条');
-  assert.equal(body.tasks['tokenpk']?.ok, true, '旧的失败被新的成功盖掉');
+  assert.equal(body.tasks['tokenpk']?.state, 'done', '旧的失败被新的成功盖掉');
   assert.equal(body.tasks['tokenpk']?.note, '执行任务 1 项');
   // 从没出现在记录里的族 ⇒ null，不编
   assert.equal(body.tasks['redpack'], null);
@@ -210,4 +210,52 @@ test('⚠ `STEP_NAMES` 里写的步骤名，必须真的在 `dailyRun` 里 push 
     .flatMap((m) => [...m[1]!.matchAll(/'([^']+)'/g)].map((x) => x[1]!));
   const missing = claimed.filter((n) => !real.has(n));
   assert.deepEqual(missing, [], `这些步骤名在 dailyRun 里不存在：${missing.join(', ')}`);
+});
+
+test('⚠ 调试页那六格必须是**四态**：只按 `ok` 画会把「这次不跑」显示成「成了」', async () => {
+  // 现场（2026-11-26 用户截图）：点「只跑趣玩AI」，调试页告诉他六族全成了 ——
+  // 其中五行写的是「这次不跑（调试只点了别的）」。用户拿这一页测单族，而它给不出结论。
+  //
+  // 根因三条：① 跳过那一步的 `ok` 也是 true；② `meta.ts` 用 `hits.every(ok)` 判；
+  // ③ 界面只认 `ok` 两态，`idle` / `skipped` 根本没用。
+  const { mcloudRoutes } = await import('../src/mcloud/routes.ts');
+  const { memStore } = await import('../src/store/memory.ts');
+  const { appendRun } = await import('../src/mcloud/runLog.ts');
+  const store = memStore();
+  store.ensureSchema();
+  const now = '2026-11-26T15:13:00.000Z';
+  // 一条"调试只跑趣玩AI"的真实形状记录：其余五族 skipped，趣玩AI 是 idle（读到了数）
+  appendRun(store, {
+    task: 'daily',
+    at: now,
+    ms: 900,
+    ok: true,
+    note: '',
+    acct: 'acct',
+    steps: [
+        { name: '签到', ok: true, idle: true, skipped: true, note: '这次不跑（调试只点了别的）' },
+        { name: '任务拓展', ok: true, idle: true, skipped: true, note: '这次不跑（调试只点了别的）' },
+        { name: 'App 任务', ok: true, idle: true, skipped: true, note: '这次不跑（调试只点了别的）' },
+        { name: '红包派对', ok: true, idle: true, skipped: true, note: '这次不跑（调试只点了别的）' },
+        { name: '算力大作战', ok: true, idle: true, skipped: true, note: '这次不跑（调试只点了别的）' },
+        { name: '趣玩AI', ok: true, idle: true, note: '4 个模块 · 24 件任务 · 22 件可做' },
+    ],
+  });
+  const routes = mcloudRoutes({
+    store,
+    now: () => now,
+    log: () => {},
+    baseUrl: '',
+    transport: (() => {
+      throw new Error('不该发请求');
+    }) as never,
+    pushDeps: {} as never,
+  });
+  const route = routes.find((r) => r.path.endsWith('/debug/last'))!;
+  const res = await route.handler({ method: 'GET', path: route.path, query: new URLSearchParams(), headers: {} } as never);
+  const body = JSON.parse(String((res as { body: string }).body));
+  assert.equal(body.tasks.signin.state, 'skipped', '签到这次没跑 ⇒ skipped，不能是 done');
+  assert.equal(body.tasks.expansion.state, 'skipped');
+  assert.equal(body.tasks.playAI.state, 'idle', '趣玩AI 读到了数但没做成任何事 ⇒ idle');
+  assert.equal(body.tasks.playAI.note, '4 个模块 · 24 件任务 · 22 件可做');
 });
