@@ -276,6 +276,7 @@ mcloud-sign config:import --config asign.json --data-dir <…>          # 真搬
 | [`docs/app-task-ids.md`](docs/app-task-ids.md) | **App 任务逐条 id 台账**（2026-11-01）：每条 id 我们做什么、Rust 参考是什么、能做的/刻意不做的/还没搬的；以及「一条没成不许拖垮整趟」 |
 | [`docs/token-pk.md`](docs/token-pk.md) | **算力大作战（`National_TokenPK`）**：实拍出来的状态机与七个口、计划分类、动作矩阵、用户看到的汇总句；以及哪些还没实拍 |
 | [`docs/play-ai.md`](docs/play-ai.md) | **趣玩AI赢好礼（`National_playAI`）**：两轮实拍、三条判据（`taskSign` / 回执零信息 / `moduleId` 会变）、五段状态机、抽奖四份真样本，以及**还没验的四个缺口** |
+| [`docs/wish-codes.md`](docs/wish-codes.md) | **全网许愿赢好礼（`National_MakeWish`）**：13 条任务里哪些能自动（上游自己标的 `autoAdvanceable` / `clickAdvance`）、豆换码为什么缺省关、以及**哪几条做不了且有实测依据** |
 | [`docs/smid-chain.md`](docs/smid-chain.md) · [`docs/upload-chain.md`](docs/upload-chain.md) | 两条比较绕的链路的实测记录 |
 | [`docs/shots/`](docs/shots/README.md) | 界面截图（各区块一张 + 扫码） |
 | [`docs/standalone.md`](docs/standalone.md) | **面板外独立运行**：替代 mcloud-sign 的 CLI / 配置 / 导出函数 |
