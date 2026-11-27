@@ -172,7 +172,20 @@ export function sendsAuthorizationTo(rawUrl: string): boolean {
 }
 
 /** 发送层按主机后缀注入 `Authorization`。已显式带 Authorization 的请求不覆盖；
- *  存储主机的预签名 URL 不注入（与参考实现的 `sends_authorization_to` 同口径）。 */
+ *  存储主机的预签名 URL 不注入（与参考实现的 `sends_authorization_to` 同口径）。
+ *
+ *  ⚠⚠ **「已有就不覆盖」是一条隐含契约，多账号场景全靠它**：
+ *
+ *  入口层那个 `transport`（`entries/shared.ts`）绑的是**当前账号**的凭据
+ *  （`loadAuthRaw` 拿不到 scoped 账号时会退回 `currentAccount()`）。
+ *  所以凡是"按某个账号读/写"的调用方（比如领奖页选了另一个号），
+ *  **必须自己把这个号的 `Authorization` 塞进请求头** —— 只要塞了，这一层就不会再补当前账号那条。
+ *
+ *  反例（2026-11-27 真实事故）：领奖的 `sendOnce` 只带了 `jwttoken`（选中账号的），
+ *  没带 `Authorization` ⇒ 这一层补上"当前账号"的那条 ⇒ **一个请求里混了两个号的凭据**。
+ *  上游按 `Authorization` 认人，界面选 `15****42` 却读回 `19****16` 的待领取，
+ *  领奖发短信也发到错的号上；GitHub issue #2 那个 `10010021 validateRisk` 就是它的后果。
+ *  修法见 `tasks/prizeClaim.ts::sendOnce`。 */
 export function authorizeRequest<T extends { url: string; headers: Record<string, string> }>(
   req: T,
   auth: string,

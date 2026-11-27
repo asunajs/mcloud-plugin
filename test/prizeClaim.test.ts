@@ -17,6 +17,7 @@ import { memStore } from '../src/store/memory.ts';
 import { rawStoreOf, scoped } from '../src/store/scoped.ts';
 import { saveSession } from '../src/store/types.ts';
 import { upsertAccount } from '../src/mcloud/accounts.ts';
+import { loadAuthRaw } from '../src/mcloud/sessionExchange.ts';
 import { jwtKey } from '../src/mcloud/sessionExchange.ts';
 import { mcloudRoutes } from '../src/mcloud/routes.ts';
 import { testDeps } from './helpers.ts';
@@ -806,4 +807,31 @@ test('ensurePrizeToken：没有可换票的原生凭据时不拦（手工贴的�
     nowIso: NOW,
   });
   assert.equal(r.ok, true, '没有换票凭据时不该在本地点拦下');
+});
+
+// ══════════════════════════ 不串号（R8）══════════════════════════
+
+test('⚠⚠ 奖品请求必须带**本账号**的 `auth`，不能只靠传输层补全局那条', async () => {
+  // 2026-11-27 用户报：「账号都对不上，发码发错号」——界面选的是 `15****42`，
+  // 待领取列表里每件都写着 `191****2716`。
+  //
+  // 根因：`sendOnce` 只带 `jwttoken`（本账号的），而路由层那个 `transport` 会补
+  // **全局默认账号**的 `Authorization` ⇒ 一个请求里混了两个号的凭据，上游按
+  // `Authorization` 认人。领奖（发短信）也走同一条路，所以短信会发到错的号上。
+  const { one } = setup();
+  const seen: BuiltRequest[] = [];
+  const transport = makeTransport((_req, path) => {
+    if (!path.endsWith('/getUserPrizeLogPageV2')) return undefined;
+    return { body: listBody([rec({ oId: 1, prizeName: 'x' })]) };
+  }, seen);
+  await readPendingPrizes(depsOf(one, transport));
+
+  assert.ok(seen.length > 0, '要真的发出去');
+  const auth = seen[0]!.headers['Authorization'] ?? seen[0]!.headers['authorization'] ?? '';
+  // `setup()` 里那个号的原生凭据（`loadAuthRaw` 读到的）必须出现在请求上
+  const own = loadAuthRaw(one);
+  assert.notEqual(own, '', '夹具里该有原生凭据');
+  assert.equal(auth, own, '请求要带本账号的 auth（否则传输层会补全局那条 ⇒ 串号）');
+  // 而且 jwttoken 还得在（两个都对才算"同一个号"）
+  assert.notEqual(seen[0]!.headers['jwttoken'] ?? '', '', 'jwttoken 也要在');
 });
