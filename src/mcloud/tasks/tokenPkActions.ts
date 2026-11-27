@@ -72,6 +72,8 @@ import {
 } from '../tokenPk.ts';
 import {
   AITOOLS_ACTION_ROUTES,
+  parseTemplates,
+  templateListRequest,
   AITOOLS_POLL_MS,
   aiToolsGenRequest,
   isTaskDone,
@@ -113,8 +115,10 @@ export function firstActionStep(key: string): string {
     case 'aiToolsMatting':
     case 'aiToolsRestore':
     case 'aiToolsQuality':
-    case 'aiToolsSnapshot':
       return 'aitools-gen';
+    // AI快照要**先拉模板**（页面也是这么做的：拉列表 → 选第一个 → 再生成）
+    case 'aiToolsSnapshot':
+      return 'aitools-template';
     case 'openAlbum':
       return 'smart-album';
     default:
@@ -164,7 +168,14 @@ async function stepAiToolsGen(
 ): Promise<ActionOutcome> {
   const route = AITOOLS_ACTION_ROUTES[a.key];
   if (route === undefined) return fail(`「${a.name}」没有配生成口（${a.key}）`);
-  const res = await send(deps, aiToolsGenRequest(DEFAULT_AITOOLS_PHOTO_B64, route));
+  // `faceswap` 那支（AI快照）要用**当趟拉到的模板**；没拉到就别硬发
+  const template =
+    data.templateId !== undefined && data.templateUrl !== undefined
+      ? { templateId: data.templateId, materialUrl: data.templateUrl }
+      : undefined;
+  const req = aiToolsGenRequest(DEFAULT_AITOOLS_PHOTO_B64, route, template);
+  if (req === undefined) return fail(`「${a.name}」还没拿到模板 —— 不该走到这一步`);
+  const res = await send(deps, req);
   if (!res.ok) return fail(`「${a.name}」提交生成没成：${res.error ?? '未知失败'}`);
   const taskId = parseGenTask(res.text);
   if (taskId === undefined) {
@@ -220,6 +231,32 @@ async function stepAiToolsPoll(
   return done(`「${a.name}」生成好了（status=3${st.progress === undefined ? '' : ` progress=${st.progress}`}）${algoNote}`);
 }
 
+/** aiTools：AI快照先拉模板列表，取第一个。
+ *
+ *  页面自己也是这么做的（`getPhotoStudioTemplateList()` → `onSelectTemplate(list[0])`），
+ *  所以插件和服务端看到的是同一份模板 —— **不写死 URL**（写死的那份模板轮换后就失效，
+ *  表现是 `status` 到不了 3，而不是参数错）。
+ *
+ *  ⚠ `style` 就是模板的 `templateId`（抓包那次 `style:1009` 正对应列表里 1009 那一项）。
+ */
+async function stepAiToolsTemplate(
+  deps: TaskDeps,
+  a: PkAttempt,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  data: Record<string, string>,
+): Promise<ActionOutcome> {
+  const res = await send(deps, templateListRequest());
+  if (!res.ok) return fail(`「${a.name}」拉模板没成：${res.error ?? '未知失败'}`);
+  const list = parseTemplates(res.text);
+  const first = list[0];
+  if (first === undefined) {
+    // 空列表不是"失败"——上游这期可能没配。如实说，别硬发一个空模板。
+    return fail(`「${a.name}」这期没有可用的模板（列表为空）`);
+  }
+  advance(a, 'aitools-gen', { templateId: first.templateId, templateUrl: first.materialUrl });
+  return more(`「${a.name}」挑好模板 ${first.templateId}（共 ${list.length} 个）—— 下一步生成`);
+}
+
 /** 推进一步（**一次调用最多一发上游请求**）。 */
 export async function stepAction(deps: TaskDeps, s: PkSession, a: PkAttempt): Promise<ActionOutcome> {
   const data = a.data ?? {};
@@ -248,6 +285,7 @@ export async function stepAction(deps: TaskDeps, s: PkSession, a: PkAttempt): Pr
   }
 
   // ── aiTools 那族（9 件 H5 工具；目前只接 AI 头像）────────────────
+  if (a.step === 'aitools-template') return stepAiToolsTemplate(deps, a, data);
   if (a.step === 'aitools-gen') return stepAiToolsGen(deps, a, data);
   if (a.step === 'aitools-poll') return stepAiToolsPoll(deps, a, data);
 

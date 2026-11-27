@@ -146,19 +146,74 @@ function jsonHeaders(): Record<string, string> {
  *  `supplierType` / `channelId` / `context` 这五个。
  *
  *  `photoB64` 是**图片原始字节的 base64**（JPEG 以 `/9j/` 开头），不是 URL。 */
-/** AI快照那个**换脸模板**。来自实拍（`extJson.templateImg`）。
- *
- *  ⚠ 这是一个**固定的素材图**（`material_media/20250116/…png`），不是每个用户不同。
- *  抓包里只见过这一个；上游有没有模板列表**没查过** —— 如果哪天它 404，换脸会失败，
- *  表现是 `status` 到不了 3，不是参数错。 */
-export const AITOOLS_FACESWAP_TEMPLATE =
-  'https://img.mcloud.139.com/material_prod/material_media/20250116/1737015803541.png';
+// ── AI快照的**模板**：不是写死的，是页面从广告位接口拉的 ─────────────
+//
+// 2026-11-27 从 `aiPhotoStudioOffice` 的 chunk 里挖出：
+//   `getPhotoStudioTemplateList()` → `getAdInfos({adpostid})`
+//   `single: "66391"`（单人写真）/ `multi: "66392"`（多人合照）
+// 响应 `body[]` 每项是 `{templateId, materialList:[{materialUrl}], adposname, …}`。
+//
+// ⚠ **`style` 就是 `templateId`**：抓包里 `style:1009` 正对应列表里
+//   `templateId=1009` / `…/20250116/1737015803541.png` 那一项（已核对）。
+//   写死一个 URL 的做法在模板轮换后会失效（表现是 `status` 到不了 3，不是参数错）。
+//
+// 默认取列表**第一个**——页面自己的兜底也是 `onSelectTemplate(t[0])`。
+export const ADVERT_BASE = 'https://ad.mcloud.139.com';
+export const ADINFO_PATH = '/advertapi/adv-config/adv-config/AdInfoFilter/getAdInfos';
+/** 单人写真的广告位；多人合照是 `66392`（单人这一档就够做任务了）。 */
+export const PHOTO_STUDIO_SINGLE_ADPOSTID = '66391';
+
+export function templateListRequest(adpostid = PHOTO_STUDIO_SINGLE_ADPOSTID): BuiltRequest {
+  return {
+    url: ADVERT_BASE + ADINFO_PATH,
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json, text/plain, */*',
+      Origin: 'https://yun.139.com',
+      Referer: 'https://yun.139.com/aiTools/',
+    },
+    body: JSON.stringify({ adpostid }),
+  };
+}
+
+export interface PhotoTemplate {
+  templateId: string;
+  materialUrl: string;
+}
+
+/** 解析模板列表。取不到就给空数组（调用方决定要不要退到默认）。 */
+export function parseTemplates(body: string): PhotoTemplate[] {
+  let v: unknown;
+  try {
+    v = JSON.parse(body);
+  } catch {
+    return [];
+  }
+  const o = v as { returnCode?: unknown; body?: unknown };
+  if (String(o?.returnCode ?? '') !== '0') return [];
+  const list = Array.isArray(o?.body) ? o.body : [];
+  const out: PhotoTemplate[] = [];
+  for (const raw of list) {
+    const t = raw as { templateId?: unknown; materialList?: unknown };
+    const id = t?.templateId === undefined || t?.templateId === null ? '' : String(t.templateId);
+    const mats = Array.isArray(t?.materialList) ? t.materialList : [];
+    const url = String((mats[0] as { materialUrl?: unknown } | undefined)?.materialUrl ?? '');
+    if (id === '' || !/^https:\/\//.test(url)) continue;
+    out.push({ templateId: id, materialUrl: url });
+  }
+  return out;
+}
 
 export function aiToolsGenRequest(
   photoB64: string,
   route: AiToolRoute = AITOOLS_ACTION_ROUTES['aiToolsAvatar']!,
-): BuiltRequest {
+  /** AI快照用：**当趟从广告位拉到的**模板（`style` 就是 `templateId`）。
+   *  不传就退到空——`faceswap` 那支会返回 `undefined` 让调用方先拉模板。 */
+  template?: PhotoTemplate | undefined,
+): BuiltRequest | undefined {
   if (route.kind === 'faceswap') {
+    if (template === undefined) return undefined;
     // ⚠ 形态完全不同：外层 `personList` 数组里放**一张脸**，模板走 `extJson.templateImg`。
     //   实测 `imageExt` 这里不是 `webp` 也行（JPEG 直接过）。
     return {
@@ -176,9 +231,10 @@ export function aiToolsGenRequest(
         ],
         channelId: AITOOLS_CHANNEL_ID,
         supplierType: route.supplierType,
-        style: route.style,
+        // ⚠ `style` **就是**模板的 `templateId`，不是另一套编号
+        style: Number(template.templateId) || template.templateId,
         poseIdList: [0],
-        extJson: JSON.stringify({ templateImg: AITOOLS_FACESWAP_TEMPLATE }),
+        extJson: JSON.stringify({ templateImg: template.materialUrl }),
         context: JSON.stringify({ source: route.source }),
       }),
     };

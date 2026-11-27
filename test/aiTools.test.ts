@@ -21,6 +21,8 @@ import {
   isTaskDone,
   isTaskFailed,
   lastRecordRequest,
+  parseTemplates,
+  templateListRequest,
   parseGenTask,
   parseTaskStatus,
   taskResultRequest,
@@ -35,7 +37,7 @@ import type { PkAttempt } from '../src/mcloud/tokenPkState.ts';
 const NOW = '2026-11-27T04:00:00.000Z';
 
 test('⚠ 生成请求七个字段一个不能少（少一个就回「参数错误」，会被误读成图不合格）', () => {
-  const req = avatarCartoonRequest('AAAA');
+  const req = avatarCartoonRequest('AAAA')!;
   const body = JSON.parse(req.body ?? '{}') as Record<string, unknown>;
   assert.deepEqual(Object.keys(body).sort(), [
     'base64',
@@ -57,7 +59,7 @@ test('⚠ 生成请求七个字段一个不能少（少一个就回「参数错�
 });
 
 test('生成 / 轮询 / 查记录三条都打到 ai.yun.139.com·且不自带 Authorization', () => {
-  const reqs = [avatarCartoonRequest('AAAA'), taskResultRequest('123'), lastRecordRequest('007')];
+  const reqs = [avatarCartoonRequest('AAAA')!, taskResultRequest('123'), lastRecordRequest('007')];
   for (const r of reqs) {
     assert.match(String(r.url), /^https:\/\/ai\.yun\.139\.com\//);
     // 凭据由传输层按主机后缀注入（AUTH_DOMAINS 含 yun.139.com）——
@@ -249,8 +251,8 @@ test('⚠ 只登记**验过的**那一件：007 头像 + 003 抠图（别的别�
 });
 
 test('换路径与 source 后 body 要跟着变（同一套 7 字段）', () => {
-  const a = avatarCartoonRequest('AAAA');
-  const m = avatarCartoonRequest('AAAA', AITOOLS_ACTION_ROUTES['aiToolsMatting']!);
+  const a = avatarCartoonRequest('AAAA')!;
+  const m = avatarCartoonRequest('AAAA', AITOOLS_ACTION_ROUTES['aiToolsMatting']!)!;
   assert.match(String(a.url), /avatar\/cartoon$/);
   assert.match(String(m.url), /portraitMatting$/);
   const pa = JSON.parse(String(a.body)) as Record<string, unknown>;
@@ -281,7 +283,9 @@ test('AI快照(034) 是**另一套 body**：personList + extJson.templateImg', (
   const r = AITOOLS_ACTION_ROUTES['aiToolsSnapshot']!;
   assert.equal(r.kind, 'faceswap', '034 不是那 7 个字段的形态');
   assert.match(r.path, /faceswap$/);
-  const req = aiToolsGenRequest('AAAA', r);
+  // 没给模板 ⇒ 返回 undefined（调用方必须先拉模板，别硬发）
+  assert.equal(aiToolsGenRequest('AAAA', r), undefined);
+  const req = aiToolsGenRequest('AAAA', r, { templateId: '1009', materialUrl: 'https://img/x.png' })!;
   const body = JSON.parse(String(req.body)) as Record<string, unknown>;
   assert.deepEqual(Object.keys(body).sort(), [
     'channelId',
@@ -297,9 +301,36 @@ test('AI快照(034) 是**另一套 body**：personList + extJson.templateImg', (
   assert.match(String(pl[0]!['base64']), /^data:image\/jpeg;base64,/);
   // 模板是**固定素材**，不是每号不同
   const ext = JSON.parse(String(body['extJson'])) as { templateImg?: string };
-  assert.match(String(ext.templateImg), /material_media\/20250116\/1737015803541\.png$/);
+  assert.equal(ext.templateImg, 'https://img/x.png', '模板图要来自当趟拉到的列表');
+  assert.equal(body['style'], 1009, '`style` 就是 templateId');
   // 和 plain 那套的键名完全不能混
-  const plain = JSON.parse(String(aiToolsGenRequest('AAAA').body)) as Record<string, unknown>;
+  const plain = JSON.parse(String(aiToolsGenRequest('AAAA')!.body)) as Record<string, unknown>;
   assert.equal('personList' in plain, false);
   assert.equal('sendType' in body, false, 'faceswap 外层没有 sendType');
+});
+
+test('⚠ AI快照的模板**从广告位拉**，不写死 URL（写死的那份轮换后失效）', async () => {
+  // 2026-11-27 从 chunk 里挖出：`getPhotoStudioTemplateList()` → `getAdInfos({adpostid})`，
+  // 单人写真 66391 / 多人合照 66392；页面兜底也是取列表第一个。
+  const req = templateListRequest();
+  assert.match(String(req.url), /^https:\/\/ad\.mcloud\.139\.com\//);
+  assert.deepEqual(JSON.parse(String(req.body)), { adpostid: '66391' });
+  // 真实响应形状（截取一项）
+  const list = parseTemplates(
+    JSON.stringify({
+      returnCode: '0',
+      body: [
+        { templateId: 1009, materialList: [{ materialUrl: 'https://img/a.png' }] },
+        { templateId: 1024, materialList: [{ materialUrl: 'https://img/b.png' }] },
+      ],
+    }),
+  );
+  assert.deepEqual(list, [
+    { templateId: '1009', materialUrl: 'https://img/a.png' },
+    { templateId: '1024', materialUrl: 'https://img/b.png' },
+  ]);
+  // 取不到就给空数组（调用方据此判"这期没模板"，别硬发）
+  assert.deepEqual(parseTemplates('{"returnCode":"1"}'), []);
+  assert.deepEqual(parseTemplates('不是 JSON'), []);
+  assert.deepEqual(parseTemplates('{"returnCode":"0","body":[{templateId:1}]}'), [], '没有图就丢掉');
 });
