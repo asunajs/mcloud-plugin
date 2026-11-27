@@ -32,6 +32,9 @@
 // 取证与 9 件的路径表：`mcloud-capture/mcloud/upstream/aitools.md`。
 
 import type { BuiltRequest } from './h5.ts';
+import { AITOOLS_ERASE_MASK_B64 } from './aiToolsMask.ts';
+
+const ERASE_MASK = AITOOLS_ERASE_MASK_B64;
 
 export const AITOOLS_BASE = 'https://ai.yun.139.com';
 
@@ -87,6 +90,8 @@ export interface AiToolRoute {
   style: string | number;
   /** 只在 3D 人偶的抓包里见过（`true`）。别的件不带这一格。 */
   addWatermark?: boolean | undefined;
+  /** 只有**智能消除**要：涂抹蒙版（`maskBase64`）。内容不敏感，但**尺寸要跟照片一致**。 */
+  needsMask?: boolean | undefined;
 }
 
 /** 「哪件任务走哪个生成口」——**只登记验过的**。
@@ -120,6 +125,17 @@ export const AITOOLS_ACTION_ROUTES: Record<string, AiToolRoute> = {
     style: AITOOLS_AVATAR_STYLE,
   },
   aiToolsRestore: { kind: 'plain', path: '/api/image/edit/restore', source: '170425', supplierType: 8, style: 0 },
+  // 智能消除（`006`）：要多送一张 `maskBase64`（涂抹蒙版）。
+  // ⚠ `supplierType` 必须是 **8** —— 用 4 会一直回「Mask图不能为空」，
+  //   看着像"缺参数"，其实2是供应商填错了（2026-11-27 查 `_buildEliminateParams()` 才发现）。
+  aiToolsEraser: {
+    kind: 'plain',
+    path: '/api/image/edit/erasure',
+    source: '170426',
+    supplierType: 8,
+    style: '001',
+    needsMask: true,
+  },
   // 3D 人偶（`3Drenou`）：和 AI漫画风**共用** `/edit/faceAnime` 路径，靠下面三格区分：
   //   `supplierType: "7"`（注意是**字符串**）、`style: "plastic_bubble_figure"`（风格**名**）、`addWatermark: true`。
   //   2026-11-27 实测：生成成功、`status=3`、`algorithmCode` 回的是 **"004"**（上游那两件确实撞号）。
@@ -272,6 +288,8 @@ export function aiToolsGenRequest(
       channelId: AITOOLS_CHANNEL_ID,
       // 只有 3D 人偶带这一格（抓包里是 `true`）；别给别的件硬塞
       ...(route.addWatermark === undefined ? {} : { addWatermark: route.addWatermark }),
+      // 只有智能消除带这一格
+      ...(route.needsMask === true ? { maskBase64: ERASE_MASK } : {}),
       // ⚠ 这一格**是字符串**（里面又套了一层 JSON），不是对象。
       context: JSON.stringify({ source: route.source }),
     }),

@@ -237,6 +237,7 @@ test('⚠ 只登记**验过的**那一件：007 头像 + 003 抠图（别的别�
   assert.deepEqual(Object.keys(AITOOLS_ACTION_ROUTES).sort(), [
     'aiToolsAvatar',
     'aiToolsDoll',
+    'aiToolsEraser',
     'aiToolsMatting',
     'aiToolsQuality',
     'aiToolsRestore',
@@ -353,4 +354,37 @@ test('⚠ 3D人偶与 AI漫画风**共用** `/edit/faceAnime`，靠三格区分�
   // 别的件不许被塞 addWatermark
   const avatar = JSON.parse(String(aiToolsGenRequest('AAAA')!.body)) as Record<string, unknown>;
   assert.equal('addWatermark' in avatar, false);
+});
+
+
+test('⚠ 智能消除(006)：`supplierType` 必须是 8，且要带 `maskBase64`', () => {
+  // 2026-11-27 查 `_buildEliminateParams()` 才发现：这一族是 **8**。
+  // 用 4 的表现是一直回「Mask图不能为空」—— 看着像缺参数，其实是供应商填错了。
+  const r = AITOOLS_ACTION_ROUTES['aiToolsEraser']!;
+  assert.equal(r.supplierType, 8);
+  assert.equal(r.needsMask, true);
+  assert.match(r.path, /edit\/erasure$/);
+  const body = JSON.parse(String(aiToolsGenRequest('AAAA', r)!.body)) as Record<string, unknown>;
+  assert.equal(typeof body['maskBase64'], 'string');
+  assert.ok(String(body['maskBase64']).length > 1000, '蒙版要真的在里面');
+  // 别的件不许带 maskBase64
+  const avatar = JSON.parse(String(aiToolsGenRequest('AAAA')!.body)) as Record<string, unknown>;
+  assert.equal('maskBase64' in avatar, false);
+});
+
+test('蒙版尺寸要和默认照片一致（不一致会被判失败）', async () => {
+  const { DEFAULT_AITOOLS_PHOTO_B64 } = await import('../src/mcloud/aiToolsPhoto.ts');
+  const { AITOOLS_ERASE_MASK_B64 } = await import('../src/mcloud/aiToolsMask.ts');
+  const sizeOf = (b64: string): number[] => {
+    const b = Buffer.from(b64, 'base64');
+    if (b[0] === 0xff && b[1] === 0xd8) {           // JPEG: SOF0
+      const i = b.indexOf(Buffer.from([0xff, 0xc0]));
+      return [b.readUInt16BE(i + 7), b.readUInt16BE(i + 5)];
+    }
+    // PNG: IHDR，宽高在 16/20 字节
+    return [b.readUInt32BE(16), b.readUInt32BE(20)];
+  };
+  const [pw, ph] = sizeOf(DEFAULT_AITOOLS_PHOTO_B64);
+  const [mw, mh] = sizeOf(AITOOLS_ERASE_MASK_B64);
+  assert.deepEqual([mw, mh], [pw, ph], `蒙版 ${mw}×${mh} 与照片 ${pw}×${ph} 不一致`);
 });

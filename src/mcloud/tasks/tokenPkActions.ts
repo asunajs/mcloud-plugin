@@ -116,6 +116,7 @@ export function firstActionStep(key: string): string {
     case 'aiToolsRestore':
     case 'aiToolsQuality':
     case 'aiToolsDoll':
+    case 'aiToolsEraser':
       return 'aitools-gen';
     // AI快照要**先拉模板**（页面也是这么做的：拉列表 → 选第一个 → 再生成）
     case 'aiToolsSnapshot':

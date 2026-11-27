@@ -149,6 +149,10 @@ export const PLAYAI_ACTION_KEYS: Record<string, string> = {
   // `style:"plastic_bubble_figure"` + `addWatermark:true` 区分。
   // 2026-11-27 实测：生成成功、`status=3`（`algorithmCode` 回 "004" —— 上游那两件撞号）。
   '3Drenou': 'aiToolsDoll',
+  // `006` 智能消除：要一张 `maskBase64`（涂抹蒙版）。插件没有触屏涂抹，
+  // 内置一张同尺寸的固定蒙版（中间一块方形）。
+  // ⚠ 这一族的 `supplierType` 必须是 **8** —— 用 4 会一直回「Mask图不能为空」。
+  '006': 'aiToolsEraser',
 };
 
 /** 挑任务的偏好：**不写云盘**的排前面。
