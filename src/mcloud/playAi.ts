@@ -223,9 +223,43 @@ export function journalingRequest(optkeyword: string, base?: string | undefined)
   };
 }
 
-/** 抽奖前后要打的那两条埋点（页面是成对发的）。 */
-export function lotteryJournalingKeywords(): string[] {
-  return ['National_playAI_click_lottery', 'National_playAI_click_lottery_app'];
+/** 抽奖前那对埋点。**第一次和后续不一样** —— 这是实拍核出来的，不是猜的：
+ *
+ *  | 第几发 | `optkeyword` |
+ *  | --- | --- |
+ *  | 第 1 发 | `National_playAI_click_lottery_task`（+ `_app`） |
+ *  | 第 2 发及以后 | `National_playAI_click_continueLottery`（+ `_app`） |
+ *  | 没中之后再抽 | `National_playAI_click_noprize_tinue`（+ `_app`）—— ⚠ `tinue` 是**上游拼错**的，照抄 |
+ *
+ *  ⚠ 2026-11-27 我一开始写成 `click_lottery` —— **那个事件根本不存在**，
+ *    是照着"抽奖"两个字编的。用户追问"埋点要抽奖前的埋点，不知道记录没有"才回头核对。
+ *
+ *  **一次抽奖=两条埋点**，真实顺序（`playai-lottery.har`）：
+ *
+ *  ```text
+ *  401 journaling [lottery_task]        ← 第 1 发，两条之间夹了 5 张转盘图
+ *  407 journaling [lottery_task_app]
+ *  408 page/lottery
+ *  ...
+ *  413 page/getmodule                   ← 回读余额
+ *  414 journaling [continueLottery_app] ← 第 2 发，`_app` 反而在前
+ *  415 journaling [continueLottery]
+ *  416 page/lottery
+ *  ```
+ *
+ *  ⇒ 两条都要发；**先后顺序不稳定**（不同发里相反），别当成契约。
+ *
+ *  `round` 从 1 开始：1 ⇒ `lottery_task`，2+ ⇒ `continueLottery`。
+ */
+export function lotteryJournalingKeywords(round = 1): string[] {
+  const base =
+    round <= 1 ? 'National_playAI_click_lottery_task' : 'National_playAI_click_continueLottery';
+  return [base, `${base}_app`];
+}
+
+/** 「没中，继续抽」那对（上游拼成 `noprize_tinue`，照抄别修）。 */
+export function noPrizeContinueKeywords(): string[] {
+  return ['National_playAI_click_noprize_tinue', 'National_playAI_click_noprize_tinue_app'];
 }
 
 /** 点一件任务时打的那一对。`taskId` 是趣玩AI 的 id（`007` / `aizhushou` …）。 */

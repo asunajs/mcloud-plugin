@@ -587,7 +587,8 @@ export async function playAiStep(deps: TaskDeps): Promise<TaskOutcome> {
       // ① 埋点先发 —— 用户口径「记得埋点也调用一下，无所谓有没有作用，防患于未然」。
       //    ⚠ 失败一律吞掉：埋点不该让抽奖停下来（直播族的注释里也写着"少发可能被静默拒"，
       //    但那是推测；宁可多发一条，不能因为埋点挂了就抽不成）。
-      for (const kw of lotteryJournalingKeywords()) {
+      // 第一发与后续用不同事件名（实拍：`lottery_task` vs `continueLottery`）
+      for (const kw of lotteryJournalingKeywords((st.drawnThisRun ?? 0) + 1)) {
         await callRawText(deps.transport, journalingRequest(kw, deps.baseUrl));
       }
       const res = await callRawText(deps.transport, lotteryRequest(s, page.moduleId, deps.baseUrl));

@@ -1020,20 +1020,29 @@ test('⚠ CLI 也要把过程行打出来（面板一直有，两端该一致）
 test('⚠ 抽奖前要打埋点（`visitlog/journaling`，form-urlencoded）', async () => {
   // 用户口径（2026-11-27）：「记得埋点也调用一下，无所谓有没有作用，防患于未然」。
   // 实拍：`page/lottery` 前一条就是它。
-  const { journalingRequest, lotteryJournalingKeywords } = await import('../src/mcloud/playAi.ts');
-  const req = journalingRequest('National_playAI_click_lottery');
+  const { journalingRequest, lotteryJournalingKeywords, noPrizeContinueKeywords } = await import('../src/mcloud/playAi.ts');
+  const req = journalingRequest('National_playAI_click_lottery_task');
   assert.match(String(req.url), /\/ycloud\/visitlog\/journaling$/);
   assert.equal(req.method, 'POST');
   assert.match(String(req.headers['content-type']), /x-www-form-urlencoded/);
   const body = String(req.body);
   assert.match(body, /^module=uservisit&/);
-  assert.match(body, /optkeyword=National_playAI_click_lottery/);
+  assert.match(body, /optkeyword=National_playAI_click_lottery_task/);
   assert.match(body, /sourceid=1044/);
   assert.match(body, /marketName=National_playAI/);
-  // 成对的事件名（页面就是这么发的）
-  assert.deepEqual(lotteryJournalingKeywords(), [
-    'National_playAI_click_lottery',
-    'National_playAI_click_lottery_app',
+  // ⚠ 第一发与后续**事件名不同**（实拍核出来的；`click_lottery` 这个事件根本不存在）
+  assert.deepEqual(lotteryJournalingKeywords(1), [
+    'National_playAI_click_lottery_task',
+    'National_playAI_click_lottery_task_app',
+  ]);
+  assert.deepEqual(lotteryJournalingKeywords(2), [
+    'National_playAI_click_continueLottery',
+    'National_playAI_click_continueLottery_app',
+  ]);
+  // 「没中继续」那条上游拼成 `noprize_tinue` —— 照抄，别"修"成 continue
+  assert.deepEqual(noPrizeContinueKeywords(), [
+    'National_playAI_click_noprize_tinue',
+    'National_playAI_click_noprize_tinue_app',
   ]);
 });
 
