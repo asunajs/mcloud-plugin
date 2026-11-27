@@ -1,6 +1,6 @@
 {
   "title": "移动云盘 · 兑换",
-  "version": "0.7.12",
+  "version": "0.7.11",
   "order": 12,
   "description": "兑换：定时抢兑 + 手动下单",
   "min_panel": "0.8.3",
