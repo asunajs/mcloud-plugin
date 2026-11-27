@@ -563,7 +563,10 @@ test('下拉一律用面板的 <p-select>（原生 select 的列表是系统画�
   assert.match(js, /const SELECT_HANDLERS = \{\};/, 'change 要登记在 SELECT_HANDLERS 里');
   assert.match(js, /document\.addEventListener\('change'/, '要有一个委派监听分发');
   // 那几个下拉的 change 不许再写成挂在元素上的形式
-  for (const id of ['ex-account', 'ex-verdict', 'matrix-account', 'daily-term-level']) {
+  // ⚠ `prize-account` 是 2026-11-27 的现场事故：它原来挂在元素上，而 `pSelect()`
+  //   每次重画都换节点 ⇒ 切账号的监听早就失效，`prizesAccountId` 从来没变过，
+  //   于是「选 15****42、列表里 17 件全是 19****16」。
+  for (const id of ['ex-account', 'ex-verdict', 'matrix-account', 'daily-term-level', 'prize-account']) {
     assert.equal(
       new RegExp(`\\$\\('${id}'\\)\\.addEventListener\\('change'`).test(js),
       false,

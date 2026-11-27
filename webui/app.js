@@ -26,7 +26,7 @@
 // 页面版本号：和 style.css 里的 --style-ver 一起人工递增。
 // 「样式自检」（boot.js 的 ?diag=1）会读它 —— 用来区分「CSS 是新的、JS 还是旧的」这种
 // 半新半旧状态（第 155 轮：样式表是 v155，但 DOM 里根本没有 .ex-group-row 这种行）。
-document.documentElement.dataset.appVer = '184';
+document.documentElement.dataset.appVer = '185';
 
 /** 插件自己的接口。 */
 const API = '/plugins/mcloud/api';
@@ -2911,13 +2911,6 @@ $('prize-refresh').addEventListener('click', (ev) => {
   void loadPrizes(true, ev.currentTarget);
 });
 
-// 切账号：弹窗里那一条属于旧号，先关掉（顺带清掉倒计时），再用 `?account=` 取这个号。
-$('prize-account').addEventListener('change', (ev) => {
-  closePrizeDialog();
-  prizesAccountId = evCur(ev).value;
-  paintPrizeSwitching();
-  void loadPrizes(false);
-});
 
 $('prize-send').addEventListener('click', () => {
   void sendPrizeCode();
@@ -4092,6 +4085,20 @@ function syncDebugRunBtn() {
 }
 
 $('debug-tasks').addEventListener('change', syncDebugRunBtn);
+// 切账号：弹窗里那一条属于旧号，先关掉（顺带清掉倒计时），再用 `?account=` 取这个号。
+//
+// ⚠⚠ 必须走 `SELECT_HANDLERS`（委派），**不能** `$('prize-account').addEventListener`：
+//    `p-select` 每次重画都会换一个新节点（`pSelect()` 内部 `replaceWith`），
+//    挂旧节点上的监听随之失效。
+//    2026-11-27 现场：领奖页选 `15****42`，列表里 17 件全是 `19****16` 的 ——
+//    就是因为这条监听早就失效，`prizesAccountId` 从来没变过，一直读的默认号。
+SELECT_HANDLERS['prize-account'] = () => {
+  closePrizeDialog();
+  prizesAccountId = $('prize-account').value;
+  paintPrizeSwitching();
+  void loadPrizes(false);
+};
+
 SELECT_HANDLERS['debug-account'] = () => {
   debugAccountId = $('debug-account').value;
 };
