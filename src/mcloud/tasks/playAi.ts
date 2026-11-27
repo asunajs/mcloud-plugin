@@ -136,6 +136,11 @@ export const PLAYAI_ACTION_KEYS: Record<string, string> = {
   // `003` 智能抠图：和头像**同一套 7 字段 body**，只换生成口与 `context.source`。
   // 2026-11-27 实测：生成成功、回读翻位（那号从 6 件变 8 件）。
   '003': 'aiToolsMatting',
+  // `008` 老图片修复 / `009` 画质修复：走 aiTools 的 `restore` / `qualityRestore`，
+  // ⚠ 这两件要用 `supplierType: 8`（填 4 会回「该功能尚未开发」，像上游没做）。
+  // 2026-11-27 实测：生成成功、`status=3`、`algorithmCode` 与 taskId 一致。
+  '008': 'aiToolsRestore',
+  '009': 'aiToolsQuality',
 };
 
 /** 挑任务的偏好：**不写云盘**的排前面。

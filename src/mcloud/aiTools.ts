@@ -65,9 +65,48 @@ export const AITOOLS_MATTING_SOURCE = '170423';
  *   · `031` 表情包 → 回「贴纸URL不能为空」（要贴纸素材，不是人像照）；
  *   · `034` / `3Drenou` → 「参数错误」，路径还没定。
  */
-export const AITOOLS_ACTION_ROUTES: Record<string, { path: string; source: string }> = {
-  aiToolsAvatar: { path: AVATAR_CARTOON_PATH, source: AITOOLS_AVATAR_SOURCE },
-  aiToolsMatting: { path: PORTRAIT_MATTING_PATH, source: AITOOLS_MATTING_SOURCE },
+export interface AiToolRoute {
+  path: string;
+  source: string;
+  /** **唯一真正要紧的字段**（2026-11-27 实测）：同一个 `restore` 路径，
+   *  `supplierType: 4` 回「该功能尚未开发」、`8` 就正常生成。
+   *  它决定"用哪家的算法"，填错的表现是**像上游没做**，最容易误判。 */
+  supplierType: number;
+  /** 风格编号。各工具不同（头像是 `"001"`，老图修复抓包是 `0`）；
+   *  ⚠ 类型也不统一（字符串/数字都有），按抓包原样存，别"统一"成一种。 */
+  style: string | number;
+}
+
+/** 「哪件任务走哪个生成口」——**只登记验过的**。
+ *
+ *  ⚠ `imageExt` 与 base64 前缀**实测不重要**（同一路径下 `png`/`jpeg`、
+ *  带不带 `data:image/jpeg;base64,` 前缀，都能出 taskId）⇒ 统一用 `png` + 裸 base64。
+ *
+ *  ⚠ 2026-11-27 挨个打过的结论：
+ *   · `003` → `/edit/portraitMatting` ✅ 生成 + 回读翻位；
+ *   · `007` → `/avatar/cartoon` ✅ 同上；
+ *   · `008` → `/edit/restore`（`supplierType:8`）✅ 同上；
+ *   · `009` → `/edit/qualityRestore`（`supplierType:8`）✅ 同上；
+ *   · `004` → `/edit/faceAnime`：参数对了仍回 `10022001 该功能尚未开发` ⇒ **上游没做**；
+ *   · `006` → 回「Mask图不能为空」（要用户圈选区域）；
+ *   · `031` → 回「贴纸URL不能为空」（要贴纸素材，不是人像照）；
+ *   · `034` / `3Drenou` → 「参数错误」，路径还没定。
+ */
+export const AITOOLS_ACTION_ROUTES: Record<string, AiToolRoute> = {
+  aiToolsAvatar: {
+    path: AVATAR_CARTOON_PATH,
+    source: AITOOLS_AVATAR_SOURCE,
+    supplierType: 4,
+    style: AITOOLS_AVATAR_STYLE,
+  },
+  aiToolsMatting: {
+    path: PORTRAIT_MATTING_PATH,
+    source: AITOOLS_MATTING_SOURCE,
+    supplierType: 4,
+    style: AITOOLS_AVATAR_STYLE,
+  },
+  aiToolsRestore: { path: '/api/image/edit/restore', source: '170425', supplierType: 8, style: 0 },
+  aiToolsQuality: { path: '/api/image/edit/qualityRestore', source: '170483', supplierType: 8, style: 0 },
 };
 
 /** 轮询多久算超时。实测头像 2 次（≈6 秒）就好；留到 60 秒够慢网。 */
@@ -92,24 +131,31 @@ function jsonHeaders(): Record<string, string> {
  *  `supplierType` / `channelId` / `context` 这五个。
  *
  *  `photoB64` 是**图片原始字节的 base64**（JPEG 以 `/9j/` 开头），不是 URL。 */
-export function avatarCartoonRequest(photoB64: string, path = AVATAR_CARTOON_PATH, source = AITOOLS_AVATAR_SOURCE): BuiltRequest {
+export function aiToolsGenRequest(
+  photoB64: string,
+  route: AiToolRoute = AITOOLS_ACTION_ROUTES['aiToolsAvatar']!,
+): BuiltRequest {
   return {
-    url: AITOOLS_BASE + path,
+    url: AITOOLS_BASE + route.path,
     method: 'POST',
     headers: jsonHeaders(),
     body: JSON.stringify({
       sendType: 2,
       base64: photoB64,
-      // ⚠ 抓包里这张明明是 JPEG，`imageExt` 却写 `"png"` —— **逐字照抄**，别"修正"成 jpg。
+      // ⚠ `imageExt` / base64 前缀**都不影响成败**（实测），统一 png + 裸 base64。
       imageExt: 'png',
-      style: AITOOLS_AVATAR_STYLE,
-      supplierType: AITOOLS_SUPPLIER_TYPE,
+      style: route.style,
+      // ⚠ **这一格是真的要紧**：改错一侧（4 vs 8）上游就回「功能尚未开发」。
+      supplierType: route.supplierType,
       channelId: AITOOLS_CHANNEL_ID,
       // ⚠ 这一格**是字符串**（里面又套了一层 JSON），不是对象。
-      context: JSON.stringify({ source }),
+      context: JSON.stringify({ source: route.source }),
     }),
   };
 }
+
+/** 旧名字留着（一处调用，别为改名牵动动作层）。 */
+export const avatarCartoonRequest = aiToolsGenRequest;
 
 /** ② 取结果（轮询这一口）。 */
 export function taskResultRequest(taskId: string): BuiltRequest {

@@ -73,7 +73,7 @@ import {
 import {
   AITOOLS_ACTION_ROUTES,
   AITOOLS_POLL_MS,
-  avatarCartoonRequest,
+  aiToolsGenRequest,
   isTaskDone,
   isTaskFailed,
   parseGenTask,
@@ -111,6 +111,8 @@ export function firstActionStep(key: string): string {
     // 用 `auth` 直接调、不需要邮箱 SSO / 灵犀对话。
     case 'aiToolsAvatar':
     case 'aiToolsMatting':
+    case 'aiToolsRestore':
+    case 'aiToolsQuality':
       return 'aitools-gen';
     case 'openAlbum':
       return 'smart-album';
@@ -161,7 +163,7 @@ async function stepAiToolsGen(
 ): Promise<ActionOutcome> {
   const route = AITOOLS_ACTION_ROUTES[a.key];
   if (route === undefined) return fail(`「${a.name}」没有配生成口（${a.key}）`);
-  const res = await send(deps, avatarCartoonRequest(DEFAULT_AITOOLS_PHOTO_B64, route.path, route.source));
+  const res = await send(deps, aiToolsGenRequest(DEFAULT_AITOOLS_PHOTO_B64, route));
   if (!res.ok) return fail(`「${a.name}」提交生成没成：${res.error ?? '未知失败'}`);
   const taskId = parseGenTask(res.text);
   if (taskId === undefined) {

@@ -231,7 +231,12 @@ test('⚠ 只登记**验过的**那一件：007 头像 + 003 抠图（别的别�
   //   003 抠图 ✅ 生成+翻位 / 004 漫画风 算法侧失败(status=4) /
   //   006 消除 要 Mask / 008+009 上游未开发 / 031 要贴纸 / 034+3D 路径未定。
   // 这条钉住"别把没验过的塞进路由表" —— 塞进去用户会看到每天一条「没成」。
-  assert.deepEqual(Object.keys(AITOOLS_ACTION_ROUTES).sort(), ['aiToolsAvatar', 'aiToolsMatting']);
+  assert.deepEqual(Object.keys(AITOOLS_ACTION_ROUTES).sort(), [
+    'aiToolsAvatar',
+    'aiToolsMatting',
+    'aiToolsQuality',
+    'aiToolsRestore',
+  ]);
   assert.match(AITOOLS_ACTION_ROUTES['aiToolsAvatar']!.path, /avatar\/cartoon/);
   assert.match(AITOOLS_ACTION_ROUTES['aiToolsMatting']!.path, /portraitMatting/);
   // 两件的 source 必须不同（各自 `innerLink` 里的 sourceId）
@@ -243,7 +248,7 @@ test('⚠ 只登记**验过的**那一件：007 头像 + 003 抠图（别的别�
 
 test('换路径与 source 后 body 要跟着变（同一套 7 字段）', () => {
   const a = avatarCartoonRequest('AAAA');
-  const m = avatarCartoonRequest('AAAA', AITOOLS_ACTION_ROUTES['aiToolsMatting']!.path, AITOOLS_ACTION_ROUTES['aiToolsMatting']!.source);
+  const m = avatarCartoonRequest('AAAA', AITOOLS_ACTION_ROUTES['aiToolsMatting']!);
   assert.match(String(a.url), /avatar\/cartoon$/);
   assert.match(String(m.url), /portraitMatting$/);
   const pa = JSON.parse(String(a.body)) as Record<string, unknown>;
@@ -251,4 +256,20 @@ test('换路径与 source 后 body 要跟着变（同一套 7 字段）', () => 
   // 七个字段的**键名**要一模一样，只有 context 里的 source 不同
   assert.deepEqual(Object.keys(pa).sort(), Object.keys(pm).sort());
   assert.notEqual(pa['context'], pm['context']);
+});
+
+
+test('⚠ `supplierType` 是关键字段：头像/抠图 4，老图修复/画质修复 8', () => {
+  // 2026-11-27 实测：同一个 `/api/image/edit/restore`，`supplierType:4` 回
+  // 「该功能尚未开发」、`8` 正常出 taskId —— 填错的表现像"上游没做"，最容易误判。
+  assert.equal(AITOOLS_ACTION_ROUTES['aiToolsAvatar']!.supplierType, 4);
+  assert.equal(AITOOLS_ACTION_ROUTES['aiToolsMatting']!.supplierType, 4);
+  assert.equal(AITOOLS_ACTION_ROUTES['aiToolsRestore']!.supplierType, 8);
+  assert.equal(AITOOLS_ACTION_ROUTES['aiToolsQuality']!.supplierType, 8);
+  // 而 `imageExt` 与 base64 前缀**不重要**（实测 png/jpeg、带不带前缀都能出 taskId）
+  // ⇒ 代码里统一 png + 裸 base64，不给每件配这一格。
+  for (const r of Object.values(AITOOLS_ACTION_ROUTES)) {
+    assert.equal('imageExt' in r, false, '不该给每件配 imageExt —— 实测它不影响成败');
+    assert.equal('base64Prefix' in r, false, '同上');
+  }
 });
