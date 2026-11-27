@@ -24,7 +24,18 @@ export interface DailyAccountResult {
 //   · `force`：忽略**子任务开关**与**账号停用**这两层门（别的一概不放宽）。
 export async function runDailyAll(
   rt: Runtime,
-  opts: { account?: string; only?: TaskSwitchId[] | null; force?: boolean } = {},
+  opts: {
+    account?: string;
+    only?: TaskSwitchId[] | null;
+    force?: boolean;
+    /** 每一步的**过程**（「准备做 / 已上报 / 回读还没翻位」这些）。
+     *
+     *  ⚠ 不传的话 CLI 上只有最后那句结论 —— 而面板那边一直有（`app/daily/run.ts`
+     *  把 `onNote` 接到了 `logBoth(store,'debug',…)`）。**两端该一致**（R3），
+     *  所以这里也留同样的口子，由调用方决定打不打。
+     */
+    onNote?: (note: string) => void;
+  } = {},
 ): Promise<DailyAccountResult[]> {
   const base = rt.store;
   const out: DailyAccountResult[] = [];
@@ -32,6 +43,7 @@ export async function runDailyAll(
   const runOpts = {
     ...(opts.only === undefined || opts.only === null ? {} : { only: opts.only }),
     ...(opts.force === true ? { force: true } : {}),
+    ...(opts.onNote === undefined ? {} : { onNote: opts.onNote }),
   };
   const runs =
     only === undefined

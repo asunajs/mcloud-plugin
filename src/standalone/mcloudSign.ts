@@ -77,6 +77,9 @@ export async function run(configPath?: string, argv: readonly string[] = []): Pr
       log.info(`调试运行：${bits.join(' · ')}`);
     }
     const results = await runDailyAll(rt, {
+      // 过程行进 debug（与面板一致：那边也是 `logBoth(store,'debug',…)`）。
+      // 不带这行的话 CLI 上只看得到最后那句结论，「准备做 / 已上报」全没了。
+      onNote: (note) => log.debug(note),
       ...(parsed.account === null ? {} : { account: parsed.account }),
       ...(parsed.include === null ? {} : { only: parsed.include }),
       ...(parsed.force ? { force: true } : {}),

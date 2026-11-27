@@ -95,6 +95,26 @@ async function once(
   }
 }
 
+/** 趣玩AI 每一步的日志行：**截掉尾巴那串读数**。
+ *
+ *  这一族的 note 里常带「—— 4 个模块 · 24 件任务 · 22 件可做 …」，而那句在
+ *  `push` 的结论行里已经报过一遍。每步都带，日志会被读数刷满，反而看不见
+ *  「准备做 / 已上报 / 回读还没翻位」这些**过程**。
+ *
+ *  只在 ` —— ` 之后接的是读数形状（含「个模块」）时才截，别把真原因也砍掉。
+ */
+export function playAiStepLine(note: string): string {
+  // 两种形状都见过：
+  //   ① `准备做「AI助手」（4 个模块 · …）`      —— 读数在**全角括号**里
+  //   ② `「X」已上报，服务端还没认 —— 4 个模块…` —— 读数在**破折号**后面
+  const paren = note.replace(/[（(][^（()）]*个模块[^（()）]*[）)]\s*$/, '');
+  if (paren !== note) return paren.trimEnd();
+  const at = note.indexOf(' —— ');
+  if (at < 0) return note;
+  const tail = note.slice(at + 4);
+  return /\d+\s*个模块/.test(tail) ? note.slice(0, at) : note;
+}
+
 /** 一趟日常。返回一行结果 + 每一步的结果（落盘给界面读，同时进日志）。 */
 export async function runDaily(
   deps: TaskDeps,
@@ -439,7 +459,18 @@ export async function runDaily(
   } else {
     // ⚠ 用 `drain`（不是 `once`）：这一族是 list → register → act → verify 四段，
     //   一次调用只推一步。`maxSteps` 给宽一点（动作链本身也要走好几段）。
-    const r = await drain(playAiStep, deps, { label: '趣玩AI', maxSteps: PLAYAI_MAX_STEPS });
+    //
+    // ⚠ **必须给 `onStep`**（2026-11-27 补）。别的族（任务拓展 / App 任务 / 红包派对 /
+    //   算力）都给了，只有这一族漏了 —— 于是日志里只看得到最后那句结论，
+    //   中间「准备做 / 已上报 / 回读还没翻位 / 接着做下一件」全没了。
+    //   用户问「为啥没有 debug 日志」，就是指这个。
+    //   尾巴那串读数（`—— 4 个模块 · 24 件任务 …`）截掉：它在结论那一行已经报过，
+    //   每步都带一遍只会把日志刷满。
+    const r = await drain(playAiStep, deps, {
+      label: '趣玩AI',
+      maxSteps: PLAYAI_MAX_STEPS,
+      onStep: (note) => opts.onNote?.(`趣玩AI：${playAiStepLine(note)}`),
+    });
     // 小结用**读数那一句**（`drain` 会把超过 40 字的原话折成一句，这一族的结论是几个计数）。
     // ⚠ **失败时不能用读数**：`userLine()` 会把它渲染成「趣玩AI：没成 —— 4 个模块 · 24 件任务 …」，
     //   看起来像"读数是失败原因"，真正的失败原因（上报被拒 / 动作链断在哪）被盖掉了。

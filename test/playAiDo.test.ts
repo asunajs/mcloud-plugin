@@ -952,3 +952,49 @@ test('⚠ 调试只跑趣玩AI 时，**必须**去换票（它读模块与点任
     '没有为趣玩AI 发过换票请求',
   );
 });
+
+test('⚠ 每一步都要进 debug 日志（`onStep` 没给的话只看得到最后那句结论）', async () => {
+  // 2026-11-27 用户问「为啥没有 debug 日志」：别的族（任务拓展 / App 任务 / 红包派对 /
+  // 算力）都给了 `onStep`，只有趣玩AI 漏了 —— 日志里只有「4 个模块 · 24 件任务 …」
+  // 这一句结论，中间「准备做 / 已上报 / 回读还没翻位 / 接着做下一件」全没了。
+  const { playAiStepLine } = await import('../src/mcloud/dailyRun.ts');
+  // 尾巴是读数 ⇒ 截掉
+  assert.equal(
+    playAiStepLine('准备做「AI助手」（4 个模块 · 24 件任务 · 22 件可做）'),
+    '准备做「AI助手」',
+  );
+  assert.equal(
+    playAiStepLine('「AI助手」已上报，服务端还没认 —— 4 个模块 · 24 件任务 · 22 件可做'),
+    '「AI助手」已上报，服务端还没认',
+  );
+  // 尾巴是**真原因**（不是读数）⇒ 留着
+  assert.equal(
+    playAiStepLine('做「AI助手」那一步没成：灵犀：querySpecTokenV2 失败'),
+    '做「AI助手」那一步没成：灵犀：querySpecTokenV2 失败',
+  );
+  // 没有 ` —— ` 的原样返回
+  assert.equal(playAiStepLine('「AI相机」做完了（回读已翻位）'), '「AI相机」做完了（回读已翻位）');
+});
+
+test('⚠ 趣玩AI 的 `drain` 必须给 `onStep`（不给就只看得到最后那句结论）', async () => {
+  // 2026-11-27 用户问「为啥没有 debug 日志」：`drain(playAiStep, …)` 没传 `onStep`，
+  // 而任务拓展 / App 任务 / 红包派对 / 算力**都传了**。于是这一族的日志里只有
+  // 「4 个模块 · 24 件任务 …」，中间「准备做 / 已上报 / 回读还没翻位」全没了。
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync('src/mcloud/dailyRun.ts', 'utf8');
+  const at = src.indexOf('drain(playAiStep');
+  assert.ok(at > 0, '找不到趣玩AI 的 drain 调用');
+  const block = src.slice(at, at + 400);
+  assert.match(block, /onStep:/, '趣玩AI 的 drain 要给 onStep —— 否则过程行不进日志');
+  // 尾巴那串读数要截掉（结论行已经报过）—— 见 `playAiStepLine`
+  assert.match(block, /playAiStepLine\(/, 'onStep 里要用 playAiStepLine 截掉读数尾巴');
+});
+
+test('⚠ CLI 也要把过程行打出来（面板一直有，两端该一致）', async () => {
+  const { readFileSync } = await import('node:fs');
+  const cli = readFileSync('src/standalone/mcloudSign.ts', 'utf8');
+  assert.match(cli, /runDailyAll\(rt, \{[\s\S]{0,300}onNote:/, 'CLI 要把 onNote 接上');
+  const daily = readFileSync('src/standalone/daily.ts', 'utf8');
+  assert.match(daily, /onNote\?:/, '`runDailyAll` 要收 onNote');
+  assert.match(daily, /opts\.onNote === undefined \? \{\} : \{ onNote: opts\.onNote \}/, '要把它传进 runOpts');
+});
