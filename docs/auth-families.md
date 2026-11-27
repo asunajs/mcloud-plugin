@@ -174,6 +174,21 @@ GET https://m.mcloud.139.com/ycloud/signin/public/cloudRecordV2
 3. **票会轮换，但旧的不一定立刻失效**：2026-11-27 抓到的 `auth` 与本仓存的那份
    **手机号相同、ticket 不同**，两份都能用。
 
+### 5.2.1 `auth` 是总票：换 `toSourceId` 就进另一个子系统
+
+除了直接当 `Authorization`，`auth` 还能换别的子系统的票 —— **同一个接口、换 `toSourceId`**：
+
+| 去向 | 怎么换 | 产物 | 代码在哪 |
+| --- | --- | --- | --- |
+| `*.yun.139.com` 原生族（含 aiTools） | **直接用**，不换 | —— | `authorizeRequest` + `AUTH_DOMAINS`（`cloudUpload.ts`） |
+| **139 邮箱** | `querySpecTokenV2 {toSourceId:'001003'}` → ssoToken → `POST mail.10086.cn/login/inlogin.action`（XML，`clientId=10804`/`loginType=7`） | `var.sid` + `var.rmkey` | `tasks/appTaskExtra.ts` 的 `mailSpecTokenRequest` / `mailLoginRequest` / `parseMailSession` |
+| **咪咕音乐** | `querySpecTokenV2 {toSourceId:'012008'}` → 票 → 前置 `ANDT` → `GET c.musicapp.migu.cn/user/h5/token-validate/v3.0?token=ANDT<票>&type=2&sourceId=220029` | `data.userId` | **另一个仓**：`panel-plugins/mgmusic-plugin/src/mgmusic.js::mintAndValidate` |
+| H5 业务族（签到/算力/趣玩AI/许愿） | `querySpecTokenV2 {toSourceId:'001005'}` → ssoToken → `tyrzLogin` | jwttoken | `h5session.ts` 三步链 |
+
+⚠ **`toSourceId` 是"去哪个子系统"的开关，不是端常量** —— `001005` / `001003` / `010001` /
+`012008` 在同一个 App 进程里都出现过。**跨端、跨发起方的常量一律不许互搬**
+（`h5session.ts` 头注里已有这条，这里补上它管着哪几路）。
+
 ### 5.3 新接口怎么定用哪张票
 
 先找同族抓包；**找不到就做四格只读探针**（jwt-only / auth-only / both / none，
