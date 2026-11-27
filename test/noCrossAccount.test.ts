@@ -77,8 +77,8 @@ test('不是凭据域名就不注入（预签名 URL 那条）', () => {
 function twoAccounts(): { base: ReturnType<typeof memStore>; a: string; b: string } {
   const base = memStore();
   base.ensureSchema();
-  const a = upsertAccount(base, AUTH_A, NOW, '15900007542');
-  const b = upsertAccount(base, AUTH_B, NOW, '13900139000');
+  const a = upsertAccount(base, AUTH_A, NOW, '13800138000');
+  const b = upsertAccount(base, AUTH_B, NOW, '13700137001');
   return { base, a: a.account.id, b: b.account.id };
 }
 
