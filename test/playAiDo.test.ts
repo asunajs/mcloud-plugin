@@ -237,10 +237,32 @@ test('一趟做几件是**有上限**的（不是"全做"，也不是 1）', () 
 
 // ── 抽奖（step ③）──────────────────────────────────────────────────
 
-test('代抽**缺省关**：开关没开时，一次都不抽（哪怕有次数）', async () => {
-  const { deps, sent } = harness({ flip: true, drawTimes: 3 });
-  await drainAll(deps);
-  assert.equal(sent.filter((x) => String(x.url).includes('/page/lottery')).length, 0, '缺省关就别抽');
+test('⚠ 代抽**缺省开**（用户口径「获取到次数就抽」）；显式设 0 才不抽', async () => {
+  // 2026-11-27 改的：原来缺省关，用户看到「可抽 5 次」却没抽，明确要求"要实现为用户可自动化那样"。
+  const { playAiDrawEnabled, setPlayAiDrawEnabled } = await import('../src/mcloud/playAiState.ts');
+  const { memStore } = await import('../src/store/memory.ts');
+  const st = memStore();
+  st.ensureSchema();
+  assert.equal(playAiDrawEnabled(st), true, '没设过 ⇒ 缺省开');
+
+  // 不设开关也照抽
+  const a = harness({ flip: true, drawTimes: 3 });
+  await drainAll(a.deps);
+  assert.ok(
+    a.sent.filter((x) => String(x.url).includes('/page/lottery')).length > 0,
+    '缺省就该抽',
+  );
+
+  // 显式关掉 ⇒ 一次都不抽
+  const b = harness({ flip: true, drawTimes: 3 });
+  setPlayAiDrawEnabled(b.store, false, NOW);
+  await drainAll(b.deps);
+  assert.equal(
+    b.sent.filter((x) => String(x.url).includes('/page/lottery')).length,
+    0,
+    '显式设 0 才不抽',
+  );
+  assert.equal(playAiDrawEnabled(b.store), false);
 });
 
 test('开了代抽 + 有几次就抽几次；`isWin:1` 判中、`isWin:0` 判没中', async () => {

@@ -88,7 +88,8 @@ test('读数里带上趣玩AI 上次读到的那一份（没读过就是 null）
   // 没读过时**仍给一份壳**（代抽开关要能看），但读数是空的 —— 不编一个空读数
   assert.equal(before.playai?.line, '', '没读过时读数是空串');
   assert.equal(before.playai?.reading, null, '没读过就没有 reading');
-  assert.equal(before.playai?.drawEnabled, false);
+  // 2026-11-27 起缺省**开**（用户口径「获取到次数就抽」）
+  assert.equal(before.playai?.drawEnabled, true);
 
   const { savePlayAiSnapshot } = await import('../src/mcloud/playAiState.ts');
   savePlayAiSnapshot(
@@ -109,7 +110,7 @@ test('读数里带上趣玩AI 上次读到的那一份（没读过就是 null）
   assert.equal(after.playai?.at, NOW);
 });
 
-test('代抽开关：缺省关、能开能关，且与读数分开给（读数没跑过也能看开关）', async () => {
+test('代抽开关：缺省**开**、能开能关，且与读数分开给（读数没跑过也能看开关）', async () => {
   const store = memStore();
   store.ensureSchema();
   const routes = mcloudRoutes(testDeps(store, { now: NOW }));
@@ -117,7 +118,7 @@ test('代抽开关：缺省关、能开能关，且与读数分开给（读数�
   const before = JSON.parse((await rd.handler({ query: '' })).body) as {
     playai: { drawEnabled: boolean; line: string } | null;
   };
-  assert.equal(before.playai?.drawEnabled, false, '缺省必须是关（花的是用户的次数）');
+  assert.equal(before.playai?.drawEnabled, true, '缺省必须是开（用户口径：获取到次数就抽）');
   assert.equal(before.playai?.line, '', '没读过时读数是空，不是编一个');
 
   const post = routes.find((x) => x.path === '/plugins/mcloud/api/playai/draw' && x.method === 'POST')!;

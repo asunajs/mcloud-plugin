@@ -26,7 +26,7 @@
 // 页面版本号：和 style.css 里的 --style-ver 一起人工递增。
 // 「样式自检」（boot.js 的 ?diag=1）会读它 —— 用来区分「CSS 是新的、JS 还是旧的」这种
 // 半新半旧状态（第 155 轮：样式表是 v155，但 DOM 里根本没有 .ex-group-row 这种行）。
-document.documentElement.dataset.appVer = '181';
+document.documentElement.dataset.appVer = '182';
 
 /** 插件自己的接口。 */
 const API = '/plugins/mcloud/api';
@@ -4123,7 +4123,7 @@ $('debug-stop').addEventListener('click', (e) => stopRunning('daily', e.currentT
 // 真正要看的是运行日志（#debug-term，含每一步原文）。后端 /debug/last 路由保留不动，
 // 万一别处还要用；只是这一页不再展示它。
 
-// 趣玩AI 的代抽开关（花次数 ⇒ 缺省关；开/关都要立刻存）
+// 趣玩AI 的代抽开关（缺省**开** —— 用户口径「获取到次数就抽」；开/关都要立刻存）
 document.addEventListener('change', (ev) => {
   const t = /** @type {{ id?: string, value?: boolean }} */ (ev.target);
   if (t.id !== 'playai-draw') return;
