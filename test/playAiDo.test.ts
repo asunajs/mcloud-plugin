@@ -1083,3 +1083,17 @@ test('真抽一趟：埋点发在 lottery 之前，且每抽一次都重发', as
   assert.ok(journals[0]! < draws[0]!, '第一次埋点在第一次抽奖之前');
   assert.ok(journals[2]! < draws[1]!, '第二次埋点在第二次抽奖之前');
 });
+
+test('⚠ 最后一发也要进 `lines`（原来只有前 N-1 条，第 N 条只剩 idle 的 note）', async () => {
+  // 真跑现场（2026-11-27）：余额 5 ⇒ 抽了 5 次，但 `lines` 里只有 4 条"抽了第 N 次"。
+  // 原因：`left===0` 走 `done` 那一段，那段原来不写 lines。
+  const { deps, store } = harness({ flip: true, drawTimes: 3, draw: true, isWin: 0 });
+  const { setPlayAiDrawEnabled } = await import('../src/mcloud/playAiState.ts');
+  setPlayAiDrawEnabled(store, true, NOW);
+  await drainAll(deps);
+  const { loadPlayAi } = await import('../src/mcloud/playAiState.ts');
+  const st = loadPlayAi(store);
+  const drawnLines = (st?.lines ?? []).filter((l) => /抽了第 \d+ 次/.test(l));
+  assert.equal(drawnLines.length, 3, `抽 3 次就该有 3 条账（实际 ${drawnLines.length}：${(st?.lines ?? []).join(' | ')}）`);
+  assert.match(drawnLines[2]!, /第 3 次/, '最后一条要是第 3 次');
+});

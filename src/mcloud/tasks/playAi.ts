@@ -619,6 +619,12 @@ export async function playAiStep(deps: TaskDeps): Promise<TaskOutcome> {
         save(deps, st);
         return { ok: true, note: `抽了第 ${drawn} 次（${what}）—— 还剩 ${left} 次，接着抽` };
       }
+      // ⚠ 最后一发也要进 `lines`：`left===0` 走的是下面 `done` 那段，原来不发，账就少一条
+      //   （真跑现场：抽了 5 次，`lines` 里只有前 4 条，第 5 条只剩那句 idle 的 note）。
+      if (left <= 0 || drawn >= PLAYAI_DRAWS_PER_RUN) {
+        const what = d.win === true ? `中了「${d.prizeName || '没给名字'}」` : d.win === false ? '没中' : '判不出中没中';
+        st.lines = [...(st.lines ?? []), `抽了第 ${drawn} 次（${what}）`];
+      }
       st.phase = 'done';
       if (d.win === null) {
         // 判不出来 ⇒ 既不写"中了"也不写"没中"
