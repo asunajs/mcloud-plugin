@@ -3,6 +3,7 @@
 // 由 mcloudRoutes 组合（见 ../index.ts）。
 
 import { loadBaseUrl } from '../../../mcloud/session.ts';
+import { transportForStore } from '../../../mcloud/accountRuntime.ts';
 import { parseQuery } from '../../../mcloud/query.ts';
 import { currentAccount, loadAccounts, upsertAccount } from '../../../mcloud/accounts.ts';
 import { rawStoreOf, scoped } from '../../../store/scoped.ts';
@@ -99,7 +100,7 @@ export function beansRoutes(deps: RouteDeps, base: string, verify: () => Promise
           } else {
             try {
               day = await readDayForAccount(
-                { store: one, transport: deps.transport, baseUrl, nowIso },
+                { store: one, transport: transportForStore(deps.store, one, deps.transport), baseUrl, nowIso },
                 nowMs,
               );
               cache.day = { atMs: nowMs, dayStart: todayStart, day };
@@ -125,7 +126,7 @@ export function beansRoutes(deps: RouteDeps, base: string, verify: () => Promise
             balance = cache.balance!.value ?? undefined;
             balanceReason = cache.balance!.reason;
           } else {
-            const info = await fetchInfoV3({ store: one, transport: deps.transport, baseUrl });
+            const info = await fetchInfoV3({ store: one, transport: transportForStore(deps.store, one, deps.transport), baseUrl });
             if (info.ok && info.info.total !== undefined) {
               balance = info.info.total;
               cache.balance = { atMs: nowMs, value: balance };
@@ -184,7 +185,7 @@ export function beansRoutes(deps: RouteDeps, base: string, verify: () => Promise
         const one = scoped(raw, id);
         try {
           const data = await readRecordsForAccount(
-            { store: one, transport: deps.transport, baseUrl, nowIso },
+            { store: one, transport: transportForStore(deps.store, one, deps.transport), baseUrl, nowIso },
             nowMs,
             days,
           );
@@ -257,7 +258,7 @@ export function beansRoutes(deps: RouteDeps, base: string, verify: () => Promise
         const who = maskPhoneLike(found.label) ?? found.label;
         const prizeDeps = {
           store: one,
-          transport: deps.transport,
+          transport: transportForStore(deps.store, one, deps.transport),
           nowIso,
           baseUrl: loadBaseUrl(deps.store),
           nowMs: () => Date.parse(deps.now()),
@@ -362,7 +363,7 @@ export function beansRoutes(deps: RouteDeps, base: string, verify: () => Promise
         const nowIso = deps.now();
         const prizeDeps = {
           store: one,
-          transport: deps.transport,
+          transport: transportForStore(deps.store, one, deps.transport),
           nowIso,
           baseUrl: loadBaseUrl(deps.store),
           nowMs: () => Date.parse(deps.now()),
@@ -442,7 +443,7 @@ export function beansRoutes(deps: RouteDeps, base: string, verify: () => Promise
         }
         const prizeDeps = {
           store: one,
-          transport: deps.transport,
+          transport: transportForStore(deps.store, one, deps.transport),
           nowIso,
           baseUrl: loadBaseUrl(deps.store),
           nowMs: () => Date.parse(deps.now()),

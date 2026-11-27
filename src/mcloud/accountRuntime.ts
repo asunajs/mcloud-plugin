@@ -1,11 +1,12 @@
 // 账号循环与 TaskDeps 的装配 —— 不依赖 host-api，面板入口和独立入口共用。
 
 import type { Store } from '../store/types.ts';
-import { rawStoreOf, scoped } from '../store/scoped.ts';
+import { rawStoreOf, scoped, scopedAccountOf } from '../store/scoped.ts';
 import { resolveTaskAccounts, type TaskAccountMode } from './taskAccounts.ts';
 import { loadBaseUrl } from './session.ts';
 import { loadAuthRaw } from './sessionExchange.ts';
-import { authorizeRequest } from './cloudUpload.ts';
+import { authorizeRequest, bindAccountCredentials } from './cloudUpload.ts';
+import { loadJwt } from './sessionExchange.ts';
 import type { Transport } from './client.ts';
 import { DEFAULT_GAP_MS, type TaskDeps } from './tasks/base.ts';
 import { loadAccounts } from './accounts.ts';
@@ -58,6 +59,42 @@ export function depsForAccount(
   transport: Transport,
 ): TaskDeps {
   return taskDeps(scoped(rawStoreOf(base), acctId), transport, payload);
+}
+
+/** **绑死某个账号**的 transport —— 多账号场景（路由层按 ?account= 读某个号）必须用它。
+ *
+ *  ⚠ 为什么不直接传入口层那个 `transport`：那个绑的是**当前账号**的凭据
+ *  （`loadAuthRaw` 拿不到 scoped 账号时退回 `currentAccount()`）。拿它去读另一个号，
+ *  就会「请求里塞着 A 的票、transport 又补 B 的 Authorization」⇒ 串号。
+ *
+ *  这一层的做法：① 把这个号的票塞进请求；② 再走 `authorizeRequest(…, 这个号的 auth)`，
+ *  它带的闸门会**抛错**而不是放行 —— 也就是"串号发不出去"。
+ */
+/** 同上，但账号从**已经 scoped 好的 store** 反查 —— 路由层大多是这种形状。
+ *  拿不到账号时**抛错**：那说明调用方没 scoped，用它发请求就是串号。 */
+export function transportForStore(base: Store, one: Store, transport: Transport): Transport {
+  const acctId = scopedAccountOf(one);
+  if (acctId === undefined) {
+    throw new Error('串号：这个 deps 没有绑定账号（store 没 scoped），不能拿它发按账号的请求');
+  }
+  return transportForAccount(base, acctId, transport);
+}
+
+export function transportForAccount(
+  base: Store,
+  acctId: string,
+  transport: Transport,
+): Transport {
+  const one = scoped(rawStoreOf(base), acctId);
+  const raw = loadAccounts(base).find((a) => a.id === acctId);
+  return async (req) => {
+    const jwtRec = loadJwt(one);
+    const bound = bindAccountCredentials(req, {
+      auth: raw?.auth ?? '',
+      jwt: jwtRec?.jwt ?? '',
+    });
+    return transport(authorizeRequest(bound, raw?.auth ?? ''));
+  };
 }
 
 export function taskDeps(

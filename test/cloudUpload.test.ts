@@ -73,12 +73,22 @@ test('发送层注入 Authorization：控制面带、存储主机不带、显式
     auth,
   );
   assert.equal(storage.headers.Authorization, undefined);
-  const explicit = authorizeRequest(
-    { url: `${PERSONAL_KD}${FILE_CREATE_PATH}`, headers: { authorization: 'Basic x' } as Record<string, string> },
+  // ⚠ 2026-11-27 改了语义：显式带的 Authorization 必须**与本层账号一致**。
+  //   同一个号 ⇒ 放行（不重复塞）；**别的号 ⇒ 抛错**（禁止串号，见 noCrossAccount.test.ts）。
+  const same = authorizeRequest(
+    { url: `${PERSONAL_KD}${FILE_CREATE_PATH}`, headers: { authorization: auth } as Record<string, string> },
     auth,
   );
-  assert.equal(explicit.headers.authorization, 'Basic x');
-  assert.equal(explicit.headers.Authorization, undefined);
+  assert.equal(same.headers.authorization, auth, '同一个号：原样放行');
+  assert.throws(
+    () =>
+      authorizeRequest(
+        { url: `${PERSONAL_KD}${FILE_CREATE_PATH}`, headers: { authorization: 'Basic other' } as Record<string, string> },
+        auth,
+      ),
+    /串号/,
+    '别的号：必须发不出去',
+  );
 });
 
 test('⚠ `uploadUrl` 是**另一台主机**，PUT 那一枪必须被认出来"不带凭据"', async () => {

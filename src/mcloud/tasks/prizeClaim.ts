@@ -200,20 +200,9 @@ async function sendOnce(
     marketName: PRIZE_ACTIVITY,
     session: session ? sessionHeaders(session) : {},
   });
-  // ⚠⚠ **必须显式带本账号的 `auth`**（2026-11-27 用户报「账号都对不上，发码发错号」）。
-  //
-  //   根因：`deps.transport`（路由层那一个）绑的是**全局默认账号**的 `auth`，
-  //   它会往每个请求补 `Authorization`（`authorizeRequest`）。而这一层只带了
-  //   `jwttoken`（本账号的）⇒ 两个号的凭据混在一个请求里，上游按 `Authorization`
-  //   认人 ⇒ 用 A 的界面读回 B 的待领取、发短信也发到 B。
-  //
-  //   `authorizeRequest` 的判据是「已有 Authorization 就不覆盖」⇒
-  //   先塞本账号这条，transport 那一层就不会再补全局的。
-  //   原生凭据为空的号（只贴了 jwttoken 的那种）不加，交给它自己那条票。
-  const ownAuth = loadAuthRaw(deps.store);
-  if (ownAuth !== '' && !('Authorization' in req.headers)) {
-    req.headers['Authorization'] = ownAuth;
-  }
+  // ⚠ 凭据**不在这里塞**（2026-11-27 改成结构性方案）：由 `transportForAccount()`
+  //   把整条请求的账号头清干净、只注入本账号那份，`authorizeRequest` 那层再带一道闸门。
+  //   ⇒ 不依赖"调用方记得塞票"，串号发不出去。
   const res = await callOnce(deps.transport, req);
   if (res.setCookies.length > 0 && session !== null) {
     saveSession(

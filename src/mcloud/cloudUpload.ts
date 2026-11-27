@@ -186,12 +186,51 @@ export function sendsAuthorizationTo(rawUrl: string): boolean {
  *  上游按 `Authorization` 认人，界面选 `15****42` 却读回 `19****16` 的待领取，
  *  领奖发短信也发到错的号上；GitHub issue #2 那个 `10010021 validateRisk` 就是它的后果。
  *  修法见 `tasks/prizeClaim.ts::sendOnce`。 */
+/** 请求上那些**属于账号**的头。串号就是指它们来自不同账号。 */
+export const ACCOUNT_HEADERS: readonly string[] = ['authorization', 'jwttoken', 'cookie'];
+
+/** 把请求上所有账号凭据**清空**，只留这个账号的。返回新对象，不改入参。
+ *
+ *  为什么要"先清再塞"，而不是"没有才塞"：`authorizeRequest` 那种"已有就不覆盖"
+ *  实际上把"这个头该是谁的"交给了调用方自觉。调用方只要忘了对齐，
+ *  两个账号的凭据就会混在一个请求里，而且**不报错** —— 上游按其中一个认人，
+ *  于是读回别人的数据、短信发到别人的号上（2026-11-27 真实事故 + issue #2）。
+ */
+export function bindAccountCredentials<T extends { headers: Record<string, string> }>(
+  req: T,
+  own: { auth?: string | undefined; jwt?: string | undefined; cookie?: string | undefined },
+): T {
+  const headers: Record<string, string> = {};
+  for (const [k, v] of Object.entries(req.headers)) {
+    if (ACCOUNT_HEADERS.includes(k.toLowerCase())) continue; // 别人的票，一律丢掉
+    headers[k] = v;
+  }
+  if (own.auth !== undefined && own.auth !== '') headers['Authorization'] = own.auth;
+  if (own.jwt !== undefined && own.jwt !== '') headers['jwttoken'] = own.jwt;
+  if (own.cookie !== undefined && own.cookie !== '') headers['cookie'] = own.cookie;
+  return { ...req, headers };
+}
+
+/** 发送层按主机后缀注入 `Authorization`。**已有 Authorization 时必须与本层账号一致**，
+ *  不一致就抛错 —— 这条是「禁止串号」的闸门，不是提示。 */
 export function authorizeRequest<T extends { url: string; headers: Record<string, string> }>(
   req: T,
   auth: string,
 ): T {
-  const hasAuth = Object.keys(req.headers).some((k) => k.toLowerCase() === 'authorization');
-  if (auth === '' || hasAuth || !sendsAuthorizationTo(req.url)) return req;
+  const key = Object.keys(req.headers).find((k) => k.toLowerCase() === 'authorization');
+  if (key !== undefined) {
+    // ⚠ 请求自己带了 Authorization：那一层要么是同一个账号，要么就是串号。
+    //   放过去等于让上游去决定"认哪个号"，而它只会认一个 —— 另一个号的凭据白带着。
+    if (auth !== '' && req.headers[key] !== auth) {
+      throw new Error(
+        '串号：这个请求带了别的账号的 Authorization。' +
+          '要读/写另一个账号，请换一个绑死那个账号的 transport（见 transportForAccount），' +
+          '不要在别人的 transport 上塞票。',
+      );
+    }
+    return req;
+  }
+  if (auth === '' || !sendsAuthorizationTo(req.url)) return req;
   return { ...req, headers: { ...req.headers, Authorization: auth } };
 }
 
