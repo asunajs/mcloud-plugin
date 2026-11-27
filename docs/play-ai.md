@@ -80,9 +80,9 @@ draw      开了代抽且 drawTimes > 0 时抽一发（一趟最多一发）
 - **同一天第二趟会重开一轮**（否则 `phase='done'` 会把这一族当天封死），`tried` 带过来；
 - **动作没成也照样回读** —— 那件事可能本来就算完成；失败那句进 `lines`。
 
-### 会做的十二件（2026-11-27 加了七件 aiTools 任务）
+### 会做的十三件（2026-11-27 加了八件 aiTools 任务 —— **9 件 H5 工具全接上**）
 
-`PLAYAI_ACTION_KEYS` 现在登记**十二件**：
+`PLAYAI_ACTION_KEYS` 现在登记**十三件**：
 
 | 趣玩AI 任务 | 动作 | 落盘 | 怎么找到的 |
 | --- | --- | --- | --- |
@@ -97,6 +97,7 @@ draw      开了代抽且 drawTimes > 0 时抽一发（一趟最多一发）
 | **`034`（AI快照）** | **`aiToolsSnapshot`** → `/api/image/faceswap` | 同上 | ⚠ **另一种 body**：`personList`（放一张脸）+ `extJson.templateImg`（固定模板图），不是那 7 个字段 |
 | **`3Drenou`（3D人偶）** | **`aiToolsDoll`** → `/api/image/edit/faceAnime` | 同上 | ⚠ 与 AI漫画风**共用**同一路径，靠 `supplierType:"7"`（**字符串**）+ `style:"plastic_bubble_figure"`（风格**名**）+ `addWatermark:true` 区分 |
 | **`006`（智能消除）** | **`aiToolsEraser`** → `/api/image/edit/erasure` | 同上 | ⚠ 要一张 `maskBase64`（涂抹蒙版）。插件没有触屏，内置一张**同尺寸固定蒙版**（中间一块方形）⇒ 效果是"去掉中间那块"，不是用户手涂的那块 |
+| **`031`（AI表情包）** | **`aiToolsEmoji`** → `/api/image/emo` | 同上 | ⚠ **第三种 body**：`templateUrl` 要用模板的 **`templateSamp`**（`.mov`），模板从广告位 `66344` 拉 |
 | **`007`（AI 头像）** | **`aiToolsAvatar`**：直接调 `ai.yun.139.com/api/image/avatar/cartoon` 把图生成出来 | **不落用户云盘**（结果落在算法侧的签名 URL，24h 有效） | 2026-11-27 抓包 + 静态提取，见下节 |
 
 挑的**偏好**：不落盘的排前面（`ACTION_RANK`）。`aiToolsAvatar` 默认排最后 ——
@@ -130,13 +131,13 @@ draw      开了代抽且 drawTimes > 0 时抽一发（一趟最多一发）
   ⚠ 换脸必须有一张**能检出人脸**的图，所以内置默认那张（人脸照）正好；纯色图会被拒
   （`face/analysis` 会回 `existFace: false`）。
 
-#### 做不了的（都是上游的账，不是我们没写）
+#### 做不了的（**现在 9 件全接上了**，下面这张表只剩 `004` 上游那一条）
 
 | taskId | 工具 | 为什么 |
 | --- | --- | --- |
 | `004` | AI漫画风 | 参数对了仍回 `10022001 该功能尚未开发`（另一次提交成功但算法侧 status=4）⇒ **上游没做** |
 
-| `031` | AI表情包 | 回「贴纸URL不能为空」——要贴纸素材，不是人像照（素材从哪来还没查） |
+
 
 
 ⚠ 还有一个**队列上限**：连发到第 4 个会回 `10000112 您当前还有任务正在处理中`。
