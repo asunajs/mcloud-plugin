@@ -614,19 +614,20 @@ export async function playAiStep(deps: TaskDeps): Promise<TaskOutcome> {
       // ② 用户口径「获取到次数就抽」⇒ 还有剩余次数就**接着抽**，别一趟只抽一发。
       //    `page.drawTimes` 是**读模块时**的余额，抽了 `drawn` 次后剩这么多：
       const left = (page.drawTimes ?? 0) - drawn;
+      const what = d.win === true ? `中了「${d.prizeName || '没给名字'}」` : d.win === false ? '没中' : '判不出中没中';
+      // ⚠ 只有**中奖**才进 `lines`（那一栏是 info 级，用户会看见）。
+      //   "抽了第 N 次、没中"是**过程**，走 `note` → `drain` 的 `onStep` → debug。
+      //   （2026-11-27 用户看日志：五次抽奖刷了五行 info，全是"没中"，噪声盖住了结论。）
+      if (d.win === true) st.lines = [...(st.lines ?? []), `抽了第 ${drawn} 次（${what}）`];
       if (left > 0 && drawn < PLAYAI_DRAWS_PER_RUN) {
-        const what = d.win === true ? `中了「${d.prizeName || '没给名字'}」` : d.win === false ? '没中' : '判不出中没中';
-        st.lines = [...(st.lines ?? []), `抽了第 ${drawn} 次（${what}）`];
         st.phase = 'draw';
         save(deps, st);
         return { ok: true, note: `抽了第 ${drawn} 次（${what}）—— 还剩 ${left} 次，接着抽` };
       }
-      // ⚠ 最后一发也要进 `lines`：`left===0` 走的是下面 `done` 那段，原来不发，账就少一条
-      //   （真跑现场：抽了 5 次，`lines` 里只有前 4 条，第 5 条只剩那句 idle 的 note）。
-      if (left <= 0 || drawn >= PLAYAI_DRAWS_PER_RUN) {
-        const what = d.win === true ? `中了「${d.prizeName || '没给名字'}」` : d.win === false ? '没中' : '判不出中没中';
-        st.lines = [...(st.lines ?? []), `抽了第 ${drawn} 次（${what}）`];
-      }
+      // 这一趟的**汇总**（只一条，不管中没中都写 —— 用户要能看到"抽了几发、中了几发"）。
+      // 逐次的过程在上面那条 `note` 里（debug），别在 info 里刷屏。
+      const won = (loadDrawDay(deps.store, day.day)?.wins ?? 0);
+      st.lines = [...(st.lines ?? []), `抽完：共 ${drawn} 发，中 ${won} 个`];
       st.phase = 'done';
       if (d.win === null) {
         // 判不出来 ⇒ 既不写"中了"也不写"没中"

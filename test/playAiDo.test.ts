@@ -1061,16 +1061,30 @@ test('真抽一趟：埋点发在 lottery 之前，且每抽一次都重发', as
   assert.ok(journals[2]! < draws[1]!, '第二次埋点在第二次抽奖之前');
 });
 
-test('⚠ 最后一发也要进 `lines`（原来只有前 N-1 条，第 N 条只剩 idle 的 note）', async () => {
-  // 真跑现场（2026-11-27）：余额 5 ⇒ 抽了 5 次，但 `lines` 里只有 4 条"抽了第 N 次"。
-  // 原因：`left===0` 走 `done` 那一段，那段原来不写 lines。
+test('⚠ 抽奖日志分级：过程走 debug，info 只留中奖与一条汇总', async () => {
+  // 2026-11-27 用户看日志：「五次抽奖刷了五行 info，全是"没中"，噪声盖住了结论」。
+  // ⇒ 逐次"抽了第 N 次（没中）"只走 `note`（`drain` 的 `onStep` → debug）；
+  //    `lines`（info）只留**中奖**那几条 + 一条本趟汇总。
   const { deps, store } = harness({ flip: true, drawTimes: 3, draw: true, isWin: 0 });
   await drainAll(deps);
   const { loadPlayAi } = await import('../src/mcloud/playAiState.ts');
   const st = loadPlayAi(store);
-  const drawnLines = (st?.lines ?? []).filter((l) => /抽了第 \d+ 次/.test(l));
-  assert.equal(drawnLines.length, 3, `抽 3 次就该有 3 条账（实际 ${drawnLines.length}：${(st?.lines ?? []).join(' | ')}）`);
-  assert.match(drawnLines[2]!, /第 3 次/, '最后一条要是第 3 次');
+  const lines = st?.lines ?? [];
+  // 一条都没中 ⇒ 不该有"抽了第 N 次"逐条
+  assert.equal(lines.filter((l) => /抽了第 \d+ 次/.test(l)).length, 0, `全没中不该有逐条：${lines.join(' | ')}`);
+  // 但要有汇总
+  assert.ok(lines.some((l) => /抽完：共 3 发，中 0 个/.test(l)), `要有汇总：${lines.join(' | ')}`);
+
+  // 中奖时，那一条要留（info 级给用户看）
+  const win = harness({ flip: true, drawTimes: 2, draw: true, isWin: 1 });
+  await drainAll(win.deps);
+  const st2 = loadPlayAi(win.store);
+  const lines2 = st2?.lines ?? [];
+  assert.ok(
+    lines2.filter((l) => /抽了第 \d+ 次（中了/.test(l)).length >= 1,
+    `中奖要逐条留：${lines2.join(' | ')}`,
+  );
+  assert.ok(lines2.some((l) => /抽完：共 2 发/.test(l)), '汇总也要在');
 });
 
 test('⚠ 调试（`force`）时**剩下的用户开关也不拦** —— 豆换码关着也照换', async () => {
