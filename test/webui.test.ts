@@ -527,6 +527,32 @@ test('调试页：只跑某一族 · 单个账号（清单一屏、不看总开�
   assert.match(js, /btn\.disabled = n === 0/, '一族都没选时不许点');
 });
 
+test('⚠ 调试页的族开关**默认全关**（不跟着「日常」里开着的预勾）', async () => {
+  // 用户原话：「调试应该默认全关，要测试哪个开哪个，而不是按照其他地方给我一堆开
+  // 我还得手动关」。原来按 `t.on` 预勾 ⇒ 日常开着五族时，进调试页要关四个才能测一个。
+  const js = srcOf('webui/app.js');
+  const html = srcOf('webui/index.html');
+  // 构建开关那一段里**不许**再读 `t.on` 去预勾
+  const block = js.slice(js.indexOf('function renderDebug()'), js.indexOf('function debugPickedIds()'));
+  // ⚠ 只看**代码**不看注释：注释里会写着"这里故意不读 `t.on`"，那是说明、不是行为。
+  const code = block
+    .split('\n')
+    .filter((l) => !/^\s*\/\//.test(l))
+    .join('\n');
+  assert.equal(
+    /if\s*\(\s*t\.on\b/.test(code),
+    false,
+    '调试页的开关不许再跟着 `t.on` 预勾 —— 必须从全关开始',
+  );
+  assert.equal(
+    /setAttribute\('checked'/.test(block.slice(block.indexOf('debug-tasks'), block.indexOf('syncDebugRunBtn'))),
+    false,
+    '构建开关时不许给任何一格设 checked',
+  );
+  // 界面上要说清这件事（用户得知道"为什么全是灰的"）
+  assert.match(html, /默认全关/, '调试页要写明默认全关');
+});
+
 test('下拉一律用面板的 <p-select>（原生 select 的列表是系统画的，配色/主题都不跟）', async () => {
   const html = srcOf('webui/index.html');
   const js = srcOf('webui/app.js');

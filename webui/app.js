@@ -26,7 +26,7 @@
 // 页面版本号：和 style.css 里的 --style-ver 一起人工递增。
 // 「样式自检」（boot.js 的 ?diag=1）会读它 —— 用来区分「CSS 是新的、JS 还是旧的」这种
 // 半新半旧状态（第 155 轮：样式表是 v155，但 DOM 里根本没有 .ex-group-row 这种行）。
-document.documentElement.dataset.appVer = '180';
+document.documentElement.dataset.appVer = '181';
 
 /** 插件自己的接口。 */
 const API = '/plugins/mcloud/api';
@@ -4029,7 +4029,6 @@ function shortName(name) {
 // ⚠ 只放宽这两层门 —— 凭据、幂等、串行、间隔、预算一律照旧（判据在 `dailyRun`）。
 //
 // 一次**只跑一个号**：`<p-select>` 本来就是单选，正好；要跑多个号回「日常」页。
-let debugPicked = {};   // 族 id → 是否勾上（这一次的）
 let debugAccountId = '';
 
 function renderDebug() {
@@ -4041,7 +4040,13 @@ function renderDebug() {
   );
   const acc = (last && last.account) || {};
   const list = Array.isArray(acc.accounts) ? acc.accounts : [];
-  // ① 族开关：第一次进来按"现在开着什么"预勾（关着的默认不勾，但可以手动勾上）
+  // ① 族开关：**一律从"全关"开始**，勾哪个跑哪个。
+  //
+  //  ⚠ 这里**故意不读 `t.on`**（2026-11-27 改）。原来是"按现在开着什么预勾"，
+  //    于是「日常」里开着五族 ⇒ 进调试页就是五个都亮着，用户要测一族得先关掉四个。
+  //    用户原话：「调试应该默认全关，要测试哪个开哪个，而不是按照其他地方给我一堆开
+  //    我还得手动关」。调试是"挑一个来试"，不是"照日常跑一遍"—— 默认全关才对。
+  //    （勾选状态只活在这一页的 DOM 里，不落库、不跟别处联动。）
   const box = $('debug-tasks');
   if (box.childElementCount === 0) {
     for (const t of (acc.taskCommon || [])) {
@@ -4052,10 +4057,6 @@ function renderDebug() {
       lab.textContent = t.label;
       const sw = document.createElement('p-switch');
       sw.setAttribute('data-task', t.id);
-      if (t.on) {
-        sw.setAttribute('checked', '');
-        debugPicked[t.id] = true;
-      }
       li.append(lab, sw);
       box.append(li);
     }
