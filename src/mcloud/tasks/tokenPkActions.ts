@@ -70,6 +70,17 @@ import {
   reserveRequest,
   smartAlbumRequest,
 } from '../tokenPk.ts';
+import {
+  AITOOLS_POLL_MS,
+  avatarCartoonRequest,
+  isTaskDone,
+  isTaskFailed,
+  parseGenTask,
+  parseTaskStatus,
+  taskResultRequest,
+  upsteamMessage,
+} from '../aiTools.ts';
+import { DEFAULT_AITOOLS_PHOTO_B64 } from '../aiToolsPhoto.ts';
 
 export interface ActionOutcome {
   ok: boolean;
@@ -95,6 +106,10 @@ export function firstActionStep(key: string): string {
     case 'aiCamera':
     case 'aiAssistant':
       return 'ai-mail-sso';
+    // aiTools 那族**不走** AI 助手那条链：它在 `ai.yun.139.com`，
+    // 用 `auth` 直接调、不需要邮箱 SSO / 灵犀对话。
+    case 'aiToolsAvatar':
+      return 'aitools-gen';
     case 'openAlbum':
       return 'smart-album';
     default:
@@ -125,6 +140,79 @@ async function send(deps: TaskDeps, req: BuiltRequest): Promise<RawTextResult> {
   return await callRawText(deps.transport, req);
 }
 
+/** 轮询几次算放弃。实测头像 2 次就好；留到 12 次（≈ 一次 drain 的预算）够慢网。 */
+export const AI_MAX_POLLS = 8;
+
+/** aiTools：提交生成。
+ *
+ *  用哪张图：**内置默认那张**（`DEFAULT_AITOOLS_PHOTO_B64`）。
+ *  ⚠ 用户自定义那张还没接（配置项待定，见 `docs/play-ai.md` §「H5 工具」）。
+ *
+ *  ⚠ 七个字段缺一不可 —— 只发 `{sendType, base64}` 上游回 `01000001 参数错误`，
+ *    看上去像"图不合格"，实际是少了 `imageExt`/`style`/`supplierType`/`channelId`/`context`。
+ */
+async function stepAiToolsGen(
+  deps: TaskDeps,
+  a: PkAttempt,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  data: Record<string, string>,
+): Promise<ActionOutcome> {
+  const res = await send(deps, avatarCartoonRequest(DEFAULT_AITOOLS_PHOTO_B64));
+  if (!res.ok) return fail(`「${a.name}」提交生成没成：${res.error ?? '未知失败'}`);
+  const taskId = parseGenTask(res.text);
+  if (taskId === undefined) {
+    const why = upsteamMessage(res.text);
+    return fail(`「${a.name}」提交生成被拒：${why === '' ? '回执里没有 taskId' : why}`);
+  }
+  advance(a, 'aitools-poll', { aiTaskId: taskId, aiPolls: '0' });
+  return more(`「${a.name}」已提交生成（taskId ${taskId}）—— 下一步等结果`);
+}
+
+/** aiTools：轮询结果。`status === 3` 才算完，`1`/`2` 继续等，其余按失败。 */
+async function stepAiToolsPoll(
+  deps: TaskDeps,
+  a: PkAttempt,
+  data: Record<string, string>,
+): Promise<ActionOutcome> {
+  const taskId = data.aiTaskId ?? '';
+  if (taskId === '') return fail(`「${a.name}」缺 taskId`);
+  const polls = Number(data.aiPolls ?? '0');
+  if (polls >= AI_MAX_POLLS) {
+    // ⚠ **不许写成"没成"**：生成早就提交了、服务端也在算，只是我们没等到 `status 3`。
+    //   2026-11-27 真跑踩过：轮询空转放弃、日志写"没成"，但回读 `isComplete` 其实是 1 ——
+    //   那句假话会留在运行记录里让用户以为失败了。
+    //   真判据是后面的回读（`verify` 阶段），这里如实说"还在算"就交出去。
+    return done(`「${a.name}」已提交，服务端还在算（问了 ${polls} 次）—— 回读看认不认`);
+  }
+  const res = await send(deps, taskResultRequest(taskId));
+  if (!res.ok) return fail(`「${a.name}」查结果没成：${res.error ?? '未知失败'}`);
+  const st = parseTaskStatus(res.text);
+  if (st === undefined) {
+    const why = upsteamMessage(res.text);
+    return fail(`「${a.name}」查结果的回执解析不了：${why === '' ? '没有 data.status' : why}`);
+  }
+  if (isTaskFailed(st)) {
+    return fail(`「${a.name}」生成失败（status=${st.status}）`);
+  }
+  if (!isTaskDone(st)) {
+    // ⚠ **必须在这里等**，不能靠 drain 的步间隔：动作链是同一个 phase 连着调，
+    //   实测两次 `stepAction` 之间只隔几十毫秒 —— 不主动等的话 12 次轮询两秒就打完了，
+    //   算法那边还在 status=2，一路空转到放弃（2026-11-27 真跑踩到）。
+    advance(a, 'aitools-poll', { aiPolls: String(polls + 1) });
+    waitMs(deps, AITOOLS_POLL_MS);
+    return more(`「${a.name}」还在生成（status=${st.status}）—— 等下一轮`);
+  }
+  // 交叉核对：`algorithmCode` 应该等于那件任务的 taskId，不等说明挑错了活儿。
+  // ⚠ 趣玩AI 的 taskId 在 `data.aiTask`（`PkAttempt.taskId` 是 number，那边一律传 0）。
+  const algo = st.algoCode ?? '';
+  const want = data.aiTask ?? '';
+  const algoNote =
+    algo !== '' && want !== '' && algo !== want
+      ? `（⚠ 但 algorithmCode=${algo}，与 taskId ${want} 不符，请核对路径表）`
+      : '';
+  return done(`「${a.name}」生成好了（status=3${st.progress === undefined ? '' : ` progress=${st.progress}`}）${algoNote}`);
+}
+
 /** 推进一步（**一次调用最多一发上游请求**）。 */
 export async function stepAction(deps: TaskDeps, s: PkSession, a: PkAttempt): Promise<ActionOutcome> {
   const data = a.data ?? {};
@@ -151,6 +239,10 @@ export async function stepAction(deps: TaskDeps, s: PkSession, a: PkAttempt): Pr
     advance(a, next);
     return more(`已登记「${a.name}」—— 下一步「${next}」`);
   }
+
+  // ── aiTools 那族（9 件 H5 工具；目前只接 AI 头像）────────────────
+  if (a.step === 'aitools-gen') return stepAiToolsGen(deps, a, data);
+  if (a.step === 'aitools-poll') return stepAiToolsPoll(deps, a, data);
 
   // ── 上传（loginPc / uploadPhoto / shareFile / backup 共用）─────────
   if (a.step === 'upload') return stepUpload(deps, a, data);

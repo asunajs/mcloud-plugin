@@ -127,6 +127,12 @@ export const PLAYAI_ACTION_KEYS: Record<string, string> = {
   //   链尾「清理临时文件」会删掉它（见 findings F-153）。
   aixiangji: 'aiCamera',
   '204': 'aiCamera',
+  // ⚠ `007`（AI头像）走**另一套**：它不是"进工具里做个动作"，而是直接调
+  //   `ai.yun.139.com/api/image/avatar/cartoon` 把图生成出来（生成成功上游就认）。
+  //   2026-11-27 用本仓凭据复跑通过：status=3、回读 `isComplete` 翻到 1。
+  //   其余 8 件的路径已查明（`mcloud-capture/mcloud/upstream/aitools.md`），
+  //   但**每件 body 形状不同**、只有头像验过，所以先只登记这一件。
+  '007': 'aiToolsAvatar',
 };
 
 /** 挑任务的偏好：**不写云盘**的排前面。
@@ -408,7 +414,16 @@ export async function playAiStep(deps: TaskDeps): Promise<TaskOutcome> {
       st.phase = 'act';
       // ⚠ 入口步骤**问动作层**，别硬编 `'ai-mail-sso'`：动作层哪天换入口，
       //   硬编的那一份会静默走错分支（`stepAction` 会一路落到默认 done）。
-      st.attempt = { taskId: 0, name: t.name, key: t.actionKey, step: firstActionStep(t.actionKey) };
+      // ⚠ `PkAttempt.taskId` 是 **number**（算力族那边就是数字），而趣玩AI 的 taskId 是
+      //   **字符串**（`'007'` / `'aixiangji'` / `'3Drenou'`）⇒ 那边传 0，真正的那个放进 `data`，
+      //   动作层要用就从 `data.aiTask` 取（`aiTools` 那条要拿它和 `algorithmCode` 对拍）。
+      st.attempt = {
+        taskId: 0,
+        name: t.name,
+        key: t.actionKey,
+        step: firstActionStep(t.actionKey),
+        data: { aiTask: String(t.taskId) },
+      };
       save(deps, st);
       return { ok: true, note: `「${t.name}」已上报 —— 下一步去做那件事` };
     }

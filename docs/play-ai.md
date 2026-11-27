@@ -80,9 +80,9 @@ draw      开了代抽且 drawTimes > 0 时抽一发（一趟最多一发）
 - **同一天第二趟会重开一轮**（否则 `phase='done'` 会把这一族当天封死），`tried` 带过来；
 - **动作没成也照样回读** —— 那件事可能本来就算完成；失败那句进 `lines`。
 
-### 会做的五件，以及其余 19 件为什么不做
+### 会做的六件（2026-11-27 加了 AI 头像）
 
-`PLAYAI_ACTION_KEYS` 现在登记五件（**全部复用动作层已有的动作**）：
+`PLAYAI_ACTION_KEYS` 现在登记**六件**：
 
 | 趣玩AI 任务 | 动作 | 落盘 | 怎么找到的 |
 | --- | --- | --- | --- |
@@ -91,8 +91,29 @@ draw      开了代抽且 drawTimes > 0 时抽一发（一趟最多一发）
 | `204`（扫描文档） | `aiCamera` | 同上 | 同上（`target=document`） |
 | `ailuyinzhuanxie`（AI 录音转写） | **独立完成口** `timed/transcriptioncompleted` | 不落盘 | 抓包 §7.8：`taskSign=2` 不走 `register` |
 | `yunbiji`（AI 云笔记） | `createNote`（笔记鉴权 → 建 → 回读） | 建一条笔记 | `innerLink` 是 `featureServices?linkUrl=0|2040`；动作层早就有（算力族 107 号） |
+| **`007`（AI 头像）** | **`aiToolsAvatar`**：直接调 `ai.yun.139.com/api/image/avatar/cartoon` 把图生成出来 | **不落用户云盘**（结果落在算法侧的签名 URL，24h 有效） | 2026-11-27 抓包 + 静态提取，见下节 |
 
-挑的**偏好**：不落盘的排前面（`ACTION_RANK`）。
+挑的**偏好**：不落盘的排前面（`ACTION_RANK`）。`aiToolsAvatar` 默认排最后 ——
+它**消耗算法额度**（`estimateTokenUsage` 7136），先把不耗额度的做完。
+
+#### AI 头像（`007`）走的是**另一套**：aiTools，不是动作链
+
+前面五件都是"模拟用户在工具里做一件事"；`007` 不是 —— 它是**直接把图生成出来**，
+生成成功服务端就认。链路（2026-11-27 真跑通过，`191****16` 那号）：
+
+```text
+① POST ai.yun.139.com/api/image/avatar/cartoon   body 七个字段（缺一个就「参数错误」）
+                                        → data.taskId
+② POST /api/outer/async/task/result  {"taskId"}  → data.status 1 → 2 → **3 = 完成**
+③ 回读 funai 的 page/getmodule                  → 007.isComplete 变 1
+```
+
+- **鉴权用 `auth`**（`Authorization: Basic …`），由传输层按 `AUTH_DOMAINS` 自动注入 ——
+  见 `docs/auth-families.md` §5。不是 `jwttoken`、也不是 `ssoToken`；
+- **图片默认用内置那张**（`src/mcloud/aiToolsPhoto.ts`，748×748 JPEG q85）：
+  这类算法要**一张人脸照**，而插件没有相册读取权（面板运行时只有 `fs.existsSync`）；
+- 其余 8 件的**路径已查明**（`mcloud-capture/mcloud/upstream/aitools.md` 有整张表），
+  但**每件的 body 形状不同**、只有头像验过，所以先只登记这一件。
 
 #### 其余 19 件：**H5 工具那一族做不了，这不是"还没抓包"**
 
