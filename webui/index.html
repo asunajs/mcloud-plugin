@@ -951,17 +951,10 @@
           </div>
         </div>
 
-        <div class="card">
-          <div class="card-head">
-            <div class="card-head-main">
-              <span class="card-title">每族上次的结果</span>
-            </div>
-            <div class="card-actions">
-              <button class="btn small" id="debug-last-refresh" type="button">刷新</button>
-            </div>
-          </div>
-          <ul class="list" id="debug-last"></ul>
-        </div>
+        <!-- 2026-11-27 删掉「每族上次的结果」卡片（用户口径：「调试要这个没用，要的是日志」）。
+             它读的是 /debug/last 的历史摘要（「这次没跑」「没事可做」这类），
+             对排查没帮助 —— 真正要看的是下面那块运行日志（含每一步的原文）。
+             日志块也因此上移，占据更大的视线。 -->
 
         <div class="term" id="debug-term">
           <div class="term-bar">

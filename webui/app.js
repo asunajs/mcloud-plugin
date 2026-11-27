@@ -4079,11 +4079,6 @@ function renderDebug() {
     document.getElementById('debug-account').dataset.debugAccount = '1';
   }
   syncDebugRunBtn();
-  // 先给一句"在读"，别让那张卡空着（读得慢的时候看起来像坏了）
-  if ($('debug-last').childElementCount === 0) {
-    $('debug-last').innerHTML = '<li class="hint">正在读…</li>';
-  }
-  void refreshDebugLast();
 }
 
 /** 选中的族（从 DOM 读，DOM 才是这一页的真身）。 */
@@ -4123,40 +4118,10 @@ $('debug-run').addEventListener('click', (e) => {
 });
 $('debug-stop').addEventListener('click', (e) => stopRunning('daily', e.currentTarget));
 
-/** 每族上次的结果（读 `/debug/last`，不新造状态）。
- *
- *  ⚠ 四种状态，**不是"成了/没成"两态**：`ok:true` 有三种完全不同的意思 ——
- *  真做成了 / 跑了没事可做 / 这一趟根本没轮到它。只按 `ok` 画的话后两种都显示成
- *  「成了」（2026-11-26 用户点「只跑趣玩AI」，这一页告诉他六族全成了）。 */
-const DEBUG_STATE_TEXT = {
-  done: { text: '成了', cls: 'ok' },
-  failed: { text: '没成', cls: 'bad' },
-  idle: { text: '没事可做', cls: 'mute' },
-  skipped: { text: '这次没跑', cls: 'mute' },
-};
-
-async function refreshDebugLast() {
-  const box = $('debug-last');
-  try {
-    const r = await api('/debug/last');
-    const tasks = r.tasks || {};
-    const labels = (r.switches || []).map((t) => [t.id, t.label]);
-    box.innerHTML = labels
-      .map(([id, label]) => {
-        const one = tasks[id];
-        const atText = one ? when(one.at) : '还没跑过';
-        const st = one ? DEBUG_STATE_TEXT[one.state] || DEBUG_STATE_TEXT.idle : null;
-        const note = one && one.note ? ` —— ${esc(one.note)}` : '';
-        const head = st === null ? esc(label) : `${esc(label)} · <span class="tag-${st.cls}">${st.text}</span>`;
-        return `<li class="item"><div class="item-main"><span class="item-t">${head}</span><span class="item-s">${esc(atText)}${note}</span></div></li>`;
-      })
-      .join('');
-  } catch (e) {
-    box.innerHTML = `<li class="hint">读不到：${esc(String(e && e.message ? e.message : e))}</li>`;
-  }
-}
-
-$('debug-last-refresh').addEventListener('click', () => void refreshDebugLast());
+// 2026-11-27 删掉「每族上次的结果」整块（用户口径：「调试要这个没用，要的是日志」）。
+// 它读 /debug/last 的历史摘要（「这次没跑」「没事可做」），对排查没帮助；
+// 真正要看的是运行日志（#debug-term，含每一步原文）。后端 /debug/last 路由保留不动，
+// 万一别处还要用；只是这一页不再展示它。
 
 // 趣玩AI 的代抽开关（花次数 ⇒ 缺省关；开/关都要立刻存）
 document.addEventListener('change', (ev) => {
