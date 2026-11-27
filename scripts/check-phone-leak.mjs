@@ -58,6 +58,23 @@ function findRoot(start) {
 
 const ROOT = findRoot(resolve(dirname(fileURLToPath(import.meta.url)), '..'));
 
+/** 提交信息里的号码（R5：提交信息是**零号码区**）。
+ *
+ *  ⚠ 为什么单列一条：工作树扫描只看文件内容，**提交信息不在文件里**，
+ *  所以"改了文件却把号码写在 commit message 里"能一路过门禁。
+ *  2026-11-27 就是这么欠下来的：十几个提交的正文带着号段掩码和完整号，
+ *  文件全干净、门禁全绿。（当时靠人肉 `git log | grep` 才发现。）
+ *
+ *  只查"带星号的掩码"和"完整 11 位号"，**不**去匹配 `**1492**` 这种
+ *  markdown 粗体 —— 那会把测试条数误判成号码（踩过）。
+ */
+const COMMIT_PHONE_PATTERNS = [
+  // 三位号段+尾号 / 两位号段+尾号 / 只有号段
+  /(^|[^0-9])1[3-9][0-9]?\*{2,}/,
+  // 完整 11 位（合成号也算：提交信息里不许有号码）
+  /(^|[^0-9])1[3-9][0-9]{9}([^0-9]|$)/,
+];
+
 /** 唯一允许出现的手机号（教科书假号，尾号互不相同、与任何真实账号无关）。 */
 const ALLOW = [
   // 教科书假号
@@ -150,6 +167,40 @@ for (const f of files) {
       }
     }
   }
+}
+
+// ⚠ 提交信息也要扫 —— 文件干净不代表历史干净（2026-11-27 的欠账就是这么来的）。
+//   默认扫 `--all`（所有分支和 tag），因为推上去的每一个都算。
+try {
+  const { execFileSync } = await import('node:child_process');
+  const out = execFileSync('git', ['log', '--all', '--format=%h%x09%s%x09%b%x1e'], {
+    cwd: ROOT,
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  for (const rec of out.split('\x1e')) {
+    const t = rec.trim();
+    if (t === '') continue;
+    const [h, subject = ''] = t.split('\t');
+    for (const ln of t.split('\n')) {
+      // 跳过 markdown 粗体造成的假阳性（`**1492**` 这种）
+      const cleaned = ln.replace(/\*\*+/g, '');
+      for (const re of COMMIT_PHONE_PATTERNS) {
+        const m = re.exec(cleaned);
+        if (m !== null) {
+          bad.push([
+            '<commit>',
+            h.slice(0, 7),
+            `提交信息里有号码：${m[0].trim()}`,
+            `「${subject.slice(0, 30)}」—— 提交信息是零号码区，改写成「某号」`,
+          ]);
+          break;
+        }
+      }
+    }
+  }
+} catch {
+  // 没有 git（打包分发时）—— 跳过这一项，不阻断
 }
 
 if (bad.length === 0) {
