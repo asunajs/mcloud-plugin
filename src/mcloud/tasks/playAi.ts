@@ -55,6 +55,7 @@ import {
   loadPlayAiSnapshot,
   newPlayAi,
   saveDrawDay,
+  playAiDrawEnabled,
   savePlayAi,
   savePlayAiSnapshot,
 } from '../playAiState.ts';
@@ -254,19 +255,21 @@ function dayKey(deps: TaskDeps): string {
  *  （`drawTimes > 0` —— 它本身已经是余额，别再减 `drawsUsed`）；
  *  ③ 今天还没抽满这一趟的上限；④ 这一趟还没抽过（`drawn` 按天记）。 */
 function shouldDraw(deps: TaskDeps, modules: readonly PlayAiModule[], drawnSoFar = 0): boolean {
-  // ⚠ **没有开关**（2026-11-27 用户拍板彻底删掉）：
-  //   「抽奖不应该有开关，我都去做了还不抽，有病吧，只有开了做，就一定抽」。
-  //   ⇒ 只要用户让「日常」跑起来、页面模块说还有次数，就抽。
-  //   "一趟最多几发"由 `PLAYAI_DRAWS_PER_RUN` 管，真正的上限是服务端的 `drawTimes`。
+  // ⚠⚠ **2026-11-27 暂停自动抽奖**（用户要求：「抽奖那个你先关闭」）。
+  //
+  //   触发原因：插件连抽 10 发全空，用户手动 5 中 4。对比出唯一硬差异是**节奏**：
+  //     · 用户手动：`lotteryTime` 18:50:23.10 → 26.44 → 28.77 → 30.66，**间隔约 2.5–3 秒**；
+  //     · 插件连抽：22:05:57.871 → 58.244 → 58.616，**间隔 0.3–0.4 秒**（同一秒里抽 5 次）。
+  //   怀疑服务端按频率给空奖（**未证实**）。查清并加上间隔之前，一发都不抽。
+  //
+  //   开关 `mcloud.playai.draw` **默认关**（没写过就不抽），界面上暂不暴露。
+  //   恢复抽奖时要一起做的：每次之间至少 3 秒，并且**先在一个号上只抽 1 发**看回执。
+  if (!playAiDrawEnabled(deps.store)) return false;
   const page = pageModule(modules);
   if (page === undefined) return false;
   if (page.drawTimes === null || page.drawTimes <= 0) return false;
-  // 这一趟已经抽掉的，从余额里减掉；抽满 `PLAYAI_DRAWS_PER_RUN` 或余额见底就停
   if (drawnSoFar >= PLAYAI_DRAWS_PER_RUN) return false;
   if (page.drawTimes - drawnSoFar <= 0) return false;
-  // ⚠ **不再**拿按天账卡这里：那样一天只能抽一次，而用户有几次就该能抽几次
-  //   （跑几趟由用户定）。"一趟最多一发"由状态机保证 —— 抽完就 `phase='done'`，
-  //   同一次运行里回不到 `draw` 了。按天账（`drawn/wins`）只用来报数。
   return true;
 }
 

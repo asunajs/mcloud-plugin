@@ -16,6 +16,22 @@ import type { PlayAiModule, PlayAiReading } from './playAi.ts';
 
 /** 这一趟的进度（可恢复：面板一次调用只有 2 秒预算）。 */
 export const STATE_PLAYAI = 'mcloud.playai.state';
+/** 自动抽奖：`'1'` / `'0'`。**没写过 = 关**（暂停状态）。
+ *
+ *  ⚠ 2026-11-27 暂停。原因：插件连抽 10 发全空，用户手动 5 中 4，唯一硬差异是**节奏**
+ *  （手动间隔 2.5–3 秒，插件 0.3–0.4 秒）。查清并加上间隔之前，缺省不抽。
+ *  ⚠ 界面上**先不暴露**这一格 —— 等查清再决定怎么给用户。
+ */
+export const STATE_PLAYAI_DRAW = 'mcloud.playai.draw';
+
+export function playAiDrawEnabled(store: Pick<Store, 'getState'>): boolean {
+  return (store.getState(STATE_PLAYAI_DRAW) ?? '') === '1';
+}
+
+export function setPlayAiDrawEnabled(store: Store, on: boolean, nowIso: string): void {
+  store.setState(STATE_PLAYAI_DRAW, on ? '1' : '0', nowIso);
+}
+
 /** 今天的抽奖账（`{day, drawn, wins}`）—— 上限按天算，同一天再跑也不重置。 */
 export const STATE_PLAYAI_DRAW_DAY = 'mcloud.playai.draw.state';
 
