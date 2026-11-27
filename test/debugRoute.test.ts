@@ -83,13 +83,11 @@ test('读数里带上趣玩AI 上次读到的那一份（没读过就是 null）
   const routes = mcloudRoutes(testDeps(store, { now: NOW }));
   const rd = routes.find((x) => x.path === '/plugins/mcloud/api/readings' && x.method === 'GET')!;
   const before = JSON.parse((await rd.handler({ query: '' })).body) as {
-    playai?: { line: string; reading: unknown; drawEnabled: boolean } | null;
+    playai?: { line: string; reading: unknown } | null;
   };
   // 没读过时**仍给一份壳**（代抽开关要能看），但读数是空的 —— 不编一个空读数
   assert.equal(before.playai?.line, '', '没读过时读数是空串');
   assert.equal(before.playai?.reading, null, '没读过就没有 reading');
-  // 2026-11-27 起缺省**开**（用户口径「获取到次数就抽」）
-  assert.equal(before.playai?.drawEnabled, true);
 
   const { savePlayAiSnapshot } = await import('../src/mcloud/playAiState.ts');
   savePlayAiSnapshot(
@@ -110,32 +108,23 @@ test('读数里带上趣玩AI 上次读到的那一份（没读过就是 null）
   assert.equal(after.playai?.at, NOW);
 });
 
-test('代抽开关：缺省**开**、能开能关，且与读数分开给（读数没跑过也能看开关）', async () => {
+test('⚠ 抽奖开关**整条删了**：没有 `POST /playai/draw`，读数里也没有 `drawEnabled`', async () => {
+  // 2026-11-27 用户拍板：「抽奖不应该有开关，我都去做了还不抽，有病吧，只有开了做，就一定抽」。
   const store = memStore();
   store.ensureSchema();
   const routes = mcloudRoutes(testDeps(store, { now: NOW }));
+  assert.equal(
+    routes.some((x) => x.path === '/plugins/mcloud/api/playai/draw'),
+    false,
+    '那条路由该删了',
+  );
   const rd = routes.find((x) => x.path === '/plugins/mcloud/api/readings' && x.method === 'GET')!;
-  const before = JSON.parse((await rd.handler({ query: '' })).body) as {
-    playai: { drawEnabled: boolean; line: string } | null;
+  const body = JSON.parse((await rd.handler({ query: '' })).body) as {
+    playai: Record<string, unknown> | null;
   };
-  assert.equal(before.playai?.drawEnabled, true, '缺省必须是开（用户口径：获取到次数就抽）');
-  assert.equal(before.playai?.line, '', '没读过时读数是空，不是编一个');
-
-  const post = routes.find((x) => x.path === '/plugins/mcloud/api/playai/draw' && x.method === 'POST')!;
-  assert.ok(post, '要有代抽开关这条路由');
-  const bad = await post.handler({ query: '', body: JSON.stringify({ on: 'yes' }) });
-  assert.equal(bad.status, 400, 'on 必须是布尔');
-
-  const on = await post.handler({ query: '', body: JSON.stringify({ on: true }) });
-  assert.equal(on.status, 200);
-  const after = JSON.parse((await rd.handler({ query: '' })).body) as {
-    playai: { drawEnabled: boolean };
-  };
-  assert.equal(after.playai.drawEnabled, true);
-
-  await post.handler({ query: '', body: JSON.stringify({ on: false }) });
-  const off = JSON.parse((await rd.handler({ query: '' })).body) as { playai: { drawEnabled: boolean } };
-  assert.equal(off.playai.drawEnabled, false);
+  assert.equal('drawEnabled' in (body.playai ?? {}), false, '读数里不该再有这一格');
+  // 但读数该有的还在
+  assert.equal('autoTaskIds' in (body.playai ?? {}), true, '「插件会做哪几件」还得给');
 });
 
 test('每族映射的步骤名，必须真的出现在 `dailyRun` 的 push 里（防静默失配）', async () => {

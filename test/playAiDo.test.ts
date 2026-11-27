@@ -237,40 +237,29 @@ test('一趟做几件是**有上限**的（不是"全做"，也不是 1）', () 
 
 // ── 抽奖（step ③）──────────────────────────────────────────────────
 
-test('⚠ 代抽**缺省开**（用户口径「获取到次数就抽」）；显式设 0 才不抽', async () => {
-  // 2026-11-27 改的：原来缺省关，用户看到「可抽 5 次」却没抽，明确要求"要实现为用户可自动化那样"。
-  const { playAiDrawEnabled, setPlayAiDrawEnabled } = await import('../src/mcloud/playAiState.ts');
-  const { memStore } = await import('../src/store/memory.ts');
-  const st = memStore();
-  st.ensureSchema();
-  assert.equal(playAiDrawEnabled(st), true, '没设过 ⇒ 缺省开');
+test('⚠ **没有抽奖开关**：只要在跑、还有次数，就一定抽', async () => {
+  // 2026-11-27 用户拍板：「抽奖不应该有开关，我都去做了还不抽，有病吧，只有开了做，就一定抽」。
+  // ⇒ `mcloud.playai.draw` 这个键、`playAiDrawEnabled` / `setPlayAiDrawEnabled`、
+  //   `POST /playai/draw` 路由、读数里的 `drawEnabled`、界面上的那个开关，**全删了**。
+  const st = await import('../src/mcloud/playAiState.ts');
+  assert.equal('playAiDrawEnabled' in st, false, '开关函数该没了');
+  assert.equal('setPlayAiDrawEnabled' in st, false);
+  assert.equal('STATE_PLAYAI_DRAW' in st, false, '开关键该没了');
 
-  // 不设开关也照抽
-  const a = harness({ flip: true, drawTimes: 3 });
+  // 什么都没设 ⇒ 照抽
+  const a = harness({ flip: true, drawTimes: 2, draw: true, isWin: 0 });
   await drainAll(a.deps);
-  assert.ok(
-    a.sent.filter((x) => String(x.url).includes('/page/lottery')).length > 0,
-    '缺省就该抽',
-  );
-
-  // 显式关掉 ⇒ 一次都不抽
-  const b = harness({ flip: true, drawTimes: 3 });
-  setPlayAiDrawEnabled(b.store, false, NOW);
-  await drainAll(b.deps);
   assert.equal(
-    b.sent.filter((x) => String(x.url).includes('/page/lottery')).length,
-    0,
-    '显式设 0 才不抽',
+    a.sent.filter((x) => String(x.url).includes('/page/lottery')).length,
+    2,
+    '有 2 次就抽 2 次',
   );
-  assert.equal(playAiDrawEnabled(b.store), false);
 });
 
 test('开了代抽 + 有几次就抽几次；`isWin:1` 判中、`isWin:0` 判没中', async () => {
   // 用户口径（2026-11-27）：「获取到次数就抽」。余额 2 ⇒ 一趟抽 2 次，不是 1 次。
   for (const [isWin, expect] of [[1, /抽中了/], [0, /没中/]] as const) {
     const { deps, sent, store } = harness({ flip: true, drawTimes: 2, draw: true, isWin });
-    const { setPlayAiDrawEnabled } = await import('../src/mcloud/playAiState.ts');
-    setPlayAiDrawEnabled(store, true, NOW);
     const { notes } = await drainAll(deps);
     const draws = sent.filter((x) => String(x.url).includes('/page/lottery'));
     assert.equal(draws.length, 2, `余额 2 ⇒ 抽 2 次；实际 notes=${notes.join(' | ')}`);
@@ -281,16 +270,12 @@ test('开了代抽 + 有几次就抽几次；`isWin:1` 判中、`isWin:0` 判没
 
 test('次数是 0 ⇒ 不抽（`drawTimes` 本身已是余额，不再减 `drawsUsed`）', async () => {
   const { deps, sent, store } = harness({ flip: true, drawTimes: 0, draw: true, isWin: 1 });
-  const { setPlayAiDrawEnabled } = await import('../src/mcloud/playAiState.ts');
-  setPlayAiDrawEnabled(store, true, NOW);
   await drainAll(deps);
   assert.equal(sent.filter((x) => String(x.url).includes('/page/lottery')).length, 0);
 });
 
 test('回执没有 `isWin` ⇒ 既不写"中了"也不写"没中"', async () => {
   const { deps, store } = harness({ flip: true, drawTimes: 1, draw: true, isWin: null });
-  const { setPlayAiDrawEnabled } = await import('../src/mcloud/playAiState.ts');
-  setPlayAiDrawEnabled(store, true, NOW);
   const { notes } = await drainAll(deps);
   assert.ok(notes.some((n) => /判不出/.test(n)), `要如实说：${notes.join(' | ')}`);
   // ⚠ 别写成 `/没中$/`：那句「判不出中没中」正好以「没中」结尾，会误伤
@@ -341,8 +326,6 @@ test('同一天跑第二趟：上一趟已经把次数抽完，就一发都不�
   // 真正拦住它的是**服务端**：真跑时第二趟的 `drawTimes` 会是 0。
   // 这条测试只钉"一趟里能连抽"，不钉跨趟行为（跨趟由服务端余额决定）。
   const { deps, sent, store } = harness({ flip: true, drawTimes: 3, draw: true, isWin: 1 });
-  const { setPlayAiDrawEnabled } = await import('../src/mcloud/playAiState.ts');
-  setPlayAiDrawEnabled(store, true, NOW);
   await drainAll(deps);
   const draws = sent.filter((x) => String(x.url).includes('/page/lottery')).length;
   assert.equal(draws, 3, `余额 3 ⇒ 一趟抽 3 发（实际 ${draws}）`);
@@ -353,8 +336,6 @@ test('一趟最多抽 `PLAYAI_DRAWS_PER_RUN`（5）发 —— 余额再多也到
   const { PLAYAI_DRAWS_PER_RUN } = await import('../src/mcloud/tasks/playAi.ts');
   assert.equal(PLAYAI_DRAWS_PER_RUN, 5, '与上游每日 5 次对齐');
   const { deps, sent, store } = harness({ flip: true, drawTimes: 9, draw: true, isWin: 1 });
-  const { setPlayAiDrawEnabled } = await import('../src/mcloud/playAiState.ts');
-  setPlayAiDrawEnabled(store, true, NOW);
   await drainAll(deps);
   const draws = sent.filter((x) => String(x.url).includes('/page/lottery')).length;
   assert.equal(draws, PLAYAI_DRAWS_PER_RUN, `一趟最多 ${PLAYAI_DRAWS_PER_RUN} 发（实际 ${draws}）`);
@@ -876,8 +857,6 @@ test('活动已结束 ⇒ 不点、不抽，只留一句「已结束」', async 
     baseUrl: undefined,
   } as unknown as TaskDeps;
   // 代抽开着也不该抽
-  const { setPlayAiDrawEnabled } = await import('../src/mcloud/playAiState.ts');
-  setPlayAiDrawEnabled(store, true, NOW);
 
   const notes: string[] = [];
   for (let i = 0; i < 8; i++) {
@@ -1070,8 +1049,6 @@ test('⚠ 抽奖前要打埋点（`visitlog/journaling`，form-urlencoded）', a
 
 test('真抽一趟：埋点发在 lottery 之前，且每抽一次都重发', async () => {
   const { deps, sent, store } = harness({ flip: true, drawTimes: 2, draw: true, isWin: 1 });
-  const { setPlayAiDrawEnabled } = await import('../src/mcloud/playAiState.ts');
-  setPlayAiDrawEnabled(store, true, NOW);
   await drainAll(deps);
   const idx = (needle: string): number[] =>
     sent.map((x, i) => (String(x.url).includes(needle) ? i : -1)).filter((i) => i >= 0);
@@ -1088,8 +1065,6 @@ test('⚠ 最后一发也要进 `lines`（原来只有前 N-1 条，第 N 条只
   // 真跑现场（2026-11-27）：余额 5 ⇒ 抽了 5 次，但 `lines` 里只有 4 条"抽了第 N 次"。
   // 原因：`left===0` 走 `done` 那一段，那段原来不写 lines。
   const { deps, store } = harness({ flip: true, drawTimes: 3, draw: true, isWin: 0 });
-  const { setPlayAiDrawEnabled } = await import('../src/mcloud/playAiState.ts');
-  setPlayAiDrawEnabled(store, true, NOW);
   await drainAll(deps);
   const { loadPlayAi } = await import('../src/mcloud/playAiState.ts');
   const st = loadPlayAi(store);
@@ -1098,25 +1073,18 @@ test('⚠ 最后一发也要进 `lines`（原来只有前 N-1 条，第 N 条只
   assert.match(drawnLines[2]!, /第 3 次/, '最后一条要是第 3 次');
 });
 
-test('⚠ 调试（`force`）时**任何用户开关都不拦** —— 抽奖开关关着也照抽', async () => {
-  // 用户口径（2026-11-27）：「哪里的配置都不能影响调试，调试是只读账号信息、不读其他开关」。
-  // 原来 `force` 只放宽"任务开关 / 账号停用"，抽奖开关是独立状态，绕过了它。
-  const { deps, sent, store } = harness({ flip: true, drawTimes: 2, draw: true, isWin: 0 });
-  const { setPlayAiDrawEnabled } = await import('../src/mcloud/playAiState.ts');
-  setPlayAiDrawEnabled(store, false, NOW); // 显式关掉
-  const forced = { ...deps, force: true } as typeof deps;
-  await drainAll(forced);
-  const draws = sent.filter((x) => String(x.url).includes('/page/lottery')).length;
-  assert.equal(draws, 2, `force 时开关不该拦（实际 ${draws} 发）`);
-
-  // 不 force ⇒ 老老实实不抽
-  const b = harness({ flip: true, drawTimes: 2, draw: true, isWin: 0 });
-  const { setPlayAiDrawEnabled: set2 } = await import('../src/mcloud/playAiState.ts');
-  set2(b.store, false, NOW);
-  await drainAll(b.deps);
-  assert.equal(
-    b.sent.filter((x) => String(x.url).includes('/page/lottery')).length,
-    0,
-    '非调试时开关要生效',
-  );
+test('⚠ 调试（`force`）时**剩下的用户开关也不拦** —— 豆换码关着也照换', async () => {
+  // 用户口径：「哪里的配置都不能影响调试，调试是只读账号信息、不读其他开关」。
+  // 趣玩AI 的抽奖开关已经**整个删掉**（没有开关了），所以这里钉另一个还活着的开关：豆换码。
+  const { wishExchangeEnabled, setWishExchangeEnabled } = await import('../src/mcloud/tasks/wishCodes.ts');
+  const { memStore } = await import('../src/store/memory.ts');
+  const st = memStore();
+  st.ensureSchema();
+  assert.equal(wishExchangeEnabled(st), false, '豆换码缺省是关的（花 AI豆）');
+  setWishExchangeEnabled(st, false, NOW);
+  assert.equal(wishExchangeEnabled(st), false);
+  // `force` 的语义：调试时不看这一格 —— 由 `runWishCodes` 自己判 `deps.force === true`
+  const src = (await import('node:fs')).readFileSync('src/mcloud/tasks/wishCodes.ts', 'utf8');
+  assert.match(src, /deps\.force === true \|\| wishExchangeEnabled\(deps\.store\)/,
+    'force 要能绕过豆换码开关');
 });

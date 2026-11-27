@@ -26,7 +26,7 @@
 // 页面版本号：和 style.css 里的 --style-ver 一起人工递增。
 // 「样式自检」（boot.js 的 ?diag=1）会读它 —— 用来区分「CSS 是新的、JS 还是旧的」这种
 // 半新半旧状态（第 155 轮：样式表是 v155，但 DOM 里根本没有 .ex-group-row 这种行）。
-document.documentElement.dataset.appVer = '182';
+document.documentElement.dataset.appVer = '183';
 
 /** 插件自己的接口。 */
 const API = '/plugins/mcloud/api';
@@ -3956,13 +3956,6 @@ function renderPlayAi() {
   const meta = $('playai-meta');
   if (!box) return;
   const p = last && last.playai;
-  // 代抽开关：读数里**单独**给的一格 —— 没读过也要能看能改，所以先画它
-  const sw = $('playai-draw');
-  if (sw) {
-    const el = /** @type {any} */ (sw);
-    if (p && p.drawEnabled === true) el.setAttribute('checked', '');
-    else el.removeAttribute('checked');
-  }
   // ⚠ 「从没读过」要跟「上次没读成」分开：`at === ''` 时服务端给的是一份空壳，
   //   照 `p.ok ? '读到了' : '上次没读成'` 画会显示「上次没读成」—— 可它一次都没跑过。
   //   （2026-11-26 重截 docs 截图时看见的。）
@@ -4122,16 +4115,6 @@ $('debug-stop').addEventListener('click', (e) => stopRunning('daily', e.currentT
 // 它读 /debug/last 的历史摘要（「这次没跑」「没事可做」），对排查没帮助；
 // 真正要看的是运行日志（#debug-term，含每一步原文）。后端 /debug/last 路由保留不动，
 // 万一别处还要用；只是这一页不再展示它。
-
-// 趣玩AI 的代抽开关（缺省**开** —— 用户口径「获取到次数就抽」；开/关都要立刻存）
-document.addEventListener('change', (ev) => {
-  const t = /** @type {{ id?: string, value?: boolean }} */ (ev.target);
-  if (t.id !== 'playai-draw') return;
-  const on = t.value === true;
-  void api('/playai/draw', { method: 'POST', write: true, body: { on } })
-    .then((r) => toast((r && r.note) || (on ? '代抽已开' : '代抽已关')))
-    .catch((e) => toast(String(e && e.message ? e.message : e), true));
-});
 
 // 许愿码「豆换码」开关（花 AI豆 ⇒ 缺省关；开/关都要立刻存）
 document.addEventListener('change', (ev) => {

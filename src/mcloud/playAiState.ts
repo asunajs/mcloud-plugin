@@ -16,28 +16,8 @@ import type { PlayAiModule, PlayAiReading } from './playAi.ts';
 
 /** 这一趟的进度（可恢复：面板一次调用只有 2 秒预算）。 */
 export const STATE_PLAYAI = 'mcloud.playai.state';
-/** 代抽开关：`'1'` / `'0'`。**没写过 = 关**（花的是用户的次数，必须显式开）。 */
-export const STATE_PLAYAI_DRAW = 'mcloud.playai.draw';
 /** 今天的抽奖账（`{day, drawn, wins}`）—— 上限按天算，同一天再跑也不重置。 */
 export const STATE_PLAYAI_DRAW_DAY = 'mcloud.playai.draw.state';
-
-/** 代抽开没开。缺省**开**。
- *
- *  ⚠ 2026-11-27 改的：原来是缺省关（"花次数的事必须用户点头"），但用户口径很明确 ——
- *    「获取到次数就抽」「要实现为用户可自动化那样」。所以**默认就抽**，
- *    只有显式设成 `'0'` 才不抽。
- *
- *  仍然保留这一格：有人就是不想让插件动他的抽奖次数，关掉要能关。
- */
-export function playAiDrawEnabled(store: Pick<Store, 'getState'>): boolean {
-  const v = store.getState(STATE_PLAYAI_DRAW);
-  if (v === undefined || v === null || v === '') return true;
-  return v === '1';
-}
-
-export function setPlayAiDrawEnabled(store: Store, on: boolean, nowIso: string): void {
-  store.setState(STATE_PLAYAI_DRAW, on ? '1' : '0', nowIso);
-}
 
 export interface PlayAiDrawDay {
   day: string;

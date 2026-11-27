@@ -54,7 +54,6 @@ import {
   loadPlayAi,
   loadPlayAiSnapshot,
   newPlayAi,
-  playAiDrawEnabled,
   saveDrawDay,
   savePlayAi,
   savePlayAiSnapshot,
@@ -255,8 +254,10 @@ function dayKey(deps: TaskDeps): string {
  *  （`drawTimes > 0` —— 它本身已经是余额，别再减 `drawsUsed`）；
  *  ③ 今天还没抽满这一趟的上限；④ 这一趟还没抽过（`drawn` 按天记）。 */
 function shouldDraw(deps: TaskDeps, modules: readonly PlayAiModule[], drawnSoFar = 0): boolean {
-  // 调试（`force`）不看用户开关 —— 见 `TaskDeps.force` 的注释
-  if (deps.force !== true && !playAiDrawEnabled(deps.store)) return false;
+  // ⚠ **没有开关**（2026-11-27 用户拍板彻底删掉）：
+  //   「抽奖不应该有开关，我都去做了还不抽，有病吧，只有开了做，就一定抽」。
+  //   ⇒ 只要用户让「日常」跑起来、页面模块说还有次数，就抽。
+  //   "一趟最多几发"由 `PLAYAI_DRAWS_PER_RUN` 管，真正的上限是服务端的 `drawTimes`。
   const page = pageModule(modules);
   if (page === undefined) return false;
   if (page.drawTimes === null || page.drawTimes <= 0) return false;

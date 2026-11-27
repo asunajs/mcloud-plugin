@@ -15,7 +15,6 @@ import { buildReadings } from '../readings.ts';
 import { json, loginPlatform, readBody } from '../support.ts';
 import type { RouteDeps, RouteEntry } from '../support.ts';
 import { setWishExchangeEnabled } from '../../../mcloud/tasks/wishCodes.ts';
-import { setPlayAiDrawEnabled } from '../../../mcloud/playAiState.ts';
 
 /** settings 组。deps 是路由依赖；base 是 /plugins/mcloud/api；verify 是「拿当前会话验一次」。 */
 export function settingsRoutes(deps: RouteDeps, base: string, verify: () => Promise<{ ok: boolean; note: string }>): RouteEntry[] {
@@ -60,20 +59,6 @@ export function settingsRoutes(deps: RouteDeps, base: string, verify: () => Prom
         // 日志只出结论与脱敏摘要
         deps.log(`导入会话：${check.note}（cookie ${st.cookie}）`);
         return json(200, { imported: true, verified: check.ok, note: check.note, status: st });
-      },
-    },
-
-{
-      // 趣玩AI 的**代抽**开关（花的是用户的次数 ⇒ 缺省关，只有这里能开）。
-      // ⚠ 与"子任务开关"不是一回事：那个管"这一族跑不跑"，这个管"要不要替用户花次数"。
-      path: `${base}/playai/draw`,
-      method: 'POST',
-      handler: (req) => {
-        const body = readBody(req);
-        if (typeof body.on !== 'boolean') return json(400, { error: '需要 {"on": true|false}' });
-        setPlayAiDrawEnabled(deps.store, body.on, deps.now());
-        deps.log(`趣玩AI 代抽：${body.on ? '开' : '关'}`);
-        return json(200, { drawEnabled: body.on, note: body.on ? '代抽已开：有次数就替你抽' : '代抽已关' });
       },
     },
 
