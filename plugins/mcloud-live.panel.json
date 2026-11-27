@@ -1,6 +1,6 @@
 {
   "title": "移动云盘 · 直播",
-  "version": "0.7.6",
+  "version": "0.7.7",
   "order": 13,
   "description": "直播：日程、口令池、领小红花",
   "min_panel": "0.8.3",
