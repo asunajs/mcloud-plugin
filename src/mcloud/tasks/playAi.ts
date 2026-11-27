@@ -255,7 +255,8 @@ function dayKey(deps: TaskDeps): string {
  *  （`drawTimes > 0` —— 它本身已经是余额，别再减 `drawsUsed`）；
  *  ③ 今天还没抽满这一趟的上限；④ 这一趟还没抽过（`drawn` 按天记）。 */
 function shouldDraw(deps: TaskDeps, modules: readonly PlayAiModule[], drawnSoFar = 0): boolean {
-  if (!playAiDrawEnabled(deps.store)) return false;
+  // 调试（`force`）不看用户开关 —— 见 `TaskDeps.force` 的注释
+  if (deps.force !== true && !playAiDrawEnabled(deps.store)) return false;
   const page = pageModule(modules);
   if (page === undefined) return false;
   if (page.drawTimes === null || page.drawTimes <= 0) return false;

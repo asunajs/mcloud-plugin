@@ -57,6 +57,12 @@ export interface TaskDeps {
   baseUrl?: string | undefined;
   /** payload 里的 `lateMs`：本次触发比计划晚了多久（负数 = 手动触发，见 F-001） */
   lateMs?: number | undefined;
+  /** **调试运行**：忽略**所有用户开关**（任务开关 / 账号停用 / 代抽 / 豆换码…）。
+   *
+   *  ⚠ 用户口径（2026-11-27）：「哪里的配置都不能影响调试，调试是只读账号信息，
+   *    不读其他开关」。所以调试页跑的时候，凡是"用户配的开关"一律当开。
+   *  但**凭据、幂等、串行、间隔**这些不是开关，照旧。 */
+  force?: boolean | undefined;
   /** 取当前毫秒时刻。**注入**是为了让"等待"能在测试里用假时钟跑 ——
    *  真等 20 秒的测试没人会跑。不注入就用 `Date.now()`。 */
   nowMs?: (() => number) | undefined;

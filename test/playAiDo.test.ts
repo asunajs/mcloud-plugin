@@ -1097,3 +1097,26 @@ test('⚠ 最后一发也要进 `lines`（原来只有前 N-1 条，第 N 条只
   assert.equal(drawnLines.length, 3, `抽 3 次就该有 3 条账（实际 ${drawnLines.length}：${(st?.lines ?? []).join(' | ')}）`);
   assert.match(drawnLines[2]!, /第 3 次/, '最后一条要是第 3 次');
 });
+
+test('⚠ 调试（`force`）时**任何用户开关都不拦** —— 抽奖开关关着也照抽', async () => {
+  // 用户口径（2026-11-27）：「哪里的配置都不能影响调试，调试是只读账号信息、不读其他开关」。
+  // 原来 `force` 只放宽"任务开关 / 账号停用"，抽奖开关是独立状态，绕过了它。
+  const { deps, sent, store } = harness({ flip: true, drawTimes: 2, draw: true, isWin: 0 });
+  const { setPlayAiDrawEnabled } = await import('../src/mcloud/playAiState.ts');
+  setPlayAiDrawEnabled(store, false, NOW); // 显式关掉
+  const forced = { ...deps, force: true } as typeof deps;
+  await drainAll(forced);
+  const draws = sent.filter((x) => String(x.url).includes('/page/lottery')).length;
+  assert.equal(draws, 2, `force 时开关不该拦（实际 ${draws} 发）`);
+
+  // 不 force ⇒ 老老实实不抽
+  const b = harness({ flip: true, drawTimes: 2, draw: true, isWin: 0 });
+  const { setPlayAiDrawEnabled: set2 } = await import('../src/mcloud/playAiState.ts');
+  set2(b.store, false, NOW);
+  await drainAll(b.deps);
+  assert.equal(
+    b.sent.filter((x) => String(x.url).includes('/page/lottery')).length,
+    0,
+    '非调试时开关要生效',
+  );
+});

@@ -337,7 +337,8 @@ async function runWishCodesInner(deps: TaskDeps): Promise<TaskOutcome> {
 
   // ③ 用 AI豆换码（**缺省关**，花的是用户的豆；开了也只换一张）
   let exchangeNote = '';
-  if (wishExchangeEnabled(deps.store)) {
+  // 调试（`force`）不看用户开关
+  if (deps.force === true || wishExchangeEnabled(deps.store)) {
     const infoRes = await callRawText(deps.transport, exchangeInfoRequest(s, deps.baseUrl));
     let info: ExchangeInfo | null = null;
     if (infoRes.ok) {

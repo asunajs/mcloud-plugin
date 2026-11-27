@@ -173,6 +173,11 @@ export async function runDaily(
   //   但 `force` 只放宽"开关/停用"这两层 —— 凭据、幂等、串行、间隔一律照旧。
   const only = opts.only ?? null;
   const force = opts.force === true;
+  // ⚠ 用户口径（2026-11-27）：「哪里的配置都不能影响调试，调试是只读账号信息、
+  //   不读其他开关」。`force` 原来只放宽"任务开关 / 账号停用"两层，而**抽奖开关**
+  //   和**豆换码开关**是独立状态，绕过了它 —— 调试照样被它们挡住。
+  //   ⇒ 凡是要读用户开关的族，统一拿这一份（开关维度恒为"开"）。
+  const depsForced: TaskDeps = force ? { ...deps, force } : deps;
   // ⚠ 返回值带 `skipped: true`：这一族**这次根本没跑**（开关关着 / 调试只点了别的）。
   //   它和 `idle`（跑了、但没事可做）都是 `ok: true`，只看 `ok` 会把两者都画成「成了」。
   const selected = (id: TaskSwitchId): { run: boolean; skipped?: boolean; skipNote?: string } => {
@@ -466,7 +471,7 @@ export async function runDaily(
     //   用户问「为啥没有 debug 日志」，就是指这个。
     //   尾巴那串读数（`—— 4 个模块 · 24 件任务 …`）截掉：它在结论那一行已经报过，
     //   每步都带一遍只会把日志刷满。
-    const r = await drain(playAiStep, deps, {
+    const r = await drain(playAiStep, depsForced, {
       label: '趣玩AI',
       maxSteps: PLAYAI_MAX_STEPS,
       onStep: (note) => opts.onNote?.(`趣玩AI：${playAiStepLine(note)}`),
@@ -573,7 +578,7 @@ export async function runDaily(
   if (tailSkip !== '') {
     push({ name: '许愿码', ok: true, note: tailSkip, idle: true, skipped: true });
   } else {
-    push(await once('许愿码', runWishCodes, deps));
+    push(await once('许愿码', runWishCodes, depsForced));
   }
 
   // ⚠ `pending` 不是失败：动作做了、服务端还没确认，不能把整趟染红。
