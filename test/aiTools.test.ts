@@ -14,6 +14,7 @@ import assert from 'node:assert/strict';
 import {
   AITOOLS_ACTION_ROUTES,
   AITOOLS_AVATAR_SOURCE,
+  aiToolsGenRequest,
   AITOOLS_CHANNEL_ID,
   AITOOLS_SUPPLIER_TYPE,
   avatarCartoonRequest,
@@ -236,6 +237,7 @@ test('⚠ 只登记**验过的**那一件：007 头像 + 003 抠图（别的别�
     'aiToolsMatting',
     'aiToolsQuality',
     'aiToolsRestore',
+    'aiToolsSnapshot',
   ]);
   assert.match(AITOOLS_ACTION_ROUTES['aiToolsAvatar']!.path, /avatar\/cartoon/);
   assert.match(AITOOLS_ACTION_ROUTES['aiToolsMatting']!.path, /portraitMatting/);
@@ -272,4 +274,32 @@ test('⚠ `supplierType` 是关键字段：头像/抠图 4，老图修复/画质
     assert.equal('imageExt' in r, false, '不该给每件配 imageExt —— 实测它不影响成败');
     assert.equal('base64Prefix' in r, false, '同上');
   }
+});
+
+
+test('AI快照(034) 是**另一套 body**：personList + extJson.templateImg', () => {
+  const r = AITOOLS_ACTION_ROUTES['aiToolsSnapshot']!;
+  assert.equal(r.kind, 'faceswap', '034 不是那 7 个字段的形态');
+  assert.match(r.path, /faceswap$/);
+  const req = aiToolsGenRequest('AAAA', r);
+  const body = JSON.parse(String(req.body)) as Record<string, unknown>;
+  assert.deepEqual(Object.keys(body).sort(), [
+    'channelId',
+    'context',
+    'extJson',
+    'personList',
+    'poseIdList',
+    'style',
+    'supplierType',
+  ]);
+  const pl = body['personList'] as Array<Record<string, unknown>>;
+  assert.equal(pl.length, 1, '只放一张脸');
+  assert.match(String(pl[0]!['base64']), /^data:image\/jpeg;base64,/);
+  // 模板是**固定素材**，不是每号不同
+  const ext = JSON.parse(String(body['extJson'])) as { templateImg?: string };
+  assert.match(String(ext.templateImg), /material_media\/20250116\/1737015803541\.png$/);
+  // 和 plain 那套的键名完全不能混
+  const plain = JSON.parse(String(aiToolsGenRequest('AAAA').body)) as Record<string, unknown>;
+  assert.equal('personList' in plain, false);
+  assert.equal('sendType' in body, false, 'faceswap 外层没有 sendType');
 });

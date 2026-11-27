@@ -65,9 +65,14 @@ export const AITOOLS_MATTING_SOURCE = '170423';
  *   · `031` 表情包 → 回「贴纸URL不能为空」（要贴纸素材，不是人像照）；
  *   · `034` / `3Drenou` → 「参数错误」，路径还没定。
  */
+/** 两种 body 形态。**别想着"统一"** —— 它们连字段名都不一样。 */
+export type AiToolBodyKind = 'plain' | 'faceswap';
+
 export interface AiToolRoute {
   path: string;
   source: string;
+  /** 请求体形态。`plain` = 那 7 个字段（多数工具）；`faceswap` = `personList` + `extJson`（AI快照）。 */
+  kind: AiToolBodyKind;
   /** **唯一真正要紧的字段**（2026-11-27 实测）：同一个 `restore` 路径，
    *  `supplierType: 4` 回「该功能尚未开发」、`8` 就正常生成。
    *  它决定"用哪家的算法"，填错的表现是**像上游没做**，最容易误判。 */
@@ -94,19 +99,29 @@ export interface AiToolRoute {
  */
 export const AITOOLS_ACTION_ROUTES: Record<string, AiToolRoute> = {
   aiToolsAvatar: {
+    kind: 'plain',
     path: AVATAR_CARTOON_PATH,
     source: AITOOLS_AVATAR_SOURCE,
     supplierType: 4,
     style: AITOOLS_AVATAR_STYLE,
   },
   aiToolsMatting: {
+    kind: 'plain',
     path: PORTRAIT_MATTING_PATH,
     source: AITOOLS_MATTING_SOURCE,
     supplierType: 4,
     style: AITOOLS_AVATAR_STYLE,
   },
-  aiToolsRestore: { path: '/api/image/edit/restore', source: '170425', supplierType: 8, style: 0 },
-  aiToolsQuality: { path: '/api/image/edit/qualityRestore', source: '170483', supplierType: 8, style: 0 },
+  aiToolsRestore: { kind: 'plain', path: '/api/image/edit/restore', source: '170425', supplierType: 8, style: 0 },
+  aiToolsQuality: { kind: 'plain', path: '/api/image/edit/qualityRestore', source: '170483', supplierType: 8, style: 0 },
+  // AI快照（`034`）：**换脸**，不是"生成一张图"。body 是 `personList` + `extJson.templateImg`。
+  aiToolsSnapshot: {
+    kind: 'faceswap',
+    path: '/api/image/faceswap',
+    source: '170422',
+    supplierType: 0,
+    style: 1009,
+  },
 };
 
 /** 轮询多久算超时。实测头像 2 次（≈6 秒）就好；留到 60 秒够慢网。 */
@@ -131,10 +146,43 @@ function jsonHeaders(): Record<string, string> {
  *  `supplierType` / `channelId` / `context` 这五个。
  *
  *  `photoB64` 是**图片原始字节的 base64**（JPEG 以 `/9j/` 开头），不是 URL。 */
+/** AI快照那个**换脸模板**。来自实拍（`extJson.templateImg`）。
+ *
+ *  ⚠ 这是一个**固定的素材图**（`material_media/20250116/…png`），不是每个用户不同。
+ *  抓包里只见过这一个；上游有没有模板列表**没查过** —— 如果哪天它 404，换脸会失败，
+ *  表现是 `status` 到不了 3，不是参数错。 */
+export const AITOOLS_FACESWAP_TEMPLATE =
+  'https://img.mcloud.139.com/material_prod/material_media/20250116/1737015803541.png';
+
 export function aiToolsGenRequest(
   photoB64: string,
   route: AiToolRoute = AITOOLS_ACTION_ROUTES['aiToolsAvatar']!,
 ): BuiltRequest {
+  if (route.kind === 'faceswap') {
+    // ⚠ 形态完全不同：外层 `personList` 数组里放**一张脸**，模板走 `extJson.templateImg`。
+    //   实测 `imageExt` 这里不是 `webp` 也行（JPEG 直接过）。
+    return {
+      url: AITOOLS_BASE + route.path,
+      method: 'POST',
+      headers: jsonHeaders(),
+      body: JSON.stringify({
+        personList: [
+          {
+            sendType: 2,
+            channelId: AITOOLS_CHANNEL_ID,
+            imageExt: 'jpeg',
+            base64: 'data:image/jpeg;base64,' + photoB64,
+          },
+        ],
+        channelId: AITOOLS_CHANNEL_ID,
+        supplierType: route.supplierType,
+        style: route.style,
+        poseIdList: [0],
+        extJson: JSON.stringify({ templateImg: AITOOLS_FACESWAP_TEMPLATE }),
+        context: JSON.stringify({ source: route.source }),
+      }),
+    };
+  }
   return {
     url: AITOOLS_BASE + route.path,
     method: 'POST',

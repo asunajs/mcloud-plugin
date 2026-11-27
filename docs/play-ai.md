@@ -80,9 +80,9 @@ draw      开了代抽且 drawTimes > 0 时抽一发（一趟最多一发）
 - **同一天第二趟会重开一轮**（否则 `phase='done'` 会把这一族当天封死），`tried` 带过来；
 - **动作没成也照样回读** —— 那件事可能本来就算完成；失败那句进 `lines`。
 
-### 会做的九件（2026-11-27 加了四件 aiTools 任务）
+### 会做的十件（2026-11-27 加了五件 aiTools 任务）
 
-`PLAYAI_ACTION_KEYS` 现在登记**九件**：
+`PLAYAI_ACTION_KEYS` 现在登记**十件**：
 
 | 趣玩AI 任务 | 动作 | 落盘 | 怎么找到的 |
 | --- | --- | --- | --- |
@@ -94,6 +94,7 @@ draw      开了代抽且 drawTimes > 0 时抽一发（一趟最多一发）
 | **`003`（智能抠图）** | **`aiToolsMatting`** → `/api/image/edit/portraitMatting` | 不落用户云盘 | 与头像同一套 body，只换路径与 `context.source` |
 | **`008`（老图片修复）** | **`aiToolsRestore`** → `/api/image/edit/restore` | 同上 | ⚠ **`supplierType` 必须是 8**（填 4 回「该功能尚未开发」） |
 | **`009`（画质修复）** | **`aiToolsQuality`** → `/api/image/edit/qualityRestore` | 同上 | 同上（`supplierType: 8`） |
+| **`034`（AI快照）** | **`aiToolsSnapshot`** → `/api/image/faceswap` | 同上 | ⚠ **另一种 body**：`personList`（放一张脸）+ `extJson.templateImg`（固定模板图），不是那 7 个字段 |
 | **`007`（AI 头像）** | **`aiToolsAvatar`**：直接调 `ai.yun.139.com/api/image/avatar/cartoon` 把图生成出来 | **不落用户云盘**（结果落在算法侧的签名 URL，24h 有效） | 2026-11-27 抓包 + 静态提取，见下节 |
 
 挑的**偏好**：不落盘的排前面（`ACTION_RANK`）。`aiToolsAvatar` 默认排最后 ——
@@ -120,6 +121,12 @@ draw      开了代抽且 drawTimes > 0 时抽一发（一趟最多一发）
   **填错的表现像"上游没做"**，最容易误判；
 - `imageExt` 与 base64 前缀**实测不影响成败**（`png`/`jpeg`、带不带 `data:image/jpeg;base64,`
   都能出 taskId）⇒ 代码里统一 `png` + 裸 base64，不给每件配这两格。
+- **`034` AI快照是不同的形态**：它调的是 `/api/image/faceswap`（**换脸**），
+  body 是 `personList: [{sendType, channelId, imageExt, base64}]` + `extJson: "{\"templateImg\":\"<素材 URL>\"}"`
+  + `style: 1009` + `supplierType: 0` + `poseIdList: [0]`。
+  模板是一张**固定素材图**（`material_media/20250116/…png`），抓包里只见过这一个。
+  ⚠ 换脸必须有一张**能检出人脸**的图，所以内置默认那张（人脸照）正好；纯色图会被拒
+  （`face/analysis` 会回 `existFace: false`）。
 
 #### 做不了的（都是上游的账，不是我们没写）
 
@@ -128,7 +135,7 @@ draw      开了代抽且 drawTimes > 0 时抽一发（一趟最多一发）
 | `004` | AI漫画风 | 参数对了仍回 `10022001 该功能尚未开发`（另一次提交成功但算法侧 status=4）⇒ **上游没做** |
 | `006` | 智能消除 | 回「Mask图不能为空」——要用户圈选区域，插件不该替用户决定消除哪块 |
 | `031` | AI表情包 | 回「贴纸URL不能为空」——要贴纸素材，不是人像照 |
-| `034` / `3Drenou` | AI快照 / 3D人偶 | 回「参数错误」，路径还没定（`/edit/portrait/generate`、`/edit/animation` 都不收） |
+| `3Drenou` | 3D人偶 | 回「参数错误」，路径还没定（`/edit/animation` 不收） |
 
 ⚠ 还有一个**队列上限**：连发到第 4 个会回 `10000112 您当前还有任务正在处理中`。
 实现里没做并发，一趟串行做，所以正常路径碰不到；但**手动连着试**会撞上。

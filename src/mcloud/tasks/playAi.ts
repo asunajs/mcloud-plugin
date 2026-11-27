@@ -141,6 +141,10 @@ export const PLAYAI_ACTION_KEYS: Record<string, string> = {
   // 2026-11-27 实测：生成成功、`status=3`、`algorithmCode` 与 taskId 一致。
   '008': 'aiToolsRestore',
   '009': 'aiToolsQuality',
+  // `034` AI快照：走 `/api/image/faceswap`（**换脸**，不是生成），
+  // body 是另一套形态（`personList` + `extJson.templateImg`）。
+  // 2026-11-27 实测：用内置那张人脸照样出 `status=3`、`algorithmCode=034`。
+  '034': 'aiToolsSnapshot',
 };
 
 /** 挑任务的偏好：**不写云盘**的排前面。

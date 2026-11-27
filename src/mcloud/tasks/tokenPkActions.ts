@@ -113,6 +113,7 @@ export function firstActionStep(key: string): string {
     case 'aiToolsMatting':
     case 'aiToolsRestore':
     case 'aiToolsQuality':
+    case 'aiToolsSnapshot':
       return 'aitools-gen';
     case 'openAlbum':
       return 'smart-album';
