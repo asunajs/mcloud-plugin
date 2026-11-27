@@ -400,14 +400,17 @@ test('⚠ AI表情包(031)：第三种 body，`templateUrl` 必须是模板样�
   // 没模板就不许发
   assert.equal(aiToolsGenRequest('AAAA', r), undefined);
   const req = aiToolsGenRequest('AAAA', r, {
-    templateId: '23',
-    materialUrl: 'https://img/templatePic.gif',   // 模板图 —— **不能**用它当 templateUrl
-    sampleUrl: 'https://yun/samp.mov',            // 样例才是
+    templateId: '26',
+    materialUrl: 'https://img/materialList.gif',
+    sampleUrl: 'https://yun/Nice.mov',        // → templateUrl
+    stickerUrl: 'https://img/templatePic.gif', // → stickerUrl
   })!;
   const body = JSON.parse(String(req.body)) as Record<string, unknown>;
-  assert.equal(body['templateUrl'], 'https://yun/samp.mov', '要用 templateSamp，不是 templatePic');
-  assert.equal(body['templateId'], '23');
+  assert.equal(body['templateUrl'], 'https://yun/Nice.mov', '要用 templateSamp，不是 templatePic');
+  assert.equal(body['stickerUrl'], 'https://img/templatePic.gif', '贴纸图要用 templatePic，给空串会卡在 99%');
+  assert.equal(body['templateId'], '26');
   assert.equal(body['supplierType'], 8);
-  assert.equal(body['animalFlag'], 1);
+  // ⚠ 抓包里是 0；用 1 会被当"动物"，算法直接失败
+  assert.equal(body['animalFlag'], 0);
   assert.equal('maskBase64' in body, false);
 });

@@ -179,7 +179,12 @@ async function stepAiToolsGen(
   // `faceswap` 那支（AI快照）要用**当趟拉到的模板**；没拉到就别硬发
   const template =
     data.templateId !== undefined && data.templateUrl !== undefined
-      ? { templateId: data.templateId, materialUrl: data.templateUrl }
+      ? {
+          templateId: data.templateId,
+          materialUrl: data.templateUrl,
+          // 表情包还要贴纸图（模板的 `templatePic`）—— 存进 data 带过来
+          ...(data.stickerUrl === undefined ? {} : { stickerUrl: data.stickerUrl }),
+        }
       : undefined;
   const req = aiToolsGenRequest(DEFAULT_AITOOLS_PHOTO_B64, route, template);
   if (req === undefined) return fail(`「${a.name}」还没拿到模板 —— 不该走到这一步`);
@@ -266,7 +271,11 @@ async function stepAiToolsTemplate(
   // 表情包的 `templateUrl` 要的是模板样例（`.mov`），不是模板图
   const url = route?.kind === 'emoji' ? (first.sampleUrl ?? '') : first.materialUrl;
   if (url === '') return fail(`「${a.name}」模板 ${first.templateId} 缺样例地址`);
-  advance(a, 'aitools-gen', { templateId: first.templateId, templateUrl: url });
+  advance(a, 'aitools-gen', {
+    templateId: first.templateId,
+    templateUrl: url,
+    ...(first.stickerUrl === undefined ? {} : { stickerUrl: first.stickerUrl }),
+  });
   return more(`「${a.name}」挑好模板 ${first.templateId}（共 ${list.length} 个）—— 下一步生成`);
 }
 

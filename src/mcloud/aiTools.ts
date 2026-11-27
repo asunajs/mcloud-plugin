@@ -232,6 +232,8 @@ export interface PhotoTemplate {
   materialUrl: string;
   /** 表情包的模板样例（`.mov`）—— 那个才是 `templateUrl`。只有广告位 `66344` 才有。 */
   sampleUrl?: string | undefined;
+  /** 表情包的**贴纸图**（模板的 `templatePic`）—— 抓包里的 `stickerUrl` 就是它。 */
+  stickerUrl?: string | undefined;
 }
 
 /** 解析模板列表。取不到就给空数组（调用方决定要不要退到默认）。 */
@@ -253,10 +255,12 @@ export function parseTemplates(body: string): PhotoTemplate[] {
     const url = String((mats[0] as { materialUrl?: unknown } | undefined)?.materialUrl ?? '');
     if (id === '' || !/^https:\/\//.test(url)) continue;
     const samp = String((raw as { templateSamp?: unknown })?.templateSamp ?? '');
+    const pic = String((raw as { templatePic?: unknown })?.templatePic ?? '');
     out.push({
       templateId: id,
       materialUrl: url,
       ...(/^https:\/\//.test(samp) ? { sampleUrl: samp } : {}),
+      ...(/^https:\/\//.test(pic) ? { stickerUrl: pic } : {}),
     });
   }
   return out;
@@ -312,9 +316,11 @@ export function aiToolsGenRequest(
         // ⚠ 用**样例**（`templateSamp`）；`materialUrl`（模板图）会被算法判失败
         templateUrl: template.sampleUrl ?? template.materialUrl,
         templateId: template.templateId,
-        animalFlag: 1,
+        // ⚠ 抓包里是 **0**（成年人像）。用 1 会被当"动物"，算法直接失败。
+        animalFlag: 0,
         mediaMode: 1,
-        stickerUrl: '',
+        // ⚠ 这一格**不能空**：它是模板的 `templatePic`（贴纸图）。给空串会卡在 progress=99。
+        stickerUrl: template.stickerUrl ?? '',
         stickerText: '',
         context: JSON.stringify({ source: route.source }),
       }),
