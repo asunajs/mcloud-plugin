@@ -133,6 +133,9 @@ export const PLAYAI_ACTION_KEYS: Record<string, string> = {
   //   其余 8 件的路径已查明（`mcloud-capture/mcloud/upstream/aitools.md`），
   //   但**每件 body 形状不同**、只有头像验过，所以先只登记这一件。
   '007': 'aiToolsAvatar',
+  // `003` 智能抠图：和头像**同一套 7 字段 body**，只换生成口与 `context.source`。
+  // 2026-11-27 实测：生成成功、回读翻位（那号从 6 件变 8 件）。
+  '003': 'aiToolsMatting',
 };
 
 /** 挑任务的偏好：**不写云盘**的排前面。

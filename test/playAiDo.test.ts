@@ -139,8 +139,15 @@ test('挑中的是「AI 助手」那件：`taskSign≠0` / 我们不会做的 / 
   const { deps, sent } = harness({ flip: true });
   await drainAll(deps);
   const regs = sent.filter((x) => String(x.url).includes('/page/register'));
-  assert.equal(regs.length, 1, '只点一件');
+  assert.ok(regs.length >= 1, '要真的点');
+  // ⚠ 钉**行为**不钉数量：一趟能做几件是 `PLAYAI_TASKS_PER_RUN` 的事，另有一条测试管；
+  //   这里管的是"第一件挑中的是谁"（偏好顺序 = 不落盘的先做）。
   assert.deepEqual(JSON.parse(String(regs[0]!.body)), { moduleId: '1-250730', taskId: 'aizhushou' });
+  // 且**不许**点那几件我们明确不会做的（taskSign=1 邀请 / 已撤掉的 zhishiku / 上游未开发的）
+  const pointed = regs.map((x) => String((JSON.parse(String(x.body)) as { taskId?: string }).taskId ?? ''));
+  for (const bad of ['invite', 'zhishiku', '008', '009']) {
+    assert.equal(pointed.includes(bad), false, `不该点「${bad}」`);
+  }
 });
 
 test('回读翻位了 ⇒ 判"做完了"（唯一判据是回读，不是 register 的回执）', async () => {
@@ -186,14 +193,18 @@ test('`register` 被拒 ⇒ 判失败，且**不再**往下做动作', async () 
 test('今天点过就不再点：同一天再跑一趟，同一件不点第二次', async () => {
   const { deps, sent } = harness({ flip: false });
   await drainAll(deps);
-  const first = sent.filter((x) => String(x.url).includes('/page/register')).length;
-  assert.equal(first, 1);
+  const regsOf = (): string[] =>
+    sent
+      .filter((x) => String(x.url).includes('/page/register'))
+      .map((x) => String((JSON.parse(String(x.body)) as { taskId?: string }).taskId ?? ''));
+  const firstRound = regsOf();
+  assert.ok(firstRound.length >= 1, '第一趟要真的点');
+  assert.ok(firstRound.includes('aizhushou'), `第一趟该点 AI 助手：${firstRound.join(',')}`);
   // 同一天再跑一趟（状态还在）
   await drainAll(deps);
-  const second = sent.filter((x) => String(x.url).includes('/page/register')).length;
-  // ⚠ 第二趟会做**另一件**（`ailuyinzhuanxie`，taskSign=2 走完成口），但那不是 register；
-  //   这里钉的是「同一件（aizhushou）不再点」，不是「第二趟什么都不做」。
-  assert.equal(second, 1, `同一件不该再点一次（实际 ${second} 发）`);
+  // ⚠ 钉「同一件不再点」，不是「第二趟什么都不做」—— 第二趟会做别的（甚至别的族）
+  const secondRound = regsOf().slice(firstRound.length);
+  assert.equal(secondRound.includes('aizhushou'), false, `aizhushou 不该再点一次（第二趟点了 ${secondRound.join(',')}）`);
   const st = loadPlayAi(deps.store);
   assert.ok(Object.keys(st?.tried ?? {}).length >= 1, '点过的要记下来');
 });

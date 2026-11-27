@@ -12,6 +12,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  AITOOLS_ACTION_ROUTES,
   AITOOLS_AVATAR_SOURCE,
   AITOOLS_CHANNEL_ID,
   AITOOLS_SUPPLIER_TYPE,
@@ -223,4 +224,31 @@ test('轮询次数打满就停手，不无限等', async () => {
   assert.equal(last.ok, true, '打满次数不等于没做成');
   assert.match(last.note, /还在算/);
   assert.equal(/没成|失败/.test(last.note), false, '这句话里不许出现"没成/失败"');
+});
+
+test('⚠ 只登记**验过的**那一件：007 头像 + 003 抠图（别的别偷偷加进来）', () => {
+  // 2026-11-27 拿同一个 7 字段 body 挨个打过，结论：
+  //   003 抠图 ✅ 生成+翻位 / 004 漫画风 算法侧失败(status=4) /
+  //   006 消除 要 Mask / 008+009 上游未开发 / 031 要贴纸 / 034+3D 路径未定。
+  // 这条钉住"别把没验过的塞进路由表" —— 塞进去用户会看到每天一条「没成」。
+  assert.deepEqual(Object.keys(AITOOLS_ACTION_ROUTES).sort(), ['aiToolsAvatar', 'aiToolsMatting']);
+  assert.match(AITOOLS_ACTION_ROUTES['aiToolsAvatar']!.path, /avatar\/cartoon/);
+  assert.match(AITOOLS_ACTION_ROUTES['aiToolsMatting']!.path, /portraitMatting/);
+  // 两件的 source 必须不同（各自 `innerLink` 里的 sourceId）
+  assert.notEqual(
+    AITOOLS_ACTION_ROUTES['aiToolsAvatar']!.source,
+    AITOOLS_ACTION_ROUTES['aiToolsMatting']!.source,
+  );
+});
+
+test('换路径与 source 后 body 要跟着变（同一套 7 字段）', () => {
+  const a = avatarCartoonRequest('AAAA');
+  const m = avatarCartoonRequest('AAAA', AITOOLS_ACTION_ROUTES['aiToolsMatting']!.path, AITOOLS_ACTION_ROUTES['aiToolsMatting']!.source);
+  assert.match(String(a.url), /avatar\/cartoon$/);
+  assert.match(String(m.url), /portraitMatting$/);
+  const pa = JSON.parse(String(a.body)) as Record<string, unknown>;
+  const pm = JSON.parse(String(m.body)) as Record<string, unknown>;
+  // 七个字段的**键名**要一模一样，只有 context 里的 source 不同
+  assert.deepEqual(Object.keys(pa).sort(), Object.keys(pm).sort());
+  assert.notEqual(pa['context'], pm['context']);
 });

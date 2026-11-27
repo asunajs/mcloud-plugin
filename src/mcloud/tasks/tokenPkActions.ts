@@ -71,6 +71,7 @@ import {
   smartAlbumRequest,
 } from '../tokenPk.ts';
 import {
+  AITOOLS_ACTION_ROUTES,
   AITOOLS_POLL_MS,
   avatarCartoonRequest,
   isTaskDone,
@@ -109,6 +110,7 @@ export function firstActionStep(key: string): string {
     // aiTools 那族**不走** AI 助手那条链：它在 `ai.yun.139.com`，
     // 用 `auth` 直接调、不需要邮箱 SSO / 灵犀对话。
     case 'aiToolsAvatar':
+    case 'aiToolsMatting':
       return 'aitools-gen';
     case 'openAlbum':
       return 'smart-album';
@@ -157,7 +159,9 @@ async function stepAiToolsGen(
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   data: Record<string, string>,
 ): Promise<ActionOutcome> {
-  const res = await send(deps, avatarCartoonRequest(DEFAULT_AITOOLS_PHOTO_B64));
+  const route = AITOOLS_ACTION_ROUTES[a.key];
+  if (route === undefined) return fail(`「${a.name}」没有配生成口（${a.key}）`);
+  const res = await send(deps, avatarCartoonRequest(DEFAULT_AITOOLS_PHOTO_B64, route.path, route.source));
   if (!res.ok) return fail(`「${a.name}」提交生成没成：${res.error ?? '未知失败'}`);
   const taskId = parseGenTask(res.text);
   if (taskId === undefined) {

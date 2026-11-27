@@ -42,6 +42,8 @@ export const LAST_RECORD_PATH = '/api/image/async/task/getLastRecord';
 
 /** AI 头像（趣玩AI 的 `007`）的生成口。 */
 export const AVATAR_CARTOON_PATH = '/api/image/avatar/cartoon';
+/** 智能抠图（趣玩AI 的 `003`）的生成口。**和头像同一套 7 字段 body**，只换路径与 `context.source`。 */
+export const PORTRAIT_MATTING_PATH = '/api/image/edit/portraitMatting';
 
 /** 生成请求里那几个**固定**字段。全部来自实拍抓包（`aitools-avatar-samples.txt`）。 */
 export const AITOOLS_CHANNEL_ID = '100103';
@@ -50,6 +52,23 @@ export const AITOOLS_SUPPLIER_TYPE = 4;
 export const AITOOLS_AVATAR_STYLE = '001';
 /** `context.source` —— 头像那个工具的 `sourceId`（`getmodule` 的 `innerLink` 里也是它）。 */
 export const AITOOLS_AVATAR_SOURCE = '170420';
+/** 智能抠图那个工具的 `sourceId`（`getmodule` 的 `innerLink` 里）。 */
+export const AITOOLS_MATTING_SOURCE = '170423';
+
+/** 「哪件任务走哪个生成口」——**只登记验过的**。
+ *
+ *  ⚠ 2026-11-27 拿同一个 7 字段 body 挨个打过（详见 `mcloud-capture/mcloud/upstream/aitools.md`）：
+ *   · `003` 智能抠图 → `/edit/portraitMatting` ✅ 生成成功、回读翻位；
+ *   · `004` AI漫画风 → `/edit/faceAnime` 提交成功但**算法侧失败**（status=4）⇒ 不登记；
+ *   · `006` 智能消除 → 回「Mask图不能为空」（要用户圈选，做不了）；
+ *   · `008` / `009` → 回「该功能尚未开发，敬请期待」——**上游自己没做**；
+ *   · `031` 表情包 → 回「贴纸URL不能为空」（要贴纸素材，不是人像照）；
+ *   · `034` / `3Drenou` → 「参数错误」，路径还没定。
+ */
+export const AITOOLS_ACTION_ROUTES: Record<string, { path: string; source: string }> = {
+  aiToolsAvatar: { path: AVATAR_CARTOON_PATH, source: AITOOLS_AVATAR_SOURCE },
+  aiToolsMatting: { path: PORTRAIT_MATTING_PATH, source: AITOOLS_MATTING_SOURCE },
+};
 
 /** 轮询多久算超时。实测头像 2 次（≈6 秒）就好；留到 60 秒够慢网。 */
 export const AITOOLS_WAIT_MS = 60_000;
@@ -73,9 +92,9 @@ function jsonHeaders(): Record<string, string> {
  *  `supplierType` / `channelId` / `context` 这五个。
  *
  *  `photoB64` 是**图片原始字节的 base64**（JPEG 以 `/9j/` 开头），不是 URL。 */
-export function avatarCartoonRequest(photoB64: string): BuiltRequest {
+export function avatarCartoonRequest(photoB64: string, path = AVATAR_CARTOON_PATH, source = AITOOLS_AVATAR_SOURCE): BuiltRequest {
   return {
-    url: AITOOLS_BASE + AVATAR_CARTOON_PATH,
+    url: AITOOLS_BASE + path,
     method: 'POST',
     headers: jsonHeaders(),
     body: JSON.stringify({
@@ -87,7 +106,7 @@ export function avatarCartoonRequest(photoB64: string): BuiltRequest {
       supplierType: AITOOLS_SUPPLIER_TYPE,
       channelId: AITOOLS_CHANNEL_ID,
       // ⚠ 这一格**是字符串**（里面又套了一层 JSON），不是对象。
-      context: JSON.stringify({ source: AITOOLS_AVATAR_SOURCE }),
+      context: JSON.stringify({ source }),
     }),
   };
 }

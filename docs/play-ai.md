@@ -80,9 +80,9 @@ draw      开了代抽且 drawTimes > 0 时抽一发（一趟最多一发）
 - **同一天第二趟会重开一轮**（否则 `phase='done'` 会把这一族当天封死），`tried` 带过来；
 - **动作没成也照样回读** —— 那件事可能本来就算完成；失败那句进 `lines`。
 
-### 会做的六件（2026-11-27 加了 AI 头像）
+### 会做的七件（2026-11-27 加了 AI 头像、智能抠图）
 
-`PLAYAI_ACTION_KEYS` 现在登记**六件**：
+`PLAYAI_ACTION_KEYS` 现在登记**七件**：
 
 | 趣玩AI 任务 | 动作 | 落盘 | 怎么找到的 |
 | --- | --- | --- | --- |
@@ -91,6 +91,7 @@ draw      开了代抽且 drawTimes > 0 时抽一发（一趟最多一发）
 | `204`（扫描文档） | `aiCamera` | 同上 | 同上（`target=document`） |
 | `ailuyinzhuanxie`（AI 录音转写） | **独立完成口** `timed/transcriptioncompleted` | 不落盘 | 抓包 §7.8：`taskSign=2` 不走 `register` |
 | `yunbiji`（AI 云笔记） | `createNote`（笔记鉴权 → 建 → 回读） | 建一条笔记 | `innerLink` 是 `featureServices?linkUrl=0|2040`；动作层早就有（算力族 107 号） |
+| **`003`（智能抠图）** | **`aiToolsMatting`**：同一套 aiTools 生成口（`/api/image/edit/portraitMatting`） | 不落用户云盘 | 与头像**同一个 7 字段 body**，只换路径与 `context.source` |
 | **`007`（AI 头像）** | **`aiToolsAvatar`**：直接调 `ai.yun.139.com/api/image/avatar/cartoon` 把图生成出来 | **不落用户云盘**（结果落在算法侧的签名 URL，24h 有效） | 2026-11-27 抓包 + 静态提取，见下节 |
 
 挑的**偏好**：不落盘的排前面（`ACTION_RANK`）。`aiToolsAvatar` 默认排最后 ——
