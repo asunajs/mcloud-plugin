@@ -243,14 +243,15 @@ test('代抽**缺省关**：开关没开时，一次都不抽（哪怕有次数�
   assert.equal(sent.filter((x) => String(x.url).includes('/page/lottery')).length, 0, '缺省关就别抽');
 });
 
-test('开了代抽 + 有次数 ⇒ 抽一发；`isWin:1` 判中、`isWin:0` 判没中', async () => {
+test('开了代抽 + 有几次就抽几次；`isWin:1` 判中、`isWin:0` 判没中', async () => {
+  // 用户口径（2026-11-27）：「获取到次数就抽」。余额 2 ⇒ 一趟抽 2 次，不是 1 次。
   for (const [isWin, expect] of [[1, /抽中了/], [0, /没中/]] as const) {
     const { deps, sent, store } = harness({ flip: true, drawTimes: 2, draw: true, isWin });
     const { setPlayAiDrawEnabled } = await import('../src/mcloud/playAiState.ts');
     setPlayAiDrawEnabled(store, true, NOW);
     const { notes } = await drainAll(deps);
     const draws = sent.filter((x) => String(x.url).includes('/page/lottery'));
-    assert.equal(draws.length, 1, `抽一发；实际 notes=${notes.join(' | ')}`);
+    assert.equal(draws.length, 2, `余额 2 ⇒ 抽 2 次；实际 notes=${notes.join(' | ')}`);
     assert.deepEqual(JSON.parse(String(draws[0]!.body)), { moduleId: '1-250730' });
     assert.ok(notes.some((n) => expect.test(n)), `要有结论：${notes.join(' | ')}`);
   }
@@ -312,23 +313,29 @@ test('⚠ 同一天第二趟照样干活：上一趟 `done` 不能把这一族�
   assert.ok(reads2 > reads1, `第二趟也要读一遍（${reads1} → ${reads2}）`);
 });
 
-test('有几次就能抽几次：两个号各跑一趟 ⇒ 两发 lottery（不是一天只准一发）', async () => {
+test('同一天跑第二趟：上一趟已经把次数抽完，就一发都不再抽', async () => {
+  // 余额 3 ⇒ 第一趟抽 3 发把次数用光；第二趟读数还是 3（mock 不模拟服务端扣减），
+  // 但 `drawnThisRun` 是**按趟**记的，所以第二趟会重新看到"有 3 次"…… ⇒
+  // 真正拦住它的是**服务端**：真跑时第二趟的 `drawTimes` 会是 0。
+  // 这条测试只钉"一趟里能连抽"，不钉跨趟行为（跨趟由服务端余额决定）。
   const { deps, sent, store } = harness({ flip: true, drawTimes: 3, draw: true, isWin: 1 });
   const { setPlayAiDrawEnabled } = await import('../src/mcloud/playAiState.ts');
   setPlayAiDrawEnabled(store, true, NOW);
   await drainAll(deps);
-  await drainAll(deps); // 同一天第二趟
   const draws = sent.filter((x) => String(x.url).includes('/page/lottery')).length;
-  assert.equal(draws, 2, `两趟该抽两发（实际 ${draws}）`);
+  assert.equal(draws, 3, `余额 3 ⇒ 一趟抽 3 发（实际 ${draws}）`);
 });
 
-test('一趟最多抽一发：一次 drain 里不会连抽', async () => {
+test('一趟最多抽 `PLAYAI_DRAWS_PER_RUN`（5）发 —— 余额再多也到这为止', async () => {
+  // 上游每天 5 次；余额 9 是造出来的越界场景，用来钉"保险丝"。
+  const { PLAYAI_DRAWS_PER_RUN } = await import('../src/mcloud/tasks/playAi.ts');
+  assert.equal(PLAYAI_DRAWS_PER_RUN, 5, '与上游每日 5 次对齐');
   const { deps, sent, store } = harness({ flip: true, drawTimes: 9, draw: true, isWin: 1 });
   const { setPlayAiDrawEnabled } = await import('../src/mcloud/playAiState.ts');
   setPlayAiDrawEnabled(store, true, NOW);
   await drainAll(deps);
   const draws = sent.filter((x) => String(x.url).includes('/page/lottery')).length;
-  assert.equal(draws, 1, `一趟只准一发（实际 ${draws}）`);
+  assert.equal(draws, PLAYAI_DRAWS_PER_RUN, `一趟最多 ${PLAYAI_DRAWS_PER_RUN} 发（实际 ${draws}）`);
 });
 
 test('入口步骤问动作层，不硬编（动作层换入口时这一族跟着走）', async () => {
@@ -1008,4 +1015,40 @@ test('⚠ CLI 也要把过程行打出来（面板一直有，两端该一致）
   const daily = readFileSync('src/standalone/daily.ts', 'utf8');
   assert.match(daily, /onNote\?:/, '`runDailyAll` 要收 onNote');
   assert.match(daily, /opts\.onNote === undefined \? \{\} : \{ onNote: opts\.onNote \}/, '要把它传进 runOpts');
+});
+
+test('⚠ 抽奖前要打埋点（`visitlog/journaling`，form-urlencoded）', async () => {
+  // 用户口径（2026-11-27）：「记得埋点也调用一下，无所谓有没有作用，防患于未然」。
+  // 实拍：`page/lottery` 前一条就是它。
+  const { journalingRequest, lotteryJournalingKeywords } = await import('../src/mcloud/playAi.ts');
+  const req = journalingRequest('National_playAI_click_lottery');
+  assert.match(String(req.url), /\/ycloud\/visitlog\/journaling$/);
+  assert.equal(req.method, 'POST');
+  assert.match(String(req.headers['content-type']), /x-www-form-urlencoded/);
+  const body = String(req.body);
+  assert.match(body, /^module=uservisit&/);
+  assert.match(body, /optkeyword=National_playAI_click_lottery/);
+  assert.match(body, /sourceid=1044/);
+  assert.match(body, /marketName=National_playAI/);
+  // 成对的事件名（页面就是这么发的）
+  assert.deepEqual(lotteryJournalingKeywords(), [
+    'National_playAI_click_lottery',
+    'National_playAI_click_lottery_app',
+  ]);
+});
+
+test('真抽一趟：埋点发在 lottery 之前，且每抽一次都重发', async () => {
+  const { deps, sent, store } = harness({ flip: true, drawTimes: 2, draw: true, isWin: 1 });
+  const { setPlayAiDrawEnabled } = await import('../src/mcloud/playAiState.ts');
+  setPlayAiDrawEnabled(store, true, NOW);
+  await drainAll(deps);
+  const idx = (needle: string): number[] =>
+    sent.map((x, i) => (String(x.url).includes(needle) ? i : -1)).filter((i) => i >= 0);
+  const journals = idx('/visitlog/journaling');
+  const draws = idx('/page/lottery');
+  assert.equal(draws.length, 2, '抽 2 次');
+  // 每次抽之前都有一对埋点
+  assert.equal(journals.length, 4, `2 次抽奖 × 2 条埋点（实际 ${journals.length}）`);
+  assert.ok(journals[0]! < draws[0]!, '第一次埋点在第一次抽奖之前');
+  assert.ok(journals[2]! < draws[1]!, '第二次埋点在第二次抽奖之前');
 });

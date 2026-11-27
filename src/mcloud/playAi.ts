@@ -57,6 +57,8 @@ export const PLAYAI_EP = {
   register: '/ycloud/funai/api/page/register',
   /** 写：抽一次（本轮**不接**） */
   lottery: '/ycloud/funai/api/page/lottery',
+  /** 埋点（见 `journalingRequest`）。抽奖/点任务前发 —— 页面自己也是这么做的。 */
+  journaling: '/ycloud/visitlog/journaling',
   /** `taskSign=2`（AI录音转写）的完成口 —— 2026-11-26 在 cmcc-plugin 侧真跑通后迁来 */
   transcriptionCompleted: '/ycloud/funai/api/timed/transcriptioncompleted',
   /** 写：刮刮乐（本轮**不接**） */
@@ -191,6 +193,47 @@ export function transcriptionCompletedRequest(
  *
  *  ⚠ 判"中没中"**只看 `isWin`**：`isWin:0` 时 `prizeId/prizeName/prizeUrl` 三键都是 `null`，
  *    但 `prizeType` **有值**（`1`）—— 拿 `prizeType` 当"有没有奖品"的信号会判错。 */
+/** 埋点（`visitlog/journaling`）。**form-urlencoded**，不是 JSON。
+ *
+ *  实拍（2026-11-27 抽奖那趟，`page/lottery` 前一条）：
+ *
+ *  ```text
+ *  POST /ycloud/visitlog/journaling
+ *  module=uservisit&optkeyword=National_playAI_click_themetask_<taskId>&sourceid=1044&marketName=National_playAI
+ *  ```
+ *
+ *  ⚠ 页面在"点任务/抽奖"前后都会打一发，且关键事件常常**成对**（`_app` 后缀那一份）。
+ *  上游**要不要**它没有证据（直播族那边有"少发埋点整条链被静默拒掉"的先例，
+ *  见 `liveFlower.ts` 头注）。这里按用户要求"先发着，防患于未然"：
+ *  **发出去失败也不影响主链** —— 调用方自己吞掉错误。
+ */
+export function journalingRequest(optkeyword: string, base?: string | undefined): BuiltRequest {
+  return {
+    url: playAiUrl(PLAYAI_EP.journaling, base),
+    method: 'POST',
+    headers: {
+      'content-type': 'application/x-www-form-urlencoded;charset=UTF-8',
+      accept: '*/*',
+    },
+    body:
+      'module=uservisit' +
+      `&optkeyword=${encodeURIComponent(optkeyword)}` +
+      '&sourceid=1044' +
+      '&marketName=National_playAI',
+  };
+}
+
+/** 抽奖前后要打的那两条埋点（页面是成对发的）。 */
+export function lotteryJournalingKeywords(): string[] {
+  return ['National_playAI_click_lottery', 'National_playAI_click_lottery_app'];
+}
+
+/** 点一件任务时打的那一对。`taskId` 是趣玩AI 的 id（`007` / `aizhushou` …）。 */
+export function taskJournalingKeywords(taskId: string): string[] {
+  const safe = taskId.replace(/[^A-Za-z0-9_]/g, '');
+  return [`National_playAI_click_themetask_${safe}`, `National_playAI_click_themetask_${safe}_app`];
+}
+
 export function lotteryRequest(
   s: PlayAiSession,
   moduleId: string,

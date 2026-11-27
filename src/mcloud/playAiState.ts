@@ -88,6 +88,10 @@ export interface PlayAiState {
   tried?: Record<string, string> | undefined;
   /** 动作层正在走的那一段（`tokenPkActions.PkAttempt` 的形状）。 */
   attempt?: unknown;
+  /** 这一趟已经抽了几次。上限 `PLAYAI_DRAWS_PER_RUN`（=5，与上游每日次数一致）。
+   *
+   *  ⚠ 用户口径：「获取到次数就抽」。所以抽完不直接收工，还有次数就回 `draw` 再来一次。 */
+  drawnThisRun?: number | undefined;
   /** 这一趟已经回读了几次（见 `verify` 那段的"再读一次"）。 */
   verifyTries?: number | undefined;
   /** 动作那一步**成了没有**。没成的话不必等那 3 秒 —— 服务端不会因为等一会儿就翻位。 */

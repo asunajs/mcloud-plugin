@@ -38,6 +38,8 @@ import {
   pageModule,
   parseModules,
   readingLine,
+  journalingRequest,
+  lotteryJournalingKeywords,
   lotteryRequest,
   parseDraw,
   registerRequest,
@@ -77,8 +79,11 @@ import type { TaskDeps, TaskOutcome } from './base.ts';
  *  继续撞只会把同一段错误刷 N 遍。 */
 export const PLAYAI_TASKS_PER_RUN = 3;
 
-/** 一趟最多抽几次。**1**：抽奖花的是用户的次数，一次一发，出问题一眼看得见。 */
-export const PLAYAI_DRAWS_PER_RUN = 1;
+/** 一趟最多抽几次。**5** —— 与上游"每天最多 5 次"对齐（`PLAYAI_DAILY_CHANCE_CAP`）。
+ *
+ *  用户口径（2026-11-27）：「获取到次数就抽」。所以是"有几次抽几次"，不是"一趟一发"。
+ *  ⚠ 真正的上限由**服务端**的 `drawTimes` 兜着：抽到 0 就自然停。这个常量只是保险丝。 */
+export const PLAYAI_DRAWS_PER_RUN = 5;
 
 /** 这一族一趟最多推几步（`drain` 的 `maxSteps`）。
  *
@@ -249,11 +254,14 @@ function dayKey(deps: TaskDeps): string {
  *  四个条件缺一不可：① 用户**显式开了**代抽（缺省关）；② 页面模块说**还有次数**
  *  （`drawTimes > 0` —— 它本身已经是余额，别再减 `drawsUsed`）；
  *  ③ 今天还没抽满这一趟的上限；④ 这一趟还没抽过（`drawn` 按天记）。 */
-function shouldDraw(deps: TaskDeps, modules: readonly PlayAiModule[]): boolean {
+function shouldDraw(deps: TaskDeps, modules: readonly PlayAiModule[], drawnSoFar = 0): boolean {
   if (!playAiDrawEnabled(deps.store)) return false;
   const page = pageModule(modules);
   if (page === undefined) return false;
   if (page.drawTimes === null || page.drawTimes <= 0) return false;
+  // 这一趟已经抽掉的，从余额里减掉；抽满 `PLAYAI_DRAWS_PER_RUN` 或余额见底就停
+  if (drawnSoFar >= PLAYAI_DRAWS_PER_RUN) return false;
+  if (page.drawTimes - drawnSoFar <= 0) return false;
   // ⚠ **不再**拿按天账卡这里：那样一天只能抽一次，而用户有几次就该能抽几次
   //   （跑几趟由用户定）。"一趟最多一发"由状态机保证 —— 抽完就 `phase='done'`，
   //   同一次运行里回不到 `draw` 了。按天账（`drawn/wins`）只用来报数。
@@ -379,7 +387,7 @@ export async function playAiStep(deps: TaskDeps): Promise<TaskOutcome> {
         // ⚠ **追加**不是覆盖：一趟会连做几件，覆盖的话前面几件的成绩全没了
         //   （实测现场：做完「AI助手」之后下一件点不动，账上只剩"没有我会做的"）。
         st.lines = [...(st.lines ?? []), `没有我会做的可做任务（${line}）`];
-        if (shouldDraw(deps, got.modules)) {
+        if (shouldDraw(deps, got.modules, st.drawnThisRun ?? 0)) {
           st.phase = 'draw';
           save(deps, st);
           return { ok: true, note: `没有要做的任务，但还有次数 —— 去抽一次（${line}）` };
@@ -520,7 +528,7 @@ export async function playAiStep(deps: TaskDeps): Promise<TaskOutcome> {
           save(deps, st);
           return { ok: true, note: `「${t.name}」做完了（${doneCount}/${PLAYAI_TASKS_PER_RUN}）—— 接着做下一件` };
         }
-        if (shouldDraw(deps, got.modules)) {
+        if (shouldDraw(deps, got.modules, st.drawnThisRun ?? 0)) {
           st.phase = 'draw';
           save(deps, st);
           return { ok: true, note: `「${t.name}」做完了 —— 还有次数，去抽一次` };
@@ -558,7 +566,7 @@ export async function playAiStep(deps: TaskDeps): Promise<TaskOutcome> {
         return { ok: true, pending: true, note: `「${t.name}」已上报，服务端还没认 —— 接着做下一件` };
       }
       // 没有下一件了：要是前面做成过、次数也在，抽奖照样给机会
-      if ((st.doneCount ?? 0) > 0 && shouldDraw(deps, got.modules)) {
+      if ((st.doneCount ?? 0) > 0 && shouldDraw(deps, got.modules, st.drawnThisRun ?? 0)) {
         st.phase = 'draw';
         save(deps, st);
         return { ok: true, pending: true, note: `「${t.name}」已上报，服务端还没认 —— 但前面做成的还有次数，去抽一次` };
@@ -576,6 +584,12 @@ export async function playAiStep(deps: TaskDeps): Promise<TaskOutcome> {
         save(deps, st);
         return { ok: true, idle: true, note: '没有页面模块 —— 不抽' };
       }
+      // ① 埋点先发 —— 用户口径「记得埋点也调用一下，无所谓有没有作用，防患于未然」。
+      //    ⚠ 失败一律吞掉：埋点不该让抽奖停下来（直播族的注释里也写着"少发可能被静默拒"，
+      //    但那是推测；宁可多发一条，不能因为埋点挂了就抽不成）。
+      for (const kw of lotteryJournalingKeywords()) {
+        await callRawText(deps.transport, journalingRequest(kw, deps.baseUrl));
+      }
       const res = await callRawText(deps.transport, lotteryRequest(s, page.moduleId, deps.baseUrl));
       const day = loadDrawDay(deps.store, dayKey(deps));
       if (!res.ok) {
@@ -592,6 +606,18 @@ export async function playAiStep(deps: TaskDeps): Promise<TaskOutcome> {
       const d = parseDraw(env.result);
       // 账要记：抽了就是抽了（**不论中没中**，次数已经花掉）
       saveDrawDay(deps.store, { day: day.day, drawn: day.drawn + 1, wins: day.wins + (d.win === true ? 1 : 0) }, deps.nowIso);
+      const drawn = (st.drawnThisRun ?? 0) + 1;
+      st.drawnThisRun = drawn;
+      // ② 用户口径「获取到次数就抽」⇒ 还有剩余次数就**接着抽**，别一趟只抽一发。
+      //    `page.drawTimes` 是**读模块时**的余额，抽了 `drawn` 次后剩这么多：
+      const left = (page.drawTimes ?? 0) - drawn;
+      if (left > 0 && drawn < PLAYAI_DRAWS_PER_RUN) {
+        const what = d.win === true ? `中了「${d.prizeName || '没给名字'}」` : d.win === false ? '没中' : '判不出中没中';
+        st.lines = [...(st.lines ?? []), `抽了第 ${drawn} 次（${what}）`];
+        st.phase = 'draw';
+        save(deps, st);
+        return { ok: true, note: `抽了第 ${drawn} 次（${what}）—— 还剩 ${left} 次，接着抽` };
+      }
       st.phase = 'done';
       if (d.win === null) {
         // 判不出来 ⇒ 既不写"中了"也不写"没中"
