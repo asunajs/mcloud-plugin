@@ -237,6 +237,7 @@ test('⚠ 只登记**验过的**那一件：007 头像 + 003 抠图（别的别�
   assert.deepEqual(Object.keys(AITOOLS_ACTION_ROUTES).sort(), [
     'aiToolsAvatar',
     'aiToolsDoll',
+    'aiToolsEmoji',
     'aiToolsEraser',
     'aiToolsMatting',
     'aiToolsQuality',
@@ -387,4 +388,26 @@ test('蒙版尺寸要和默认照片一致（不一致会被判失败）', async
   const [pw, ph] = sizeOf(DEFAULT_AITOOLS_PHOTO_B64);
   const [mw, mh] = sizeOf(AITOOLS_ERASE_MASK_B64);
   assert.deepEqual([mw, mh], [pw, ph], `蒙版 ${mw}×${mh} 与照片 ${pw}×${ph} 不一致`);
+});
+
+
+test('⚠ AI表情包(031)：第三种 body，`templateUrl` 必须是模板样例（不是模板图）', () => {
+  // `/api/image/emo`；`addEmoSticker` 是第二步（`sendType:1` + MP4），不是主生成口。
+  const r = AITOOLS_ACTION_ROUTES['aiToolsEmoji']!;
+  assert.equal(r.kind, 'emoji');
+  assert.match(r.path, /\/api\/image\/emo$/);
+  assert.equal(r.templateAdpostid, '66344');
+  // 没模板就不许发
+  assert.equal(aiToolsGenRequest('AAAA', r), undefined);
+  const req = aiToolsGenRequest('AAAA', r, {
+    templateId: '23',
+    materialUrl: 'https://img/templatePic.gif',   // 模板图 —— **不能**用它当 templateUrl
+    sampleUrl: 'https://yun/samp.mov',            // 样例才是
+  })!;
+  const body = JSON.parse(String(req.body)) as Record<string, unknown>;
+  assert.equal(body['templateUrl'], 'https://yun/samp.mov', '要用 templateSamp，不是 templatePic');
+  assert.equal(body['templateId'], '23');
+  assert.equal(body['supplierType'], 8);
+  assert.equal(body['animalFlag'], 1);
+  assert.equal('maskBase64' in body, false);
 });

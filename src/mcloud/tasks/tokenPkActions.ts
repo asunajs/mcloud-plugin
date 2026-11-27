@@ -118,8 +118,9 @@ export function firstActionStep(key: string): string {
     case 'aiToolsDoll':
     case 'aiToolsEraser':
       return 'aitools-gen';
-    // AI快照要**先拉模板**（页面也是这么做的：拉列表 → 选第一个 → 再生成）
+    // AI快照 / AI表情包都要**先拉模板**（页面也是这么做的：拉列表 → 选第一个 → 再生成）
     case 'aiToolsSnapshot':
+    case 'aiToolsEmoji':
       return 'aitools-template';
     case 'openAlbum':
       return 'smart-album';
@@ -252,7 +253,9 @@ async function stepAiToolsTemplate(
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   data: Record<string, string>,
 ): Promise<ActionOutcome> {
-  const res = await send(deps, templateListRequest());
+  const route = AITOOLS_ACTION_ROUTES[a.key];
+  const adpostid = route?.templateAdpostid;
+  const res = await send(deps, templateListRequest(adpostid));
   if (!res.ok) return fail(`「${a.name}」拉模板没成：${res.error ?? '未知失败'}`);
   const list = parseTemplates(res.text);
   const first = list[0];
@@ -260,7 +263,10 @@ async function stepAiToolsTemplate(
     // 空列表不是"失败"——上游这期可能没配。如实说，别硬发一个空模板。
     return fail(`「${a.name}」这期没有可用的模板（列表为空）`);
   }
-  advance(a, 'aitools-gen', { templateId: first.templateId, templateUrl: first.materialUrl });
+  // 表情包的 `templateUrl` 要的是模板样例（`.mov`），不是模板图
+  const url = route?.kind === 'emoji' ? (first.sampleUrl ?? '') : first.materialUrl;
+  if (url === '') return fail(`「${a.name}」模板 ${first.templateId} 缺样例地址`);
+  advance(a, 'aitools-gen', { templateId: first.templateId, templateUrl: url });
   return more(`「${a.name}」挑好模板 ${first.templateId}（共 ${list.length} 个）—— 下一步生成`);
 }
 

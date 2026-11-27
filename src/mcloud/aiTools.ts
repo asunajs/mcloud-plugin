@@ -69,7 +69,7 @@ export const AITOOLS_MATTING_SOURCE = '170423';
  *   · `034` / `3Drenou` → 「参数错误」，路径还没定。
  */
 /** 两种 body 形态。**别想着"统一"** —— 它们连字段名都不一样。 */
-export type AiToolBodyKind = 'plain' | 'faceswap';
+export type AiToolBodyKind = 'plain' | 'faceswap' | 'emoji';
 
 export interface AiToolRoute {
   path: string;
@@ -92,6 +92,8 @@ export interface AiToolRoute {
   addWatermark?: boolean | undefined;
   /** 只有**智能消除**要：涂抹蒙版（`maskBase64`）。内容不敏感，但**尺寸要跟照片一致**。 */
   needsMask?: boolean | undefined;
+  /** 只有**表情包**要：模板从哪个广告位拉（`66344` = AI表情包模板）。 */
+  templateAdpostid?: string | undefined;
 }
 
 /** 「哪件任务走哪个生成口」——**只登记验过的**。
@@ -125,6 +127,19 @@ export const AITOOLS_ACTION_ROUTES: Record<string, AiToolRoute> = {
     style: AITOOLS_AVATAR_STYLE,
   },
   aiToolsRestore: { kind: 'plain', path: '/api/image/edit/restore', source: '170425', supplierType: 8, style: 0 },
+  // AI表情包（`031`）：`/api/image/emo`。**第三种 body 形态** ——
+  // 要 `templateUrl`（= 模板的 **`templateSamp`**，一个 `.mov`）、`templateId`、`mediaMode`。
+  // ⚠ `addEmoSticker` 是**第二步**（给生成好的视频加贴纸，`sendType:1` + `fileExt:"MP4"`），
+  //   不是主生成口；主生成用 `emo`。
+  // ⚠ `templateUrl` 填模板的 `templatePic`/`emojiUrl` 会 `status=4`，只有 `templateSamp` 能过。
+  aiToolsEmoji: {
+    kind: 'emoji',
+    path: '/api/image/emo',
+    source: '170424',
+    supplierType: 8,
+    style: '001',
+    templateAdpostid: '66344',
+  },
   // 智能消除（`006`）：要多送一张 `maskBase64`（涂抹蒙版）。
   // ⚠ `supplierType` 必须是 **8** —— 用 4 会一直回「Mask图不能为空」，
   //   看着像"缺参数"，其实2是供应商填错了（2026-11-27 查 `_buildEliminateParams()` 才发现）。
@@ -213,7 +228,10 @@ export function templateListRequest(adpostid = PHOTO_STUDIO_SINGLE_ADPOSTID): Bu
 
 export interface PhotoTemplate {
   templateId: string;
+  /** 模板图。快照用它当 `extJson.templateImg`；表情包**不能用它**（见 `aiToolsEmoji`）。 */
   materialUrl: string;
+  /** 表情包的模板样例（`.mov`）—— 那个才是 `templateUrl`。只有广告位 `66344` 才有。 */
+  sampleUrl?: string | undefined;
 }
 
 /** 解析模板列表。取不到就给空数组（调用方决定要不要退到默认）。 */
@@ -234,7 +252,12 @@ export function parseTemplates(body: string): PhotoTemplate[] {
     const mats = Array.isArray(t?.materialList) ? t.materialList : [];
     const url = String((mats[0] as { materialUrl?: unknown } | undefined)?.materialUrl ?? '');
     if (id === '' || !/^https:\/\//.test(url)) continue;
-    out.push({ templateId: id, materialUrl: url });
+    const samp = String((raw as { templateSamp?: unknown })?.templateSamp ?? '');
+    out.push({
+      templateId: id,
+      materialUrl: url,
+      ...(/^https:\/\//.test(samp) ? { sampleUrl: samp } : {}),
+    });
   }
   return out;
 }
@@ -269,6 +292,30 @@ export function aiToolsGenRequest(
         style: Number(template.templateId) || template.templateId,
         poseIdList: [0],
         extJson: JSON.stringify({ templateImg: template.materialUrl }),
+        context: JSON.stringify({ source: route.source }),
+      }),
+    };
+  }
+  if (route.kind === 'emoji') {
+    if (template === undefined) return undefined;
+    // ⚠ 模板那几条里只有 `templateSamp` 能当 `templateUrl`（`templatePic`/`emojiUrl` 都 status=4）
+    return {
+      url: AITOOLS_BASE + route.path,
+      method: 'POST',
+      headers: jsonHeaders(),
+      body: JSON.stringify({
+        sendType: 2,
+        channelId: AITOOLS_CHANNEL_ID,
+        imageExt: 'jpeg',
+        base64: photoB64,
+        supplierType: route.supplierType,
+        // ⚠ 用**样例**（`templateSamp`）；`materialUrl`（模板图）会被算法判失败
+        templateUrl: template.sampleUrl ?? template.materialUrl,
+        templateId: template.templateId,
+        animalFlag: 1,
+        mediaMode: 1,
+        stickerUrl: '',
+        stickerText: '',
         context: JSON.stringify({ source: route.source }),
       }),
     };

@@ -153,6 +153,9 @@ export const PLAYAI_ACTION_KEYS: Record<string, string> = {
   // 内置一张同尺寸的固定蒙版（中间一块方形）。
   // ⚠ 这一族的 `supplierType` 必须是 **8** —— 用 4 会一直回「Mask图不能为空」。
   '006': 'aiToolsEraser',
+  // `031` AI表情包：`/api/image/emo`（**第三种 body**）。模板从广告位 `66344` 拉，
+  // `templateUrl` 用模板的 **`templateSamp`**（`.mov`）—— 用 `templatePic`/`emojiUrl` 会 `status=4`。
+  '031': 'aiToolsEmoji',
 };
 
 /** 挑任务的偏好：**不写云盘**的排前面。
