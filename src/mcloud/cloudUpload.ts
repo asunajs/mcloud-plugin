@@ -137,6 +137,15 @@ export const AUTH_DOMAINS: readonly string[] = [
   'mail.10086.cn',
 ];
 
+// ⚠ `'yun.139.com'` 这一条**顺带覆盖了 `ai.yun.139.com`**（`endsWith` 判据）——
+//   也就是 aiTools 那 9 件 H5 工具的 REST 接口（`/api/image/*`、`/api/outer/async/*`）。
+//   它们要的 `Authorization` 就是 `mcloud.h5.auth` 那串（`Basic base64("mobile:号:ticket")`），
+//   2026-11-27 实测：拿 `jwttoken` / `ssoToken` / `Bearer` 去打全是 `01000002 鉴权失败`，
+//   用 `auth` 直接 `0000`。
+//   ⇒ **走本仓的 `Transport` 就已经自动带上了**（`authorizeRequest` 会注入），
+//     别像 2026-11-27 那样手写 `fetch` 去试 —— 那会绕过自己的实现，得到"鉴权失败"的假结论。
+//   三张票的选票口径见 `docs/auth-families.md` §5。
+
 /** 从 URL 里取主机名（小写）。取不到 ⇒ `''`。
  *
  *  ⚠ 不依赖 `new URL(...)`：插件沙箱里有没有它没验过，而这里只需要主机名。

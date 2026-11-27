@@ -135,3 +135,77 @@ GET https://m.mcloud.139.com/ycloud/signin/public/cloudRecordV2
 四个变体各一次（jwt-only / auth-only / both / none），打印 `code` / 记录数 / 第一笔的
 `num` 与 `inserttime`，不打印响应正文与任何票值。
 端点对比探针再把旧 `cloudRecord` 打一次（只读、同一账号、同一天），只打印汇总数。
+
+## 5. 三张票：`auth` / `ssoToken` / `jwttoken` —— 一条链，不是三种选择
+
+> 2026-11-27 补。此前这份文档只说"两套票（jwttoken / Authorization）"，
+> **没写清它们从哪来、各自用在哪** —— 于是在 `ai.yun.139.com` 那一族上，
+> 挨个试了 `jwttoken` / `ssoToken` / `Bearer` / 不带，全回"鉴权失败"，才回头补这一节。
+
+### 5.1 转换链
+
+```text
+① 原生凭据 auth        Basic base64("mobile:<手机号>:<ticket>")     302 字符
+   │  POST user-njs.yun.139.com/user/querySpecTokenV2  body {"toSourceId":"001003"}
+   ▼
+② ssoToken            "YZsidssolg" + 32 位 hex                     40 字符
+   │  POST m.mcloud.139.com/ycloud/auth-service/auth/tyrzLogin（带签名 + 服务端时间戳）
+   ▼
+③ jwttoken            JWT（"eyJ…"）                                905 字符 / 100 分钟
+```
+
+实现：`src/mcloud/h5session.ts`（纯协议）+ `src/mcloud/sessionExchange.ts`（网络编排）。
+`ssoToken` 在实现里只是 `ExchangeState` 的一个**中间字段**，换完就 `delete` ——
+这容易让人以为它"不是票"，其实它是**给 H5 页面用的**（见下）。
+
+### 5.2 各自用在哪（**选票看这张表**）
+
+| 票 | 用在哪 | 怎么带 |
+| --- | --- | --- |
+| **`auth`** | **`*.yun.139.com` 原生族** —— `user-njs` / `personal-kd-njs` / **`ai.yun.139.com`** | `Authorization: Basic base64(...)`（**整串**，含 `Basic ` 前缀） |
+| **`jwttoken`** | **`m.mcloud.139.com/ycloud/*`** H5 业务族（签到 / 算力 / 趣玩AI / 许愿…） | `jwttoken: <jwt>` 请求头 |
+| **`ssoToken`** | **H5 页面 URL 的 `token=` 参数** —— 上游模板里那个 `#ssoToken#` 占位就是它 | query string（`?token=YZsidssolg…`），**不进请求头** |
+
+⚠ 三条要点，都是踩过的：
+
+1. **`ssoToken` 只用于拼页面 URL**，不是"第三种鉴权头"。拿它当 `Authorization` 是错的。
+2. **`auth` 不只能换票**：它本身就是 `*.yun.139.com` 那族的通行证 ——
+   包括 aiTools 那 9 件 H5 工具的 REST 接口（`ai.yun.139.com/api/*`）。
+3. **票会轮换，但旧的不一定立刻失效**：2026-11-27 抓到的 `auth` 与本仓存的那份
+   **手机号相同、ticket 不同**，两份都能用。
+
+### 5.3 新接口怎么定用哪张票
+
+先找同族抓包；**找不到就做四格只读探针**（jwt-only / auth-only / both / none，
+见 §4），别按主机后缀硬推 —— `mrp.mcloud.139.com` 就是混合的。
+
+### 5.4 2026-11-27 的现场（这条是怎么被发现的）
+
+`ai.yun.139.com/api/*`（aiTools 的 9 件 H5 工具）逐格试的结果：
+
+| 试的票 | 结果 |
+| --- | --- |
+| `jwttoken`（`eyJ…`） | `{"success":false,"code":"01000002","message":"鉴权失败"}` |
+| `ssoToken`（`YZsidssolg…`） | 同上 |
+| `Bearer ` + 上面两种 | 同上 |
+| 不带 | 同上 |
+| **`auth`**（`Basic bW9iaWxl…`） | **`{"success":true,"code":"0000"}`** ✅ |
+
+原因就是 §5.2 那张表：它在 `*.yun.139.com`，该带 `auth`。
+证据与完整链路见 `mcloud-capture/mcloud/capture/aitools-avatar-samples.txt`。
+
+### 5.4.1 这条**代码里早就编码了**，别再手写 fetch 去试
+
+`src/mcloud/cloudUpload.ts` 的 `AUTH_DOMAINS` 里有 `'yun.139.com'`，而
+`ai.yun.139.com`.endsWith('yun.139.com') 为真 ⇒ **传输层本来就会给它注入 `Authorization`**。
+
+⚠ 2026-11-27 我是**手写 `fetch`** 去试的，绕过了 `authorizeRequest`，
+于是得到"`auth` 也失败"之外的假结论，白折腾半天。**验票一律走本仓 `Transport`。**
+
+### 5.5 顺带一个会骗人的坑
+
+**过期的 `jwttoken` 调 `m.mcloud.139.com/ycloud/*` 不报错**：回
+`{"code":0,"msg":"success"}` 但数据是空的（`isComplete` 全 0、`drawTimes=0`）。
+
+第一眼会读成"任务全没做"，实际是票过期了。判据：同一张票去打
+`makewish/page/home`，`raffleCodes.totalCount` 会变成 0（正常应有值）。
