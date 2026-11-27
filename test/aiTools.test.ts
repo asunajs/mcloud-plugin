@@ -236,6 +236,7 @@ test('⚠ 只登记**验过的**那一件：007 头像 + 003 抠图（别的别�
   // 这条钉住"别把没验过的塞进路由表" —— 塞进去用户会看到每天一条「没成」。
   assert.deepEqual(Object.keys(AITOOLS_ACTION_ROUTES).sort(), [
     'aiToolsAvatar',
+    'aiToolsDoll',
     'aiToolsMatting',
     'aiToolsQuality',
     'aiToolsRestore',
@@ -333,4 +334,23 @@ test('⚠ AI快照的模板**从广告位拉**，不写死 URL（写死的那份
   assert.deepEqual(parseTemplates('{"returnCode":"1"}'), []);
   assert.deepEqual(parseTemplates('不是 JSON'), []);
   assert.deepEqual(parseTemplates('{"returnCode":"0","body":[{templateId:1}]}'), [], '没有图就丢掉');
+});
+
+
+test('⚠ 3D人偶与 AI漫画风**共用** `/edit/faceAnime`，靠三格区分（且 `supplierType` 是字符串）', () => {
+  const doll = AITOOLS_ACTION_ROUTES['aiToolsDoll']!;
+  assert.match(doll.path, /edit\/faceAnime$/);
+  // ⚠ 类型不统一：这里是**字符串** "7"，别的件是数字
+  assert.equal(doll.supplierType, '7');
+  assert.equal(typeof doll.supplierType, 'string');
+  // ⚠ style 是**风格名**，不是编号
+  assert.equal(doll.style, 'plastic_bubble_figure');
+  assert.equal(doll.addWatermark, true);
+  const body = JSON.parse(String(aiToolsGenRequest('AAAA', doll)!.body)) as Record<string, unknown>;
+  assert.equal(body['supplierType'], '7');
+  assert.equal(body['style'], 'plastic_bubble_figure');
+  assert.equal(body['addWatermark'], true);
+  // 别的件不许被塞 addWatermark
+  const avatar = JSON.parse(String(aiToolsGenRequest('AAAA')!.body)) as Record<string, unknown>;
+  assert.equal('addWatermark' in avatar, false);
 });

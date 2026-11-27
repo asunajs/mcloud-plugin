@@ -115,6 +115,7 @@ export function firstActionStep(key: string): string {
     case 'aiToolsMatting':
     case 'aiToolsRestore':
     case 'aiToolsQuality':
+    case 'aiToolsDoll':
       return 'aitools-gen';
     // AI快照要**先拉模板**（页面也是这么做的：拉列表 → 选第一个 → 再生成）
     case 'aiToolsSnapshot':
@@ -149,8 +150,13 @@ async function send(deps: TaskDeps, req: BuiltRequest): Promise<RawTextResult> {
   return await callRawText(deps.transport, req);
 }
 
-/** 轮询几次算放弃。实测头像 2 次就好；留到 12 次（≈ 一次 drain 的预算）够慢网。 */
-export const AI_MAX_POLLS = 8;
+/** 轮询几次算放弃（每次之间 `AITOOLS_POLL_MS` = 3 秒）。
+ *
+ *  实测差得很远：AI头像/抠图 **1–2 次**就好；**3D 人偶要 9 次以上**（30 秒开外）。
+ *  ⇒ 按最慢的那件给到 12 次（≈36 秒）。再慢就交给回读了 —— 打满也不算"没成"，
+ *  只是"还在算"，下次触发会再挑它。
+ */
+export const AI_MAX_POLLS = 12;
 
 /** aiTools：提交生成。
  *

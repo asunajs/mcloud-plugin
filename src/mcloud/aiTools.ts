@@ -75,11 +75,18 @@ export interface AiToolRoute {
   kind: AiToolBodyKind;
   /** **唯一真正要紧的字段**（2026-11-27 实测）：同一个 `restore` 路径，
    *  `supplierType: 4` 回「该功能尚未开发」、`8` 就正常生成。
-   *  它决定"用哪家的算法"，填错的表现是**像上游没做**，最容易误判。 */
-  supplierType: number;
-  /** 风格编号。各工具不同（头像是 `"001"`，老图修复抓包是 `0`）；
-   *  ⚠ 类型也不统一（字符串/数字都有），按抓包原样存，别"统一"成一种。 */
+   *  它决定"用哪家的算法"，填错的表现是**像上游没做**，最容易误判。
+   *
+   *  ⚠ 类型**不统一**：多数件是数字（4 / 8 / 0），3D 人偶是**字符串 `"7"`**。
+   *  逐字照抄，别"统一"。 */
+  supplierType: number | string;
+  /** 风格。各工具不同，而且**类型和含义都不统一**：
+   *  · 头像是 `"001"`、老图修复是 `0`（数字）、AI快照用模板的 `templateId`；
+   *  · **3D 人偶是风格名**：`"plastic_bubble_figure"`。
+   *  按抓包原样存，别"统一"。 */
   style: string | number;
+  /** 只在 3D 人偶的抓包里见过（`true`）。别的件不带这一格。 */
+  addWatermark?: boolean | undefined;
 }
 
 /** 「哪件任务走哪个生成口」——**只登记验过的**。
@@ -113,6 +120,17 @@ export const AITOOLS_ACTION_ROUTES: Record<string, AiToolRoute> = {
     style: AITOOLS_AVATAR_STYLE,
   },
   aiToolsRestore: { kind: 'plain', path: '/api/image/edit/restore', source: '170425', supplierType: 8, style: 0 },
+  // 3D 人偶（`3Drenou`）：和 AI漫画风**共用** `/edit/faceAnime` 路径，靠下面三格区分：
+  //   `supplierType: "7"`（注意是**字符串**）、`style: "plastic_bubble_figure"`（风格**名**）、`addWatermark: true`。
+  //   2026-11-27 实测：生成成功、`status=3`、`algorithmCode` 回的是 **"004"**（上游那两件确实撞号）。
+  aiToolsDoll: {
+    kind: 'plain',
+    path: '/api/image/edit/faceAnime',
+    source: '170618',
+    supplierType: '7',
+    style: 'plastic_bubble_figure',
+    addWatermark: true,
+  },
   aiToolsQuality: { kind: 'plain', path: '/api/image/edit/qualityRestore', source: '170483', supplierType: 8, style: 0 },
   // AI快照（`034`）：**换脸**，不是"生成一张图"。body 是 `personList` + `extJson.templateImg`。
   aiToolsSnapshot: {
@@ -252,6 +270,8 @@ export function aiToolsGenRequest(
       // ⚠ **这一格是真的要紧**：改错一侧（4 vs 8）上游就回「功能尚未开发」。
       supplierType: route.supplierType,
       channelId: AITOOLS_CHANNEL_ID,
+      // 只有 3D 人偶带这一格（抓包里是 `true`）；别给别的件硬塞
+      ...(route.addWatermark === undefined ? {} : { addWatermark: route.addWatermark }),
       // ⚠ 这一格**是字符串**（里面又套了一层 JSON），不是对象。
       context: JSON.stringify({ source: route.source }),
     }),

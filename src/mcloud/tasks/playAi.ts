@@ -145,6 +145,10 @@ export const PLAYAI_ACTION_KEYS: Record<string, string> = {
   // body 是另一套形态（`personList` + `extJson.templateImg`）。
   // 2026-11-27 实测：用内置那张人脸照样出 `status=3`、`algorithmCode=034`。
   '034': 'aiToolsSnapshot',
+  // `3Drenou` 3D人偶：和 AI漫画风共用 `/edit/faceAnime`，靠 `supplierType:"7"` +
+  // `style:"plastic_bubble_figure"` + `addWatermark:true` 区分。
+  // 2026-11-27 实测：生成成功、`status=3`（`algorithmCode` 回 "004" —— 上游那两件撞号）。
+  '3Drenou': 'aiToolsDoll',
 };
 
 /** 挑任务的偏好：**不写云盘**的排前面。

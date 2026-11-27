@@ -80,9 +80,9 @@ draw      开了代抽且 drawTimes > 0 时抽一发（一趟最多一发）
 - **同一天第二趟会重开一轮**（否则 `phase='done'` 会把这一族当天封死），`tried` 带过来；
 - **动作没成也照样回读** —— 那件事可能本来就算完成；失败那句进 `lines`。
 
-### 会做的十件（2026-11-27 加了五件 aiTools 任务）
+### 会做的十一件（2026-11-27 加了六件 aiTools 任务）
 
-`PLAYAI_ACTION_KEYS` 现在登记**十件**：
+`PLAYAI_ACTION_KEYS` 现在登记**十一件**：
 
 | 趣玩AI 任务 | 动作 | 落盘 | 怎么找到的 |
 | --- | --- | --- | --- |
@@ -95,6 +95,7 @@ draw      开了代抽且 drawTimes > 0 时抽一发（一趟最多一发）
 | **`008`（老图片修复）** | **`aiToolsRestore`** → `/api/image/edit/restore` | 同上 | ⚠ **`supplierType` 必须是 8**（填 4 回「该功能尚未开发」） |
 | **`009`（画质修复）** | **`aiToolsQuality`** → `/api/image/edit/qualityRestore` | 同上 | 同上（`supplierType: 8`） |
 | **`034`（AI快照）** | **`aiToolsSnapshot`** → `/api/image/faceswap` | 同上 | ⚠ **另一种 body**：`personList`（放一张脸）+ `extJson.templateImg`（固定模板图），不是那 7 个字段 |
+| **`3Drenou`（3D人偶）** | **`aiToolsDoll`** → `/api/image/edit/faceAnime` | 同上 | ⚠ 与 AI漫画风**共用**同一路径，靠 `supplierType:"7"`（**字符串**）+ `style:"plastic_bubble_figure"`（风格**名**）+ `addWatermark:true` 区分 |
 | **`007`（AI 头像）** | **`aiToolsAvatar`**：直接调 `ai.yun.139.com/api/image/avatar/cartoon` 把图生成出来 | **不落用户云盘**（结果落在算法侧的签名 URL，24h 有效） | 2026-11-27 抓包 + 静态提取，见下节 |
 
 挑的**偏好**：不落盘的排前面（`ACTION_RANK`）。`aiToolsAvatar` 默认排最后 ——
@@ -135,10 +136,13 @@ draw      开了代抽且 drawTimes > 0 时抽一发（一趟最多一发）
 | `004` | AI漫画风 | 参数对了仍回 `10022001 该功能尚未开发`（另一次提交成功但算法侧 status=4）⇒ **上游没做** |
 | `006` | 智能消除 | 回「Mask图不能为空」——要用户圈选区域，插件不该替用户决定消除哪块 |
 | `031` | AI表情包 | 回「贴纸URL不能为空」——要贴纸素材，不是人像照 |
-| `3Drenou` | 3D人偶 | 回「参数错误」，路径还没定（`/edit/animation` 不收） |
+
 
 ⚠ 还有一个**队列上限**：连发到第 4 个会回 `10000112 您当前还有任务正在处理中`。
 实现里没做并发，一趟串行做，所以正常路径碰不到；但**手动连着试**会撞上。
+
+⚠ **3D 人偶算得慢**：实测要 **9 次以上轮询**（30 秒开外），其余几件 1–2 次就好。
+`AI_MAX_POLLS` 按最慢的给到 12（≈36 秒）；再慢就交给回读 —— 打满不算"没成"。
 
 #### 其余 19 件：**H5 工具那一族做不了，这不是"还没抓包"**
 
